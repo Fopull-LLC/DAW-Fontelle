@@ -42,6 +42,7 @@ fn an_insert(label: &str) -> InsertInfo {
         bypassed: false,
         mix: 1.0,
         mix_automated: false,
+        missing: false,
     }
 }
 

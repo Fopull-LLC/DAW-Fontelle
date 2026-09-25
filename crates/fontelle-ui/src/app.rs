@@ -7012,6 +7012,10 @@ impl WindowApp {
                     && clip.start + clip.length >= ticks.start
                 {
                     self.labels.ensure(&clip.name, &font, &mut self.text);
+                    if let Some(fraction) = clip.audio.fetching {
+                        let caption = crate::canvas::fetching_caption(fraction);
+                        self.labels.ensure(&caption, &font, &mut self.text);
+                    }
                 }
             }
             // The fade in hand says how long it is, beside its handle.

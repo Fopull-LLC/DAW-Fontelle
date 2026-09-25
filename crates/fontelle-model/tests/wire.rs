@@ -711,6 +711,14 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         // --- the song
         ("RenameProject", |_| Box::new(RenameProject::new("Song v2"))),
+        ("RelocateAssets", |_| {
+            Box::new(fontelle_model::RelocateAssets::new(vec![(
+                "/home/alice/take.wav".into(),
+                "assets/abc.wav".into(),
+                0xabc,
+                1024,
+            )]))
+        }),
         ("AddMarker", |_| {
             Box::new(AddMarker::new("Bridge", PPQN * 32))
         }),

@@ -68,6 +68,11 @@ pub struct SampleLibrary {
     /// the file, which is why §17.1 puts its cached form under `cache/` and not
     /// under `assets/`.
     audio_peaks: HashMap<AssetId, fontelle_assets::PeakData>,
+    /// Where this library mints a clip's audio id — a joiner's own space while
+    /// it shares a song, so an import here and one on another studio at the
+    /// same moment are two ids (`docs/collab-plan.md` §18, F56). An audio
+    /// clip's id is written into the song, unlike a patch sample's.
+    mint_space: Option<u16>,
 }
 
 /// What [`SampleLibrary::import_audio`] found.
@@ -129,12 +134,19 @@ impl SampleLibrary {
     /// originally came from: a patch the user has edited to reach a second
     /// preset's sample would not survive that, and the whole product thesis is
     /// that the file supplies defaults rather than the final word.
+    ///
+    /// `from` is where the bytes are on this machine, which is not always
+    /// where `file` says: a collected file's path is inside the bundle, and a
+    /// soundfont somebody shared is found in this machine's own bank by what
+    /// is in it (`bundle::resolve`). The library stays keyed by `file`, the
+    /// song's own name for it.
     pub fn reload_sf2_samples(
         &mut self,
         file: &AssetRef,
+        from: &Path,
         wanted: &[u32],
     ) -> Result<(), ImportError> {
-        let loaded = fontelle_assets::load_sf2_samples(&file.path, wanted, self.store_mut())?;
+        let loaded = fontelle_assets::load_sf2_samples(from, wanted, self.store_mut())?;
         for (sample, found) in loaded {
             let reference = SampleRef {
                 file: file.clone(),
@@ -186,11 +198,14 @@ impl SampleLibrary {
     pub fn import_audio(&mut self, path: &Path) -> Result<ImportedAudio, ImportError> {
         let path = path.to_path_buf();
         let decoded = fontelle_assets::import_audio(&path)?;
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let hash = fontelle_assets::content_hash::hash_file(&path)
+            .map_err(|e| ImportError(format!("{}: {e}", path.display())))?;
         let id = match self.audio_by_path.get(&path) {
             Some(id) => *id,
             None => {
-                let id = self.audio_files.insert(path.clone());
+                let id = fontelle_model::minting_in(self.mint_space, || {
+                    self.audio_files.insert(path.clone())
+                });
                 self.audio_by_path.insert(path.clone(), id);
                 self.audio_peaks.insert(
                     id,
@@ -211,11 +226,11 @@ impl SampleLibrary {
             asset: AssetRef {
                 id,
                 path,
-                // Left at nothing rather than guessed: §17.4's relink hash is
-                // the first megabyte plus the size, and nothing reads it yet.
-                // A wrong hash is worse than an absent one.
-                content_hash: 0,
-                size,
+                // What the file *is*, so a machine that already has it — a
+                // shared song's other studio, a copy in a bank — finds it by
+                // its contents (`docs/collab-plan.md` §7.1, F24).
+                content_hash: hash.low,
+                size: hash.size,
                 kind: fontelle_types::AssetKind::Sample,
             },
             frames: decoded.frames,
@@ -251,9 +266,15 @@ impl SampleLibrary {
                 path.display()
             )));
         }
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let hash = fontelle_assets::content_hash::hash_file(&path)
+            .map_err(|e| ImportError(format!("{}: {e}", path.display())))?;
         let file = SampleRef {
-            file: AssetRef::unregistered(path.clone(), 0, size, fontelle_types::AssetKind::Sample),
+            file: AssetRef::unregistered(
+                path.clone(),
+                hash.low,
+                hash.size,
+                fontelle_types::AssetKind::Sample,
+            ),
             // One file, one sample: a wav has no preset index to disambiguate.
             sample: 0,
         };
@@ -290,25 +311,19 @@ impl SampleLibrary {
     /// [`Self::reload_sf2_samples`]'s counterpart for a plain audio file, and
     /// what stops a sampler built by dropping a wav on the rack from opening
     /// silent (`bundle::open` dispatches on `AssetKind`).
-    pub fn reload_sample(&mut self, file: &AssetRef) -> Result<(), ImportError> {
+    pub fn reload_sample(&mut self, file: &AssetRef, from: &Path) -> Result<(), ImportError> {
         let want = SampleRef {
             file: file.clone(),
             sample: 0,
         };
-        let decoded = fontelle_assets::import_audio(&file.path)?;
+        let decoded = fontelle_assets::import_audio(from)?;
         let buffer = mono(&decoded.samples, decoded.channels, decoded.sample_rate);
         // A fresh id is fine — and is what `reload_sf2_samples` does too:
         // a patch stores its layers' **provenance** (`SampleRef`) and resolves
         // them through `SampleLibrary::resolve` on load, so what has to match
         // is the file it names, not the slot it happened to sit in.
         let id = self.store_mut().insert(buffer);
-        self.names.insert(
-            id,
-            file.path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Sample".to_string()),
-        );
+        self.names.insert(id, sound_name(&file.path));
         self.by_file.insert(want.clone(), id);
         self.by_id.insert(id, want);
         Ok(())
@@ -335,7 +350,7 @@ impl SampleLibrary {
     /// Already-loaded ids and already-decoded paths both return without
     /// touching the decoder: a loop on eight rows is eight clips, one asset
     /// and one read.
-    pub fn reload_audio(&mut self, file: &AssetRef) -> Result<(), ImportError> {
+    pub fn reload_audio(&mut self, file: &AssetRef, from: &Path) -> Result<(), ImportError> {
         if self.audio.get(file.id).is_some() {
             return Ok(());
         }
@@ -353,7 +368,7 @@ impl SampleLibrary {
             }
             return Ok(());
         }
-        let decoded = fontelle_assets::import_audio(&file.path)?;
+        let decoded = fontelle_assets::import_audio(from)?;
         self.claim(file);
         self.audio_peaks.insert(
             file.id,
@@ -368,6 +383,50 @@ impl SampleLibrary {
             },
         );
         Ok(())
+    }
+
+    /// Makes a clip's audio id minted in `space` from now on — see the field.
+    pub fn set_mint_space(&mut self, space: Option<u16>) {
+        self.mint_space = space;
+    }
+
+    /// Follows a song's file to where it has been moved: every entry that
+    /// knew it at `from` knows it at `to`'s path, hash and size, under the
+    /// same ids.
+    ///
+    /// What collecting a song into its bundle needs beside the document's
+    /// own rewrite (`fontelle_model::RelocateAssets`): a patch's samples are
+    /// found by the exact reference the patch stores, so a library still
+    /// keyed by the old one would leave every sampler silent after the move.
+    pub fn relocate(&mut self, from: &Path, to: &Path, content_hash: u64, size: u64) {
+        let moved = |file: &AssetRef| AssetRef {
+            path: to.to_path_buf(),
+            content_hash,
+            size,
+            ..file.clone()
+        };
+        let keys: Vec<SampleRef> = self
+            .by_file
+            .keys()
+            .filter(|key| key.file.path == from)
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(id) = self.by_file.remove(&key) {
+                let new = SampleRef {
+                    file: moved(&key.file),
+                    sample: key.sample,
+                };
+                self.by_id.insert(id, new.clone());
+                self.by_file.insert(new, id);
+            }
+        }
+        if let Some(id) = self.audio_by_path.remove(from) {
+            self.audio_by_path.insert(to.to_path_buf(), id);
+            if let Some(path) = self.audio_files.get_mut(id) {
+                *path = to.to_path_buf();
+            }
+        }
     }
 
     /// Books a stored id out of the arena so nothing else is given it.
@@ -428,5 +487,25 @@ fn mono(samples: &[f32], channels: u16, sample_rate: u32) -> SampleBuffer {
     SampleBuffer {
         data: std::sync::Arc::from(data),
         sample_rate,
+    }
+}
+
+/// What a sound is called, from its file: the file's own name without its
+/// extension — and without the hash a collected copy carries.
+///
+/// A song's files are collected into its bundle as
+/// `assets/<name>.<sixteen hex digits>.<ext>` (`Session::collect_assets`): the
+/// digits are what the file *is*, so two machines agree about it, and the
+/// name is so a clip still says "Take 3" rather than its hash.
+pub fn sound_name(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Sample".to_string());
+    match stem.rsplit_once('.') {
+        Some((name, tail)) if tail.len() == 16 && tail.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            name.to_string()
+        }
+        _ => stem,
     }
 }

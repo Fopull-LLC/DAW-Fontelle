@@ -1158,10 +1158,12 @@ dependencies = [
  "fontelle-types",
  "midly",
  "notify",
+ "serde",
+ "serde_json",
+ "sha2",
  "slotmap",
  "soundfont",
  "symphonia",
- "twox-hash",
 ]
 
 [[package]]

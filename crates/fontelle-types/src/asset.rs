@@ -14,7 +14,7 @@ pub enum AssetKind {
 
 /// A reference to sample/soundfont data on disk (TDD §17.4). Referenced by
 /// `fontelle-core::Layer::Source`, resolved and imported by `fontelle-assets`, and
-/// tracked in the document's `AssetTable` by `fontelle-model` — living here keeps
+/// found in a song by `fontelle_model::Project::files` — living here keeps
 /// `fontelle-core` from depending on either of those crates (INVARIANT 4).
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,

@@ -559,26 +559,17 @@ pub fn import_sf2_preset(
 
 /// Names the file on disk the way a saved patch has to (TDD §17.4).
 ///
-/// The hash covers the first megabyte plus the size, which is what §17.4
-/// specifies: enough to tell two soundfonts apart, cheap enough to compute on
-/// every load, and — because it stops at a megabyte — the same cost for a
-/// 325 MB library as for a 97 KB one.
+/// By what is in it (`crate::content_hash`): the whole file's SHA-256, kept
+/// against its path, size and modification time so a soundfont is hashed
+/// once however many of its presets are clicked through. It used to be an
+/// xxhash of the first megabyte plus the size — cheap, and a name nothing
+/// else in the program could compute or look up (`docs/collab-plan.md` §7.1,
+/// F24).
 ///
 /// `bytes` is the file this import already read, so nothing is read twice.
 fn asset_ref(path: &Path, bytes: &[u8]) -> AssetRef {
-    use std::hash::Hasher;
-
-    const HASHED_PREFIX: usize = 1024 * 1024;
-    let mut hasher = twox_hash::XxHash64::with_seed(0);
-    hasher.write(&bytes[..bytes.len().min(HASHED_PREFIX)]);
-    hasher.write_u64(bytes.len() as u64);
-
-    AssetRef::unregistered(
-        path.to_path_buf(),
-        hasher.finish(),
-        bytes.len() as u64,
-        AssetKind::Sf2,
-    )
+    let hash = crate::content_hash::hash_file_bytes(path, bytes);
+    AssetRef::unregistered(path.to_path_buf(), hash.low, hash.size, AssetKind::Sf2)
 }
 
 /// The modulation half of an instrument zone: SF2's two LFOs, its modulation

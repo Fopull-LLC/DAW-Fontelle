@@ -2,7 +2,6 @@ use fontelle_types::{ChannelId, ClipId, LaneId, MarkerId, PPQN, PrefabId, Sample
 
 use crate::arena::Arena;
 
-use crate::asset_table::AssetTable;
 use crate::channel::Channel;
 use crate::clip::{Clip, ClipSource};
 use crate::lane::Lane;
@@ -303,7 +302,12 @@ pub struct Project {
     pub lanes: Arena<LaneId, Lane>,
     pub clips: Arena<ClipId, Clip>,
     pub prefabs: Arena<PrefabId, Prefab>,
-    pub assets: AssetTable,
+    // `assets: AssetTable` was here: an arena of `AssetRef`s that nothing
+    // ever wrote or read. The files a song uses are the ones it names, and
+    // `files()` is the one walk that finds them (`docs/collab-plan.md` §18,
+    // F25); a second list every command had to keep in step with the first
+    // would be one to drift. Older files still carry an empty one, which is
+    // passed over on load.
     /// Named places on the timeline. An arena rather than a list since
     /// format 1, so an edit can name one — a list's positions shift under
     /// whoever else is adding markers (`docs/collab-plan.md` §5.2).
@@ -446,6 +450,58 @@ impl Project {
         twox_hash::XxHash64::oneshot(0, &bytes)
     }
 
+    /// Every file the song names, in one fixed order: each audio clip's,
+    /// each prefab's audio, then each channel's patch and its A/B slot's —
+    /// the patch bodies read as the JSON they are (`docs/collab-plan.md`
+    /// §7.1).
+    ///
+    /// What a song needs to be whole on another machine, and what a reopened
+    /// song reads back; one walk, so the two cannot disagree about what a
+    /// song uses.
+    pub fn files(&self) -> Vec<fontelle_types::AssetRef> {
+        let mut files = Vec::new();
+        for clip in self.clips.values() {
+            if let ClipSource::Audio(data) = &clip.source {
+                files.push(data.asset.clone());
+            }
+        }
+        for prefab in self.prefabs.values() {
+            if let ClipSource::Audio(data) = &prefab.source {
+                files.push(data.asset.clone());
+            }
+        }
+        for channel in self.channels.values() {
+            for patch in [&channel.patch_data, &channel.ab.other]
+                .into_iter()
+                .flatten()
+            {
+                files_in(&patch.body, &mut files);
+            }
+        }
+        files
+    }
+
+    /// Every file reference in the song, to change — in [`files`](Self::files)'
+    /// order. What moving a song's files into its bundle rewrites.
+    pub fn each_file_mut(&mut self, mut f: impl FnMut(&mut fontelle_types::AssetRef)) {
+        for clip in self.clips.values_mut() {
+            if let ClipSource::Audio(data) = &mut clip.source {
+                f(&mut data.asset);
+            }
+        }
+        for prefab in self.prefabs.values_mut() {
+            if let ClipSource::Audio(data) = &mut prefab.source {
+                f(&mut data.asset);
+            }
+        }
+        for channel in self.channels.values_mut() {
+            let patches = [&mut channel.patch_data, &mut channel.ab.other];
+            for patch in patches.into_iter().flatten() {
+                files_in_mut(&mut patch.body, &mut f);
+            }
+        }
+    }
+
     /// The prefabs, in a stable order for a list to draw.
     ///
     /// Arena order, which is insertion order — the order somebody made them
@@ -498,11 +554,49 @@ impl Project {
             lanes: Arena::default(),
             clips: Arena::default(),
             prefabs: Arena::default(),
-            assets: AssetTable::default(),
             markers: Arena::default(),
             loop_range: None,
             view_state: ViewState::default(),
         }
+    }
+}
+
+/// Whether a JSON object is an `AssetRef` — the shape a patch body writes
+/// one in, and the only way to find one in a body the model cannot read as
+/// types.
+fn is_asset(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["id", "path", "content_hash", "size", "kind"]
+        .iter()
+        .all(|key| map.contains_key(*key))
+}
+
+fn files_in(value: &serde_json::Value, out: &mut Vec<fontelle_types::AssetRef>) {
+    match value {
+        serde_json::Value::Object(map) if is_asset(map) => {
+            if let Ok(asset) = serde_json::from_value(value.clone()) {
+                out.push(asset);
+            }
+        }
+        serde_json::Value::Object(map) => map.values().for_each(|v| files_in(v, out)),
+        serde_json::Value::Array(items) => items.iter().for_each(|v| files_in(v, out)),
+        _ => {}
+    }
+}
+
+fn files_in_mut(value: &mut serde_json::Value, f: &mut impl FnMut(&mut fontelle_types::AssetRef)) {
+    match value {
+        serde_json::Value::Object(map) if is_asset(map) => {
+            if let Ok(mut asset) = serde_json::from_value::<fontelle_types::AssetRef>(value.clone())
+            {
+                f(&mut asset);
+                if let Ok(written) = serde_json::to_value(&asset) {
+                    *value = written;
+                }
+            }
+        }
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| files_in_mut(v, f)),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| files_in_mut(v, f)),
+        _ => {}
     }
 }
 

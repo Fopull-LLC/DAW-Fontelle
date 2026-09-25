@@ -5,7 +5,6 @@
 //! references (INVARIANT 8).
 
 mod arena;
-mod asset_table;
 mod automation;
 mod channel;
 mod clip;
@@ -23,8 +22,7 @@ mod tools;
 pub mod trim;
 pub mod wire;
 
-pub use arena::Arena;
-pub use asset_table::AssetTable;
+pub use arena::{Arena, minting_in};
 pub use automation::{AutomationData, AutomationPoint, CurveShape, curve_value};
 pub use channel::{Channel, ChannelAb};
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
@@ -36,10 +34,10 @@ pub use commands::{
     EditLapse, EditNotepad, FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart,
     MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes,
     NEW_SEND_DB, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, PluginTarget,
-    PresetTarget, RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane,
-    RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel,
-    RenameLane, RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeNotes,
-    RestoreAutomationPoints, RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig,
+    PresetTarget, RelocateAssets, RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert,
+    RemoveLane, RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend,
+    RenameChannel, RenameLane, RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip,
+    ResizeNotes, RestoreAutomationPoints, RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig,
     RestorePluginParam, RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch,
     SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
     SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetLoopRange, SetNoteLengths,

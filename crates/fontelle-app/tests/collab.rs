@@ -833,3 +833,558 @@ fn an_edit_made_just_before_leaving_still_arrives() {
     assert!(notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 33));
     pair.same();
 }
+
+// ================================================================ Phase 2
+//
+// Files: the samples, recordings and soundfonts a song plays, travelling by
+// what is in them (§7).
+
+use fontelle_ui::document::ClipKind;
+
+/// A tone on disk: `seconds` of `hz`, mono, 48 kHz.
+fn a_tone(dir: &Path, name: &str, seconds: f32, hz: f32) -> PathBuf {
+    let frames = (48_000.0 * seconds) as usize;
+    let samples: Vec<f32> = (0..frames)
+        .map(|i| (i as f32 * hz * std::f32::consts::TAU / 48_000.0).sin() * 0.5)
+        .collect();
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        fontelle_assets::fixtures::build_wav(48_000, 1, &samples),
+    )
+    .unwrap();
+    path
+}
+
+/// What a file's bytes are called on the wire: the low 64 bits of their
+/// SHA-256 (§7.1).
+fn hash_of(path: &Path) -> u64 {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(std::fs::read(path).unwrap());
+    u64::from_be_bytes(digest[24..32].try_into().unwrap())
+}
+
+/// Every file a song names: its audio clips' and its instruments' samples.
+fn files_of(project: &fontelle_model::Project) -> Vec<fontelle_types::AssetRef> {
+    let mut files = Vec::new();
+    for clip in project.clips.values() {
+        if let fontelle_model::ClipSource::Audio(data) = &clip.source {
+            files.push(data.asset.clone());
+        }
+    }
+    for channel in project.channels.values() {
+        if let Some(data) = &channel.patch_data {
+            for sample in fontelle_core::referenced_samples(data).unwrap() {
+                files.push(sample.file);
+            }
+        }
+    }
+    files
+}
+
+fn audio_clips(session: &Session) -> Vec<fontelle_ui::document::ClipInfo> {
+    session
+        .clips()
+        .into_iter()
+        .filter(|clip| clip.kind == ClipKind::Audio)
+        .collect()
+}
+
+/// F24. A file's hash is its bytes, whatever kind of file it is, from the
+/// moment it comes in.
+#[test]
+fn an_assets_hash_is_its_bytes() {
+    let dir = scratch("hash");
+    let mut session = a_session();
+    let tone = a_tone(&dir.join("elsewhere"), "tone.wav", 0.5, 440.0);
+    let hit = a_tone(&dir.join("elsewhere"), "hit.wav", 0.1, 220.0);
+    session.drop_file_at(&tone, 0).expect("a sound drops");
+    session
+        .drop_file_as_channel(&hit)
+        .expect("a sound becomes a sampler");
+
+    let files = files_of(session.project());
+    assert_eq!(files.len(), 2, "{files:?}");
+    for file in files {
+        assert_ne!(file.content_hash, 0);
+        assert_eq!(
+            file.content_hash,
+            hash_of(&file.path),
+            "{}",
+            file.path.display()
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// F23. Sharing a song collects every file it uses into the bundle, by what
+/// is in it, and saves what was not saved — a copy is only a copy if it
+/// carries its samples.
+#[test]
+fn sharing_an_unsaved_project_saves_first_and_collects_assets() {
+    let dir = scratch("collect");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let tone = a_tone(&dir.join("desktop"), "tone.wav", 0.5, 440.0);
+    let hit = a_tone(&dir.join("desktop"), "hit.wav", 0.1, 220.0);
+    host.drop_file_at(&tone, 0).unwrap();
+    host.drop_file_as_channel(&hit).unwrap();
+    assert!(host.is_dirty());
+    let before = std::fs::read(&tone).unwrap();
+
+    let hub = MemoryHub::new();
+    host.share(
+        Box::new(hub.server_endpoint()),
+        options("Alice", PersistentId::new()),
+    )
+    .unwrap();
+    assert!(!host.is_dirty(), "sharing saved it");
+    let bundle = host.bundle_path().unwrap().to_path_buf();
+    let files = files_of(host.project());
+    assert_eq!(files.len(), 2);
+    for file in &files {
+        assert!(
+            file.path.is_relative(),
+            "{} is not in the bundle",
+            file.path.display()
+        );
+        assert!(file.path.starts_with("assets"), "{}", file.path.display());
+        let on_disk = bundle.join(&file.path);
+        assert!(on_disk.is_file(), "{} is missing", on_disk.display());
+        assert_eq!(hash_of(&on_disk), file.content_hash);
+    }
+    assert_eq!(
+        std::fs::read(&tone).unwrap(),
+        before,
+        "the original is untouched"
+    );
+    // And what is on disk is the collected song.
+    let saved = fontelle_model::load_project(&bundle).unwrap();
+    assert!(files_of(&saved).iter().all(|f| f.path.is_relative()));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// F25. What a joiner is told the song needs is exactly the files the song
+/// names — by hash, with their sizes — and the question says how much.
+#[test]
+fn the_manifest_is_the_asset_table() {
+    let dir = scratch("manifest");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let tone = a_tone(&dir.join("desktop"), "tone.wav", 0.5, 440.0);
+    host.drop_file_at(&tone, 0).unwrap();
+    // The same file twice is one file.
+    host.drop_file_at(&tone, PPQN * 8).unwrap();
+    host.drop_file_as_channel(&a_tone(&dir.join("desktop"), "hit.wav", 0.1, 220.0))
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+
+    let manifest = fontelle_app::collab::manifest(pair.host.project());
+    let bundle = pair.host.bundle_path().unwrap();
+    assert_eq!(manifest.len(), 2, "{manifest:?}");
+    for entry in &manifest {
+        let on_disk = bundle.join(&entry.file_name);
+        assert_eq!(entry.hash, hash_of(&on_disk));
+        assert_eq!(entry.size, std::fs::metadata(&on_disk).unwrap().len());
+    }
+    let question = pair.joiner.join_question().expect("asked").clone();
+    assert!(
+        question.lines[0].contains("2 files"),
+        "the question says what is coming: {:?}",
+        question.lines
+    );
+}
+
+/// §1 point 2. Bob ends up with every file the song uses, in his copy's own
+/// bundle, and the copy opens whole on its own afterwards.
+#[test]
+fn a_joiner_gets_every_file_the_song_uses() {
+    let dir = scratch("every-file");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.drop_file_at(&a_tone(&dir.join("desktop"), "tone.wav", 0.5, 440.0), 0)
+        .unwrap();
+    host.drop_file_as_channel(&a_tone(&dir.join("desktop"), "hit.wav", 0.1, 220.0))
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+    pair.settle();
+    pair.same();
+
+    let copy = pair.joiner.bundle_path().unwrap().to_path_buf();
+    for file in files_of(pair.joiner.project()) {
+        assert!(
+            copy.join(&file.path).is_file(),
+            "{} did not arrive",
+            file.path.display()
+        );
+    }
+    let clips = audio_clips(&pair.joiner);
+    assert!(
+        clips.iter().all(|c| !c.audio.peaks.is_empty()),
+        "the clip plays"
+    );
+    pair.joiner.leave_session();
+    let reopened = fontelle_app::open_project(&copy).unwrap();
+    assert!(reopened.missing.is_empty(), "{:?}", reopened.missing);
+}
+
+/// F26, F28 and F31. A take recorded on the joiner lands on the host at
+/// once as an edit, is drawn as fetching while its audio travels, and then
+/// plays — under the id the joiner gave it.
+#[test]
+fn a_recording_on_the_joiner_reaches_the_host_and_plays() {
+    let mut pair = Pair::joined("recording", 4);
+    pair.joiner.add_mixer_track();
+    let strip = pair.joiner.selected_mixer_track();
+    pair.joiner.set_track_input(strip, Some("mic".to_string()));
+    pair.joiner
+        .set_record_mode(fontelle_ui::transport::RecordMode::Audio);
+    let (mut writer, reader) = fontelle_engine::input_capture_channel(48_000);
+    let samples: Vec<f32> = (0..24_000)
+        .map(|i| (i as f32 * 220.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.7)
+        .collect();
+    writer.write(&samples);
+    pair.joiner.set_audio_input(reader, 48_000, 1);
+    pair.joiner.keep_audio_take(0, 24_000).expect("a take");
+    pair.joiner.end_gesture();
+    assert_eq!(audio_clips(&pair.joiner).len(), 1);
+
+    // The edit is there before the audio is.
+    let mut seen_fetching = false;
+    for _ in 0..40 {
+        pair.tick(1);
+        if let Some(clip) = audio_clips(&pair.host).first()
+            && clip.audio.fetching.is_some()
+        {
+            seen_fetching = true;
+            assert!(clip.audio.peaks.is_empty(), "no audio yet, no waveform");
+        }
+    }
+    assert!(
+        seen_fetching,
+        "the host drew the clip as fetching while it travelled"
+    );
+    pair.settle();
+    let clip = audio_clips(&pair.host).pop().expect("the take arrived");
+    assert_eq!(clip.audio.fetching, None);
+    assert!(!clip.audio.peaks.is_empty(), "and it plays");
+    pair.same();
+}
+
+/// F56. Alice and Bob each drop a different sound at the same moment: two
+/// files, two ids, and each clip plays its own on both machines.
+#[test]
+fn two_imports_at_once_are_two_files() {
+    let mut pair = Pair::joined("two-imports", 4);
+    let long = a_tone(&pair.dir.join("alice-desk"), "long.wav", 1.0, 330.0);
+    let short = a_tone(&pair.dir.join("bob-desk"), "short.wav", 0.25, 550.0);
+    pair.host.drop_file_at(&long, 0).unwrap();
+    pair.host.end_gesture();
+    pair.joiner.drop_file_at(&short, 0).unwrap();
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+
+    for session in [&pair.host, &pair.joiner] {
+        let assets: Vec<fontelle_types::AssetRef> = files_of(session.project());
+        assert_eq!(assets.len(), 2);
+        assert_ne!(assets[0].id, assets[1].id, "two files are two assets");
+        let store = session.library().audio_store();
+        let mut frames: Vec<usize> = assets
+            .iter()
+            .map(|a| store.get(a.id).expect("the audio is here").frames())
+            .collect();
+        frames.sort();
+        assert_eq!(frames, vec![12_000, 48_000], "each clip plays its own file");
+    }
+}
+
+/// A soundfont on disk: a real one, one zone across the keyboard.
+fn a_soundfont(dir: &Path, name: &str) -> PathBuf {
+    use fontelle_assets::fixtures::{
+        GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, Sf2Fixture, ZoneSpec, build_sf2, gen_range, gen_val,
+    };
+    std::fs::create_dir_all(dir).unwrap();
+    let fixture = Sf2Fixture {
+        samples: (0..64).map(|i| (i * 300 - 9_000) as i16).collect(),
+        sample_rate: 44_100,
+        header_start: 0,
+        header_end: 64,
+        header_loop_start: 4,
+        header_loop_end: 60,
+        origpitch: 60,
+        pitchadj: 0,
+        zone: ZoneSpec {
+            generators: vec![
+                gen_range(GEN_KEY_RANGE, 0, 127),
+                gen_val(GEN_OVERRIDING_ROOT_KEY, 60),
+            ],
+        },
+        extra_zones: Vec::new(),
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, build_sf2(&fixture)).unwrap();
+    path
+}
+
+/// Alice's song plays a soundfont out of her bank.
+fn a_song_on_a_soundfont(dir: &Path) -> (Session, PathBuf) {
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let font = a_soundfont(&dir.join("alice-bank"), "Glass.sf2");
+    host.set_library_dirs(vec![dir.join("alice-bank")], false);
+    let row = host
+        .library_files()
+        .iter()
+        .position(|entry| entry.name == "Glass")
+        .expect("the bank lists it");
+    host.open_file(row).expect("it opens");
+    host.add_channel_with(0)
+        .expect("a soundfont becomes an instrument");
+    host.save().unwrap();
+    (host, font)
+}
+
+/// F27. A soundfont Bob already has in his bank — under any name — is found
+/// by what is in it and never sent.
+#[test]
+fn a_soundfont_already_in_the_bank_is_not_transferred() {
+    let dir = scratch("bank-has-it");
+    let (host, font) = a_song_on_a_soundfont(&dir);
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let bank = dir.join("bob-bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    std::fs::copy(&font, bank.join("my glass copy.sf2")).unwrap();
+    joiner.set_library_dirs(vec![bank.clone()], false);
+
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+    pair.settle();
+    pair.same();
+    assert!(
+        pair.joiner.fetch_question().is_none(),
+        "nothing to ask about"
+    );
+    assert!(
+        pair.joiner.files_received().is_empty(),
+        "nothing was sent: {:?}",
+        pair.joiner.files_received()
+    );
+    assert!(
+        pair.joiner.missing_files().is_empty(),
+        "and nothing is missing"
+    );
+    assert_eq!(
+        std::fs::read_dir(&bank).unwrap().count(),
+        1,
+        "nothing was added to Bob's bank: his own copy was the one used"
+    );
+}
+
+/// F29. A soundfont Bob does not have is fetched only after he is asked,
+/// with its size and roughly how long it takes; then it lands in his bank.
+#[test]
+fn a_large_fetch_asks_first() {
+    let dir = scratch("large-fetch");
+    let (host, _) = a_song_on_a_soundfont(&dir);
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let bank = dir.join("bob-bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    joiner.set_library_dirs(vec![bank.clone()], false);
+
+    let hub = MemoryHub::new();
+    hub.set_conditions(2, 0.0);
+    let mut host = host;
+    host.share(
+        Box::new(hub.server_endpoint()),
+        options("Alice", PersistentId::new()),
+    )
+    .unwrap();
+    let mut mine = options("Bob", PersistentId::new());
+    mine.ask_above = 0; // every soundfont counts as large here
+    joiner.join(Box::new(hub.connect()), mine).unwrap();
+    let mut now = 0;
+    let mut tick = |host: &mut Session, joiner: &mut Session, n: u64| {
+        for _ in 0..n {
+            now += 1;
+            hub.set_now(now);
+            host.pump_collab();
+            joiner.pump_collab();
+        }
+    };
+    tick(&mut host, &mut joiner, 20);
+    joiner.answer_join(JoinAnswer::Copy).unwrap();
+    tick(&mut host, &mut joiner, 20);
+
+    let question = joiner
+        .fetch_question()
+        .expect("asked before fetching")
+        .clone();
+    assert!(
+        question.lines.iter().any(|l| l.contains("Glass")),
+        "{:?}",
+        question.lines
+    );
+    assert!(
+        question.lines.iter().any(|l| l.contains("minute")),
+        "{:?}",
+        question.lines
+    );
+    assert!(
+        joiner.files_received().is_empty(),
+        "nothing fetched before the answer"
+    );
+    assert!(
+        !joiner.missing_files().is_empty(),
+        "it is missing, and said to be"
+    );
+
+    joiner.answer_fetch(true).unwrap();
+    tick(&mut host, &mut joiner, 40);
+    assert_eq!(joiner.files_received().len(), 1);
+    assert!(joiner.missing_files().is_empty());
+    let fetched: Vec<PathBuf> = std::fs::read_dir(&bank)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "sf2"))
+        .collect();
+    assert_eq!(fetched.len(), 1, "it landed in Bob's bank");
+    assert_eq!(host.project().sync_hash(), joiner.project().sync_hash());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// F30. A plugin Bob does not have keeps its place, its settings and its
+/// state in his copy — drawn as missing — and nothing Bob's machine does
+/// writes over the state Alice's plugin saved.
+#[test]
+fn a_missing_plugins_state_survives_a_round_trip_through_a_machine_without_it() {
+    let dir = scratch("missing-plugin");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let master = host.project().mixer.master.unwrap();
+    let mut state =
+        fontelle_types::PluginState::new(fontelle_types::PluginKey::clap("com.u-he.diva"), "Diva");
+    state.blob = Some("the plugin's own words".to_string());
+    host.apply_foreign({
+        let mut add = fontelle_model::AddPluginInsert::new(master, state.clone());
+        let mut scratch_doc = host.project().clone();
+        add.apply(&mut scratch_doc).unwrap();
+        add.to_edit()
+    })
+    .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+
+    let strips = pair.joiner.mixer_strips();
+    let master_strip = strips.last().unwrap();
+    assert!(
+        master_strip.inserts.iter().any(|slot| slot.missing),
+        "Bob's mixer says the plugin is not here"
+    );
+    pair.joiner.save().unwrap();
+    pair.settle();
+    let blob = |project: &fontelle_model::Project| {
+        project.mixer.tracks[master]
+            .inserts
+            .iter()
+            .find_map(|slot| slot.plugin.as_ref())
+            .and_then(|plugin| plugin.blob.clone())
+    };
+    assert_eq!(
+        blob(pair.joiner.project()),
+        Some("the plugin's own words".to_string())
+    );
+    let copy = fontelle_model::load_project(pair.joiner.bundle_path().unwrap()).unwrap();
+    assert_eq!(
+        blob(&copy),
+        Some("the plugin's own words".to_string()),
+        "saved as it came"
+    );
+    assert_eq!(
+        blob(pair.host.project()),
+        Some("the plugin's own words".to_string())
+    );
+}
+
+/// F57. A prefab of an audio clip, and a sampler's sound waiting in the A/B
+/// slot, are files the song names; a reopened song reads them back like any
+/// other, so neither comes up silent — on this machine or a joiner's.
+#[test]
+fn a_prefabs_audio_and_an_ab_slots_samples_open_with_the_song() {
+    let dir = scratch("reopen-everything");
+    let mut session = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    session.set_projects_dir(Some(dir.join("alice")));
+    session.save_as("Song").unwrap();
+    let loop_file = a_tone(&dir.join("desktop"), "loop.wav", 0.5, 330.0);
+    session.drop_file_at(&loop_file, 0).unwrap();
+    // No gesture makes a prefab of an audio clip, but a song can hold one.
+    let data = match &session.project().clips[audio_clips(&session)[0].id].source {
+        fontelle_model::ClipSource::Audio(data) => data.clone(),
+        _ => unreachable!(),
+    };
+    let mut prefab =
+        fontelle_model::AddPrefab::new("Loop", fontelle_model::ClipSource::Audio(data));
+    prefab.apply(&mut session.project().clone()).unwrap();
+    session.apply_foreign(prefab.to_edit()).unwrap();
+    let hit = a_tone(&dir.join("desktop"), "hit.wav", 0.1, 220.0);
+    session.drop_file_as_channel(&hit).unwrap();
+
+    // The sampler's sound is kept in the A/B slot; another takes its place.
+    session.ab_copy();
+    let other = a_tone(&dir.join("desktop"), "other.wav", 0.1, 440.0);
+    let last = session.project().channels.len() - 1;
+    session.drop_file_on_channel(last, &other).unwrap();
+    session.save().unwrap();
+    let in_the_slot = session
+        .project()
+        .channels
+        .values()
+        .filter_map(|c| c.ab.other.as_ref())
+        .flat_map(|patch| fontelle_core::referenced_samples(patch).unwrap())
+        .count();
+    assert_eq!(in_the_slot, 1, "the A/B slot holds the first sound");
+
+    let bundle = session.bundle_path().unwrap().to_path_buf();
+    let reopened = fontelle_app::open_project(&bundle).unwrap();
+    assert!(reopened.missing.is_empty(), "{:?}", reopened.missing);
+    for file in fontelle_app::collab::song_files(&reopened.project) {
+        let known = reopened.library.audio_store().get(file.id).is_some()
+            || reopened
+                .library
+                .provenance()
+                .values()
+                .any(|sample| sample.file == file);
+        assert!(known, "{} was not read back", file.path.display());
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

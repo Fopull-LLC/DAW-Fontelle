@@ -325,6 +325,14 @@ pub struct AudioPreview {
     /// carried so the block draws the bend the node asked for.
     pub fade_in_tension: f32,
     pub fade_out_tension: f32,
+    /// How much of the clip's file has arrived, 0..1, while it is still on
+    /// its way from somebody sharing the song (`docs/collab-plan.md` §7.3).
+    ///
+    /// `None` for every clip whose audio is here — which is every clip,
+    /// outside a shared session. A fetching clip is drawn hatched with its
+    /// percentage, and is silent until the last piece lands: never silent
+    /// with nothing to say why.
+    pub fetching: Option<f32>,
     /// How long the clip's range of the file is, in seconds at the file's
     /// own rate — so a fade can be read out as a time while its handle is
     /// dragged (`canvas::fade_caption`). Zero when the rate is not known.

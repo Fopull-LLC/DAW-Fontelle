@@ -6,7 +6,7 @@
 //! `fontelle-assets` at once.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fontelle_model::{Project, StorageError};
 use fontelle_types::{AssetKind, AssetRef, ChannelId, ClipId};
@@ -84,8 +84,62 @@ pub fn save_project(project: &Project, path: &Path) -> Result<(), StorageError> 
     fontelle_model::save_project(project, path)
 }
 
+/// Where the bytes `file` names are on this machine, if they are anywhere
+/// (`docs/collab-plan.md` §7.1).
+///
+/// **The one reader of a reference's path.** A path inside the bundle is
+/// written relative to it (a collected file, `assets/<hash>.wav`); any other
+/// is where the song was made. And when neither is there — a soundfont a
+/// friend's song names at a place on *their* disk — the file is looked for by
+/// what is in it: a collected copy in this bundle, then this machine's
+/// soundfont folders (`banks`). A song shared between two machines names
+/// files that are in different places on each; this is what makes that a
+/// non-event.
+pub fn resolve(bundle: Option<&Path>, file: &AssetRef, banks: &[PathBuf]) -> Option<PathBuf> {
+    if file.path.is_relative() {
+        let here = bundle?.join(&file.path);
+        if here.is_file() {
+            return Some(here);
+        }
+    } else if file.path.is_file() {
+        return Some(file.path.clone());
+    }
+    if file.content_hash == 0 {
+        return None;
+    }
+    // A collected copy is called by its whole digest, which ends with the
+    // sixteen hex digits the reference carries.
+    let tail = format!("{:016x}", file.content_hash);
+    if let Some(bundle) = bundle
+        && let Ok(listing) = std::fs::read_dir(bundle.join("assets"))
+    {
+        let found = listing.flatten().map(|entry| entry.path()).find(|path| {
+            path.file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with(&tail))
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    fontelle_assets::content_hash::find_by_hash(banks, file.content_hash, file.size)
+}
+
 /// Reads the project at `path` and reloads the audio its patches name.
+///
+/// With no soundfont folders to look in: see [`open_project_with`].
 pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
+    open_project_with(path, &[])
+}
+
+/// Reads the project at `path` and reloads **every file it names** — each
+/// channel's samples and its A/B slot's, each audio clip's and each prefab's
+/// audio — looking for any that are not where the song says in `banks`
+/// (see [`resolve`]).
+///
+/// It used to read the channels' patches and the clips, and nothing else: a
+/// prefab of an audio clip and a sound waiting in an A/B slot opened silent
+/// (`docs/collab-plan.md` §18, F57).
+pub fn open_project_with(path: &Path, banks: &[PathBuf]) -> Result<OpenedProject, OpenError> {
     let project = fontelle_model::load_project(path)?;
 
     // Grouped by file: one read of a soundfont serves every sample any patch
@@ -93,16 +147,20 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
     // pass and one per layer.
     let mut wanted: BTreeMap<AssetRef, (Vec<u32>, Vec<ChannelId>)> = BTreeMap::new();
     for (id, channel) in project.channels.iter() {
-        let Some(data) = &channel.patch_data else {
-            continue;
-        };
-        let samples = fontelle_core::referenced_samples(data)
-            .map_err(|error| OpenError::Patch { channel: id, error })?;
-        for reference in samples {
-            let entry = wanted.entry(reference.file).or_default();
-            entry.0.push(reference.sample);
-            if !entry.1.contains(&id) {
-                entry.1.push(id);
+        for data in [&channel.patch_data, &channel.ab.other]
+            .into_iter()
+            .flatten()
+        {
+            let samples = fontelle_core::referenced_samples(data)
+                .map_err(|error| OpenError::Patch { channel: id, error })?;
+            for reference in samples {
+                let entry = wanted.entry(reference.file).or_default();
+                if !entry.0.contains(&reference.sample) {
+                    entry.0.push(reference.sample);
+                }
+                if !entry.1.contains(&id) {
+                    entry.1.push(id);
+                }
             }
         }
     }
@@ -110,12 +168,21 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
     let mut library = SampleLibrary::new();
     let mut missing = Vec::new();
     for (file, (samples, channels)) in wanted {
+        let Some(from) = resolve(Some(path), &file, banks) else {
+            missing.push(MissingAsset {
+                file,
+                channels,
+                clips: Vec::new(),
+                why: "it is not on this machine".to_string(),
+            });
+            continue;
+        };
         let result = match file.kind {
-            AssetKind::Sf2 | AssetKind::Sf3 => library.reload_sf2_samples(&file, &samples),
+            AssetKind::Sf2 | AssetKind::Sf3 => library.reload_sf2_samples(&file, &from, &samples),
             // A plain audio file put on a channel as a sampler — see
             // `SampleLibrary::import_sample`. Without this arm a sampler built
             // by dropping a wav on the rack opens silent.
-            AssetKind::Sample => library.reload_sample(&file),
+            AssetKind::Sample => library.reload_sample(&file, &from),
             other => Err(fontelle_assets::ImportError(format!(
                 "{other:?} assets cannot be loaded yet"
             ))),
@@ -152,8 +219,24 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
             takes.entry(data.asset.clone()).or_default().push(id);
         }
     }
+    // A prefab's audio is a take nobody has placed yet: it plays wherever a
+    // place of the prefab is put, so it is read back like any other.
+    for prefab in project.prefabs.values() {
+        if let fontelle_model::ClipSource::Audio(data) = &prefab.source {
+            takes.entry(data.asset.clone()).or_default();
+        }
+    }
     for (file, clips) in takes {
-        if let Err(e) = library.reload_audio(&file) {
+        let Some(from) = resolve(Some(path), &file, banks) else {
+            missing.push(MissingAsset {
+                file,
+                channels: Vec::new(),
+                clips,
+                why: "it is not on this machine".to_string(),
+            });
+            continue;
+        };
+        if let Err(e) = library.reload_audio(&file, &from) {
             missing.push(MissingAsset {
                 file,
                 channels: Vec::new(),

@@ -19,6 +19,39 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 (later still) — working on a song together, Phase 2
+built: the files.** `docs/collab-plan.md` §13's third phase; ledger rows
+F23–F31 closed, and F56 and F57 found and closed.
+
+- **A file's hash is what is in it**: the low 64 bits of its SHA-256, on
+  every kind (soundfonts too, which were an xxhash of their first megabyte),
+  cached by path, size and time in the data folder's `hashes.json`
+  (`fontelle_assets::content_hash`).
+- **Sharing collects the song into its bundle** (`Session::collect_assets`,
+  TDD §17.1's *Export Bundle*): every sample and recording is copied to
+  `assets/<name>.<hash>.<ext>` and its references become bundle-relative,
+  through one `RelocateAssets` command applied outside the history. A
+  soundfont stays in the bank and gains its real hash. `bundle::resolve` is
+  now the one reader of a reference's path, and finds a file by its hash in
+  the bundle and the soundfont folders when it is not where the song says.
+- **Files travel by request**, 48 KB pieces, smallest first, one at a time
+  per studio (`collab/files.rs`): a joiner asks the host for what its copy
+  lacks and for what the host's edits name; the host asks a joiner for what
+  the joiner's edits name. A piece lands in `cache/` and is checked against
+  its hash before it is kept; a soundfont goes into the bank only after the
+  person has said yes (*"This song uses “Glass” (13 KB), which you don't
+  have. Fetch it? It takes less than a minute."*). A clip whose file is on
+  its way is **hatched with "fetching 43 %"** (seen in the headless dump).
+- **A joiner mints its imports' audio ids in its own space too** (F56), and
+  a reopened song now reads back a prefab's audio and an A/B slot's samples
+  (F57 — it never did).
+- **A plugin a machine lacks keeps its slot, settings and state**, drawn in
+  the alarm colour on the mixer.
+- The unused `project.assets` table is gone; the manifest is the song's own
+  walk (`Project::files`).
+- `tests/collab.rs` is 33 tests. §19 of the plan lists where this departs
+  from it.
+
 **As of 2026-09-25 (later still) — working on a song together, Phase 1
 built: two studios in one process.** `docs/collab-plan.md` §13's second
 phase; ledger rows F13–F22 and F55 closed. The whole feature works with no

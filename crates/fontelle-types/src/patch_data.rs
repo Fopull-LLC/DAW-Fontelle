@@ -51,7 +51,7 @@ impl AssetRef {
     /// Whether two references name the same content, for relinking (§17.4).
     ///
     /// Deliberately ignores [`AssetRef::id`]. That field is a runtime handle
-    /// into the document's `AssetTable`, so a reference embedded in a preset
+    /// into one studio's sample library, so a reference embedded in a preset
     /// from another machine has no meaningful value for it — comparing it would
     /// make every imported preset's samples unresolvable.
     pub fn same_content(&self, other: &Self) -> bool {
@@ -61,12 +61,12 @@ impl AssetRef {
             && self.kind == other.kind
     }
 
-    /// A reference to a file on disk with no `AssetTable` entry behind it yet.
+    /// A reference to a file on disk with no library entry behind it yet.
     ///
-    /// The `id` is null, and that is the honest value: the document's asset
-    /// table mints ids, and an importer building a reference for a preset has
-    /// no table to mint from. Relinking matches on [`AssetRef::same_content`],
-    /// never on the id.
+    /// The `id` is null, and that is the honest value: a sample library mints
+    /// ids, and an importer building a reference for a preset has no library
+    /// to mint from. Relinking matches on [`AssetRef::same_content`], never on
+    /// the id.
     pub fn unregistered(
         path: std::path::PathBuf,
         content_hash: u64,

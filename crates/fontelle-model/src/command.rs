@@ -141,6 +141,11 @@ impl History {
         self.mint_space = space;
     }
 
+    /// Where this history mints — see [`set_mint_space`](Self::set_mint_space).
+    pub fn mint_space(&self) -> Option<u16> {
+        self.mint_space
+    }
+
     /// Starts keeping every edit that lands, for a shared session to send.
     pub fn open_outbox(&mut self) {
         self.outbox.get_or_insert_with(Vec::new);

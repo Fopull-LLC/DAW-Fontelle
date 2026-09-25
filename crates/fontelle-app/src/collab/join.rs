@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use fontelle_model::Project;
-use fontelle_model::wire::ProjectHead;
+use fontelle_model::wire::{AssetEntry, ProjectHead};
 use fontelle_types::PersistentId;
 
 use super::{JoinAnswer, JoinQuestion, Relation};
@@ -32,13 +32,14 @@ struct Local {
 pub(crate) fn question(
     projects_dir: &Path,
     head: &ProjectHead,
+    manifest: &[AssetEntry],
     host: &str,
     me: PersistentId,
     host_install: PersistentId,
 ) -> JoinQuestion {
     let found = crate::projects::find_by_id(projects_dir, head.id);
     match found.as_slice() {
-        [] => copy_question(head, host),
+        [] => copy_question(head, manifest, host),
         [path] => match fontelle_model::load_project(path) {
             Ok(project) => known_question(
                 &Local {
@@ -52,7 +53,7 @@ pub(crate) fn question(
             ),
             // A copy that will not open is not a copy to update; it is left
             // exactly where it is and the song comes in beside it.
-            Err(_) => copy_question(head, host),
+            Err(_) => copy_question(head, manifest, host),
         },
         many => which_question(many, head),
     }
@@ -79,12 +80,18 @@ pub(crate) fn question_for(
     ))
 }
 
-fn copy_question(head: &ProjectHead, host: &str) -> JoinQuestion {
+fn copy_question(head: &ProjectHead, manifest: &[AssetEntry], host: &str) -> JoinQuestion {
+    let size: u64 = manifest.iter().map(|entry| entry.size).sum();
+    let what = match manifest.len() {
+        0 => String::new(),
+        1 => format!(" 1 file, {}.", megabytes(size)),
+        n => format!(" {n} files, {}.", megabytes(size)),
+    };
     JoinQuestion {
         song: head.name.clone(),
         from: host.to_string(),
         lines: vec![format!(
-            "Copy \u{201c}{}\u{201d} from {host} into your Shared projects?",
+            "Copy \u{201c}{}\u{201d} from {host} into your Shared projects?{what}",
             head.name
         )],
         buttons: vec![
@@ -371,4 +378,12 @@ pub(crate) fn fork(path: &Path) -> Result<(), String> {
     let mut project = fontelle_model::load_project(path).map_err(|e| e.to_string())?;
     project.meta.fork();
     crate::save_project(&project, path).map_err(|e| e.to_string())
+}
+
+fn megabytes(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{} KB", bytes.div_ceil(1024))
+    } else {
+        format!("{:.0} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }

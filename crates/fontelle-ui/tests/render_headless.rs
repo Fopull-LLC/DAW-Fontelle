@@ -1211,6 +1211,14 @@ fn shoot_timeline_recording(
         };
         labels.ensure(caption, &theme.font, &mut text);
     }
+    // A clip still on its way says how far along it is — shaped as the
+    // window's own `shape_labels` shapes it.
+    for clip in clips {
+        if let Some(fraction) = clip.audio.fetching {
+            let caption = fontelle_ui::canvas::fetching_caption(fraction);
+            labels.ensure(&caption, &theme.font, &mut text);
+        }
+    }
     let tview = TimelineView::default();
     let lanes: Vec<LaneInfo> = (0..4)
         .map(|n| LaneInfo {
@@ -1846,6 +1854,7 @@ fn shoot_mixer_renaming(
         bypassed,
         mix: 1.0,
         mix_automated: false,
+        missing: false,
     };
     let mut strips = vec![
         // A **full** chain on the selected strip, so the shot shows both the
@@ -2951,8 +2960,52 @@ fn an_audio_clip(
         natural_length: length,
         stretched: false,
         loop_offset: 0,
+        fetching: None,
     };
     clip
+}
+
+/// F28 (`docs/collab-plan.md` §7.3, §12.4). A clip whose audio is still on
+/// its way from somebody sharing the song is **hatched, with how far along it
+/// is** — never a silent block with nothing to say why.
+#[test]
+fn a_clip_still_on_its_way_is_hatched_and_says_how_far_along() {
+    use fontelle_ui::canvas::clip_rect;
+    let mut arrived = an_audio_clip(0, 0, PPQN * 8, 0.0, 0.0);
+    arrived.audio.peaks = Vec::new().into();
+    arrived.audio.rms = Vec::new().into();
+    let mut coming = arrived.clone();
+    coming.audio.fetching = Some(0.43);
+    assert_eq!(fontelle_ui::canvas::fetching_caption(0.43), "fetching 43 %");
+
+    let Some(plain) = shoot_timeline_hovered(std::slice::from_ref(&arrived), None) else {
+        return;
+    };
+    let hatched = shoot_timeline_hovered(std::slice::from_ref(&coming), None).unwrap();
+    dump_sized(&hatched.pixels, "Fontelle-Dark-fetching-clip", RW, RH);
+    let block = clip_rect(&plain.view, plain.layout.grid, &arrived);
+    let (_, body) = fontelle_ui::canvas::clip_bands(block);
+    // Across the body, a quarter of the way down: the plain block is one
+    // colour there, the hatched one is striped.
+    let y = (body.y + body.height * 0.25) as u32;
+    let changes = |shot: &TimelineShot| {
+        let mut changes = 0;
+        let mut last = shot.at(body.x as u32 + 2, y);
+        for x in (body.x as u32 + 2)..(body.right() as u32).saturating_sub(2) {
+            let here = shot.at(x, y);
+            if !near(here, last) {
+                changes += 1;
+            }
+            last = here;
+        }
+        changes
+    };
+    assert!(changes(&plain) <= 2, "the plain block is plain");
+    assert!(
+        changes(&hatched) >= 8,
+        "a fetching clip is hatched across its body ({} changes)",
+        changes(&hatched)
+    );
 }
 
 /// **A block under the pointer shows its fade handles, and lights the one

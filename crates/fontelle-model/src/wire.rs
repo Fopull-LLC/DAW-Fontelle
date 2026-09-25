@@ -188,7 +188,9 @@ edits!(
     RenameProject,
     AddMarker,
     RemoveMarker,
-    RestoreMarker
+    RestoreMarker,
+    RelocateAssets,
+    RestoreAssets,
 );
 
 impl Edit {

@@ -1243,6 +1243,8 @@ commit.
 | F29 | Soundfonts are hundreds of MB; 325 MB is ~11 min at the relay's budget | §7.1: looked for by hash in bundle then bank (`hashes.json`); fetched only after a prompt naming size and minutes; smallest first | `a_soundfont_already_in_the_bank_is_not_transferred`, `a_large_fetch_asks_first` |
 | F30 | A plugin the joiner lacks: the rack already leaves the slot silent with a message (`plugins.rs:545-549`); `capture_plugin_states` writes blobs outside any command at save (`session.rs:3095-3120`) | §7.4: draw the slot as missing; never write a blob from a machine that could not open the plugin | `a_missing_plugins_state_survives_a_round_trip_through_a_machine_without_it` |
 | F31 | `heal_audio_clips` rewrites every audio clip's trim on every `republish`, outside any command (`session.rs:2774-2787`) | §5.2: declared local and deterministic given the same bytes; the hash (F18) is what proves it, and this is the first suspect if it ever fails | hashes equal after a recording lands on both sides |
+| F56 | *Found building Phase 1.* An audio clip's `AssetId` is minted by each studio's `SampleLibrary` (its own `Arena`), outside the history — so a joiner's import and the host's at the same moment can claim one id for two different files, and the clip would play the wrong audio on one side | A library import runs in the history's mint space, like everything the history applies (F55); a received file is loaded under the id the edit names (`reload_audio`) | `two_imports_at_once_are_two_files` |
+| F57 | *Found building Phase 2.* `bundle::open_project` reloads a channel's patch samples and the audio clips' files, and nothing else: a **prefab's** audio source and a channel's **A/B slot** patch name files that are never read back, so a reopened song — and every joiner's copy, which is a reopened song — plays those silent | The open reloads every file the song names, from the same walk the manifest is made from | `a_prefabs_audio_and_an_ab_slots_samples_open_with_the_song` |
 
 ### Phase 3 — the relay
 
@@ -1260,6 +1262,7 @@ commit.
 | F41 | Codes carry a region letter (`U` = us-east); the engine resolves it from a cached regions API | §9.3: a compiled-in letter table; a new region is a release | `a_code_names_its_relay` |
 | F42 | The window sleeps `Forever` when idle; there is no wake path for a network thread (`widget/*.rs:208`) | §9.2: `ENGINE_POLL` while a session is open (this phase); the proxy is F48 | `a_session_keeps_the_window_awake` |
 | F43 | CI builds three targets; the Windows build runs under Wine here; sockets and rustls on `x86_64-pc-windows-gnu` are untested in this tree | §0: Phase 3 ends with the Windows build hosting and joining under Wine on `:99`, and clippy on the msvc target | scene in §12.5, on Wine |
+| F58 | *Found preparing Phase 3.* F38's answer does not hold on today's relay: a returning host reclaims its lobby inside `HOST_GRACE` only when the relay's policy says the key owns the code (`claim_code`), and the managed policy grants that only for codes the control plane has *reserved* for a deployment (`floptle-relay/src/policy.rs:630-636`). An ordinary Fontelle host that drops comes back under a new code, and its joiners — held in the old lobby for twenty seconds — are stranded; on an open relay (no policy) reclaim never happens | Fontelle re-hosts with `WantCode` (its own code) on a drop, which is right the day the relay agrees; a card to E asks the managed policy to let a host reclaim the code it was given, inside the grace window. Until then a host's drop ends the session on the joiners with a sentence saying so, and the host's panel shows the new code | `a_lost_host_reconnects_inside_the_grace` (against an in-process relay whose policy grants it), the card's thread |
 
 ### Phase 4 — the window
 
@@ -1376,3 +1379,47 @@ with the reason. The text above is left as it was planned.
 - **A refused edit's toast names the edit, not the reason**: *"“Move 3
   notes” was taken back — Alice had changed it first."* The reason the
   command gave names ids; it goes to the log.
+
+**Phase 2.**
+
+- **The asset table is gone** (F25's second answer). What a song needs is
+  what it names — `Project::files()`, one walk over clips, prefabs and every
+  patch body including the A/B slot's — and the manifest, the open and
+  collecting all read that walk. A table every command had to keep in step
+  with the song would be a second list to drift.
+- **A collected file is `assets/<name>.<16 hex digits>.<ext>`**, not
+  `assets/<sha256>.<ext>`. The sixteen digits are the `content_hash` itself,
+  so the file is still named by what is in it; the name is so an audio clip
+  still says "Take 3" rather than sixty-four hex digits
+  (`library::sound_name` drops the digits for a caption).
+- **`content_hash` is the digest's last eight bytes, big-endian**, on every
+  kind — soundfonts too, which used to be an xxhash of the first megabyte.
+  Hashes are cached by path, size and modification time in `hashes.json` in
+  Fontelle's **data** folder rather than beside the soundfonts: the bank
+  folder is the person's.
+- **Whether a studio has a file is decided by its hash, in its own bundle
+  and its own soundfont folders**, never by the path a reference carries: a
+  path in somebody else's edit names a place on *their* disk. (Two studios on
+  one computer, which is what every test is, found each other's files by
+  path until this was so.) `bundle::resolve` — the one reader of a path —
+  falls back to the same lookup.
+- **A file somebody's edit names that is already here is loaded at once**;
+  one that is not is fetched from whoever made the edit.
+- **A sound brought in while sharing is collected straight away**, as
+  sharing collected everything before it.
+- **Every soundfont is asked about before it is fetched** (it goes into the
+  bank, outside the song), and anything over `CollabOptions::ask_above` (64
+  MB). Decision 4's recommendation: the question gives the size and the
+  minutes, and there is no cap.
+- **F27's "the library dedupes by hash too"** is where it matters — the
+  fetch never asks for a file that is here (`Here::has`). The library still
+  dedupes imports by path: one sound imported from two places is two assets
+  until it is collected, and then one file.
+- **Sixteen pieces a turn** per studio being sent to; the relay's byte
+  budget is Phase 3's pacing.
+- **F57 was found here**: a reopened song never read back a prefab's audio or
+  an A/B slot's samples.
+- **A missing plugin's slot draws its name in the alarm colour**; the slot,
+  its settings and its state are kept, and the state is never written from a
+  machine without the plugin (`PluginRack::snapshot` already answered `None`
+  for one that is not live).

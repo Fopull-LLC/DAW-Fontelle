@@ -1103,6 +1103,7 @@ impl Session {
             natural_length: 0,
             stretched: data.stretch == fontelle_types::ClipStretch::Resample,
             loop_offset: data.loop_phase,
+            fetching: None,
         };
         let frames = data.source_frames();
         if frames > 0 && data.sample_rate > 0 {
@@ -1646,7 +1647,7 @@ impl Session {
                 "{name} is not there any more \u{2014} it was in {folder}"
             ));
         }
-        let opened = crate::open_project(path).map_err(|e| e.to_string())?;
+        let opened = self.open_bundle(path).map_err(|e| e.to_string())?;
         self.adopt(opened, path.to_path_buf());
         Ok(())
     }
@@ -1691,6 +1692,13 @@ impl Session {
         }
     }
 
+    /// Opens a bundle, reading back every file it names — and finding one
+    /// that is not where the song says in this studio's soundfont folders
+    /// (`bundle::resolve`).
+    fn open_bundle(&self, path: &Path) -> Result<crate::OpenedProject, crate::OpenError> {
+        crate::open_project_with(path, &self.library_dirs())
+    }
+
     /// Shares the open song: this studio becomes the host of a session over
     /// `transport` (`docs/collab-plan.md` §2, §4.3).
     ///
@@ -1711,11 +1719,101 @@ impl Session {
         if self.dirty {
             fontelle_ui::document::DocumentHost::save(self)?;
         }
+        // A copy is only a copy if it carries its samples (§7.1).
+        if self.collect_assets()? {
+            fontelle_ui::document::DocumentHost::save(self)?;
+        }
         self.history.set_mint_space(None);
         self.history.open_outbox();
         self.collab = Some(crate::collab::Collab::host(transport, options));
         self.touch();
         Ok(())
+    }
+
+    /// Collects every file the song uses into its bundle (TDD §17.1's
+    /// *Export Bundle*, `docs/collab-plan.md` §7.1, F23), and says whether
+    /// anything moved.
+    ///
+    /// A sample or a recording is **copied** to `assets/<its SHA-256>.<ext>`
+    /// and every reference to it follows, bundle-relative: a copy of the
+    /// bundle is then a copy of the song. A soundfont is not — it can be
+    /// hundreds of megabytes, and it belongs in the bank — but its reference
+    /// gains its real hash, so another machine can find its own copy of it.
+    /// Nothing is moved or deleted from where it was. A file that is not on
+    /// this machine is left as it is: there is nothing to collect.
+    ///
+    /// Applied **outside the history**: where a file is kept is not the song,
+    /// and an undo that put a sample back on somebody's desktop would un-share
+    /// it without anybody asking.
+    pub fn collect_assets(&mut self) -> Result<bool, String> {
+        let bundle = self
+            .bundle
+            .clone()
+            .ok_or("a song is collected into its bundle, and this one has none yet")?;
+        let banks = self.library_dirs();
+        let mut moves: Vec<(PathBuf, PathBuf, u64, u64)> = Vec::new();
+        for file in self.project.files() {
+            if moves.iter().any(|m| m.0 == file.path) {
+                continue;
+            }
+            let Some(from) = crate::bundle::resolve(Some(&bundle), &file, &banks) else {
+                continue;
+            };
+            let hash = fontelle_assets::content_hash::hash_file(&from)
+                .map_err(|e| format!("{}: {e}", from.display()))?;
+            let to = match file.kind {
+                fontelle_types::AssetKind::Sample => {
+                    let ext = from
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_lowercase())
+                        .unwrap_or_else(|| "wav".to_string());
+                    // Its name, then what it is: see `library::sound_name`.
+                    let name = crate::projects::safe_name(&crate::library::sound_name(&from));
+                    let relative =
+                        PathBuf::from("assets").join(format!("{name}.{:016x}.{ext}", hash.low));
+                    let target = bundle.join(&relative);
+                    if !target.is_file() {
+                        std::fs::create_dir_all(bundle.join("assets"))
+                            .map_err(|e| format!("{}: {e}", bundle.display()))?;
+                        // Beside and renamed, so a copy cut off half way is
+                        // never mistaken for the file.
+                        let part = target.with_extension("part");
+                        std::fs::copy(&from, &part)
+                            .map_err(|e| format!("could not copy {}: {e}", from.display()))?;
+                        std::fs::rename(&part, &target)
+                            .map_err(|e| format!("{}: {e}", target.display()))?;
+                    }
+                    relative
+                }
+                _ => file.path.clone(),
+            };
+            if to != file.path || hash.low != file.content_hash || hash.size != file.size {
+                moves.push((file.path.clone(), to, hash.low, hash.size));
+            }
+        }
+        if moves.is_empty() {
+            return Ok(false);
+        }
+        for (from, to, hash, size) in &moves {
+            self.library.relocate(from, to, *hash, *size);
+        }
+        let _ = fontelle_model::RelocateAssets::new(moves).apply(&mut self.project);
+        self.dirty = true;
+        self.rebuild_graph();
+        self.touch();
+        Ok(true)
+    }
+
+    /// While the song is shared, a sound brought in is collected into the
+    /// bundle straight away, as sharing collected everything before it: the
+    /// bundle is then the song, on this machine as on the others, and "is it
+    /// here" is always answered by what is in it (`collab::files::Here`).
+    fn collect_if_shared(&mut self) {
+        if self.collab_live()
+            && let Err(e) = self.collect_assets()
+        {
+            self.message = Some(e);
+        }
     }
 
     /// Joins a shared song over `transport`: says hello, and waits for the
@@ -1747,11 +1845,103 @@ impl Session {
     /// One turn of the shared session, if there is one: this studio's edits
     /// go out and everybody else's come in. Once a tick, beside `poll_job`.
     pub fn pump_collab(&mut self) {
-        let Some(collab) = self.collab.as_mut() else {
+        if self.collab.is_none() {
             return;
+        }
+        let place = crate::collab::files::Place {
+            bundle: self.bundle.clone(),
+            banks: self.library_dirs(),
         };
-        let effects = collab.pump(&mut self.project, &mut self.history);
+        let collab = self.collab.as_mut().expect("just checked");
+        let effects = collab.pump(&mut self.project, &mut self.history, &place);
+        // Imports mint where the history does, so a sound this studio brings
+        // in and one somebody else does at the same moment are two sounds
+        // (F56).
+        self.library.set_mint_space(self.history.mint_space());
         self.collab_effects(effects);
+    }
+
+    /// Loads a file that has just arrived into whatever plays it: every clip
+    /// and prefab whose audio it is, under the id the song gave it, and every
+    /// instrument's samples out of it (§7.3).
+    fn load_arrived(&mut self, hash: u64) {
+        let banks = self.library_dirs();
+        let bundle = self.bundle.clone();
+        let mut samples: std::collections::BTreeMap<fontelle_types::AssetRef, Vec<u32>> =
+            Default::default();
+        for channel in self.project.channels.values() {
+            for data in [&channel.patch_data, &channel.ab.other]
+                .into_iter()
+                .flatten()
+            {
+                for sample in fontelle_core::referenced_samples(data).unwrap_or_default() {
+                    if sample.file.content_hash == hash {
+                        let entry = samples.entry(sample.file).or_default();
+                        if !entry.contains(&sample.sample) {
+                            entry.push(sample.sample);
+                        }
+                    }
+                }
+            }
+        }
+        for file in self.project.files() {
+            if file.content_hash != hash || samples.contains_key(&file) {
+                continue;
+            }
+            if let Some(from) = crate::bundle::resolve(bundle.as_deref(), &file, &banks)
+                && let Err(e) = self.library.reload_audio(&file, &from)
+            {
+                self.message = Some(format!("{}: {e}", from.display()));
+            }
+        }
+        for (file, wanted) in samples {
+            let Some(from) = crate::bundle::resolve(bundle.as_deref(), &file, &banks) else {
+                continue;
+            };
+            let loaded = match file.kind {
+                fontelle_types::AssetKind::Sample => self.library.reload_sample(&file, &from),
+                _ => self.library.reload_sf2_samples(&file, &from, &wanted),
+            };
+            if let Err(e) = loaded {
+                self.message = Some(format!("{}: {e}", from.display()));
+            }
+        }
+        self.patch_cache = None;
+        self.rebuild_graph();
+        self.touch();
+    }
+
+    /// The files waiting on the person before they are fetched — a soundfont,
+    /// which goes into the bank, or anything big (§7.1, F29).
+    pub fn fetch_question(&self) -> Option<crate::collab::FetchQuestion> {
+        self.collab.as_ref()?.fetch_question()
+    }
+
+    pub fn answer_fetch(&mut self, fetch: bool) -> Result<(), String> {
+        let collab = self.collab.as_mut().ok_or("there is nothing to fetch")?;
+        collab.answer_fetch(fetch);
+        self.touch();
+        Ok(())
+    }
+
+    /// The files that have arrived whole in this session, by hash.
+    pub fn files_received(&self) -> Vec<u64> {
+        self.collab
+            .as_ref()
+            .map(|c| c.files_received().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The files the open song names that are not on this machine, by hash.
+    pub fn missing_files(&self) -> Vec<u64> {
+        let place = crate::collab::files::Place {
+            bundle: self.bundle.clone(),
+            banks: self.library_dirs(),
+        };
+        crate::collab::files::missing(&self.project, &place.with(&self.project))
+            .into_iter()
+            .map(|entry| entry.hash)
+            .collect()
     }
 
     fn collab_effects(&mut self, effects: Vec<crate::collab::Effect>) {
@@ -1768,8 +1958,9 @@ impl Session {
                     self.message = Some(line);
                     self.touch();
                 }
+                Effect::FileArrived(hash) => self.load_arrived(hash),
                 Effect::Open(path) => {
-                    let opened = match crate::open_project(&path) {
+                    let opened = match self.open_bundle(&path) {
                         Ok(opened) => opened,
                         Err(e) => {
                             self.message = Some(format!("could not open the copy: {e}"));
@@ -1780,10 +1971,15 @@ impl Session {
                     // that ends a session on a document swap ends this one.
                     let mut collab = self.collab.take();
                     self.adopt(opened, path);
+                    let place = crate::collab::files::Place {
+                        bundle: self.bundle.clone(),
+                        banks: self.library_dirs(),
+                    };
                     let more = collab
                         .as_mut()
-                        .map(|c| c.went_live(&mut self.project, &mut self.history))
+                        .map(|c| c.went_live(&mut self.project, &mut self.history, &place))
                         .unwrap_or_default();
+                    self.library.set_mint_space(self.history.mint_space());
                     self.collab = collab;
                     self.collab_effects(more);
                 }
@@ -1949,7 +2145,7 @@ impl Session {
         project.meta.stamp_save(&who_saves());
         crate::save_project(&project, &path).map_err(|e| e.to_string())?;
         self.projects.rescan();
-        let opened = crate::open_project(&path).map_err(|e| e.to_string())?;
+        let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
         self.adopt(opened, path);
         Ok(())
     }
@@ -4106,6 +4302,7 @@ impl Session {
         self.dirty = true;
         self.rebuild_graph();
         self.touch();
+        self.collect_if_shared();
         Ok(name)
     }
 
@@ -4163,6 +4360,7 @@ impl Session {
         self.dirty = true;
         self.rebuild_graph();
         self.touch();
+        self.collect_if_shared();
         Ok(name)
     }
 
@@ -5823,6 +6021,7 @@ impl Session {
         // and the one they are holding does not have this file in it.
         self.rebuild_graph();
         self.republish();
+        self.collect_if_shared();
         Ok(name)
     }
 
@@ -7072,7 +7271,7 @@ impl StudioHost for Session {
             .and_then(|i| self.projects.entries().get(*i))
             .map(|entry| entry.path.clone())
             .ok_or_else(|| "that project is not in the list any more".to_string())?;
-        let opened = crate::open_project(&path).map_err(|e| e.to_string())?;
+        let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
         self.adopt(opened, path);
         Ok(())
     }
@@ -8968,6 +9167,12 @@ impl StudioHost for Session {
                                 }
                                 .address(),
                             ),
+                            // Asked of the scan, not of the rack: a plugin
+                            // that is installed and has not been opened yet
+                            // is not missing.
+                            missing: slot.plugin.as_ref().is_some_and(|state| {
+                                self.plugins.scan().find(&state.key).is_none()
+                            }),
                         })
                         .collect(),
                     sends: track
@@ -10094,13 +10299,15 @@ impl StudioHost for Session {
                     // this, at a glance, without opening it.
                     ClipSource::Audio(data) => {
                         audio = self.audio_preview(id, clip.start, data);
+                        // Here rather than in the preview, which is cached
+                        // per clip and would never see the percentage move.
+                        audio.fetching = self
+                            .collab
+                            .as_ref()
+                            .and_then(|collab| collab.fetching(data.asset.content_hash));
                         (
                             ClipKind::Audio,
-                            data.asset
-                                .path
-                                .file_stem()
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "Audio".to_string()),
+                            crate::library::sound_name(&data.asset.path),
                             Vec::new(),
                             Vec::new(),
                         )

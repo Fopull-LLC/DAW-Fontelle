@@ -3322,7 +3322,12 @@ fn draw_track_options(
             &insert.label,
             row.name,
             row.name.x + 2.0,
-            if insert.bypassed {
+            if insert.missing {
+                // The alarm colour: a plugin that is not on this machine is
+                // silent, and a name in the ordinary colour would say it
+                // is playing.
+                p.meter_peak
+            } else if insert.bypassed {
                 p.text_muted
             } else {
                 p.text
@@ -5855,6 +5860,9 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             // *"i should be able to see the waveform of the audio inside the
             // clip."* Same band as the note preview, same reason.
             draw_clip_waveform(scene, theme, l.grid, whole, clip, selected);
+            if let Some(fraction) = clip.audio.fetching {
+                draw_clip_fetching(scene, theme, labels, l.grid, whole, clip, fraction);
+            }
             // And its fades over the waveform: the curve the player uses,
             // the part it takes away shaded, and — on the chosen block —
             // the handles that set it (TDD §15.2). See `canvas::fade_anatomy`.
@@ -6264,6 +6272,72 @@ const WAVEFORM_OUTLINE_ALPHA: u8 = 0x78;
 /// for a voice the two are far apart — drawn as one shape, speech was a
 /// fuzz of peaks; drawn as two, it reads as syllables. A preview without a
 /// core yet draws the outline solid, so nothing is fainter for being older.
+/// A clip whose file is still on its way from somebody sharing the song
+/// (`docs/collab-plan.md` §7.3): its body hatched, and how far along it is
+/// written across it. Silent until it lands — and saying so, which a plain
+/// empty block would not.
+fn draw_clip_fetching(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    grid: Rect,
+    block: Rect,
+    clip: &ClipInfo,
+    fraction: f32,
+) {
+    let (_, body) = crate::canvas::clip_bands(block);
+    let visible = body.intersection(&grid);
+    if visible.is_empty() {
+        return;
+    }
+    let p = &theme.palette;
+    let ink = lighten(Color(clip.color), WAVEFORM_LIGHTEN).with_alpha(140);
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            visible.x as f64,
+            visible.y as f64,
+            visible.right() as f64,
+            visible.bottom() as f64,
+        ),
+    );
+    // Diagonals every few pixels, measured from the block so they do not
+    // crawl as the arrangement scrolls.
+    const PITCH: f32 = 7.0;
+    let height = body.height;
+    let mut x = body.x - height;
+    while x < body.right() {
+        scene.stroke(
+            &Stroke::new(1.5),
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &vello::kurbo::Line::new(
+                (x as f64, body.bottom() as f64),
+                ((x + height) as f64, body.y as f64),
+            ),
+        );
+        x += PITCH;
+    }
+    scene.pop_layer();
+    let caption = crate::canvas::fetching_caption(fraction);
+    if let Some(text) = labels_get(labels, &caption) {
+        let x = body.x + (body.width - text.width).max(0.0) / 2.0;
+        let y = body.y + (body.height - text.height).max(0.0) / 2.0;
+        // On a chip of the panel's colour: words straight over stripes are
+        // stripes too.
+        let chip = Rect::new(x - 5.0, y - 1.0, text.width + 10.0, text.height + 2.0)
+            .intersection(&visible);
+        if !chip.is_empty() {
+            fill_rect_rounded(scene, chip, 3.0, p.panel.with_alpha(210));
+        }
+        draw_text_clipped(scene, text, visible, x, y, p.text);
+    }
+}
+
 fn draw_clip_waveform(
     scene: &mut Scene,
     theme: &Theme,

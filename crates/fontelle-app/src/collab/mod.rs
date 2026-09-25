@@ -16,16 +16,46 @@
 //!
 //! Where this departs from the plan, and why, is the plan's §19.
 
+pub(crate) mod files;
 pub(crate) mod join;
+
+pub use files::FetchQuestion;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fontelle_model::wire::{Edit, Msg, PROTOCOL, ProjectHead};
+use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead};
 use fontelle_model::{Command, History, Project};
 use fontelle_net::{Channel, Incoming, PeerId, SERVER, Transport};
 use fontelle_types::PersistentId;
+
+use files::{Files, Place};
+
+/// Every file the song names — see `fontelle_model::Project::files`.
+pub fn song_files(song: &Project) -> Vec<fontelle_types::AssetRef> {
+    song.files()
+}
+
+/// What a joiner is told the song needs (§8.2): each file once, by what is
+/// in it, with its size and what it is called — its place in the bundle for
+/// a collected file, its own name for a soundfont, which goes to the bank.
+///
+/// Made from the song itself rather than kept beside it, so it can never
+/// list a file the song has stopped using or miss one it has started to
+/// (§18, F25). Smallest first: the order a joiner fetches in, so the drum
+/// hit arrives before the soundfont (§7.2).
+pub fn manifest(song: &Project) -> Vec<AssetEntry> {
+    let mut entries: Vec<AssetEntry> = Vec::new();
+    for file in song.files() {
+        if file.content_hash == 0 || entries.iter().any(|e| e.hash == file.content_hash) {
+            continue;
+        }
+        entries.push(files::entry_of(&file));
+    }
+    entries.sort_by_key(|entry| (entry.size, entry.hash));
+    entries
+}
 
 /// The song goes over in pieces this big, under the relay's reliable-frame
 /// cap in both directions (64 KB peer to host, 128 KB the other way; §8.4).
@@ -49,6 +79,11 @@ pub struct CollabOptions {
     /// of and sent. A drag moves every frame; a typed tempo or a key press has
     /// no mouse-up to end it and would otherwise never leave.
     pub idle_break: Duration,
+    /// Files bigger than this are asked about before they are fetched (§7.1,
+    /// decision 4: ask, with the size and the minutes, and no cap). A
+    /// soundfont is always asked about: it goes into the bank, outside the
+    /// song's own folder.
+    pub ask_above: u64,
 }
 
 impl CollabOptions {
@@ -59,6 +94,7 @@ impl CollabOptions {
             fontelle: env!("CARGO_PKG_VERSION").to_string(),
             strict: false,
             idle_break: Duration::from_millis(400),
+            ask_above: 64 * 1024 * 1024,
         }
     }
 }
@@ -123,6 +159,8 @@ pub(crate) enum Effect {
     Open(PathBuf),
     /// Something to put on the status line.
     Say(String),
+    /// A file the song names has arrived whole: load it into what plays it.
+    FileArrived(u64),
 }
 
 enum Role {
@@ -142,6 +180,8 @@ pub(crate) struct Collab {
     /// The history's generation last seen with an edit in the hand, and
     /// since when — see [`CollabOptions::idle_break`].
     held: Option<(u64, Instant)>,
+    /// The song's files on their way in and out (§7.2).
+    files: Files,
 }
 
 impl Collab {
@@ -153,6 +193,7 @@ impl Collab {
             notices: Vec::new(),
             ended: None,
             held: None,
+            files: Files::default(),
         }
     }
 
@@ -179,6 +220,7 @@ impl Collab {
             notices: Vec::new(),
             ended: None,
             held: None,
+            files: Files::default(),
         }
     }
 
@@ -220,35 +262,50 @@ impl Collab {
         std::mem::take(&mut self.notices)
     }
 
+    /// How far along the file `hash` is, while it is on its way here.
+    pub fn fetching(&self, hash: u64) -> Option<f32> {
+        self.files.progress(hash)
+    }
+
+    /// The files waiting on the person before they are fetched.
+    pub fn fetch_question(&self) -> Option<FetchQuestion> {
+        self.files.question()
+    }
+
+    pub fn answer_fetch(&mut self, fetch: bool) {
+        self.files.answer(fetch);
+    }
+
+    /// The files that have arrived whole, by hash.
+    pub fn files_received(&self) -> &[u64] {
+        self.files.received()
+    }
+
     /// One turn: what this studio did goes out, and what arrived comes in.
-    pub fn pump(&mut self, doc: &mut Project, history: &mut History) -> Vec<Effect> {
+    pub fn pump(&mut self, doc: &mut Project, history: &mut History, place: &Place) -> Vec<Effect> {
         if self.ended.is_some() {
             return Vec::new();
         }
         self.let_go_of_idle_edits(history);
         let mut effects = Vec::new();
+        let mut turn = Turn {
+            transport: self.transport.as_mut(),
+            options: &self.options,
+            files: &mut self.files,
+            place,
+            notices: &mut self.notices,
+            effects: &mut effects,
+        };
         match &mut self.role {
-            Role::Host(host) => host.pump(
-                self.transport.as_mut(),
-                &self.options,
-                doc,
-                history,
-                &mut self.notices,
-                &mut effects,
-            ),
+            Role::Host(host) => host.pump(&mut turn, doc, history),
             Role::Joiner(joiner) => {
-                if let Some(why) = joiner.pump(
-                    self.transport.as_mut(),
-                    &self.options,
-                    doc,
-                    history,
-                    &mut self.notices,
-                    &mut effects,
-                ) {
+                if let Some(why) = joiner.pump(&mut turn, doc, history) {
                     self.end(why, history);
+                    return effects;
                 }
             }
         }
+        self.files.pump(self.transport.as_mut(), &place.with(doc));
         effects
     }
 
@@ -307,19 +364,25 @@ impl Collab {
     }
 
     /// The join's copy is open as `doc`: this studio is in the session now.
-    pub fn went_live(&mut self, doc: &mut Project, history: &mut History) -> Vec<Effect> {
+    pub fn went_live(
+        &mut self,
+        doc: &mut Project,
+        history: &mut History,
+        place: &Place,
+    ) -> Vec<Effect> {
         let Role::Joiner(joiner) = &mut self.role else {
             return Vec::new();
         };
         let mut effects = Vec::new();
-        if let Some(why) = joiner.went_live(
-            self.transport.as_mut(),
-            &self.options,
-            doc,
-            history,
-            &mut self.notices,
-            &mut effects,
-        ) {
+        let mut turn = Turn {
+            transport: self.transport.as_mut(),
+            options: &self.options,
+            files: &mut self.files,
+            place,
+            notices: &mut self.notices,
+            effects: &mut effects,
+        };
+        if let Some(why) = joiner.went_live(&mut turn, doc, history) {
             self.end(why, history);
         }
         effects
@@ -368,6 +431,55 @@ fn send(transport: &mut dyn Transport, to: PeerId, msg: &Msg) {
     transport.send(to, Channel::Reliable, &msg.to_bytes());
 }
 
+/// Everything a turn works with besides the document and the history.
+struct Turn<'a> {
+    transport: &'a mut dyn Transport,
+    options: &'a CollabOptions,
+    files: &'a mut Files,
+    place: &'a Place,
+    notices: &'a mut Vec<String>,
+    effects: &'a mut Vec<Effect>,
+}
+
+impl Turn<'_> {
+    /// The file messages, which both sides speak alike (§7.2). `true` when
+    /// `msg` was one of them.
+    fn file_message(&mut self, from: PeerId, msg: &Msg, doc: &Project) -> bool {
+        match msg {
+            Msg::AssetRequest { hash } => {
+                self.files
+                    .asked(self.transport, from, *hash, &self.place.with(doc));
+            }
+            Msg::AssetChunk { hash, bytes, .. } => self.files.piece(from, *hash, bytes),
+            Msg::AssetDone { hash } => match self.files.done(from, *hash, &self.place.with(doc)) {
+                Ok(Some(hash)) => self.effects.push(Effect::FileArrived(hash)),
+                Ok(None) => {}
+                Err(why) => self.notices.push(why),
+            },
+            Msg::AssetMissing { hash } => {
+                if let Some(why) = self.files.missing(self.transport, *hash) {
+                    self.notices.push(why);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Asks `from` for whatever files `edit` names that are not here, and
+    /// loads the ones that are.
+    fn want_files_of(&mut self, edit: &Edit, from: PeerId, doc: &Project) {
+        let named = files::named_by(edit);
+        if !named.is_empty() {
+            let here = self
+                .files
+                .want(named, from, &self.place.with(doc), self.options.ask_above);
+            self.effects
+                .extend(here.into_iter().map(Effect::FileArrived));
+        }
+    }
+}
+
 /// A drifted copy: a bug report in strict mode, a fresh snapshot otherwise.
 fn drifted(
     options: &CollabOptions,
@@ -412,16 +524,8 @@ impl HostPeer {
 }
 
 impl Host {
-    fn pump(
-        &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
-        doc: &mut Project,
-        history: &mut History,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
-    ) {
-        self.send_mine(transport, doc, history);
+    fn pump(&mut self, turn: &mut Turn, doc: &mut Project, history: &mut History) {
+        self.send_mine(turn.transport, doc, history);
 
         // Nothing from outside while the host has a drag in the hand: an
         // edit applied under it, or a snapshot taken of its middle, would be
@@ -429,7 +533,7 @@ impl Host {
         if history.gesture_in_hand() {
             return;
         }
-        for incoming in transport.poll() {
+        for incoming in turn.transport.poll() {
             match incoming {
                 Incoming::Connected(peer) => {
                     self.peers.insert(
@@ -442,15 +546,15 @@ impl Host {
                         },
                     );
                 }
-                Incoming::Disconnected(peer, _) => {
-                    self.gone(transport, peer, doc, notices, effects, false);
-                }
+                Incoming::Disconnected(peer, _) => self.gone(turn, peer, doc, false),
                 Incoming::Message(peer, _, bytes) => {
                     let Ok(msg) = Msg::from_bytes(&bytes) else {
                         eprintln!("Fontelle: a message from peer {peer} did not read");
                         continue;
                     };
-                    self.receive(transport, options, peer, msg, doc, notices, effects);
+                    if !turn.file_message(peer, &msg, doc) {
+                        self.receive(turn, peer, msg, doc);
+                    }
                 }
             }
         }
@@ -478,17 +582,7 @@ impl Host {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn receive(
-        &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
-        peer: PeerId,
-        msg: Msg,
-        doc: &mut Project,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
-    ) {
+    fn receive(&mut self, turn: &mut Turn, peer: PeerId, msg: Msg, doc: &mut Project) {
         match msg {
             Msg::Hello {
                 protocol,
@@ -496,12 +590,13 @@ impl Host {
                 name,
                 install,
             } => {
+                let options = turn.options;
                 if protocol != PROTOCOL || fontelle != options.fontelle {
                     let reason = version_sentence(&options.name, &options.fontelle, &fontelle);
-                    send(transport, peer, &Msg::Refuse { reason });
-                    transport.disconnect(peer);
+                    send(turn.transport, peer, &Msg::Refuse { reason });
+                    turn.transport.disconnect(peer);
                     self.peers.remove(&peer);
-                    notices.push(format!(
+                    turn.notices.push(format!(
                         "{name} tried to join with Fontelle {fontelle}, and this is {}.",
                         options.fontelle
                     ));
@@ -515,7 +610,7 @@ impl Host {
                     })
                     .unwrap_or(u16::from(u8::MAX));
                 send(
-                    transport,
+                    turn.transport,
                     peer,
                     &Msg::Welcome {
                         peer: space,
@@ -524,15 +619,15 @@ impl Host {
                         host: options.name.clone(),
                         host_install: options.install,
                         project: head_of(doc),
-                        manifest: Vec::new(),
+                        manifest: manifest(doc),
                     },
                 );
-                self.send_snapshot(transport, peer, doc);
+                self.send_snapshot(turn.transport, peer, doc);
                 // Who is here already, then everybody else hears of them.
                 for other in self.peers.values().filter(|p| p.welcomed) {
                     let public = other.public();
                     send(
-                        transport,
+                        turn.transport,
                         peer,
                         &Msg::Joined {
                             peer: public.peer,
@@ -553,7 +648,7 @@ impl Host {
                 entry.welcomed = true;
                 let public = entry.public();
                 self.broadcast_except(
-                    transport,
+                    turn.transport,
                     peer,
                     &Msg::Joined {
                         peer: public.peer,
@@ -561,8 +656,8 @@ impl Host {
                         colour: public.colour,
                     },
                 );
-                notices.push(format!("{name} joined"));
-                effects.push(Effect::Say(format!("{name} joined")));
+                turn.notices.push(format!("{name} joined"));
+                turn.effects.push(Effect::Say(format!("{name} joined")));
             }
             Msg::Propose { local_seq, edit } => {
                 let Some(author) = self.peers.get(&peer).filter(|p| p.welcomed) else {
@@ -575,20 +670,24 @@ impl Host {
                 match command.apply(doc) {
                     Ok(()) => {
                         self.seq += 1;
+                        let applied = command.to_edit();
+                        // A file the edit names that is not here yet is the
+                        // author's to send (§7.2).
+                        turn.want_files_of(&applied, peer, doc);
                         self.broadcast(
-                            transport,
+                            turn.transport,
                             &Msg::Applied {
                                 seq: self.seq,
                                 author,
                                 author_seq: local_seq,
-                                edit: command.to_edit(),
+                                edit: applied,
                                 hash: Some(doc.sync_hash()),
                             },
                         );
-                        effects.push(Effect::Changed);
+                        turn.effects.push(Effect::Changed);
                     }
                     Err(e) => send(
-                        transport,
+                        turn.transport,
                         peer,
                         &Msg::Refused {
                             local_seq,
@@ -597,22 +696,14 @@ impl Host {
                     ),
                 }
             }
-            Msg::ResyncRequest => self.send_snapshot(transport, peer, doc),
-            Msg::Bye => self.gone(transport, peer, doc, notices, effects, true),
+            Msg::ResyncRequest => self.send_snapshot(turn.transport, peer, doc),
+            Msg::Bye => self.gone(turn, peer, doc, true),
             _ => {}
         }
     }
 
     /// Somebody has left — said goodbye, or dropped.
-    fn gone(
-        &mut self,
-        transport: &mut dyn Transport,
-        peer: PeerId,
-        doc: &mut Project,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
-        said_goodbye: bool,
-    ) {
+    fn gone(&mut self, turn: &mut Turn, peer: PeerId, doc: &mut Project, said_goodbye: bool) {
         let Some(who) = self.peers.remove(&peer) else {
             return;
         };
@@ -623,9 +714,9 @@ impl Host {
         if said_goodbye {
             doc.meta.shared_revision = Some((who.install, doc.sync_hash()));
         }
-        self.broadcast(transport, &Msg::Left { peer: who.space });
-        notices.push(format!("{} left", who.name));
-        effects.push(Effect::Say(format!("{} left", who.name)));
+        self.broadcast(turn.transport, &Msg::Left { peer: who.space });
+        turn.notices.push(format!("{} left", who.name));
+        turn.effects.push(Effect::Say(format!("{} left", who.name)));
     }
 
     fn send_snapshot(&self, transport: &mut dyn Transport, peer: PeerId, doc: &Project) {
@@ -737,6 +828,8 @@ struct Joiner {
     snapshot_done: Option<(u64, u64)>,
     /// What the host sent after the snapshot and before the copy was open.
     backlog: Vec<Msg>,
+    /// The files the song uses, as the host listed them.
+    manifest: Vec<AssetEntry>,
     /// **The host's song, exactly**: every edit in the host's order and
     /// nothing of this studio's that the host has not ordered yet. The
     /// document on screen is this plus `pending`, and it is rebuilt from here
@@ -764,6 +857,7 @@ impl Joiner {
             snapshot: Vec::new(),
             snapshot_done: None,
             backlog: Vec::new(),
+            manifest: Vec::new(),
             confirmed: None,
             seq: 0,
             pending: VecDeque::new(),
@@ -775,22 +869,19 @@ impl Joiner {
     /// One turn. `Some` is why the session ended.
     fn pump(
         &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
+        turn: &mut Turn,
         doc: &mut Project,
         history: &mut History,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
     ) -> Option<String> {
         if self.stage == Stage::Live {
-            self.send_mine(transport, history);
+            self.send_mine(turn.transport, history);
             // Nothing is rebased under a drag in the hand (F17): it waits in
             // the transport until the button comes up.
             if history.gesture_in_hand() {
                 return None;
             }
         }
-        for incoming in transport.poll() {
+        for incoming in turn.transport.poll() {
             match incoming {
                 Incoming::Connected(_) => {}
                 Incoming::Disconnected(_, why) => {
@@ -803,16 +894,18 @@ impl Joiner {
                         eprintln!("Fontelle: a message from the host did not read");
                         continue;
                     };
-                    if let Some(why) =
-                        self.receive(transport, options, msg, doc, history, notices, effects)
-                    {
+                    // Files only once there is a copy to put them in.
+                    if self.stage == Stage::Live && turn.file_message(SERVER, &msg, doc) {
+                        continue;
+                    }
+                    if let Some(why) = self.receive(turn, msg, doc, history) {
                         return Some(why);
                     }
                 }
             }
         }
         if self.stage == Stage::Asking {
-            effects.extend(self.finish());
+            turn.effects.extend(self.finish());
         }
         None
     }
@@ -846,16 +939,12 @@ impl Joiner {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn receive(
         &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
+        turn: &mut Turn,
         msg: Msg,
         doc: &mut Project,
         history: &mut History,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
     ) -> Option<String> {
         match msg {
             Msg::Welcome {
@@ -863,6 +952,7 @@ impl Joiner {
                 host,
                 host_install,
                 project,
+                manifest,
                 ..
             } => {
                 self.space = peer;
@@ -871,11 +961,13 @@ impl Joiner {
                 self.question = Some(join::question(
                     &self.projects_dir,
                     &project,
+                    &manifest,
                     &self.host_name,
-                    options.install,
+                    turn.options.install,
                     host_install,
                 ));
                 self.head = Some(project);
+                self.manifest = manifest;
                 self.stage = Stage::Asking;
             }
             Msg::Refuse { reason } => return Some(reason),
@@ -894,8 +986,8 @@ impl Joiner {
                         Ok(song) => {
                             self.confirmed = Some(song);
                             self.seq = seq;
-                            self.rebuild(doc, history, notices);
-                            effects.push(Effect::Changed);
+                            self.rebuild(doc, history, turn.notices);
+                            turn.effects.push(Effect::Changed);
                         }
                         Err(e) => return Some(format!("The song did not arrive whole: {e}")),
                     }
@@ -911,28 +1003,26 @@ impl Joiner {
                 edit,
                 hash,
             } => {
-                self.applied(
-                    transport, options, seq, author, author_seq, edit, hash, doc, history, notices,
-                    effects,
-                );
+                self.applied(turn, seq, author, author_seq, edit, hash, doc, history);
             }
             Msg::Refused { local_seq, reason } => {
                 if let Some(at) = self.pending.iter().position(|p| p.local_seq == local_seq) {
                     let refused = self.pending.remove(at).expect("just found");
                     history.forget(refused.entry);
                     eprintln!("Fontelle: the host refused edit {local_seq}: {reason}");
-                    notices.push(taken_back(refused.command.label(), self.host_or_them()));
-                    self.rebuild(doc, history, notices);
-                    effects.push(Effect::Changed);
+                    turn.notices
+                        .push(taken_back(refused.command.label(), self.host_or_them()));
+                    self.rebuild(doc, history, turn.notices);
+                    turn.effects.push(Effect::Changed);
                 }
             }
             Msg::Joined { peer, name, colour } => {
-                notices.push(format!("{name} joined"));
+                turn.notices.push(format!("{name} joined"));
                 self.peers.insert(peer, Peer { peer, name, colour });
             }
             Msg::Left { peer } => {
                 if let Some(who) = self.peers.remove(&peer) {
-                    notices.push(format!("{} left", who.name));
+                    turn.notices.push(format!("{} left", who.name));
                 }
             }
             Msg::Bye => {
@@ -953,8 +1043,7 @@ impl Joiner {
     #[allow(clippy::too_many_arguments)]
     fn applied(
         &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
+        turn: &mut Turn,
         seq: u64,
         author: u16,
         author_seq: u64,
@@ -962,8 +1051,6 @@ impl Joiner {
         hash: Option<u64>,
         doc: &mut Project,
         history: &mut History,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
     ) {
         if seq <= self.seq {
             return; // already in the copy this studio was given
@@ -975,13 +1062,13 @@ impl Joiner {
             .expect("live means a confirmed copy");
         if let Err(e) = edit.clone().into_command().apply(confirmed) {
             eprintln!("Fontelle: the host's edit {seq} did not apply to its own song here: {e}");
-            send(transport, SERVER, &Msg::ResyncRequest);
+            send(turn.transport, SERVER, &Msg::ResyncRequest);
             return;
         }
         if let Some(theirs) = hash {
             let ours = confirmed.sync_hash();
             if ours != theirs {
-                drifted(options, transport, seq, ours, theirs);
+                drifted(turn.options, turn.transport, seq, ours, theirs);
             }
         }
 
@@ -997,13 +1084,15 @@ impl Joiner {
         }
         if self.pending.is_empty() {
             // Nothing of ours in the way: the copy on screen is the host's.
-            if edit.into_command().apply(doc).is_err() {
-                self.rebuild(doc, history, notices);
+            if edit.clone().into_command().apply(doc).is_err() {
+                self.rebuild(doc, history, turn.notices);
             }
         } else {
-            self.rebuild(doc, history, notices);
+            self.rebuild(doc, history, turn.notices);
         }
-        effects.push(Effect::Changed);
+        // A file somebody else's edit names comes from the host (§7.2).
+        turn.want_files_of(&edit, SERVER, doc);
+        turn.effects.push(Effect::Changed);
     }
 
     /// The document on screen, made again: the host's song, and this
@@ -1071,19 +1160,16 @@ impl Joiner {
     /// The copy is open as `doc`. `Some` is why the session ended instead.
     fn went_live(
         &mut self,
-        transport: &mut dyn Transport,
-        options: &CollabOptions,
+        turn: &mut Turn,
         doc: &mut Project,
         history: &mut History,
-        notices: &mut Vec<String>,
-        effects: &mut Vec<Effect>,
     ) -> Option<String> {
         let (_, seq) = self.snapshot_done?;
         let confirmed = self.confirmed.as_ref()?;
         if doc.sync_hash() != confirmed.sync_hash() {
             drifted(
-                options,
-                transport,
+                turn.options,
+                turn.transport,
                 seq,
                 doc.sync_hash(),
                 confirmed.sync_hash(),
@@ -1093,9 +1179,18 @@ impl Joiner {
         self.stage = Stage::Live;
         history.set_mint_space(Some(self.space));
         history.open_outbox();
+        // Every file the song uses that is not here yet, smallest first.
+        let wanted = files::missing(doc, &turn.place.with(doc));
+        let here = turn.files.want(
+            wanted,
+            SERVER,
+            &turn.place.with(doc),
+            turn.options.ask_above,
+        );
+        turn.effects
+            .extend(here.into_iter().map(Effect::FileArrived));
         for msg in std::mem::take(&mut self.backlog) {
-            if let Some(why) = self.receive(transport, options, msg, doc, history, notices, effects)
-            {
+            if let Some(why) = self.receive(turn, msg, doc, history) {
                 return Some(why);
             }
         }

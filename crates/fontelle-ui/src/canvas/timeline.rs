@@ -206,6 +206,15 @@ fn fade_end_x(block: Rect, clip: &ClipInfo, end: FadeEnd) -> f32 {
     }
 }
 
+/// What a clip still on its way from somebody sharing the song says across
+/// its body (`docs/collab-plan.md` §7.3): how much of its file has arrived.
+pub fn fetching_caption(fraction: f32) -> String {
+    format!(
+        "fetching {:.0} %",
+        (fraction.clamp(0.0, 1.0) * 100.0).floor()
+    )
+}
+
 /// A fade's length in words, for the caption a block shows while its
 /// handle is being dragged: seconds of the file, or milliseconds when it is
 /// under a tenth of a second, which is how a fade that short is spoken of.

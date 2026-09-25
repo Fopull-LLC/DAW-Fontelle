@@ -9749,3 +9749,144 @@ impl Command for RestoreMarker {
         std::mem::size_of::<Self>()
     }
 }
+
+/// Moves where the song keeps some of its files: every reference to a file
+/// at `from` now names `to`, with that file's hash and size.
+///
+/// What collecting a song into its bundle does before it is shared
+/// (`docs/collab-plan.md` §7.1, F23): an imported sample referenced by its
+/// place on somebody's desktop becomes `assets/<its hash>.wav` inside the
+/// bundle, and a soundfont keeps its place but gains its real hash. Every
+/// reference follows — an audio clip's, a prefab's, and the ones inside a
+/// patch's own body — or a clip plays nothing and a sampler goes silent.
+///
+/// Like `RenameProject` this is not the song: where a file is kept is each
+/// machine's own business. The session applies it outside the history.
+///
+/// It remembers **every** reference as it was, in the song's own walk order
+/// ([`Project::files`]), rather than the reverse of each move: two copies of
+/// one sound imported from two places collapse into one collected file, and
+/// only the list can tell them apart again.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RelocateAssets {
+    moves: Vec<(std::path::PathBuf, std::path::PathBuf, u64, u64)>,
+    before: Option<Vec<fontelle_types::AssetRef>>,
+}
+
+impl RelocateAssets {
+    /// Each move is `(from, to, hash, size)`.
+    pub fn new(moves: Vec<(std::path::PathBuf, std::path::PathBuf, u64, u64)>) -> Self {
+        Self {
+            moves,
+            before: None,
+        }
+    }
+}
+
+impl Command for RelocateAssets {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RelocateAssets(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let before = doc.files();
+        doc.each_file_mut(|file| {
+            if let Some((_, to, hash, size)) = self.moves.iter().find(|m| m.0 == file.path) {
+                file.path = to.clone();
+                file.content_hash = *hash;
+                file.size = *size;
+            }
+        });
+        self.before.get_or_insert(before);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(files) => Box::new(RestoreAssets {
+                files: files.clone(),
+                before: None,
+            }),
+            None => Box::new(NotApplied::new("moving a song's files")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Collect files"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.before.as_ref().map_or(0, |files| {
+                files.len() * std::mem::size_of::<fontelle_types::AssetRef>()
+            })
+    }
+}
+
+/// [`RelocateAssets`]' inverse: every file reference in the song set back to
+/// what it was, reference by reference in the song's walk order.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreAssets {
+    files: Vec<fontelle_types::AssetRef>,
+    before: Option<Vec<fontelle_types::AssetRef>>,
+}
+
+impl Command for RestoreAssets {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreAssets(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let before = doc.files();
+        // A song with a different number of files is a different song: put
+        // back into it, the list would land on the wrong references.
+        if before.len() != self.files.len() {
+            return Err(CommandError(
+                "the song's files have changed since they were moved".into(),
+            ));
+        }
+        let mut next = self.files.iter();
+        doc.each_file_mut(|file| {
+            if let Some(was) = next.next() {
+                *file = was.clone();
+            }
+        });
+        self.before.get_or_insert(before);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(files) => Box::new(RestoreAssets {
+                files: files.clone(),
+                before: None,
+            }),
+            None => Box::new(NotApplied::new("putting a song's files back")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Collect files"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.files.len() * std::mem::size_of::<fontelle_types::AssetRef>()
+    }
+}

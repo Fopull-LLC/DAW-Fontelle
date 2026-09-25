@@ -36,7 +36,9 @@ use fontelle_model::{
 };
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
-pub use bundle::{MissingAsset, OpenError, OpenedProject, open_project, save_project};
+pub use bundle::{
+    MissingAsset, OpenError, OpenedProject, open_project, open_project_with, resolve, save_project,
+};
 pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::{ImportedAudio, SampleLibrary};
 pub use plugins::{PluginRack, PluginSlot, PluginWiring, plugin_slots};

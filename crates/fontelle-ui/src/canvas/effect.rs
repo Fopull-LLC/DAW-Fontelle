@@ -623,6 +623,11 @@ pub struct InsertInfo {
     /// appeared on one of the two places it is drawn and not the other would
     /// be a worse answer than neither.
     pub mix_automated: bool,
+    /// A plugin this machine does not have (`docs/collab-plan.md` §7.4): the
+    /// slot keeps its place, its settings and its saved state, is silent, and
+    /// is drawn so — not left looking like a plugin that is playing. A song
+    /// from somebody else's studio is the ordinary way to get one.
+    pub missing: bool,
 }
 
 /// One insert's controls, as the generic parameter panel draws them.

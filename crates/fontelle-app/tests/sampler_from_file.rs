@@ -151,7 +151,7 @@ fn the_sample_can_be_found_again_after_a_reload() {
 
     let mut reopened = SampleLibrary::new();
     reopened
-        .reload_sample(&imported.file.file)
+        .reload_sample(&imported.file.file, &imported.file.file.path)
         .expect("reloads");
     assert!(
         reopened.resolve(&imported.file).is_some(),

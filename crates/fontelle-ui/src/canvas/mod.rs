@@ -207,10 +207,10 @@ pub use timeline::{
     Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineTool, TimelineToolbar,
     TimelineView, arrival_row, clip_bands, clip_cuts, clip_grip, clip_notes, clip_overlaps,
     clip_rect, clip_waveform, clip_waveform_core, content_end, content_fraction, content_ticks,
-    fade_anatomy, fade_caption, fade_curve, lane_scroll_to_show, lane_to_y, loop_marks,
-    slice_marks, time_selection, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
-    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+    fade_anatomy, fade_caption, fade_curve, fetching_caption, lane_scroll_to_show, lane_to_y,
+    loop_marks, slice_marks, time_selection, timeline_hit, timeline_layout, timeline_snap,
+    timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks,
+    timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

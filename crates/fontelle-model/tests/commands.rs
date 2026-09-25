@@ -1392,3 +1392,96 @@ fn an_imported_clip_can_name_the_row_it_makes() {
         &mut f.project,
     );
 }
+
+/// F23. Collecting a song's files moves where they are kept, and every
+/// reference to a moved file has to follow it — an audio clip's, a prefab's,
+/// and the ones inside a patch's own body — or a clip plays nothing and a
+/// sampler goes silent. One command, so it can be taken back like any other.
+#[test]
+fn relocating_a_file_rewrites_every_reference_to_it() {
+    use fontelle_types::{AssetId, AssetKind, AssetRef, AudioClipData, PatchData};
+    let mut f = fixture();
+    let asset = |path: &str, hash: u64| AssetRef {
+        id: AssetId::default(),
+        path: path.into(),
+        content_hash: hash,
+        size: 10,
+        kind: AssetKind::Sample,
+    };
+    let old = asset("/home/alice/loop.wav", 0);
+    AddClip::new(Clip {
+        lane: f.lane,
+        start: PPQN * 8,
+        length: PPQN,
+        source: ClipSource::Audio(AudioClipData::whole(old.clone(), 4_800, 48_000)),
+        prefab_link: None,
+        color: None,
+        muted: false,
+        loop_length: None,
+    })
+    .apply(&mut f.project)
+    .unwrap();
+    fontelle_model::AddPrefab::new(
+        "Loop",
+        ClipSource::Audio(AudioClipData::whole(old.clone(), 4_800, 48_000)),
+    )
+    .apply(&mut f.project)
+    .unwrap();
+    // A patch body names its file inside JSON the model cannot read as types.
+    let body = serde_json::json!({ "layers": [{ "source": { "Sample": {
+        "file": { "file": serde_json::to_value(&old).unwrap(), "sample": 0 }
+    } } }] });
+    SetChannelPatch::new(
+        f.channel,
+        Some(PatchData {
+            format_version: 1,
+            body,
+        }),
+    )
+    .apply(&mut f.project)
+    .unwrap();
+    let other = asset("/home/alice/other.wav", 5);
+    AddClip::new(Clip {
+        lane: f.lane,
+        start: PPQN * 12,
+        length: PPQN,
+        source: ClipSource::Audio(AudioClipData::whole(other.clone(), 4_800, 48_000)),
+        prefab_link: None,
+        color: None,
+        muted: false,
+        loop_length: None,
+    })
+    .apply(&mut f.project)
+    .unwrap();
+    assert_eq!(f.project.files().len(), 4);
+
+    let moved = asset("assets/9f86d08.wav", 0x9f86);
+    round_trips(
+        Box::new(fontelle_model::RelocateAssets::new(vec![(
+            old.path.clone(),
+            moved.path.clone(),
+            moved.content_hash,
+            moved.size,
+        )])),
+        &mut f.project,
+    );
+    fontelle_model::RelocateAssets::new(vec![(
+        old.path.clone(),
+        moved.path.clone(),
+        moved.content_hash,
+        moved.size,
+    )])
+    .apply(&mut f.project)
+    .unwrap();
+    let files = f.project.files();
+    assert_eq!(files.iter().filter(|a| a.path == moved.path).count(), 3);
+    assert!(files.iter().all(|a| a.path != old.path), "{files:?}");
+    assert!(files.contains(&other), "a file not moved stays");
+    assert!(
+        files
+            .iter()
+            .filter(|a| a.path == moved.path)
+            .all(|a| a.content_hash == 0x9f86),
+        "the hash moves with it"
+    );
+}

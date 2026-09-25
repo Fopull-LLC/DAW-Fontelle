@@ -3,6 +3,7 @@
 //! (FONTELLE_TDD.md §7.7, §14.6, §15.3, §17.5).
 
 pub mod audio_import;
+pub mod content_hash;
 pub mod fixtures;
 mod fsc_import;
 mod general_midi;

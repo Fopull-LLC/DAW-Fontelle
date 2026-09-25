@@ -1455,6 +1455,13 @@ fn main() {
     if window && let Some(dir) = fontelle_app::logs::default_dir() {
         fontelle_app::logs::start(&dir);
     }
+    // What each file's bytes hash to, kept between runs so a soundfont bank
+    // is hashed once per machine rather than once per run (`docs/collab-plan.md`
+    // §7.1). In the data folder, beside the logs; a run that cannot find one
+    // just hashes again.
+    if let Some(data) = fontelle_app::settings::Settings::data_dir() {
+        fontelle_assets::content_hash::set_cache_file(data.join("hashes.json"));
+    }
 
     if blank && !window {
         eprintln!(
