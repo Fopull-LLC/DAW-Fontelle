@@ -426,6 +426,18 @@ pub struct Session {
     /// (`docs/collab-plan.md`) — `None`, and nothing opened, until *Share* or
     /// *Join* is pressed.
     collab: Option<crate::collab::Collab>,
+    /// A share the relay has not answered yet: registering a lobby waits on
+    /// it for up to seconds, so it happens on a thread and lands here
+    /// (`docs/collab-plan.md` §10.1).
+    sharing: Option<std::sync::mpsc::Receiver<RelayAnswer>>,
+    /// What the network calls to wake the window (F48), handed to every
+    /// session's transport.
+    wake: Option<fontelle_net::Wake>,
+    /// Whether the window has been told why the last session ended.
+    told_end: bool,
+    /// What the session's own plumbing has to say, beside the collaboration's
+    /// notices — a share the relay refused.
+    session_notices: Vec<String>,
     /// The bounce running beside the window, if one is — see
     /// [`Session::poll_job`].
     job: Option<RunningJob>,
@@ -990,7 +1002,7 @@ impl Session {
                      Projects tab, or save the project, and record again"
                         .to_string()
                 })?;
-            self.project.meta.stamp_save(&who_saves());
+            self.project.meta.stamp_save(&self.settings.your_name());
             crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
             self.name_after(&path);
             self.bundle = Some(path);
@@ -1314,6 +1326,10 @@ impl Session {
             bundle,
             dirty: false,
             collab: None,
+            sharing: None,
+            wake: None,
+            told_end: false,
+            session_notices: Vec::new(),
             job: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
@@ -1725,7 +1741,12 @@ impl Session {
         }
         self.history.set_mint_space(None);
         self.history.open_outbox();
+        let mut transport = transport;
+        if let Some(wake) = &self.wake {
+            transport.set_wake(wake.clone());
+        }
         self.collab = Some(crate::collab::Collab::host(transport, options));
+        self.told_end = false;
         self.touch();
         Ok(())
     }
@@ -1833,11 +1854,24 @@ impl Session {
         if self.dirty {
             return Err("save or discard the open song before joining another".into());
         }
+        self.begin_join(transport, options)
+    }
+
+    /// [`join`](Self::join), once whatever was unsaved has been asked about.
+    fn begin_join(
+        &mut self,
+        mut transport: Box<dyn fontelle_net::Transport>,
+        options: crate::collab::CollabOptions,
+    ) -> Result<(), String> {
         let projects = self.projects.dir().map(Path::to_path_buf).ok_or_else(|| {
             "a joined song is copied into your projects folder \u{2014} choose one first"
                 .to_string()
         })?;
+        if let Some(wake) = &self.wake {
+            transport.set_wake(wake.clone());
+        }
         self.collab = Some(crate::collab::Collab::join(transport, options, projects));
+        self.told_end = false;
         self.touch();
         Ok(())
     }
@@ -1845,6 +1879,7 @@ impl Session {
     /// One turn of the shared session, if there is one: this studio's edits
     /// go out and everybody else's come in. Once a tick, beside `poll_job`.
     pub fn pump_collab(&mut self) {
+        self.land_share();
         if self.collab.is_none() {
             return;
         }
@@ -2028,6 +2063,30 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// Makes somebody view only, or lets them edit again (§10.1, F49).
+    pub fn set_peer_view_only(&mut self, peer: u16, view_only: bool) -> Result<(), String> {
+        let collab = self.collab.as_mut().ok_or("nothing is shared")?;
+        collab.set_view_only(peer, view_only)?;
+        self.touch();
+        Ok(())
+    }
+
+    /// Takes somebody out of the session (§10.1, F49).
+    pub fn remove_peer(&mut self, peer: u16) -> Result<(), String> {
+        let collab = self.collab.as_mut().ok_or("nothing is shared")?;
+        collab.remove(peer, &mut self.project)?;
+        self.touch();
+        Ok(())
+    }
+
+    /// Whether the host refuses this studio's edits — what the joiner's panel
+    /// says before anybody tries one.
+    pub fn session_view_only(&self) -> bool {
+        self.collab
+            .as_ref()
+            .is_some_and(|c| c.ended().is_none() && c.view_only())
+    }
+
     /// What the session has to tell the person — a refused edit, somebody
     /// joining — taken once.
     pub fn take_collab_notices(&mut self) -> Vec<String> {
@@ -2035,6 +2094,56 @@ impl Session {
             .as_mut()
             .map(|c| c.take_notices())
             .unwrap_or_default()
+    }
+
+    /// Who this studio is to the others, as the settings say — minting the
+    /// studio's id, and writing it down, the first time it is asked for.
+    fn collab_options(&mut self) -> crate::collab::CollabOptions {
+        let had = self.settings.install.is_some();
+        let install = self.settings.install_id();
+        if !had && let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write the settings: {e}"));
+        }
+        crate::collab::CollabOptions::new(self.settings.your_name(), install)
+    }
+
+    /// Shares the open song through the relay the settings name, the relay
+    /// asked off this thread (§10.1). The code is in
+    /// [`StudioHost::session`] once it has answered.
+    fn start_sharing(&mut self) -> Result<(), String> {
+        if self.sharing.is_some() || self.collab.as_ref().is_some_and(|c| c.ended().is_none()) {
+            return Err("this studio is in a session already".into());
+        }
+        if self.bundle.is_none() {
+            return Err("save the song before sharing it".into());
+        }
+        let relay = fontelle_net::Relay::from_setting(self.settings.relay.as_deref());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(fontelle_net::host(&relay, env!("CARGO_PKG_VERSION")));
+        });
+        self.sharing = Some(rx);
+        self.told_end = false;
+        self.touch();
+        Ok(())
+    }
+
+    /// The relay's answer to a share, when it has come.
+    fn land_share(&mut self) {
+        let Some(answer) = self.sharing.as_ref().and_then(|rx| rx.try_recv().ok()) else {
+            return;
+        };
+        self.sharing = None;
+        let shared = answer.and_then(|(transport, _code)| {
+            let options = self.collab_options();
+            self.share(transport, options)
+        });
+        if let Err(why) = shared {
+            let said = format!("Could not share the song \u{2014} {why}");
+            self.message = Some(said.clone());
+            self.session_notices.push(said);
+        }
+        self.touch();
     }
 
     /// Applies an edit somebody else made to the song
@@ -2115,7 +2224,7 @@ impl Session {
         if self.bundle.is_some() {
             self.project.meta.fork();
         }
-        self.project.meta.stamp_save(&who_saves());
+        self.project.meta.stamp_save(&self.settings.your_name());
         self.capture_plugin_states();
         crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
         self.remember_project(&path);
@@ -2142,7 +2251,7 @@ impl Session {
             // Not through `name_after`: this document is not the open one.
             let _ = fontelle_model::RenameProject::new(stem.to_string_lossy()).apply(&mut project);
         }
-        project.meta.stamp_save(&who_saves());
+        project.meta.stamp_save(&self.settings.your_name());
         crate::save_project(&project, &path).map_err(|e| e.to_string())?;
         self.projects.rescan();
         let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
@@ -5637,7 +5746,7 @@ impl DocumentHost for Session {
         let Some(bundle) = self.bundle.clone() else {
             return Session::save_as(self, &self.project.meta.name.clone());
         };
-        self.project.meta.stamp_save(&who_saves());
+        self.project.meta.stamp_save(&self.settings.your_name());
         crate::save_project(&self.project, &bundle).map_err(|e| e.to_string())?;
         self.dirty = false;
         self.touch();
@@ -7213,7 +7322,216 @@ impl StudioHost for Session {
 
     fn pump_session(&mut self) -> bool {
         self.pump_collab();
-        self.collab.as_ref().is_some_and(|c| c.ended().is_none())
+        self.sharing.is_some() || self.collab.as_ref().is_some_and(|c| c.ended().is_none())
+    }
+
+    fn session(&self) -> fontelle_ui::document::SessionView {
+        use fontelle_ui::document::{SessionPeer, SessionRole, SessionView};
+        if self.sharing.is_some() {
+            return SessionView {
+                role: SessionRole::Starting,
+                status: "Asking the relay for a code\u{2026}".to_string(),
+                ..SessionView::default()
+            };
+        }
+        let Some(collab) = self.collab.as_ref() else {
+            return SessionView::default();
+        };
+        if let Some(why) = collab.ended() {
+            return SessionView {
+                status: why.to_string(),
+                ..SessionView::default()
+            };
+        }
+        let host = collab.host_name().unwrap_or_default().to_string();
+        // A joiner lists who is sharing first, in the host's colour (F61):
+        // the host is not one of the peers the session hands out.
+        let mut peers: Vec<SessionPeer> = Vec::new();
+        if !collab.is_host() && !host.is_empty() {
+            peers.push(SessionPeer {
+                peer: 0,
+                name: host.clone(),
+                colour: 0,
+                view_only: false,
+            });
+        }
+        peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
+            peer: p.peer,
+            name: p.name,
+            colour: p.colour,
+            view_only: p.view_only,
+        }));
+        let role = if collab.is_host() {
+            SessionRole::Hosting
+        } else if collab.is_live() {
+            SessionRole::Joined
+        } else {
+            SessionRole::Joining
+        };
+        let status = match role {
+            SessionRole::Hosting if peers.is_empty() => {
+                "Give somebody the code \u{2014} they join from their start menu".to_string()
+            }
+            SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
+            SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
+            SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
+            _ => {
+                let missing = self.missing_files().len();
+                if collab.view_only() {
+                    format!("{host} has made the song view only for you")
+                } else if missing > 0 {
+                    format!(
+                        "Waiting for {missing} file{} from {host}",
+                        if missing == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("{host} is sharing this song")
+                }
+            }
+        };
+        SessionView {
+            role,
+            code: collab.code(),
+            host,
+            peers,
+            view_only: collab.view_only(),
+            status,
+        }
+    }
+
+    fn share_song(&mut self) -> Result<(), String> {
+        self.start_sharing()
+    }
+
+    fn join_song(&mut self, code: &str) -> Result<(), String> {
+        // However it was typed: spaces, a dash, lower case.
+        let code: String = code
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_uppercase();
+        if self.sharing.is_some() || self.collab.as_ref().is_some_and(|c| c.ended().is_none()) {
+            return Err("this studio is in a session already".into());
+        }
+        let relay = fontelle_net::Relay::from_setting(self.settings.relay.as_deref());
+        let transport = fontelle_net::join(&relay, &code)?;
+        let options = self.collab_options();
+        // The window has asked about anything unsaved before it got here
+        // (§4.4, rule 3): a Don't Save is an answer.
+        self.begin_join(transport, options)
+    }
+
+    fn leave_song(&mut self) {
+        if self.sharing.take().is_some() {
+            self.touch();
+            return;
+        }
+        self.leave_session();
+    }
+
+    fn session_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        if let Some(question) = self.join_question() {
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines: question.lines.clone(),
+                buttons: question
+                    .buttons
+                    .iter()
+                    .map(|(_, label)| label.clone())
+                    .collect(),
+                default: question.default,
+            });
+        }
+        self.fetch_question()
+            .map(|question| fontelle_ui::document::SessionQuestion {
+                lines: question.lines,
+                buttons: vec!["Fetch".to_string(), "Not now".to_string()],
+                default: 0,
+            })
+    }
+
+    fn answer_session_question(&mut self, answer: usize) -> Result<(), String> {
+        if let Some(question) = self.join_question() {
+            let answer = question
+                .buttons
+                .get(answer)
+                .map(|(answer, _)| answer.clone())
+                .ok_or("there is no such answer")?;
+            return self.answer_join(answer);
+        }
+        if self.fetch_question().is_some() {
+            return self.answer_fetch(answer == 0);
+        }
+        Ok(())
+    }
+
+    fn set_peer_view_only(&mut self, peer: u16, view_only: bool) {
+        if let Err(why) = Session::set_peer_view_only(self, peer, view_only) {
+            self.session_notices.push(why);
+        }
+    }
+
+    fn remove_peer(&mut self, peer: u16) {
+        if let Err(why) = Session::remove_peer(self, peer) {
+            self.session_notices.push(why);
+        }
+    }
+
+    fn take_session_notices(&mut self) -> Vec<String> {
+        let mut notices = std::mem::take(&mut self.session_notices);
+        notices.extend(self.take_collab_notices());
+        if !self.told_end
+            && let Some(why) = self.collab_ended()
+        {
+            notices.push(why.to_string());
+            self.told_end = true;
+        }
+        notices
+    }
+
+    fn name_to_ask_for(&self) -> Option<String> {
+        self.settings
+            .display_name
+            .is_none()
+            .then(|| self.settings.your_name())
+    }
+
+    fn set_your_name(&mut self, name: &str) {
+        let name = name.trim();
+        // A blank answer is the name it was offered, not a question asked
+        // again next time.
+        let name = if name.is_empty() {
+            self.settings.your_name()
+        } else {
+            name.to_string()
+        };
+        self.settings.display_name = Some(name);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write the settings: {e}"));
+        }
+        self.touch();
+    }
+
+    fn set_wake(&mut self, wake: fontelle_ui::document::Wake) {
+        if let Some(collab) = &mut self.collab {
+            collab.set_wake(wake.clone());
+        }
+        self.wake = Some(wake);
+    }
+
+    fn copy_text(&mut self, text: &str) -> Result<(), String> {
+        crate::desktop::copy_text(text)
+    }
+
+    fn set_setting_text(&mut self, index: usize, text: &str) {
+        let rows = crate::settings::setting_rows(&self.settings);
+        let Some(row) = rows.get(index).copied() else {
+            return;
+        };
+        row.set_text(&mut self.settings, text);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write the settings: {e}"));
+        }
+        self.touch();
     }
 
     fn poll_job(&mut self) -> JobPoll {
@@ -7369,6 +7687,9 @@ impl StudioHost for Session {
                 // the MIDI half — see `nudge_setting`, which flips it here too.
                 K::Switch => SettingControl::Switch {
                     on: self.settings.check_for_updates,
+                },
+                K::Text => SettingControl::Text {
+                    text: row.text(&self.settings),
                 },
             })
             .collect()
@@ -12536,16 +12857,17 @@ impl Session {
     }
 }
 
-/// Who a save is by, as the join prompt will say it (`docs/collab-plan.md`
-/// §4.1): the name the settings page's *Your name* row will hold, and the
-/// computer's own user name until it does.
-fn who_saves() -> String {
-    ["USER", "USERNAME", "LOGNAME"]
-        .iter()
-        .find_map(|key| {
-            std::env::var(key)
-                .ok()
-                .filter(|name| !name.trim().is_empty())
-        })
-        .unwrap_or_else(|| "someone".to_string())
+/// "Bob", "Bob and Carol", "Bob, Carol and Dan" — who the host's panel says is
+/// in the room.
+fn people_here(peers: &[fontelle_ui::document::SessionPeer]) -> String {
+    let names: Vec<&str> = peers.iter().map(|p| p.name.as_str()).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => format!("{one} is"),
+        [rest @ .., last] => format!("{} and {last} are", rest.join(", ")),
+    }
 }
+
+/// What a relay says to a share: the lobby's transport and its code, or why
+/// not.
+type RelayAnswer = Result<(Box<dyn fontelle_net::Transport>, String), String>;

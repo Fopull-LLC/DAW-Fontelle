@@ -1519,3 +1519,245 @@ fn the_session_says_whether_it_is_open() {
     let mut alone = a_session();
     assert!(!alone.pump_session(), "nobody shared anything");
 }
+
+// ------------------------------------------------------------ Phase 4
+
+/// F49. The host can make somebody view only: every edit they propose is
+/// refused and taken back on their screen, and they are told so before they
+/// try. The switch goes back as cheaply as it came.
+#[test]
+fn a_view_only_peers_proposal_is_refused() {
+    let mut pair = Pair::joined("view-only", 2);
+    let clip = open_clip(&pair.host);
+    let bob = pair.host.session_peers()[0].peer;
+    pair.host.set_peer_view_only(bob, true).unwrap();
+    pair.settle();
+    assert!(pair.host.session_peers()[0].view_only);
+    assert!(
+        pair.joiner.session_view_only(),
+        "Bob's panel says so before he tries"
+    );
+
+    let before = notes_of(&pair.joiner, clip);
+    let _ = pair.joiner.take_collab_notices();
+    draw(&mut pair.joiner, 0, 60);
+    pair.settle();
+    pair.same();
+    assert_eq!(notes_of(&pair.joiner, clip), before, "taken back");
+    let notices = pair.joiner.take_collab_notices();
+    assert!(
+        notices.iter().any(|n| n.contains("view only")),
+        "{notices:?}"
+    );
+
+    pair.host.set_peer_view_only(bob, false).unwrap();
+    pair.settle();
+    assert!(!pair.joiner.session_view_only());
+    let id = draw(&mut pair.joiner, 0, 60);
+    pair.settle();
+    pair.same();
+    assert!(notes_of(&pair.host, clip).iter().any(|n| n.0 == id));
+}
+
+/// F49. Removing somebody ends their session with a sentence saying who did
+/// it, keeps their copy theirs, and leaves the share open for everyone else.
+#[test]
+fn a_removed_peer_is_gone() {
+    let mut pair = Pair::joined("removed", 2);
+    let clip = open_clip(&pair.host);
+    let bob = pair.host.session_peers()[0].peer;
+    let _ = pair.host.take_collab_notices();
+    pair.host.remove_peer(bob).unwrap();
+    pair.settle();
+
+    assert!(pair.host.session_peers().is_empty());
+    assert!(pair.host.collab_live(), "Alice is still sharing");
+    let said = pair.host.take_collab_notices();
+    assert!(said.iter().any(|n| n.contains("Bob")), "{said:?}");
+    let ended = pair.joiner.collab_ended().expect("Bob's session is over");
+    assert!(ended.contains("Alice removed you"), "{ended}");
+
+    draw(&mut pair.host, 0, 72);
+    pair.settle();
+    assert!(!notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 72));
+}
+
+/// A relay on a thread of its own — the lifted server, as `fontelle-net`'s
+/// own tests run it — so the window's doors can be driven the way the
+/// window drives them, over a real socket.
+struct LocalRelay {
+    addr: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LocalRelay {
+    fn start() -> Self {
+        let mut server = fontelle_net::RelayServer::bind(0).expect("a relay binds");
+        let addr = format!("127.0.0.1:{}", server.port());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                server.step();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        Self {
+            addr,
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for LocalRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A studio whose settings — a file of its own, never the real one — name
+/// `who` and the relay.
+fn a_studio_on(relay: &LocalRelay, dir: &Path, who: &str) -> Session {
+    std::fs::create_dir_all(dir.join(who)).unwrap();
+    let settings = dir.join(format!("{who}-settings.json"));
+    std::fs::write(
+        &settings,
+        format!(
+            r#"{{"format_version": 7, "soundfont_dirs": [], "projects_dir": null,
+                "theme": null, "display_name": "{who}", "relay": "{}"}}"#,
+            relay.addr
+        ),
+    )
+    .unwrap();
+    let mut session = a_session().with_settings_path(settings);
+    session.set_projects_dir(Some(dir.join(who)));
+    session
+}
+
+fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(15),
+            "waited too long for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// F46, F48. The doors the window uses, end to end over a relay: Share gives
+/// a code a moment later (the relay is asked off the window's thread), Join
+/// takes it however it was typed and asks its question with the safe answer
+/// first, both panels say who is there — and an edit from the other side
+/// wakes the window rather than waiting to be looked for.
+#[test]
+fn the_window_doors_share_and_join_over_a_relay() {
+    use fontelle_ui::document::SessionRole;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let relay = LocalRelay::start();
+    let dir = scratch("doors");
+    let _cleanup = Cleanup(dir.clone());
+
+    let mut alice = a_studio_on(&relay, &dir, "Alice");
+    alice.save_as("Song").unwrap();
+    StudioHost::share_song(&mut alice).unwrap();
+    assert_eq!(StudioHost::session(&alice).role, SessionRole::Starting);
+    until("a code", || {
+        alice.pump_session();
+        StudioHost::session(&alice).code.is_some()
+    });
+    let view = StudioHost::session(&alice);
+    assert_eq!(view.role, SessionRole::Hosting);
+    let code = view.code.expect("just waited for it");
+
+    let mut bob = a_studio_on(&relay, &dir, "Bob");
+    StudioHost::join_song(&mut bob, &format!(" {} ", code.to_lowercase())).unwrap();
+    assert_eq!(StudioHost::session(&bob).role, SessionRole::Joining);
+    until("the join's question", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session_question(&bob).is_some()
+    });
+    let question = StudioHost::session_question(&bob).expect("just waited for it");
+    assert!(
+        question.lines.iter().any(|line| line.contains("Alice")),
+        "{:?}",
+        question.lines
+    );
+    assert_eq!(question.default, 0, "the safe answer is first");
+    StudioHost::answer_session_question(&mut bob, question.default).unwrap();
+    until("Bob's copy", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session(&bob).role == SessionRole::Joined
+    });
+    assert_eq!(StudioHost::session(&bob).host, "Alice");
+    until("Alice sees Bob", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session(&alice).peers.len() == 1
+    });
+    assert_eq!(StudioHost::session(&alice).peers[0].name, "Bob");
+    // F61, found on `:99`: a joiner's panel lists who is sharing, first and
+    // in the host's colour, rather than "Nobody has joined yet".
+    let theirs = StudioHost::session(&bob);
+    assert_eq!(theirs.peers[0].name, "Alice");
+    assert_eq!(theirs.peers[0].colour, 0);
+
+    let woke = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = woke.clone();
+    StudioHost::set_wake(
+        &mut bob,
+        std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let clip = open_clip(&alice);
+    draw(&mut alice, 0, 72);
+    until("the note", || {
+        alice.pump_session();
+        bob.pump_session();
+        notes_of(&bob, clip).iter().any(|note| note.2 == 72)
+    });
+    assert!(
+        woke.load(Ordering::SeqCst) > 0,
+        "Bob's window was woken, not left to find the note"
+    );
+
+    StudioHost::leave_song(&mut bob);
+    assert_eq!(StudioHost::session(&bob).role, SessionRole::Alone);
+    StudioHost::leave_song(&mut alice);
+    assert_eq!(StudioHost::session(&alice).role, SessionRole::Alone);
+}
+
+/// F62, found on `:99`: the join's answers were whole sentences — "Update
+/// mine to Alice's — a backup of yours is kept" — and ran out of their
+/// buttons. A button says what it does in a few words; the lines above it say
+/// the rest, the backup included.
+#[test]
+fn the_joins_answers_fit_on_their_buttons_and_the_lines_say_the_rest() {
+    let pair = a_second_join("labels", false, true);
+    let question = pair.joiner.join_question().expect("asked").clone();
+    for (_, label) in &question.buttons {
+        assert!(label.chars().count() <= 14, "{label:?} is a sentence");
+    }
+    let said = question.lines.join(" ");
+    assert!(said.contains("backup"), "{said}");
+}
+
+/// F63, found on `:99`: both copies said "saved by fopull" — the computer's
+/// login — where the others know the person by the name in the settings.
+#[test]
+fn a_save_is_signed_with_the_name_the_others_see() {
+    let relay = LocalRelay::start();
+    let dir = scratch("signed");
+    let _cleanup = Cleanup(dir.clone());
+    let mut alice = a_studio_on(&relay, &dir, "Alice");
+    alice.save_as("Song").unwrap();
+    assert_eq!(alice.project().meta.saved_by, "Alice");
+}

@@ -234,3 +234,44 @@ pub fn watching(engine: bool, session: bool) -> bool {
 pub fn autosave_due(since_last: std::time::Duration, every: std::time::Duration) -> bool {
     since_last >= every
 }
+
+/// Wakes the window from another thread — the network's, when somebody
+/// else's edit lands (`docs/collab-plan.md` §9.2, F48) — **once** until the
+/// window has looked.
+///
+/// `send` is the event loop proxy's `send_event`. A burst of a hundred edits
+/// is a hundred calls to [`waker`](Self::waker)'s function and one event: the
+/// window drains everything that is waiting when it wakes, so a queue of the
+/// rest would be a hundred wakes to find nothing. [`woken`](Self::woken)
+/// says it has looked, and the next message wakes it again. The
+/// [`ENGINE_POLL`] look stays underneath as the fallback.
+pub struct WindowWake {
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    send: std::sync::Arc<dyn Fn() + Send + Sync>,
+}
+
+impl WindowWake {
+    pub fn new(send: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            send: std::sync::Arc::new(send),
+        }
+    }
+
+    /// What to hand the network: cheap, and safe from any thread.
+    pub fn waker(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        let pending = self.pending.clone();
+        let send = self.send.clone();
+        std::sync::Arc::new(move || {
+            if !pending.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                send();
+            }
+        })
+    }
+
+    /// The window has woken and looked: the next message may wake it again.
+    pub fn woken(&self) {
+        self.pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}

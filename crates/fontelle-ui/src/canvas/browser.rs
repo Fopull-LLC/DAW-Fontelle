@@ -743,6 +743,38 @@ pub enum SettingControl {
     Choice { options: Vec<String>, chosen: usize },
     /// An on/off switch a press flips.
     Switch { on: bool },
+    /// Words, typed into the prompt a project is named in, which opens
+    /// holding `text` (`docs/collab-plan.md` §10.4).
+    Text { text: String },
+}
+
+/// What a press on a settings row does — decided by its control alone, so
+/// the drawing, the press and the keyboard cannot disagree about a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingPress {
+    /// A heading: nothing.
+    Nothing,
+    /// A button's action: a picker, a rescan, an install.
+    Act,
+    /// Along the groove, and then with the pointer.
+    Drag,
+    /// The list of choices, dropped down.
+    DropDown,
+    /// The switch, the other way.
+    Flip,
+    /// The name prompt, holding this.
+    Type(String),
+}
+
+pub fn setting_press(control: &SettingControl) -> SettingPress {
+    match control {
+        SettingControl::Heading => SettingPress::Nothing,
+        SettingControl::Button => SettingPress::Act,
+        SettingControl::Slider { .. } => SettingPress::Drag,
+        SettingControl::Choice { .. } => SettingPress::DropDown,
+        SettingControl::Switch { .. } => SettingPress::Flip,
+        SettingControl::Text { text } => SettingPress::Type(text.clone()),
+    }
 }
 
 /// How much of a settings row's width its control takes, on the right. The left

@@ -375,3 +375,29 @@ fn an_open_picker_exists_on_every_desktop_and_carries_its_title_and_filter() {
         }
     }
 }
+
+/// The Share panel's Copy (`docs/collab-plan.md` §10.1): the code goes to
+/// the desktop's clipboard through whatever program the desktop has for it,
+/// Wayland's first — and the text goes on the program's standard input,
+/// never on its command line, where a stray character could mean something.
+#[test]
+fn the_clipboard_is_the_desktops_own_program_given_the_text_on_stdin() {
+    use fontelle_app::desktop::copy_commands;
+    let commands = copy_commands();
+    assert!(!commands.is_empty());
+    if cfg!(target_os = "linux") {
+        let programs: Vec<&str> = commands.iter().map(|(program, _)| *program).collect();
+        let wayland = programs
+            .iter()
+            .position(|p| *p == "wl-copy")
+            .expect("wl-copy");
+        let x11 = programs.iter().position(|p| *p == "xclip").expect("xclip");
+        assert!(wayland < x11, "Wayland first: {programs:?}");
+    }
+    for (program, args) in &commands {
+        assert!(
+            args.iter().all(|arg| !arg.contains("UL22A6")),
+            "{program} is handed no text on its command line"
+        );
+    }
+}

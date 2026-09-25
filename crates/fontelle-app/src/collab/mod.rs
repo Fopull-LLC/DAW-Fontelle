@@ -106,6 +106,10 @@ pub struct Peer {
     pub name: String,
     /// Which of the theme's clip colours marks them.
     pub colour: u8,
+    /// Whether the host refuses their edits (§10.1, F49). Only the host
+    /// knows this of everybody; a joiner knows it of itself
+    /// ([`Collab::view_only`]).
+    pub view_only: bool,
 }
 
 /// What a joiner can say to the join's question (§4.3).
@@ -224,6 +228,32 @@ impl Collab {
         }
     }
 
+    /// Whether this studio is the one sharing.
+    pub fn is_host(&self) -> bool {
+        matches!(self.role, Role::Host(_))
+    }
+
+    /// The code to give out, while the relay has one for this share.
+    pub fn code(&self) -> Option<String> {
+        if !self.is_host() || self.ended.is_some() {
+            return None;
+        }
+        self.transport.lobby_code()
+    }
+
+    /// Who is sharing, once the host has said hello.
+    pub fn host_name(&self) -> Option<&str> {
+        match &self.role {
+            Role::Joiner(joiner) if !joiner.host_name.is_empty() => Some(&joiner.host_name),
+            _ => None,
+        }
+    }
+
+    /// Hands the transport what to call when a message lands (F48).
+    pub fn set_wake(&mut self, wake: fontelle_net::Wake) {
+        self.transport.set_wake(wake);
+    }
+
     /// Sharing, or holding the song open as a joiner — and not over.
     pub fn is_live(&self) -> bool {
         self.ended.is_none()
@@ -260,6 +290,61 @@ impl Collab {
 
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
+    }
+
+    /// Whether the host refuses this studio's edits (§10.1, F49).
+    pub fn view_only(&self) -> bool {
+        match &self.role {
+            Role::Joiner(joiner) => joiner.view_only,
+            Role::Host(_) => false,
+        }
+    }
+
+    /// The host's *view only* switch on somebody's row (§10.1, F49): their
+    /// every proposal is refused while it is on, and they are told.
+    pub fn set_view_only(&mut self, peer: u16, view_only: bool) -> Result<(), String> {
+        let Role::Host(host) = &mut self.role else {
+            return Err("only the person sharing the song decides who edits it".into());
+        };
+        let (&id, who) = host
+            .peers
+            .iter_mut()
+            .find(|(_, p)| p.welcomed && p.space == peer)
+            .ok_or("that person has left")?;
+        if who.view_only != view_only {
+            who.view_only = view_only;
+            send(self.transport.as_mut(), id, &Msg::ViewOnly { view_only });
+        }
+        Ok(())
+    }
+
+    /// The host's *remove* on somebody's row (§10.1, F49): they are told who
+    /// did it, and let go of. The code is unchanged — anybody who has it can
+    /// come back (§14.6).
+    pub fn remove(&mut self, peer: u16, doc: &mut Project) -> Result<(), String> {
+        let Role::Host(host) = &mut self.role else {
+            return Err("only the person sharing the song can remove anybody".into());
+        };
+        let id = host
+            .peers
+            .iter()
+            .find(|(_, p)| p.welcomed && p.space == peer)
+            .map(|(&id, _)| id)
+            .ok_or("that person has left")?;
+        let who = host.peers.remove(&id).expect("just found");
+        send(
+            self.transport.as_mut(),
+            id,
+            &Msg::Removed {
+                by: self.options.name.clone(),
+            },
+        );
+        self.transport.disconnect(id);
+        // They part holding the song as it is now (§4.5).
+        doc.meta.shared_revision = Some((who.install, doc.sync_hash()));
+        host.broadcast(self.transport.as_mut(), &Msg::Left { peer: who.space });
+        self.notices.push(format!("You removed {}.", who.name));
+        Ok(())
     }
 
     /// How far along the file `hash` is, while it is on its way here.
@@ -516,6 +601,7 @@ struct HostPeer {
     name: String,
     install: PersistentId,
     welcomed: bool,
+    view_only: bool,
 }
 
 impl HostPeer {
@@ -524,6 +610,7 @@ impl HostPeer {
             peer: self.space,
             name: self.name.clone(),
             colour: (self.space % 8) as u8,
+            view_only: self.view_only,
         }
     }
 }
@@ -554,6 +641,7 @@ impl Host {
                             name: String::new(),
                             install: PersistentId::default(),
                             welcomed: false,
+                            view_only: false,
                         },
                     );
                 }
@@ -661,6 +749,7 @@ impl Host {
                     name: name.clone(),
                     install,
                     welcomed: false,
+                    view_only: false,
                 });
                 entry.space = space;
                 entry.name = name.clone();
@@ -683,6 +772,19 @@ impl Host {
                 let Some(author) = self.peers.get(&peer).filter(|p| p.welcomed) else {
                     return;
                 };
+                // Refused whatever it is: the joiner has already been told,
+                // and takes it back the way any refusal is (§10.1).
+                if author.view_only {
+                    send(
+                        turn.transport,
+                        peer,
+                        &Msg::Refused {
+                            local_seq,
+                            reason: "view only".to_string(),
+                        },
+                    );
+                    return;
+                }
                 let author = author.space;
                 // The proposal as it came, ids and all: the joiner minted
                 // them in its own space, so they can be nobody else's (F55).
@@ -861,6 +963,8 @@ struct Joiner {
     pending: VecDeque<Pending>,
     next_local: u64,
     peers: BTreeMap<u16, Peer>,
+    /// The host refuses this studio's edits (F49).
+    view_only: bool,
 }
 
 impl Joiner {
@@ -883,6 +987,7 @@ impl Joiner {
             pending: VecDeque::new(),
             next_local: 0,
             peers: BTreeMap::new(),
+            view_only: false,
         }
     }
 
@@ -1042,15 +1147,28 @@ impl Joiner {
                     let refused = self.pending.remove(at).expect("just found");
                     history.forget(refused.entry);
                     eprintln!("Fontelle: the host refused edit {local_seq}: {reason}");
-                    turn.notices
-                        .push(taken_back(refused.command.label(), self.host_or_them()));
+                    let label = refused.command.label();
+                    turn.notices.push(if self.view_only {
+                        // Short enough for a toast (F64).
+                        format!("\u{201c}{label}\u{201d} was taken back \u{2014} it is view only.")
+                    } else {
+                        taken_back(label, self.host_or_them())
+                    });
                     self.rebuild(doc, history, turn.notices);
                     turn.effects.push(Effect::Changed);
                 }
             }
             Msg::Joined { peer, name, colour } => {
                 turn.notices.push(format!("{name} joined"));
-                self.peers.insert(peer, Peer { peer, name, colour });
+                self.peers.insert(
+                    peer,
+                    Peer {
+                        peer,
+                        name,
+                        colour,
+                        view_only: false,
+                    },
+                );
             }
             Msg::Left { peer } => {
                 if let Some(who) = self.peers.remove(&peer) {
@@ -1064,6 +1182,25 @@ impl Joiner {
                 return Some(format!(
                     "{} stopped sharing \u{2014} your copy is still open, and yours now.",
                     self.host_or_them()
+                ));
+            }
+            Msg::ViewOnly { view_only } => {
+                if view_only != self.view_only {
+                    self.view_only = view_only;
+                    turn.notices.push(if view_only {
+                        format!("{} made the song view only for you.", self.host_or_them())
+                    } else {
+                        format!("{} let you edit the song again.", self.host_or_them())
+                    });
+                }
+            }
+            Msg::Removed { by } => {
+                if self.stage == Stage::Live {
+                    doc.meta.shared_revision = Some((self.host_install, doc.sync_hash()));
+                }
+                return Some(format!(
+                    "{by} removed you from the session \u{2014} your copy is still open, and \
+                     yours now."
                 ));
             }
             _ => {}

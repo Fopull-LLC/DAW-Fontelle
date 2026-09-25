@@ -46,6 +46,37 @@ Add, never rename.
 on the wire. The name is set through `Session::name_after` (a command applied
 outside the history — the folder wins).
 
+**Updated 2026-09-25 (collaboration, Phases 1–4: sharing a song).**
+`docs/collab-plan.md` is built through Phase 4; its §18 ledger says what is
+closed and §19 how the tree departs from the text. Things to know:
+
+(a) **The window knows nothing about a session but `StudioHost`'s doors**
+(`session`, `share_song`, `join_song`, `leave_song`, `session_question`,
+`answer_session_question`, `set_peer_view_only`, `remove_peer`,
+`take_session_notices`, `name_to_ask_for`, `set_your_name`, `set_wake`,
+`copy_text`) and `pump_session` once a pass. Everything behind them is
+`fontelle-app/src/collab/` over a `fontelle_net::Transport`.
+
+(b) **Two studios on this machine**: each needs its own `XDG_CONFIG_HOME`
+and `XDG_DATA_HOME` (a settings file naming `display_name` and
+`projects_dir`, `check_for_updates: false`, `extensions_offered: true`) and
+its own nested X server (`Xwayland :98` beside `:99`) — with no window manager
+two windows on one display lie on top of each other. The relay is the real one
+unless the settings' `relay` names another. Kill them by pid.
+
+(c) **A `Msg` is append-only** (`msg_variant_order_is_pinned`), like an
+`Edit`'s names. Phase 4 appended `ViewOnly` and `Removed`.
+
+(d) **`fontelle-net`'s `transport.rs`, `quic.rs` and `relay.rs` are the
+engine's, copied** at `16481c30`; the one Fontelle addition is the wake
+(`Transport::set_wake`, the `Events` sender in `quic.rs`), marked where it is.
+Keep any other change out of them, or tell hub card `0265`.
+
+(e) **A session test that needs a socket** runs its own relay in-process
+(`LocalRelay` in `tests/collab.rs`, `InProcessRelay` in `tests/relay.rs`), and
+a studio in a test gets a settings file of its own: a `Session` with no
+settings path writes the real one.
+
 **Updated 2026-09-25 (Windows, v0.15.0).** `PROGRESS.md`'s top entry. Things
 to know:
 

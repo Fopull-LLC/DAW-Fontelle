@@ -51,6 +51,7 @@ fn pressables(layout: &WelcomeLayout) -> Vec<Rect> {
         layout.website,
         layout.repository,
     ];
+    all.push(layout.join_button);
     all.extend(layout.update_button);
     all.extend(layout.rows.iter().map(|row| row.frame));
     all
@@ -371,4 +372,22 @@ fn the_logs_folder_is_a_link_in_the_footer_beside_the_other_two() {
             .to_lowercase()
             .contains("logs")
     );
+}
+
+/// F46 (`docs/collab-plan.md` §10.2). *Join a shared song* is the third way
+/// in, under the other two, and a press on it is its own hit — the window
+/// answers it with the code prompt.
+#[test]
+fn the_join_button_is_the_third_way_in() {
+    let layout = welcome_layout(window(), &metrics(), 3, false);
+    assert!(!layout.join_button.is_empty());
+    assert!(within(layout.join_button, layout.frame));
+    assert!(layout.join_button.y > layout.open_button.y, "under Open");
+    assert!(layout.open_button.y > layout.new_button.y);
+    assert!(!overlaps(layout.join_button, layout.open_button));
+    assert!(!overlaps(layout.join_button, layout.footer));
+    assert!(!overlaps(layout.message, layout.new_button));
+    let (x, y) = centre(layout.join_button);
+    assert_eq!(welcome_hit(&layout, x, y), Some(WelcomeHit::Join));
+    assert!(fontelle_ui::canvas::JOIN_LABEL.starts_with("Join"));
 }

@@ -374,10 +374,83 @@ fn every_row_knows_which_kind_of_control_it_is() {
     assert_eq!(SettingRow::VelocityMin.control_kind(), K::Slider);
     assert_eq!(SettingRow::Transpose.control_kind(), K::Slider);
     assert_eq!(SettingRow::CheckForUpdates.control_kind(), K::Switch);
+    assert_eq!(SettingRow::YourName.control_kind(), K::Text);
     assert_eq!(SettingRow::PluginFolder.control_kind(), K::Button);
     assert_eq!(SettingRow::Extension(0).control_kind(), K::Button);
     assert_eq!(
         SettingRow::Folder(fontelle_app::settings::FolderKind::Midi).control_kind(),
         K::Button
     );
+}
+
+// ------------------------------------------- sharing (collab-plan §10.4) ---
+
+/// F47. Two rows under their own heading: the name the people you share
+/// with see, and the relay — blank meaning Floptle Cloud. Both are typed,
+/// so both are text rows, the first this page has had.
+#[test]
+fn your_name_and_the_relay_are_text_rows_under_sharing() {
+    use fontelle_app::settings::SettingControlKind as K;
+    assert_eq!(SettingRow::YourName.control_kind(), K::Text);
+    assert_eq!(SettingRow::Relay.control_kind(), K::Text);
+    let at = SETTING_ROWS
+        .iter()
+        .position(|row| *row == SettingRow::Heading("Sharing"))
+        .expect("a Sharing heading");
+    assert_eq!(SETTING_ROWS[at + 1], SettingRow::YourName);
+    assert_eq!(SETTING_ROWS[at + 2], SettingRow::Relay);
+    let settings = Settings::default();
+    assert!(!SettingRow::YourName.value(&settings).is_empty());
+    assert_eq!(SettingRow::Relay.value(&settings), "Floptle Cloud");
+    assert_eq!(SettingRow::Relay.text(&settings), "");
+}
+
+/// A name is kept trimmed; a blank one goes back to the default rather than
+/// showing nobody as "". The relay likewise: blank is Floptle Cloud.
+#[test]
+fn a_typed_name_is_kept_and_a_blank_one_goes_back_to_the_default() {
+    let mut settings = Settings::default();
+    SettingRow::YourName.set_text(&mut settings, "  Bob  ");
+    assert_eq!(settings.display_name.as_deref(), Some("Bob"));
+    assert_eq!(settings.your_name(), "Bob");
+    assert_eq!(SettingRow::YourName.value(&settings), "Bob");
+    assert_eq!(SettingRow::YourName.text(&settings), "Bob");
+    SettingRow::YourName.set_text(&mut settings, "   ");
+    assert_eq!(settings.display_name, None);
+    assert!(!settings.your_name().trim().is_empty());
+
+    SettingRow::Relay.set_text(&mut settings, " relay.example.com:7788 ");
+    assert_eq!(settings.relay.as_deref(), Some("relay.example.com:7788"));
+    assert_eq!(SettingRow::Relay.value(&settings), "relay.example.com:7788");
+    SettingRow::Relay.set_text(&mut settings, "");
+    assert_eq!(settings.relay, None);
+}
+
+/// §4.5 names a studio by an id of its own, minted once and kept: the record
+/// of what two copies last agreed on is only as good as the name it is under.
+#[test]
+fn a_studio_keeps_one_install_id_for_good() {
+    let mut settings = Settings::default();
+    assert_eq!(settings.install, None);
+    let first = settings.install_id();
+    assert_eq!(settings.install_id(), first);
+    let back = Settings::from_json(&settings.to_json()).expect("reads back");
+    assert_eq!(back.install, Some(first));
+}
+
+/// Settings format 7 carries the three, and a format-6 file still reads.
+#[test]
+fn the_sharing_settings_survive_the_file_and_an_older_one_reads() {
+    assert_eq!(fontelle_app::settings::SETTINGS_FORMAT_VERSION, 7);
+    let mut settings = Settings::default();
+    SettingRow::YourName.set_text(&mut settings, "Alice");
+    SettingRow::Relay.set_text(&mut settings, "10.0.0.2:7788");
+    let back = Settings::from_json(&settings.to_json()).expect("reads back");
+    assert_eq!(back.display_name.as_deref(), Some("Alice"));
+    assert_eq!(back.relay.as_deref(), Some("10.0.0.2:7788"));
+    let older =
+        r#"{"format_version": 6, "soundfont_dirs": [], "projects_dir": null, "theme": null}"#;
+    let settings = Settings::from_json(older).expect("a version 6 file still reads");
+    assert_eq!(settings.display_name, None);
+    assert_eq!(settings.relay, None);
 }

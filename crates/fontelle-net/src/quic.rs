@@ -125,8 +125,37 @@ async fn write_frames(
     }
 }
 
+/// Where the network's tasks put what arrived: the channel [`Transport::poll`]
+/// drains, and — Fontelle's own, not in the engine's copy — a wake called once
+/// each thing is in it (F48, [`Transport::set_wake`]).
+#[derive(Clone)]
+struct Events {
+    tx: mpsc::Sender<Incoming>,
+    wake: Arc<Mutex<Option<crate::transport::Wake>>>,
+}
+
+impl Events {
+    fn new(tx: mpsc::Sender<Incoming>) -> Self {
+        Self {
+            tx,
+            wake: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn send(&self, event: Incoming) -> Result<(), mpsc::SendError<Incoming>> {
+        self.tx.send(event)?;
+        // Cloned out, so a wake that takes a moment never holds the lock
+        // against the next message.
+        let wake = self.wake.lock().unwrap().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+        Ok(())
+    }
+}
+
 /// Read length-prefixed frames off the peer's reliable stream.
-async fn read_frames(mut rx: quinn::RecvStream, peer: PeerId, events: mpsc::Sender<Incoming>) {
+async fn read_frames(mut rx: quinn::RecvStream, peer: PeerId, events: Events) {
     loop {
         let mut len = [0u8; 4];
         if rx.read_exact(&mut len).await.is_err() {
@@ -150,7 +179,7 @@ async fn read_frames(mut rx: quinn::RecvStream, peer: PeerId, events: mpsc::Send
 }
 
 /// Receive datagrams; sequenced ones drop when stale.
-async fn read_datagrams(conn: quinn::Connection, peer: PeerId, events: mpsc::Sender<Incoming>) {
+async fn read_datagrams(conn: quinn::Connection, peer: PeerId, events: Events) {
     let mut last_seq = 0u64;
     loop {
         let Ok(d) = conn.read_datagram().await else {
@@ -503,6 +532,7 @@ impl QuicServer {
         let local_port = endpoint.local_addr().map_err(|e| e.to_string())?.port();
 
         let (events_tx, events_rx) = mpsc::channel();
+        let events_tx = Events::new(events_tx);
         let peers: Arc<Mutex<HashMap<PeerId, Arc<PeerHandle>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         {
@@ -739,6 +769,8 @@ pub struct QuicClient {
     /// What the handshake had to say — today, that a managed relay's
     /// certificate did not verify and the dev-trust fallback was taken.
     warnings: Arc<Mutex<Vec<String>>>,
+    /// See [`Events`]: Fontelle's own.
+    wake: Arc<Mutex<Option<crate::transport::Wake>>>,
 }
 
 /// A TLS client config under one trust model.
@@ -851,7 +883,9 @@ impl QuicClient {
         endpoint.set_default_client_config(client_config);
 
         let (events_tx, events_rx) = mpsc::channel();
+        let events_tx = Events::new(events_tx);
         let (reliable_tx, reliable_rx) = tokio::sync::mpsc::unbounded_channel();
+        let wake = events_tx.wake.clone();
         let conn_slot: Arc<Mutex<Option<quinn::Connection>>> = Arc::new(Mutex::new(None));
         {
             let conn_slot = conn_slot.clone();
@@ -937,6 +971,7 @@ impl QuicClient {
             reliable: reliable_tx,
             seq: AtomicU64::new(0),
             warnings,
+            wake,
         })
     }
 }
@@ -944,6 +979,10 @@ impl QuicClient {
 impl Transport for QuicClient {
     fn take_notices(&mut self) -> Vec<String> {
         self.take_warnings()
+    }
+
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        *self.wake.lock().unwrap() = Some(wake);
     }
 
     fn send(&mut self, _peer: PeerId, channel: Channel, bytes: &[u8]) {

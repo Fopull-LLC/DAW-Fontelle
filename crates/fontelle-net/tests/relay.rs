@@ -147,6 +147,54 @@ fn host_join_and_echo_through_an_in_process_relay() {
     assert_eq!(message(&back).unwrap().1, b"hello back");
 }
 
+/// F48. A message arriving is announced the moment it lands, on the network
+/// thread, so the window can wake for it rather than finding it on its next
+/// look — both ways round, and without anybody polling in between.
+#[test]
+fn a_message_wakes_whoever_is_waiting() {
+    use std::sync::atomic::AtomicUsize;
+    let relay = InProcessRelay::open();
+    let (mut host, code) = fontelle_net::host(&relay.relay(), "test").expect("hosts");
+    let mut joiner = fontelle_net::join(&relay.relay(), &code).expect("joins");
+    let counter = |count: &Arc<AtomicUsize>| -> fontelle_net::Wake {
+        let count = count.clone();
+        Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let host_woke = Arc::new(AtomicUsize::new(0));
+    let joiner_woke = Arc::new(AtomicUsize::new(0));
+    host.set_wake(counter(&host_woke));
+    joiner.set_wake(counter(&joiner_woke));
+
+    joiner.send(SERVER, Channel::Reliable, b"hello");
+    let start = Instant::now();
+    while host_woke.load(Ordering::SeqCst) == 0 {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the host was never woken"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let Some(Incoming::Message(peer, _, _)) = poll_until(host.as_mut(), |i| message(i).is_some())
+    else {
+        panic!("woken, and then nothing to read");
+    };
+
+    let before = joiner_woke.load(Ordering::SeqCst);
+    host.send(peer, Channel::Reliable, b"hello back");
+    let start = Instant::now();
+    while joiner_woke.load(Ordering::SeqCst) == before {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the joiner was never woken"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let back = poll_until(joiner.as_mut(), |i| message(i).is_some()).expect("an answer");
+    assert_eq!(message(&back).unwrap().1, b"hello back");
+}
+
 /// Keeps what an inner transport was asked to send, with when.
 struct Recorder<T> {
     inner: T,

@@ -19,6 +19,49 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 (evening) — working on a song together, Phase 4 built:
+the window.** `docs/collab-plan.md` §13's last v1 phase; ledger rows F44–F50
+and F60–F64 (found on `:99`) closed. **F43 and F59 stay open**: no QUIC socket
+opens under Wine, and the Windows proof is CI's run of `tests/relay.rs`.
+**v0.16.0 is prepared, not tagged** — the tag is Ty's.
+
+- **Share** is the People button at the transport bar's right end, beside the
+  meter. Its panel is the whole of a session: the code in the biggest type on
+  it, *Copy* (onto the desktop's clipboard), who is here in their colours, two
+  lines of what is going on, *Stop sharing* / *Leave session*, *Join
+  instead…*. A dot in the host's colour sits on the button while the song is
+  shared, and the title says *(shared)*.
+- **Join** is the start menu's third button (*Join a shared song…*) and the
+  panel's: the code prompt, then the save prompt if anything is unsaved, then
+  the join's question on a card whose first answer is the safe one and the one
+  Enter presses.
+- **The host's row controls** (F49): *view only* — every proposal refused and
+  taken back on the joiner's screen, who is told before trying — and *remove*,
+  which tells them who did it and leaves the code working.
+- **Settings format 7**: *Your name* and *Relay* under a *Sharing* heading,
+  the page's first text rows (typed in the name prompt), and the studio's
+  install id.
+- **The network wakes the window** (F48): a message landing calls a wake on
+  the network's thread; `WindowWake` turns a burst into one user event.
+- **Seen on `:99` through `relay.fopull.com`** — §19 lists it. Not seen by
+  hand: a recorded take on the joiner and the version-mismatch sentence (both
+  tested).
+
+**Built to the recommendation, flagged for Ty (§15):** soundfonts are fetched
+into the bank after a prompt naming the size and the minutes, with no cap
+(decision 4); no playing together in v1, each transport is its own (5); joins
+land in `<projects>/Shared` (6); *Your name* is a settings row, asked on the
+first Share or Join while it is still the computer's user name (7).
+
+**Two words that are Ty's, proposed and not written:**
+- `FONTELLE_TDD.md:64` lists "network collaboration, cloud anything" as a v1
+  non-goal (F45). Proposed: *"Video, notation, surround/ambisonics, and cloud
+  anything. ~~Network collaboration~~ — **built after v1**
+  (`docs/collab-plan.md`): a song shared through Fopull's relay, host
+  authoritative, no account."*
+- The product page (F44, decision 8): the sentence is appended to hub card
+  `0234`'s thread for W, with the wording left to Ty.
+
 **As of 2026-09-25 (later still) — working on a song together, Phase 3
 built: the relay.** `docs/collab-plan.md` §13's fourth phase; ledger rows
 F32–F42 and F58 closed, **F43 open** (see F59), hub cards `0264`–`0266`

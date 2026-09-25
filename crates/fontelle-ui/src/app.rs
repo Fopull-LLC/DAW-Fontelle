@@ -413,6 +413,21 @@ enum NameFor {
     /// What is open now, saved into a project of that name — and then, when
     /// the save prompt asked for it, what the person was leaving to do.
     SaveAs(Option<Leave>),
+    /// The code somebody sharing a song gave you (`docs/collab-plan.md`
+    /// §10.2).
+    JoinCode,
+    /// The name the others will see, asked the first time it matters
+    /// (decision 7) — and then what was being done when it was asked.
+    YourName(Sharing),
+    /// A text row on the settings page, by its index (§10.4).
+    Setting(usize),
+}
+
+/// What was being done when the name the others see was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sharing {
+    Share,
+    Join,
 }
 
 /// What somebody was doing when the save prompt stopped them: each one leaves
@@ -428,6 +443,10 @@ enum Leave {
     OpenProject(usize),
     /// Making a new project from the browser.
     NewProject,
+    /// Joining the song whose code is in `pending_join`.
+    JoinSong,
+    /// Sharing — after the name a song needs to be a file.
+    Share,
 }
 
 /// An answer to the save prompt.
@@ -444,6 +463,9 @@ impl NameFor {
         match self {
             Self::NewProject => "Name the new project",
             Self::SaveAs(_) => "Save this project as",
+            Self::JoinCode => "The code you were given",
+            Self::YourName(_) => "Your name, as the others will see it",
+            Self::Setting(_) => "Type it \u{2014} blank for the default",
         }
     }
 }
@@ -977,6 +999,16 @@ pub fn run_window(options: WindowOptions) -> Result<WindowApp, WindowError> {
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let mut app = WindowApp::new(options);
+    // Somebody else's edit wakes the loop from the network's thread rather
+    // than waiting for the next look (F48).
+    let proxy = event_loop.create_proxy();
+    let wake = crate::widget::WindowWake::new(move || {
+        let _ = proxy.send_event(());
+    });
+    if let Some(doc) = &mut app.options.document {
+        doc.set_wake(wake.waker());
+    }
+    app.wake = Some(wake);
     event_loop
         .run_app(&mut app)
         .map_err(|e| WindowError::EventLoop(e.to_string()))?;
@@ -1172,6 +1204,19 @@ pub struct WindowApp {
     /// The prompt before leaving unsaved work: what was being left to do,
     /// and the question as it is drawn.
     save_prompt: Option<(Leave, String)>,
+    /// The Share panel, open (`docs/collab-plan.md` §10.1).
+    share_open: bool,
+    /// The shared song as last read — once a pass while one is open, and once
+    /// more as it ends.
+    session: crate::document::SessionView,
+    /// What the session is waiting on the person for (§4.3, §7.1), drawn as
+    /// a card over everything.
+    session_question: Option<crate::document::SessionQuestion>,
+    /// A code typed while there were unsaved changes, held while the save
+    /// prompt asks about them (§4.4, rule 3).
+    pending_join: Option<String>,
+    /// Wakes the loop from the network's thread when an edit lands (F48).
+    wake: Option<crate::widget::WindowWake>,
     /// When the last save landed, while "Saved!" is still rising.
     saved_at: Option<std::time::Instant>,
     /// The bounce running beside the window, as it last said.
@@ -1974,6 +2019,11 @@ impl WindowApp {
             toast: None,
             confirm: None,
             save_prompt: None,
+            share_open: false,
+            session: Default::default(),
+            session_question: None,
+            pending_join: None,
+            wake: None,
             saved_at: None,
             job: None,
             shown_dirty: false,
@@ -2379,6 +2429,10 @@ impl WindowApp {
             self.open_keybinds();
             return;
         }
+        if hit == WelcomeHit::Join {
+            self.start_join();
+            return;
+        }
         if hit == WelcomeHit::NewProject {
             let Some(doc) = &mut self.options.document else {
                 return;
@@ -2437,7 +2491,7 @@ impl WindowApp {
             // The menu stays up: the folder opens beside it, and a report
             // is written with the project still to be chosen.
             WelcomeHit::Logs => doc.reveal_logs_dir().map(|()| false),
-            WelcomeHit::Help => unreachable!("handled above"),
+            WelcomeHit::Help | WelcomeHit::Join => unreachable!("handled above"),
         };
         match outcome {
             Ok(true) => self.close_welcome(),
@@ -2763,6 +2817,21 @@ impl WindowApp {
                         )
                     }),
                     save_prompt: self.save_prompt.as_ref().map(|(_, q)| q.as_str()),
+                    share: self.share_open.then(|| crate::render::ShareNotice {
+                        role: self.session.role,
+                        code: self.session.code.as_deref(),
+                        peers: &self.session.peers,
+                        status: &self.session.status,
+                    }),
+                    question: self.session_question.as_ref().map(|q| {
+                        crate::render::QuestionNotice {
+                            lines: &q.lines,
+                            buttons: &q.buttons,
+                            default: q.default,
+                        }
+                    }),
+                    sharing: (self.session.role != crate::document::SessionRole::Alone)
+                        .then_some(0),
                 },
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
                 // Only the studio's own menus: one opened on a knob belongs
@@ -2896,6 +2965,7 @@ impl WindowApp {
             .document
             .as_mut()
             .is_some_and(|doc| doc.pump_session());
+        self.read_session();
         // "Saved!" rises every frame it is up, and is gone once it has risen.
         if let Some(at) = self.saved_at {
             if at.elapsed().as_secs_f32() > crate::canvas::SAVED_FLASH_SECONDS {
@@ -3549,6 +3619,12 @@ impl WindowApp {
         if self.keybinds.is_some() {
             return None;
         }
+        // Nor over the Share panel or a session's question: the Share
+        // button's own tip was drawn across the panel it had just opened
+        // (F64, seen on `:99`).
+        if self.share_open || self.session_question.is_some() {
+            return None;
+        }
         // The bar is above the panels, and the tabs above the panel they head,
         // so the order here is the order `press` reads them in.
         // The key that does the same, after the words, read off the keymap
@@ -3688,6 +3764,14 @@ impl WindowApp {
 }
 
 impl ApplicationHandler for WindowApp {
+    /// A message landed (F48). The pass this starts pumps the session and
+    /// redraws; saying it has looked lets the next message wake it again.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(wake) = &self.wake {
+            wake.woken();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.live.is_some() {
             return;
@@ -6222,6 +6306,7 @@ impl WindowApp {
             for fixed in [
                 crate::canvas::NEW_PROJECT_LABEL,
                 crate::canvas::OPEN_PROJECT_LABEL,
+                crate::canvas::JOIN_LABEL,
                 crate::canvas::RECENT_HEADING,
                 crate::canvas::NOTHING_RECENT,
                 crate::canvas::FOOTER_TEXT,
@@ -6932,6 +7017,24 @@ impl WindowApp {
                 crate::canvas::SAVED_FLASH_TEXT,
             );
         }
+        if self.share_open {
+            let mut words =
+                crate::canvas::share_panel_words(self.session.role, &self.session.peers);
+            let (first, second) = crate::canvas::status_lines(&self.session.status);
+            words.extend([first.to_string(), second.to_string()]);
+            for word in &words {
+                want(&mut self.labels, &mut self.text, word);
+            }
+            if let Some(code) = &self.session.code {
+                let size = self.share_panel_layout().code_size;
+                self.labels.ensure_mono(code, size, &mut self.text);
+            }
+        }
+        if let Some(question) = &self.session_question {
+            for word in question.lines.iter().chain(&question.buttons) {
+                want(&mut self.labels, &mut self.text, word);
+            }
+        }
         if let Some((_, question)) = &self.save_prompt {
             let question = question.clone();
             want(&mut self.labels, &mut self.text, &question);
@@ -7201,6 +7304,24 @@ impl WindowApp {
             self.press_save_prompt(x, y);
             return;
         }
+        // A session's question, the same.
+        if self.session_question.is_some() {
+            self.press_session_question(x, y);
+            return;
+        }
+        // The Share panel takes a press on it; a press anywhere else but the
+        // button that opened it shuts it, and goes on to what was pressed.
+        if self.share_open {
+            let panel = self.share_panel_layout();
+            if panel.frame.contains(x, y) {
+                self.press_share_panel(&panel, x, y);
+                return;
+            }
+            if !self.bar.share.contains(x, y) {
+                self.share_open = false;
+                self.tree.invalidate_rect(self.layout.window);
+            }
+        }
         // A confirm modal is above everything: the press is answered here and
         // goes no further — a hit on a button acts, a press anywhere else is a
         // cancel.
@@ -7382,6 +7503,11 @@ impl WindowApp {
                     }
                     TransportHit::Help => {
                         self.open_keybinds();
+                        return;
+                    }
+                    TransportHit::Share => {
+                        self.share_open = !self.share_open;
+                        self.tree.invalidate_rect(self.layout.window);
                         return;
                     }
                     _ => {}
@@ -14245,10 +14371,11 @@ impl WindowApp {
                 | SettingControl::Switch { .. }
         )
         .then_some(index);
-        match control {
+        use crate::canvas::SettingPress;
+        match crate::canvas::setting_press(&control) {
             // A label is not a control; a press on one does nothing.
-            SettingControl::Heading => {}
-            SettingControl::Slider { .. } => {
+            SettingPress::Nothing => {}
+            SettingPress::Drag => {
                 let row = self.setting_row_rect(index);
                 let area = crate::canvas::setting_control_rect(row, &self.options.theme.metrics);
                 // On the groove, the number goes where the press landed and
@@ -14269,8 +14396,8 @@ impl WindowApp {
                 }
             }
             // A flip, not a step: `nudge_setting` toggles the switch here.
-            SettingControl::Switch { .. } => self.apply_setting_press(index, back),
-            SettingControl::Choice { .. } => {
+            SettingPress::Flip => self.apply_setting_press(index, back),
+            SettingPress::DropDown => {
                 let row = self.setting_row_rect(index);
                 let bounds = self.layout.window;
                 self.open_menu(
@@ -14282,7 +14409,9 @@ impl WindowApp {
             }
             // A folder picker, a rescan, an install/remove — with the confirm
             // and the undo toast Phase C wired.
-            SettingControl::Button => self.press_setting_row(index, back),
+            SettingPress::Act => self.press_setting_row(index, back),
+            // Typed, in the prompt a project is named in (§10.4).
+            SettingPress::Type(text) => self.ask_for_a_name(NameFor::Setting(index), text),
         }
     }
 
@@ -15869,16 +15998,19 @@ impl WindowApp {
                 let purpose = *purpose;
                 let name = self.menu_filter.text().to_string();
                 self.menu_filter.clear();
+                if self.named_for_sharing(purpose, &name) {
+                    return;
+                }
                 let done = self.options.document.as_mut().map(|doc| match purpose {
-                    NameFor::NewProject => doc.new_project_named(&name),
                     NameFor::SaveAs(_) => doc.save_as(&name),
+                    _ => doc.new_project_named(&name),
                 });
                 let saved_as =
                     matches!(purpose, NameFor::SaveAs(_)) && matches!(done, Some(Ok(())));
                 self.status = match &done {
                     Some(Ok(())) => match purpose {
-                        NameFor::NewProject => "new project".to_string(),
                         NameFor::SaveAs(_) => "saved".to_string(),
+                        _ => "new project".to_string(),
                     },
                     Some(Err(e)) => e.clone(),
                     None => String::new(),
@@ -18106,6 +18238,24 @@ impl WindowApp {
             }
             return;
         }
+        // Enter is the answer the question weighted — the safe one — and
+        // Escape its last, which is always the one that does nothing.
+        if let Some(question) = &self.session_question {
+            let answer = match &event.logical_key {
+                Key::Named(NamedKey::Enter) => Some(question.default),
+                Key::Named(NamedKey::Escape) => question.buttons.len().checked_sub(1),
+                _ => None,
+            };
+            if let Some(answer) = answer {
+                self.answer_session_question(answer);
+            }
+            return;
+        }
+        if self.share_open && event.logical_key == Key::Named(NamedKey::Escape) {
+            self.share_open = false;
+            self.tree.invalidate_rect(self.layout.window);
+            return;
+        }
 
         // A held browser row is let go on Escape, before anything else reads
         // the key: the chip is the nearest thing to the pointer.
@@ -18987,7 +19137,7 @@ impl WindowApp {
         let name = doc.name().to_string();
         let question = match what {
             Leave::Quit => format!("Save changes to {name} before closing?"),
-            Leave::OpenProject(_) | Leave::NewProject => {
+            Leave::OpenProject(_) | Leave::NewProject | Leave::JoinSong | Leave::Share => {
                 format!("Save changes to {name} first?")
             }
         };
@@ -19001,6 +19151,12 @@ impl WindowApp {
         match what {
             Leave::Quit => self.quit = true,
             Leave::NewProject => self.ask_for_a_name(NameFor::NewProject, String::new()),
+            Leave::Share => self.start_share(),
+            Leave::JoinSong => {
+                if let Some(code) = self.pending_join.take() {
+                    self.join_now(&code);
+                }
+            }
             Leave::OpenProject(index) => {
                 if let Some(doc) = &mut self.options.document
                     && let Err(e) = doc.open_project(index)
@@ -19046,6 +19202,240 @@ impl WindowApp {
             SaveAnswer::Discard => self.go(what),
             SaveAnswer::Save => self.save_then(Some(what)),
         }
+    }
+
+    // --- a shared song (`docs/collab-plan.md` §10) ---
+
+    /// Reads the shared song once a pass while one is open, and once more as
+    /// it ends — and whenever the panel is up, since it can be opened alone.
+    fn read_session(&mut self) {
+        if self.session_open
+            || self.share_open
+            || self.session_question.is_some()
+            || self.session.role != crate::document::SessionRole::Alone
+        {
+            self.read_session_now();
+        }
+    }
+
+    fn read_session_now(&mut self) {
+        use crate::document::SessionRole;
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let session = doc.session();
+        let question = doc.session_question();
+        let notices = doc.take_session_notices();
+        let arrived =
+            self.session.role == SessionRole::Joining && session.role == SessionRole::Joined;
+        let role_changed = session.role != self.session.role;
+        if session != self.session || question != self.session_question {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+        self.session = session;
+        self.session_question = question;
+        for notice in notices {
+            self.show_toast(notice, false);
+        }
+        if arrived {
+            // The copy is a different song from the one that was open: what
+            // opening a project resets, this resets.
+            self.file_scroll = 0;
+            self.preset_scroll = 0;
+            self.roll.clear_selection();
+            self.studio_revision = u64::MAX;
+        }
+        // Somebody else's edits: the lists now, not on the next pass.
+        let before = self.studio_revision;
+        self.refresh_studio();
+        if self.studio_revision != before {
+            self.tree.invalidate(BROWSER);
+            self.tree.invalidate(RACK);
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(PANEL);
+        }
+        if role_changed || arrived {
+            self.refresh_title();
+        }
+    }
+
+    fn share_panel_layout(&self) -> crate::canvas::SharePanelLayout {
+        crate::canvas::share_panel_layout(
+            self.layout.window,
+            self.bar.share,
+            &self.options.theme.metrics,
+            self.session.role,
+            self.session.peers.len(),
+        )
+    }
+
+    fn press_share_panel(&mut self, panel: &crate::canvas::SharePanelLayout, x: f32, y: f32) {
+        use crate::canvas::ShareHit;
+        use crate::document::SessionRole;
+        let Some(hit) = crate::canvas::share_hit(panel, x, y) else {
+            return;
+        };
+        let peer = |i: usize| self.session.peers.get(i).cloned();
+        match hit {
+            ShareHit::Primary if self.session.role == SessionRole::Alone => self.start_share(),
+            ShareHit::Primary => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.leave_song();
+                }
+            }
+            ShareHit::Copy => {
+                let code = self.session.code.clone().unwrap_or_default();
+                let said = match self
+                    .options
+                    .document
+                    .as_mut()
+                    .map(|doc| doc.copy_text(&code))
+                {
+                    Some(Ok(())) => format!("Copied {code}"),
+                    Some(Err(why)) => {
+                        format!("Could not copy it ({why}) \u{2014} the code is {code}")
+                    }
+                    None => return,
+                };
+                self.show_toast(said, false);
+            }
+            // *Join instead…* leaves what this studio is in first (§10.2).
+            ShareHit::Join => {
+                if self.session.role != SessionRole::Alone
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.leave_song();
+                }
+                self.start_join();
+            }
+            ShareHit::ViewOnly(i) => {
+                if let (Some(who), Some(doc)) = (peer(i), &mut self.options.document) {
+                    doc.set_peer_view_only(who.peer, !who.view_only);
+                }
+            }
+            ShareHit::Remove(i) => {
+                if let (Some(who), Some(doc)) = (peer(i), &mut self.options.document) {
+                    doc.remove_peer(who.peer);
+                }
+            }
+        }
+        self.read_session_now();
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// A press while a session's question is up: a button answers it, and
+    /// nothing else under the card is reachable until one has.
+    fn press_session_question(&mut self, x: f32, y: f32) {
+        let Some(question) = &self.session_question else {
+            return;
+        };
+        let layout = crate::canvas::choice_prompt_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            question.lines.len(),
+            question.buttons.len(),
+        );
+        if let Some(answer) = crate::canvas::choice_prompt_hit(&layout, x, y) {
+            self.answer_session_question(answer);
+        }
+    }
+
+    fn answer_session_question(&mut self, answer: usize) {
+        self.session_question = None;
+        if let Some(doc) = &mut self.options.document
+            && let Err(why) = doc.answer_session_question(answer)
+        {
+            self.show_toast(why, false);
+        }
+        self.read_session_now();
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// Share this song: the name the others see if nobody has typed one, a
+    /// name for the song if it is not a file yet, and then the relay.
+    fn start_share(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if let Some(seed) = doc.name_to_ask_for() {
+            self.ask_for_a_name(NameFor::YourName(Sharing::Share), seed);
+            return;
+        }
+        if !doc.has_file() {
+            let seed = doc.name().to_string();
+            self.ask_for_a_name(NameFor::SaveAs(Some(Leave::Share)), seed);
+            return;
+        }
+        match doc.share_song() {
+            Ok(()) => self.share_open = true,
+            Err(why) => self.show_toast(why, false),
+        }
+        self.read_session_now();
+        self.refresh_title();
+    }
+
+    /// Join a shared song: the name the others see if nobody has typed one,
+    /// then the code.
+    fn start_join(&mut self) {
+        if let Some(seed) = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.name_to_ask_for())
+        {
+            self.ask_for_a_name(NameFor::YourName(Sharing::Join), seed);
+            return;
+        }
+        self.ask_for_a_name(NameFor::JoinCode, String::new());
+    }
+
+    /// Joins `code` — the save prompt, if any, already answered.
+    fn join_now(&mut self, code: &str) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match doc.join_song(code) {
+            Ok(()) => {
+                self.share_open = true;
+                if self.welcome.is_some() {
+                    self.close_welcome();
+                }
+            }
+            Err(why) if self.welcome.is_some() => self.say_on_welcome(why),
+            Err(why) => self.show_toast(why, false),
+        }
+        self.read_session_now();
+    }
+
+    /// Enter on a name prompt that is about a shared song rather than a
+    /// project. `true` when it was one of those, and has been answered.
+    fn named_for_sharing(&mut self, purpose: NameFor, name: &str) -> bool {
+        match purpose {
+            NameFor::JoinCode => {
+                self.pending_join = Some(name.to_string());
+                // Unsaved work is asked about before anything else (§4.4).
+                self.leave(Leave::JoinSong);
+            }
+            NameFor::YourName(then) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_your_name(name);
+                }
+                match then {
+                    Sharing::Share => self.start_share(),
+                    Sharing::Join => self.ask_for_a_name(NameFor::JoinCode, String::new()),
+                }
+            }
+            NameFor::Setting(index) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_setting_text(index, name);
+                }
+                self.refresh_studio();
+                self.tree.invalidate(BROWSER);
+            }
+            NameFor::NewProject | NameFor::SaveAs(_) => return false,
+        }
+        self.tree.invalidate_rect(self.layout.window);
+        true
     }
 
     /// Reads how the bounce beside the window is getting on, and says so
@@ -19094,7 +19484,13 @@ impl WindowApp {
         // > *"should have a * next to the project name when unsaved."*
         let caption = crate::canvas::project_caption(doc.name(), doc.is_dirty());
         self.shown_dirty = doc.is_dirty();
-        let title = format!("{caption} — Fontelle");
+        // A title bar cannot carry the host's colour; the Share button's dot
+        // does, and the title says it in words (§10.1).
+        let title = if self.session.role == crate::document::SessionRole::Alone {
+            format!("{caption} — Fontelle")
+        } else {
+            format!("{caption} (shared) — Fontelle")
+        };
         if let Some(live) = &self.live {
             live.window.set_title(&title);
         }

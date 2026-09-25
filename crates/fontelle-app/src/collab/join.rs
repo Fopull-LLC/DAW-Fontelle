@@ -227,15 +227,19 @@ fn known_question(
                 head.saved_revision
             ),
             verdict,
+            // What the two buttons do, here rather than on them: a button is
+            // a few words (F62).
+            format!("Update mine takes {host}\u{2019}s, and keeps a backup of yours."),
+            "Keep both makes yours a song of its own.".to_string(),
         ],
         buttons: vec![
             (
                 JoinAnswer::Update(local.path.clone()),
-                format!("Update mine to {host}\u{2019}s \u{2014} a backup of yours is kept"),
+                "Update mine".to_string(),
             ),
             (
                 JoinAnswer::KeepBoth(local.path.clone()),
-                "Keep both \u{2014} yours becomes its own project".to_string(),
+                "Keep both".to_string(),
             ),
             (JoinAnswer::Cancel, "Cancel".to_string()),
         ],

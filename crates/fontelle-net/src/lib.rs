@@ -42,5 +42,5 @@ pub use relay::{
     RelayServer,
 };
 pub use transport::{
-    Channel, Incoming, LinkStats, MemoryHub, MemoryTransport, PeerId, SERVER, Transport,
+    Channel, Incoming, LinkStats, MemoryHub, MemoryTransport, PeerId, SERVER, Transport, Wake,
 };

@@ -102,6 +102,8 @@ struct Hosting {
     lapsed: Option<String>,
     reclaiming: Option<std::sync::mpsc::Receiver<Result<(RelayHost, String), String>>>,
     notices: Vec<String>,
+    /// Handed to the leg, and to the one got back after a drop (F48).
+    wake: Option<crate::transport::Wake>,
 }
 
 /// What the lifted client says, for each joiner, when the host's own leg to
@@ -118,6 +120,7 @@ impl Hosting {
             lapsed: None,
             reclaiming: None,
             notices: Vec::new(),
+            wake: None,
         }
     }
 
@@ -145,6 +148,13 @@ impl Hosting {
 }
 
 impl Transport for Hosting {
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        if let Some(inner) = &mut self.inner {
+            inner.set_wake(wake.clone());
+        }
+        self.wake = Some(wake);
+    }
+
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
         // Nothing to send it on while the leg is being got back: the song's
         // hash says so on the next edit, and a joiner that drifted asks for
@@ -167,7 +177,11 @@ impl Transport for Hosting {
                         ));
                         self.code = code;
                     }
-                    self.inner = Some(Framed::new(Paced::new(host, PACE)));
+                    let mut inner = Framed::new(Paced::new(host, PACE));
+                    if let Some(wake) = &self.wake {
+                        inner.set_wake(wake.clone());
+                    }
+                    self.inner = Some(inner);
                 }
                 Err(why) => {
                     let why = format!("could not get back onto the relay: {why}");

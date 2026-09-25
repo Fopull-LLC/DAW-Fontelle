@@ -41,11 +41,12 @@ pub use fontelle_types::FolderKind;
 ///
 /// Two since the settings file grew [`MidiInputSettings`], three since it grew
 /// the two import folders, four since it grew the favourites, six since it
-/// grew the recent projects and the update switch. Every added field carries
+/// grew the recent projects and the update switch, seven since it grew the
+/// three a shared song needs (`docs/collab-plan.md` §10.4). Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 6;
+pub const SETTINGS_FORMAT_VERSION: u32 = 7;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.
@@ -186,6 +187,21 @@ pub struct Settings {
     /// notepad says nothing about one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notepad_theme: Option<String>,
+    /// What the people this studio shares a song with see it called
+    /// (`docs/collab-plan.md` §10.4, decision 7). `None` is the computer's
+    /// own user name — see [`Settings::your_name`] — and the first Share or
+    /// Join asks, since a login name is often not what anybody is called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// A relay of somebody's own to share through, as `host:port`; `None` is
+    /// Floptle Cloud (§9.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// This studio, as the record of what two copies last agreed on names it
+    /// (§4.5). Minted the first time it is asked for and kept — see
+    /// [`Settings::install_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<fontelle_types::PersistentId>,
 }
 
 fn yes() -> bool {
@@ -220,11 +236,38 @@ impl Default for Settings {
             extensions_offered: false,
             flopsynth_scale_percent: 100,
             notepad_theme: None,
+            display_name: None,
+            relay: None,
+            install: None,
         }
     }
 }
 
 impl Settings {
+    /// The name the people this studio shares with see: the one typed on the
+    /// settings page, or the computer's user name, or — with neither — a word
+    /// rather than nothing.
+    pub fn your_name(&self) -> String {
+        self.display_name
+            .clone()
+            .or_else(|| {
+                ["USER", "USERNAME", "LOGNAME"]
+                    .iter()
+                    .filter_map(|var| std::env::var(var).ok())
+                    .map(|name| name.trim().to_string())
+                    .find(|name| !name.is_empty())
+            })
+            .unwrap_or_else(|| "Someone".to_string())
+    }
+
+    /// This studio's id, minted the first time it is asked for. The caller
+    /// saves the settings when this was `None` before.
+    pub fn install_id(&mut self) -> fontelle_types::PersistentId {
+        *self
+            .install
+            .get_or_insert_with(fontelle_types::PersistentId::new)
+    }
+
     /// Puts `path` at the top of the recent list.
     ///
     /// One entry per path, so a project opened ten times is one row and not
@@ -368,6 +411,12 @@ pub enum SettingRow {
     /// not happen on its own — and because installing a plugin while Fontelle
     /// is open is the ordinary case, not an unusual one.
     RescanPlugins,
+    /// The name the people you share with see (`docs/collab-plan.md` §10.4).
+    /// Typed.
+    YourName,
+    /// The relay to share through: blank for Floptle Cloud, or a
+    /// `host:port` of your own (§9.3). Typed.
+    Relay,
     /// A section title. Nothing to set, and a click does nothing — it is what
     /// says which of these settings belong together. It is deliberately *not*
     /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
@@ -396,7 +445,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 20] = [
+pub const SETTING_ROWS: [SettingRow; 23] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -428,8 +477,13 @@ pub const SETTING_ROWS: [SettingRow; 20] = [
     // not a folder or a keyboard setting (`docs/vst-plan.md` §4.2). The
     // catalogue's rows go here — see `setting_rows`.
     SettingRow::Heading("Extensions"),
-    // Under its own heading, because it is the one row here about the
-    // network rather than about a folder or a keyboard.
+    // Sharing a song: who you are to the others, and through where.
+    SettingRow::Heading("Sharing"),
+    SettingRow::YourName,
+    SettingRow::Relay,
+    // Under its own heading, because it is about the network rather than
+    // about a folder or a keyboard — and not "Sharing"'s, which is about
+    // other people.
     SettingRow::Heading("Updates"),
     SettingRow::CheckForUpdates,
 ];
@@ -479,6 +533,9 @@ pub enum SettingControlKind {
     Choice,
     /// An on/off switch a press flips.
     Switch,
+    /// Words, typed into the prompt a project is named in, seeded with what
+    /// the row holds ([`SettingRow::text`]).
+    Text,
 }
 
 impl SettingRow {
@@ -529,6 +586,8 @@ impl SettingRow {
             Self::PresetFolder => "My presets",
             Self::RescanPlugins => "Rescan plugins",
             Self::CheckForUpdates => "Check at launch",
+            Self::YourName => "Your name",
+            Self::Relay => "Relay",
         }
     }
 
@@ -634,6 +693,12 @@ impl SettingRow {
                 "Off"
             }
             .to_string(),
+            Self::YourName => settings.your_name(),
+            // Never blank: blank *is* the managed relay, so it says which.
+            Self::Relay => settings
+                .relay
+                .clone()
+                .unwrap_or_else(|| "Floptle Cloud".to_string()),
         }
     }
 
@@ -662,7 +727,9 @@ impl SettingRow {
             | Self::ImportFlFolders
             | Self::RescanPlugins
             | Self::Extension(_)
-            | Self::CheckForUpdates => {}
+            | Self::CheckForUpdates
+            | Self::YourName
+            | Self::Relay => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -703,6 +770,28 @@ impl SettingRow {
         }
     }
 
+    /// What a text row's prompt opens holding: what is set, and blank for
+    /// what is not — so Enter on an untouched relay leaves it on Floptle
+    /// Cloud rather than writing "Floptle Cloud" in as an address.
+    pub fn text(self, settings: &Settings) -> String {
+        match self {
+            Self::YourName => settings.your_name(),
+            Self::Relay => settings.relay.clone().unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// Sets a text row to what was typed. Trimmed; blank is the default.
+    pub fn set_text(self, settings: &mut Settings, text: &str) {
+        let text = text.trim();
+        let typed = (!text.is_empty()).then(|| text.to_string());
+        match self {
+            Self::YourName => settings.display_name = typed,
+            Self::Relay => settings.relay = typed,
+            _ => {}
+        }
+    }
+
     /// Which kind of control this row is — see [`SettingControlKind`].
     ///
     /// One place the classification lives, so the window's rendering and its
@@ -718,6 +807,7 @@ impl SettingRow {
                 SettingControlKind::Slider
             }
             Self::CheckForUpdates => SettingControlKind::Switch,
+            Self::YourName | Self::Relay => SettingControlKind::Text,
             Self::PluginFolder
             | Self::PluginDir(_)
             | Self::ImportFlFolders

@@ -351,6 +351,17 @@ pub enum Msg {
         peer: u16,
     },
     Bye,
+    // The host's two controls on somebody's row (§10.1, F49).
+    /// Host to a joiner: your edits are refused from now on, or no longer.
+    /// Sent so the joiner's panel can say so before they try.
+    ViewOnly {
+        view_only: bool,
+    },
+    /// Host to a joiner: `by` has taken you out of the session. The code is
+    /// unchanged, so this is not a lock (§14.6).
+    Removed {
+        by: String,
+    },
 }
 
 impl Msg {

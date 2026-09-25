@@ -1276,6 +1276,11 @@ commit.
 | F48 | Remote edits should not wait for a 100 ms poll | §9.2: `EventLoopProxy` wake from the network thread; the poll stays as the fallback | `a_message_wakes_the_window` |
 | F49 | Anyone with the code can edit; the host cannot remove anyone | §10.1: view-only and remove per row | `a_view_only_peers_proposal_is_refused`, `a_removed_peer_is_gone` |
 | F50 | Everything above must be seen, not believed | §12.5 with two studios and the real relay; `PROGRESS.md` and `docs/handoff.md` updated | the scenes, the entries |
+| F60 | *Found on `:99`.* The panel's one status line clipped its sentence — *"Alice removed you from the session — your copy is…"* | The status is two lines, broken at the sentence's dash (`canvas::status_lines`) | `a_status_sentence_gets_two_lines_broken_at_its_dash` |
+| F61 | *Found on `:99`.* A joiner's panel said *"Nobody has joined yet"* while working with the host: the host is not one of the peers the session hands out | The joiner's panel lists the host first, in the host's colour | `the_window_doors_share_and_join_over_a_relay` |
+| F62 | *Found on `:99`.* The join's answers were sentences (*"Update mine to Alice's — a backup of yours is kept"*) and ran out of their buttons | *Update mine*, *Keep both*, *Cancel*; the two lines above them say what each does | `the_joins_answers_fit_on_their_buttons_and_the_lines_say_the_rest` |
+| F63 | *Found on `:99`.* Both copies said *"saved by fopull"*: a save was signed with the login, not the name the others know | A save is signed with *Your name* (`Settings::your_name`) | `a_save_is_signed_with_the_name_the_others_see` |
+| F64 | *Found on `:99`.* The Share button's tip was drawn over the panel it had just opened, and the view-only toast was clipped at *"…for yo"* | No tip under the panel or a session's question; the toast says *"— it is view only."* | seen on `:99`; `a_view_only_peers_proposal_is_refused` |
 
 ### Later — §14
 
@@ -1464,3 +1469,42 @@ with the reason. The text above is left as it was planned.
   it, bytes both ways.
 - **F43 is not closed** — see F59: no QUIC socket opens under Wine, and the
   Windows proof is CI's run of `tests/relay.rs` on real Windows.
+
+**Phase 4.**
+
+- **Two messages appended** to `Msg` (F49): `ViewOnly { view_only }` (tag 16)
+  so the joiner's panel says so before anybody tries, and `Removed { by }`
+  (tag 17) so a removal is not mistaken for the host stopping. The plan had a
+  `Bye` for both.
+- **The people's colours are Fontelle's own eight** (`canvas::PEER_COLOURS`):
+  the plan's "theme's clip palette" does not exist — a clip is its channel's
+  colour.
+- **The dot is on the Share button, not in the caption**: the caption is only
+  the OS title bar, which cannot carry a colour. The title says *(shared)* in
+  words.
+- **A text settings row is typed into the prompt a project is named in**
+  (`SettingPress::Type`), not a new `TextEntry` field on the page: the prompt
+  already is one, with its caret, its keys and its Enter.
+- **The first Share or Join asks the name** when *Your name* was never typed
+  (decision 7); a blank answer keeps the computer's user name, so it is asked
+  once.
+- **Copy uses the desktop's own clipboard program** (`wl-copy`, `xclip`,
+  `xsel`, `clip`, `pbcopy`), the text on its standard input — the same
+  no-new-crate rule the file dialogs follow; with none, the toast says the
+  code instead.
+- **The wake is one event per burst** (`widget::WindowWake`): the network's
+  thread calls it on every message, the loop gets one user event until it has
+  looked. The hook is Fontelle's own addition to the lifted transport
+  (`Transport::set_wake`, marked in `transport.rs` and `quic.rs`); hub card
+  `0265` is told.
+- **§12.5, seen on 2026-09-25**, two studios through `relay.fopull.com`
+  (codes `UMS6ZY`, `U3SW8X`): Share, the code, Copy onto the real clipboard,
+  Join by the code typed in lower case, the copy under *Shared*, a clip and
+  notes both ways, view only (a refused note taken back with its toast),
+  remove, a second join asking with the unsaved work saved first, *Update
+  mine* writing `backups/before-join-…`, *Keep both* making `Duet 2`, and the
+  joiner's panel naming the host. F60–F64 were found doing it. **Not done by
+  hand**: a recorded take on the joiner, and the version-mismatch sentence —
+  both are tests (`a_recording_on_the_joiner_reaches_the_host_and_plays`,
+  `a_version_mismatch_is_refused_naming_both`), neither was looked at.
+

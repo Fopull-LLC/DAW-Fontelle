@@ -1355,6 +1355,9 @@ fn msg_variant_order_is_pinned() {
     assert_eq!(tag(&Msg::ResyncRequest), 8);
     assert_eq!(tag(&Msg::Left { peer: 3 }), 14);
     assert_eq!(tag(&Msg::Bye), 15);
+    // Phase 4 (F49): the host's two controls on a person's row.
+    assert_eq!(tag(&Msg::ViewOnly { view_only: true }), 16);
+    assert_eq!(tag(&Msg::Removed { by: "Alice".into() }), 17);
 }
 
 /// §8.2 and F52: an edit rides inside a postcard message as the JSON the

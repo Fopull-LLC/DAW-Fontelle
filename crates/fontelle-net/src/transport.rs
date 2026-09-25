@@ -122,7 +122,20 @@ pub trait Transport: Send {
     fn lobby_code(&self) -> Option<String> {
         None
     }
+
+    /// Something to call, from whatever thread a message lands on, the moment
+    /// it lands — so a window asleep until the next event can be woken for
+    /// it (`docs/collab-plan.md` §9.2, F48).
+    ///
+    /// **Fontelle's own, not in the engine's copy** (hub card
+    /// `tasks/fontelle/0265`). Defaulted to nothing: a transport that cannot
+    /// say leaves its owner polling, which is what it did before.
+    fn set_wake(&mut self, _wake: Wake) {}
 }
+
+/// What [`Transport::set_wake`] calls. Cheap and non-blocking, since it runs
+/// on the network's own thread.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// A boxed transport is a transport — what lets a wrapper such as
 /// [`Impaired`](crate::Impaired) go around an already-erased one.
@@ -147,6 +160,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn disconnect(&mut self, peer: PeerId) {
         (**self).disconnect(peer);
+    }
+    fn set_wake(&mut self, wake: Wake) {
+        (**self).set_wake(wake);
     }
 }
 

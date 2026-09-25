@@ -101,6 +101,53 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .map_err(|e| format!("could not open {url}: {program} {e}"))
 }
 
+/// The programs that put text on the desktop's clipboard, in the order to
+/// try them — each given the text on its standard input, never as an
+/// argument. Wayland's own first: under XWayland an X11 tool writes a
+/// clipboard the Wayland programs may never see.
+pub fn copy_commands() -> Vec<(&'static str, Vec<String>)> {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect();
+    if cfg!(target_os = "macos") {
+        vec![("pbcopy", Vec::new())]
+    } else if cfg!(target_os = "windows") {
+        vec![("clip", Vec::new())]
+    } else {
+        vec![
+            ("wl-copy", Vec::new()),
+            ("xclip", args(&["-selection", "clipboard"])),
+            ("xsel", args(&["--clipboard", "--input"])),
+        ]
+    }
+}
+
+/// Puts `text` on the desktop's clipboard (the Share panel's Copy,
+/// `docs/collab-plan.md` §10.1), through the first of [`copy_commands`] this
+/// machine has.
+///
+/// Waits for it: `wl-copy` forks to serve the clipboard and returns at once,
+/// and the others are done as soon as they have read their input.
+pub fn copy_text(text: &str) -> Result<(), String> {
+    use std::io::Write;
+    for (program, args) in copy_commands() {
+        let Ok(mut child) = Command::new(program)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        if child.wait().is_ok_and(|status| status.success()) {
+            return Ok(());
+        }
+    }
+    Err("there is no clipboard program here (wl-copy, xclip or xsel)".to_string())
+}
+
 /// The application id the window announces and the desktop entry is named
 /// by. **One string, used in three places** — the Wayland app id and the X11
 /// `WM_CLASS` the window sets, the `.desktop` file's name and

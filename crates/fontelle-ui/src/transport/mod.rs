@@ -183,6 +183,10 @@ pub struct TransportBarLayout {
     pub help: Rect,
     /// The song, end to end. Clicking it seeks.
     pub ruler: Rect,
+    /// *Share this song* (`docs/collab-plan.md` §10.1): the panel it opens is
+    /// the whole of a session from inside the studio. Beside the meter and
+    /// reserved with it, so it is there at every width.
+    pub share: Rect,
     pub meter: Rect,
 }
 
@@ -225,6 +229,13 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         inner.height,
     )
     .clamped();
+    let share = Rect::new(
+        (meter.x - gap - button).max(inner.x),
+        inner.y,
+        button.min((meter.x - gap - inner.x).max(0.0)),
+        inner.height,
+    )
+    .clamped();
 
     let mut x = inner.x;
     let take = |x: &mut f32, width: f32| {
@@ -258,7 +269,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         MODE_WIDTH,
         button,
     ];
-    let room = (meter.x - gap - x).max(0.0);
+    let room = (share.x - gap - x).max(0.0);
     let mut shown = boxes.len();
     while shown > 0 {
         let wanted: f32 = boxes[..shown].iter().map(|w| w + gap).sum();
@@ -301,7 +312,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         Rect::ZERO
     };
 
-    let ruler = Rect::new(x, inner.y, (meter.x - gap - x).max(0.0), inner.height).clamped();
+    let ruler = Rect::new(x, inner.y, (share.x - gap - x).max(0.0), inner.height).clamped();
 
     TransportBarLayout {
         bar,
@@ -316,6 +327,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         mode,
         help,
         ruler,
+        share,
         meter,
     }
 }
@@ -342,6 +354,8 @@ pub enum TransportHit {
     /// The `?`: open the keyboard shortcuts page. The window's business,
     /// like the boxes — nothing about the engine changes.
     Help,
+    /// The Share panel, open or shut. The window's, like the `?`.
+    Share,
 }
 
 impl TransportHit {
@@ -363,6 +377,7 @@ impl TransportHit {
             Self::Signature => "Beats in a bar \u{2014} click to choose",
             Self::Mode => "Song plays the arrangement; Clip plays only the clip you are editing",
             Self::Help => "Every keyboard shortcut",
+            Self::Share => "Work on this song with someone \u{2014} share it, or join theirs",
             Self::Scrub(_) => return None,
         })
     }
@@ -423,6 +438,9 @@ pub fn hit(
     if layout.help.contains(x, y) {
         return Some(TransportHit::Help);
     }
+    if layout.share.contains(x, y) {
+        return Some(TransportHit::Share);
+    }
     if layout.ruler.contains(x, y) {
         return Some(TransportHit::Scrub(sample_at(
             layout.ruler,
@@ -482,7 +500,11 @@ pub fn action(hit: TransportHit, view: &TransportView) -> Option<TransportAction
         TransportHit::ToggleRecord => TransportAction::SetArmed(!view.armed),
         TransportHit::ToggleMetronome => TransportAction::SetMetronome(!view.metronome),
         TransportHit::Scrub(sample) => TransportAction::Mark(sample),
-        TransportHit::Tempo | TransportHit::Signature | TransportHit::Mode | TransportHit::Help => {
+        TransportHit::Tempo
+        | TransportHit::Signature
+        | TransportHit::Mode
+        | TransportHit::Help
+        | TransportHit::Share => {
             return None;
         }
     })

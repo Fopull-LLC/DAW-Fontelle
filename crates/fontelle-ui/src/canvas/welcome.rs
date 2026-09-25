@@ -37,6 +37,9 @@ pub const REPOSITORY_LABEL: &str = "Source on GitHub";
 pub const LOGS_LABEL: &str = "Logs folder";
 pub const NEW_PROJECT_LABEL: &str = "New project";
 pub const OPEN_PROJECT_LABEL: &str = "Open a project\u{2026}";
+/// The third way in: somebody else's song, by the code they gave you
+/// (`docs/collab-plan.md` §10.2).
+pub const JOIN_LABEL: &str = "Join a shared song\u{2026}";
 pub const RECENT_HEADING: &str = "Recent projects";
 pub const NOTHING_RECENT: &str = "Nothing yet \u{2014} make one, or open one.";
 
@@ -105,6 +108,8 @@ pub struct WelcomeLayout {
     pub message: Rect,
     pub new_button: Rect,
     pub open_button: Rect,
+    /// Join a shared song, under the other two.
+    pub join_button: Rect,
     pub recent_heading: Rect,
     /// As many as were asked for and fit; the rest are not drawn.
     pub rows: Vec<RecentRow>,
@@ -190,9 +195,15 @@ pub fn welcome_layout(
             UPDATE_BUTTON_HEIGHT,
         )
     });
-    let open_button = Rect::new(
+    let join_button = Rect::new(
         left.x,
         above_footer - BUTTON_HEIGHT,
+        left.width,
+        BUTTON_HEIGHT,
+    );
+    let open_button = Rect::new(
+        left.x,
+        join_button.y - BUTTON_GAP - BUTTON_HEIGHT,
         left.width,
         BUTTON_HEIGHT,
     );
@@ -202,6 +213,23 @@ pub fn welcome_layout(
         left.width,
         BUTTON_HEIGHT,
     );
+    // Three stacked do not fit under the update offer on a short card: New
+    // and Open share a row then, side by side, and Join keeps its own.
+    let above = update_button.map_or(update.bottom(), |b| b.bottom()) + STACK_GAP;
+    let (new_button, open_button) = if new_button.y < above {
+        let half = ((left.width - BUTTON_GAP) / 2.0).max(0.0);
+        (
+            Rect::new(left.x, open_button.y, half, BUTTON_HEIGHT),
+            Rect::new(
+                left.x + half + BUTTON_GAP,
+                open_button.y,
+                half,
+                BUTTON_HEIGHT,
+            ),
+        )
+    } else {
+        (new_button, open_button)
+    };
     let message = Rect::new(
         left.x,
         new_button.y - STACK_GAP - 2.0 * row,
@@ -252,6 +280,7 @@ pub fn welcome_layout(
         message,
         new_button,
         open_button,
+        join_button,
         recent_heading,
         rows,
         empty_recent,
@@ -268,6 +297,8 @@ pub fn welcome_layout(
 pub enum WelcomeHit {
     NewProject,
     OpenProject,
+    /// Join a shared song: the code prompt.
+    Join,
     /// The `n`th recent row: open it.
     Recent(usize),
     /// The × on the `n`th recent row: forget it.
@@ -298,6 +329,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.open_button.contains(x, y) {
         return Some(WelcomeHit::OpenProject);
+    }
+    if layout.join_button.contains(x, y) {
+        return Some(WelcomeHit::Join);
     }
     if layout.update_button.is_some_and(|b| b.contains(x, y)) {
         return Some(WelcomeHit::Update);

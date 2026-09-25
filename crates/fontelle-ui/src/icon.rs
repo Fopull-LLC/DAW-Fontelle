@@ -148,10 +148,13 @@ pub enum Icon {
     Gear,
     /// Two beamed notes: a score, a phrase written down.
     Notes,
+    /// Two people, one behind the other: the Share button
+    /// (`docs/collab-plan.md` §10.1).
+    People,
 }
 
 /// Every icon, for a test that has to check all of them.
-pub const EVERY_ICON: [Icon; 41] = [
+pub const EVERY_ICON: [Icon; 42] = [
     Icon::Play,
     Icon::Stop,
     Icon::Record,
@@ -193,6 +196,7 @@ pub const EVERY_ICON: [Icon; 41] = [
     Icon::Import,
     Icon::Gear,
     Icon::Notes,
+    Icon::People,
 ];
 
 /// What `icon` is made of, in the unit box.
@@ -417,6 +421,31 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
             Shape::line(&[(0.64, 0.18), (0.64, 0.82)]),
             Shape::poly(&[(0.26, 0.18), (0.46, 0.18), (0.46, 0.54), (0.26, 0.54)]),
             Shape::poly(&[(0.54, 0.18), (0.74, 0.18), (0.74, 0.54), (0.54, 0.54)]),
+        ],
+        // Two heads and their shoulders, the second behind and to the right:
+        // somebody else, with you.
+        Icon::People => vec![
+            Shape::Circle {
+                at: (0.36, 0.34),
+                r: 0.15,
+                filled: false,
+            },
+            Shape::line(&[
+                (0.08, 0.88),
+                (0.12, 0.70),
+                (0.24, 0.60),
+                (0.48, 0.60),
+                (0.60, 0.70),
+                (0.64, 0.88),
+            ]),
+            Shape::line(&[
+                (0.62, 0.20),
+                (0.72, 0.16),
+                (0.82, 0.22),
+                (0.84, 0.34),
+                (0.76, 0.46),
+            ]),
+            Shape::line(&[(0.74, 0.60), (0.84, 0.62), (0.92, 0.72), (0.94, 0.86)]),
         ],
         // A line that leaves one thing and arrives at another.
         Icon::Route => vec![

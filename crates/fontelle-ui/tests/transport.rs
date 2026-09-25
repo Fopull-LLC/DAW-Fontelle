@@ -612,3 +612,31 @@ fn a_narrow_bar_drops_the_mode_chip_rather_than_squeezing_the_ruler_away() {
     let wide = transport_bar_layout(Rect::new(0.0, 0.0, 1264.0, 36.0), &m);
     assert!(!wide.mode.is_empty(), "a wide bar has room for the chip");
 }
+
+// ------------------------------------------------ sharing (collab-plan §10.1) ---
+
+/// F46. *Share this song* is a button at the bar's right end, beside the
+/// master meter — kept whatever the bar's width, like the meter, because it
+/// is the only way into a session from inside the studio.
+#[test]
+fn the_bar_has_a_share_button_beside_the_meter() {
+    let m = Theme::dark_default().metrics;
+    for width in [1264.0, 640.0] {
+        let l = transport_bar_layout(Rect::new(8.0, 8.0, width, 36.0), &m);
+        assert!(!l.share.is_empty(), "no share button at {width}");
+        assert_eq!(l.share.intersection(&l.bar), l.share, "inside the bar");
+        assert!(l.share.right() <= l.meter.x, "left of the meter");
+        assert!(l.meter.x - l.share.right() <= m.panel_padding, "beside it");
+        for other in [l.ruler, l.help, l.mode, l.readout] {
+            assert!(!l.share.intersects(&other), "overlaps {other:?}");
+        }
+        let (x, y) = (
+            l.share.x + l.share.width / 2.0,
+            l.share.y + l.share.height / 2.0,
+        );
+        assert_eq!(hit(&l, &view(), x, y), Some(TransportHit::Share));
+    }
+    assert!(TransportHit::Share.tip().is_some());
+    // The window's business: it opens a panel, and the engine hears nothing.
+    assert_eq!(action(TransportHit::Share, &view()), None);
+}

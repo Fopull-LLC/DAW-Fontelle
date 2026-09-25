@@ -18,6 +18,7 @@ mod piano_roll;
 mod prefabs;
 mod preset_bar;
 mod rack;
+mod share;
 mod text_entry;
 mod timeline;
 mod tools;
@@ -37,11 +38,11 @@ pub use automation::{
     block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
-    BrowserHit, BrowserLayout, BrowserMode, SettingControl, TAB_WORD_MIN_WIDTH,
+    BrowserHit, BrowserLayout, BrowserMode, SettingControl, SettingPress, TAB_WORD_MIN_WIDTH,
     browser_file_share_at, browser_focus_step, browser_hit, browser_layout, browser_layout_for,
     browser_layout_split, browser_row_carries, kind_icon, row_under, scrolled,
-    setting_control_rect, setting_slider_at, setting_slider_groove, setting_slider_x_of,
-    tab_shows_word,
+    setting_control_rect, setting_press, setting_slider_at, setting_slider_groove,
+    setting_slider_x_of, tab_shows_word,
 };
 pub use carry::{
     CARRY_PAD, Carried, CarryOscillator, CarryRack, CarryRelease, CarryScene, CarryTarget,
@@ -200,6 +201,12 @@ pub use rack::{
     rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
     route_menu_layout_excluding, scroll_to_show, tab_at, tab_strip,
 };
+pub use share::{
+    COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, NOBODY_YET,
+    PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG, STOP_SHARING, ShareHit,
+    SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout, peer_colour,
+    share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
+};
 pub use text_entry::{TextEntry, TextKey, text_key};
 pub use timeline::{
     ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, FadeAnatomy, FadeEnd, FadeGrip,
@@ -224,8 +231,8 @@ pub use tune::{
     tune_strings, viewport_points, viewport_rails,
 };
 pub use welcome::{
-    FOOTER_TEXT, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
-    REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL,
-    WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line, update_progress,
-    welcome_hit, welcome_layout,
+    FOOTER_TEXT, JOIN_LABEL, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL,
+    RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL,
+    WEBSITE_URL, WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line,
+    update_progress, welcome_hit, welcome_layout,
 };

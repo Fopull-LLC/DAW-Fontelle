@@ -116,6 +116,10 @@ impl<T: Transport> Transport for Paced<T> {
         self.inner.take_join_progress()
     }
 
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        self.inner.set_wake(wake);
+    }
+
     fn lobby_code(&self) -> Option<String> {
         self.inner.lobby_code()
     }

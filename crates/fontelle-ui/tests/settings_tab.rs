@@ -254,3 +254,37 @@ fn a_control_on_a_zero_width_row_is_empty_not_negative() {
     assert!(c.width >= 0.0 && c.height >= 0.0);
     assert_eq!(setting_slider_at(c, 5.0), 0.0);
 }
+
+// ------------------------------------------------ a row you type into (F47) ---
+
+/// What a press on a settings row does, decided by its control and nothing
+/// else. A text row is typed into — the prompt a project is named in,
+/// seeded with what the row holds — and a press never steps it.
+#[test]
+fn a_text_row_is_typed_into_seeded_with_what_it_holds() {
+    use fontelle_ui::canvas::{SettingControl, SettingPress, setting_press};
+    assert_eq!(
+        setting_press(&SettingControl::Text { text: "Bob".into() }),
+        SettingPress::Type("Bob".into())
+    );
+    assert_eq!(
+        setting_press(&SettingControl::Heading),
+        SettingPress::Nothing
+    );
+    assert_eq!(setting_press(&SettingControl::Button), SettingPress::Act);
+    assert_eq!(
+        setting_press(&SettingControl::Switch { on: true }),
+        SettingPress::Flip
+    );
+    assert_eq!(
+        setting_press(&SettingControl::Slider { fraction: 0.5 }),
+        SettingPress::Drag
+    );
+    assert_eq!(
+        setting_press(&SettingControl::Choice {
+            options: vec!["a".into()],
+            chosen: 0
+        }),
+        SettingPress::DropDown
+    );
+}

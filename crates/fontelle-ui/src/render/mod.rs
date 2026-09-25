@@ -57,6 +57,31 @@ pub struct Notices<'a> {
     /// everything, like the confirm. See
     /// [`crate::canvas::save_prompt_layout`].
     pub save_prompt: Option<&'a str>,
+    /// The Share panel, while it is open (`docs/collab-plan.md` §10.1).
+    pub share: Option<ShareNotice<'a>>,
+    /// A session's question — the join's, a fetch's — over everything.
+    pub question: Option<QuestionNotice<'a>>,
+    /// While this studio is in a session: the host's colour, for the dot on
+    /// the Share button.
+    pub sharing: Option<u8>,
+}
+
+/// What the Share panel says. See [`crate::canvas::share_panel_layout`].
+#[derive(Debug, Clone, Copy)]
+pub struct ShareNotice<'a> {
+    pub role: crate::canvas::ShareRole,
+    pub code: Option<&'a str>,
+    pub peers: &'a [crate::document::SessionPeer],
+    pub status: &'a str,
+}
+
+/// A question with its answers, the safe one first and weighted. See
+/// [`crate::canvas::choice_prompt_layout`].
+#[derive(Debug, Clone, Copy)]
+pub struct QuestionNotice<'a> {
+    pub lines: &'a [String],
+    pub buttons: &'a [String],
+    pub default: usize,
 }
 
 /// Everything the window draws that had to be shaped or measured first.
@@ -759,8 +784,28 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(question) = chrome.confirm {
         draw_confirm(scene, theme, chrome.labels, layout.window, question);
     }
+    if let Some(colour) = chrome.notices.sharing {
+        let dot = crate::canvas::share_dot(chrome.transport.layout.share);
+        if !dot.is_empty() {
+            let [r, g, b, a] = crate::canvas::peer_colour(colour);
+            fill_rect_rounded(scene, dot, dot.width / 2.0, Color::rgba(r, g, b, a));
+        }
+    }
+    if let Some(share) = &chrome.notices.share {
+        draw_share_panel(
+            scene,
+            theme,
+            chrome.labels,
+            layout.window,
+            chrome.transport.layout.share,
+            share,
+        );
+    }
     if let Some(question) = chrome.notices.save_prompt {
         draw_save_prompt(scene, theme, chrome.labels, layout.window, question);
+    }
+    if let Some(question) = &chrome.notices.question {
+        draw_question(scene, theme, chrome.labels, layout.window, question);
     }
     // And the shortcuts sheet, which is a page rather than a prompt: over
     // the studio and its menus, under nothing.
@@ -1178,6 +1223,159 @@ fn draw_save_prompt(
     }
 }
 
+/// The Share panel (`canvas::share`): a card hanging from the Share button —
+/// the code large, who is here with their colours, one line of what is going
+/// on, and the way in or out.
+fn draw_share_panel(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    anchor: Rect,
+    share: &ShareNotice<'_>,
+) {
+    use crate::canvas::{COPY_CODE, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = crate::canvas::share_panel_layout(window, anchor, m, share.role, share.peers.len());
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    draw_line(scene, labels, share.role.title(), l.title, p.text_muted);
+    if let Some(code) = share.code
+        && !l.code.is_empty()
+    {
+        fill_rect_rounded(scene, l.code, m.corner_radius, p.window);
+        if let Some(shaped) = labels.get_mono(code, l.code_size) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                l.code,
+                l.code.x + (l.code.width - shaped.width) / 2.0,
+                l.code.y + (l.code.height - shaped.height) / 2.0,
+                p.text,
+            );
+        }
+        draw_welcome_button(scene, theme, labels, COPY_CODE, l.copy, false);
+    }
+    for (row, peer) in l.rows.iter().zip(share.peers) {
+        let [r, g, b, a] = crate::canvas::peer_colour(peer.colour);
+        fill_rect_rounded(
+            scene,
+            row.swatch,
+            row.swatch.width / 2.0,
+            Color::rgba(r, g, b, a),
+        );
+        draw_line(scene, labels, &peer.name, row.name, p.text);
+        if !row.view_only.is_empty() {
+            draw_line(scene, labels, VIEW_ONLY, row.view_only_label, p.text_muted);
+            // The settings page's switch, so it reads as one.
+            let track = row.view_only;
+            let radius = track.height / 2.0;
+            fill_rect_rounded(
+                scene,
+                track,
+                radius,
+                if peer.view_only { p.accent } else { p.border },
+            );
+            let knob = (track.height - 2.0).max(0.0);
+            let knob_x = if peer.view_only {
+                track.right() - knob - 1.0
+            } else {
+                track.x + 1.0
+            };
+            fill_rect_rounded(
+                scene,
+                Rect::new(knob_x, track.y + 1.0, knob, knob),
+                knob / 2.0,
+                if peer.view_only {
+                    p.panel
+                } else {
+                    p.text_muted
+                },
+            );
+        }
+        if !row.remove.is_empty()
+            && let Some(shaped) = labels.get(REMOVE_PEER)
+        {
+            draw_text_clipped(
+                scene,
+                shaped,
+                row.remove,
+                row.remove.x + (row.remove.width - shaped.width) / 2.0,
+                row.remove.y + (row.remove.height - shaped.height) / 2.0,
+                p.text_muted,
+            );
+        }
+    }
+    if !l.nobody.is_empty() {
+        draw_line(scene, labels, NOBODY_YET, l.nobody, p.text_muted);
+    }
+    let (first, second) = crate::canvas::status_lines(share.status);
+    let line = l.status.height / 2.0;
+    for (i, words) in [first, second].into_iter().enumerate() {
+        let rect = Rect::new(
+            l.status.x,
+            l.status.y + i as f32 * line,
+            l.status.width,
+            line,
+        );
+        draw_line(scene, labels, words, rect, p.text_muted);
+    }
+    draw_welcome_button(scene, theme, labels, share.role.primary(), l.primary, false);
+    if let Some(join) = share.role.join() {
+        draw_welcome_button(scene, theme, labels, join, l.join, false);
+    }
+}
+
+/// A session's question (`canvas::choice_prompt_layout`): a scrim, the
+/// question a line at a time, and the answers — the default in the accent.
+fn draw_question(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    question: &QuestionNotice<'_>,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect(scene, window, p.window.with_alpha(190));
+    let l = crate::canvas::choice_prompt_layout(
+        window,
+        m,
+        question.lines.len(),
+        question.buttons.len(),
+    );
+    if l.frame.is_empty() {
+        return;
+    }
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.grid_line);
+    for (line, rect) in question.lines.iter().zip(&l.lines) {
+        draw_line(scene, labels, line, *rect, p.text);
+    }
+    for (i, (word, rect)) in question.buttons.iter().zip(&l.buttons).enumerate() {
+        let (fill, ink) = if i == question.default {
+            (p.accent, p.window)
+        } else {
+            (p.panel_header, p.text)
+        };
+        fill_rect_rounded(scene, *rect, m.corner_radius, fill);
+        if let Some(shaped) = labels.get(word) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                *rect,
+                rect.x + (rect.width - shaped.width) / 2.0,
+                rect.y + (rect.height - shaped.height) / 2.0,
+                ink,
+            );
+        }
+    }
+}
+
 /// The start menu (`canvas::welcome`).
 ///
 /// One card on the window's ground. The logo is drawn in the theme's text
@@ -1267,6 +1465,14 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         OPEN_PROJECT_LABEL,
         l.open_button,
         hot(WelcomeHit::OpenProject),
+    );
+    draw_welcome_button(
+        scene,
+        theme,
+        labels,
+        crate::canvas::JOIN_LABEL,
+        l.join_button,
+        hot(WelcomeHit::Join),
     );
 
     // The recent list.
@@ -2710,8 +2916,24 @@ pub fn draw_transport_bar(
             | TransportHit::Tempo
             | TransportHit::Signature
             | TransportHit::Mode
-            | TransportHit::Help => {}
+            | TransportHit::Help
+            | TransportHit::Share => {}
         }
+    }
+
+    // Share: at the bar's right end, beside the meter, drawn at full ink —
+    // unlike the `?` it is a way somewhere, not a hint.
+    if !l.share.is_empty() {
+        let hot = chrome.hover == Some(TransportHit::Share) && view.available;
+        if hot {
+            fill_rect_rounded(scene, l.share, m.corner_radius, p.border);
+        }
+        draw_icon(
+            scene,
+            crate::icon::Icon::People,
+            l.share.inset(l.share.height * 0.24),
+            ink,
+        );
     }
 
     // The `?`: a glyph button like the five on the left, drawn quieter — it
@@ -7337,6 +7559,19 @@ fn draw_setting_control(
                 knob / 2.0,
                 if *on { p.panel } else { p.text_muted },
             );
+        }
+        // A pencil where a choice has its caret: the value beside it is
+        // words you type, and a press opens the prompt they are typed in.
+        SettingControl::Text { .. } => {
+            let divider = crate::canvas::setting_slider_groove(area, m).right();
+            let side = (row.height * 0.45).min(area.width);
+            let pencil = Rect::new(
+                divider - side,
+                row.y + (row.height - side) / 2.0,
+                side,
+                side,
+            );
+            draw_icon(scene, crate::icon::Icon::Pencil, pencil, p.text_muted);
         }
         SettingControl::Choice { .. } => {
             // A caret just left of the value gutter, saying the value beside it

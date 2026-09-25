@@ -5875,6 +5875,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
         job: Some((job, Some(0.5))),
         saved: Some(flash),
         save_prompt: None,
+        ..Default::default()
     });
     dump_sized(&card, "notices-job-and-saved", W, H);
     let l = job_card_layout(layout.window, &theme.metrics);
@@ -5913,6 +5914,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
         job: None,
         saved: None,
         save_prompt: Some(question),
+        ..Default::default()
     });
     dump_sized(&prompt, "notices-save-prompt", W, H);
     let l = save_prompt_layout(layout.window, &theme.metrics);
@@ -5925,6 +5927,217 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
     );
     assert!(
         at(&prompt, 2.0, H as f32 - 2.0) != at(&bare, 2.0, H as f32 - 2.0),
+        "no scrim over the window"
+    );
+}
+
+// --- a shared song: the panel, the dot, the join's question ---------------
+//
+// `docs/collab-plan.md` §10.1–10.2, F46, F49.
+
+#[test]
+fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_say() {
+    use fontelle_ui::canvas::{
+        PEER_COLOURS, ShareRole, choice_prompt_layout, share_dot, share_panel_layout,
+        share_panel_words,
+    };
+    use fontelle_ui::document::SessionPeer;
+    use fontelle_ui::render::{Notices, QuestionNotice, ShareNotice};
+
+    let Some(shared) = headless() else {
+        return;
+    };
+    let theme = Theme::dark_default();
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let mut text = TextContext::new();
+    let title = text.layout("Song", &theme.font, None);
+    let readout = text.layout("1.1.000", &theme.font, None);
+    let peers = vec![
+        SessionPeer {
+            peer: 1,
+            name: "Bob".into(),
+            colour: 1,
+            view_only: false,
+        },
+        SessionPeer {
+            peer: 2,
+            name: "Carol".into(),
+            colour: 2,
+            view_only: true,
+        },
+    ];
+    let status = "Bob is fetching 3 of 14 files";
+    let lines = vec![
+        "Alice is sharing \u{201c}Song\u{201d}.".to_string(),
+        "You have a copy of it, from yesterday.".to_string(),
+        "Yours has not changed since; theirs has.".to_string(),
+    ];
+    let buttons = vec![
+        "Update mine".to_string(),
+        "Keep both".to_string(),
+        "Cancel".to_string(),
+    ];
+    let panel = share_panel_layout(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Hosting,
+        peers.len(),
+    );
+    let mut labels = Labels::new();
+    let mut words: Vec<String> = share_panel_words(ShareRole::Hosting, &peers);
+    words.push(status.to_string());
+    words.extend(lines.iter().cloned());
+    words.extend(buttons.iter().cloned());
+    for word in &words {
+        labels.ensure(word, &theme.font, &mut text);
+    }
+    labels.ensure_mono("UL22A6", panel.code_size, &mut text);
+
+    let shoot = |notices: Notices<'_>| {
+        let mut scene = vello::Scene::new();
+        draw_window(
+            &mut scene,
+            &theme,
+            &layout,
+            &Chrome {
+                field: None,
+                panel_title: &title,
+                transport: TransportChrome {
+                    layout: bar,
+                    view: TransportView::unavailable(),
+                    meters: [Meter::new(); 2],
+                    readout: &readout,
+                    tempo: &readout,
+                    signature: &readout,
+                    mode: &readout,
+                    hover: None,
+                    marker_sample: 0,
+                    clip_mode: false,
+                    tempo_field: None,
+                },
+                roll: None,
+                rack: None,
+                prefabs: None,
+                browser: None,
+                timeline: None,
+                mixer: None,
+                tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+                tab: fontelle_ui::layout::EditorTab::Roll,
+                hover_tab: None,
+                browser_title: "Soundfonts",
+                labels: &labels,
+                status: "",
+                toast: None,
+                confirm: None,
+                notices,
+                tooltip: None,
+                menu: None,
+                carry: None,
+                welcome: None,
+                keybinds: None,
+            },
+        );
+        shared
+            .lock()
+            .expect("the shared renderer")
+            .render(&scene, W, H, theme.palette.window)
+            .expect("rendering")
+    };
+    let at = |pixels: &[u8], x: f32, y: f32| {
+        let i = ((y as u32 * W + x as u32) * 4) as usize;
+        Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
+    };
+    let ink = |a: &[u8], b: &[u8], r: Rect| {
+        let mut count = 0;
+        let mut y = r.y;
+        while y < r.bottom() {
+            let mut x = r.x;
+            while x < r.right() {
+                if at(a, x, y) != at(b, x, y) {
+                    count += 1;
+                }
+                x += 1.0;
+            }
+            y += 1.0;
+        }
+        count
+    };
+    let bare = shoot(Notices::default());
+
+    // The dot on the Share button, in the host's colour, while sharing.
+    let dotted = shoot(Notices {
+        sharing: Some(0),
+        ..Default::default()
+    });
+    let dot = share_dot(bar.share);
+    let [r, g, b, a] = PEER_COLOURS[0];
+    assert!(
+        near(
+            at(&dotted, dot.x + dot.width / 2.0, dot.y + dot.height / 2.0),
+            Color([r, g, b, a])
+        ),
+        "no dot in the host's colour on the Share button"
+    );
+    assert!(
+        ink(&dotted, &bare, bar.share) > 0 && ink(&bare, &bare, bar.share) == 0,
+        "the dot is not drawn"
+    );
+
+    // The panel: the code inked large, Carol's view-only switch lit and
+    // Bob's not.
+    let open = shoot(Notices {
+        sharing: Some(0),
+        share: Some(ShareNotice {
+            role: ShareRole::Hosting,
+            code: Some("UL22A6"),
+            peers: &peers,
+            status,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&open, "share-panel", W, H);
+    assert!(
+        ink(&open, &bare, panel.code) > 200,
+        "the code is not written large"
+    );
+    assert!(ink(&open, &bare, panel.status) > 10, "no status line");
+    let lit = |r: Rect| {
+        near(
+            at(&open, r.x + r.width / 2.0, r.y + r.height / 2.0),
+            theme.palette.accent,
+        )
+    };
+    assert!(
+        lit(panel.rows[1].view_only),
+        "Carol is view only and her switch is not lit"
+    );
+    assert!(!lit(panel.rows[0].view_only), "Bob's switch is lit");
+
+    // The join's question: a scrim, the words, and the safe answer weighted.
+    let asked = shoot(Notices {
+        question: Some(QuestionNotice {
+            lines: &lines,
+            buttons: &buttons,
+            default: 0,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&asked, "join-question", W, H);
+    let prompt = choice_prompt_layout(layout.window, &theme.metrics, lines.len(), buttons.len());
+    let corner = |r: Rect| at(&asked, r.x + 3.0, r.y + 3.0);
+    assert!(
+        near(corner(prompt.buttons[0]), theme.palette.accent),
+        "the safe answer is not weighted"
+    );
+    assert!(!near(corner(prompt.buttons[2]), theme.palette.accent));
+    assert!(
+        ink(&asked, &bare, prompt.lines[0]) > 20,
+        "the question is not written"
+    );
+    assert!(
+        at(&asked, 2.0, H as f32 - 2.0) != at(&bare, 2.0, H as f32 - 2.0),
         "no scrim over the window"
     );
 }

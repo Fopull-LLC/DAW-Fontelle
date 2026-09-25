@@ -965,6 +965,49 @@ pub enum ExportTail {
     Cut,
 }
 
+/// Somebody in a shared session, as the Share panel lists them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionPeer {
+    pub peer: u16,
+    pub name: String,
+    /// Which of [`crate::canvas::PEER_COLOURS`] marks them.
+    pub colour: u8,
+    /// Whether the host refuses their edits. Known to the host only.
+    pub view_only: bool,
+}
+
+/// Where this studio stands in a session — the panel's [`ShareRole`](crate::canvas::ShareRole).
+pub use crate::canvas::ShareRole as SessionRole;
+
+/// A shared song, as the window sees it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionView {
+    pub role: SessionRole,
+    /// The code to give out, while hosting and the relay has given one.
+    pub code: Option<String>,
+    /// Who is sharing, on a joiner.
+    pub host: String,
+    /// Everybody else.
+    pub peers: Vec<SessionPeer>,
+    /// Whether the host refuses this studio's edits.
+    pub view_only: bool,
+    /// One line for the panel: who is fetching what, or why it ended.
+    pub status: String,
+}
+
+/// A question a session asks, with more answers than the confirm card has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionQuestion {
+    pub lines: Vec<String>,
+    /// **The safe one first.**
+    pub buttons: Vec<String>,
+    /// Which Enter presses.
+    pub default: usize,
+}
+
+/// What the network calls to wake the window — see [`crate::widget::WindowWake`].
+pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 pub trait StudioHost: DocumentHost {
     /// Bumped whenever anything a panel draws has changed.
     ///
@@ -1311,6 +1354,54 @@ pub trait StudioHost: DocumentHost {
         false
     }
 
+    // --- a shared song (`docs/collab-plan.md` §10) ---
+
+    /// Where this studio stands in a session, for the Share panel and the dot.
+    fn session(&self) -> SessionView {
+        SessionView::default()
+    }
+    /// Shares the open song. Returns at once: the code arrives a moment
+    /// later, in [`session`](Self::session), when the relay has answered.
+    fn share_song(&mut self) -> Result<(), String> {
+        Err("this studio cannot share a song".to_string())
+    }
+    /// Joins the song `code` names, however it was typed.
+    fn join_song(&mut self, _code: &str) -> Result<(), String> {
+        Err("this studio cannot join a song".to_string())
+    }
+    /// Stop sharing, or leave — the copy stays open, and is this studio's.
+    fn leave_song(&mut self) {}
+    /// A question the session is waiting on — the join's (§4.3), a fetch's
+    /// (§7.1) — with its answers, the safe one first.
+    fn session_question(&self) -> Option<SessionQuestion> {
+        None
+    }
+    fn answer_session_question(&mut self, _answer: usize) -> Result<(), String> {
+        Ok(())
+    }
+    /// The host's two controls on a person's row (§10.1, F49).
+    fn set_peer_view_only(&mut self, _peer: u16, _view_only: bool) {}
+    fn remove_peer(&mut self, _peer: u16) {}
+    /// What the session has to say — somebody came, an edit was taken back —
+    /// taken once, for the toasts.
+    fn take_session_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// The name the first Share or Join should ask for, while nobody has typed
+    /// one: `Some` of the computer's user name, as the prompt's seed
+    /// (decision 7).
+    fn name_to_ask_for(&self) -> Option<String> {
+        None
+    }
+    fn set_your_name(&mut self, _name: &str) {}
+    /// Puts `text` on the desktop's clipboard — the code, from the panel.
+    fn copy_text(&mut self, _text: &str) -> Result<(), String> {
+        Err("this studio cannot reach the clipboard".to_string())
+    }
+    /// Something the network may call from its own thread when a message
+    /// lands, to wake the window (§9.2, F48).
+    fn set_wake(&mut self, _wake: Wake) {}
+
     /// Tells every automated parameter what its automation says at song
     /// sample `sample` — or, before its first clip, that it is its knob's
     /// again (a NaN value).
@@ -1395,6 +1486,11 @@ pub trait StudioHost: DocumentHost {
 
     /// Sets drop-down row `index` to its `option`th entry, as choosing from its
     /// menu does.
+    /// Sets text row `index` to what was typed into its prompt.
+    fn set_setting_text(&mut self, index: usize, text: &str) {
+        let _ = (index, text);
+    }
+
     fn choose_setting(&mut self, index: usize, option: usize) {
         let _ = (index, option);
     }

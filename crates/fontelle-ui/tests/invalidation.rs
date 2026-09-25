@@ -240,3 +240,34 @@ fn a_session_keeps_the_window_awake() {
         Sleep::AtMost(ENGINE_POLL)
     );
 }
+
+/// F48 (`docs/collab-plan.md` §9.2). An edit from somebody else wakes the
+/// window from the network thread — and a burst of them is one wake, not a
+/// queue of a thousand events for a window that reads them all at once
+/// anyway. Once the window has looked, the next message wakes it again.
+#[test]
+fn a_message_wakes_the_window() {
+    use fontelle_ui::widget::WindowWake;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let sent = Arc::new(AtomicUsize::new(0));
+    let counter = sent.clone();
+    let wake = WindowWake::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let waker = wake.waker();
+    let from_the_network = std::thread::spawn(move || {
+        for _ in 0..1000 {
+            waker();
+        }
+    });
+    from_the_network.join().unwrap();
+    assert_eq!(sent.load(Ordering::SeqCst), 1, "one wake for the burst");
+    wake.woken();
+    (wake.waker())();
+    assert_eq!(
+        sent.load(Ordering::SeqCst),
+        2,
+        "and again once it has looked"
+    );
+}

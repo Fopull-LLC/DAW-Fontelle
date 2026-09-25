@@ -1459,6 +1459,9 @@ pub struct RelayHost {
     /// nobody will remember.
     retry_at: Option<Instant>,
     backoff: Duration,
+    /// Fontelle's own: the wake handed to every leg, the fresh one after a
+    /// re-host included (F48).
+    wake: Option<crate::transport::Wake>,
 }
 
 /// First wait after losing the relay, and the ceiling the backoff climbs to.
@@ -1576,6 +1579,7 @@ impl RelayHost {
             ask: ask.clone(),
             retry_at: None,
             backoff: RELAY_RETRY_MIN,
+            wake: None,
         };
         let mut fallback = fallback;
         for i in 0..600 {
@@ -1684,11 +1688,19 @@ impl RelayHost {
                 &RelayMsg::HostIsDedicated.encode(),
             );
         }
+        if let Some(wake) = &self.wake {
+            fresh.set_wake(wake.clone());
+        }
         self.inner = fresh;
     }
 }
 
 impl Transport for RelayHost {
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        self.inner.set_wake(wake.clone());
+        self.wake = Some(wake);
+    }
+
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
         let seq = if channel == Channel::UnreliableSequenced {
             self.seq += 1;
@@ -1870,6 +1882,9 @@ impl RelayClient {
 }
 
 impl Transport for RelayClient {
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        self.inner.set_wake(wake);
+    }
     fn take_notices(&mut self) -> Vec<String> {
         self.inner.take_warnings()
     }
