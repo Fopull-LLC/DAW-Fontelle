@@ -67,3 +67,33 @@ fn every_kind_is_offered_once_in_one_order() {
         assert!(row.enabled, "nothing is greyed when the kind is unknown");
     }
 }
+
+/// What an instrument window says with nothing to show depends on what the
+/// channel is: an empty sampler told to "pick a soundfont from the browser"
+/// was the report — *"it will be saying stuff for soundfonts while u have a
+/// sampler and its confusing."*
+#[test]
+fn an_empty_instrument_says_what_it_is_waiting_for() {
+    use fontelle_types::InstrumentKind;
+    use fontelle_ui::render::no_instrument_text;
+    for kind in InstrumentKind::ALL {
+        let said = no_instrument_text(Some(kind)).to_lowercase();
+        assert!(!said.is_empty());
+        let soundfont = said.contains("soundfont");
+        assert_eq!(
+            soundfont,
+            kind == InstrumentKind::SoundFont,
+            "{kind:?}: {said}"
+        );
+    }
+    assert!(
+        no_instrument_text(Some(InstrumentKind::Sampler))
+            .to_lowercase()
+            .contains("import")
+    );
+    assert!(
+        no_instrument_text(Some(InstrumentKind::Plugin))
+            .to_lowercase()
+            .contains("plugin")
+    );
+}

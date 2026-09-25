@@ -469,6 +469,38 @@ mod through_the_session {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// > *"some of the built in panels also are just not updating right like
+    /// > it will be saying stuff for soundfonts while u have a sampler."*
+    ///
+    /// The soundfont that is open is lit on the Sounds tab and nowhere else:
+    /// its row number used to light whatever sat at that place in the Presets,
+    /// Projects and Settings lists too.
+    #[test]
+    fn the_open_soundfont_is_lit_on_the_sounds_tab_and_nowhere_else() {
+        use fontelle_ui::canvas::BrowserMode;
+        let dir = a_collection("session-lit");
+        let mut session = studio(&dir);
+        session.open_file(bank_row(&session, 0)).expect("Drums");
+        session.open_file(1).expect("Kit A");
+        let lit = session.selected_file();
+        assert!(lit.is_some(), "Kit A is open");
+        for mode in [
+            BrowserMode::Presets,
+            BrowserMode::Projects,
+            BrowserMode::Settings,
+        ] {
+            session.set_browser_mode(mode);
+            assert_eq!(
+                session.selected_file(),
+                None,
+                "{mode:?} has no soundfont in it"
+            );
+        }
+        session.set_browser_mode(BrowserMode::Sounds);
+        assert_eq!(session.selected_file(), lit);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_folder_row_says_what_is_in_it() {
         let dir = a_collection("session-detail");

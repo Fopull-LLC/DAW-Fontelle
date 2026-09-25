@@ -161,3 +161,36 @@ fn dropping_an_import_file_past_the_rows_makes_a_new_row() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// > *"when i import sound file and select one seemingly creates an
+/// > instrument and doesn't allow u to play anything else when you select a
+/// > channel."*
+///
+/// A click on the Import tab aims the keyboard at the file for as long as the
+/// listen lasts — and choosing a channel is the end of the listen: the keys,
+/// the MIDI keyboard and the roll play that channel again.
+#[test]
+fn choosing_a_channel_after_a_preview_gives_the_keys_back_to_the_channel() {
+    let dir = scratch("give-back");
+    let mut session = a_session(&dir);
+    a_take(&dir, "Loop.wav");
+    use_audio_folder(&mut session, &dir);
+    let target = std::sync::Arc::new(fontelle_midi::LiveTarget::new(
+        fontelle_types::NodeId::default(),
+    ));
+    let mut session = session.with_live_target(std::sync::Arc::clone(&target));
+    let channel = session.audition_target();
+
+    StudioHost::preview_import(&mut session, 0).expect("the file previews");
+    assert_ne!(session.audition_target(), channel, "the listen is heard");
+
+    StudioHost::select_channel(&mut session, 0);
+    assert_eq!(
+        session.audition_target(),
+        channel,
+        "the keys are the channel's"
+    );
+    assert_eq!(target.get(), channel, "and so is the MIDI keyboard");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

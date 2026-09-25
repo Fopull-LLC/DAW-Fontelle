@@ -105,3 +105,35 @@ fn an_empty_arrangement_still_compiles_and_renders() {
         "nothing was written, so nothing sounds"
     );
 }
+
+/// From a Windows log: eighteen lines of *"no clip ClipId(null) in this
+/// project"* — every note drawn in the roll of a new project, which has no
+/// clip open, went to a clip that does not exist. The roll with nothing open
+/// is refused with one sentence saying what to do, and nothing is changed.
+#[test]
+fn a_note_drawn_with_no_clip_open_is_refused_with_a_sentence() {
+    use fontelle_ui::document::{DocumentHost, StudioHost};
+    let mut session = common::a_session_for(blank_project(BARS, 120.0, SR));
+    let before = session.project().sync_hash();
+    let made = session.edit(fontelle_ui::canvas::RollEdit::Add {
+        note: fontelle_model::Note {
+            start: 0,
+            length: fontelle_types::PPQN,
+            key: 60,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            channel: None,
+        },
+    });
+    session.end_gesture();
+    assert!(made.is_empty());
+    assert_eq!(session.project().sync_hash(), before, "nothing changed");
+    let said = session.take_message().expect("it says why");
+    assert!(said.contains("clip"), "{said}");
+    assert!(!said.contains("null"), "{said}");
+}

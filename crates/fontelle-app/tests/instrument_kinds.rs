@@ -205,3 +205,18 @@ fn a_soundfont_player_is_what_a_preset_lands_on() {
     session.set_channel_kind(0, InstrumentKind::SoundFont);
     assert_eq!(session.channel_kind(0), Some(InstrumentKind::SoundFont));
 }
+
+/// Choosing what a channel is says so, and in the words the session hands the
+/// status line: the window's own "Instrument is now Sampler" was overwritten
+/// on the next frame by the soundfont folder's path — soundfont words while a
+/// sampler was selected.
+#[test]
+fn choosing_what_a_channel_is_says_so_on_the_status_line() {
+    use fontelle_ui::document::StudioHost;
+    let mut session = a_session();
+    let _ = StudioHost::take_message(&mut session);
+    session.set_channel_kind(0, InstrumentKind::Sampler);
+    let said = StudioHost::take_message(&mut session).expect("it says what it did");
+    assert!(said.contains("Sampler"), "{said}");
+    assert!(!said.to_lowercase().contains("soundfont"), "{said}");
+}

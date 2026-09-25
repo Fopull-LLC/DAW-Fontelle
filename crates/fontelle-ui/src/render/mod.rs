@@ -1791,6 +1791,9 @@ pub fn draw_editor_window(
         EditorWindowChrome::Instrument(None) => {
             draw_label(scene, labels, NO_INSTRUMENT, layout.body, m, p.text_muted)
         }
+        EditorWindowChrome::EmptyInstrument(said) => {
+            draw_label(scene, labels, said, layout.body, m, p.text_muted)
+        }
         EditorWindowChrome::Flopsynth(flopsynth) => {
             draw_flopsynth(scene, theme, labels, flopsynth);
             draw_flopsynth_overlays(scene, theme, labels, flopsynth);
@@ -2317,6 +2320,9 @@ pub struct PresetBarChrome<'a> {
 #[allow(clippy::large_enum_variant)]
 pub enum EditorWindowChrome<'a> {
     Instrument(Option<InstrumentChrome<'a>>),
+    /// A channel with nothing to show, saying what it is waiting for — see
+    /// [`no_instrument_text`].
+    EmptyInstrument(&'a str),
     /// **Flopsynth**, which draws a picture of a signal path because that is
     /// what a synthesiser is (`docs/flopsynth-plan.md` §8). Its own variant
     /// rather than a flag on `Instrument`, for the reason `Effect` is one: the
@@ -5275,6 +5281,25 @@ pub const RECORDING: &str = "Recording";
 /// What the instrument tab says when the channel is playing nothing.
 pub const NO_INSTRUMENT: &str =
     "this channel has no soundfont yet \u{2014} pick one from the browser";
+
+/// What an instrument window says when there is nothing to show, by what the
+/// channel is. Only a SoundFont player is waiting for a soundfont:
+///
+/// > *"it will be saying stuff for soundfonts while u have a sampler and its
+/// > confusing."*
+pub fn no_instrument_text(kind: Option<fontelle_types::InstrumentKind>) -> &'static str {
+    use fontelle_types::InstrumentKind as K;
+    match kind {
+        Some(K::SoundFont) | None => NO_INSTRUMENT,
+        Some(K::Sampler) => {
+            "this sampler has no sound yet \u{2014} drag one onto it from the Import tab"
+        }
+        Some(K::Plugin) => "this channel has no plugin yet \u{2014} choose one from its menu",
+        Some(K::Flopsynth) | Some(K::Osc3) | Some(K::DrumMachine) => {
+            "this instrument could not be read \u{2014} choose Change instrument to start again"
+        }
+    }
+}
 
 fn draw_editor_tabs(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
     let p = &theme.palette;

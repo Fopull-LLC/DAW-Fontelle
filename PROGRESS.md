@@ -19,10 +19,46 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**Prepared as v0.16.0 on 2026-09-25, not tagged** — working on a song
-together: Share and Join through Fopull's relay, view only and remove, the
-join's copy-or-update question with backups. The tag and the push are Ty's
-(`git tag v0.16.0 && git push origin main v0.16.0`).
+**Released as v0.16.0 on 2026-09-25** — working on a song together (Share and
+Join through Fopull's relay, view only and remove, the join's copy-or-update
+question with backups), and the three reports below. Ty gave the go.
+
+**As of 2026-09-25 (night) — three reports fixed before v0.16.0.**
+
+- *"when i import sound file and select one seemingly creates an instrument
+  and doesn't allow u to play anything else when you select a channel."* A
+  click on the Import tab aims the live path — the MIDI keyboard, the roll's
+  keys — at a one-shot sampler of the file, and only four gestures ever gave
+  it back. **Choosing a channel now ends the listen** (`select_channel`), and
+  so does the first press on the roll's keys, not only a slide onto the next.
+  Test: `choosing_a_channel_after_a_preview_gives_the_keys_back_to_the_channel`.
+- The Windows log's eighteen *"no clip ClipId(null) in this project"*: every
+  note drawn in a new project's roll went to a clip that does not exist
+  (nothing is open until a clip is drawn). Refused now with one sentence —
+  *"Draw a clip on the arrangement first…"* — in `edit` and `insert`, which a
+  MIDI take and a score import go through too.
+  Test: `a_note_drawn_with_no_clip_open_is_refused_with_a_sentence`.
+- *"they fell back to the only knob display at first when opening them, then
+  after closing and trying to open it again it did actually render the vst
+  right."* When a plugin's own editor opened, a studio window of the same kind
+  that was already up (the channel's Flopsynth, the window whose menu chose the
+  plugin) stayed open over it, redrawn as the plugin's knobs. It is closed now
+  when the plugin's editor goes up; seen on `:99` choosing Surge XT with the
+  instrument window open. A refused editor also writes its reason to the
+  session log now. **Not reproduced on Windows itself**; the fix is in the
+  window's logic, which is the same on every platform. (A second suspect —
+  VST 3's `has_editor` making a probe view just before the real one — was left
+  alone: JUCE tears the probe down synchronously, so it is not the cause.)
+- *"some of the built in panels also are just not updating right like it will
+  be saying stuff for soundfonts while u have a sampler."* The instrument
+  window's empty text said *"no soundfont yet"* for every kind; it now says
+  what that kind is waiting for (`render::no_instrument_text`). Choosing what a
+  channel is said so through the window's own status line, which the next
+  refresh replaced with the soundfont folder's path; the session says it now.
+  The open soundfont's row number no longer lights rows in the Presets,
+  Projects and Settings lists. Tests: `an_empty_instrument_says_what_it_is_waiting_for`,
+  `choosing_what_a_channel_is_says_so_on_the_status_line`,
+  `the_open_soundfont_is_lit_on_the_sounds_tab_and_nowhere_else`.
 
 **As of 2026-09-25 (evening) — working on a song together, Phase 4 built:
 the window.** `docs/collab-plan.md` §13's last v1 phase; ledger rows F44–F50

@@ -60,8 +60,8 @@ use crate::layout::{
 use crate::pointer::{Pointer, PointerScene, pointer_at};
 use crate::render::{
     ADD_CHANNEL, ARRANGEMENT, BrowserChrome, CHOOSE_FOLDER, Chrome, EMPTY_LANE, EXPORT,
-    EditorWindowChrome, InstrumentChrome, MixerChrome, NEW_PROJECT, NO_INSTRUMENT, OPEN_FOLDER,
-    RackChrome, RenderError, RollChrome, TAB_MIXER, TAB_ROLL, TimelineChrome, TransportChrome,
+    EditorWindowChrome, InstrumentChrome, MixerChrome, NEW_PROJECT, OPEN_FOLDER, RackChrome,
+    RenderError, RollChrome, TAB_MIXER, TAB_ROLL, TimelineChrome, TransportChrome,
     draw_editor_window, draw_window, key_name, label_stride, labelled_bar,
 };
 use crate::text::{Labels, TextContext, TextLayout};
@@ -1252,6 +1252,9 @@ pub struct WindowApp {
     /// The selected channel's instrument, read with the rest of the studio's
     /// lists rather than once a frame.
     instrument: Option<InstrumentView>,
+    /// What the selected channel is, for what its window says when it has
+    /// nothing to show (`render::no_instrument_text`).
+    selected_kind: Option<fontelle_types::InstrumentKind>,
     instrument_layout: InstrumentLayout,
     /// The same channel as **Flopsynth's own window**, when that is what it is
     /// (`docs/flopsynth-plan.md` §8).
@@ -2043,6 +2046,7 @@ impl WindowApp {
             tab: EditorTab::Roll,
             tabs: editor_tabs(layout.panel.header, &options.theme.metrics),
             instrument: None,
+            selected_kind: None,
             instrument_layout: InstrumentLayout {
                 name: crate::layout::Rect::ZERO,
                 body: layout.panel.body,
@@ -4375,6 +4379,16 @@ impl WindowApp {
         // — and every LV2 one in this build — answers `false` and gets the
         // panel, which is what the panel is for.
         if self.open_plugins_own_editor(kind) {
+            // **And the studio's own window of that kind goes.** One already
+            // up — the Flopsynth the channel was, the window whose menu chose
+            // the plugin — was left open over the plugin's editor, redrawn
+            // as the plugin's knobs; closing it and opening again was the
+            // only way to see the real one:
+            //
+            // > *"they fell back to the only knob display at first when
+            // > opening them, then after closing and trying to open it again
+            // > it did actually render the vst right."*
+            self.close_editor(kind);
             return;
         }
         if self.raise_editor(kind) {
@@ -5684,6 +5698,11 @@ impl WindowApp {
                         .unwrap_or(1.0),
                 })
             }
+            EditorKind::Instrument if self.instrument.is_none() => {
+                EditorWindowChrome::EmptyInstrument(crate::render::no_instrument_text(
+                    self.selected_kind,
+                ))
+            }
             EditorKind::Instrument => {
                 EditorWindowChrome::Instrument(self.instrument.as_ref().map(|view| {
                     InstrumentChrome {
@@ -6027,6 +6046,7 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
+        self.selected_kind = doc.channel_kind(doc.selected_channel());
         self.flopsynth = doc.flopsynth_showing(
             self.flop_page,
             crate::canvas::FlopsynthShowing {
@@ -6346,7 +6366,7 @@ impl WindowApp {
             EMPTY_LANE,
             TAB_ROLL,
             TAB_MIXER,
-            NO_INSTRUMENT,
+            crate::render::no_instrument_text(self.selected_kind),
             crate::render::SAVE,
             crate::render::SAVE_AS,
             crate::canvas::NO_PRESET,
@@ -7661,6 +7681,10 @@ impl WindowApp {
                 // sliding down the keyboard sounds each key as it is reached.
                 let key = y_to_key(&self.roll.view, self.roll_layout.grid, y);
                 self.drag = Drag::Keys;
+                // The keys play **your** instrument — the first one pressed
+                // as much as the ones slid onto (`audition_at`). It was the
+                // Import tab's file that answered it.
+                self.end_preview();
                 // No note behind it, so no length: the keyboard gets the floor.
                 self.start_audition(key, 0);
                 return;

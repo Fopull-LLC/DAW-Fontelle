@@ -3599,6 +3599,9 @@ impl Session {
         match self.plugins.open_editor(slot) {
             Ok(opened) => opened,
             Err(e) => {
+                // Into the session log as well: a report of the knob panel
+                // opening instead said nothing of why.
+                eprintln!("Fontelle: the plugin's own editor did not open \u{2014} {e}");
                 self.message = Some(e);
                 self.touch();
                 false
@@ -5491,6 +5494,16 @@ impl DocumentHost for Session {
         // line that had to change when prefabs arrived — and it is the only
         // line that could have got it wrong.
         let clip = self.note_target();
+        // Nothing open to write into — a new project's empty arrangement.
+        // Said once, in words, rather than eighteen times as "no clip
+        // ClipId(null)" on the console of a studio that went on sounding the
+        // notes it never kept.
+        if let fontelle_model::NoteHome::Clip(id) = clip
+            && !self.project.clips.contains_key(id)
+        {
+            self.message = Some(NOTHING_OPEN.to_string());
+            return Vec::new();
+        }
         // `AddNotes` is the one command whose ids the caller needs back, so it
         // is applied through the history by hand rather than through `run`.
         // Everything else goes the ordinary way.
@@ -5766,6 +5779,14 @@ impl Session {
     /// `History::last_applied`, which exists for exactly this.
     fn insert(&mut self, clip: fontelle_model::NoteHome, mut notes: Vec<Note>) -> Vec<NoteId> {
         if notes.is_empty() {
+            return Vec::new();
+        }
+        // A take, a pasted score, a drawn note: all of them need a clip to
+        // land in, and a new project has none open.
+        if let fontelle_model::NoteHome::Clip(id) = clip
+            && !self.project.clips.contains_key(id)
+        {
+            self.message = Some(NOTHING_OPEN.to_string());
             return Vec::new();
         }
         // **On the selected channel**, whatever the note said and whatever
@@ -6287,6 +6308,14 @@ impl StudioHost for Session {
         };
         self.selected = index;
         self.patch_cache = None;
+        // **Choosing a channel ends a listen.** A click on the Import tab
+        // aims the keys at the file for as long as it plays; the channel you
+        // then pick is what you mean to play, and was not:
+        //
+        // > *"when i import sound file and select one seemingly creates an
+        // > instrument and doesn't allow u to play anything else when you
+        // > select a channel."*
+        self.previewing = false;
         // A MIDI keyboard follows the rack, the same as an audition does.
         self.publish_live_target();
         // The roll shows this channel's notes **in the clip that is open**
@@ -6821,7 +6850,11 @@ impl StudioHost for Session {
         // rather than a file you are looking inside. Answering with the
         // soundfont's index would light whichever import row happened to sit
         // at that position — a highlight on a file nobody chose.
-        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Import {
+        //
+        // Nor on any tab but Sounds: the Presets, Projects and Settings lists
+        // are other lists, and the soundfont's row number lit whatever sat at
+        // that place in them.
+        if self.browser_mode != fontelle_ui::canvas::BrowserMode::Sounds {
             return None;
         }
         if self.flopsynth_open {
@@ -7046,6 +7079,13 @@ impl StudioHost for Session {
         let patch = self.starter_patch(kind);
         let channel = self.new_channel_of(name, patch, kind)?;
         self.patch_cache = None;
+        // On the status line through the session, like `set_channel_kind`.
+        self.message = Some(match kind {
+            fontelle_types::InstrumentKind::Sampler => {
+                "New Sampler \u{2014} drag a sound onto it from the Import tab".to_string()
+            }
+            other => format!("New instrument: {}", other.label()),
+        });
         self.rebuild_graph();
         self.touch();
         let _ = channel;
@@ -7086,6 +7126,16 @@ impl StudioHost for Session {
         self.channel_presets.remove(&id);
         self.patch_cache = None;
         self.dirty = true;
+        // Said here, where the status line reads it, rather than by the
+        // window — whose own sentence the next refresh replaced with the
+        // soundfont folder's path.
+        self.message = Some(match kind {
+            fontelle_types::InstrumentKind::Sampler => {
+                "Instrument is now a Sampler \u{2014} drag a sound onto it from the Import tab"
+                    .to_string()
+            }
+            other => format!("Instrument is now {}", other.label()),
+        });
         self.rebuild_graph();
         self.touch();
     }
@@ -12871,3 +12921,7 @@ fn people_here(peers: &[fontelle_ui::document::SessionPeer]) -> String {
 /// What a relay says to a share: the lobby's transport and its code, or why
 /// not.
 type RelayAnswer = Result<(Box<dyn fontelle_net::Transport>, String), String>;
+
+/// What the roll says when there is no clip for it to write into.
+const NOTHING_OPEN: &str =
+    "Draw a clip on the arrangement first \u{2014} the roll writes into the clip that is open";
