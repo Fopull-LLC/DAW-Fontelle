@@ -1269,18 +1269,18 @@ commit.
 
 | # | Finding | Answer | Proof |
 |---|---|---|---|
-| F44 | The product page (0234) says "no account, no cloud" and "the only network request it ever makes is the optional update check" (lines 52, 75, 82-84, 145) | §15 decision 8: one clause added, Ty's wording; appended to 0234's thread | the thread entry |
-| F45 | `FONTELLE_TDD.md:64` lists "network collaboration, cloud anything" as a v1 non-goal | The TDD is Ty's: propose the amended line in `PROGRESS.md`'s entry and leave the edit to him | the `PROGRESS.md` entry |
-| F46 | No Share or Join anywhere in the window | §10.1–10.3 | `welcome.rs`, `share_panel.rs`, the scenes |
-| F47 | No display name; the settings page has no text row (`SettingControlKind`) | §10.4: *Your name* and *Relay* rows, `SettingControlKind::Text` over `TextEntry`, settings format 6→7 | `settings_tab.rs` |
-| F48 | Remote edits should not wait for a 100 ms poll | §9.2: `EventLoopProxy` wake from the network thread; the poll stays as the fallback | `a_message_wakes_the_window` |
-| F49 | Anyone with the code can edit; the host cannot remove anyone | §10.1: view-only and remove per row | `a_view_only_peers_proposal_is_refused`, `a_removed_peer_is_gone` |
-| F50 | Everything above must be seen, not believed | §12.5 with two studios and the real relay; `PROGRESS.md` and `docs/handoff.md` updated | the scenes, the entries |
-| F60 | *Found on `:99`.* The panel's one status line clipped its sentence — *"Alice removed you from the session — your copy is…"* | The status is two lines, broken at the sentence's dash (`canvas::status_lines`) | `a_status_sentence_gets_two_lines_broken_at_its_dash` |
-| F61 | *Found on `:99`.* A joiner's panel said *"Nobody has joined yet"* while working with the host: the host is not one of the peers the session hands out | The joiner's panel lists the host first, in the host's colour | `the_window_doors_share_and_join_over_a_relay` |
-| F62 | *Found on `:99`.* The join's answers were sentences (*"Update mine to Alice's — a backup of yours is kept"*) and ran out of their buttons | *Update mine*, *Keep both*, *Cancel*; the two lines above them say what each does | `the_joins_answers_fit_on_their_buttons_and_the_lines_say_the_rest` |
-| F63 | *Found on `:99`.* Both copies said *"saved by fopull"*: a save was signed with the login, not the name the others know | A save is signed with *Your name* (`Settings::your_name`) | `a_save_is_signed_with_the_name_the_others_see` |
-| F64 | *Found on `:99`.* The Share button's tip was drawn over the panel it had just opened, and the view-only toast was clipped at *"…for yo"* | No tip under the panel or a session's question; the toast says *"— it is view only."* | seen on `:99`; `a_view_only_peers_proposal_is_refused` |
+| F44 ✓ `c22f928`, hub `1b63256` | The product page (0234) says "no account, no cloud" and "the only network request it ever makes is the optional update check" (lines 52, 75, 82-84, 145) | §15 decision 8: one clause added, Ty's wording; appended to 0234's thread | the thread entry |
+| F45 ✓ `c22f928` | `FONTELLE_TDD.md:64` lists "network collaboration, cloud anything" as a v1 non-goal | The TDD is Ty's: propose the amended line in `PROGRESS.md`'s entry and leave the edit to him | the `PROGRESS.md` entry |
+| F46 ✓ `c22f928` | No Share or Join anywhere in the window | §10.1–10.3 | `welcome.rs`, `share_panel.rs`, the scenes |
+| F47 ✓ `c22f928` | No display name; the settings page has no text row (`SettingControlKind`) | §10.4: *Your name* and *Relay* rows, `SettingControlKind::Text` over `TextEntry`, settings format 6→7 | `settings_tab.rs` |
+| F48 ✓ `c22f928` | Remote edits should not wait for a 100 ms poll | §9.2: `EventLoopProxy` wake from the network thread; the poll stays as the fallback | `a_message_wakes_the_window` |
+| F49 ✓ `c22f928` | Anyone with the code can edit; the host cannot remove anyone | §10.1: view-only and remove per row | `a_view_only_peers_proposal_is_refused`, `a_removed_peer_is_gone` |
+| F50 ✓ `c22f928` | Everything above must be seen, not believed | §12.5 with two studios and the real relay; `PROGRESS.md` and `docs/handoff.md` updated | the scenes, the entries |
+| F60 ✓ `c22f928` | *Found on `:99`.* The panel's one status line clipped its sentence — *"Alice removed you from the session — your copy is…"* | The status is two lines, broken at the sentence's dash (`canvas::status_lines`) | `a_status_sentence_gets_two_lines_broken_at_its_dash` |
+| F61 ✓ `c22f928` | *Found on `:99`.* A joiner's panel said *"Nobody has joined yet"* while working with the host: the host is not one of the peers the session hands out | The joiner's panel lists the host first, in the host's colour | `the_window_doors_share_and_join_over_a_relay` |
+| F62 ✓ `c22f928` | *Found on `:99`.* The join's answers were sentences (*"Update mine to Alice's — a backup of yours is kept"*) and ran out of their buttons | *Update mine*, *Keep both*, *Cancel*; the two lines above them say what each does | `the_joins_answers_fit_on_their_buttons_and_the_lines_say_the_rest` |
+| F63 ✓ `c22f928` | *Found on `:99`.* Both copies said *"saved by fopull"*: a save was signed with the login, not the name the others know | A save is signed with *Your name* (`Settings::your_name`) | `a_save_is_signed_with_the_name_the_others_see` |
+| F64 ✓ `c22f928` | *Found on `:99`.* The Share button's tip was drawn over the panel it had just opened, and the view-only toast was clipped at *"…for yo"* | No tip under the panel or a session's question; the toast says *"— it is view only."* | seen on `:99`; `a_view_only_peers_proposal_is_refused` |
 
 ### Later — §14
 
