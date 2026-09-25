@@ -19,6 +19,11 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Prepared as v0.16.0 on 2026-09-25, not tagged** — working on a song
+together: Share and Join through Fopull's relay, view only and remove, the
+join's copy-or-update question with backups. The tag and the push are Ty's
+(`git tag v0.16.0 && git push origin main v0.16.0`).
+
 **As of 2026-09-25 (evening) — working on a song together, Phase 4 built:
 the window.** `docs/collab-plan.md` §13's last v1 phase; ledger rows F44–F50
 and F60–F64 (found on `:99`) closed. **F43 and F59 stay open**: no QUIC socket

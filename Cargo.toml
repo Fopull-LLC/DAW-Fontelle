@@ -27,7 +27,7 @@ members = [
 # The product's version: one number for the whole workspace, which is what the
 # window shows, what a release is tagged as, and what the updater compares
 # against (`crates/fontelle-app/src/updates.rs`).
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "MIT OR Apache-2.0"
