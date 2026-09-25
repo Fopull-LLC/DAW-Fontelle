@@ -32,6 +32,9 @@ pub const REPOSITORY_URL: &str = "https://github.com/Fopull-LLC/DAW-Fontelle";
 pub const FOOTER_TEXT: &str = "Open source software by Fopull LLC";
 pub const WEBSITE_LABEL: &str = "fopull.com";
 pub const REPOSITORY_LABEL: &str = "Source on GitHub";
+/// The footer's third link: the folder the session logs and crash reports
+/// are in (`fontelle_app::logs`), for attaching to a bug report.
+pub const LOGS_LABEL: &str = "Logs folder";
 pub const NEW_PROJECT_LABEL: &str = "New project";
 pub const OPEN_PROJECT_LABEL: &str = "Open a project\u{2026}";
 pub const RECENT_HEADING: &str = "Recent projects";
@@ -67,6 +70,7 @@ const STACK_GAP: f32 = 12.0;
 /// The footer's links are fixed-width cells the text is drawn inside.
 const WEBSITE_WIDTH: f32 = 80.0;
 const REPOSITORY_WIDTH: f32 = 120.0;
+const LOGS_WIDTH: f32 = 80.0;
 const LINK_GAP: f32 = 16.0;
 
 /// One row of the recent list.
@@ -110,6 +114,8 @@ pub struct WelcomeLayout {
     pub footer: Rect,
     pub website: Rect,
     pub repository: Rect,
+    /// The logs folder — "where get", answered.
+    pub logs: Rect,
     /// The `?` in the top right corner: the keyboard shortcuts page.
     pub help: Rect,
 }
@@ -152,6 +158,7 @@ pub fn welcome_layout(
         WEBSITE_WIDTH,
         row,
     );
+    let logs = Rect::new(website.x - LINK_GAP - LOGS_WIDTH, footer.y, LOGS_WIDTH, row);
     let above_footer = footer.y - STACK_GAP;
 
     // The left column, top down: the logo with the name and version beside
@@ -251,6 +258,7 @@ pub fn welcome_layout(
         footer,
         website,
         repository,
+        logs,
         help,
     }
 }
@@ -269,6 +277,8 @@ pub enum WelcomeHit {
     Update,
     Website,
     Repository,
+    /// The logs folder, shown in the file manager.
+    Logs,
     /// The `?`: the keyboard shortcuts page.
     Help,
 }
@@ -297,6 +307,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.repository.contains(x, y) {
         return Some(WelcomeHit::Repository);
+    }
+    if layout.logs.contains(x, y) {
+        return Some(WelcomeHit::Logs);
     }
     if layout.help.contains(x, y) {
         return Some(WelcomeHit::Help);

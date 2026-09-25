@@ -1187,8 +1187,8 @@ fn draw_save_prompt(
 /// the links in the accent so they read as links.
 pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &WelcomeChrome<'_>) {
     use crate::canvas::{
-        FOOTER_TEXT, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
-        REPOSITORY_LABEL, WEBSITE_LABEL, WelcomeHit,
+        FOOTER_TEXT, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL,
+        RECENT_HEADING, REPOSITORY_LABEL, WEBSITE_LABEL, WelcomeHit,
     };
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -1372,6 +1372,14 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         REPOSITORY_LABEL,
         l.repository,
         hot(WelcomeHit::Repository),
+    );
+    draw_welcome_link(
+        scene,
+        theme,
+        labels,
+        LOGS_LABEL,
+        l.logs,
+        hot(WelcomeHit::Logs),
     );
 }
 

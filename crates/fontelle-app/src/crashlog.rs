@@ -164,9 +164,15 @@ impl LastRun {
     pub fn message(&self) -> Option<String> {
         match self {
             Self::Clean => None,
+            // The file's name and the folder's, not the whole path: the
+            // start menu has two rows for this, and its *Logs folder* link
+            // opens the folder.
             Self::Panicked { report, .. } => Some(format!(
-                "Crashed last time \u{2014} the report is in {}",
-                report.display()
+                "Crashed last time \u{2014} the report is {} in the logs folder",
+                report.file_name().map_or_else(
+                    || report.display().to_string(),
+                    |name| { name.to_string_lossy().into_owned() }
+                )
             )),
             Self::Killed { pid } => Some(format!(
                 "Not a Fontelle crash \u{2014} the last run was ended from outside \
@@ -237,6 +243,41 @@ pub fn report_text(
     text
 }
 
+/// What a report says when the program did not panic but **faulted**: a
+/// signal on Linux and macOS, an unhandled exception on Windows.
+///
+/// > *"oh now it crashed xD"*
+///
+/// There is no message and no backtrace to give — the fault is in native
+/// code, most often a plugin's — so it says what the fault was and, where
+/// the platform can say it, **which module** the faulting address is in.
+/// That one line is the difference between "a plugin crashed" and "Fontelle
+/// crashed", which is the first thing anybody reading it needs to know.
+pub fn native_report_text(what: &str, module: Option<&str>, marker: &Marker) -> String {
+    let mut text = String::new();
+    text.push_str("Fontelle crash report\n");
+    text.push_str("=====================\n\n");
+    text.push_str(&format!("version:   {}\n", marker.version));
+    text.push_str(&format!("pid:       {}\n", marker.pid));
+    text.push_str(&format!("started:   {} (unix)\n", marker.started));
+    text.push_str(&format!(
+        "project:   {}\n",
+        marker.project.as_deref().unwrap_or("(none open)")
+    ));
+    text.push_str(&format!(
+        "module:    {}\n\n",
+        module.unwrap_or("(this platform does not say)")
+    ));
+    text.push_str("what went wrong\n---------------\n");
+    text.push_str(what);
+    text.push_str(
+        "\n\nThis was a fault in native code rather than a panic, so there is no \
+         message from Fontelle itself. If the module above is a plugin, the plugin \
+         crashed; the session log beside this report says what was happening.\n",
+    );
+    text
+}
+
 /// What a report written at `unix` is called.
 ///
 /// Zero-padded so the file names sort in the order the crashes happened, which
@@ -266,6 +307,7 @@ pub fn begin(dir: &Path, project: Option<&str>) -> LastRun {
     // catch.
     let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(marker_path(dir), marker.line());
+    native::install(dir, &marker);
     install_hook(dir.to_path_buf(), marker);
     verdict
 }
@@ -325,4 +367,218 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Writing a report when native code faults.
+///
+/// Installed by [`begin`] beside the panic hook. **Chained, never
+/// swallowing**: after the report is written the fault goes on to whatever
+/// would have handled it — Rust's own stack-overflow message, the system's
+/// crash dialog, a core dump — so this adds a file and takes nothing away.
+#[cfg(unix)]
+mod native {
+    use std::ffi::CString;
+    use std::path::Path;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicPtr, Ordering};
+
+    /// The synchronous faults, and the abort a C++ `std::terminate` ends in.
+    const SIGNALS: [(libc::c_int, &str); 5] = [
+        (
+            libc::SIGSEGV,
+            "SIGSEGV \u{2014} a read or write of memory that was not there",
+        ),
+        (libc::SIGBUS, "SIGBUS \u{2014} a bad memory access"),
+        (libc::SIGILL, "SIGILL \u{2014} an illegal instruction"),
+        (libc::SIGFPE, "SIGFPE \u{2014} an arithmetic fault"),
+        (libc::SIGABRT, "SIGABRT \u{2014} the process aborted"),
+    ];
+
+    /// Everything the handler needs, made **before** there is a fault: a
+    /// signal handler may not allocate, format or lock, so the report for
+    /// each signal is written out in full now and the handler only copies
+    /// bytes to a file.
+    struct Prepared {
+        path: CString,
+        reports: Vec<(libc::c_int, Vec<u8>)>,
+    }
+
+    /// The current run's, swapped whole when `begin` is called again.
+    static PREPARED: AtomicPtr<Prepared> = AtomicPtr::new(std::ptr::null_mut());
+    /// What each signal did before, to hand the fault on to.
+    static PREVIOUS: OnceLock<Vec<(libc::c_int, libc::sigaction)>> = OnceLock::new();
+
+    pub(super) fn install(dir: &Path, marker: &super::Marker) {
+        use std::os::unix::ffi::OsStrExt;
+        let path = dir.join(super::report_name(marker.started));
+        let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        let reports = SIGNALS
+            .iter()
+            .map(|(signal, what)| {
+                let text = super::native_report_text(what, None, marker);
+                (*signal, text.into_bytes())
+            })
+            .collect();
+        // Leaked on purpose: a handler may read it at any moment for the rest
+        // of the process, and `begin` runs once or twice a process.
+        let prepared = Box::into_raw(Box::new(Prepared { path, reports }));
+        PREPARED.store(prepared, Ordering::Release);
+        PREVIOUS.get_or_init(|| {
+            SIGNALS
+                .iter()
+                .filter_map(|(signal, _)| {
+                    // SAFETY: `sigaction` with a zeroed, fully initialised
+                    // struct; the handler it installs is async-signal-safe.
+                    unsafe {
+                        let mut ours: libc::sigaction = std::mem::zeroed();
+                        ours.sa_sigaction = on_fault as *const () as usize;
+                        ours.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+                        libc::sigemptyset(&mut ours.sa_mask);
+                        let mut before: libc::sigaction = std::mem::zeroed();
+                        (libc::sigaction(*signal, &ours, &mut before) == 0)
+                            .then_some((*signal, before))
+                    }
+                })
+                .collect()
+        });
+    }
+
+    /// Writes the prepared report for `signal`, puts the old handler back
+    /// and lets the fault happen again under it.
+    extern "C" fn on_fault(
+        signal: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _context: *mut libc::c_void,
+    ) {
+        // SAFETY: only async-signal-safe calls (`open`, `write`, `close`,
+        // `sigaction`, `raise`) on data prepared before any fault.
+        unsafe {
+            let prepared = PREPARED.load(Ordering::Acquire);
+            if let Some(prepared) = prepared.as_ref()
+                && let Some((_, text)) = prepared.reports.iter().find(|(s, _)| *s == signal)
+            {
+                let fd = libc::open(
+                    prepared.path.as_ptr(),
+                    libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC,
+                    0o644,
+                );
+                if fd >= 0 {
+                    libc::write(fd, text.as_ptr().cast(), text.len());
+                    libc::close(fd);
+                }
+            }
+            if let Some(before) = PREVIOUS
+                .get()
+                .and_then(|all| all.iter().find(|(s, _)| *s == signal))
+            {
+                libc::sigaction(signal, &before.1, std::ptr::null_mut());
+            }
+            // A fault re-runs the instruction on return, now under the old
+            // handler. An abort does not, so it is sent again.
+            if signal == libc::SIGABRT {
+                libc::raise(signal);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+mod native {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        EXCEPTION_POINTERS, SetUnhandledExceptionFilter,
+    };
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        GetModuleFileNameW, GetModuleHandleExW,
+    };
+
+    /// Where the report goes, and what the run was.
+    static RUN: Mutex<Option<(PathBuf, super::Marker)>> = Mutex::new(None);
+
+    /// `EXCEPTION_CONTINUE_SEARCH`: the fault goes on to the system's own
+    /// handling once the report is written.
+    const CONTINUE_SEARCH: i32 = 0;
+
+    pub(super) fn install(dir: &Path, marker: &super::Marker) {
+        if let Ok(mut run) = RUN.lock() {
+            *run = Some((dir.to_path_buf(), marker.clone()));
+        }
+        // SAFETY: installs a process-wide filter whose function lives for the
+        // whole program.
+        unsafe {
+            SetUnhandledExceptionFilter(Some(on_exception));
+        }
+    }
+
+    /// What an exception code means, in words.
+    fn describe(code: i32) -> String {
+        let words = match code as u32 {
+            0xC000_0005 => "an access violation (a read or write of memory that was not there)",
+            0xC000_00FD => "a stack overflow",
+            0xC000_001D => "an illegal instruction",
+            0xC000_0094 => "an integer division by zero",
+            0xC000_0409 => "a stack buffer overrun, or a fast-fail abort",
+            0xC000_0374 => "a corrupted heap",
+            0x8000_0003 => "a breakpoint",
+            0xE06D_7363 => "an uncaught C++ exception",
+            _ => "an unhandled exception",
+        };
+        format!("{words} \u{2014} exception code 0x{:08X}", code as u32)
+    }
+
+    /// The file a code address is inside — a plugin's DLL, or Fontelle.
+    fn module_of(address: *const std::ffi::c_void) -> Option<String> {
+        let mut module: HMODULE = std::ptr::null_mut();
+        // SAFETY: asks the loader about an address without taking a
+        // reference; the buffer is a fixed array of the length passed.
+        unsafe {
+            if GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                address.cast(),
+                &mut module,
+            ) == 0
+            {
+                return None;
+            }
+            let mut name = [0u16; 1024];
+            let length = GetModuleFileNameW(module, name.as_mut_ptr(), name.len() as u32);
+            (length > 0).then(|| String::from_utf16_lossy(&name[..length as usize]))
+        }
+    }
+
+    unsafe extern "system" fn on_exception(info: *const EXCEPTION_POINTERS) -> i32 {
+        // Best effort, on a process that is going down: a lock that is held
+        // or a record that is not there is a report that is not written.
+        let Ok(run) = RUN.try_lock() else {
+            return CONTINUE_SEARCH;
+        };
+        let Some((dir, marker)) = run.as_ref() else {
+            return CONTINUE_SEARCH;
+        };
+        // SAFETY: the system hands the filter a valid record for the fault.
+        let (code, address) = unsafe {
+            let Some(record) = info.as_ref().and_then(|info| info.ExceptionRecord.as_ref()) else {
+                return CONTINUE_SEARCH;
+            };
+            (record.ExceptionCode, record.ExceptionAddress)
+        };
+        let what = format!("{} at {address:p}", describe(code));
+        let module = module_of(address);
+        let text = super::native_report_text(&what, module.as_deref(), marker);
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(dir.join(super::report_name(super::now())), text);
+        CONTINUE_SEARCH
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod native {
+    pub(super) fn install(_: &std::path::Path, _: &super::Marker) {}
 }

@@ -2271,6 +2271,18 @@ impl WindowApp {
             recent,
             message: TextLayout::default(),
         });
+        // Whatever the host has to say goes on the menu, which is in front
+        // of the status line it would otherwise be written on — the last
+        // run's crash above all, whose report is one press away under
+        // *Logs folder*.
+        if let Some(news) = self
+            .options
+            .document
+            .as_mut()
+            .and_then(|doc| doc.take_message())
+        {
+            self.say_on_welcome(news);
+        }
         self.tree.invalidate_rect(self.layout.window);
     }
 
@@ -2419,6 +2431,9 @@ impl WindowApp {
                 doc.open_url(REPOSITORY_URL);
                 Ok(false)
             }
+            // The menu stays up: the folder opens beside it, and a report
+            // is written with the project still to be chosen.
+            WelcomeHit::Logs => doc.reveal_logs_dir().map(|()| false),
             WelcomeHit::Help => unreachable!("handled above"),
         };
         match outcome {
@@ -6202,6 +6217,7 @@ impl WindowApp {
                 crate::canvas::FOOTER_TEXT,
                 crate::canvas::WEBSITE_LABEL,
                 crate::canvas::REPOSITORY_LABEL,
+                crate::canvas::LOGS_LABEL,
                 "\u{00d7}",
             ] {
                 want(&mut self.labels, &mut self.text, fixed);
@@ -10929,6 +10945,23 @@ impl WindowApp {
                 self.flop_node = Some((card, node, (x, y), from));
                 self.drag = Drag::FlopEnvNode;
             }
+            // The cycle of an LFO that plays its wave: a press starts drawing
+            // it — DRAW on, seeded from the wave, one undo — and the picture
+            // is the shape editor from the next frame (`lfo_draw_switch`).
+            FlopsynthPicture::Lfo { .. } => {
+                let draw = self
+                    .flopsynth
+                    .as_ref()
+                    .and_then(|view| view.cards.get(card))
+                    .and_then(crate::canvas::lfo_draw_switch);
+                if let Some(draw) = draw {
+                    self.set_param(&draw, 1.0);
+                    if let Some(doc) = &mut self.options.document {
+                        doc.end_gesture();
+                    }
+                    self.after_flop_structure();
+                }
+            }
             // A drawn shape (§3.4): a point is dragged, the segment between
             // two is bent, a double-click adds a point, an Alt-click takes
             // one out.
@@ -10998,11 +11031,8 @@ impl WindowApp {
                     self.drag_flop_velocity(card, x, y);
                 }
             }
-            // A wave's picture is a read-out: its shape is a chooser and its
-            // rate is a knob, and there is nothing in the drawing to aim at.
-            FlopsynthPicture::Lfo { .. }
-            | FlopsynthPicture::Curve { .. }
-            | FlopsynthPicture::None => {}
+            // An effect's curve is a read-out of its knobs.
+            FlopsynthPicture::Curve { .. } | FlopsynthPicture::None => {}
         }
         self.tree.invalidate(PANEL);
     }

@@ -2413,3 +2413,112 @@ fn the_seven_new_effects_take_a_slot_and_draw_their_pictures() {
     assert!(matches!(card_of(5).picture, FlopsynthPicture::None));
     assert!(matches!(card_of(6).picture, FlopsynthPicture::None));
 }
+
+/// > *"the lfos say click to draw but seemingly does nothing"*
+///
+/// An LFO's picture said *"DRAW to edit it"* — meaning a switch called DRAW
+/// further down the card — and a press on the picture itself did nothing,
+/// which is exactly where anybody who read the words pressed. The picture is
+/// the way in now: a press on it turns the card's DRAW on (the drawn shape
+/// starts as the wave it was playing, so nothing jumps) and the same picture
+/// becomes the shape editor. The tip says so in the words a click needs.
+#[test]
+fn pressing_an_lfos_picture_starts_drawing_it() {
+    use fontelle_ui::canvas::{
+        FlopsynthHit, FlopsynthPage, FlopsynthPicture, flopsynth_tip, lfo_draw_switch,
+    };
+    let mut session = a_flopsynth();
+    let sources = session
+        .flopsynth(FlopsynthPage::Synth)
+        .expect("a window")
+        .sources;
+    let lfo = sources.iter().position(|s| s == "LFO 1").unwrap();
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(lfo))
+        .unwrap();
+    let card = view
+        .cards
+        .iter()
+        .position(|c| c.group.name == "LFO 1")
+        .expect("the LFO's card in the inspector");
+    assert!(matches!(
+        view.cards[card].picture,
+        FlopsynthPicture::Lfo { .. }
+    ));
+    let tip = flopsynth_tip(FlopsynthHit::Picture { card }, &view.cards).unwrap();
+    assert!(
+        tip.to_lowercase().contains("click to draw"),
+        "the tip says what a click does: {tip}"
+    );
+
+    // The switch the press sets.
+    let draw = lfo_draw_switch(&view.cards[card]).expect("an LFO card has a DRAW switch");
+    assert_eq!(draw.as_str(), "patch/lfo[0]/draw");
+    session.set_instrument_param(&draw, 1.0);
+    session.end_gesture();
+
+    let view = session
+        .flopsynth_inspecting(FlopsynthPage::Synth, Some(lfo))
+        .unwrap();
+    let card = view.cards.iter().find(|c| c.group.name == "LFO 1").unwrap();
+    assert!(
+        matches!(card.picture, FlopsynthPicture::LfoShape { .. }),
+        "the picture is the shape editor now: {:?}",
+        card.picture
+    );
+    // Nothing else has a DRAW switch to find.
+    let osc = view
+        .cards
+        .iter()
+        .find(|c| c.group.name.starts_with("OSC"))
+        .unwrap();
+    assert_eq!(lfo_draw_switch(osc), None);
+}
+
+/// > *"on flopsynth: some of the knobs don't do anything"*
+///
+/// In the Init patch three of the four sources are at level *off* and the
+/// second filter is switched off, so every knob on those cards moves
+/// something nobody can hear — correctly, and silently. The tip on such a
+/// card's controls says why before it says how, and points at the one
+/// control that would change that.
+#[test]
+fn a_knob_on_a_card_that_cannot_be_heard_says_so() {
+    use fontelle_ui::canvas::{FlopsynthHit, FlopsynthPage, flopsynth_tip};
+    let session = a_flopsynth();
+    let view = session.flopsynth(FlopsynthPage::Synth).expect("a window");
+    let tip = |name: &str, label: &str| {
+        let card = view
+            .cards
+            .iter()
+            .position(|c| c.group.name == name)
+            .unwrap_or_else(|| panic!("no {name} card"));
+        let param = view.cards[card]
+            .group
+            .params
+            .iter()
+            .position(|p| p.label == label)
+            .unwrap_or_else(|| panic!("no {label} on {name}"));
+        flopsynth_tip(FlopsynthHit::Control { card, param }, &view.cards).unwrap()
+    };
+
+    let silent = tip("OSC B", "DETUNE").to_lowercase();
+    assert!(
+        silent.contains("silent") && silent.contains("level"),
+        "a source at level off says so, and which knob: {silent}"
+    );
+    let off = tip("Filter 2", "CUTOFF").to_lowercase();
+    assert!(
+        off.contains("off") && off.contains("on"),
+        "a stage switched off says so: {off}"
+    );
+    // The knob that would change it is not told it is silent — it is the
+    // answer, not the problem.
+    assert!(!tip("OSC B", "LEVEL").to_lowercase().contains("silent"));
+    // And a card that is heard says nothing of the sort.
+    let heard = tip("OSC A", "DETUNE").to_lowercase();
+    assert!(
+        !heard.contains("silent") && !heard.contains("switched off"),
+        "{heard}"
+    );
+}

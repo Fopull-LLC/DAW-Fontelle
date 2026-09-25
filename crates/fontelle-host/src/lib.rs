@@ -75,7 +75,7 @@ pub mod vst3;
 
 pub use atom::{AtomPipe, AtomPipes, MAX_ATOM_BYTES, trace as atom_trace};
 pub use bridge::{BridgeFailure, Bridges, bridge_search_paths};
-pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow};
+pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
 pub use lv2_state::{Lv2Property, Lv2State};
 pub use param::{HostedParam, ParamValues};
 pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHost};

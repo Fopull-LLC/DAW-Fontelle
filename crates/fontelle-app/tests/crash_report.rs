@@ -294,16 +294,24 @@ fn the_news_says_what_it_is_before_the_status_line_runs_out() {
     );
 }
 
+/// The report is named, and so is where to find it: the start menu's *Logs
+/// folder*. A whole path does not fit the two rows the menu has for it —
+/// `C:\Users\…\AppData\Local\fontelle\logs\crash-….log` is cut off
+/// before the name — and the folder is one press away.
 #[test]
-fn a_panic_is_reported_with_the_path_of_its_report() {
+fn a_panic_is_reported_with_the_name_of_its_report_and_the_folder_it_is_in() {
     let said = LastRun::Panicked {
-        report: PathBuf::from("/data/fontelle/crash-000001757500.log"),
+        report: PathBuf::from("/data/fontelle/logs/crash-000001757500.log"),
         pid: 7,
     }
     .message()
     .expect("a panic is news");
     assert!(
-        said.contains("/data/fontelle/crash-000001757500.log"),
+        said.contains("crash-000001757500.log"),
         "the message has to name the file to read: {said}"
+    );
+    assert!(
+        said.to_lowercase().contains("logs folder"),
+        "and say where it is: {said}"
     );
 }

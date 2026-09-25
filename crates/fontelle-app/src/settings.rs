@@ -863,24 +863,128 @@ impl From<MidiInputSettings> for fontelle_midi::InputSettings {
     }
 }
 
+/// Which rules a folder is chosen by — a parameter rather than a `cfg!`, so
+/// the Windows rules are tested on the machine this is built on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    /// Linux and macOS: `HOME` and the XDG variables.
+    Unix,
+    /// `%APPDATA%` and `%LOCALAPPDATA%`; no `HOME` to be had.
+    Windows,
+}
+
+impl Platform {
+    /// The one this build runs on.
+    pub fn here() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Unix
+        }
+    }
+
+    /// Whether `path` is absolute *on this platform* — asked of a string,
+    /// because `Path::is_absolute` answers for the machine running the test.
+    fn is_absolute(self, path: &str) -> bool {
+        match self {
+            Self::Unix => path.starts_with('/'),
+            Self::Windows => {
+                let bytes = path.as_bytes();
+                let drive = bytes.len() >= 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && matches!(bytes[2], b'\\' | b'/');
+                drive || path.starts_with(r"\\") || path.starts_with('/')
+            }
+        }
+    }
+}
+
 impl Settings {
-    /// `$XDG_CONFIG_HOME/fontelle`, or `$HOME/.config/fontelle`.
+    /// `$XDG_CONFIG_HOME/fontelle`, or `$HOME/.config/fontelle` — or on
+    /// Windows `%APPDATA%\fontelle` (see [`config_dir_on`](Self::config_dir_on)).
     ///
     /// The environment is injected so the answer is testable without one —
     /// this is the one function in the workspace that decides where Fontelle is
     /// allowed to write, and it should not need a particular machine to check.
     pub fn config_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-        Self::xdg_from(env, "XDG_CONFIG_HOME", ".config").map(|base| base.join("fontelle"))
+        Self::config_dir_on(env, Platform::here(), &|path| path.is_dir())
     }
 
-    /// `$XDG_DATA_HOME/fontelle`, or `$HOME/.local/share/fontelle`.
+    /// `$XDG_DATA_HOME/fontelle`, or `$HOME/.local/share/fontelle` — or on
+    /// Windows `%LOCALAPPDATA%\fontelle`.
     ///
     /// Fontelle's own data directory — the parent of the soundfont bank and
     /// the user presets, and where [`crate::crashlog`] writes. Its own
     /// function rather than `default_soundfont_dir().parent()`, which would
     /// make the crash log's home a consequence of where the soundfonts live.
     pub fn data_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-        Self::xdg_from(env, "XDG_DATA_HOME", ".local/share").map(|base| base.join("fontelle"))
+        Self::data_dir_on(env, Platform::here(), &|path| path.is_dir())
+    }
+
+    /// The config folder on `platform`, with `exists` asked about folders
+    /// already on disk.
+    ///
+    /// > *"could not write settings: there is n…"*
+    ///
+    /// **Windows sets no `HOME`**, so the XDG rule alone answered `None`
+    /// there, and every Windows install ran with no settings file, no preset
+    /// folder, no soundfont bank and no crash reports. A Windows program's
+    /// own folders are `%APPDATA%` for what it is set to and `%LOCALAPPDATA%`
+    /// for what it keeps — the second is where the bridges already went
+    /// (`fontelle_host::bridge_search_paths`). One exception, for somebody
+    /// who ran Fontelle from a shell that does set `HOME` (Git Bash, MSYS):
+    /// a Fontelle folder that **already exists** under it is kept, because
+    /// moving somebody's settings out from under them is worse than an
+    /// unusual place for them.
+    pub fn config_dir_on(
+        env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        Self::own_dir(
+            env,
+            platform,
+            exists,
+            "XDG_CONFIG_HOME",
+            ".config",
+            "APPDATA",
+        )
+    }
+
+    /// The data folder on `platform` — [`config_dir_on`](Self::config_dir_on)'s
+    /// rule, with `%LOCALAPPDATA%` for Windows.
+    pub fn data_dir_on(
+        env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        Self::own_dir(
+            env,
+            platform,
+            exists,
+            "XDG_DATA_HOME",
+            ".local/share",
+            "LOCALAPPDATA",
+        )
+    }
+
+    /// The soundfont bank inside [`data_dir_on`](Self::data_dir_on).
+    pub fn default_soundfont_dir_on(
+        env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        Self::data_dir_on(env, platform, exists).map(|dir| dir.join("soundfonts"))
+    }
+
+    /// The user presets inside [`data_dir_on`](Self::data_dir_on).
+    pub fn default_preset_dir_on(
+        env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        Self::data_dir_on(env, platform, exists).map(|dir| dir.join("presets"))
     }
 
     pub fn data_dir() -> Option<PathBuf> {
@@ -889,14 +993,12 @@ impl Settings {
 
     /// `$XDG_DATA_HOME/fontelle/soundfonts`, or `$HOME/.local/share/...`.
     pub fn default_soundfont_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-        Self::xdg_from(env, "XDG_DATA_HOME", ".local/share")
-            .map(|base| base.join("fontelle").join("soundfonts"))
+        Self::data_dir_from(env).map(|dir| dir.join("soundfonts"))
     }
 
     /// `$XDG_DATA_HOME/fontelle/presets`, or `$HOME/.local/share/...`.
     pub fn default_preset_dir_from(env: &dyn Fn(&str) -> Option<String>) -> Option<PathBuf> {
-        Self::xdg_from(env, "XDG_DATA_HOME", ".local/share")
-            .map(|base| base.join("fontelle").join("presets"))
+        Self::data_dir_from(env).map(|dir| dir.join("presets"))
     }
 
     pub fn default_preset_dir() -> Option<PathBuf> {
@@ -912,18 +1014,37 @@ impl Settings {
         self.preset_dir.clone().or_else(Self::default_preset_dir)
     }
 
-    fn xdg_from(
+    /// One of Fontelle's own folders: the XDG variable, then — on Windows —
+    /// an existing folder under `HOME` or else the Windows variable, then
+    /// the XDG fallback under `HOME`.
+    fn own_dir(
         env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
         variable: &str,
         fallback: &str,
+        windows: &str,
     ) -> Option<PathBuf> {
         // An XDG variable that is set but empty or relative is, per the spec,
         // to be ignored rather than honoured — and honouring a relative one
         // would put Fontelle's config wherever it happened to be launched from.
-        match env(variable) {
-            Some(value) if Path::new(&value).is_absolute() => Some(PathBuf::from(value)),
-            _ => env("HOME").map(|home| PathBuf::from(home).join(fallback)),
+        if let Some(value) = env(variable)
+            && platform.is_absolute(&value)
+        {
+            return Some(PathBuf::from(value).join("fontelle"));
         }
+        let under_home = env("HOME")
+            .filter(|home| !home.is_empty())
+            .map(|home| PathBuf::from(home).join(fallback).join("fontelle"));
+        if platform == Platform::Windows {
+            if let Some(old) = under_home.as_ref().filter(|dir| exists(dir)) {
+                return Some(old.clone());
+            }
+            if let Some(base) = env(windows).filter(|value| platform.is_absolute(value)) {
+                return Some(PathBuf::from(base).join("fontelle"));
+            }
+        }
+        under_home
     }
 
     pub fn config_dir() -> Option<PathBuf> {

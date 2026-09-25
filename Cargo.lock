@@ -1097,10 +1097,12 @@ dependencies = [
  "fontelle-testvst3",
  "fontelle-types",
  "fontelle-ui",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
  "slotmap",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1194,6 +1196,7 @@ dependencies = [
  "png",
  "serde_json",
  "vst3",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 

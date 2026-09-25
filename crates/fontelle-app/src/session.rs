@@ -674,6 +674,62 @@ const PREVIEW_BUCKETS_MAX: usize = 1 << 16;
 const DROPPED_OSC_DB: f32 = -18.0;
 
 impl Session {
+    /// One settings row pressed — [`StudioHost::nudge_setting`]'s work,
+    /// which is that and the toast.
+    fn press_setting(&mut self, index: usize, delta: i32) {
+        let rows = crate::settings::setting_rows(&self.settings);
+        let Some(row) = rows.get(index) else {
+            return;
+        };
+        // A folder row is a **button**, not a value to step: clicking it asks
+        // for a folder. `SettingRow::nudge` deliberately does nothing to one
+        // (a row that was both would change the row above it), so the branch
+        // is here, at the one place a settings row is pressed.
+        if let Some(kind) = row.folder() {
+            self.import_kind = kind;
+            self.import_query.clear();
+            self.choose_import_dir();
+            self.touch();
+            return;
+        }
+        // The plugin buttons, for the same reason and by the same rule: a row
+        // that opens a picker is not a value to step.
+        if row.is_plugin_row() {
+            match row {
+                crate::settings::SettingRow::PluginFolder => self.choose_plugin_dir(),
+                crate::settings::SettingRow::PluginDir(which) => self.remove_plugin_dir(*which),
+                crate::settings::SettingRow::ImportFlFolders => self.import_fl_folders(),
+                _ => <Self as StudioHost>::rescan_plugins(self),
+            }
+            self.touch();
+            return;
+        }
+        // An extension row is a button too: install it, or remove it.
+        if let crate::settings::SettingRow::Extension(index) = *row {
+            self.press_extension(index);
+            self.touch();
+            return;
+        }
+        // A switch, by the same rule: not a value to step, so it is flipped
+        // here rather than in `nudge`, which only sees the MIDI half.
+        if *row == crate::settings::SettingRow::CheckForUpdates {
+            self.settings.check_for_updates = !self.settings.check_for_updates;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
+        let before = self.settings.midi_input;
+        row.nudge(&mut self.settings.midi_input, delta);
+        if self.settings.midi_input == before {
+            // A heading, or a number already at its end. Neither is worth a
+            // write to disk or a redraw.
+            return;
+        }
+        self.write_input_settings();
+    }
+
     /// Says something in the window's status line, once.
     ///
     /// The same one-line channel every edit reports through
@@ -6961,57 +7017,22 @@ impl StudioHost for Session {
     }
 
     fn nudge_setting(&mut self, index: usize, delta: i32) {
-        let rows = crate::settings::setting_rows(&self.settings);
-        let Some(row) = rows.get(index) else {
-            return;
-        };
-        // A folder row is a **button**, not a value to step: clicking it asks
-        // for a folder. `SettingRow::nudge` deliberately does nothing to one
-        // (a row that was both would change the row above it), so the branch
-        // is here, at the one place a settings row is pressed.
-        if let Some(kind) = row.folder() {
-            self.import_kind = kind;
-            self.import_query.clear();
-            self.choose_import_dir();
-            self.touch();
-            return;
+        // **A settings button answers on the settings page.** What each one
+        // has to say — a folder chosen, a picker that failed, an install
+        // refused while a plugin is open — is written to the status line,
+        // one row clipped at forty characters under the page that was
+        // pressed, and from the page a refused press looked like a press
+        // that did nothing: *"anything that says click doesn't work"*. So
+        // whatever a press left there comes back as the page's toast too,
+        // unless the press made a toast of its own.
+        let said_before = self.message.clone();
+        self.press_setting(index, delta);
+        if self.settings_toast.is_none()
+            && self.message != said_before
+            && let Some(said) = &self.message
+        {
+            self.settings_toast = Some((said.clone(), false));
         }
-        // The plugin buttons, for the same reason and by the same rule: a row
-        // that opens a picker is not a value to step.
-        if row.is_plugin_row() {
-            match row {
-                crate::settings::SettingRow::PluginFolder => self.choose_plugin_dir(),
-                crate::settings::SettingRow::PluginDir(which) => self.remove_plugin_dir(*which),
-                crate::settings::SettingRow::ImportFlFolders => self.import_fl_folders(),
-                _ => <Self as StudioHost>::rescan_plugins(self),
-            }
-            self.touch();
-            return;
-        }
-        // An extension row is a button too: install it, or remove it.
-        if let crate::settings::SettingRow::Extension(index) = *row {
-            self.press_extension(index);
-            self.touch();
-            return;
-        }
-        // A switch, by the same rule: not a value to step, so it is flipped
-        // here rather than in `nudge`, which only sees the MIDI half.
-        if *row == crate::settings::SettingRow::CheckForUpdates {
-            self.settings.check_for_updates = !self.settings.check_for_updates;
-            if let Err(e) = self.save_settings() {
-                self.message = Some(format!("could not write settings: {e}"));
-            }
-            self.touch();
-            return;
-        }
-        let before = self.settings.midi_input;
-        row.nudge(&mut self.settings.midi_input, delta);
-        if self.settings.midi_input == before {
-            // A heading, or a number already at its end. Neither is worth a
-            // write to disk or a redraw.
-            return;
-        }
-        self.write_input_settings();
     }
 
     fn settings_confirm(&self, index: usize) -> Option<String> {
@@ -7588,6 +7609,15 @@ impl StudioHost for Session {
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
+    }
+
+    fn reveal_logs_dir(&mut self) -> Result<(), String> {
+        let dir = crate::logs::current()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(crate::logs::default_dir)
+            .ok_or_else(|| "Fontelle has no data folder to keep logs in".to_string())?;
+        crate::desktop::reveal(&dir)
     }
 
     fn reveal_config_dir(&mut self) {

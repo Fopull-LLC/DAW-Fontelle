@@ -558,8 +558,9 @@ impl BridgedPlugin {
     }
 
     /// Opens the editor into `window`, answering the size the bridge says
-    /// it wants. The window's id is what an X11 embedding needs and what a
-    /// headless window reports as zero.
+    /// it wants. The window's id is what the platform embeds into — an X11
+    /// window, or on Windows an `HWND`, which is what `effEditOpen` takes —
+    /// and what a headless window reports as zero.
     pub(crate) fn open_editor(
         &self,
         window: &crate::gui::PluginWindow,
@@ -569,12 +570,7 @@ impl BridgedPlugin {
         }
         let (mut width, mut height) = (0u32, 0u32);
         let result = unsafe {
-            (self.table().open_editor)(
-                self.shared.instance,
-                u64::from(window.id()),
-                &mut width,
-                &mut height,
-            )
+            (self.table().open_editor)(self.shared.instance, window.id(), &mut width, &mut height)
         };
         if result < 0 {
             return Err(crate::gui::GuiError::Refused("create"));

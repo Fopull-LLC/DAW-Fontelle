@@ -260,6 +260,60 @@ pub fn flop_knob_menu(menu: &FlopKnobMenu<'_>) -> Vec<(super::MenuEntry, FlopKno
     rows
 }
 
+/// The switch that makes an LFO card's picture a shape editor — its DRAW —
+/// or `None` for a card that is not an LFO's.
+///
+/// > *"the lfos say click to draw but seemingly does nothing"*
+///
+/// A press on the cycle's picture sets it, so the picture is the way in to
+/// drawing rather than a switch the words point at.
+pub fn lfo_draw_switch(card: &FlopsynthCard) -> Option<fontelle_types::ParamAddress> {
+    if !matches!(
+        card.picture,
+        FlopsynthPicture::Lfo { .. } | FlopsynthPicture::LfoShape { .. }
+    ) {
+        return None;
+    }
+    card.group
+        .params
+        .iter()
+        .find(|param| {
+            matches!(param.kind, ParamKind::Switch) && param.address.as_str().ends_with("/draw")
+        })
+        .map(|param| param.address.clone())
+}
+
+/// Why the controls of `card` are not heard, if they are not — for every
+/// control but `param`, when `param` is the one that would change it.
+///
+/// > *"on flopsynth: some of the knobs don't do anything"*
+///
+/// The Init patch starts three of its four sources at level *off* and its
+/// second filter switched off, so a knob on one of those cards turns
+/// something nobody can hear. That is right, and it said nothing about it.
+fn unheard(card: &FlopsynthCard, param: usize) -> Option<&'static str> {
+    let params = &card.group.params;
+    let silent = params
+        .iter()
+        .position(|p| p.address.as_str().ends_with("/gain") && p.display == "off");
+    if let Some(level) = silent
+        && level != param
+    {
+        return Some("Silent until its LEVEL is turned up");
+    }
+    let off = params.iter().position(|p| {
+        matches!(p.kind, ParamKind::Switch)
+            && p.address.as_str().ends_with("/enabled")
+            && p.value < 0.5
+    });
+    if let Some(switch) = off
+        && switch != param
+    {
+        return Some("Switched off \u{2014} turn ON to hear it");
+    }
+    None
+}
+
 /// The tip for what the pointer is on (§3.3): one sentence, what it does
 /// and how. `None` for a thing with nothing to say — a source card's
 /// header is its name.
@@ -267,7 +321,7 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
     Some(match hit {
         FlopsynthHit::Control { card, param } => {
             let control = cards.get(card)?.group.params.get(param)?;
-            match control.kind {
+            let how = match control.kind {
                 ParamKind::Knob => "Drag to set \u{b7} Shift or Ctrl for finer \u{b7} \
                                     Alt-click resets \u{b7} double-click to type a value \u{b7} \
                                     right-click for more"
@@ -279,6 +333,11 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
                 }
                 ParamKind::Switch => "Click to switch \u{b7} right-click for more".to_string(),
                 ParamKind::Action => "Click".to_string(),
+            };
+            // Why nothing is heard goes first, when nothing is.
+            match unheard(cards.get(card)?, param) {
+                Some(why) => format!("{why} \u{b7} {how}"),
+                None => how,
             }
         }
         FlopsynthHit::Picture { card } => match cards.get(card)?.picture {
@@ -303,7 +362,13 @@ pub fn flopsynth_tip(hit: FlopsynthHit, cards: &[FlopsynthCard]) -> Option<Strin
                 "Drag sideways to move the start \u{b7} right-click for a sound".to_string()
             }
             FlopsynthPicture::Partials { .. } => "The string's partials".to_string(),
-            FlopsynthPicture::Lfo { .. } => "The LFO's cycle \u{b7} DRAW to edit it".to_string(),
+            // The picture is the way in: a press turns DRAW on and it becomes
+            // the shape editor (`lfo_draw_switch`). It used to say "DRAW to
+            // edit it", meaning a switch further down, and a press on the
+            // picture — where anybody who read that pressed — did nothing.
+            FlopsynthPicture::Lfo { .. } => {
+                "The LFO's cycle \u{b7} click to draw your own shape".to_string()
+            }
             FlopsynthPicture::LfoShape { .. } => {
                 "Drag a point \u{b7} drag between points to bend \u{b7} double-click to add \u{b7} \
                  right-click for shapes"

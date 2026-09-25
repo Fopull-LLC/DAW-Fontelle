@@ -40,6 +40,33 @@ slotmap = "1.1.1"
 # desktop's own (`desktop.rs`) — one more subprocess and nothing more linked.
 sha2 = "0.10.9"
 
+# The session log's tee and the native crash handler (`logs.rs`,
+# `crashlog.rs`) — a pipe, `dup2` and `sigaction`, already in the tree for
+# the engine's RT budget.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
+# The same two on Windows, plus the desktop's own folder and file dialogs
+# (`desktop.rs`), which run in-process there so they can be owned by the
+# studio's window. Already in the tree under winit and wgpu.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Pipes",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [dev-dependencies]
 # Built for its side effect: the CLAP bundle `tests/plugin_hosting.rs` loads.
 fontelle-testplug = { path = "../fontelle-testplug" }

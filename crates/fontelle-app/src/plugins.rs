@@ -665,7 +665,10 @@ impl PluginRack {
         // The plugin's own idea of how big it should be, asked for while it is
         // being created and applied to the frame afterwards: a window opened
         // at the wrong size and corrected is a window that jumps.
-        match live.plugin.open_editor(&window, 1.0) {
+        // The monitor's scale on Windows, where a plugin is told; one on X11,
+        // where it reads the desktop's own setting.
+        let scale = window.scale();
+        match live.plugin.open_editor(&window, scale) {
             Ok(wanted) => {
                 let mut window = window;
                 window.resize(wanted);

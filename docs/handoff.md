@@ -16,6 +16,42 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-25 (Windows, v0.15.0).** `PROGRESS.md`'s top entry. Things
+to know:
+
+(a) **Test Windows under Wine, it is on this machine.** `cargo build --release
+-p fontelle-app --target x86_64-pc-windows-gnu`, then with a prefix of your own
+(`WINEPREFIX=<scratch>/wine`, `wineboot -u` once, cancel the Mono installer)
+run it on `:99` with `env -u WAYLAND_DISPLAY DISPLAY=:99 wine fontelle.exe`.
+Copy fonts into `drive_c/windows/Fonts` first or it panics (*"no default font
+found"*), and make an **Arial** (Liberation Sans with its name records
+rewritten by fontTools): the theme's `sans-serif` is Arial on Windows, and any
+other face changes Flopsynth's layout. Test binaries run the same way
+(`cargo test --target x86_64-pc-windows-gnu --no-run`, then `wine <test>.exe`);
+set `AeDebug\Debugger` to `false` in the prefix or a test that crashes on
+purpose waits on winedbg. Real Windows plugins: Dexed and Surge XT publish
+plain zips on GitHub. `drive.py` has a `fid,<hex id>` op now — Fontelle's own
+window titles come back as undecodable bytes under Wine, so focus by id.
+
+(b) **Fontelle's own folders go through `Settings::*_dir_on(env, Platform,
+exists)`.** Nothing else may read `HOME` for a folder of Fontelle's — Windows
+has none. `fontelle_ui::skin` still does, for a developer's skin override only.
+
+(c) **`PluginWindow::id()` is a `u64`** (an `HWND` on Windows) and
+`PluginWindow::scale()` is what a plugin is told. A loop with no winit event
+loop of its own (the `plugin_editor` probe, tests) must call
+`fontelle_host::pump_gui_messages()` or a Windows plugin window never paints;
+the studio must not, its loop already does.
+
+(d) **stderr and stdout are a pipe** in a windowed run (`logs::start`). Whatever
+you print is in `logs/` under the data folder as well as on the terminal. The
+tee thread writes unbuffered; keep it that way, the point is the last line
+before a crash.
+
+(e) **A settings press's status-line message is also its toast**
+(`nudge_setting` wraps `press_setting`). A new settings button needs no toast
+code of its own unless it wants an undo.
+
 **Updated 2026-09-22 (DisgustingBeat, the time and volume machine).** A
 twenty-second `EffectKind` — `PROGRESS.md`'s top entry, the whole design in
 `docs/disgusting-beat-plan.md`, and §15 of that document for where the tree

@@ -565,7 +565,9 @@ fn play_or_render(
         // `main` because this is where the project's name is known and where
         // the interactive life of the process begins; a bounce or a `--help`
         // has a terminal to print to and needs no file.
-        let crash_dir = fontelle_app::settings::Settings::data_dir();
+        // Beside the session logs, so the folder the start menu opens holds
+        // both halves of a bug report.
+        let crash_dir = fontelle_app::logs::default_dir();
         let crash_news = crash_dir
             .as_ref()
             .and_then(|dir| fontelle_app::crashlog::begin(dir, Some(&project.meta.name)).message());
@@ -1446,6 +1448,13 @@ fn main() {
     // through the bank that §7.4's listening half needs.
     let headless_project = playing_sf2 || opening || flopsynth.is_some();
     let window = args.iter().any(|a| a == "--window") || !headless_project;
+    // **What this run says goes in a file** as well as to the terminal —
+    // `fontelle_app::logs`. As early as the window is known to be wanted,
+    // so a device that will not open or a scan that trips is in it too; a
+    // bounce or a `--help` has a terminal and needs no file.
+    if window && let Some(dir) = fontelle_app::logs::default_dir() {
+        fontelle_app::logs::start(&dir);
+    }
 
     if blank && !window {
         eprintln!(

@@ -1421,6 +1421,12 @@ pub trait StudioHost: DocumentHost {
     /// Shows the folder the settings file lives in.
     fn reveal_config_dir(&mut self) {}
 
+    /// Shows the folder the session logs and crash reports are in
+    /// (`fontelle_app::logs`), or says why it cannot.
+    fn reveal_logs_dir(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     // ------------------------------------------------------ the keymap ---
 
     /// The shortcuts that differ from the defaults, as the settings file

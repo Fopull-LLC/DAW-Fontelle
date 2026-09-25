@@ -144,12 +144,20 @@ struct OnScreen {
     delete_window: u32,
 }
 
-/// The same, where there is no X server to have: a build for Windows or
-/// macOS, on which a plugin's editor is not yet shown — the embedding is a
-/// different protocol on each and nothing here speaks it. Uninhabited, so
-/// every branch on `server` below is a branch the compiler knows is not
-/// taken.
-#[cfg(not(target_os = "linux"))]
+/// The same on Windows: the window's handle and what its window procedure
+/// has seen. See [`win32`].
+#[cfg(windows)]
+struct OnScreen {
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    /// Written by the window procedure, read by [`PluginWindow::poll`]. Boxed
+    /// so its address — which the window keeps — does not move.
+    seen: Box<win32::Seen>,
+}
+
+/// The same on macOS, where a plugin's editor is not yet shown — the
+/// embedding is an `NSView` and nothing here makes one. Uninhabited, so every
+/// branch on `server` below is a branch the compiler knows is not taken.
+#[cfg(not(any(target_os = "linux", windows)))]
 enum OnScreen {}
 
 #[cfg(target_os = "linux")]
@@ -248,12 +256,21 @@ impl PluginWindow {
     }
 
     /// The X11 id a plugin is given as its parent. Zero for a headless one.
-    pub fn id(&self) -> u32 {
-        self.server.as_ref().map_or(0, |server| server.window)
+    /// A `u64` because on Windows the same number is an `HWND`.
+    pub fn id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| u64::from(server.window))
     }
 
     pub fn size(&self) -> GuiSize {
         self.size
+    }
+
+    /// The display scale the plugin is told. One on X11, where a plugin
+    /// reads the desktop's own setting.
+    pub fn scale(&self) -> f64 {
+        1.0
     }
 
     /// Names the window, so a desktop full of them can be told apart.
@@ -413,12 +430,16 @@ impl Drop for PluginWindow {
 /// says so, and the headless form — every size question, every request the
 /// plugin makes of it — behaves exactly as on Linux, so the code either side
 /// of the drawing is one code. See [`OnScreen`].
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 impl PluginWindow {
     pub fn open(_title: &str, _size: GuiSize) -> Result<Self, GuiError> {
         Err(GuiError::NoDisplay(
-            "plugin editors are shown on Linux only in this build".to_string(),
+            "plugin editors are not shown on this platform yet".to_string(),
         ))
+    }
+
+    pub fn scale(&self) -> f64 {
+        1.0
     }
 
     pub fn headless(width: u32, height: u32) -> Self {
@@ -432,7 +453,7 @@ impl PluginWindow {
         self.server.is_some()
     }
 
-    pub fn id(&self) -> u32 {
+    pub fn id(&self) -> u64 {
         0
     }
 
@@ -454,6 +475,354 @@ impl PluginWindow {
 
     pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
         None
+    }
+}
+
+/// Dispatches every window message waiting on this thread.
+///
+/// **Not for the studio**, whose event loop already does exactly this — a
+/// plugin's windows are windows on the studio's thread, and winit's loop
+/// dispatches all of them. For a loop that has no event loop of its own: the
+/// editor probe and the tests. A no-op where a window is not driven by
+/// messages.
+pub fn pump_gui_messages() {
+    #[cfg(windows)]
+    win32::pump();
+}
+
+/// A plugin editor's window on Windows.
+///
+/// > *"this is what happens to outside vsts in ur daw — it works but it's
+/// > like only the knobs of like every parameter"*
+///
+/// Embedding on Windows is the simplest of the three: a VST 3 view attached
+/// with `"HWND"`, a CLAP GUI given a `win32` window and a VST 2 editor opened
+/// with `effEditOpen` all make a **child window** inside the `HWND` they are
+/// given, and draw and take input there on their own. The studio's winit loop
+/// dispatches every message on its thread — this window's and the plugin's
+/// children's included — so nothing here pumps; the window procedure only
+/// notes what the desktop did to the frame for [`PluginWindow::poll`].
+#[cfg(windows)]
+mod win32 {
+    use std::cell::Cell;
+
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AdjustWindowRectEx, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+        GetClientRect, GetWindowLongPtrW, IDC_ARROW, IsIconic, LoadCursorW, MSG, PM_REMOVE,
+        PeekMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
+        ShowWindow, TranslateMessage, WM_CLOSE, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
+        WS_OVERLAPPEDWINDOW,
+    };
+
+    use super::GuiSize;
+
+    /// What the window procedure has seen since the host last asked.
+    #[derive(Default)]
+    pub(super) struct Seen {
+        pub(super) client: Cell<Option<GuiSize>>,
+        pub(super) closed: Cell<bool>,
+    }
+
+    const STYLE: u32 = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// The class every plugin window is made of, registered once.
+    fn class() -> &'static [u16] {
+        static CLASS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+        CLASS.get_or_init(|| {
+            let name = wide("FontellePluginEditor");
+            // SAFETY: a class with a static name and a window procedure that
+            // lives for the program; registering twice is refused harmlessly.
+            unsafe {
+                let class = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    style: CS_HREDRAW | CS_VREDRAW,
+                    lpfnWndProc: Some(procedure),
+                    hInstance: GetModuleHandleW(std::ptr::null()),
+                    hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
+                    // Black rather than white: a plugin paints its own
+                    // background, and the frame before its first paint should
+                    // not flash.
+                    hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
+                    lpszClassName: name.as_ptr(),
+                    ..std::mem::zeroed()
+                };
+                RegisterClassExW(&class);
+            }
+            name
+        })
+    }
+
+    /// The outer size that gives a client area of `size`.
+    fn outer(size: GuiSize) -> (i32, i32) {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: size.width as i32,
+            bottom: size.height as i32,
+        };
+        // SAFETY: a plain rectangle computation.
+        unsafe { AdjustWindowRectEx(&mut rect, STYLE, 0, 0) };
+        (rect.right - rect.left, rect.bottom - rect.top)
+    }
+
+    pub(super) fn open(title: &str, size: GuiSize) -> Result<(HWND, Box<Seen>), String> {
+        let class = class();
+        let title = wide(title);
+        let (width, height) = outer(size);
+        // SAFETY: a top-level window of a registered class, on this thread,
+        // whose user data is a `Seen` that outlives it (see `close`).
+        unsafe {
+            let hwnd = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                STYLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                width,
+                height,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            );
+            if hwnd.is_null() {
+                return Err(format!(
+                    "the window could not be made: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            let seen = Box::new(Seen::default());
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*seen as *const Seen as isize);
+            ShowWindow(hwnd, SW_SHOW);
+            SetForegroundWindow(hwnd);
+            Ok((hwnd, seen))
+        }
+    }
+
+    pub(super) fn close(hwnd: HWND) {
+        // SAFETY: the user data is cleared before the window goes, so no
+        // message after this reads the `Seen` about to be dropped.
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DestroyWindow(hwnd);
+        }
+    }
+
+    pub(super) fn client(hwnd: HWND) -> GuiSize {
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        // SAFETY: a live window of this thread.
+        unsafe { GetClientRect(hwnd, &mut rect) };
+        GuiSize {
+            width: (rect.right - rect.left).max(0) as u32,
+            height: (rect.bottom - rect.top).max(0) as u32,
+        }
+    }
+
+    pub(super) fn resize(hwnd: HWND, size: GuiSize) {
+        let (width, height) = outer(size);
+        // SAFETY: a live window of this thread.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    pub(super) fn raise(hwnd: HWND) {
+        // SAFETY: a live window of this thread.
+        unsafe {
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        }
+    }
+
+    pub(super) fn set_title(hwnd: HWND, title: &str) {
+        let title = wide(title);
+        // SAFETY: a live window of this thread and a NUL-terminated string.
+        unsafe { SetWindowTextW(hwnd, title.as_ptr()) };
+    }
+
+    /// The monitor's scale: 96 DPI is one. The studio is per-monitor DPI
+    /// aware (winit makes it so), so a plugin's sizes are real pixels and
+    /// this is what it scales its drawing by.
+    pub(super) fn scale(hwnd: HWND) -> f64 {
+        // SAFETY: a live window of this thread.
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        if dpi == 0 { 1.0 } else { f64::from(dpi) / 96.0 }
+    }
+
+    pub(super) fn pump() {
+        // SAFETY: the ordinary message loop, drained without waiting.
+        unsafe {
+            let mut message: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        }
+    }
+
+    unsafe extern "system" fn procedure(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // SAFETY: the user data is a `Seen` set by `open` and cleared by
+        // `close` before it is dropped, or zero.
+        let seen = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Seen).as_ref() };
+        match (message, seen) {
+            // The close button closes the *editor*: the host is told and
+            // decides, and the window stays until it is let go of.
+            (WM_CLOSE, Some(seen)) => {
+                seen.closed.set(true);
+                0
+            }
+            (WM_SIZE, Some(seen)) => {
+                let width = (lparam as u32) & 0xFFFF;
+                let height = ((lparam as u32) >> 16) & 0xFFFF;
+                if width > 0 && height > 0 {
+                    seen.client.set(Some(GuiSize { width, height }));
+                }
+                // SAFETY: the default handling of a message this window got.
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+            // SAFETY: as above.
+            _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+        }
+    }
+}
+
+#[cfg(windows)]
+impl PluginWindow {
+    /// Opens a window whose client area is `size`, titled `title`, and shows
+    /// it in front.
+    pub fn open(title: &str, size: GuiSize) -> Result<Self, GuiError> {
+        let size = size.sane();
+        let (hwnd, seen) = win32::open(title, size).map_err(GuiError::NoDisplay)?;
+        let size = win32::client(hwnd);
+        seen.client.set(None);
+        Ok(Self {
+            server: Some(OnScreen { hwnd, seen }),
+            size,
+        })
+    }
+
+    /// See the Linux one: for tests, a window on no screen.
+    pub fn headless(width: u32, height: u32) -> Self {
+        Self {
+            server: None,
+            size: GuiSize { width, height }.sane(),
+        }
+    }
+
+    pub fn is_on_screen(&self) -> bool {
+        self.server.is_some()
+    }
+
+    /// The `HWND` a plugin is given as its parent. Zero for a headless one.
+    pub fn id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| server.hwnd as usize as u64)
+    }
+
+    pub fn size(&self) -> GuiSize {
+        self.size
+    }
+
+    /// The monitor's scale, for a plugin that is told rather than asks.
+    pub fn scale(&self) -> f64 {
+        self.server
+            .as_ref()
+            .map_or(1.0, |server| win32::scale(server.hwnd))
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        if let Some(server) = &self.server {
+            win32::set_title(server.hwnd, title);
+        }
+    }
+
+    /// Makes the client area `size`. What a plugin's own resize request
+    /// ends up calling.
+    pub fn resize(&mut self, size: GuiSize) {
+        let size = size.sane();
+        if size == self.size {
+            return;
+        }
+        let Some(server) = &self.server else {
+            self.size = size;
+            return;
+        };
+        win32::resize(server.hwnd, size);
+        // What the desktop actually gave — a screen smaller than the plugin
+        // gets a smaller window — and not news the next time it is polled.
+        self.size = win32::client(server.hwnd);
+        server.seen.client.set(None);
+    }
+
+    pub fn raise(&mut self) {
+        if let Some(server) = &self.server {
+            win32::raise(server.hwnd);
+        }
+    }
+
+    /// Everything the desktop has done to the window since last time. Never
+    /// blocks: the window procedure has already noted it.
+    pub fn poll(&mut self) -> GuiPoll {
+        let mut result = GuiPoll::default();
+        let Some(server) = &self.server else {
+            return result;
+        };
+        result.closed = server.seen.closed.replace(false);
+        if let Some(size) = server.seen.client.take()
+            && size != self.size
+        {
+            self.size = size;
+            result.resized = Some(size);
+        }
+        result
+    }
+
+    /// Not on Windows: the plugin draws with whatever it likes, and there is
+    /// no one call that reads it back.
+    pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
+        None
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PluginWindow {
+    fn drop(&mut self) {
+        if let Some(server) = &self.server {
+            win32::close(server.hwnd);
+        }
     }
 }
 

@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use fontelle_app::bank::{BankEntry, SoundfontBank, fuzzy_score, is_soundfont, matches};
-use fontelle_app::settings::{SETTINGS_FORMAT_VERSION, Settings, SettingsError};
+use fontelle_app::settings::{Platform, SETTINGS_FORMAT_VERSION, Settings, SettingsError};
 
 fn scratch(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("fontelle-bank-{name}-{}", std::process::id()));
@@ -234,6 +234,88 @@ fn every_path_fontelle_chooses_for_itself_is_under_the_xdg_dirs() {
     // No home at all is not a crash, and not a guess.
     assert_eq!(Settings::config_dir_from(&|_: &str| None), None);
     assert_eq!(Settings::data_dir_from(&|_: &str| None), None);
+}
+
+/// > *"could not write settings: there is n…"*
+///
+/// — the status line, on the first Windows build anybody else ran.
+///
+/// Windows sets no `HOME`, so every folder Fontelle chose for itself was
+/// `None` there: no settings file (the MIDI velocity settings were lost on
+/// every launch), no preset folder, no soundfont bank and no crash report.
+/// A Windows program's own folders are `%APPDATA%` (what is set) and
+/// `%LOCALAPPDATA%` (what is kept) — the second is where the bridges already
+/// were.
+#[test]
+fn on_windows_fontelles_folders_are_appdata_because_there_is_no_home() {
+    let windows = |key: &str| match key {
+        "APPDATA" => Some(r"C:\Users\lo\AppData\Roaming".to_string()),
+        "LOCALAPPDATA" => Some(r"C:\Users\lo\AppData\Local".to_string()),
+        "USERPROFILE" => Some(r"C:\Users\lo".to_string()),
+        _ => None,
+    };
+    let nothing_exists = |_: &Path| false;
+    assert_eq!(
+        Settings::config_dir_on(&windows, Platform::Windows, &nothing_exists),
+        Some(PathBuf::from(r"C:\Users\lo\AppData\Roaming").join("fontelle"))
+    );
+    let data = PathBuf::from(r"C:\Users\lo\AppData\Local").join("fontelle");
+    assert_eq!(
+        Settings::data_dir_on(&windows, Platform::Windows, &nothing_exists),
+        Some(data.clone())
+    );
+    assert_eq!(
+        Settings::default_soundfont_dir_on(&windows, Platform::Windows, &nothing_exists),
+        Some(data.join("soundfonts"))
+    );
+    assert_eq!(
+        Settings::default_preset_dir_on(&windows, Platform::Windows, &nothing_exists),
+        Some(data.join("presets"))
+    );
+
+    // An XDG variable somebody set on purpose still wins, as on Linux.
+    let xdg = |key: &str| match key {
+        "XDG_CONFIG_HOME" => Some(r"D:\cfg".to_string()),
+        other => windows(other),
+    };
+    assert_eq!(
+        Settings::config_dir_on(&xdg, Platform::Windows, &nothing_exists),
+        Some(PathBuf::from(r"D:\cfg").join("fontelle"))
+    );
+
+    // A `HOME` (Git Bash, MSYS) whose Fontelle folder **already exists** is
+    // kept — moving somebody's settings out from under them is worse than
+    // an unusual place for them. One that does not exist is not invented.
+    let with_home = |key: &str| match key {
+        "HOME" => Some("/c/Users/lo".to_string()),
+        other => windows(other),
+    };
+    let old = PathBuf::from("/c/Users/lo")
+        .join(".config")
+        .join("fontelle");
+    let old_exists = |path: &Path| path == old.as_path();
+    assert_eq!(
+        Settings::config_dir_on(&with_home, Platform::Windows, &old_exists),
+        Some(old.clone())
+    );
+    assert_eq!(
+        Settings::config_dir_on(&with_home, Platform::Windows, &nothing_exists),
+        Some(PathBuf::from(r"C:\Users\lo\AppData\Roaming").join("fontelle"))
+    );
+
+    // And Linux is untouched by any of it: `APPDATA` means nothing there.
+    let linux = |key: &str| match key {
+        "HOME" => Some("/home/someone".to_string()),
+        other => windows(other),
+    };
+    assert_eq!(
+        Settings::config_dir_on(&linux, Platform::Unix, &nothing_exists),
+        Some(PathBuf::from("/home/someone/.config/fontelle"))
+    );
+    assert_eq!(
+        Settings::data_dir_on(&linux, Platform::Unix, &nothing_exists),
+        Some(PathBuf::from("/home/someone/.local/share/fontelle"))
+    );
 }
 
 #[test]

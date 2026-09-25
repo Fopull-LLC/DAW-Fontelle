@@ -19,6 +19,86 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 — v0.15.0: Fontelle on Windows, and a log somebody can
+send.** From the first person to run it on Windows: *"this is what happens to
+outside vsts in ur daw — it works but it's like only the knobs of like every
+parameter ... on flopsynth: some of the knobs don't do anything ... the lfos
+say click to draw but seemingly does nothing ... anything that says click
+doesn't work ... oh now it crashed"* — and, asked for the error log, *"where
+get"*. Ty: *"make the logs more accessible for people maybe in a button on the
+home menu."* Every item below was reproduced or verified on a Windows build
+(`x86_64-pc-windows-gnu`) running under Wine on `:99`, with real Windows
+plugins (Dexed VST 3, Surge XT CLAP).
+
+- **Windows has no `HOME`**, and every folder Fontelle chooses for itself came
+  from it — so on Windows there was no settings file (the MIDI velocity
+  settings Ty pointed her at were never saved; the status line said *"could
+  not write settings: there is n…"*), no presets folder, no soundfont bank and
+  **no crash reports**. `Settings::config_dir_on` / `data_dir_on` take a
+  `Platform`: `%APPDATA%\fontelle` for settings, `%LOCALAPPDATA%\fontelle`
+  for data (where the bridges already were), an XDG variable still wins, and
+  a Fontelle folder that already exists under a `HOME` (Git Bash) is kept.
+- **Plugin editors on Windows.** `PluginWindow` was X11-only and answered
+  *"plugin editors are shown on Linux only"* everywhere else, so every VST 3
+  and CLAP plugin fell back to the generated knob grid — the screenshot. On
+  Windows it is now a Win32 top-level window (`gui::win32`) whose `HWND` a
+  VST 3 view (`"HWND"`), a CLAP GUI (`win32`) or a VST 2 editor (the bridge's
+  `effEditOpen`) makes its child window in. The studio's winit loop already
+  dispatches every message on its thread, so nothing pumps; the window
+  procedure notes resizes and the close button for `poll`. `PluginWindow::id`
+  is a `u64` now (an `HWND` is pointer-sized) and `scale()` is the monitor's
+  DPI, which the plugin is told — Dexed and Surge XT both drew at 150 %. Seen
+  in the real `fontelle.exe`: *+ Add instrument → Plugin… → Dexed* opens
+  Dexed's own editor. **The VST 2 path was not exercised against a real VST 2
+  with an editor** (none to hand); it is the same `HWND` handed to the bridge.
+- **The settings page's buttons.** *"Not set — click"*, *"Not installed —
+  click"*: on Windows the folder rows ran PowerShell to put up a WinForms
+  dialog — seconds of a frozen studio while .NET loaded, then a dialog owned
+  by another process, which Windows put **behind** the frozen window, which
+  Windows then marked *Not Responding* (a likely "crash"). The folder, open
+  and save dialogs on Windows are now the system's own `IFileDialog`,
+  in-process and owned by the window that asked (`desktop::win_dialogs`;
+  `windows-sys` has no COM vtables, so the two used are declared there). And
+  **a settings button answers on the settings page**: whatever a press wrote
+  to the status line (one row, clipped at forty characters) comes back as a
+  toast — an install refused while a plugin is open used to look like a click
+  that did nothing.
+- **The session log.** `fontelle_app::logs::start` tees stderr and stdout
+  into `logs/fontelle-<date>_<time>.log` under the data folder (thirty kept),
+  unbuffered so the last line before a crash is on disk; the terminal still
+  gets every line. Crash reports moved into the same folder. The start menu's
+  footer has **Logs folder**, and the last run's crash news is said on the
+  start menu rather than on a status line hidden behind it, naming the report
+  and pointing at the folder.
+- **A crash that is not a panic writes a report too** (`crashlog::native`):
+  `sigaction` for SIGSEGV/BUS/ILL/FPE/ABRT on Unix (reports prepared before
+  any fault, the handler only copies bytes, then the old handler runs), and an
+  unhandled-exception filter on Windows that names **the module the fault was
+  in** — the one line that says "the plugin" or "us". Such a run used to be
+  reported next launch as *"ended from outside"*.
+- **An LFO's picture is the way in to drawing it.** It said *"DRAW to edit
+  it"* — meaning a switch further down — and pressing the picture did
+  nothing. A press turns DRAW on (seeded from the wave, one undo) and the
+  picture is the shape editor; the tip says *"click to draw your own shape"*.
+- **A knob nobody can hear says so.** The Init patch starts OSC B, OSC C, SUB
+  and NOISE at level *off* and Filter 2 switched off, so most of the knobs on
+  the page move nothing audible. Their tips now lead with *"Silent until its
+  LEVEL is turned up"* / *"Switched off — turn ON to hear it"*.
+- Not changed, for Ty: **velocity min/max are a gate, not a range** — a note
+  outside the window is dropped, not scaled — so they do not answer *"the
+  default velocity seems very touchy"*; the *Soft* velocity curve does, and
+  now it is remembered. A console window still opens beside `fontelle.exe`
+  (the binary is a console-subsystem program); whether to hide it is a
+  choice with a cost (a crash's last words go with it), so it was left.
+- Traps found on the way: under Wine, **install fonts into the prefix** or the
+  window panics with *"no default font found"*, and give it an *Arial*
+  (Liberation Sans renamed with fontTools) — the theme's `sans-serif` is Arial
+  on Windows, and with DejaVu Serif standing in, Flopsynth's cards grew over
+  its source strip and hid the LFO badges, which looked like a Windows layout
+  bug and was not. Under Wine + XTEST, JUCE plugins open menus on a click but
+  do not see pointer motion (the standalone Dexed.exe behaves the same), so a
+  plugin knob drag cannot be tested there.
+
 **Released as v0.14.0 on 2026-09-24** — cuts that keep a loop's phase, a trim that
 follows the edges, the left grip, the engine count-in, automation chase, and
 right-click menus on the mixer's controls.

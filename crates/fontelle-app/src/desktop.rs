@@ -16,6 +16,19 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(windows)]
+mod win_dialogs;
+
+/// A Windows dialog's filter for `pattern` (`*.json`): the name it shows and
+/// the pattern itself. Nothing asked for is every file.
+pub fn windows_filter(pattern: &str) -> (String, String) {
+    if pattern.trim().is_empty() {
+        ("All files".to_string(), "*.*".to_string())
+    } else {
+        (format!("Files ({pattern})"), pattern.to_string())
+    }
+}
+
 /// The program and arguments that show `dir` in the desktop's file manager.
 pub fn reveal_command(dir: &Path) -> (&'static str, Vec<String>) {
     let path = dir.to_string_lossy().into_owned();
@@ -431,6 +444,10 @@ pub fn choose_open_file(
     start: Option<&Path>,
     filter: &str,
 ) -> Result<Option<PathBuf>, String> {
+    // The system's own, in-process, on Windows — see `win_dialogs`.
+    #[cfg(windows)]
+    return win_dialogs::ask(title, start, win_dialogs::Ask::Open { filter });
+    #[cfg(not(windows))]
     run_picker(&open_file_candidates(title, start, filter))
 }
 
@@ -443,6 +460,9 @@ pub fn choose_save_file(
     default_name: &str,
     start: Option<&Path>,
 ) -> Result<Option<PathBuf>, String> {
+    #[cfg(windows)]
+    return win_dialogs::ask(title, start, win_dialogs::Ask::Save { name: default_name });
+    #[cfg(not(windows))]
     run_picker(&save_file_candidates(title, default_name, start))
 }
 
@@ -469,6 +489,9 @@ pub fn parse_picker_output(stdout: &str) -> Option<PathBuf> {
 /// `Ok(None)` is a cancel. `Err` is a machine with no picker on it at all,
 /// which is worth saying rather than looking like a cancel.
 pub fn choose_folder(title: &str, start: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    #[cfg(windows)]
+    return win_dialogs::ask(title, start, win_dialogs::Ask::Folder);
+    #[cfg(not(windows))]
     run_picker(&picker_candidates(title, start))
 }
 

@@ -619,3 +619,39 @@ fn the_studio_looks_for_plugins_up_front_and_says_what_it_found() {
     assert_eq!(found, 4, "the test bundle's four plugins");
     assert_eq!(failed, 0, "nothing in the fixture folder refuses to load");
 }
+
+/// > *"tried this — anything that says click doesn't work"*
+///
+/// The settings page's buttons answered on the studio's status line — one
+/// row, clipped at about forty characters, under the page that was pressed.
+/// *"Not installed — click"* with a plugin open was refused there, as *"Close
+/// the project before changing an extension"*, and from the page it looked
+/// like the click did nothing. A settings button's answer is a toast over the
+/// page now, whatever it was.
+#[test]
+fn a_settings_button_that_cannot_do_its_job_says_why_where_it_was_pressed() {
+    let mut session = session();
+    session.add_plugin_channel(0);
+    let rows = session.settings();
+    let install = rows
+        .iter()
+        .position(|row| row.detail.contains("Not installed") || row.detail.contains("Installed"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the extension row: {:?}",
+                rows.iter()
+                    .map(|r| (&r.name, &r.detail))
+                    .collect::<Vec<_>>()
+            )
+        });
+    // An installed one asks first; answering is the window's. This build's
+    // test machine has none installed, so the press goes straight through.
+    session.nudge_setting(install, 1);
+    let (said, _) = session
+        .take_settings_toast()
+        .expect("the press answers on the page");
+    assert!(
+        said.to_lowercase().contains("close the project"),
+        "and says what to do: {said}"
+    );
+}

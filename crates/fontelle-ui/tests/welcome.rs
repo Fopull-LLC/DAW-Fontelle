@@ -344,3 +344,31 @@ fn the_card_has_a_help_button_in_its_top_corner_and_it_is_pressable() {
     );
     assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Help));
 }
+
+/// > *"if you can get the error log that would be helpful" — "where get"*
+///
+/// The folder the session logs and the crash reports are in, one press from
+/// the first thing the program shows — in the footer, with the other two
+/// places the card sends you.
+#[test]
+fn the_logs_folder_is_a_link_in_the_footer_beside_the_other_two() {
+    let layout = welcome_layout(window(), &metrics(), 3, true);
+    assert!(within(layout.logs, layout.footer), "{:?}", layout.logs);
+    assert!(!overlaps(layout.logs, layout.website));
+    assert!(!overlaps(layout.logs, layout.repository));
+    assert!(layout.logs.x + layout.logs.width <= layout.website.x);
+    // And clear of the company line at the footer's left, which is about
+    // 240 pixels of text at the chrome's size.
+    assert!(
+        layout.logs.x >= layout.footer.x + 260.0,
+        "{:?}",
+        layout.logs
+    );
+    let (x, y) = centre(layout.logs);
+    assert_eq!(welcome_hit(&layout, x, y), Some(WelcomeHit::Logs));
+    assert!(
+        fontelle_ui::canvas::LOGS_LABEL
+            .to_lowercase()
+            .contains("logs")
+    );
+}

@@ -23,7 +23,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(6);
     let plugins = fontelle_host::scan_bundle(&path).expect("scan");
-    let want = std::env::args().nth(2);
+    let want = std::env::args().nth(2).filter(|id| !id.is_empty());
     let info = match &want {
         Some(id) => plugins
             .iter()
@@ -41,7 +41,7 @@ fn main() {
     let mut window =
         fontelle_host::PluginWindow::open(&info.name, fontelle_host::GuiSize::FALLBACK)
             .expect("window");
-    let wanted = plugin.open_editor(&window, 1.0).expect("editor");
+    let wanted = plugin.open_editor(&window, window.scale()).expect("editor");
     println!(
         "plugin wants {wanted:?}, resizable {}",
         plugin.editor_resizable()
@@ -73,6 +73,8 @@ fn main() {
             processor.process_instrument(&mut scratch, 512);
         }
         plugin.tick_editor();
+        // The studio's event loop does this; the probe has none.
+        fontelle_host::pump_gui_messages();
         let polled = window.poll();
         if let Some(size) = polled.resized {
             plugin.resize_editor(size);

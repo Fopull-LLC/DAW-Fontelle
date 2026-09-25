@@ -1097,7 +1097,7 @@ impl HostedPlugin {
         gui.is_api_supported(
             &mut instance.plugin_handle(),
             GuiConfiguration {
-                api_type: GuiApiType::X11,
+                api_type: embedded_api(),
                 is_floating: false,
             },
         )
@@ -1151,7 +1151,7 @@ impl HostedPlugin {
             return Err(GuiError::NoEditor);
         };
         let configuration = GuiConfiguration {
-            api_type: GuiApiType::X11,
+            api_type: embedded_api(),
             is_floating: false,
         };
         gui.create(&mut instance.plugin_handle(), configuration)
@@ -1179,11 +1179,14 @@ impl HostedPlugin {
         // The window this process made and owns. It outlives the editor:
         // `close_editor` destroys the plugin's GUI first, and only then is
         // the window dropped.
-        // `c_ulong` is 64 bits on Linux, where this runs, and 32 on Windows,
-        // where the conversion is the identity and clippy would call it
-        // useless — but the code is one code, so the lint is answered here.
-        #[allow(clippy::useless_conversion)]
-        let parent = clack_extensions::gui::Window::from_x11_handle(window.id().into());
+        // An X11 window id on Linux; on Windows the `HWND` the window's id
+        // carries, which is what a CLAP `win32` GUI is parented to.
+        #[cfg(windows)]
+        let parent = clack_extensions::gui::Window::from_win32_hwnd(
+            window.id() as usize as *mut std::ffi::c_void
+        );
+        #[cfg(not(windows))]
+        let parent = clack_extensions::gui::Window::from_x11_handle(window.id() as _);
         // SAFETY: `parent` names a live X11 window this process made and owns,
         // and it outlives the editor — `close_editor` destroys the plugin's
         // GUI first, and only then is the window dropped.
@@ -1640,4 +1643,14 @@ fn read_note_ports(instance: &mut PluginInstance<FontelleHost>) -> Option<NoteDi
     } else {
         NoteDialect::Clap
     })
+}
+
+/// The CLAP GUI API this platform embeds with: `win32` on Windows, where the
+/// editor window is an `HWND` (`gui::win32`), and `x11` everywhere else.
+fn embedded_api() -> GuiApiType<'static> {
+    if cfg!(windows) {
+        GuiApiType::WIN32
+    } else {
+        GuiApiType::X11
+    }
 }

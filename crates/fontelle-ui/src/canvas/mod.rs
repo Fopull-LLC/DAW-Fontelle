@@ -92,7 +92,7 @@ pub use flopsynth::{
 pub use gestures::{
     BADGE_CLICK_SLOP, BadgeGesture, FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision,
     Typed, badge_gesture, flop_knob_menu, flopsynth_tip, hover_bubble_rect, inspector_after_click,
-    knob_drag, matrix_tip, nudged, parse_typed, wheel_nudge,
+    knob_drag, lfo_draw_switch, matrix_tip, nudged, parse_typed, wheel_nudge,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
@@ -224,7 +224,7 @@ pub use tune::{
     tune_strings, viewport_points, viewport_rails,
 };
 pub use welcome::{
-    FOOTER_TEXT, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
+    FOOTER_TEXT, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING,
     REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL,
     WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line, update_progress,
     welcome_hit, welcome_layout,
