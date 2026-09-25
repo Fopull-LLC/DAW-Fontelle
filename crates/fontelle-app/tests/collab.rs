@@ -1388,3 +1388,134 @@ fn a_prefabs_audio_and_an_ab_slots_samples_open_with_the_song() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ================================================================ Phase 3
+
+/// A link that can be cut from outside, the way a closed laptop lid cuts one.
+struct Droppable {
+    inner: fontelle_net::MemoryTransport,
+    cut: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    told: bool,
+}
+
+impl fontelle_net::Transport for Droppable {
+    fn send(&mut self, peer: fontelle_net::PeerId, channel: fontelle_net::Channel, bytes: &[u8]) {
+        if !self.cut.load(std::sync::atomic::Ordering::Relaxed) {
+            self.inner.send(peer, channel, bytes);
+        }
+    }
+    fn poll(&mut self) -> Vec<fontelle_net::Incoming> {
+        if self.cut.load(std::sync::atomic::Ordering::Relaxed) {
+            if std::mem::replace(&mut self.told, true) {
+                return Vec::new();
+            }
+            return vec![fontelle_net::Incoming::Disconnected(
+                fontelle_net::SERVER,
+                None,
+            )];
+        }
+        self.inner.poll()
+    }
+    fn stats(&self, peer: fontelle_net::PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// F39. A joiner whose link drops is told, carries on with its copy, and
+/// joins again with the same code: its copy is recognised as behind, and the
+/// update is a fresh copy of the song — no log of what it missed is kept.
+#[test]
+fn a_dropped_joiner_rejoins_with_a_snapshot() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = scratch("dropped");
+    let _cleanup = Cleanup(dir.clone());
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+
+    let hub = MemoryHub::new();
+    hub.set_conditions(2, 0.0);
+    host.share(
+        Box::new(hub.server_endpoint()),
+        options("Alice", PersistentId::derived("alice")),
+    )
+    .unwrap();
+    let cut = std::sync::Arc::new(AtomicBool::new(false));
+    let link = hub.connect();
+    joiner
+        .join(
+            Box::new(Droppable {
+                inner: link,
+                cut: cut.clone(),
+                told: false,
+            }),
+            options("Bob", PersistentId::derived("bob")),
+        )
+        .unwrap();
+    let mut now = 0;
+    let mut tick = |host: &mut Session, joiner: &mut Session, n: u64| {
+        for _ in 0..n {
+            now += 1;
+            hub.set_now(now);
+            host.pump_collab();
+            joiner.pump_collab();
+        }
+    };
+    tick(&mut host, &mut joiner, 20);
+    joiner.answer_join(JoinAnswer::Copy).unwrap();
+    tick(&mut host, &mut joiner, 30);
+    draw(&mut host, 0, 60);
+    tick(&mut host, &mut joiner, 30);
+    assert_eq!(host.project().sync_hash(), joiner.project().sync_hash());
+
+    // Bob's lid closes. Alice carries on.
+    cut.store(true, Ordering::Relaxed);
+    hub.disconnect(1);
+    tick(&mut host, &mut joiner, 10);
+    let why = joiner.collab_ended().expect("Bob is told").to_string();
+    assert!(why.contains("lost"), "{why}");
+    assert!(host.session_peers().is_empty(), "Alice sees him gone");
+    draw(&mut host, PPQN, 62);
+    tick(&mut host, &mut joiner, 10);
+
+    // Bob keeps what he had, saves it, and joins again.
+    joiner.save().unwrap();
+    joiner
+        .join(
+            Box::new(hub.connect()),
+            options("Bob", PersistentId::derived("bob")),
+        )
+        .unwrap();
+    tick(&mut host, &mut joiner, 20);
+    let question = joiner.join_question().expect("asked").clone();
+    assert_eq!(
+        question.relation,
+        Some(Relation::YouAreBehind),
+        "{:?}",
+        question.lines
+    );
+    let update = question.buttons[question.default].0.clone();
+    assert!(matches!(update, JoinAnswer::Update(_)));
+    joiner.answer_join(update).unwrap();
+    tick(&mut host, &mut joiner, 30);
+    assert!(joiner.collab_live());
+    assert_eq!(host.project().sync_hash(), joiner.project().sync_hash());
+}
+
+/// F42. While a song is shared the window has something to look at that
+/// changes without anybody touching it; the session says so each pass.
+#[test]
+fn the_session_says_whether_it_is_open() {
+    let mut pair = Pair::joined("awake", 2);
+    assert!(pair.host.pump_session(), "sharing");
+    assert!(pair.joiner.pump_session(), "joined");
+    pair.joiner.leave_session();
+    pair.settle();
+    assert!(!pair.joiner.pump_session(), "alone again");
+    let mut alone = a_session();
+    assert!(!alone.pump_session(), "nobody shared anything");
+}

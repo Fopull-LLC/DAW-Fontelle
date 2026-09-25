@@ -23,6 +23,11 @@ allow = [
     "CC0-1.0",
     # `midly`, the MIDI file parser: public domain, same terms as CC0.
     "Unlicense",
+    # `webpki-roots`, the public certificate roots a managed relay's certificate
+    # is checked against when a song is shared (`fontelle-net`,
+    # docs/collab-plan.md §9.1): Mozilla's root list as data, under the
+    # Community Data License Agreement — permissive, no copyleft.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

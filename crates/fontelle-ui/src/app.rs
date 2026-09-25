@@ -1825,6 +1825,8 @@ pub struct WindowApp {
     /// editor is drawn by the plugin, on this thread, out of the timer this
     /// loop fires — see `tick_plugin_editors`.
     plugin_editor_open: bool,
+    /// Whether a shared song is open — see `DocumentHost::pump_session`.
+    session_open: bool,
     /// Whether this window currently holds an animator on the tree's
     /// [`crate::widget::Redraw`]. Kept so `begin`/`end` stay paired — the
     /// counter is there so several moving things can coexist, and a caller
@@ -1963,6 +1965,7 @@ impl WindowApp {
             lane_menu: None,
             dismissed: None,
             plugin_editor_open: false,
+            session_open: false,
             tools: Tools::default(),
             imports: Vec::new(),
             import_kind: fontelle_types::FolderKind::Midi,
@@ -2886,6 +2889,13 @@ impl WindowApp {
     fn tick(&mut self) {
         self.poll_welcome();
         self.poll_job();
+        // A shared song: somebody else's edits come in, this studio's go
+        // out, once a pass — and while one is open the loop keeps looking.
+        self.session_open = self
+            .options
+            .document
+            .as_mut()
+            .is_some_and(|doc| doc.pump_session());
         // "Saved!" rises every frame it is up, and is gone once it has risen.
         if let Some(at) = self.saved_at {
             if at.elapsed().as_secs_f32() > crate::canvas::SAVED_FLASH_SECONDS {
@@ -19131,7 +19141,7 @@ impl WindowApp {
 
         let mut wake = match sleep_budget(
             self.tree.redraw().is_animating(),
-            self.options.host.is_some(),
+            crate::widget::watching(self.options.host.is_some(), self.session_open),
         ) {
             Sleep::Forever => None,
             Sleep::AtMost(budget) => Some(now + budget),

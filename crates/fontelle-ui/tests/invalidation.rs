@@ -162,7 +162,7 @@ fn a_resize_dirties_the_whole_surface() {
 
 // --------------------------------------------- how long may we sleep? ------
 
-use fontelle_ui::widget::{ENGINE_POLL, FRAME_INTERVAL, Sleep, sleep_budget};
+use fontelle_ui::widget::{ENGINE_POLL, FRAME_INTERVAL, Sleep, sleep_budget, watching};
 
 #[test]
 fn a_window_with_nothing_behind_it_sleeps_until_the_os_speaks() {
@@ -221,5 +221,22 @@ fn the_autosave_interval_is_arithmetic_anyone_can_check() {
     assert!(
         autosave_due(Duration::from_secs(600), every),
         "a window left alone and then touched backs up on the next pass"
+    );
+}
+
+/// F42 (`docs/collab-plan.md` §9.2). A shared song is something that changes
+/// without anybody touching this window — somebody else's edit — so while one
+/// is open the window looks every `ENGINE_POLL`, the precedent the engine set;
+/// with none it sleeps as it always did.
+#[test]
+fn a_session_keeps_the_window_awake() {
+    assert_eq!(
+        sleep_budget(false, watching(false, true)),
+        Sleep::AtMost(ENGINE_POLL)
+    );
+    assert_eq!(sleep_budget(false, watching(false, false)), Sleep::Forever);
+    assert_eq!(
+        sleep_budget(false, watching(true, false)),
+        Sleep::AtMost(ENGINE_POLL)
     );
 }

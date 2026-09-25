@@ -1302,6 +1302,15 @@ pub trait StudioHost: DocumentHost {
         JobPoll::Idle
     }
 
+    /// One turn of a shared song (`docs/collab-plan.md`), if one is open:
+    /// this studio's edits go out and everybody else's come in. Called once a
+    /// pass, beside [`poll_job`](Self::poll_job); `true` while a song is
+    /// shared or being joined, which keeps the window looking every
+    /// `ENGINE_POLL` for edits nobody here made.
+    fn pump_session(&mut self) -> bool {
+        false
+    }
+
     /// Tells every automated parameter what its automation says at song
     /// sample `sample` — or, before its first clip, that it is its knob's
     /// again (a NaN value).

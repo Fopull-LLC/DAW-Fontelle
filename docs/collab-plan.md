@@ -1263,6 +1263,7 @@ commit.
 | F42 | The window sleeps `Forever` when idle; there is no wake path for a network thread (`widget/*.rs:208`) | §9.2: `ENGINE_POLL` while a session is open (this phase); the proxy is F48 | `a_session_keeps_the_window_awake` |
 | F43 | CI builds three targets; the Windows build runs under Wine here; sockets and rustls on `x86_64-pc-windows-gnu` are untested in this tree | §0: Phase 3 ends with the Windows build hosting and joining under Wine on `:99`, and clippy on the msvc target | scene in §12.5, on Wine |
 | F58 | *Found preparing Phase 3.* F38's answer does not hold on today's relay: a returning host reclaims its lobby inside `HOST_GRACE` only when the relay's policy says the key owns the code (`claim_code`), and the managed policy grants that only for codes the control plane has *reserved* for a deployment (`floptle-relay/src/policy.rs:630-636`). An ordinary Fontelle host that drops comes back under a new code, and its joiners — held in the old lobby for twenty seconds — are stranded; on an open relay (no policy) reclaim never happens | Fontelle re-hosts with `WantCode` (its own code) on a drop, which is right the day the relay agrees; a card to E asks the managed policy to let a host reclaim the code it was given, inside the grace window. Until then a host's drop ends the session on the joiners with a sentence saying so, and the host's panel shows the new code | `a_lost_host_reconnects_inside_the_grace` (against an in-process relay whose policy grants it), the card's thread |
+| F59 | *Found building Phase 3.* **No QUIC socket opens under Wine.** quinn-udp 0.5 asks `getsockopt(IPPROTO_IPV6, IPV6_V6ONLY)` of every socket, an IPv4 one included, and treats a failure as fatal; Wine 11.16 answers `STATUS_NOT_SUPPORTED` (seen with `WINEDEBUG=+winsock`: `server_getsockopt status 0xc00000bb`, then *"bind 0.0.0.0:0: OS Error 10045"*). Real Windows answers it, which is why quinn works there. So F43's "hosting and joining under Wine" cannot be done on this machine | The Windows build's sockets are proved where they run: CI's `windows-latest` job runs `cargo test --workspace`, `fontelle-net/tests/relay.rs` included (host, join, frames, reclaim, idle lapse over a real relay). Under Wine, everything but the network is still checked. A live two-studio session on real Windows is the person with a Windows machine's | CI's Windows run of `tests/relay.rs` on the next push (Ty's) |
 
 ### Phase 4 — the window
 
@@ -1423,3 +1424,43 @@ with the reason. The text above is left as it was planned.
   its settings and its state are kept, and the state is never written from a
   machine without the plugin (`PluginRack::snapshot` already answered `None`
   for one that is not live).
+
+**Phase 3.**
+
+- **Every message is framed, not only snapshots and files**: `Framed` splits
+  any reliable message over 56 KB (not 48) and joins it again, so an edit that
+  deletes five thousand notes crosses as surely as a sample. 56 KB is under
+  the relay's 64 KB peer-to-host cap with room for its envelope, and makes a
+  48 KB piece of a file one frame. The session's own 48 KB pieces stay.
+- **Pacing is per connection, on an injectable clock** (`Paced::with_clock`):
+  a host's one leg carries what it sends every joiner, which is §8.4's
+  arithmetic, and the budget test runs ten simulated megabytes in a moment.
+- **A host re-hosts itself when its leg drops**, asking for its own code
+  (`host_keyed_reclaiming`, on a thread), rather than letting the lifted client
+  back off and quietly mint a new code; the "lost the connection to the relay"
+  it raises for each joiner is kept from the session, which would forget them.
+  **`reclaim` is tested; the automatic trigger is not** — the lifted code
+  offers no way to cut a live QUIC leg in-process — and **today's relay would
+  answer with a new code anyway** (F58, hub card `tasks/fontelle/0266`), which
+  a notice says. Also found: after a reclaim the lifted client's handshake
+  loop swallows the relay's re-announcement of who is still in the lobby; the
+  session keeps its roster across the reconnect, so it does not need it.
+- **A lapsed lobby ends the share with a sentence** (F40) — *"Your share ended
+  — nobody joined it for half an hour. Press Share for a new code."* — and its
+  code is never offered as live again.
+- **A dropped joiner writes down what it last agreed with the host** (the
+  host's song as it last had it), so joining again finds its copy *behind*
+  and offers the safe update — F39's fresh snapshot.
+- **The window's wake is `watching(engine, session)`** feeding `sleep_budget`,
+  and the session is pumped once a pass through `StudioHost::pump_session`
+  (F42). The `EventLoopProxy` wake is Phase 4's F48.
+- **`deny.toml` allows `CDLA-Permissive-2.0`**: `webpki-roots` is Mozilla's
+  root certificates as data under that licence. Everything else the relay
+  client brings was already allowed.
+- **Three of the lifted tests stay in the engine**: they drive its game
+  session (`NetSession`, `floptle_core::World`); each is marked where it was.
+- **Hosting on Floptle Cloud was seen** (F34): `fontelle_hosts_on_floptle_cloud`,
+  run by hand on 2026-09-25, hosted as `UL22A6` and then `UQVAXH` and joined
+  it, bytes both ways.
+- **F43 is not closed** — see F59: no QUIC socket opens under Wine, and the
+  Windows proof is CI's run of `tests/relay.rs` on real Windows.

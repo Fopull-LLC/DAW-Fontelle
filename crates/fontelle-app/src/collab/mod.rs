@@ -297,7 +297,12 @@ impl Collab {
             effects: &mut effects,
         };
         match &mut self.role {
-            Role::Host(host) => host.pump(&mut turn, doc, history),
+            Role::Host(host) => {
+                if let Some(why) = host.pump(&mut turn, doc, history) {
+                    self.end(why, history);
+                    return effects;
+                }
+            }
             Role::Joiner(joiner) => {
                 if let Some(why) = joiner.pump(&mut turn, doc, history) {
                     self.end(why, history);
@@ -524,14 +529,20 @@ impl HostPeer {
 }
 
 impl Host {
-    fn pump(&mut self, turn: &mut Turn, doc: &mut Project, history: &mut History) {
+    /// One turn. `Some` is why the share ended.
+    fn pump(
+        &mut self,
+        turn: &mut Turn,
+        doc: &mut Project,
+        history: &mut History,
+    ) -> Option<String> {
         self.send_mine(turn.transport, doc, history);
 
         // Nothing from outside while the host has a drag in the hand: an
         // edit applied under it, or a snapshot taken of its middle, would be
         // a document nobody else could reach (F17).
         if history.gesture_in_hand() {
-            return;
+            return None;
         }
         for incoming in turn.transport.poll() {
             match incoming {
@@ -546,6 +557,14 @@ impl Host {
                         },
                     );
                 }
+                // The relay itself: it ended the lobby — nobody joined it for
+                // half an hour, or it refused the host — and the code means
+                // nothing now. Said, not hidden (F40).
+                Incoming::Disconnected(peer, Some(why)) if peer == SERVER => {
+                    return Some(format!(
+                        "Your share ended \u{2014} {why}. Press Share for a new code."
+                    ));
+                }
                 Incoming::Disconnected(peer, _) => self.gone(turn, peer, doc, false),
                 Incoming::Message(peer, _, bytes) => {
                     let Ok(msg) = Msg::from_bytes(&bytes) else {
@@ -558,6 +577,7 @@ impl Host {
                 }
             }
         }
+        None
     }
 
     /// The host's own edits, in the order they landed. The hash goes on the
@@ -885,8 +905,20 @@ impl Joiner {
             match incoming {
                 Incoming::Connected(_) => {}
                 Incoming::Disconnected(_, why) => {
+                    // What the two copies last agreed on is the host's song
+                    // as this studio last had it — written down, so joining
+                    // again finds this copy behind rather than diverged
+                    // (F39).
+                    if self.stage == Stage::Live
+                        && let Some(confirmed) = &self.confirmed
+                    {
+                        doc.meta.shared_revision = Some((self.host_install, confirmed.sync_hash()));
+                    }
                     return Some(why.unwrap_or_else(|| {
-                        format!("The connection to {} was lost.", self.host_or_them())
+                        format!(
+                            "The connection to {} was lost \u{2014} your copy is still open.",
+                            self.host_or_them()
+                        )
                     }));
                 }
                 Incoming::Message(_, _, bytes) => {

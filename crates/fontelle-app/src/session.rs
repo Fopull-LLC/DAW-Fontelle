@@ -7211,6 +7211,11 @@ impl StudioHost for Session {
         self.start_bounce(|s| s.prepare_export(options), "Exporting")
     }
 
+    fn pump_session(&mut self) -> bool {
+        self.pump_collab();
+        self.collab.as_ref().is_some_and(|c| c.ended().is_none())
+    }
+
     fn poll_job(&mut self) -> JobPoll {
         Session::poll_job(self)
     }

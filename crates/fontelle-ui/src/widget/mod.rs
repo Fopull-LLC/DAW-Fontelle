@@ -213,6 +213,14 @@ pub fn sleep_budget(animating: bool, watching_engine: bool) -> Sleep {
     }
 }
 
+/// Whether anything behind the window can change without the user touching
+/// it: the engine it is showing, or a shared song somebody else is editing
+/// (`docs/collab-plan.md` §9.2, F42). Either keeps the window looking every
+/// [`ENGINE_POLL`]; neither lets it sleep until the OS has something to say.
+pub fn watching(engine: bool, session: bool) -> bool {
+    engine || session
+}
+
 /// Whether an autosave is due, given how long it has been since the last one.
 ///
 /// Here rather than in `fontelle-app` for the reason everything in this module

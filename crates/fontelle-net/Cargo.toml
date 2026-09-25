@@ -10,3 +10,18 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The relay's client, lifted from the Floptle engine's `floptle-net` with the
+# versions it builds against (`docs/collab-plan.md` §9.1). quinn on a small
+# background tokio runtime, bridged to the sync `Transport` seam; rustls with
+# `ring` for the relay's certificate; the public roots a managed relay's
+# certificate is checked against; rcgen for a self-hosted relay's dev
+# certificate. crates.io only (`deny.toml` bans git and unknown registries).
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "0.26"
+rcgen = "0.13"
+ring = "0.17"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+socket2 = "0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }

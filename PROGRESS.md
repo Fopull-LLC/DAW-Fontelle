@@ -19,6 +19,37 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 (later still) — working on a song together, Phase 3
+built: the relay.** `docs/collab-plan.md` §13's fourth phase; ledger rows
+F32–F42 and F58 closed, **F43 open** (see F59), hub cards `0264`–`0266`
+filed.
+
+- **`fontelle-net` carries the Floptle relay's client**: `quic.rs`,
+  `relay.rs`, `transport.rs` lifted from the engine at `16481c30`, with their
+  41 tests (three that drive the engine's game session stayed behind). Over
+  it: `Framed` (any message size, in ≤56 KB frames), `Paced` (480 KiB a
+  second per connection, under the relay's 512), and `host` / `reclaim` /
+  `join` with Fontelle's Cloud key and a compiled-in region table
+  (`U` = us-east). A self-hosted relay is `Relay::Open(addr)`.
+- **Seen through Floptle Cloud**: the key hosts (`UL22A6`, then `UQVAXH`),
+  and a joiner by the code alone swaps bytes with it both ways
+  (`cargo test -p fontelle-net --test relay -- --ignored`).
+- **A dropped link is said and survived**: a joiner is told and keeps its
+  copy, and joining again finds the copy behind and updates it from a fresh
+  snapshot (F39); a lobby the relay ends is a sentence on the host (F40); a
+  host whose leg drops asks for its own code back (F38) — but **today's
+  relay only returns a code reserved for a deployment**, so a host's blip
+  strands its joiners (F58; hub card `tasks/fontelle/0266` to E).
+- **The window stays awake while a song is shared** (`watching`, and
+  `StudioHost::pump_session` once a pass — F42).
+- **Not proved on Windows (F43 open)**: quinn-udp asks `IPV6_V6ONLY` of an
+  IPv4 socket and treats Wine's "not supported" as fatal, so no QUIC socket
+  opens under Wine 11.16 (F59). The Windows build compiles and passes clippy;
+  CI's `windows-latest` job runs `tests/relay.rs` on real Windows the next
+  time `main` is pushed.
+- `deny.toml` allows `CDLA-Permissive-2.0` (`webpki-roots`, the root
+  certificates as data).
+
 **As of 2026-09-25 (later still) — working on a song together, Phase 2
 built: the files.** `docs/collab-plan.md` §13's third phase; ledger rows
 F23–F31 closed, and F56 and F57 found and closed.
