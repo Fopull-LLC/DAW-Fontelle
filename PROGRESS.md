@@ -19,6 +19,91 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-25 (later still) — working on a song together, Phase 0
+built: identity and the wire form, no network.** `docs/collab-plan.md` §13's
+first phase, ledger rows F1–F12 closed and four new rows found and closed
+(F51–F54); §19 of the plan is where the build departs from it and why.
+
+- **A song has an id** (`ProjectMeta::id`, a UUIDv7) and `forked_from`,
+  `saved_revision`/`saved_at`/`saved_by` (stamped by every save you make, not
+  the autosave) and `shared_revision`. **Project format 1**: a format-0 file
+  is given an id *derived* from its `created` and `name`, and derived ids for
+  every insert and send, so two copies of an old song agree about who they
+  are and two loads of one file agree about every id in it.
+  `fontelle_model::peek_meta` reads a bundle's head without its body;
+  `fontelle_app::find_by_id` finds a song in the projects folder and its
+  `Shared/` by id, whatever the folders are called. **A Save As of a saved
+  song is a new song** that remembers its parent (§15, decision 2); the first
+  save of a never-saved song is that song.
+- **Every insert and send has an id**, and every command that names one by
+  its place learns the id of what was there on its first apply and refuses
+  on any later apply — a redo, the other end of a wire — if the place now
+  holds something else. None of the window's index-taking calls changed.
+  **Markers are an arena** (`AddMarker`/`RemoveMarker`; no gesture makes one
+  yet — nothing ever did).
+- **The edits that skipped a command don't.** An automation clip's row is
+  made by the same command as the clip (`AddClip::on_new_row`) — one undo
+  takes both, where the old bare insert left an empty row behind; a render's
+  row is named by the import that makes it (`AddAudioClip::row_named`); the
+  project's name goes through `RenameProject`, applied *outside* the history
+  because the name follows the folder.
+- **Every command has a wire form**: `Command::to_edit`, `fontelle_model::
+  wire::Edit` (one variant per command, `Restore*` included), `Edit::
+  into_command`. **JSON, not postcard** — a patch body is a
+  `serde_json::Value`, two effect configs are untagged, seventeen fields are
+  skipped when empty, and a format that does not describe itself reads none of
+  them back (F52). JSON names variants, so names are permanent now:
+  `wire_variant_order_is_pinned`. `tests/wire.rs`'s
+  `every_command_has_a_wire_form` applies each of 85 commands, sends it,
+  applies what arrives on a copy, and does the same with its inverse.
+- **The history has an outbox**, shut until a session opens it (so a studio
+  with no session open copies nothing): a gesture goes once, merged, when it
+  breaks; an undo goes as the inverse it applied, after the gesture it undoes
+  if that had not gone yet. `History::apply_foreign` / `Session::
+  apply_foreign` apply somebody else's edit off the undo stack, rebuild the
+  way an undo does, and **mark the document unsaved** (F12).
+- **`Project::sync_hash`**: xxhash64 over the saved JSON without the meta,
+  the view or any asset's path.
+- Two live bugs the wire test found, both fixed: **undoing a track preset
+  took away every plugin insert, sidechain key, note source and page of
+  notepad words the preset had replaced** (its inverse was a chain, and a
+  chain is a sound, not a rack — F51); and **the first prefab override ever
+  made would have failed the save** (a map keyed by a tuple is not JSON —
+  F53). And four inverses that swapped their fields with the document
+  replayed backwards on another machine (F54).
+- **Found for Phase 1, not built: F55.** The plan's "the host strips a
+  proposal's ids and mints its own" breaks a joiner's *second* edit that
+  names what the first made — draw a note, drag it, inside a round trip — and
+  no JSON remap can fix it (a `NoteId` and a `ClipId` look the same there).
+  The answer in the ledger: each joiner mints in its own id range, so the
+  host takes proposals with their ids. Phase 1 starts there.
+- `cargo test -p fontelle-model` 436 passing, `-p fontelle-app` 1019;
+  clippy clean on Linux and the Windows target.
+
+**As of 2026-09-25 (later) — working on a song together, planned:
+`docs/collab-plan.md`, nothing built.** Ty: *"a way for people to be able
+to over the internet work on a song together at the same time ... route
+stuff through the relay (oracle gives us free relay) ... so that nobody has
+to port forward ... every project made gets its own unique identifier ...
+your friend would just join from there using that ... copy the friend's
+project to your shared projects ... we need confirmation prompts to make
+sure people dont accidentally lose files."* The plan chooses the Floptle
+relay (opaque bytes in a star round the host, a public game key to host,
+nothing to join; its client is three files E wrote to be lifted), a
+host-authoritative stream of the commands the document already has (a
+remote edit is a redo from somebody else's history; joiners predict and
+rebase; undo is yours), a project id in the bundle with a join that copies
+into *Shared* or updates after a prompt and never deletes, and samples by
+content hash. Five phases, tests named first, and a **findings ledger**
+(§18: fifty v1 rows, ten later) so nothing the two surveys found is left
+to memory. **Ty's decisions before phase 3** are §15 — the first is
+registering Fontelle as a Floptle Cloud game for its key. Two things the
+plan needs from Ty's own documents: `FONTELLE_TDD.md:64` lists "network
+collaboration, cloud anything" as a v1 non-goal (proposed line: *"Network
+collaboration is v1.5 — `docs/collab-plan.md`; cloud storage of projects
+stays out"*), and the product page's "no cloud" sentence (hub 0234) wants
+one clause once it ships.
+
 **Released as v0.15.0 on 2026-09-25** — plugin editors on Windows, Fontelle's
 folders under AppData, the system's own dialogs, the session log and the
 start menu's *Logs folder*, native-crash reports, and LFO drawing from its

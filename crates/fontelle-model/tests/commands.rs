@@ -1293,3 +1293,102 @@ fn a_patch_written_to_a_different_channel_is_a_different_entry() {
         "and the first channel's survived — two channels are two gestures"
     );
 }
+
+// ---- docs/collab-plan.md §5.2: the edits that used to skip a command ----
+
+/// F7. The project's name was written straight into the document from four
+/// places in the session. It is the bundle's label rather than the song, so
+/// it never crosses a wire (§5.6), but it goes through a command like
+/// everything else that changes the document (INVARIANT 9).
+#[test]
+fn renaming_the_project_inverts_exactly() {
+    let mut f = fixture();
+    round_trips(
+        Box::new(fontelle_model::RenameProject::new("Second Song")),
+        &mut f.project,
+    );
+}
+
+/// F5. An automation clip used to get its row from a bare insert — off the
+/// undo stack, so taking the clip back left an empty lavender row behind, and
+/// invisible to anyone sharing the song. The row and the clip are one
+/// command now, and one undo.
+#[test]
+fn a_clip_on_a_new_row_is_one_command_and_one_undo() {
+    let mut f = fixture();
+    let lanes_before = f.project.lanes.len();
+    let clip = Clip {
+        lane: f.lane,
+        start: 0,
+        length: PPQN * 4,
+        source: ClipSource::Notes(NoteData {
+            channel: f.channel,
+            notes: Arena::default(),
+        }),
+        prefab_link: None,
+        color: None,
+        muted: false,
+        loop_length: None,
+    };
+    let mut add =
+        fontelle_model::AddClip::on_new_row(clip.clone(), "Part \u{2014} pan", [1, 2, 3, 255]);
+    add.apply(&mut f.project).unwrap();
+    let made = add.id().expect("the clip is known once it is applied");
+    let row = f.project.clips[made].lane;
+    assert_ne!(row, f.lane, "on a row of its own");
+    assert_eq!(f.project.lanes[row].name, "Part \u{2014} pan");
+    assert_eq!(f.project.lanes[row].color, [1, 2, 3, 255]);
+    assert_eq!(f.project.lanes.len(), lanes_before + 1);
+
+    add.invert().apply(&mut f.project).unwrap();
+    assert_eq!(f.project.lanes.len(), lanes_before, "the row went with it");
+    round_trips(
+        Box::new(fontelle_model::AddClip::on_new_row(clip, "again", [0; 4])),
+        &mut f.project,
+    );
+}
+
+/// F9. Markers are an arena now, so an edit can name one.
+#[test]
+fn adding_and_removing_a_marker_inverts_exactly() {
+    let mut f = fixture();
+    let mut add = fontelle_model::AddMarker::new("Chorus", PPQN * 16);
+    add.apply(&mut f.project).unwrap();
+    let marker = add.id().expect("minted on apply");
+    assert_eq!(f.project.markers[marker].name, "Chorus");
+    round_trips(
+        Box::new(fontelle_model::RemoveMarker::new(marker)),
+        &mut f.project,
+    );
+    round_trips(
+        Box::new(fontelle_model::AddMarker::new("Bridge", PPQN * 32)),
+        &mut f.project,
+    );
+}
+
+/// F6. A render lands on a row named after the row it came from — "Lane 1
+/// (rendered)" — and that name used to be written into the lane by hand after
+/// the import's command, where no undo and no wire could see it. The import
+/// names the row it makes now.
+#[test]
+fn an_imported_clip_can_name_the_row_it_makes() {
+    let mut f = fixture();
+    let asset = fontelle_types::AssetRef {
+        id: fontelle_types::AssetId::default(),
+        path: "take.wav".into(),
+        content_hash: 0,
+        size: 0,
+        kind: fontelle_types::AssetKind::Sample,
+    };
+    let data = fontelle_types::AudioClipData::whole(asset, 48_000, 48_000);
+    let mut add = fontelle_model::AddAudioClip::new("take.wav", data.clone(), 0, PPQN)
+        .row_named("Lane 1 (rendered)");
+    add.apply(&mut f.project).unwrap();
+    let clip = add.clip().unwrap();
+    let row = f.project.clips[clip].lane;
+    assert_eq!(f.project.lanes[row].name, "Lane 1 (rendered)");
+    round_trips(
+        Box::new(fontelle_model::AddAudioClip::new("take.wav", data, 0, PPQN).row_named("again")),
+        &mut f.project,
+    );
+}

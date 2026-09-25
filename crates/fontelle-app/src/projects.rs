@@ -209,6 +209,31 @@ fn bundle_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// The folder a joined song is copied into, inside the projects folder
+/// (`docs/collab-plan.md` §4.2): songs that came from somebody else, kept
+/// apart so the browser can say which they are.
+pub const SHARED_DIR: &str = "Shared";
+
+/// Every bundle in the projects folder — its top level and its
+/// [`SHARED_DIR`] — whose song is `id`, whatever the bundle is called
+/// (`docs/collab-plan.md` §4.2).
+///
+/// **The folder name is a label; the id is the identity.** A join looks the
+/// song up here to decide whether it is a copy or an update. Each bundle's
+/// head is read and its body skipped (`fontelle_model::peek_meta`); two
+/// hundred songs is two hundred small reads at join time, and nothing is
+/// cached until that is shown to be slow. A bundle that cannot be read is not
+/// the song — it is somebody else's problem, and not a reason to fail a join.
+pub fn find_by_id(projects_dir: &Path, id: fontelle_types::PersistentId) -> Vec<PathBuf> {
+    [projects_dir.to_path_buf(), projects_dir.join(SHARED_DIR)]
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|listing| listing.flatten().map(|entry| entry.path()))
+        .filter(|path| is_bundle(path))
+        .filter(|path| fontelle_model::peek_meta(path).is_ok_and(|meta| meta.id == id))
+        .collect()
+}
+
 /// A typed name as a **file name**, not as a path.
 ///
 /// INVARIANT 10 says Fontelle writes nothing outside the folders the user

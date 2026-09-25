@@ -18,6 +18,7 @@ fn a_track() -> (Project, fontelle_types::MixerTrackId) {
     project.mixer.tracks[track].gain_db = -3.0;
     project.mixer.tracks[track].pan = 0.25;
     project.mixer.tracks[track].sends.push(Send {
+        id: fontelle_types::PersistentId::new(),
         target: master,
         level_db: -12.0,
         pan: 0.0,

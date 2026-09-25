@@ -20,6 +20,19 @@ pub use fontelle_types::PanLaw;
 /// unbuilt — a name for an effect with nowhere to put a single parameter.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EffectSlot {
+    /// Which insert this is, whatever place in the chain it has moved to.
+    ///
+    /// A command names an insert by its place — that is the window's
+    /// vocabulary — and remembers this beside it, so an edit that crosses to
+    /// another machine where somebody has moved a different insert into
+    /// that place is refused rather than applied to the neighbour
+    /// (`docs/collab-plan.md` §5.2). Minted by [`EffectSlot::new`] and kept
+    /// by every copy of the slot that *is* the slot (an undo, a move); a
+    /// copy that is a new insert (a duplicated strip, a chain applied) mints
+    /// its own. Defaulted for a hand-written file; format 0's migration
+    /// derives one for every slot it finds.
+    #[serde(default)]
+    pub id: fontelle_types::PersistentId,
     /// The settings of whichever **built-in** effect this holds.
     ///
     /// Meaningless, and left at what it was, when [`plugin`](Self::plugin) is
@@ -150,6 +163,7 @@ impl EffectSlot {
     /// are touched.
     pub fn new(kind: EffectKind) -> Self {
         Self {
+            id: fontelle_types::PersistentId::new(),
             config: EffectConfig::new(kind),
             plugin: None,
             bypassed: false,
@@ -174,6 +188,7 @@ impl EffectSlot {
     /// is a `Utility` because that is the built-in that does nothing.
     pub fn hosting(state: PluginState) -> Self {
         Self {
+            id: fontelle_types::PersistentId::new(),
             config: EffectConfig::new(EffectKind::Utility),
             plugin: Some(state),
             bypassed: false,
@@ -257,6 +272,10 @@ impl EffectSlot {
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Send {
+    /// Which send this is, whatever place in the list it has moved to — the
+    /// same reason, and the same rules, as [`EffectSlot::id`].
+    #[serde(default)]
+    pub id: fontelle_types::PersistentId,
     pub target: MixerTrackId,
     pub level_db: f32,
     pub pan: f32,
@@ -543,6 +562,7 @@ mod tests {
         mixer.tracks[a].output = Some(master);
         mixer.tracks[reverb].output = Some(master);
         mixer.tracks[a].sends.push(Send {
+            id: fontelle_types::PersistentId::new(),
             target: reverb,
             level_db: -6.0,
             pan: 0.0,
@@ -551,6 +571,7 @@ mod tests {
         assert!(!mixer.has_cycle(), "a send to a bus is not a loop");
 
         mixer.tracks[reverb].sends.push(Send {
+            id: fontelle_types::PersistentId::new(),
             target: a,
             level_db: -6.0,
             pan: 0.0,
@@ -572,6 +593,7 @@ mod tests {
             let id = mixer.tracks.insert(track(name));
             mixer.tracks[id].output = Some(group);
             mixer.tracks[id].sends.push(Send {
+                id: fontelle_types::PersistentId::new(),
                 target: group,
                 level_db: -6.0,
                 pan: 0.0,

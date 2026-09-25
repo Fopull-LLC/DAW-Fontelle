@@ -459,7 +459,7 @@ impl Default for DisgustingBeatBank {
 /// and no second copy of these rules — the shape
 /// [`NotepadEdit`](crate::NotepadEdit) and
 /// [`WavetableEdit`](crate::WavetableEdit) both take, for the same reason.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DisgustingBeatEdit {
     AddPoint {
         scene: usize,

@@ -21,6 +21,7 @@ mod storage;
 mod stretch;
 mod tools;
 pub mod trim;
+pub mod wire;
 
 pub use arena::Arena;
 pub use asset_table::AssetTable;
@@ -29,22 +30,22 @@ pub use channel::{Channel, ChannelAb};
 pub use clip::{AudioClipData, Clip, ClipMap, ClipSource};
 pub use command::{Command, CommandError, History};
 pub use commands::{
-    AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMixerTrack,
-    AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset, ApplyTrackChain,
-    Compound, CopyChannelAb, DetachPrefab, DuplicateChannel, DuplicateClip, EditLapse, EditNotepad,
-    FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart, MakePrefabFromClip,
-    MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes, NEW_SEND_DB,
-    NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, PluginTarget, PresetTarget,
-    RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMixerTrack,
-    RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane, RenameMixerTrack,
-    RenamePrefab, ResizeClip, ResizeNotes, RestoreAutomationPoints, RestoreChannelPlugin,
-    RestoreInsert, RestoreInsertConfig, RestorePluginParam, RestorePointCurves, SetAudioClip,
-    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
-    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam,
-    SetLoopRange, SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart,
+    AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMarker,
+    AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,
+    ApplyTrackChain, Compound, CopyChannelAb, DetachPrefab, DuplicateChannel, DuplicateClip,
+    EditLapse, EditNotepad, FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart,
+    MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes,
+    NEW_SEND_DB, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, PluginTarget,
+    PresetTarget, RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane,
+    RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel,
+    RenameLane, RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeNotes,
+    RestoreAutomationPoints, RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig,
+    RestorePluginParam, RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch,
+    SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
+    SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetLoopRange, SetNoteLengths,
+    SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam,
+    SetPointCurve, SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput,
+    SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};
@@ -55,13 +56,15 @@ pub use prefab::{
 pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};
 pub use recording::notes_from_capture;
 pub use storage::{
-    BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, save_project,
+    BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, peek_meta,
+    save_project,
 };
 pub use stretch::with_stretch;
 pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
     RandomSpec, arpeggiated, legato_lengths, randomised,
 };
+pub use wire::{Edit, WireError};
 
 /// What `target` is automated to at `tick` in song time, or `None` if nothing
 /// has automated it yet (TDD §12.2).

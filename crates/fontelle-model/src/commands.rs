@@ -18,7 +18,9 @@
 //!   the same id on a redo. Anything else breaks the command above it in the
 //!   history.
 
-use fontelle_types::{ChannelId, ClipId, LaneId, MixerTrackId, NoteId, PrefabId, Tick};
+use fontelle_types::{
+    ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NoteId, PersistentId, PrefabId, Tick,
+};
 
 use crate::arena::Arena;
 use crate::channel::Channel;
@@ -36,9 +38,83 @@ use crate::project::Project;
 /// means something after `apply` has recorded what to undo. Rather than
 /// silently doing nothing — which would look like a successful undo that lost
 /// an edit — this says so.
-struct NotApplied(&'static str);
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NotApplied(std::borrow::Cow<'static, str>);
+
+impl NotApplied {
+    fn new(what: &'static str) -> Self {
+        Self(std::borrow::Cow::Borrowed(what))
+    }
+}
+
+/// Refuses an edit aimed at an insert or a send that is not the one it was
+/// made against (`docs/collab-plan.md` §5.2).
+///
+/// The window names an insert by its place in the chain, and a place is only
+/// a name while nobody else is moving things: on a shared song another
+/// person's insert can land in front of it, and "slot 2" is then the
+/// neighbour. So a command learns the id of what it found there the first
+/// time it is applied — on the machine whose rows the place was counted
+/// against — and every later apply (a redo, the other end of a wire) checks
+/// the place still holds it. Refuse rather than clamp (INVARIANT 9).
+fn claim(
+    expected: &mut Option<PersistentId>,
+    found: PersistentId,
+    what: &str,
+) -> Result<(), CommandError> {
+    match expected {
+        Some(id) if *id != found => Err(CommandError(format!(
+            "that {what} has moved since this edit was made"
+        ))),
+        _ => {
+            *expected = Some(found);
+            Ok(())
+        }
+    }
+}
+
+/// The insert at `index` on `track`, if it is still the one `expected`
+/// names — see [`claim`].
+fn insert_mut<'a>(
+    doc: &'a mut Project,
+    track: MixerTrackId,
+    index: usize,
+    expected: &mut Option<PersistentId>,
+) -> Result<&'a mut crate::EffectSlot, CommandError> {
+    let slot = doc
+        .mixer
+        .tracks
+        .get_mut(track)
+        .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
+        .inserts
+        .get_mut(index)
+        .ok_or_else(|| CommandError(format!("no insert {index}")))?;
+    claim(expected, slot.id, "insert")?;
+    Ok(slot)
+}
+
+/// The send at `index` on `track`, if it is still the one `expected` names.
+fn send_mut<'a>(
+    doc: &'a mut Project,
+    track: MixerTrackId,
+    index: usize,
+    expected: &mut Option<PersistentId>,
+) -> Result<&'a mut Send, CommandError> {
+    let send = doc
+        .mixer
+        .tracks
+        .get_mut(track)
+        .and_then(|track| track.sends.get_mut(index))
+        .ok_or_else(|| CommandError("no such send".into()))?;
+    claim(expected, send.id, "send")?;
+    Ok(send)
+}
 
 impl Command for NotApplied {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::NotApplied(self.clone())
+    }
+
     fn apply(&mut self, _doc: &mut Project) -> Result<(), CommandError> {
         Err(CommandError(format!(
             "cannot undo {}: it has not been applied",
@@ -46,10 +122,10 @@ impl Command for NotApplied {
         )))
     }
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied(self.0))
+        Box::new(self.clone())
     }
     fn label(&self) -> &str {
-        self.0
+        &self.0
     }
     fn merge_with(&mut self, _next: &dyn Command) -> bool {
         false
@@ -104,6 +180,7 @@ fn notes_of(
 ///
 /// One command rather than two, because choosing an instrument is one action:
 /// needing two presses of Ctrl+Z to take it back would be a bug report.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddChannel {
     name: String,
     patch_data: Option<fontelle_types::PatchData>,
@@ -162,6 +239,10 @@ impl AddChannel {
 }
 
 impl Command for AddChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddChannel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if let Some(track) = self.route
             && !doc.mixer.tracks.contains_key(track)
@@ -203,7 +284,7 @@ impl Command for AddChannel {
     fn invert(&self) -> Box<dyn Command> {
         match self.created {
             Some(channel) => Box::new(RemoveChannel::new(channel)),
-            None => Box::new(NotApplied("adding a channel")),
+            None => Box::new(NotApplied::new("adding a channel")),
         }
     }
 
@@ -225,7 +306,8 @@ impl Command for AddChannel {
 }
 
 /// What a channel took with it, so the inverse can put all of it back.
-struct RemovedChannel {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemovedChannel {
     channel: Channel,
     /// The clips that played this channel. Left behind they would be orphans:
     /// silent, and invisible to a user trying to work out why.
@@ -234,6 +316,7 @@ struct RemovedChannel {
     listeners: Vec<(MixerTrackId, usize)>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveChannel {
     channel: ChannelId,
     removed: Option<RemovedChannel>,
@@ -249,6 +332,10 @@ impl RemoveChannel {
 }
 
 impl Command for RemoveChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveChannel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(channel) = doc.channels.remove(self.channel) else {
             return Err(CommandError(format!(
@@ -309,7 +396,7 @@ impl Command for RemoveChannel {
                 clips: removed.clips.clone(),
                 listeners: removed.listeners.clone(),
             }),
-            None => Box::new(NotApplied("removing a channel")),
+            None => Box::new(NotApplied::new("removing a channel")),
         }
     }
 
@@ -336,7 +423,8 @@ impl Command for RemoveChannel {
 }
 
 /// The inverse half of [`RemoveChannel`]. Not a user-facing command.
-struct RestoreChannel {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreChannel {
     id: ChannelId,
     channel: Channel,
     clips: Vec<(ClipId, Clip)>,
@@ -345,6 +433,10 @@ struct RestoreChannel {
 }
 
 impl Command for RestoreChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreChannel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.channels.insert_at(self.id, self.channel.clone()) {
             return Err(CommandError("that channel id is taken".into()));
@@ -418,13 +510,15 @@ impl Command for RestoreChannel {
 /// track is a destination somebody built (see [`AddMixerTrack`]), and a second
 /// strip appearing per duplicate is exactly the mistake `AddChannel` used to
 /// make.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DuplicateChannel {
     source: ChannelId,
     /// Everything this minted, kept so a redo re-uses the same ids.
     made: Option<Made>,
 }
 
-struct Made {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Made {
     channel: ChannelId,
 }
 
@@ -440,6 +534,10 @@ impl DuplicateChannel {
 }
 
 impl Command for DuplicateChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::DuplicateChannel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(original) = doc.channels.get(self.source).cloned() else {
             return Err(CommandError(format!("no channel {:?}", self.source)));
@@ -473,7 +571,7 @@ impl Command for DuplicateChannel {
             // none, so this takes back exactly what was added. No lane to
             // remove either, because none was made.
             Some(made) => Box::new(RemoveChannel::new(made.channel)),
-            None => Box::new(NotApplied("duplicating a channel")),
+            None => Box::new(NotApplied::new("duplicating a channel")),
         }
     }
 
@@ -518,6 +616,7 @@ fn copy_name(name: &str) -> String {
 /// there is nothing to decide here beyond its name. It is a command all the
 /// same, because everything that changes the document is (INVARIANT 9) and
 /// because a row added by mistake has to come off again.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddLane {
     name: String,
     /// Where in the stack it goes, counted the way the arrangement counts
@@ -573,6 +672,7 @@ impl AddLane {
 /// A move off either end is a no-op rather than an error: the menu greys them,
 /// and a command that failed would make a keyboard shortcut for it something
 /// somebody has to handle.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MoveLane {
     from: usize,
     delta: isize,
@@ -593,6 +693,10 @@ impl MoveLane {
 }
 
 impl Command for MoveLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveLane(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let ids = doc.lane_ids();
         let Some(to) = self.from.checked_add_signed(self.delta) else {
@@ -719,6 +823,10 @@ fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
 }
 
 impl Command for AddLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddLane(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let mut lane = a_lane(self.name.clone());
         lane.order = open_rows(doc, self.at, 1);
@@ -738,7 +846,7 @@ impl Command for AddLane {
     fn invert(&self) -> Box<dyn Command> {
         match self.created {
             Some(id) => Box::new(RemoveLane::new(id)),
-            None => Box::new(NotApplied("adding a lane")),
+            None => Box::new(NotApplied::new("adding a lane")),
         }
     }
 
@@ -768,6 +876,7 @@ impl Command for AddLane {
 /// **The last lane stays.** An arrangement with no rows has nowhere to draw a
 /// clip and no way back to having one, since every "add" in the window puts
 /// something *on* a lane.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveLane {
     lane: LaneId,
     removed: Option<(Lane, Vec<(ClipId, Clip)>)>,
@@ -783,6 +892,10 @@ impl RemoveLane {
 }
 
 impl Command for RemoveLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveLane(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.lanes.contains_key(self.lane) {
             return Err(CommandError(format!(
@@ -820,7 +933,7 @@ impl Command for RemoveLane {
                 lane: lane.clone(),
                 clips: clips.clone(),
             }),
-            None => Box::new(NotApplied("removing a lane")),
+            None => Box::new(NotApplied::new("removing a lane")),
         }
     }
 
@@ -846,13 +959,18 @@ impl Command for RemoveLane {
 }
 
 /// The inverse half of [`RemoveLane`]. Not a user-facing command.
-struct RestoreLane {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreLane {
     id: LaneId,
     lane: Lane,
     clips: Vec<(ClipId, Clip)>,
 }
 
 impl Command for RestoreLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreLane(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.lanes.insert_at(self.id, self.lane.clone()) {
             return Err(CommandError("that lane id is taken".into()));
@@ -888,6 +1006,7 @@ impl Command for RestoreLane {
 
 /// Renames a lane. Coalescing, like every other rename here: typing is one
 /// gesture and one undo entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RenameLane {
     lane: LaneId,
     name: String,
@@ -905,6 +1024,10 @@ impl RenameLane {
 }
 
 impl Command for RenameLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenameLane(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let lane = doc
             .lanes
@@ -918,7 +1041,7 @@ impl Command for RenameLane {
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
             Some(previous) => Box::new(RenameLane::new(self.lane, previous.clone())),
-            None => Box::new(NotApplied("renaming a lane")),
+            None => Box::new(NotApplied::new("renaming a lane")),
         }
     }
 
@@ -957,6 +1080,7 @@ impl Command for RenameLane {
 /// whole of the routing model: `AddChannel` used to mint one per channel, so a
 /// project with twenty instruments had twenty strips nobody asked for and no
 /// way to say "these four go to the drum bus".
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddMixerTrack {
     name: String,
     created: Option<MixerTrackId>,
@@ -980,6 +1104,10 @@ impl AddMixerTrack {
 }
 
 impl Command for AddMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddMixerTrack(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let mut track = MixerTrack::new(self.name.clone());
         // Into the master, which is the only destination that is always there.
@@ -998,7 +1126,7 @@ impl Command for AddMixerTrack {
     fn invert(&self) -> Box<dyn Command> {
         match self.created {
             Some(id) => Box::new(RemoveMixerTrack::new(id)),
-            None => Box::new(NotApplied("adding a mixer track")),
+            None => Box::new(NotApplied::new("adding a mixer track")),
         }
     }
 
@@ -1020,8 +1148,8 @@ impl Command for AddMixerTrack {
 }
 
 /// What a deleted track took with it, so the inverse can put all of it back.
-#[derive(Clone)]
-struct RemovedTrack {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemovedTrack {
     track: MixerTrack,
     /// The channels that were playing through it.
     channels: Vec<ChannelId>,
@@ -1043,6 +1171,7 @@ struct RemovedTrack {
 /// does not exist is silent for a reason nobody can see in the panel, and a
 /// track routed into thin air is a bus you cannot hear. Audible-and-wrong is a
 /// state a person can fix; silent-and-wrong is one they have to debug.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveMixerTrack {
     id: MixerTrackId,
     removed: Option<RemovedTrack>,
@@ -1055,6 +1184,10 @@ impl RemoveMixerTrack {
 }
 
 impl Command for RemoveMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveMixerTrack(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // Every project has a master (TDD §13.1) and `realise` refuses to
         // build a graph without one, so this is not a thing to allow and then
@@ -1120,7 +1253,7 @@ impl Command for RemoveMixerTrack {
                 id: self.id,
                 removed: removed.clone(),
             }),
-            None => Box::new(NotApplied("deleting a mixer track")),
+            None => Box::new(NotApplied::new("deleting a mixer track")),
         }
     }
 
@@ -1142,12 +1275,17 @@ impl Command for RemoveMixerTrack {
 }
 
 /// The inverse half of [`RemoveMixerTrack`]. Not a user-facing command.
-struct RestoreMixerTrack {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreMixerTrack {
     id: MixerTrackId,
     removed: RemovedTrack,
 }
 
 impl Command for RestoreMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreMixerTrack(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc
             .mixer
@@ -1199,6 +1337,7 @@ impl Command for RestoreMixerTrack {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RenameMixerTrack {
     id: MixerTrackId,
     name: String,
@@ -1216,6 +1355,10 @@ impl RenameMixerTrack {
 }
 
 impl Command for RenameMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenameMixerTrack(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -1230,7 +1373,7 @@ impl Command for RenameMixerTrack {
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
             Some(previous) => Box::new(RenameMixerTrack::new(self.id, previous.clone())),
-            None => Box::new(NotApplied("renaming a mixer track")),
+            None => Box::new(NotApplied::new("renaming a mixer track")),
         }
     }
 
@@ -1277,9 +1420,11 @@ impl Command for RenameMixerTrack {
 /// reachability walk, because `has_cycle` already reads `output` *and* `sends`
 /// and a second implementation is somewhere for the two to disagree — which
 /// would mean a loop that one of them permits.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetTrackOutput {
     track: MixerTrackId,
     output: Option<MixerTrackId>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<MixerTrackId>>,
 }
 
@@ -1294,6 +1439,10 @@ impl SetTrackOutput {
 }
 
 impl Command for SetTrackOutput {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetTrackOutput(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // The master is where everything arrives. Giving it an output is
         // either a loop or a second master, and neither is a thing this
@@ -1328,7 +1477,7 @@ impl Command for SetTrackOutput {
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
             Some(previous) => Box::new(SetTrackOutput::new(self.track, previous)),
-            None => Box::new(NotApplied("routing a mixer track")),
+            None => Box::new(NotApplied::new("routing a mixer track")),
         }
     }
 
@@ -1372,11 +1521,15 @@ pub const NEW_SEND_DB: f32 = -60.0;
 /// see in the UI". So this checks with [`Mixer::has_cycle`], the same way
 /// [`SetTrackOutput`] does and for the same reason — one implementation of
 /// what a loop is.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddSend {
     track: MixerTrackId,
     target: MixerTrackId,
     /// Where it landed, so the inverse can take exactly this one off.
     index: Option<usize>,
+    /// The id the send was given, so a redo — or the other end of a wire —
+    /// makes the same send rather than a new one.
+    made: Option<PersistentId>,
 }
 
 impl AddSend {
@@ -1385,11 +1538,16 @@ impl AddSend {
             track,
             target,
             index: None,
+            made: None,
         }
     }
 }
 
 impl Command for AddSend {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddSend(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.mixer.tracks.contains_key(self.target) {
             return Err(CommandError(format!("no mixer track {:?}", self.target)));
@@ -1406,6 +1564,7 @@ impl Command for AddSend {
         track.sends.insert(
             index,
             Send {
+                id: *self.made.get_or_insert_with(PersistentId::new),
                 target: self.target,
                 level_db: NEW_SEND_DB,
                 pan: 0.0,
@@ -1427,8 +1586,11 @@ impl Command for AddSend {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.index {
-            Some(index) => Box::new(RemoveSend::new(self.track, index)),
-            None => Box::new(NotApplied("adding a send")),
+            Some(index) => Box::new(RemoveSend {
+                slot: self.made,
+                ..RemoveSend::new(self.track, index)
+            }),
+            None => Box::new(NotApplied::new("adding a send")),
         }
     }
 
@@ -1450,10 +1612,13 @@ impl Command for AddSend {
 }
 
 /// Takes one off, keeping it so undo puts it back where it was set.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveSend {
     track: MixerTrackId,
     index: usize,
     removed: Option<Send>,
+    /// Which send was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
 }
 
 impl RemoveSend {
@@ -1462,20 +1627,28 @@ impl RemoveSend {
             track,
             index,
             removed: None,
+            slot: None,
         }
     }
 }
 
 impl Command for RemoveSend {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveSend(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        if self.index >= track.sends.len() {
-            return Err(CommandError("no such send".into()));
-        }
+        let found = track
+            .sends
+            .get(self.index)
+            .ok_or_else(|| CommandError("no such send".into()))?
+            .id;
+        claim(&mut self.slot, found, "send")?;
         let removed = track.sends.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -1488,7 +1661,7 @@ impl Command for RemoveSend {
                 index: self.index,
                 send,
             }),
-            None => Box::new(NotApplied("deleting a send")),
+            None => Box::new(NotApplied::new("deleting a send")),
         }
     }
 
@@ -1510,13 +1683,18 @@ impl Command for RemoveSend {
 }
 
 /// Puts a deleted send back at its own index, with the level it was set to.
-struct RestoreSend {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreSend {
     track: MixerTrackId,
     index: usize,
     send: Send,
 }
 
 impl Command for RestoreSend {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreSend(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -1529,7 +1707,10 @@ impl Command for RestoreSend {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(RemoveSend::new(self.track, self.index))
+        Box::new(RemoveSend {
+            slot: Some(self.send.id),
+            ..RemoveSend::new(self.track, self.index)
+        })
     }
 
     fn label(&self) -> &str {
@@ -1550,9 +1731,12 @@ impl Command for RestoreSend {
 }
 
 /// How much of a track goes down one of its sends.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetSendLevel {
     track: MixerTrackId,
     index: usize,
+    /// Which send was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     level_db: f32,
     previous: Option<f32>,
 }
@@ -1562,6 +1746,7 @@ impl SetSendLevel {
         Self {
             track,
             index,
+            slot: None,
             level_db,
             previous: None,
         }
@@ -1569,13 +1754,12 @@ impl SetSendLevel {
 }
 
 impl Command for SetSendLevel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetSendLevel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let send = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .and_then(|track| track.sends.get_mut(self.index))
-            .ok_or_else(|| CommandError("no such send".into()))?;
+        let send = send_mut(doc, self.track, self.index, &mut self.slot)?;
         let previous = std::mem::replace(&mut send.level_db, self.level_db);
         self.previous.get_or_insert(previous);
         Ok(())
@@ -1583,8 +1767,11 @@ impl Command for SetSendLevel {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetSendLevel::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("setting a send level")),
+            Some(previous) => Box::new(SetSendLevel {
+                slot: self.slot,
+                ..SetSendLevel::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("setting a send level")),
         }
     }
 
@@ -1619,9 +1806,12 @@ impl Command for SetSendLevel {
 /// The difference is audible and is the reason the switch exists: a post-fader
 /// send follows the fader down, and a pre-fader one does not — which is what a
 /// cue mix wants and what a reverb send does not.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetSendPreFader {
     track: MixerTrackId,
     index: usize,
+    /// Which send was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     pre_fader: bool,
     previous: Option<bool>,
 }
@@ -1631,6 +1821,7 @@ impl SetSendPreFader {
         Self {
             track,
             index,
+            slot: None,
             pre_fader,
             previous: None,
         }
@@ -1638,13 +1829,12 @@ impl SetSendPreFader {
 }
 
 impl Command for SetSendPreFader {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetSendPreFader(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let send = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .and_then(|track| track.sends.get_mut(self.index))
-            .ok_or_else(|| CommandError("no such send".into()))?;
+        let send = send_mut(doc, self.track, self.index, &mut self.slot)?;
         let previous = std::mem::replace(&mut send.pre_fader, self.pre_fader);
         self.previous.get_or_insert(previous);
         Ok(())
@@ -1652,8 +1842,11 @@ impl Command for SetSendPreFader {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetSendPreFader::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("switching a send pre-fader")),
+            Some(previous) => Box::new(SetSendPreFader {
+                slot: self.slot,
+                ..SetSendPreFader::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("switching a send pre-fader")),
         }
     }
 
@@ -1678,9 +1871,11 @@ impl Command for SetSendPreFader {
 ///
 /// `None` is the master. See [`Channel::mixer_track`] for why that is a
 /// `None` rather than the master's own id.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetChannelRoute {
     channel: ChannelId,
     track: Option<MixerTrackId>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<MixerTrackId>>,
 }
 
@@ -1695,6 +1890,10 @@ impl SetChannelRoute {
 }
 
 impl Command for SetChannelRoute {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetChannelRoute(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // Checked before the write, not after: a channel pointing at a track
         // that is not there plays into the master by accident rather than by
@@ -1716,7 +1915,7 @@ impl Command for SetChannelRoute {
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
             Some(previous) => Box::new(SetChannelRoute::new(self.channel, previous)),
-            None => Box::new(NotApplied("routing a channel")),
+            None => Box::new(NotApplied::new("routing a channel")),
         }
     }
 
@@ -1752,15 +1951,18 @@ impl Command for SetChannelRoute {
 /// disturbing the second's undo entry. `Session::set_channel_kind` runs them
 /// together in a `Compound` when both should move, which is what makes
 /// choosing a kind one press of Ctrl+Z.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetChannelKind {
     channel: ChannelId,
     kind: fontelle_types::InstrumentKind,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<fontelle_types::InstrumentKind>>,
     /// The preset the channel said it was loaded from, before. A preset is
     /// for one kind of instrument, so choosing another kind is the moment it
     /// stops applying — and a channel that kept saying "Grand Piano" over
     /// the Init patch read as *edited* on the bar rather than as fresh
     /// (`tests/preset_bar.rs`, once a new project named its preset).
+    #[serde(with = "crate::wire::nested")]
     previous_preset: Option<Option<fontelle_types::PresetRef>>,
 }
 
@@ -1776,6 +1978,10 @@ impl SetChannelKind {
 }
 
 impl Command for SetChannelKind {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetChannelKind(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(channel) = doc.channels.get_mut(self.channel) else {
             return Err(CommandError("that channel is not there".into()));
@@ -1801,7 +2007,7 @@ impl Command for SetChannelKind {
                 kind: previous,
                 preset: self.previous_preset.clone(),
             }),
-            None => Box::new(NotApplied("choosing an instrument")),
+            None => Box::new(NotApplied::new("choosing an instrument")),
         }
     }
 
@@ -1825,14 +2031,20 @@ impl Command for SetChannelKind {
 }
 
 /// [`SetChannelKind`]'s inverse, which can also put back "not said".
-struct RestoreChannelKind {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreChannelKind {
     channel: ChannelId,
     kind: Option<fontelle_types::InstrumentKind>,
     /// The preset ref to put back, when the kind change took one.
+    #[serde(with = "crate::wire::nested")]
     preset: Option<Option<fontelle_types::PresetRef>>,
 }
 
 impl Command for RestoreChannelKind {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreChannelKind(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(channel) = doc.channels.get_mut(self.channel) else {
             return Err(CommandError("that channel is not there".into()));
@@ -1845,7 +2057,7 @@ impl Command for RestoreChannelKind {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("choosing an instrument"))
+        Box::new(NotApplied::new("choosing an instrument"))
     }
 
     fn label(&self) -> &str {
@@ -1865,9 +2077,11 @@ impl Command for RestoreChannelKind {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetChannelPatch {
     channel: ChannelId,
     patch_data: Option<fontelle_types::PatchData>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<fontelle_types::PatchData>>,
 }
 
@@ -1882,6 +2096,10 @@ impl SetChannelPatch {
 }
 
 impl Command for SetChannelPatch {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetChannelPatch(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -1895,7 +2113,7 @@ impl Command for SetChannelPatch {
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
             Some(previous) => Box::new(SetChannelPatch::new(self.channel, previous.clone())),
-            None => Box::new(NotApplied("choosing an instrument")),
+            None => Box::new(NotApplied::new("choosing an instrument")),
         }
     }
 
@@ -1941,6 +2159,7 @@ impl Command for SetChannelPatch {
 ///
 /// It merges with itself so typing a name is one undo rather than one per
 /// keystroke, and so is swapping a channel's soundfont twice in a row.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RenameChannel {
     channel: ChannelId,
     name: String,
@@ -1961,6 +2180,10 @@ impl RenameChannel {
 }
 
 impl Command for RenameChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenameChannel(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -1974,7 +2197,7 @@ impl Command for RenameChannel {
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
             Some(previous) => Box::new(RenameChannel::new(self.channel, previous.clone())),
-            None => Box::new(NotApplied("renaming a channel")),
+            None => Box::new(NotApplied::new("renaming a channel")),
         }
     }
 
@@ -2032,9 +2255,30 @@ impl Compound {
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
     }
+
+    /// A compound as it arrives off a wire: its parts are edits, each made
+    /// back into the command it was.
+    pub(crate) fn from_edits(label: String, parts: Vec<crate::wire::Edit>, applied: bool) -> Self {
+        Self {
+            label,
+            parts: parts
+                .into_iter()
+                .map(crate::wire::Edit::into_command)
+                .collect(),
+            applied,
+        }
+    }
 }
 
 impl Command for Compound {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::Compound {
+            label: self.label.clone(),
+            parts: self.parts.iter().map(|part| part.to_edit()).collect(),
+            applied: self.applied,
+        }
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         for index in 0..self.parts.len() {
             if let Err(e) = self.parts[index].apply(doc) {
@@ -2054,7 +2298,7 @@ impl Command for Compound {
 
     fn invert(&self) -> Box<dyn Command> {
         if !self.applied {
-            return Box::new(NotApplied("a compound edit"));
+            return Box::new(NotApplied::new("a compound edit"));
         }
         Box::new(Compound::new(
             self.label.clone(),
@@ -2091,6 +2335,7 @@ fn note_count_label(verb: &str, count: usize) -> String {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddNotes {
     home: NoteHome,
     notes: Vec<Note>,
@@ -2115,6 +2360,10 @@ impl AddNotes {
 }
 
 impl Command for AddNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         if self.ids.is_empty() {
@@ -2135,7 +2384,7 @@ impl Command for AddNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.ids.is_empty() {
-            return Box::new(NotApplied("drawing notes"));
+            return Box::new(NotApplied::new("drawing notes"));
         }
         Box::new(RemoveNotes::new(self.home, self.ids.clone()))
     }
@@ -2160,6 +2409,7 @@ impl Command for AddNotes {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveNotes {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2179,6 +2429,10 @@ impl RemoveNotes {
 }
 
 impl Command for RemoveNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         // Checked before anything is taken out, so a selection with one stale
@@ -2196,7 +2450,7 @@ impl Command for RemoveNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.removed.is_empty() && !self.ids.is_empty() {
-            return Box::new(NotApplied("deleting notes"));
+            return Box::new(NotApplied::new("deleting notes"));
         }
         Box::new(RestoreNotes {
             home: self.home,
@@ -2225,12 +2479,17 @@ impl Command for RemoveNotes {
 }
 
 /// The inverse half of [`RemoveNotes`].
-struct RestoreNotes {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreNotes {
     home: NoteHome,
     notes: Vec<(NoteId, Note)>,
 }
 
 impl Command for RestoreNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         for (id, note) in &self.notes {
@@ -2267,6 +2526,7 @@ impl Command for RestoreNotes {
 
 /// Moves notes by a **delta**, which is what makes a drag both mergeable and
 /// exactly invertible: coalescing is adding, and undoing is negating.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MoveNotes {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2293,6 +2553,10 @@ impl MoveNotes {
 }
 
 impl Command for MoveNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let (tick_delta, key_delta) = (self.tick_delta, self.key_delta);
         let data = notes_of(doc, self.home)?;
@@ -2360,6 +2624,7 @@ impl Command for MoveNotes {
 }
 
 /// Lengthens or shortens notes by a delta, on the same terms as [`MoveNotes`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResizeNotes {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2379,6 +2644,10 @@ impl ResizeNotes {
 }
 
 impl Command for ResizeNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ResizeNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let delta = self.length_delta;
         let data = notes_of(doc, self.home)?;
@@ -2447,6 +2716,7 @@ impl Command for ResizeNotes {
 ///   mouse-move; without `merge_with` an undo would step back through the drag
 ///   a pixel at a time. Merging keeps the *original* `previous`, which is what
 ///   makes one undo go back to where the drag started.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNoteVelocity {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2470,6 +2740,10 @@ impl SetNoteVelocity {
 }
 
 impl Command for SetNoteVelocity {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteVelocity(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         // Checked before anything is written: a command that half-applies is
@@ -2498,7 +2772,7 @@ impl Command for SetNoteVelocity {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("setting velocity"));
+            return Box::new(NotApplied::new("setting velocity"));
         }
         Box::new(RestoreNoteVelocities {
             home: self.home,
@@ -2538,7 +2812,8 @@ impl Command for SetNoteVelocity {
 }
 
 /// [`SetNoteVelocity`]'s inverse: each note back to its own value.
-struct RestoreNoteVelocities {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreNoteVelocities {
     home: NoteHome,
     ids: Vec<NoteId>,
     velocities: Vec<u8>,
@@ -2546,6 +2821,10 @@ struct RestoreNoteVelocities {
 }
 
 impl Command for RestoreNoteVelocities {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreNoteVelocities(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         for (id, velocity) in self.ids.iter().zip(&self.velocities) {
@@ -2605,6 +2884,7 @@ impl Command for RestoreNoteVelocities {
 /// draws a bar per note and a slide has no height; and the compiler treats a
 /// slide as a bend rather than as a note at all, which no amount of a value
 /// could express. See `Note::slide`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNoteSlide {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2627,6 +2907,10 @@ impl SetNoteSlide {
 }
 
 impl Command for SetNoteSlide {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteSlide(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let slide = self.slide;
         let first = self.previous.is_empty();
@@ -2649,7 +2933,7 @@ impl Command for SetNoteSlide {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("marking a slide"));
+            return Box::new(NotApplied::new("marking a slide"));
         }
         Box::new(RestoreNoteSlides {
             home: self.home,
@@ -2679,13 +2963,18 @@ impl Command for SetNoteSlide {
 ///
 /// Its own command rather than a second `SetNoteSlide`, because a selection
 /// that was half slides has no single value to set back to.
-struct RestoreNoteSlides {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreNoteSlides {
     home: NoteHome,
     ids: Vec<NoteId>,
     previous: Vec<bool>,
 }
 
 impl Command for RestoreNoteSlides {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreNoteSlides(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         for (id, was) in self.ids.iter().zip(self.previous.iter()) {
@@ -2697,7 +2986,7 @@ impl Command for RestoreNoteSlides {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("restoring slides"))
+        Box::new(NotApplied::new("restoring slides"))
     }
 
     fn label(&self) -> &str {
@@ -2729,6 +3018,7 @@ impl Command for RestoreNoteSlides {
 /// outright would lose the good cuts along with the empty ones. A zero-length
 /// note is a note-on and a note-off at the same sample — silence you can
 /// neither see nor select.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SliceNotes {
     home: NoteHome,
     cuts: Vec<(NoteId, Tick)>,
@@ -2760,6 +3050,10 @@ impl SliceNotes {
 }
 
 impl Command for SliceNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SliceNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let redo = !self.created.is_empty();
         let data = notes_of(doc, self.home)?;
@@ -2815,7 +3109,7 @@ impl Command for SliceNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.created.is_empty() {
-            return Box::new(NotApplied("cutting notes"));
+            return Box::new(NotApplied::new("cutting notes"));
         }
         Box::new(MergeSlices {
             home: self.home,
@@ -2845,13 +3139,18 @@ impl Command for SliceNotes {
 
 /// The inverse half of [`SliceNotes`]: takes the second halves away and puts
 /// the first halves back to the length they were.
-struct MergeSlices {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MergeSlices {
     home: NoteHome,
     restore: Vec<(NoteId, Tick)>,
     remove: Vec<NoteId>,
 }
 
 impl Command for MergeSlices {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MergeSlices(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         for id in &self.remove {
@@ -2866,7 +3165,7 @@ impl Command for MergeSlices {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("merging slices"))
+        Box::new(NotApplied::new("merging slices"))
     }
 
     fn label(&self) -> &str {
@@ -2886,6 +3185,7 @@ impl Command for MergeSlices {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNoteProperty {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -2920,6 +3220,10 @@ impl SetNoteProperty {
 }
 
 impl Command for SetNoteProperty {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteProperty(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
         let data = notes_of(doc, self.home)?;
@@ -2949,7 +3253,7 @@ impl Command for SetNoteProperty {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("setting a note property"));
+            return Box::new(NotApplied::new("setting a note property"));
         }
         Box::new(RestoreNoteProperties {
             home: self.home,
@@ -2990,7 +3294,8 @@ impl Command for SetNoteProperty {
 }
 
 /// [`SetNoteProperty`]'s inverse: each note back to its own value.
-struct RestoreNoteProperties {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreNoteProperties {
     home: NoteHome,
     ids: Vec<NoteId>,
     property: NoteProperty,
@@ -2999,6 +3304,10 @@ struct RestoreNoteProperties {
 }
 
 impl Command for RestoreNoteProperties {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreNoteProperties(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
         let data = notes_of(doc, self.home)?;
@@ -3056,6 +3365,7 @@ impl Command for RestoreNoteProperties {
 /// "the other way by the same amount": once three notes have all been clamped
 /// to 127 their differences are gone from the document. It restores the value
 /// each note actually had, like [`SetNoteProperty`]'s does.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NudgeNoteProperty {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -3089,6 +3399,10 @@ impl NudgeNoteProperty {
 }
 
 impl Command for NudgeNoteProperty {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::NudgeNoteProperty(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let property = self.property;
         let data = notes_of(doc, self.home)?;
@@ -3120,7 +3434,7 @@ impl Command for NudgeNoteProperty {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("nudging a note property"));
+            return Box::new(NotApplied::new("nudging a note property"));
         }
         Box::new(RestoreNoteProperties {
             home: self.home,
@@ -3169,6 +3483,7 @@ impl Command for NudgeNoteProperty {
 /// Deliberately **not** mergeable: rolling the dice again is a new answer to
 /// the same question rather than the continuation of a gesture, and undo
 /// should walk back through the rolls one at a time.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNotePropertyEach {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -3201,6 +3516,10 @@ impl SetNotePropertyEach {
 }
 
 impl Command for SetNotePropertyEach {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNotePropertyEach(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // A list that does not line up with its notes would write the second
         // note's value onto the third — a scramble rather than an error, and
@@ -3238,7 +3557,7 @@ impl Command for SetNotePropertyEach {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("setting a value on each note"));
+            return Box::new(NotApplied::new("setting a value on each note"));
         }
         Box::new(RestoreNoteProperties {
             home: self.home,
@@ -3279,6 +3598,7 @@ impl Command for SetNotePropertyEach {
 /// presses of Ctrl+Z to take back.
 ///
 /// Self-inverting: it holds the lengths it found, and undoing writes those.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNoteLengths {
     home: NoteHome,
     ids: Vec<NoteId>,
@@ -3302,6 +3622,10 @@ impl SetNoteLengths {
 }
 
 impl Command for SetNoteLengths {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteLengths(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // A list that does not line up with its notes would write the second
         // note's length onto the third, the same scramble
@@ -3343,7 +3667,7 @@ impl Command for SetNoteLengths {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.previous.is_empty() {
-            return Box::new(NotApplied("setting a length on each note"));
+            return Box::new(NotApplied::new("setting a length on each note"));
         }
         Box::new(SetNoteLengths::new(
             self.home,
@@ -3377,7 +3701,7 @@ impl Command for SetNoteLengths {
 // --- Importing -------------------------------------------------------------
 
 /// One part of a file being brought in: an instrument, a row, and its notes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportPart {
     /// What the file called it. What the channel, the strip and the
     /// arrangement row are all named — see `fontelle_assets::part_name` for
@@ -3393,7 +3717,7 @@ pub struct ImportPart {
 }
 
 /// What one part turned into, so the window can go and look at it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MadePart {
     pub channel: ChannelId,
     pub lane: LaneId,
@@ -3409,6 +3733,7 @@ pub struct MadePart {
 /// command is about to mint, and a `Compound` holds commands built before any
 /// of them ran. Two entries in the history would be worse still — an undo that
 /// leaves an empty row behind is not an undo.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddAudioClip {
     label: String,
     name: String,
@@ -3438,6 +3763,10 @@ pub struct AddAudioClip {
     /// The `LaneId` is `None` when the clip was dropped onto a row that already
     /// existed — there was no row to make, and there is none to take back.
     made: Option<(Option<LaneId>, ClipId)>,
+    /// What the row it makes is called, when that is not the file's name —
+    /// see [`AddAudioClip::row_named`].
+    #[serde(default)]
+    row_name: Option<String>,
 }
 
 impl AddAudioClip {
@@ -3457,7 +3786,19 @@ impl AddAudioClip {
             onto: None,
             at: None,
             made: None,
+            row_name: None,
         }
+    }
+
+    /// Names the row this makes, when it makes one.
+    ///
+    /// A render lands on a row called after the row it is a render of —
+    /// "Lane 1 (rendered)" — and that name used to be written into the lane
+    /// by hand once this had run, where neither an undo nor anybody sharing
+    /// the song could see it (`docs/collab-plan.md` §5.2, F6).
+    pub fn row_named(mut self, name: impl Into<String>) -> Self {
+        self.row_name = Some(name.into());
+        self
     }
 
     /// Drops the clip onto an existing row rather than a new one — the row the
@@ -3488,6 +3829,10 @@ impl AddAudioClip {
 }
 
 impl Command for AddAudioClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddAudioClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // A drop onto a row that is already there uses it — but only if it is
         // still there. A row removed between the drop and a redo falls back to
@@ -3511,7 +3856,7 @@ impl Command for AddAudioClip {
         // only when a row is actually going to be made — a drop onto an
         // existing row must not shuffle the stack.
         let at = self.at;
-        let name = self.name.clone();
+        let name = self.row_name.clone().unwrap_or_else(|| self.name.clone());
         let new_lane = |doc: &mut Project| Lane {
             name: name.clone(),
             height: DEFAULT_LANE_HEIGHT,
@@ -3568,7 +3913,7 @@ impl Command for AddAudioClip {
             // The row goes with the clip only when this command made the row;
             // a drop onto an existing row leaves it alone.
             Some((lane, clip)) => Box::new(RemoveAudioClip { lane, clip }),
-            None => Box::new(NotApplied("importing a sound")),
+            None => Box::new(NotApplied::new("importing a sound")),
         }
     }
 
@@ -3591,7 +3936,8 @@ impl Command for AddAudioClip {
 
 /// What undoing an [`AddAudioClip`] does: the clip and the row it arrived on,
 /// both gone.
-struct RemoveAudioClip {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoveAudioClip {
     /// `None` when the drop landed on a row that was already there: the clip is
     /// undone, the row is not.
     lane: Option<LaneId>,
@@ -3599,6 +3945,10 @@ struct RemoveAudioClip {
 }
 
 impl Command for RemoveAudioClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveAudioClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         doc.clips.remove(self.clip);
         if let Some(lane) = self.lane {
@@ -3610,7 +3960,7 @@ impl Command for RemoveAudioClip {
     fn invert(&self) -> Box<dyn Command> {
         // Never reached: the history holds the `AddAudioClip` and re-applies
         // it for a redo, which is what puts the original ids back.
-        Box::new(NotApplied("un-importing a sound"))
+        Box::new(NotApplied::new("un-importing a sound"))
     }
 
     fn label(&self) -> &str {
@@ -3636,9 +3986,11 @@ impl Command for RemoveAudioClip {
 /// mixer track."* A command rather than a plain field write, because it is
 /// written into the document and therefore has to be undoable and has to be
 /// saved — the same reasoning that made the track's output one.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetTrackInput {
     track: MixerTrackId,
     input: Option<String>,
+    #[serde(with = "crate::wire::nested")]
     before: Option<Option<String>>,
 }
 
@@ -3653,6 +4005,10 @@ impl SetTrackInput {
 }
 
 impl Command for SetTrackInput {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetTrackInput(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(track) = doc.mixer.tracks.get_mut(self.track) else {
             return Err(CommandError("that mixer track is not there".into()));
@@ -3667,7 +4023,7 @@ impl Command for SetTrackInput {
     fn invert(&self) -> Box<dyn Command> {
         match &self.before {
             Some(input) => Box::new(SetTrackInput::new(self.track, input.clone())),
-            None => Box::new(NotApplied("choosing an input")),
+            None => Box::new(NotApplied::new("choosing an input")),
         }
     }
 
@@ -3696,6 +4052,7 @@ impl Command for SetTrackInput {
 /// that each have to agree about what "unchanged" means. Nothing is
 /// destructive either way — the file is never touched, so the inverse is
 /// simply the list that was there before.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetAudioClip {
     clip: ClipId,
     data: fontelle_types::AudioClipData,
@@ -3715,6 +4072,10 @@ impl SetAudioClip {
 }
 
 impl Command for SetAudioClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetAudioClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(clip) = doc.clips.get_mut(self.clip) else {
             return Err(CommandError("that clip is not there".into()));
@@ -3735,7 +4096,7 @@ impl Command for SetAudioClip {
     fn invert(&self) -> Box<dyn Command> {
         match &self.before {
             Some(data) => Box::new(SetAudioClip::new(self.clip, data.clone())),
-            None => Box::new(NotApplied("changing a sound")),
+            None => Box::new(NotApplied::new("changing a sound")),
         }
     }
 
@@ -3791,6 +4152,7 @@ const DEFAULT_LANE_HEIGHT: f32 = 32.0;
 /// `Compound` holds commands that were made before any of them ran. Being one
 /// command is also what makes importing eight tracks one entry in the history
 /// — eight presses of Ctrl+Z to undo one drop would be a bug report.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportParts {
     parts: Vec<ImportPart>,
     /// Where in the stack the rows go: a block starting at this index, and
@@ -3834,6 +4196,10 @@ impl ImportParts {
 }
 
 impl Command for ImportParts {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ImportParts(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if self.parts.is_empty() {
             return Err(CommandError(
@@ -3956,7 +4322,7 @@ impl Command for ImportParts {
 
     fn invert(&self) -> Box<dyn Command> {
         if self.made.is_empty() {
-            return Box::new(NotApplied("importing a file"));
+            return Box::new(NotApplied::new("importing a file"));
         }
         Box::new(UnimportParts {
             made: self.made.clone(),
@@ -3990,12 +4356,17 @@ impl Command for ImportParts {
 /// [`ImportParts`]'s inverse: everything it made, taken back out.
 ///
 /// **Newest first**, so a clip is gone before the lane it names is.
-struct UnimportParts {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UnimportParts {
     made: Vec<MadePart>,
     label: String,
 }
 
 impl Command for UnimportParts {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::UnimportParts(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         for ids in self.made.iter().rev() {
             doc.clips.remove(ids.clip);
@@ -4010,7 +4381,7 @@ impl Command for UnimportParts {
         // Not expressible as an `ImportParts` — the parts themselves are
         // gone. Redoing an undone import goes through `History::redo`, which
         // re-applies the original command rather than inverting this one.
-        Box::new(NotApplied("taking an import back out"))
+        Box::new(NotApplied::new("taking an import back out"))
     }
 
     fn label(&self) -> &str {
@@ -4034,9 +4405,15 @@ impl Command for UnimportParts {
 
 // --- Clips -----------------------------------------------------------------
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddClip {
     clip: Clip,
     created: Option<ClipId>,
+    /// A row to make for the clip, named and coloured, at the bottom of the
+    /// stack — see [`AddClip::on_new_row`].
+    row: Option<(String, [u8; 4])>,
+    /// The row it made, so a redo makes the same one.
+    made_row: Option<LaneId>,
 }
 
 impl AddClip {
@@ -4044,6 +4421,23 @@ impl AddClip {
         Self {
             clip,
             created: None,
+            row: None,
+            made_row: None,
+        }
+    }
+
+    /// The clip on a row of its own, made for it: one command and one undo
+    /// for both.
+    ///
+    /// An automation clip is put on a new row (§12.4), and that row used to
+    /// be a bare insert beside the command — off the undo stack, so taking
+    /// the clip back left an empty row behind, and never sent to anybody
+    /// sharing the song (`docs/collab-plan.md` §5.2, F5). The clip's own
+    /// `lane` is ignored.
+    pub fn on_new_row(clip: Clip, name: impl Into<String>, color: [u8; 4]) -> Self {
+        Self {
+            row: Some((name.into(), color)),
+            ..Self::new(clip)
         }
     }
 
@@ -4053,22 +4447,47 @@ impl AddClip {
 }
 
 impl Command for AddClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let mut clip = self.clip.clone();
+        if let Some((name, color)) = &self.row {
+            let mut lane = a_lane(name.clone());
+            lane.color = *color;
+            lane.order = open_rows(doc, None, 1);
+            let row = match self.made_row {
+                Some(id) => {
+                    if !doc.lanes.insert_at(id, lane) {
+                        return Err(CommandError("that lane id is taken".into()));
+                    }
+                    id
+                }
+                None => *self.made_row.insert(doc.lanes.insert(lane)),
+            };
+            clip.lane = row;
+        }
         match self.created {
             Some(id) => {
-                if !doc.clips.insert_at(id, self.clip.clone()) {
+                if !doc.clips.insert_at(id, clip) {
+                    if let Some(row) = self.made_row {
+                        doc.lanes.remove(row);
+                    }
                     return Err(CommandError("that clip id is taken".into()));
                 }
             }
-            None => self.created = Some(doc.clips.insert(self.clip.clone())),
+            None => self.created = Some(doc.clips.insert(clip)),
         }
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        match self.created {
-            Some(id) => Box::new(RemoveClip::new(id)),
-            None => Box::new(NotApplied("adding a clip")),
+        match (self.created, self.made_row) {
+            // The row goes, and the clip on it with it.
+            (Some(_), Some(row)) => Box::new(RemoveLane::new(row)),
+            (Some(id), None) => Box::new(RemoveClip::new(id)),
+            _ => Box::new(NotApplied::new("adding a clip")),
         }
     }
 
@@ -4089,6 +4508,7 @@ impl Command for AddClip {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveClip {
     clip: ClipId,
     removed: Option<Clip>,
@@ -4104,6 +4524,10 @@ impl RemoveClip {
 }
 
 impl Command for RemoveClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         match doc.clips.remove(self.clip) {
             Some(clip) => {
@@ -4120,7 +4544,7 @@ impl Command for RemoveClip {
                 id: self.clip,
                 clip: clip.clone(),
             }),
-            None => Box::new(NotApplied("deleting a clip")),
+            None => Box::new(NotApplied::new("deleting a clip")),
         }
     }
 
@@ -4142,12 +4566,17 @@ impl Command for RemoveClip {
 }
 
 /// The inverse half of [`RemoveClip`].
-struct RestoreClip {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreClip {
     id: ClipId,
     clip: Clip,
 }
 
 impl Command for RestoreClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.clips.insert_at(self.id, self.clip.clone()) {
             return Err(CommandError("that clip id is taken".into()));
@@ -4177,6 +4606,7 @@ impl Command for RestoreClip {
 }
 
 /// Moves a clip along the timeline and, optionally, onto another lane.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MoveClip {
     clip: ClipId,
     tick_delta: Tick,
@@ -4196,6 +4626,10 @@ impl MoveClip {
 }
 
 impl Command for MoveClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if let Some(lane) = self.lane
             && !doc.lanes.contains_key(lane)
@@ -4265,6 +4699,7 @@ impl Command for MoveClip {
 /// can never reach zero length — a clip with no width is one nobody can grab
 /// again, and the only way back would be an undo the user has no reason to
 /// know they need.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResizeClip {
     clip: ClipId,
     tick_delta: Tick,
@@ -4284,9 +4719,11 @@ pub const MIN_CLIP_LENGTH: Tick = fontelle_types::PPQN / 4;
 /// clip whose one set of notes plays again every `loop_length` until the clip
 /// runs out — so editing bar 1 changes every repeat, which is the whole point
 /// and the thing a copy can never give you. See [`Clip::loop_length`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetClipLoop {
     clip: ClipId,
     loop_length: Option<Tick>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<Tick>>,
     /// The whole clip as it was, when stopping the loop also moved where in
     /// its take it starts — the inverse has to put that back too.
@@ -4305,6 +4742,10 @@ impl SetClipLoop {
 }
 
 impl Command for SetClipLoop {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetClipLoop(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // A period of nothing repeats for ever in no time at all, which is an
         // infinite loop in the compiler rather than a musical statement.
@@ -4364,7 +4805,7 @@ impl Command for SetClipLoop {
         }
         match self.previous {
             Some(previous) => Box::new(SetClipLoop::new(self.clip, previous)),
-            None => Box::new(NotApplied("looping a clip")),
+            None => Box::new(NotApplied::new("looping a clip")),
         }
     }
 
@@ -4406,6 +4847,10 @@ impl ResizeClip {
 }
 
 impl Command for ResizeClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ResizeClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(clip) = doc.clips.get_mut(self.clip) else {
             return Err(no_clip(self.clip));
@@ -4425,7 +4870,7 @@ impl Command for ResizeClip {
             (Some(previous), Some(applied)) => {
                 Box::new(ResizeClip::new(self.clip, previous - applied))
             }
-            _ => Box::new(NotApplied("resizing a clip")),
+            _ => Box::new(NotApplied::new("resizing a clip")),
         }
     }
 
@@ -4474,6 +4919,7 @@ impl Command for ResizeClip {
 ///
 /// Audio only: a note clip has nowhere to keep the notes an edge dragged in
 /// would uncover.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TrimClipStart {
     clip: ClipId,
     tick_delta: Tick,
@@ -4492,6 +4938,10 @@ impl TrimClipStart {
 }
 
 impl Command for TrimClipStart {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::TrimClipStart(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(original) = doc.clips.get(self.clip).cloned() else {
             return Err(no_clip(self.clip));
@@ -4552,7 +5002,7 @@ impl Command for TrimClipStart {
                 previous: previous.clone(),
                 replaced: None,
             }),
-            None => Box::new(NotApplied("trimming a clip")),
+            None => Box::new(NotApplied::new("trimming a clip")),
         }
     }
 
@@ -4583,7 +5033,8 @@ impl Command for TrimClipStart {
 
 /// Puts one clip back exactly as it was — the inverse of an edit that changed
 /// several of its fields at once. Not a user-facing command.
-struct ReplaceClip {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReplaceClip {
     clip: ClipId,
     previous: Clip,
     /// What it was replaced over, so this is itself undoable.
@@ -4591,6 +5042,10 @@ struct ReplaceClip {
 }
 
 impl Command for ReplaceClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ReplaceClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(slot) = doc.clips.get_mut(self.clip) else {
             return Err(no_clip(self.clip));
@@ -4607,7 +5062,7 @@ impl Command for ReplaceClip {
                 previous: replaced.clone(),
                 replaced: None,
             }),
-            None => Box::new(NotApplied("restoring a clip")),
+            None => Box::new(NotApplied::new("restoring a clip")),
         }
     }
 
@@ -4633,6 +5088,7 @@ impl Command for ReplaceClip {
 /// The copy's notes keep the ids they had inside the original clip, because a
 /// clip owns its own note arena — two clips holding a note with the same id is
 /// no more a collision than two files holding a line 1.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DuplicateClip {
     source: ClipId,
     tick_offset: Tick,
@@ -4654,6 +5110,10 @@ impl DuplicateClip {
 }
 
 impl Command for DuplicateClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::DuplicateClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(source) = doc.clips.get(self.source) else {
             return Err(no_clip(self.source));
@@ -4679,7 +5139,7 @@ impl Command for DuplicateClip {
     fn invert(&self) -> Box<dyn Command> {
         match self.created {
             Some(id) => Box::new(RemoveClip::new(id)),
-            None => Box::new(NotApplied("duplicating a clip")),
+            None => Box::new(NotApplied::new("duplicating a clip")),
         }
     }
 
@@ -4729,6 +5189,7 @@ impl Command for DuplicateClip {
 ///   second half that restarted the pattern would be a cut you can hear.
 /// - **An automation clip** cuts by its points, each half keeping the ones
 ///   that fall in it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SplitClip {
     clip: ClipId,
     /// In **song** ticks, not the clip's own: the arrangement is where the cut
@@ -4758,6 +5219,10 @@ impl SplitClip {
 }
 
 impl Command for SplitClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SplitClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(original) = doc.clips.get(self.clip).cloned() else {
             return Err(CommandError(format!("no clip {:?}", self.clip)));
@@ -4992,7 +5457,7 @@ impl Command for SplitClip {
             // and it has to be a real command rather than a refusal, because
             // the history will run it.
             (_, None) => Box::new(Compound::new("Undo cut", Vec::new())),
-            _ => Box::new(NotApplied("cutting a clip")),
+            _ => Box::new(NotApplied::new("cutting a clip")),
         }
     }
 
@@ -5015,13 +5480,18 @@ impl Command for SplitClip {
 
 /// The inverse half of [`SplitClip`]: the right half goes, the left one is put
 /// back as it was. Not a user-facing command.
-struct UnsplitClip {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct UnsplitClip {
     clip: ClipId,
     previous: Clip,
     created: ClipId,
 }
 
 impl Command for UnsplitClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::UnsplitClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         doc.clips.remove(self.created);
         doc.clips
@@ -5031,7 +5501,7 @@ impl Command for UnsplitClip {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("undoing a cut"))
+        Box::new(NotApplied::new("undoing a cut"))
     }
 
     fn label(&self) -> &str {
@@ -5177,7 +5647,7 @@ fn split_notes(
 /// automation, MIDI learn, plugin parameters, presets and undo. That needs the
 /// `PersistentId` half of §10.2, which nothing in `Project` carries yet, so
 /// these are typed for now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NumberTarget {
     TrackGainDb(MixerTrackId),
     TrackPan(MixerTrackId),
@@ -5199,6 +5669,7 @@ pub enum NumberTarget {
     BeatsPerBar,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetNumber {
     target: NumberTarget,
     value: f64,
@@ -5226,6 +5697,10 @@ impl SetNumber {
 }
 
 impl Command for SetNumber {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNumber(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let previous = match self.target {
             NumberTarget::TrackGainDb(id) => {
@@ -5284,7 +5759,7 @@ impl Command for SetNumber {
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
             Some(previous) => Box::new(SetNumber::new(self.target, previous)),
-            None => Box::new(NotApplied("setting a value")),
+            None => Box::new(NotApplied::new("setting a value")),
         }
     }
 
@@ -5315,7 +5790,7 @@ impl Command for SetNumber {
 }
 
 /// A boolean one command can set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FlagTarget {
     TrackMute(MixerTrackId),
     TrackSolo(MixerTrackId),
@@ -5342,6 +5817,7 @@ pub enum FlagTarget {
     ChannelNamedKeys(ChannelId),
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetFlag {
     target: FlagTarget,
     value: bool,
@@ -5359,6 +5835,10 @@ impl SetFlag {
 }
 
 impl Command for SetFlag {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetFlag(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let previous = match self.target {
             FlagTarget::TrackMute(id) => {
@@ -5431,7 +5911,7 @@ impl Command for SetFlag {
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
             Some(previous) => Box::new(SetFlag::new(self.target, previous)),
-            None => Box::new(NotApplied("setting a switch")),
+            None => Box::new(NotApplied::new("setting a switch")),
         }
     }
 
@@ -5462,8 +5942,10 @@ impl Command for SetFlag {
 }
 
 /// Sets, or clears, the loop region.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetLoopRange {
     range: Option<(Tick, Tick)>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<(Tick, Tick)>>,
 }
 
@@ -5477,6 +5959,10 @@ impl SetLoopRange {
 }
 
 impl Command for SetLoopRange {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetLoopRange(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if let Some((from, to)) = self.range
             && to <= from
@@ -5491,7 +5977,7 @@ impl Command for SetLoopRange {
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
             Some(previous) => Box::new(SetLoopRange::new(previous)),
-            None => Box::new(NotApplied("setting the loop")),
+            None => Box::new(NotApplied::new("setting the loop")),
         }
     }
 
@@ -5534,12 +6020,16 @@ impl Command for SetLoopRange {
 /// sends, not the routing, not the input. A chain describes a *sound*; those
 /// four describe *this project's wiring*, and a preset that quietly repointed
 /// somebody's reverb send would be a worse failure than one that carried less.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ApplyTrackChain {
     track: MixerTrackId,
     chain: fontelle_types::TrackChain,
     /// Everything it replaced, for the undo — taken on the first apply and
     /// kept, so a redo puts back what the *first* apply found.
     previous: Option<(f32, f32, bool, Vec<crate::mixer::EffectSlot>)>,
+    /// The ids the chain's inserts were given, so a redo — or the other end
+    /// of a wire — makes the same inserts rather than new ones.
+    made: Vec<PersistentId>,
 }
 
 impl ApplyTrackChain {
@@ -5548,11 +6038,16 @@ impl ApplyTrackChain {
             track,
             chain,
             previous: None,
+            made: Vec::new(),
         }
     }
 }
 
 impl Command for ApplyTrackChain {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ApplyTrackChain(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -5568,11 +6063,16 @@ impl Command for ApplyTrackChain {
         track.gain_db = self.chain.gain_db;
         track.pan = self.chain.pan;
         track.phase_invert = self.chain.phase_invert;
+        while self.made.len() < self.chain.inserts.len() {
+            self.made.push(PersistentId::new());
+        }
         track.inserts = self
             .chain
             .inserts
             .iter()
-            .map(|insert| crate::mixer::EffectSlot {
+            .zip(&self.made)
+            .map(|(insert, id)| crate::mixer::EffectSlot {
+                id: *id,
                 preset: insert.preset.clone(),
                 config: insert.config,
                 plugin: None,
@@ -5608,29 +6108,25 @@ impl Command for ApplyTrackChain {
         Ok(())
     }
 
-    /// The inverse is **the chain it replaced**, as a chain: the same command
-    /// pointed at what was there before, which is why `previous` is kept as a
-    /// whole rack rather than as a list of differences.
+    /// The inverse is **the rack it replaced**, slot for slot.
+    ///
+    /// It used to be the same command pointed at what was there before, as a
+    /// chain — and a chain is a *sound*, so it carries no plugin, no key, no
+    /// note source and no notepad words. Undoing a track preset therefore
+    /// took away every plugin insert, sidechain and page of lyrics the preset
+    /// had replaced; found by the collaboration wire test, whose inverse has
+    /// to put the song back exactly (`docs/collab-plan.md` §18, F51).
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
-            Some((gain, pan, phase, inserts)) => Box::new(ApplyTrackChain::new(
-                self.track,
-                fontelle_types::TrackChain {
-                    gain_db: *gain,
-                    pan: *pan,
-                    phase_invert: *phase,
-                    inserts: inserts
-                        .iter()
-                        .map(|slot| fontelle_types::TrackInsert {
-                            config: slot.config,
-                            bypassed: slot.bypassed,
-                            preset: slot.preset.clone(),
-                            disgusting_beat: None,
-                        })
-                        .collect(),
-                },
-            )),
-            None => Box::new(NotApplied("loading a track preset")),
+            Some((gain_db, pan, phase_invert, inserts)) => Box::new(RestoreTrackChain {
+                track: self.track,
+                gain_db: *gain_db,
+                pan: *pan,
+                phase_invert: *phase_invert,
+                inserts: inserts.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied::new("loading a track preset")),
         }
     }
 
@@ -5655,6 +6151,78 @@ impl Command for ApplyTrackChain {
     }
 }
 
+/// [`ApplyTrackChain`]'s inverse: a strip's level, pan, phase and whole
+/// rack, exactly as they were.
+///
+/// **It writes a copy of what it holds and remembers what it replaced**, like
+/// every other command. It used to swap its own fields with the document's,
+/// which made its own inverse the same command again — and made its applied
+/// form carry the *old* state, so an edit sent to another machine after it was
+/// applied put that machine back where this one had just left
+/// (`docs/collab-plan.md` §18, F54).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreTrackChain {
+    track: MixerTrackId,
+    gain_db: f32,
+    pan: f32,
+    phase_invert: bool,
+    inserts: Vec<crate::mixer::EffectSlot>,
+    replaced: Option<(f32, f32, bool, Vec<crate::mixer::EffectSlot>)>,
+}
+
+impl Command for RestoreTrackChain {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreTrackChain(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.track)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
+        let replaced = (
+            std::mem::replace(&mut track.gain_db, self.gain_db),
+            std::mem::replace(&mut track.pan, self.pan),
+            std::mem::replace(&mut track.phase_invert, self.phase_invert),
+            std::mem::replace(&mut track.inserts, self.inserts.clone()),
+        );
+        self.replaced.get_or_insert(replaced);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.replaced {
+            Some((gain_db, pan, phase_invert, inserts)) => Box::new(RestoreTrackChain {
+                track: self.track,
+                gain_db: *gain_db,
+                pan: *pan,
+                phase_invert: *phase_invert,
+                inserts: inserts.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied::new("undoing a track preset")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Track preset"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.inserts.len() * std::mem::size_of::<crate::mixer::EffectSlot>()
+    }
+}
+
 // ============================================================ insert chains
 
 /// Puts an effect on the end of a track's insert chain (TDD §13.4).
@@ -5663,11 +6231,15 @@ impl Command for ApplyTrackChain {
 /// an effect that inserted itself part-way would rearrange a mix that was
 /// already balanced. Moving it up is [`MoveInsert`]'s job and a separate
 /// gesture.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddInsert {
     track: MixerTrackId,
     config: fontelle_types::EffectConfig,
     /// Where it landed, so the undo knows which one to take away.
     added: Option<usize>,
+    /// The id the insert was given, so a redo — or the other end of a wire —
+    /// makes the same insert rather than a new one.
+    made: Option<PersistentId>,
 }
 
 impl AddInsert {
@@ -5686,11 +6258,16 @@ impl AddInsert {
             track,
             config,
             added: None,
+            made: None,
         }
     }
 }
 
 impl Command for AddInsert {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddInsert(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -5699,6 +6276,7 @@ impl Command for AddInsert {
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
         let mut slot = crate::EffectSlot::new(self.config.kind());
         slot.config = self.config;
+        slot.id = *self.made.get_or_insert(slot.id);
         track.inserts.push(slot);
         self.added = Some(track.inserts.len() - 1);
         Ok(())
@@ -5706,8 +6284,11 @@ impl Command for AddInsert {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.added {
-            Some(index) => Box::new(RemoveInsert::new(self.track, index)),
-            None => Box::new(NotApplied("adding an effect")),
+            Some(index) => Box::new(RemoveInsert {
+                slot: self.made,
+                ..RemoveInsert::new(self.track, index)
+            }),
+            None => Box::new(NotApplied::new("adding an effect")),
         }
     }
 
@@ -5733,10 +6314,13 @@ impl Command for AddInsert {
 /// The whole slot, not its kind: an undo that put back a fresh EQ where a
 /// tuned one used to be would be a command that lost work while claiming not
 /// to. And at the index it came from, because the order is the sound.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveInsert {
     track: MixerTrackId,
     index: usize,
     removed: Option<crate::EffectSlot>,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
 }
 
 impl RemoveInsert {
@@ -5745,23 +6329,28 @@ impl RemoveInsert {
             track,
             index,
             removed: None,
+            slot: None,
         }
     }
 }
 
 impl Command for RemoveInsert {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveInsert(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        if self.index >= track.inserts.len() {
-            return Err(CommandError(format!(
-                "no insert {} on that track",
-                self.index
-            )));
-        }
+        let found = track
+            .inserts
+            .get(self.index)
+            .ok_or_else(|| CommandError(format!("no insert {} on that track", self.index)))?
+            .id;
+        claim(&mut self.slot, found, "insert")?;
         let removed = track.inserts.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -5774,7 +6363,7 @@ impl Command for RemoveInsert {
                 index: self.index,
                 slot: slot.clone(),
             }),
-            None => Box::new(NotApplied("removing an effect")),
+            None => Box::new(NotApplied::new("removing an effect")),
         }
     }
 
@@ -5796,6 +6385,7 @@ impl Command for RemoveInsert {
 }
 
 /// The undo of a [`RemoveInsert`]: this exact effect, back where it was.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestoreInsert {
     track: MixerTrackId,
     index: usize,
@@ -5809,6 +6399,10 @@ impl RestoreInsert {
 }
 
 impl Command for RestoreInsert {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreInsert(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -5821,7 +6415,10 @@ impl Command for RestoreInsert {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(RemoveInsert::new(self.track, self.index))
+        Box::new(RemoveInsert {
+            slot: Some(self.slot.id),
+            ..RemoveInsert::new(self.track, self.index)
+        })
     }
 
     fn label(&self) -> &str {
@@ -5842,19 +6439,31 @@ impl Command for RestoreInsert {
 }
 
 /// Drags one effect to another place in the chain.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MoveInsert {
     track: MixerTrackId,
     from: usize,
     to: usize,
+    /// Which insert was at `from` — see [`claim`].
+    slot: Option<PersistentId>,
 }
 
 impl MoveInsert {
     pub fn new(track: MixerTrackId, from: usize, to: usize) -> Self {
-        Self { track, from, to }
+        Self {
+            track,
+            from,
+            to,
+            slot: None,
+        }
     }
 }
 
 impl Command for MoveInsert {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveInsert(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
@@ -5871,13 +6480,17 @@ impl Command for MoveInsert {
         if self.from == self.to {
             return Err(CommandError("that is where it already is".to_string()));
         }
+        claim(&mut self.slot, track.inserts[self.from].id, "insert")?;
         let slot = track.inserts.remove(self.from);
         track.inserts.insert(self.to, slot);
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(MoveInsert::new(self.track, self.to, self.from))
+        Box::new(MoveInsert {
+            slot: self.slot,
+            ..MoveInsert::new(self.track, self.to, self.from)
+        })
     }
 
     fn label(&self) -> &str {
@@ -5898,9 +6511,12 @@ impl Command for MoveInsert {
 }
 
 /// Switches one insert out of the chain, or back into it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetInsertBypassed {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     bypassed: bool,
     previous: Option<bool>,
 }
@@ -5910,6 +6526,7 @@ impl SetInsertBypassed {
         Self {
             track,
             index,
+            slot: None,
             bypassed,
             previous: None,
         }
@@ -5917,16 +6534,12 @@ impl SetInsertBypassed {
 }
 
 impl Command for SetInsertBypassed {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetInsertBypassed(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         let previous = std::mem::replace(&mut slot.bypassed, self.bypassed);
         self.previous.get_or_insert(previous);
         Ok(())
@@ -5934,8 +6547,11 @@ impl Command for SetInsertBypassed {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetInsertBypassed::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("bypassing an effect")),
+            Some(previous) => Box::new(SetInsertBypassed {
+                slot: self.slot,
+                ..SetInsertBypassed::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("bypassing an effect")),
         }
     }
 
@@ -5967,9 +6583,12 @@ impl Command for SetInsertBypassed {
 /// Normalised, 0..1, for the reason automation is: the taper between a dial's
 /// fraction and a value in decibels or seconds is a property of the parameter,
 /// and `EffectConfig` already owns it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetInsertParam {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     param: String,
     value: f32,
     previous: Option<f32>,
@@ -5980,6 +6599,7 @@ impl SetInsertParam {
         Self {
             track,
             index,
+            slot: None,
             param: param.into(),
             value,
             previous: None,
@@ -5988,16 +6608,12 @@ impl SetInsertParam {
 }
 
 impl Command for SetInsertParam {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetInsertParam(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         // A parameter this effect does not have is refused rather than
         // silently ignored: unlike a *patch* address, which may legitimately
         // come from a later build's project file, this comes from a panel that
@@ -6013,13 +6629,11 @@ impl Command for SetInsertParam {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetInsertParam::new(
-                self.track,
-                self.index,
-                self.param.clone(),
-                previous,
-            )),
-            None => Box::new(NotApplied("turning an effect's knob")),
+            Some(previous) => Box::new(SetInsertParam {
+                slot: self.slot,
+                ..SetInsertParam::new(self.track, self.index, self.param.clone(), previous)
+            }),
+            None => Box::new(NotApplied::new("turning an effect's knob")),
         }
     }
 
@@ -6060,10 +6674,14 @@ impl Command for SetInsertParam {
 /// carry no sound: the listening node reads the source node's events out of
 /// the block both are handed, so nothing has to be scheduled before anything
 /// else and there is no cycle to refuse.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetInsertNotes {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     notes: Option<ChannelId>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<ChannelId>>,
 }
 
@@ -6072,6 +6690,7 @@ impl SetInsertNotes {
         Self {
             track,
             index,
+            slot: None,
             notes,
             previous: None,
         }
@@ -6079,21 +6698,17 @@ impl SetInsertNotes {
 }
 
 impl Command for SetInsertNotes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetInsertNotes(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if let Some(channel) = self.notes
             && !doc.channels.contains_key(channel)
         {
             return Err(CommandError(format!("no channel {channel:?}")));
         }
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         // A plugin slot takes none: a plugin's MIDI input is the host's to
         // route, and this build does not route it — see
         // `EffectSlot::effective_notes`.
@@ -6111,8 +6726,11 @@ impl Command for SetInsertNotes {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetInsertNotes::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("pointing an effect at a channel")),
+            Some(previous) => Box::new(SetInsertNotes {
+                slot: self.slot,
+                ..SetInsertNotes::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("pointing an effect at a channel")),
         }
     }
 
@@ -6140,10 +6758,14 @@ impl Command for SetInsertNotes {
 /// other routing command checks: a key is an edge in the same graph `output`
 /// and `sends` are edges in, so one that closed a loop is refused here rather
 /// than handed to a compiler that cannot order it (§13.2).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetInsertKey {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     key: Option<MixerTrackId>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<MixerTrackId>>,
 }
 
@@ -6152,6 +6774,7 @@ impl SetInsertKey {
         Self {
             track,
             index,
+            slot: None,
             key,
             previous: None,
         }
@@ -6159,6 +6782,10 @@ impl SetInsertKey {
 }
 
 impl Command for SetInsertKey {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetInsertKey(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // A track keying itself is the degenerate loop, and it is worth its
         // own message: it is the one somebody reaches for by accident when
@@ -6175,15 +6802,7 @@ impl Command for SetInsertKey {
         {
             return Err(CommandError(format!("no mixer track {key:?}")));
         }
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         // A plugin slot may always be keyed: whether the plugin has a
         // sidechain port is the host's to know — see
         // `EffectSlot::effective_key`.
@@ -6211,8 +6830,11 @@ impl Command for SetInsertKey {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetInsertKey::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("keying an effect")),
+            Some(previous) => Box::new(SetInsertKey {
+                slot: self.slot,
+                ..SetInsertKey::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("keying an effect")),
         }
     }
 
@@ -6249,23 +6871,30 @@ impl Command for SetInsertKey {
 /// The inverse of [`SetInsertPreset`], and not something the window offers on
 /// its own: there is no gesture that means "set every knob at once" except
 /// choosing a preset, and undoing that is what this is.
+///
+/// **It writes a copy of what it holds and remembers what it replaced**, like
+/// every other command. It used to swap its own fields with the document's,
+/// which made its own inverse the same command again — and made its applied
+/// form carry the *old* state, so an edit sent to another machine after it was
+/// applied put that machine back where this one had just left
+/// (`docs/collab-plan.md` §18, F54).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestoreInsertConfig {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     config: fontelle_types::EffectConfig,
+    replaced: Option<fontelle_types::EffectConfig>,
 }
 
 impl Command for RestoreInsertConfig {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreInsertConfig(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         // A kind that has changed under this is a slot that was removed and
         // replaced, which is a different insert wearing the same number.
         if slot.config.kind() != self.config.kind() {
@@ -6276,19 +6905,22 @@ impl Command for RestoreInsertConfig {
                 self.config.kind()
             )));
         }
-        // Swapped rather than written, so this command carries what it
-        // replaced and its own inverse is the same command again.
-        std::mem::swap(&mut slot.config, &mut self.config);
+        let replaced = std::mem::replace(&mut slot.config, self.config);
+        self.replaced.get_or_insert(replaced);
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(RestoreInsertConfig {
-            track: self.track,
-            index: self.index,
-            // `apply` swapped them, so this is what was there before the undo.
-            config: self.config,
-        })
+        match self.replaced {
+            Some(config) => Box::new(RestoreInsertConfig {
+                track: self.track,
+                index: self.index,
+                slot: self.slot,
+                config,
+                replaced: None,
+            }),
+            None => Box::new(NotApplied::new("restoring an effect")),
+        }
     }
 
     fn label(&self) -> &str {
@@ -6316,9 +6948,12 @@ impl Command for RestoreInsertConfig {
 ///
 /// Merges with itself while the same insert's knob is being dragged — the rule
 /// every continuous control in this document follows.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetInsertMix {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     mix: f32,
     previous: Option<f32>,
 }
@@ -6329,6 +6964,7 @@ impl SetInsertMix {
         Self {
             track,
             index,
+            slot: None,
             mix: mix.clamp(0.0, 1.0),
             previous: None,
         }
@@ -6336,16 +6972,12 @@ impl SetInsertMix {
 }
 
 impl Command for SetInsertMix {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetInsertMix(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         let previous = slot.config.mix();
         slot.config.set_mix(self.mix);
         self.previous.get_or_insert(previous);
@@ -6354,8 +6986,11 @@ impl Command for SetInsertMix {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => Box::new(SetInsertMix::new(self.track, self.index, previous)),
-            None => Box::new(NotApplied("mixing an effect")),
+            Some(previous) => Box::new(SetInsertMix {
+                slot: self.slot,
+                ..SetInsertMix::new(self.track, self.index, previous)
+            }),
+            None => Box::new(NotApplied::new("mixing an effect")),
         }
     }
 
@@ -6399,9 +7034,12 @@ impl Command for SetInsertMix {
 /// the page you are on, taking away the last page: each of those is `Err`, so
 /// the history never grows an entry that would undo to the state it is already
 /// in.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EditNotepad {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     edit: fontelle_types::NotepadEdit,
     /// The edit that puts it back, learnt when this one was applied.
     undo: Option<fontelle_types::NotepadEdit>,
@@ -6412,6 +7050,7 @@ impl EditNotepad {
         Self {
             track,
             index,
+            slot: None,
             edit,
             undo: None,
         }
@@ -6427,16 +7066,12 @@ impl EditNotepad {
 }
 
 impl Command for EditNotepad {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::EditNotepad(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         let pad = slot
             .notepad
             .as_mut()
@@ -6453,8 +7088,11 @@ impl Command for EditNotepad {
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.undo {
-            Some(undo) => Box::new(EditNotepad::new(self.track, self.index, undo.clone())),
-            None => Box::new(NotApplied("writing in a notepad")),
+            Some(undo) => Box::new(EditNotepad {
+                slot: self.slot,
+                ..EditNotepad::new(self.track, self.index, undo.clone())
+            }),
+            None => Box::new(NotApplied::new("writing in a notepad")),
         }
     }
 
@@ -6519,9 +7157,12 @@ impl Command for EditNotepad {
 /// switching a lane that is already on, removing the last point of a lane:
 /// each is `None`, so the history never grows an entry that would undo to the
 /// state it is already in.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EditLapse {
     track: MixerTrackId,
     index: usize,
+    /// Which insert was at `index` — see [`claim`].
+    slot: Option<PersistentId>,
     edit: fontelle_types::DisgustingBeatEdit,
     /// The edit that puts it back, learnt when this one was applied.
     undo: Option<fontelle_types::DisgustingBeatEdit>,
@@ -6536,6 +7177,7 @@ impl EditLapse {
         Self {
             track,
             index,
+            slot: None,
             edit,
             undo: None,
         }
@@ -6543,16 +7185,12 @@ impl EditLapse {
 }
 
 impl Command for EditLapse {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::EditLapse(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.index)))?;
+        let slot = insert_mut(doc, self.track, self.index, &mut self.slot)?;
         let bank = slot.disgusting_beat.as_mut().ok_or_else(|| {
             CommandError(format!("insert {} is not a DisgustingBeat", self.index))
         })?;
@@ -6568,8 +7206,11 @@ impl Command for EditLapse {
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.undo {
-            Some(undo) => Box::new(EditLapse::new(self.track, self.index, undo.clone())),
-            None => Box::new(NotApplied("drawing a curve")),
+            Some(undo) => Box::new(EditLapse {
+                slot: self.slot,
+                ..EditLapse::new(self.track, self.index, undo.clone())
+            }),
+            None => Box::new(NotApplied::new("drawing a curve")),
         }
     }
 
@@ -6635,9 +7276,12 @@ impl Command for EditLapse {
 /// Merges with itself while the same band of the same EQ is being dragged —
 /// the rule every continuous control in this project follows, and the reason
 /// moving a knob leaves one entry in the history rather than sixty.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetEqBand {
     track: MixerTrackId,
     insert: usize,
+    /// Which insert was at `insert` — see [`claim`].
+    slot: Option<PersistentId>,
     band: usize,
     value: fontelle_types::EqBand,
     previous: Option<fontelle_types::EqBand>,
@@ -6653,6 +7297,7 @@ impl SetEqBand {
         Self {
             track,
             insert,
+            slot: None,
             band,
             value,
             previous: None,
@@ -6661,16 +7306,12 @@ impl SetEqBand {
 }
 
 impl Command for SetEqBand {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetEqBand(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let track = doc
-            .mixer
-            .tracks
-            .get_mut(self.track)
-            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let slot = track
-            .inserts
-            .get_mut(self.insert)
-            .ok_or_else(|| CommandError(format!("no insert {}", self.insert)))?;
+        let slot = insert_mut(doc, self.track, self.insert, &mut self.slot)?;
         let fontelle_types::EffectConfig::Eq(eq) = &mut slot.config else {
             return Err(CommandError("that insert is not an EQ".to_string()));
         };
@@ -6685,10 +7326,11 @@ impl Command for SetEqBand {
 
     fn invert(&self) -> Box<dyn Command> {
         match self.previous {
-            Some(previous) => {
-                Box::new(SetEqBand::new(self.track, self.insert, self.band, previous))
-            }
-            None => Box::new(NotApplied("editing an EQ band")),
+            Some(previous) => Box::new(SetEqBand {
+                slot: self.slot,
+                ..SetEqBand::new(self.track, self.insert, self.band, previous)
+            }),
+            None => Box::new(NotApplied::new("editing an EQ band")),
         }
     }
 
@@ -6738,6 +7380,7 @@ fn points_mut(
 }
 
 /// Puts a point on an automation curve — a click on the editor.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddAutomationPoint {
     clip: ClipId,
     point: crate::AutomationPoint,
@@ -6761,6 +7404,10 @@ impl AddAutomationPoint {
 }
 
 impl Command for AddAutomationPoint {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddAutomationPoint(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // §12.1 stores values normalised. Refused at the door rather than
         // clamped silently, because a caller passing 1.5 has a bug and a
@@ -6788,7 +7435,7 @@ impl Command for AddAutomationPoint {
     fn invert(&self) -> Box<dyn Command> {
         match self.created {
             Some(id) => Box::new(RemoveAutomationPoints::new(self.clip, vec![id])),
-            None => Box::new(NotApplied("adding an automation point")),
+            None => Box::new(NotApplied::new("adding an automation point")),
         }
     }
 
@@ -6811,6 +7458,7 @@ impl Command for AddAutomationPoint {
 
 /// Drags points about. **Deltas relative to the previous step of the same
 /// drag**, which is what lets a whole gesture merge into one history entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MoveAutomationPoints {
     clip: ClipId,
     ids: Vec<fontelle_types::PointId>,
@@ -6845,6 +7493,10 @@ impl MoveAutomationPoints {
 }
 
 impl Command for MoveAutomationPoints {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveAutomationPoints(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let (ids, tick_delta, value_delta) = (self.ids.clone(), self.tick_delta, self.value_delta);
         let points = points_mut(doc, self.clip)?;
@@ -6885,7 +7537,7 @@ impl Command for MoveAutomationPoints {
                 clip: self.clip,
                 points: previous.clone(),
             }),
-            None => Box::new(NotApplied("moving automation points")),
+            None => Box::new(NotApplied::new("moving automation points")),
         }
     }
 
@@ -6917,12 +7569,17 @@ impl Command for MoveAutomationPoints {
 }
 
 /// Puts named points at exact positions — the inverse of a drag.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlaceAutomationPoints {
     clip: ClipId,
     points: Vec<(fontelle_types::PointId, Tick, f64)>,
 }
 
 impl Command for PlaceAutomationPoints {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::PlaceAutomationPoints(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let placing = self.points.clone();
         let points = points_mut(doc, self.clip)?;
@@ -6936,7 +7593,7 @@ impl Command for PlaceAutomationPoints {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("placing automation points"))
+        Box::new(NotApplied::new("placing automation points"))
     }
 
     fn label(&self) -> &str {
@@ -6958,6 +7615,7 @@ impl Command for PlaceAutomationPoints {
 
 /// Deletes points, keeping them for the undo — the same ids, because the
 /// command above this one in the history names them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoveAutomationPoints {
     clip: ClipId,
     ids: Vec<fontelle_types::PointId>,
@@ -6975,6 +7633,10 @@ impl RemoveAutomationPoints {
 }
 
 impl Command for RemoveAutomationPoints {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveAutomationPoints(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let ids = self.ids.clone();
         let points = points_mut(doc, self.clip)?;
@@ -6994,7 +7656,7 @@ impl Command for RemoveAutomationPoints {
                 clip: self.clip,
                 points: points.clone(),
             }),
-            None => Box::new(NotApplied("deleting automation points")),
+            None => Box::new(NotApplied::new("deleting automation points")),
         }
     }
 
@@ -7016,12 +7678,17 @@ impl Command for RemoveAutomationPoints {
 }
 
 /// The undo of a [`RemoveAutomationPoints`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestoreAutomationPoints {
     clip: ClipId,
     points: Vec<(fontelle_types::PointId, crate::AutomationPoint)>,
 }
 
 impl Command for RestoreAutomationPoints {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreAutomationPoints(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let restoring = self.points.clone();
         let points = points_mut(doc, self.clip)?;
@@ -7056,6 +7723,7 @@ impl Command for RestoreAutomationPoints {
 }
 
 /// Changes the shape of the segment *after* each named point (§12.1).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetPointCurve {
     clip: ClipId,
     ids: Vec<fontelle_types::PointId>,
@@ -7077,6 +7745,10 @@ impl SetPointCurve {
 }
 
 impl Command for SetPointCurve {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetPointCurve(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let (ids, curve) = (self.ids.clone(), self.curve);
         let points = points_mut(doc, self.clip)?;
@@ -7097,7 +7769,7 @@ impl Command for SetPointCurve {
                 clip: self.clip,
                 previous: previous.clone(),
             }),
-            None => Box::new(NotApplied("changing a curve shape")),
+            None => Box::new(NotApplied::new("changing a curve shape")),
         }
     }
 
@@ -7119,12 +7791,17 @@ impl Command for SetPointCurve {
 }
 
 /// The undo of a [`SetPointCurve`]: each point its own shape back.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestorePointCurves {
     clip: ClipId,
     previous: Vec<(fontelle_types::PointId, crate::CurveShape)>,
 }
 
 impl Command for RestorePointCurves {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestorePointCurves(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let previous = self.previous.clone();
         let points = points_mut(doc, self.clip)?;
@@ -7137,7 +7814,7 @@ impl Command for RestorePointCurves {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("restoring curve shapes"))
+        Box::new(NotApplied::new("restoring curve shapes"))
     }
 
     fn label(&self) -> &str {
@@ -7167,10 +7844,13 @@ impl Command for RestorePointCurves {
 /// this binary, by a `Copy` enum the compiler checks, and this names a plugin
 /// on the machine, by a string that may not resolve. Folding them together
 /// would have meant one of the two lying about what it needs.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddPluginInsert {
     track: MixerTrackId,
     state: fontelle_types::PluginState,
     added: Option<usize>,
+    /// The id the insert was given — [`AddInsert::made`]'s reason.
+    made: Option<PersistentId>,
 }
 
 impl AddPluginInsert {
@@ -7179,28 +7859,36 @@ impl AddPluginInsert {
             track,
             state,
             added: None,
+            made: None,
         }
     }
 }
 
 impl Command for AddPluginInsert {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddPluginInsert(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let track = doc
             .mixer
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        track
-            .inserts
-            .push(crate::EffectSlot::hosting(self.state.clone()));
+        let mut slot = crate::EffectSlot::hosting(self.state.clone());
+        slot.id = *self.made.get_or_insert(slot.id);
+        track.inserts.push(slot);
         self.added = Some(track.inserts.len() - 1);
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
         match self.added {
-            Some(index) => Box::new(RemoveInsert::new(self.track, index)),
-            None => Box::new(NotApplied("adding a plugin")),
+            Some(index) => Box::new(RemoveInsert {
+                slot: self.made,
+                ..RemoveInsert::new(self.track, index)
+            }),
+            None => Box::new(NotApplied::new("adding a plugin")),
         }
     }
 
@@ -7227,6 +7915,7 @@ impl Command for AddPluginInsert {
 /// same reason [`SetChannelKind`] exists: what a channel *is* is stored rather
 /// than derived, because an empty instrument cannot say what it was going to
 /// be.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetChannelPlugin {
     channel: ChannelId,
     state: Option<fontelle_types::PluginState>,
@@ -7247,6 +7936,10 @@ impl SetChannelPlugin {
 }
 
 impl Command for SetChannelPlugin {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetChannelPlugin(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -7276,7 +7969,7 @@ impl Command for SetChannelPlugin {
                 state: state.clone(),
                 kind: *kind,
             }),
-            None => Box::new(NotApplied("choosing a plugin")),
+            None => Box::new(NotApplied::new("choosing a plugin")),
         }
     }
 
@@ -7298,6 +7991,7 @@ impl Command for SetChannelPlugin {
 }
 
 /// The undo of a [`SetChannelPlugin`]: exactly what was there, kind included.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestoreChannelPlugin {
     channel: ChannelId,
     state: Option<fontelle_types::PluginState>,
@@ -7305,6 +7999,10 @@ pub struct RestoreChannelPlugin {
 }
 
 impl Command for RestoreChannelPlugin {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreChannelPlugin(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -7342,7 +8040,7 @@ impl Command for RestoreChannelPlugin {
 /// differ only in where the [`PluginState`](fontelle_types::PluginState) is
 /// kept: an insert's parameters and an instrument's are the same kind of thing
 /// set the same way, and a drag over either has to merge the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PluginTarget {
     Insert { track: MixerTrackId, slot: usize },
     Channel(ChannelId),
@@ -7356,10 +8054,14 @@ pub enum PluginTarget {
 /// storing a fraction of a range that the plugin is entitled to widen in an
 /// update is how a project comes back sounding different. CLAP's own advice to
 /// hosts is to store plain values, and it is the same argument.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetPluginParam {
     target: PluginTarget,
+    /// Which insert the target's place held, for an insert — see [`claim`].
+    slot: Option<PersistentId>,
     id: u32,
     value: f64,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<f64>>,
 }
 
@@ -7367,6 +8069,7 @@ impl SetPluginParam {
     pub fn insert(track: MixerTrackId, slot: usize, id: u32, value: f64) -> Self {
         Self {
             target: PluginTarget::Insert { track, slot },
+            slot: None,
             id,
             value,
             previous: None,
@@ -7376,6 +8079,7 @@ impl SetPluginParam {
     pub fn channel(channel: ChannelId, id: u32, value: f64) -> Self {
         Self {
             target: PluginTarget::Channel(channel),
+            slot: None,
             id,
             value,
             previous: None,
@@ -7384,17 +8088,15 @@ impl SetPluginParam {
 }
 
 /// The `PluginState` a target names, if it is a plugin at all.
-fn plugin_state_mut(
-    doc: &mut Project,
+fn plugin_state_mut<'a>(
+    doc: &'a mut Project,
     target: PluginTarget,
-) -> Result<&mut fontelle_types::PluginState, CommandError> {
+    expected: &mut Option<PersistentId>,
+) -> Result<&'a mut fontelle_types::PluginState, CommandError> {
     match target {
-        PluginTarget::Insert { track, slot } => doc
-            .mixer
-            .tracks
-            .get_mut(track)
-            .and_then(|track| track.inserts.get_mut(slot))
-            .and_then(|insert| insert.plugin.as_mut())
+        PluginTarget::Insert { track, slot } => insert_mut(doc, track, slot, expected)?
+            .plugin
+            .as_mut()
             .ok_or_else(|| CommandError(format!("insert {slot} holds no plugin"))),
         PluginTarget::Channel(channel) => doc
             .channels
@@ -7405,8 +8107,12 @@ fn plugin_state_mut(
 }
 
 impl Command for SetPluginParam {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetPluginParam(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let state = plugin_state_mut(doc, self.target)?;
+        let state = plugin_state_mut(doc, self.target, &mut self.slot)?;
         let previous = state.param(self.id);
         state.set_param(self.id, self.value);
         self.previous.get_or_insert(previous);
@@ -7421,10 +8127,11 @@ impl Command for SetPluginParam {
             // default.
             Some(previous) => Box::new(RestorePluginParam {
                 target: self.target,
+                slot: self.slot,
                 id: self.id,
                 value: previous,
             }),
-            None => Box::new(NotApplied("turning a plugin's knob")),
+            None => Box::new(NotApplied::new("turning a plugin's knob")),
         }
     }
 
@@ -7453,15 +8160,21 @@ impl Command for SetPluginParam {
 }
 
 /// The undo of a [`SetPluginParam`], including "it was not set at all".
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestorePluginParam {
     target: PluginTarget,
+    slot: Option<PersistentId>,
     id: u32,
     value: Option<f64>,
 }
 
 impl Command for RestorePluginParam {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestorePluginParam(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        let state = plugin_state_mut(doc, self.target)?;
+        let state = plugin_state_mut(doc, self.target, &mut self.slot)?;
         match self.value {
             Some(value) => state.set_param(self.id, value),
             None => state.params.retain(|param| param.id != self.id),
@@ -7470,7 +8183,7 @@ impl Command for RestorePluginParam {
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(NotApplied("turning a plugin's knob"))
+        Box::new(NotApplied::new("turning a plugin's knob"))
     }
 
     fn label(&self) -> &str {
@@ -7497,7 +8210,7 @@ impl Command for RestorePluginParam {
 /// Two shapes rather than one address, because the two are addressed
 /// differently everywhere else in this file too: a channel is a `ChannelId`,
 /// an insert is a track and a position in its chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PresetTarget {
     Channel(ChannelId),
     Insert { track: MixerTrackId, index: usize },
@@ -7505,8 +8218,8 @@ pub enum PresetTarget {
 
 /// What a device was before a preset landed on it, so an undo can put all of
 /// it back at once.
-#[derive(Debug, Clone)]
-enum DeviceState {
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum DeviceState {
     Channel {
         instrument: Option<fontelle_types::InstrumentKind>,
         patch_data: Option<fontelle_types::PatchData>,
@@ -7540,6 +8253,7 @@ enum DeviceState {
 /// nothing. An **insert** is refused, because a slot's kind was chosen from
 /// the "+ effect" menu and a reverb preset dropped on a gate is a mistake
 /// rather than an instruction.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ApplyPreset {
     target: PresetTarget,
     preset: fontelle_types::Preset,
@@ -7551,6 +8265,8 @@ pub struct ApplyPreset {
     /// on the entry it hands out, and whoever has an entry passes it here.
     origin: fontelle_types::PresetOrigin,
     previous: Option<DeviceState>,
+    /// Which insert the target's place held, for an insert — see [`claim`].
+    slot: Option<PersistentId>,
 }
 
 impl ApplyPreset {
@@ -7573,11 +8289,16 @@ impl ApplyPreset {
             preset,
             origin,
             previous: None,
+            slot: None,
         }
     }
 }
 
 impl Command for ApplyPreset {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ApplyPreset(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         use fontelle_types::{DeviceKind, InstrumentKind, PresetPayload};
         // Checked before anything is written, and in this order: a file from a
@@ -7645,14 +8366,7 @@ impl Command for ApplyPreset {
                 self.previous.get_or_insert(previous);
             }
             PresetTarget::Insert { track, index } => {
-                let slot = doc
-                    .mixer
-                    .tracks
-                    .get_mut(track)
-                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
-                    .inserts
-                    .get_mut(index)
-                    .ok_or_else(|| CommandError(format!("no insert {index}")))?;
+                let slot = insert_mut(doc, track, index, &mut self.slot)?;
                 let previous = DeviceState::Insert {
                     config: slot.config,
                     plugin: slot.plugin.clone(),
@@ -7723,9 +8437,11 @@ impl Command for ApplyPreset {
         match &self.previous {
             Some(previous) => Box::new(RestoreDeviceState {
                 target: self.target,
+                slot: self.slot,
                 state: previous.clone(),
+                replaced: None,
             }),
-            None => Box::new(NotApplied("loading a preset")),
+            None => Box::new(NotApplied::new("loading a preset")),
         }
     }
 
@@ -7759,6 +8475,7 @@ impl Command for ApplyPreset {
 ///
 /// Its own inverse, but for that first copy: undoing the first switch
 /// empties the other slot again rather than leaving a copy nobody made.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SwitchChannelAb {
     channel: ChannelId,
     /// Whether the switch filled an empty slot, so the inverse can empty it.
@@ -7778,6 +8495,10 @@ impl SwitchChannelAb {
 }
 
 impl Command for SwitchChannelAb {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SwitchChannelAb(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -7807,7 +8528,7 @@ impl Command for SwitchChannelAb {
                 filled: None,
                 empties: filled,
             }),
-            None => Box::new(NotApplied("switching A/B")),
+            None => Box::new(NotApplied::new("switching A/B")),
         }
     }
 
@@ -7830,8 +8551,10 @@ impl Command for SwitchChannelAb {
 
 /// Copies the playing patch over the other slot of a channel's A/B pair,
 /// without switching — "keep this one, and start the comparison here".
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CopyChannelAb {
     channel: ChannelId,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<fontelle_types::PatchData>>,
 }
 
@@ -7845,6 +8568,10 @@ impl CopyChannelAb {
 }
 
 impl Command for CopyChannelAb {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::CopyChannelAb(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
@@ -7860,8 +8587,9 @@ impl Command for CopyChannelAb {
             Some(previous) => Box::new(RestoreChannelAbOther {
                 channel: self.channel,
                 other: previous.clone(),
+                replaced: None,
             }),
-            None => Box::new(NotApplied("copying A/B")),
+            None => Box::new(NotApplied::new("copying A/B")),
         }
     }
 
@@ -7883,26 +8611,45 @@ impl Command for CopyChannelAb {
 }
 
 /// [`CopyChannelAb`]'s inverse: the other slot as it was.
-struct RestoreChannelAbOther {
+///
+/// **It writes a copy of what it holds and remembers what it replaced**, like
+/// every other command. It used to swap its own fields with the document's,
+/// which made its own inverse the same command again — and made its applied
+/// form carry the *old* state, so an edit sent to another machine after it was
+/// applied put that machine back where this one had just left
+/// (`docs/collab-plan.md` §18, F54).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreChannelAbOther {
     channel: ChannelId,
     other: Option<fontelle_types::PatchData>,
+    #[serde(with = "crate::wire::nested")]
+    replaced: Option<Option<fontelle_types::PatchData>>,
 }
 
 impl Command for RestoreChannelAbOther {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreChannelAbOther(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let channel = doc
             .channels
             .get_mut(self.channel)
             .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
-        std::mem::swap(&mut channel.ab.other, &mut self.other);
+        let replaced = std::mem::replace(&mut channel.ab.other, self.other.clone());
+        self.replaced.get_or_insert(replaced);
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(RestoreChannelAbOther {
-            channel: self.channel,
-            other: self.other.clone(),
-        })
+        match &self.replaced {
+            Some(other) => Box::new(RestoreChannelAbOther {
+                channel: self.channel,
+                other: other.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied::new("undoing an A/B copy")),
+        }
     }
 
     fn label(&self) -> &str {
@@ -7927,14 +8674,30 @@ impl Command for RestoreChannelAbOther {
 /// [`ApplyPreset`]'s inverse, and not a gesture of its own: there is no way to
 /// ask for "the instrument, the patch, the plugin and the name, all at once"
 /// except by loading a preset, and undoing that is what this is.
-struct RestoreDeviceState {
+///
+/// **It writes a copy of what it holds and remembers what it replaced**, like
+/// every other command. It used to swap its own fields with the document's,
+/// which made its own inverse the same command again — and made its applied
+/// form carry the *old* state, so an edit sent to another machine after it was
+/// applied put that machine back where this one had just left
+/// (`docs/collab-plan.md` §18, F54).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreDeviceState {
     target: PresetTarget,
+    slot: Option<PersistentId>,
     state: DeviceState,
+    replaced: Option<DeviceState>,
 }
 
 impl Command for RestoreDeviceState {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreDeviceState(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        match (self.target, &mut self.state) {
+        // Swapped into a copy, which then holds what was there.
+        let mut state = self.state.clone();
+        match (self.target, &mut state) {
             (
                 PresetTarget::Channel(id),
                 DeviceState::Channel {
@@ -7949,15 +8712,11 @@ impl Command for RestoreDeviceState {
                     .channels
                     .get_mut(id)
                     .ok_or_else(|| CommandError("that channel is not there".to_string()))?;
-                // Swapped rather than written, so this command carries what it
-                // replaced and its own inverse is the same command again —
-                // `RestoreInsertConfig`'s shape.
                 std::mem::swap(&mut channel.instrument, instrument);
                 std::mem::swap(&mut channel.patch_data, patch_data);
                 std::mem::swap(&mut channel.plugin, plugin);
                 std::mem::swap(&mut channel.preset, preset);
                 std::mem::swap(&mut channel.ab, ab);
-                Ok(())
             }
             (
                 PresetTarget::Insert { track, index },
@@ -7968,34 +8727,34 @@ impl Command for RestoreDeviceState {
                     disgusting_beat,
                 },
             ) => {
-                let slot = doc
-                    .mixer
-                    .tracks
-                    .get_mut(track)
-                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
-                    .inserts
-                    .get_mut(index)
-                    .ok_or_else(|| CommandError(format!("no insert {index}")))?;
+                let slot = insert_mut(doc, track, index, &mut self.slot)?;
                 std::mem::swap(&mut slot.config, config);
                 std::mem::swap(&mut slot.plugin, plugin);
                 std::mem::swap(&mut slot.preset, preset);
                 std::mem::swap(&mut slot.disgusting_beat, disgusting_beat);
-                Ok(())
             }
             // A target and a state of different shapes cannot be built by
             // `ApplyPreset::invert`, which is the only thing that builds one.
-            _ => Err(CommandError(
-                "that is not the device this undoes".to_string(),
-            )),
+            _ => {
+                return Err(CommandError(
+                    "that is not the device this undoes".to_string(),
+                ));
+            }
         }
+        self.replaced.get_or_insert(state);
+        Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
-        Box::new(RestoreDeviceState {
-            target: self.target,
-            // `apply` swapped them, so this is what was there before the undo.
-            state: self.state.clone(),
-        })
+        match &self.replaced {
+            Some(state) => Box::new(RestoreDeviceState {
+                target: self.target,
+                slot: self.slot,
+                state: state.clone(),
+                replaced: None,
+            }),
+            None => Box::new(NotApplied::new("undoing a preset")),
+        }
     }
 
     fn label(&self) -> &str {
@@ -8023,10 +8782,14 @@ impl Command for RestoreDeviceState {
 /// because undo is not a delete (§P.5).
 ///
 /// Also what clears a name: `None` is a device that is no longer any preset.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetPresetRef {
     target: PresetTarget,
     preset: Option<fontelle_types::PresetRef>,
+    #[serde(with = "crate::wire::nested")]
     previous: Option<Option<fontelle_types::PresetRef>>,
+    /// Which insert the target's place held, for an insert — see [`claim`].
+    slot: Option<PersistentId>,
 }
 
 impl SetPresetRef {
@@ -8035,11 +8798,16 @@ impl SetPresetRef {
             target,
             preset,
             previous: None,
+            slot: None,
         }
     }
 }
 
 impl Command for SetPresetRef {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetPresetRef(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let held = match self.target {
             PresetTarget::Channel(id) => {
@@ -8050,15 +8818,7 @@ impl Command for SetPresetRef {
                     .preset
             }
             PresetTarget::Insert { track, index } => {
-                &mut doc
-                    .mixer
-                    .tracks
-                    .get_mut(track)
-                    .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
-                    .inserts
-                    .get_mut(index)
-                    .ok_or_else(|| CommandError(format!("no insert {index}")))?
-                    .preset
+                &mut insert_mut(doc, track, index, &mut self.slot)?.preset
             }
         };
         let previous = std::mem::replace(held, self.preset.clone());
@@ -8068,8 +8828,11 @@ impl Command for SetPresetRef {
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
-            Some(previous) => Box::new(SetPresetRef::new(self.target, previous.clone())),
-            None => Box::new(NotApplied("naming a preset")),
+            Some(previous) => Box::new(SetPresetRef {
+                slot: self.slot,
+                ..SetPresetRef::new(self.target, previous.clone())
+            }),
+            None => Box::new(NotApplied::new("naming a preset")),
         }
     }
 
@@ -8104,6 +8867,7 @@ impl Command for SetPresetRef {
 // edit set would be a prefab whose piano roll drifted from the arrangement's.
 
 /// Makes a prefab: named content that is not on the arrangement.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddPrefab {
     name: String,
     source: ClipSource,
@@ -8126,6 +8890,10 @@ impl AddPrefab {
 }
 
 impl Command for AddPrefab {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddPrefab(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let prefab = Prefab {
             name: self.name.clone(),
@@ -8149,7 +8917,7 @@ impl Command for AddPrefab {
     fn invert(&self) -> Box<dyn Command> {
         match self.made {
             Some(id) => Box::new(RemovePrefab::new(id)),
-            None => Box::new(NotApplied("making a prefab")),
+            None => Box::new(NotApplied::new("making a prefab")),
         }
     }
 
@@ -8176,6 +8944,7 @@ impl Command for AddPrefab {
 /// It carries an empty `ClipSource` of the right kind anyway, so that a clip
 /// whose prefab is later deleted or detached has somewhere for its content to
 /// be baked into rather than needing a different kind of clip made for it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AddPrefabInstance {
     prefab: PrefabId,
     lane: LaneId,
@@ -8202,6 +8971,10 @@ impl AddPrefabInstance {
 }
 
 impl Command for AddPrefabInstance {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddPrefabInstance(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(prefab) = doc.prefabs.get(self.prefab) else {
             return Err(CommandError(format!(
@@ -8260,7 +9033,7 @@ impl Command for AddPrefabInstance {
     fn invert(&self) -> Box<dyn Command> {
         match self.made {
             Some(id) => Box::new(RemoveClip::new(id)),
-            None => Box::new(NotApplied("placing a prefab")),
+            None => Box::new(NotApplied::new("placing a prefab")),
         }
     }
 
@@ -8281,6 +9054,7 @@ impl Command for AddPrefabInstance {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RenamePrefab {
     prefab: PrefabId,
     name: String,
@@ -8298,6 +9072,10 @@ impl RenamePrefab {
 }
 
 impl Command for RenamePrefab {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenamePrefab(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(prefab) = doc.prefabs.get_mut(self.prefab) else {
             return Err(CommandError(format!("no prefab {:?}", self.prefab)));
@@ -8312,7 +9090,7 @@ impl Command for RenamePrefab {
     fn invert(&self) -> Box<dyn Command> {
         match &self.was {
             Some(was) => Box::new(RenamePrefab::new(self.prefab, was.clone())),
-            None => Box::new(NotApplied("renaming a prefab")),
+            None => Box::new(NotApplied::new("renaming a prefab")),
         }
     }
 
@@ -8348,6 +9126,7 @@ impl Command for RenamePrefab {
 /// source on the way out, so the arrangement sounds identical either side of
 /// the press — a detach that emptied a clip would make "let me tweak this one"
 /// a destructive operation, which is the opposite of what a prefab is for.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DetachPrefab {
     clip: ClipId,
     /// What the clip was before, kept whole so the inverse is exact: the link
@@ -8364,6 +9143,10 @@ impl DetachPrefab {
 }
 
 impl Command for DetachPrefab {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::DetachPrefab(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(resolved) = doc.clip_source(self.clip).map(|s| s.into_owned()) else {
             return Err(no_clip(self.clip));
@@ -8391,7 +9174,7 @@ impl Command for DetachPrefab {
                 link: link.clone(),
                 source: source.clone(),
             }),
-            None => Box::new(NotApplied("detaching a prefab")),
+            None => Box::new(NotApplied::new("detaching a prefab")),
         }
     }
 
@@ -8413,6 +9196,7 @@ impl Command for DetachPrefab {
 }
 
 /// [`DetachPrefab`]'s inverse: the link back on, and the baked content off.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestorePrefabLink {
     clip: ClipId,
     link: PrefabLink,
@@ -8420,6 +9204,10 @@ pub struct RestorePrefabLink {
 }
 
 impl Command for RestorePrefabLink {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestorePrefabLink(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let Some(clip) = doc.clips.get_mut(self.clip) else {
             return Err(no_clip(self.clip));
@@ -8456,6 +9244,7 @@ impl Command for RestorePrefabLink {
 /// becomes an ordinary clip holding its own copy. The alternative — clips that
 /// silently empty — is one press away from blanking eight bars of somebody's
 /// song, and is the single worst thing this feature could do.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemovePrefab {
     prefab: PrefabId,
     /// The prefab itself, so a redo puts back the same one under the same id.
@@ -8476,6 +9265,10 @@ impl RemovePrefab {
 }
 
 impl Command for RemovePrefab {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemovePrefab(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.prefabs.contains_key(self.prefab) {
             return Err(CommandError(format!("no prefab {:?}", self.prefab)));
@@ -8519,7 +9312,7 @@ impl Command for RemovePrefab {
                 was: was.clone(),
                 detached: self.detached.clone(),
             }),
-            None => Box::new(NotApplied("deleting a prefab")),
+            None => Box::new(NotApplied::new("deleting a prefab")),
         }
     }
 
@@ -8541,6 +9334,7 @@ impl Command for RemovePrefab {
 }
 
 /// [`RemovePrefab`]'s inverse.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RestorePrefab {
     prefab: PrefabId,
     was: Prefab,
@@ -8548,6 +9342,10 @@ pub struct RestorePrefab {
 }
 
 impl Command for RestorePrefab {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestorePrefab(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.prefabs.insert_at(self.prefab, self.was.clone()) {
             return Err(CommandError("that prefab id is taken".into()));
@@ -8613,6 +9411,7 @@ impl Command for RestorePrefab {
 ///
 /// One command rather than a `Compound`, because the second half needs the
 /// first half's answer: the prefab's id does not exist until the prefab does.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MakePrefabFromClip {
     clip: ClipId,
     name: String,
@@ -8635,6 +9434,10 @@ impl MakePrefabFromClip {
 }
 
 impl Command for MakePrefabFromClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MakePrefabFromClip(self.clone())
+    }
+
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         // Everything checked before anything is written: a command that cannot
         // do its whole job does nothing.
@@ -8699,7 +9502,7 @@ impl Command for MakePrefabFromClip {
                     Box::new(RemovePrefab::new(id)),
                 ],
             )),
-            None => Box::new(NotApplied("making a prefab from a clip")),
+            None => Box::new(NotApplied::new("making a prefab from a clip")),
         }
     }
 
@@ -8717,5 +9520,232 @@ impl Command for MakePrefabFromClip {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>() + self.name.len()
+    }
+}
+
+// --- The song as a whole ------------------------------------------------------
+
+/// Names the project.
+///
+/// The name is the bundle's label — the folder name wins, and a joiner's copy
+/// of a shared song may be "Song (2)" — so the session applies this outside
+/// the history and it never crosses a wire (`docs/collab-plan.md` §5.2,
+/// §5.6). It is a command all the same, because everything that changes the
+/// document is (INVARIANT 9), and before it was one the name was written from
+/// four places in the session by hand.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RenameProject {
+    name: String,
+    previous: Option<String>,
+}
+
+impl RenameProject {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            previous: None,
+        }
+    }
+}
+
+impl Command for RenameProject {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenameProject(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let previous = std::mem::replace(&mut doc.meta.name, self.name.clone());
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(RenameProject::new(previous.clone())),
+            None => Box::new(NotApplied::new("naming the project")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Rename project"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.name.len()
+    }
+}
+
+/// Puts a named marker on the timeline.
+///
+/// Markers are an arena since format 1 so that an edit can name one
+/// (`docs/collab-plan.md` §5.2, F9). **No gesture makes one yet**: the
+/// arrangement has no marker lane, and these exist so the document's markers
+/// have commands before anything can reach them rather than after.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct AddMarker {
+    marker: crate::Marker,
+    made: Option<MarkerId>,
+}
+
+impl AddMarker {
+    pub fn new(name: impl Into<String>, tick: Tick) -> Self {
+        Self {
+            marker: crate::Marker {
+                name: name.into(),
+                tick,
+            },
+            made: None,
+        }
+    }
+
+    /// The marker, once this has been applied.
+    pub fn id(&self) -> Option<MarkerId> {
+        self.made
+    }
+}
+
+impl Command for AddMarker {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::AddMarker(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        match self.made {
+            Some(id) => {
+                if !doc.markers.insert_at(id, self.marker.clone()) {
+                    return Err(CommandError("that marker id is taken".into()));
+                }
+            }
+            None => self.made = Some(doc.markers.insert(self.marker.clone())),
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.made {
+            Some(id) => Box::new(RemoveMarker::new(id)),
+            None => Box::new(NotApplied::new("adding a marker")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Add marker"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.marker.name.len()
+    }
+}
+
+/// Takes a marker off the timeline, keeping it for the undo.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoveMarker {
+    marker: MarkerId,
+    removed: Option<crate::Marker>,
+}
+
+impl RemoveMarker {
+    pub fn new(marker: MarkerId) -> Self {
+        Self {
+            marker,
+            removed: None,
+        }
+    }
+}
+
+impl Command for RemoveMarker {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RemoveMarker(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let removed = doc
+            .markers
+            .remove(self.marker)
+            .ok_or_else(|| CommandError("no such marker".into()))?;
+        self.removed.get_or_insert(removed);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.removed {
+            Some(marker) => Box::new(RestoreMarker {
+                id: self.marker,
+                marker: marker.clone(),
+            }),
+            None => Box::new(NotApplied::new("deleting a marker")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Delete marker"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// [`RemoveMarker`]'s inverse: the marker, back under its own id.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreMarker {
+    id: MarkerId,
+    marker: crate::Marker,
+}
+
+impl Command for RestoreMarker {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreMarker(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if !doc.markers.insert_at(self.id, self.marker.clone()) {
+            return Err(CommandError("that marker id is taken".into()));
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(RemoveMarker::new(self.id))
+    }
+
+    fn label(&self) -> &str {
+        "Restore marker"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }

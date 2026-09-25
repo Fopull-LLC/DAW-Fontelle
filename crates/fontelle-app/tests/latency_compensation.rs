@@ -132,6 +132,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
     let plain = track("Plain");
     if lookahead_ms > 0.0 {
         project.mixer.tracks[gated].inserts.push(EffectSlot {
+            id: fontelle_types::PersistentId::new(),
             preset: None,
             config: open_gate(lookahead_ms),
             plugin: None,
@@ -247,6 +248,7 @@ fn the_graph_reports_what_it_costs() {
     let base = plain.latency_samples;
 
     project.mixer.tracks[master].inserts.push(EffectSlot {
+        id: fontelle_types::PersistentId::new(),
         preset: None,
         config: open_gate(LOOKAHEAD_MS),
         plugin: None,

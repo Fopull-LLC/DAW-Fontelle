@@ -19,4 +19,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # on every open.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 slotmap = { version = "1.1.1", features = ["serde"] }
+# `Project::sync_hash` (docs/collab-plan.md §5.6): the same xxhash64
+# `fontelle-assets` already names soundfonts by.
+twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
 uuid = { version = "1.25.0", features = ["v7", "serde"] }

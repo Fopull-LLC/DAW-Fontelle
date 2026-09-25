@@ -1219,6 +1219,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slotmap",
+ "twox-hash",
  "uuid",
 ]
 

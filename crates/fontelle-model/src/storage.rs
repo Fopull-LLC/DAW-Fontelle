@@ -3,14 +3,19 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::project::Project;
+use fontelle_types::PersistentId;
+
+use crate::project::{Project, ProjectMeta};
 
 /// The revision of the document format this build writes.
 ///
 /// Separate from a patch's own version (`fontelle-core`): a project can gain a
 /// field without every preset in the world needing a new version stamp, and a
 /// patch's format can change without invalidating projects that hold one.
-pub const PROJECT_FORMAT_VERSION: u32 = 0;
+///
+/// **1** (2026-09-25, `docs/collab-plan.md` §4.1): a project has an id,
+/// markers are an arena, and every insert and send has an id of its own.
+pub const PROJECT_FORMAT_VERSION: u32 = 1;
 
 /// The document inside a bundle.
 pub const PROJECT_FILE: &str = "project.json";
@@ -140,6 +145,47 @@ pub fn load_project(bundle: &Path) -> Result<Project, StorageError> {
         .map_err(|e| StorageError::Format(format!("{} could not be read: {e}", path.display())))
 }
 
+/// Reads only what the bundle at `bundle` says about itself — its id, its
+/// name, its save stamps — without building the song.
+///
+/// What a join walks the projects folder with (`docs/collab-plan.md` §4.2):
+/// two hundred bundles at join time is two hundred of these. The file is
+/// still read through, but the body is skipped rather than built. A format-0
+/// bundle answers with the id its migration would give it, so a peek and a
+/// load always agree.
+pub fn peek_meta(bundle: &Path) -> Result<ProjectMeta, StorageError> {
+    #[derive(serde::Deserialize)]
+    struct Head {
+        meta: serde_json::Value,
+    }
+    let path = bundle.join(PROJECT_FILE);
+    let file = std::fs::File::open(&path).map_err(io(&path))?;
+    let head: Head = serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| {
+        StorageError::Format(format!("{} is not a Fontelle project: {e}", path.display()))
+    })?;
+    let mut meta = head.meta;
+    let found = meta
+        .get("format_version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            StorageError::Format(format!(
+                "{} has no meta.format_version — it is not a Fontelle project",
+                path.display()
+            ))
+        })? as u32;
+    if found > PROJECT_FORMAT_VERSION {
+        return Err(StorageError::FromTheFuture {
+            found,
+            newest: PROJECT_FORMAT_VERSION,
+        });
+    }
+    if found == 0 {
+        meta_v0_to_v1(&mut meta);
+    }
+    serde_json::from_value(meta)
+        .map_err(|e| StorageError::Format(format!("{} could not be read: {e}", path.display())))
+}
+
 /// Brings a document written by an older build up to
 /// [`PROJECT_FORMAT_VERSION`].
 ///
@@ -150,11 +196,15 @@ pub fn load_project(bundle: &Path) -> Result<Project, StorageError> {
 /// if version == 0 { json = v0_to_v1(json)?; version = 1; }
 /// ```
 ///
-/// There is nothing before v0, so the chain is empty today. The shape is
-/// written down because the first migration is the one most likely to be added
-/// under time pressure.
-fn migrate(json: serde_json::Value, from: u32) -> Result<serde_json::Value, StorageError> {
-    if from != PROJECT_FORMAT_VERSION {
+/// Every step works on the JSON rather than on the types, because the types
+/// are this build's and the file is not.
+fn migrate(mut json: serde_json::Value, from: u32) -> Result<serde_json::Value, StorageError> {
+    let mut version = from;
+    if version == 0 {
+        json = v0_to_v1(json)?;
+        version = 1;
+    }
+    if version != PROJECT_FORMAT_VERSION {
         return Err(StorageError::Format(format!(
             "no migration from project format version {from} to {PROJECT_FORMAT_VERSION}"
         )));
@@ -162,12 +212,75 @@ fn migrate(json: serde_json::Value, from: u32) -> Result<serde_json::Value, Stor
     Ok(json)
 }
 
+/// Format 0 to 1: the ids a song needs before two machines can share it
+/// (`docs/collab-plan.md` §4.1, §5.2).
+///
+/// **Every id given out here is derived, never minted.** Two zipped copies of
+/// one old project on two machines, or two loads of the same file on one,
+/// must agree about who the song is and which insert is which; `now_v7()`
+/// on load would make every open a different song. From format 1 on, ids are
+/// minted when the thing is made and saved with it.
+fn v0_to_v1(mut json: serde_json::Value) -> Result<serde_json::Value, StorageError> {
+    let meta = json
+        .get_mut("meta")
+        .ok_or_else(|| StorageError::Format("a format-0 project with no meta".into()))?;
+    meta_v0_to_v1(meta);
+    let song = meta["id"].as_str().unwrap_or_default().to_string();
+
+    // A plain list of markers becomes the arena's list of (key, marker)
+    // pairs, keyed in the order they were in.
+    if let Some(markers) = json.get_mut("markers").and_then(|m| m.as_array_mut()) {
+        for (index, marker) in markers.iter_mut().enumerate() {
+            let key = serde_json::json!({ "idx": index, "version": 1 });
+            *marker = serde_json::json!([key, marker.take()]);
+        }
+    }
+
+    // Each insert and send is named by its song, its strip's key and its
+    // place, which is exactly as stable as the file is.
+    if let Some(tracks) = json
+        .pointer_mut("/mixer/tracks")
+        .and_then(|t| t.as_array_mut())
+    {
+        for pair in tracks.iter_mut().filter_map(|p| p.as_array_mut()) {
+            let [key, track] = pair.as_mut_slice() else {
+                continue;
+            };
+            let strip = format!("{}.{}", key["idx"], key["version"]);
+            for (list, what) in [("inserts", "insert"), ("sends", "send")] {
+                let Some(slots) = track.get_mut(list).and_then(|l| l.as_array_mut()) else {
+                    continue;
+                };
+                for (place, slot) in slots.iter_mut().enumerate() {
+                    if let Some(slot) = slot.as_object_mut() {
+                        let id = PersistentId::derived(&format!("{song}/{strip}/{what}/{place}"));
+                        slot.entry("id").or_insert(serde_json::json!(id));
+                    }
+                }
+            }
+        }
+    }
+    Ok(json)
+}
+
+/// The meta half of [`v0_to_v1`], shared with [`peek_meta`] so a peek and a
+/// load cannot disagree about an old song's id.
+fn meta_v0_to_v1(meta: &mut serde_json::Value) {
+    let created = meta["created"].as_str().unwrap_or_default();
+    let name = meta["name"].as_str().unwrap_or_default();
+    // A unit separator between the two, so "ab" + "c" and "a" + "bc" are two
+    // songs.
+    let id = PersistentId::derived(&format!("fontelle-project\u{1f}{created}\u{1f}{name}"));
+    meta["id"] = serde_json::json!(id);
+    meta["format_version"] = serde_json::json!(1);
+}
+
 /// The current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
 ///
 /// Hand-rolled rather than pulled in: the only thing that needs a calendar is
 /// this one field, and the civil-from-days algorithm is short, exact and has
 /// no dependency to keep up to date.
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

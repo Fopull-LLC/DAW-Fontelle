@@ -81,6 +81,7 @@ fn ducking_compressor(project: &mut fontelle_model::Project, track: MixerTrackId
     });
     let node = &mut project.mixer.tracks[track];
     node.inserts.push(fontelle_model::EffectSlot {
+        id: fontelle_types::PersistentId::new(),
         preset: None,
         config,
         plugin: None,
@@ -130,6 +131,7 @@ fn a_key_that_would_close_a_loop_is_refused() {
     let (mut project, kick, pad) = two_tracks();
     let slot = ducking_compressor(&mut project, pad);
     project.mixer.tracks[pad].sends.push(fontelle_model::Send {
+        id: fontelle_types::PersistentId::new(),
         target: kick,
         level_db: -6.0,
         pan: 0.0,

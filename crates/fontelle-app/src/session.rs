@@ -29,8 +29,8 @@ use fontelle_assets::{MidiChannels, import_fsc, import_midi, survey_midi};
 use fontelle_engine::{GraphPublisher, TimelinePublisher};
 use fontelle_model::{
     AddChannel, AddClip, AddNotes, Arena, Clip, ClipSource, Command, DuplicateClip, FlagTarget,
-    History, ImportPart, ImportParts, Lane, MoveClip, MoveNotes, Note, NoteData, NumberTarget,
-    Project, RemoveClip, RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
+    History, ImportPart, ImportParts, MoveClip, MoveNotes, Note, NoteData, NumberTarget, Project,
+    RemoveClip, RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
 };
 use fontelle_types::{
     ChannelId, ClipId, EventPayload, LaneId, MixerTrackId, NodeId, NoteId, PPQN, Sample, Tick,
@@ -986,10 +986,9 @@ impl Session {
                      Projects tab, or save the project, and record again"
                         .to_string()
                 })?;
+            self.project.meta.stamp_save(&who_saves());
             crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
-            if let Some(stem) = path.file_stem() {
-                self.project.meta.name = stem.to_string_lossy().into_owned();
-            }
+            self.name_after(&path);
             self.bundle = Some(path);
             self.projects.rescan();
             self.dirty = false;
@@ -1671,6 +1670,45 @@ impl Session {
         }
     }
 
+    /// Names the project after the folder it lives in (see
+    /// [`adopt`](Self::adopt) for why the folder wins).
+    ///
+    /// Through a command, like every change to the document (INVARIANT 9),
+    /// but **not through the history**: the name follows the folder, and an
+    /// undo that put the old name back would put a title on the window that
+    /// no folder has. For the same reason it is each machine's own — a
+    /// joiner's copy may be "Song (2)" — and never crosses a wire
+    /// (`docs/collab-plan.md` §5.2, F7).
+    fn name_after(&mut self, path: &Path) {
+        if let Some(stem) = path.file_stem() {
+            let _ =
+                fontelle_model::RenameProject::new(stem.to_string_lossy()).apply(&mut self.project);
+        }
+    }
+
+    /// Applies an edit somebody else made to the song
+    /// (`docs/collab-plan.md` §5.4).
+    ///
+    /// Not onto the undo stack — undo is each person's own (§5.7) — and
+    /// republished the way an undo is, because which of the rebuild, the
+    /// republish and the mixer an edit needs is decided by hand at each of
+    /// forty-odd call sites and a foreign edit could be any of them. Heavier
+    /// than necessary, and exactly what an undo already costs.
+    ///
+    /// It marks the document **unsaved** (F12): a joiner's copy that was
+    /// changed by somebody else is work nobody has saved yet, and closing it
+    /// without being asked would lose it.
+    pub fn apply_foreign(&mut self, edit: fontelle_model::Edit) -> Result<(), String> {
+        self.history
+            .apply_foreign(edit, &mut self.project)
+            .map_err(|e| e.to_string())?;
+        self.dirty = true;
+        self.patch_cache = None;
+        self.rebuild_graph();
+        self.touch();
+        Ok(())
+    }
+
     /// Points the session at a projects folder and remembers it. For tests,
     /// and for a `--projects <dir>` flag when there is one.
     pub fn set_projects_dir(&mut self, dir: Option<PathBuf>) {
@@ -1717,9 +1755,16 @@ impl Session {
         // Projects tab lists and what the title bar says are the same word —
         // and it is the unique one, not the one that was typed, when the
         // folder already held it.
-        if let Some(stem) = path.file_stem() {
-            self.project.meta.name = stem.to_string_lossy().into_owned();
+        self.name_after(&path);
+        // A Save As of a song that already has a file is a **new song** that
+        // remembers where it came from (`docs/collab-plan.md` §15, decision
+        // 2): "Song" and "Song v2" are then two songs, and sharing one never
+        // offers to replace the other on a friend's disk. The first save of
+        // a song that has never had a file is that song.
+        if self.bundle.is_some() {
+            self.project.meta.fork();
         }
+        self.project.meta.stamp_save(&who_saves());
         self.capture_plugin_states();
         crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
         self.remember_project(&path);
@@ -1743,8 +1788,10 @@ impl Session {
         // is the commonest way to lose one.
         let mut project = crate::blank_project(NEW_PROJECT_BARS, 120.0, self.options.sample_rate);
         if let Some(stem) = path.file_stem() {
-            project.meta.name = stem.to_string_lossy().into_owned();
+            // Not through `name_after`: this document is not the open one.
+            let _ = fontelle_model::RenameProject::new(stem.to_string_lossy()).apply(&mut project);
         }
+        project.meta.stamp_save(&who_saves());
         crate::save_project(&project, &path).map_err(|e| e.to_string())?;
         self.projects.rescan();
         let opened = crate::open_project(&path).map_err(|e| e.to_string())?;
@@ -1769,9 +1816,7 @@ impl Session {
         // opening `MySong.fontelle` used to put "Untitled" in the title bar,
         // in the projects list, and on every render it exported. The folder is
         // the name somebody typed, so the folder wins.
-        if let Some(stem) = path.file_stem() {
-            self.project.meta.name = stem.to_string_lossy().into_owned();
-        }
+        self.name_after(&path);
         self.library = opened.library;
         self.history = History::new();
         self.clip = Session::first_clip(&self.project).unwrap_or_default();
@@ -1919,44 +1964,6 @@ impl Session {
             .collect();
         ids.extend(master.filter(|id| self.project.mixer.tracks.contains_key(*id)));
         ids
-    }
-
-    /// A lane for an automation clip to go on.
-    ///
-    /// Always a new one, and the caller is why: [`create_automation`] hands
-    /// back the clip a parameter already has rather than making a second, so
-    /// by the time this is called there is no clip for this address and
-    /// therefore no lane carrying one. (It used to search for one, by the
-    /// clips on it rather than by its name — the name is a caption and the
-    /// address is the identity — and that search can no longer find
-    /// anything.)
-    ///
-    /// A lane is *visual only* (TDD §10.3) and deliberately cheap, which is
-    /// why this inserts one rather than going through a command — the same
-    /// thing `add_channel_with` does for a new channel's lane, and with the
-    /// same consequence: making a lane is not on the undo stack, though
-    /// everything put on it is.
-    ///
-    /// [`create_automation`]: fontelle_ui::document::StudioHost::create_automation
-    fn automation_lane(
-        &mut self,
-        _address: &fontelle_types::ParamAddress,
-        label: &str,
-    ) -> fontelle_types::LaneId {
-        self.project.lanes.insert(Lane {
-            name: label.to_string(),
-            height: 32.0,
-            // A light lavender: a different hue from a note lane's blue, so
-            // the two kinds of strip are tellable apart down the header
-            // column, and **bright**, because on an automation block this
-            // colour is the curve rather than the fill. The first attempt was
-            // a dim `0x7a6f9a` and the curve was invisible on the block — see
-            // `render::draw_automation_curve`.
-            color: [0xb4, 0xa2, 0xe8, 0xff],
-            muted: false,
-            locked: false,
-            order: next_lane_order(&self.project),
-        })
     }
 
     /// What an automation clip is called on the arrangement.
@@ -2455,15 +2462,17 @@ impl Session {
                 // the bottom of a long arrangement is a bounce you have to go
                 // looking for — and what is left is to **name** it for that
                 // row.
-                self.import_audio_at(path, at, None, Landing::NewRow(index + 1))?;
-                let made = self
-                    .lane_ids()
+                self.import_audio_named(
+                    path,
+                    at,
+                    None,
+                    Landing::NewRow(index + 1),
+                    Some(format!("{name} (rendered)")),
+                )?;
+                self.lane_ids()
                     .into_iter()
                     .find(|id| !before.contains(id))
                     .ok_or("the row for the render was not made")?;
-                if let Some(lane) = self.project.lanes.get_mut(made) {
-                    lane.name = format!("{name} (rendered)");
-                }
                 self.history.break_gesture();
                 self.dirty = true;
                 self.republish();
@@ -5265,6 +5274,7 @@ impl DocumentHost for Session {
         let Some(bundle) = self.bundle.clone() else {
             return Session::save_as(self, &self.project.meta.name.clone());
         };
+        self.project.meta.stamp_save(&who_saves());
         crate::save_project(&self.project, &bundle).map_err(|e| e.to_string())?;
         self.dirty = false;
         self.touch();
@@ -5602,6 +5612,19 @@ impl Session {
         track: Option<MixerTrackId>,
         landing: Landing,
     ) -> Result<String, String> {
+        self.import_audio_named(path, at, track, landing, None)
+    }
+
+    /// [`import_audio_at`](Self::import_audio_at), with the row it makes
+    /// named `row` rather than after the file.
+    fn import_audio_named(
+        &mut self,
+        path: &Path,
+        at: fontelle_types::Sample,
+        track: Option<MixerTrackId>,
+        landing: Landing,
+        row: Option<String>,
+    ) -> Result<String, String> {
         let name = file_label(path);
         let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
         if imported.frames == 0 || imported.sample_rate == 0 {
@@ -5617,7 +5640,10 @@ impl Session {
             imported.sample_rate,
         );
         data.mixer_track = track;
-        let clip = fontelle_model::AddAudioClip::new(name.clone(), data, start, length);
+        let mut clip = fontelle_model::AddAudioClip::new(name.clone(), data, start, length);
+        if let Some(row) = row {
+            clip = clip.row_named(row);
+        }
         let clip = match landing {
             // Onto the row the pointer was over.
             Landing::Onto(lane) => clip.on_lane(lane),
@@ -9003,7 +9029,6 @@ impl StudioHost for Session {
             _ => (0, self.song_ticks()),
         };
         let length = length.max(1);
-        let lane = self.automation_lane(address, label);
 
         // Two points at the value the control is at now, one at each end, so
         // the clip starts by changing nothing: an automation lane that jumped
@@ -9021,7 +9046,7 @@ impl StudioHost for Session {
         }
 
         let clip = Clip {
-            lane,
+            lane: fontelle_types::LaneId::default(),
             start,
             length,
             source: ClipSource::Automation(fontelle_model::AutomationData {
@@ -9033,7 +9058,19 @@ impl StudioHost for Session {
             muted: false,
             loop_length: None,
         };
-        if let Ok(command) = self.apply_for::<AddClip>(Box::new(AddClip::new(clip)))
+        // On a row of its own, made **by the same command** — one undo takes
+        // both, and anybody sharing the song is sent both. The row used to be
+        // a bare insert beside this (`docs/collab-plan.md` §5.2, F5), off the
+        // undo stack, so taking the clip back left an empty row behind.
+        //
+        // A light lavender: a different hue from a note lane's blue, so the
+        // two kinds of strip are tellable apart down the header column, and
+        // **bright**, because on an automation block this colour is the curve
+        // rather than the fill. The first attempt was a dim `0x7a6f9a` and the
+        // curve was invisible on the block — see
+        // `render::draw_automation_curve`.
+        let command = AddClip::on_new_row(clip, label, [0xb4, 0xa2, 0xe8, 0xff]);
+        if let Ok(command) = self.apply_for::<AddClip>(Box::new(command))
             && let Some(id) = command.id()
         {
             // It is the block in hand: you made it to draw in it, and the
@@ -10639,22 +10676,6 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// The `order` a row added now should carry: past the bottom of the stack.
-///
-/// The same rule `AddLane` follows, and it has to be the same rule: a row
-/// created straight on the arena rather than through the command — an
-/// automation lane, a channel's own lane — must still turn up where somebody
-/// adding a row is looking for it, and not wherever a default of zero sorts
-/// once the rows have been reordered.
-fn next_lane_order(project: &fontelle_model::Project) -> u32 {
-    project
-        .lanes
-        .values()
-        .map(|lane| lane.order)
-        .max()
-        .map_or(0, |highest| highest.saturating_add(1))
-}
-
 /// A `.mid` file that holds more than one part, waiting on the question
 /// *"import them all as separate tracks, or only one of them?"*.
 ///
@@ -12136,4 +12157,18 @@ impl Session {
     pub fn previews_rendering(&self) -> bool {
         self.preview_jobs.borrow().is_some()
     }
+}
+
+/// Who a save is by, as the join prompt will say it (`docs/collab-plan.md`
+/// §4.1): the name the settings page's *Your name* row will hold, and the
+/// computer's own user name until it does.
+fn who_saves() -> String {
+    ["USER", "USERNAME", "LOGNAME"]
+        .iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+        })
+        .unwrap_or_else(|| "someone".to_string())
 }

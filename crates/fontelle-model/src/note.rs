@@ -100,7 +100,7 @@ impl NoteData {
 /// piano roll's property lane is what needed the rest, but the *range* of each
 /// one is a document fact, not a view one, so it lives here — one source of
 /// truth for what a note may hold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NoteProperty {
     Velocity,
     Pan,
@@ -192,7 +192,7 @@ impl NoteProperty {
 /// what it meant. Which of the two the piano roll sends is decided in one
 /// place — [`Project::note_home`] — because "editing an instance edits the
 /// prefab" is a rule about the document, not about a canvas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NoteHome {
     Clip(fontelle_types::ClipId),
     Prefab(fontelle_types::PrefabId),

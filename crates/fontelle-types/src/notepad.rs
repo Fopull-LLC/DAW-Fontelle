@@ -480,7 +480,7 @@ impl Default for NotepadPages {
 /// holds the edited string ([`TextEntry`](../../fontelle_ui/canvas/struct.TextEntry.html)),
 /// and an edit algebra fine enough to describe a paste over a selection is a
 /// second text model to keep in step with the first.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NotepadEdit {
     /// Page `page` now says `text`.
     Write { page: usize, text: String },

@@ -39,7 +39,9 @@ pub use bundle::{MissingAsset, OpenError, OpenedProject, open_project, save_proj
 pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::{ImportedAudio, SampleLibrary};
 pub use plugins::{PluginRack, PluginSlot, PluginWiring, plugin_slots};
-pub use projects::{ProjectEntry, ProjectLibrary, ProjectOrder, unique_name};
+pub use projects::{
+    ProjectEntry, ProjectLibrary, ProjectOrder, SHARED_DIR, find_by_id, unique_name,
+};
 pub use realise::{
     KeptTaps, MonitorPlan, RealiseError, RealiseOptions, Realised, apply_mixer_controls,
     apply_send_controls, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,

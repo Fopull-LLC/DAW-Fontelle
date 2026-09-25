@@ -31,6 +31,11 @@ pub trait Command: Send {
     /// share a label — and downcasting is the honest way to ask. Every
     /// implementation is the same line: `self`.
     fn as_any(&self) -> &dyn std::any::Any;
+    /// This command as a value, ids and all, so another machine can apply it
+    /// the way redo does (`docs/collab-plan.md` §5.3). Taken **after** apply,
+    /// when the command knows what it minted. Every command has one —
+    /// `tests/wire.rs` sends each of them across and back.
+    fn to_edit(&self) -> crate::wire::Edit;
 }
 
 /// Command-pattern undo/redo stack. Default depth 100, with a memory ceiling
@@ -41,6 +46,15 @@ pub struct History {
     /// Set by `break_gesture`, and by an undo or a redo — resuming a drag
     /// across an undo is not the same drag.
     gesture_broken: bool,
+    /// Every edit that has landed, in order, for whoever is sharing the song
+    /// — `None` while nobody is, so a studio with no session open keeps no
+    /// copies and behaves exactly as it did (`docs/collab-plan.md` §1, 9).
+    outbox: Option<Vec<crate::wire::Edit>>,
+    /// Whether the entry on top of the undo stack has gone to the outbox. A
+    /// gesture still in the hand has not: it goes once, merged, when it
+    /// breaks — a drag is one message when the button comes up, not four
+    /// hundred.
+    head_sent: bool,
     pub max_depth: usize,
     pub memory_ceiling_bytes: usize,
 }
@@ -51,6 +65,8 @@ impl History {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gesture_broken: true,
+            outbox: None,
+            head_sent: true,
             max_depth: 100,
             memory_ceiling_bytes: 256 * 1024 * 1024,
         }
@@ -76,10 +92,65 @@ impl History {
         {
             return Ok(());
         }
+        // A new entry closes the one below it, as far as anybody else is
+        // concerned: it can never be merged into again.
+        self.send_head();
         self.gesture_broken = false;
         self.undo_stack.push(command);
+        self.head_sent = false;
         self.evict_if_over_budget();
         Ok(())
+    }
+
+    /// Starts keeping every edit that lands, for a shared session to send.
+    pub fn open_outbox(&mut self) {
+        self.outbox.get_or_insert_with(Vec::new);
+        // Whatever was on top before the session began is in the snapshot
+        // the others were given, not in the stream.
+        self.head_sent = true;
+    }
+
+    /// Stops keeping them, and drops any that were not taken.
+    pub fn close_outbox(&mut self) {
+        self.outbox = None;
+    }
+
+    /// Every edit that has landed since the last call, in order: merged
+    /// gestures once, when they break; an undo as the inverse it applied; a
+    /// redo as the command again. Empty while no outbox is open.
+    pub fn take_outbox(&mut self) -> Vec<crate::wire::Edit> {
+        self.outbox.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// Applies an edit that came from somebody else.
+    ///
+    /// It changes the document and nothing else: it does not enter the undo
+    /// stack, because undo is each person's own (§5.7), and it does not go to
+    /// the outbox, because it came from the stream rather than into it. The
+    /// gesture in progress, if any, is left alone.
+    pub fn apply_foreign(
+        &mut self,
+        edit: crate::wire::Edit,
+        doc: &mut Project,
+    ) -> Result<(), CommandError> {
+        edit.into_command().apply(doc)
+    }
+
+    /// Offers the entry on top of the undo stack to the outbox, once.
+    fn send_head(&mut self) {
+        if self.head_sent {
+            return;
+        }
+        self.head_sent = true;
+        if let (Some(outbox), Some(head)) = (self.outbox.as_mut(), self.undo_stack.last()) {
+            outbox.push(head.to_edit());
+        }
+    }
+
+    fn send(&mut self, edit: impl FnOnce() -> crate::wire::Edit) {
+        if let Some(outbox) = self.outbox.as_mut() {
+            outbox.push(edit());
+        }
     }
 
     /// Ends the current gesture, so the next command starts a new history
@@ -104,6 +175,7 @@ impl History {
 
     pub fn break_gesture(&mut self) {
         self.gesture_broken = true;
+        self.send_head();
     }
 
     /// How many entries `undo` could walk back through.
@@ -124,9 +196,14 @@ impl History {
     /// `None` when there is nothing to undo. An inverse that fails puts its
     /// entry back rather than losing it.
     pub fn undo(&mut self, doc: &mut Project) -> Option<Result<(), CommandError>> {
+        // A gesture nobody has been sent yet goes first, so the other side
+        // never inverts a thing it was never given.
+        self.send_head();
         let command = self.undo_stack.pop()?;
-        match command.invert().apply(doc) {
+        let mut inverse = command.invert();
+        match inverse.apply(doc) {
             Ok(()) => {
+                self.send(|| inverse.to_edit());
                 self.redo_stack.push(command);
                 self.gesture_broken = true;
                 Some(Ok(()))
@@ -146,9 +223,11 @@ impl History {
     /// redo would mint a fresh id and the *next* redo would be looking for a
     /// note that no longer exists.
     pub fn redo(&mut self, doc: &mut Project) -> Option<Result<(), CommandError>> {
+        self.send_head();
         let mut command = self.redo_stack.pop()?;
         match command.apply(doc) {
             Ok(()) => {
+                self.send(|| command.to_edit());
                 self.undo_stack.push(command);
                 self.gesture_broken = true;
                 Some(Ok(()))

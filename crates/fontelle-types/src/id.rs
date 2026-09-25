@@ -35,12 +35,36 @@ impl NodeId {
 
 /// The on-disk counterpart to an in-memory `slotmap` key (TDD §10.2): time-ordered,
 /// stable across a save/load round trip, and safe to use as a serialised reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct PersistentId(pub uuid::Uuid);
 
 impl PersistentId {
     pub fn new() -> Self {
         Self(uuid::Uuid::now_v7())
+    }
+
+    /// An id worked out from `seed` rather than minted: the same seed gives
+    /// the same id on every machine and every run.
+    ///
+    /// For a thing written before it had an id of its own — a format-0
+    /// project, whose id comes from its `created` and its `name`
+    /// (`docs/collab-plan.md` §4.1) — so two copies of one old song on two
+    /// machines agree about who they are, which minting on load would break.
+    /// Nothing made today should use this; `new` is the rule.
+    ///
+    /// FNV-1a over 128 bits, stamped as a UUIDv8 ("custom"). Not
+    /// cryptographic and not meant to be: the seeds are a song's own birth
+    /// details, not an adversary's. **The constants are part of every old
+    /// project's identity** and must never change.
+    pub fn derived(seed: &str) -> Self {
+        const OFFSET: u128 = 0x6c62272e07bb014262b821756295c58d;
+        const PRIME: u128 = 0x0000000001000000000000000000013b;
+        let hash = seed.bytes().fold(OFFSET, |hash, byte| {
+            (hash ^ byte as u128).wrapping_mul(PRIME)
+        });
+        Self(uuid::Builder::from_custom_bytes(hash.to_be_bytes()).into_uuid())
     }
 }
 

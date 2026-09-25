@@ -16,6 +16,36 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-25 (collaboration, Phase 0).** `docs/collab-plan.md` is
+being built phase by phase; its §18 ledger is the to-do list and its §19 is
+where the tree departs from the text. Things to know before adding a command:
+
+(a) **A new command is five things now**: `#[derive(Clone, Debug,
+serde::Serialize, serde::Deserialize)]`, a `to_edit` (one line, the same as
+every other), its name in `wire.rs`'s `edits!` list, a line in
+`tests/wire.rs`'s `every_command()`, and `#[serde(with =
+"crate::wire::nested")]` on any `Option<Option<_>>` field — JSON writes
+`Some(None)` and `None` both as `null`, and an applied command would arrive
+looking unapplied. `every_command_has_a_wire_form` is the test that notices a
+command that lands differently on another machine.
+
+(b) **A command that names an insert or a send by its place** gets the slot
+through `insert_mut`/`send_mut` with a `slot: Option<PersistentId>` field, and
+hands `slot` to its inverse. **A command that makes something remembers the id
+it gave it** (`made`) — a redo, and the other end of a wire, must make the
+same thing.
+
+(c) **Never swap state into `self` in `apply`** (F54). Write a copy and keep
+what was replaced; a command's applied form is what crosses the wire, and a
+swapped one carries the old state.
+
+(d) **An `Edit`'s variant and field names are permanent** — JSON names them.
+Add, never rename.
+
+(e) **`ProjectMeta` is the bundle, not the song**: left out of `sync_hash`, never
+on the wire. The name is set through `Session::name_after` (a command applied
+outside the history — the folder wins).
+
 **Updated 2026-09-25 (Windows, v0.15.0).** `PROGRESS.md`'s top entry. Things
 to know:
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fontelle_types::PrefabId;
 
@@ -8,10 +8,14 @@ use crate::clip::ClipSource;
 /// automation point, ...). Persistent (INVARIANT 8) — never an index — so an
 /// override survives edits to the source, insertions before it, and a save/load
 /// round trip (TDD §10.2, §10.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct ElementId(pub fontelle_types::PersistentId);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum PropKey {
     Transpose,
     Velocity,
@@ -28,11 +32,68 @@ pub enum PropValue {
 /// A variant/instance's deltas against its base. Structural overrides (`added`,
 /// `removed`) are structure-only in v1 — the data shape ships now so no project
 /// migration is needed when the feature lands (TDD §10.5.1).
+///
+/// **Sorted, and the map written as a list of pairs.** They were a `HashMap`
+/// and a `HashSet`: a map keyed by a tuple cannot be written as JSON at all
+/// (a JSON key is a string), so the first override ever made would have
+/// failed the save; and a set writes in whatever order it iterates, which
+/// would give two copies of one song two different hashes
+/// (`docs/collab-plan.md` §18, F53). Every project written before this has
+/// an empty map as `{}`, which still reads.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct OverrideMap {
-    pub props: HashMap<(ElementId, PropKey), PropValue>,
+    #[serde(with = "prop_pairs")]
+    pub props: BTreeMap<(ElementId, PropKey), PropValue>,
     pub added: Vec<ElementId>,
-    pub removed: HashSet<ElementId>,
+    pub removed: BTreeSet<ElementId>,
+}
+
+/// `OverrideMap::props` as a list of `[key, value]` pairs, reading the empty
+/// object older builds wrote as well.
+mod prop_pairs {
+    use std::collections::BTreeMap;
+
+    use serde::de::{Error, MapAccess, SeqAccess, Visitor};
+    use serde::{Deserializer, Serializer};
+
+    use super::{ElementId, PropKey, PropValue};
+
+    type Props = BTreeMap<(ElementId, PropKey), PropValue>;
+
+    pub fn serialize<S: Serializer>(props: &Props, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(props.iter())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Props, D::Error> {
+        struct Pairs;
+        impl<'de> Visitor<'de> for Pairs {
+            type Value = Props;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of [element and property, value] pairs")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Props, A::Error> {
+                let mut props = Props::new();
+                while let Some((key, value)) =
+                    seq.next_element::<((ElementId, PropKey), PropValue)>()?
+                {
+                    props.insert(key, value);
+                }
+                Ok(props)
+            }
+
+            /// What every older build wrote, and it was always empty: a
+            /// non-empty one could not have been written.
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Props, A::Error> {
+                match map.next_key::<serde::de::IgnoredAny>()? {
+                    None => Ok(Props::new()),
+                    Some(_) => Err(A::Error::custom("prefab overrides written as a map")),
+                }
+            }
+        }
+        deserializer.deserialize_any(Pairs)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -120,10 +181,14 @@ pub fn resolve(
 ///
 /// An [`ElementId`] is a [`PersistentId`](fontelle_types::PersistentId), and
 /// **a note does not carry one yet**: `NoteData::notes` is an `Arena<NoteId,
-/// Note>`, and a `NoteId` is a slot-and-version pair that is minted fresh
-/// every session. There is therefore no way to look up the note an override
-/// names, and any code here that appeared to do so would be code that silently
-/// matched nothing.
+/// Note>`, keyed by a slot-and-version pair. That pair *does* survive a save
+/// and a load — the arena writes its keys and puts every element back under
+/// its own (`tests/wire.rs`, `note_ids_survive_save_and_load`, which is what
+/// lets two machines sharing a song agree about a note). But it is a key into
+/// one clip's arena, not an identity that outlives the note being copied
+/// into another clip or prefab, which is what an override has to name. So
+/// there is still no way to look up the note an override names, and any code
+/// here that appeared to do so would be code that silently matched nothing.
 ///
 /// This is §10.5.1's split showing through, and it is the right way round: the
 /// `OverrideMap` is in the document and in the file from commit one, so the

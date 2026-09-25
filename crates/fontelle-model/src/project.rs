@@ -1,4 +1,4 @@
-use fontelle_types::{ChannelId, ClipId, LaneId, PPQN, PrefabId, Sample, Tick};
+use fontelle_types::{ChannelId, ClipId, LaneId, MarkerId, PPQN, PrefabId, Sample, Tick};
 
 use crate::arena::Arena;
 
@@ -9,12 +9,62 @@ use crate::lane::Lane;
 use crate::mixer::Mixer;
 use crate::prefab::Prefab;
 
+/// What a bundle says about itself, as opposed to the song inside it.
+///
+/// **None of this is the song.** Two machines sharing one song keep two of
+/// these, and they differ by design — the joiner's copy may be called
+/// "Song (2)" in its own *Shared* folder, and each side counts its own saves
+/// — so none of it is in [`Project::sync_hash`] and no edit carries it
+/// (`docs/collab-plan.md` §5.6).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectMeta {
     pub name: String,
     pub created: String, // ISO-8601; kept as a plain string to avoid a chrono dep here
     pub app_version: String,
     pub format_version: u32,
+    /// Never repeated. Minted when a project is created; carried by every
+    /// copy a join makes; a Save As mints a new one and records where it came
+    /// from in [`forked_from`](Self::forked_from). A format-0 project is given
+    /// one derived from its birth by the migration (`storage.rs`).
+    ///
+    /// The folder name is a label; this is the identity. What a join looks
+    /// for on the joiner's disk (§4.2).
+    pub id: fontelle_types::PersistentId,
+    #[serde(default)]
+    pub forked_from: Option<fontelle_types::PersistentId>,
+    /// Bumped on every save the person makes (not the autosave). What the
+    /// join prompt compares to say which copy is newer (§4.3).
+    #[serde(default)]
+    pub saved_revision: u64,
+    #[serde(default)]
+    pub saved_at: String,
+    #[serde(default)]
+    pub saved_by: String,
+    /// The `saved_revision` this copy and the peer named here last agreed on,
+    /// written by both sides when a shared session ends. Without it a join
+    /// cannot tell a copy that is *behind* from one that has *diverged*
+    /// (§4.5).
+    #[serde(default)]
+    pub shared_revision: Option<(fontelle_types::PersistentId, u64)>,
+}
+
+impl ProjectMeta {
+    /// Marks a save by `by`: one more revision, now, and who.
+    pub fn stamp_save(&mut self, by: &str) {
+        self.saved_revision += 1;
+        self.saved_at = crate::storage::now_iso8601();
+        self.saved_by = by.to_string();
+    }
+
+    /// Makes this a new song that remembers the one it came from — what a
+    /// Save As does (§15, decision 2). "Song" and "Song v2" are then two
+    /// songs, and sharing one never offers to replace the other. What it
+    /// agreed with a peer was agreed by the parent, so that goes.
+    pub fn fork(&mut self) {
+        self.forked_from = Some(self.id);
+        self.id = fontelle_types::PersistentId::new();
+        self.shared_revision = None;
+    }
 }
 
 /// One constant-tempo stretch of the timeline, in force from `start_tick`
@@ -254,7 +304,10 @@ pub struct Project {
     pub clips: Arena<ClipId, Clip>,
     pub prefabs: Arena<PrefabId, Prefab>,
     pub assets: AssetTable,
-    pub markers: Vec<Marker>,
+    /// Named places on the timeline. An arena rather than a list since
+    /// format 1, so an edit can name one — a list's positions shift under
+    /// whoever else is adding markers (`docs/collab-plan.md` §5.2).
+    pub markers: Arena<MarkerId, Marker>,
     /// The loop region, in ticks (TDD §6.3: "loop points are ticks").
     ///
     /// Document state rather than transport state: a project reopens to the
@@ -359,6 +412,40 @@ impl Project {
         })
     }
 
+    /// A number that is the same on two machines exactly when they hold the
+    /// same song (`docs/collab-plan.md` §5.6).
+    ///
+    /// Every edit a shared session sends carries the host's, and a joiner
+    /// that disagrees once it has nothing pending knows its copy has drifted
+    /// — which is the whole bug report, since the drift has no other symptom
+    /// until somebody hears it.
+    ///
+    /// Three things are left out, because each is each machine's own:
+    ///
+    /// - **the view** — zoom and scroll live in the document and are yours;
+    /// - **the meta** — the bundle's label, its id, its save stamps. The
+    ///   joiner's copy may be "Song (2)" in its own *Shared* folder and counts
+    ///   its own saves;
+    /// - **where a file is** — every asset's `path` differs per machine by
+    ///   design, and its `content_hash` is what names the bytes.
+    ///
+    /// xxhash64 over the JSON the document saves as, keys sorted (a
+    /// `serde_json::Value` map is ordered), so field order and machine cannot
+    /// move it. **One thing can**: `OverrideMap`'s `HashSet`, which writes in
+    /// whatever order it iterates. It is empty in every project today —
+    /// nothing can create an override — and §18's F53 is the row that says
+    /// what to do before anything does.
+    pub fn sync_hash(&self) -> u64 {
+        let mut json = serde_json::to_value(self).expect("a project always writes");
+        if let Some(song) = json.as_object_mut() {
+            song.remove("meta");
+            song.remove("view_state");
+        }
+        forget_paths(&mut json);
+        let bytes = serde_json::to_vec(&json).expect("a JSON value always writes");
+        twox_hash::XxHash64::oneshot(0, &bytes)
+    }
+
     /// The prefabs, in a stable order for a list to draw.
     ///
     /// Arena order, which is insertion order — the order somebody made them
@@ -396,7 +483,13 @@ impl Project {
                 name: name.into(),
                 created: String::new(),
                 app_version: env!("CARGO_PKG_VERSION").to_string(),
-                format_version: 0,
+                format_version: crate::storage::PROJECT_FORMAT_VERSION,
+                id: fontelle_types::PersistentId::new(),
+                forked_from: None,
+                saved_revision: 0,
+                saved_at: String::new(),
+                saved_by: String::new(),
+                shared_revision: None,
             },
             tempo_map: TempoMap::default(),
             beats_per_bar: default_beats_per_bar(),
@@ -406,10 +499,26 @@ impl Project {
             clips: Arena::default(),
             prefabs: Arena::default(),
             assets: AssetTable::default(),
-            markers: Vec::new(),
+            markers: Arena::default(),
             loop_range: None,
             view_state: ViewState::default(),
         }
+    }
+}
+
+/// Blanks every asset's `path`, wherever it sits in the document: an asset
+/// is an object with a `path` beside a `content_hash`, and it is the hash
+/// that names the file (§5.6).
+fn forget_paths(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.contains_key("content_hash") && map.contains_key("path") {
+                map.insert("path".into(), serde_json::Value::Null);
+            }
+            map.values_mut().for_each(forget_paths);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(forget_paths),
+        _ => {}
     }
 }
 
