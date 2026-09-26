@@ -1271,6 +1271,7 @@ fn shoot_timeline_recording(
                 beats_per_bar: 4,
                 marquee: None,
                 slice: None,
+                magnet: None,
                 focused: false,
                 renaming: None,
                 rename: None,

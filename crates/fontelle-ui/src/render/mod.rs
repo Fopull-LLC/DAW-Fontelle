@@ -359,6 +359,10 @@ pub struct TimelineChrome<'a> {
     /// roll's has, and for the same reason: a tool whose gesture leaves no
     /// mark is one you have to aim blind.
     pub slice: Option<((f32, f32), (f32, f32))>,
+    /// The edge a snap-off drag has landed on because it came near it —
+    /// drawn as a guide down the grid, so the pull is seen and not only felt.
+    /// See `canvas::MAGNET_PX`.
+    pub magnet: Option<Tick>,
     /// Which lane header is having its name typed into. See
     /// [`RackChrome::renaming`].
     pub renaming: Option<usize>,
@@ -6010,13 +6014,15 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         );
     }
 
-    // Bar lines, and a stronger one every four bars so a long arrangement can
-    // be counted at a glance.
-    let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
-    for (unit, colour) in [(bar, p.grid_line), (bar * 4, p.grid_line_strong)] {
-        if unit <= 0 || (unit as f32) * v.pixels_per_tick < 4.0 {
-            continue;
-        }
+    // The grid, faintest level first so the stronger wins where two land on
+    // the same tick: bars and every fourth bar always, beats and finer once
+    // there is room, single ticks at the deepest zooms.
+    for (unit, level) in crate::canvas::timeline_grid_units(v, chrome.beats_per_bar) {
+        let colour = match level {
+            crate::canvas::TimelineLine::Phrase => p.grid_line_strong,
+            crate::canvas::TimelineLine::Bar => p.grid_line,
+            _ => p.grid_line_sub,
+        };
         let mut tick = ticks.start - ticks.start.rem_euclid(unit);
         while tick < ticks.end {
             let x = timeline_tick_to_x(v, l.grid, tick).floor();
@@ -6262,6 +6268,19 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 ),
             );
         }
+    }
+
+    // The edge a snap-off drag has come to rest on: a line down the whole
+    // grid, so the two edges that now meet are seen to meet.
+    if let Some(tick) = chrome.magnet {
+        // On the column the grid's own lines use, so it covers the line it
+        // lands on rather than blurring beside it.
+        let x = timeline_tick_to_x(v, l.grid, tick).floor();
+        fill_rect(
+            scene,
+            Rect::new(x, l.grid.y, 1.0, l.grid.height).intersection(&l.grid),
+            p.accent,
+        );
     }
 
     // The cut tool. **Two marks, and they say two different things.**
@@ -7000,6 +7019,34 @@ fn draw_timeline_ruler(
             }
         }
         tick += bar;
+    }
+    // Zoomed in past the point where a bar fits, the beats are numbered too.
+    for (tick, name) in crate::canvas::timeline_beat_labels(v, l.grid, chrome.beats_per_bar) {
+        let x = timeline_tick_to_x(v, l.grid, tick).floor();
+        if x < l.grid.x {
+            continue;
+        }
+        fill_rect(
+            scene,
+            Rect::new(
+                x,
+                l.ruler.bottom() - l.ruler.height / 3.0,
+                1.0,
+                l.ruler.height / 3.0,
+            )
+            .intersection(&l.ruler),
+            p.grid_line_strong,
+        );
+        if let Some(text) = labels.get(&name) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.ruler,
+                x + 3.0,
+                l.ruler.y + (l.ruler.height - text.height) / 2.0,
+                p.text_muted,
+            );
+        }
     }
 
     // The selection on the ruler itself, where the drag that made it was:

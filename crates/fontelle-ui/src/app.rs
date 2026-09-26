@@ -2763,6 +2763,7 @@ impl WindowApp {
                     hover_clip: self.hover_clip,
                     fading: self.timeline.fading(),
                     slice: self.timeline.slice_line(),
+                    magnet: self.timeline.magnet_tick(),
                     renaming: match &self.renaming {
                         Some(MenuTarget::Lane(index)) => Some(*index),
                         _ => None,
@@ -3290,9 +3291,12 @@ impl WindowApp {
             // A fade keeps the cursor it was taken hold of with: the handle
             // is dragged along, the node up and down, and the pointer's
             // travel over the body must not turn either into a hand.
+            // So does an edge: a snapped edge trails the pointer, and the
+            // pointer passing over the body must not turn ↔ into a hand.
             Drag::Timeline => Some(match self.timeline.fade_grip() {
                 Some(crate::canvas::FadeGrip::Handle) => Pointer::ResizeX,
                 Some(crate::canvas::FadeGrip::Node) => Pointer::ResizeY,
+                None if self.timeline.sizing_edge() => Pointer::ResizeX,
                 None => Pointer::Grabbing,
             }),
             Drag::Roll => Some(Pointer::Grabbing),
@@ -3528,7 +3532,7 @@ impl WindowApp {
             .frame
             .contains(x, y)
             .then(|| {
-                timeline_hit(
+                crate::canvas::timeline_grab(
                     &self.timeline.view,
                     &self.timeline_layout,
                     &self.clips,
@@ -7169,6 +7173,13 @@ impl WindowApp {
                     }
                     tick += bar;
                 }
+            }
+            for (_, name) in crate::canvas::timeline_beat_labels(
+                &self.timeline.view,
+                self.timeline_layout.grid,
+                self.beats_per_bar(),
+            ) {
+                self.labels.ensure(&name, &font, &mut self.text);
             }
         }
         let rows: Vec<usize> = self.browser.file_rows.iter().map(|(i, _)| *i).collect();

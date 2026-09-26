@@ -16,7 +16,7 @@ use crate::canvas::{
     BrowserHit, BrowserLayout, ClipPart, InstrumentLayout, InstrumentView, NotePart, RackHit,
     RackLayout, RollHit, RollLayout, RollView, TimelineHit, TimelineLayout, TimelineToolbar,
     TimelineView, Tool, ToolbarLayout, browser_hit, hit_test, instrument_hit, rack_hit,
-    timeline_hit, timeline_toolbar_hit, toolbar_hit,
+    timeline_grab, timeline_toolbar_hit, toolbar_hit,
 };
 use crate::document::ClipInfo;
 use crate::layout::{EditorTab, EditorTabs, WindowLayout, editor_tab_at};
@@ -198,7 +198,9 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
     }
 
     if scene.layout.timeline.frame.contains(x, y) {
-        return timeline_pointer(timeline_hit(
+        // The press's own question, so the cursor promises what a press
+        // there does — including the reach past a clip's edge.
+        return timeline_pointer(timeline_grab(
             scene.timeline_view,
             scene.timeline,
             scene.clips,

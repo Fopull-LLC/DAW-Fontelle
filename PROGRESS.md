@@ -19,6 +19,41 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**Released as v0.17.0 on 2026-09-26** — clip edges and the snap-off drag,
+below. Ty asked for the release with the report.
+
+**As of 2026-09-26 — clip edges, and placing them exactly with the snap
+off.** *"im finding it kind of hard to grab the edges of clips to size
+them ... when i have snapping set to none, its really hard to snap it
+exactly to an edge ... in fl studio, this is solved by just zooming in super
+far and you can see the tiny individual snaps"*. Tests:
+`crates/fontelle-ui/tests/clip_edges.rs`, one line in `tests/pointer.rs`.
+
+- **The edge reaches out** (`EDGE_REACH_PX` = 6): bare grid just past a
+  clip's right edge — or an audio clip's left — in its row is that edge, for
+  a left press, a double press and the cursor (`timeline_grab`). The grip
+  was only the 7 px inside the block (a third of a narrow one), so a press a
+  hair past the edge drew a clip or did nothing, and a tiny clip could not
+  be sized without zooming. The eraser, menus and drops keep
+  `timeline_hit`: a right-click beside a clip must not delete it. The ↔
+  cursor now holds for a whole edge drag (`Timeline::sizing_edge`).
+- **Zoom goes to 16 px a tick** (`MAX_TIMELINE_PPT`, was 0.5). At half a
+  pixel a tick no snap-off step was ever a pixel wide, which is the
+  "extremely smooth". Seen on `:99`: a 32 px drag moves an edge exactly two
+  ticks, in steps.
+- **The grid draws finer levels** (`timeline_grid_units`): it was bar lines
+  only, so zoomed in there was nothing to read a drag against. Beats once a
+  beat is 16 px, the subdivision the same, single ticks from 6 px. The ruler
+  numbers beats and then `bar.beat.tick` (`timeline_beat_labels`), so the
+  deepest zoom still says where it is.
+- **Snap off, edges meet** (`MAGNET_PX` = 8): a moved, sized or trimmed edge
+  within 8 px of any other clip's edge lands exactly on it, with an accent
+  guide down the grid while it does (`Timeline::magnet_tick`). Alt lets go.
+  In pixels, so zoomed right in it pulls nothing and the ticks take over.
+  Grid snaps are unchanged.
+- Not done: a **note** clip still has no left-edge trim (only audio does),
+  and the wheel needs ~46 Ctrl notches from the default zoom to the deepest.
+
 **Released as v0.16.0 on 2026-09-25** — working on a song together (Share and
 Join through Fopull's relay, view only and remove, the join's copy-or-update
 question with backups), and the three reports below. Ty gave the go.

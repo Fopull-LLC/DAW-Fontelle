@@ -22,7 +22,7 @@ use std::ops::Range;
 use fontelle_types::{ClipId, ClipStretch, PPQN, PointId, Tick};
 
 use crate::canvas::automation::{automation_block, block_tick_at, block_value_at};
-use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit};
+use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit, subdivision_unit};
 use crate::canvas::{Modifiers, MouseButton, clamp_to_grid};
 use crate::document::{ClipInfo, ClipKind};
 use crate::layout::Rect;
@@ -679,8 +679,17 @@ pub fn clip_notes(block: Rect, visible: Rect, clip: &ClipInfo) -> Vec<Rect> {
 
 /// Zoom limits. A pixels-per-tick of zero is a division by zero in every
 /// conversion here; a lane taller than the panel is not a zoom.
+///
+/// The deepest is **sixteen pixels to a tick**. It was half a pixel, which is
+/// the snap-off report: *"in fl studio, this is solved by just zooming in
+/// super far and you can see the tiny individual snaps of moving with none
+/// snapping but in our daw no matter how far you zoom in it looks extremely
+/// smooth"*. At half a pixel a tick, no step of a snap-off drag was ever as
+/// wide as a pixel, so there was no zoom at which an edge could be put down
+/// on the tick you wanted by eye. Now the steps can be seen, and
+/// [`timeline_grid_units`] draws one line per tick once they can.
 pub const MIN_TIMELINE_PPT: f32 = 0.0005;
-pub const MAX_TIMELINE_PPT: f32 = 0.5;
+pub const MAX_TIMELINE_PPT: f32 = 16.0;
 pub const MIN_LANE_ROW: f32 = 14.0;
 pub const MAX_LANE_ROW: f32 = 96.0;
 
@@ -1028,6 +1037,121 @@ pub fn timeline_visible_ticks(view: &TimelineView, grid: Rect) -> Range<Tick> {
     }
     let span = (grid.width / view.pixels_per_tick).ceil() as Tick;
     view.scroll_tick..view.scroll_tick + span + 1
+}
+
+/// One level of the arrangement's grid, faintest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineLine {
+    /// One line per tick — only once a tick is several pixels wide, where it
+    /// is the step a snap-off drag moves by.
+    Tick,
+    /// The subdivision the roll draws too ([`subdivision_unit`]).
+    Sub,
+    Beat,
+    Bar,
+    /// Every fourth bar, so a long arrangement can be counted at a glance.
+    Phrase,
+}
+
+/// How far apart two lines of a level must be before the level is drawn.
+/// Bars keep the old four pixels; anything finer waits for more room, so the
+/// arrangement at its ordinary zoom stays a picture of bars with the beats
+/// in them, not a comb.
+const BAR_LINE_PX: f32 = 4.0;
+const FINE_LINE_PX: f32 = 16.0;
+const TICK_LINE_PX: f32 = 6.0;
+
+/// The levels the arrangement's grid draws at this zoom, as `(unit,
+/// level)`, faintest first so the stronger one wins where two coincide.
+///
+/// The grid used to be bars and nothing else, so zoomed in there was nothing
+/// on screen to read a drag against — half the reason the snap-off drag
+/// "looks extremely smooth". Beats come in once a beat has room, the
+/// subdivision after them, and single ticks at the deepest zooms.
+pub fn timeline_grid_units(view: &TimelineView, beats_per_bar: u32) -> Vec<(Tick, TimelineLine)> {
+    let ppt = view.pixels_per_tick;
+    let bar = PPQN * Tick::from(beats_per_bar.max(1));
+    let sub = subdivision_unit(view.snap, beats_per_bar);
+    let wide = |unit: Tick, px: f32| unit > 0 && unit as f32 * ppt >= px;
+    let mut units = Vec::new();
+    if wide(1, TICK_LINE_PX) {
+        units.push((1, TimelineLine::Tick));
+    }
+    if sub < PPQN && wide(sub, FINE_LINE_PX) {
+        units.push((sub, TimelineLine::Sub));
+    }
+    if PPQN < bar && wide(PPQN, FINE_LINE_PX) {
+        units.push((PPQN, TimelineLine::Beat));
+    }
+    if wide(bar, BAR_LINE_PX) {
+        units.push((bar, TimelineLine::Bar));
+    }
+    if wide(bar * 4, BAR_LINE_PX) {
+        units.push((bar * 4, TimelineLine::Phrase));
+    }
+    units
+}
+
+/// How wide a beat must be before the ruler numbers it, and how far apart
+/// any two of its finer numbers must be.
+const BEAT_LABEL_PX: f32 = 40.0;
+const FINE_LABEL_PX: f32 = 64.0;
+
+/// The steps the ruler may number within a beat, coarsest first: halves of a
+/// beat down to fifteen ticks, then five, then one.
+const LABEL_UNITS: [Tick; 9] = [
+    PPQN,
+    PPQN / 2,
+    PPQN / 4,
+    PPQN / 8,
+    PPQN / 16,
+    PPQN / 32,
+    PPQN / 64,
+    5,
+    1,
+];
+
+/// The ruler's numbers finer than a bar, on screen: `"bar.beat"` on a beat,
+/// `"bar.beat.tick"` between beats once there is room for them. A bar's own
+/// first beat is left out — it is the bar number, drawn already.
+///
+/// Zoomed in far enough, a bar and then a beat is wider than the panel, and
+/// the ruler had no number on it at all: nowhere to read where you are
+/// while placing an edge by the tick.
+pub fn timeline_beat_labels(
+    view: &TimelineView,
+    grid: Rect,
+    beats_per_bar: u32,
+) -> Vec<(Tick, String)> {
+    let beats = Tick::from(beats_per_bar.max(1));
+    let ppt = view.pixels_per_tick;
+    if (PPQN as f32) * ppt < BEAT_LABEL_PX {
+        return Vec::new();
+    }
+    let unit = LABEL_UNITS
+        .iter()
+        .copied()
+        .rfind(|unit| (*unit as f32) * ppt >= FINE_LABEL_PX)
+        .unwrap_or(PPQN);
+    let bar = PPQN * beats;
+    let ticks = timeline_visible_ticks(view, grid);
+    let mut tick = ticks.start + (unit - ticks.start.rem_euclid(unit)) % unit;
+    let mut labels = Vec::new();
+    while tick < ticks.end {
+        if tick % bar != 0 {
+            let (number, beat, within) = (tick / bar + 1, tick % bar / PPQN + 1, tick % PPQN);
+            labels.push((
+                tick,
+                if within == 0 {
+                    format!("{number}.{beat}")
+                } else {
+                    format!("{number}.{beat}.{within}")
+                },
+            ));
+        }
+        tick += unit;
+    }
+    labels
 }
 
 /// The lanes the grid can show, clamped to how many the project has.
@@ -1468,6 +1592,58 @@ pub fn timeline_hit(
     })
 }
 
+/// How far past a clip's edge the pointer may be and still take hold of it.
+///
+/// > *"im finding it kind of hard to grab the edges of clips to size them."*
+///
+/// The grip was only the [`clip_grip`] inside the block — seven pixels, a
+/// third of a narrow one, less the fade handle's corner on audio — so a
+/// press a hair past the edge landed on empty grid. The edge is a line, and
+/// a line is grabbed from either side of it.
+pub const EDGE_REACH_PX: f32 = 6.0;
+
+/// [`timeline_hit`] for a **left press** and the cursor it promises: bare
+/// grid within [`EDGE_REACH_PX`] of a clip's resizable edge, in that clip's
+/// row, is that edge. The nearer edge wins where two are in reach.
+///
+/// Only the left button and the pointer ask this. The eraser, the menus and
+/// the drop targets keep the plain answer — a right-click beside a clip must
+/// not rub it out.
+pub fn timeline_grab(
+    view: &TimelineView,
+    layout: &TimelineLayout,
+    clips: &[ClipInfo],
+    x: f32,
+    y: f32,
+) -> TimelineHit {
+    let hit = timeline_hit(view, layout, clips, x, y);
+    if !matches!(hit, TimelineHit::Empty { .. }) {
+        return hit;
+    }
+    let mut best: Option<(f32, ClipId, ClipPart)> = None;
+    for clip in clips {
+        let block = clip_rect(view, layout.grid, clip);
+        if y < block.y || y >= block.bottom() {
+            continue;
+        }
+        let mut consider = |distance: f32, part: ClipPart| {
+            if (0.0..=EDGE_REACH_PX).contains(&distance)
+                && best.is_none_or(|(nearest, _, _)| distance <= nearest)
+            {
+                best = Some((distance, clip.id, part));
+            }
+        };
+        consider(x - block.right(), ClipPart::RightEdge);
+        if clip.kind == ClipKind::Audio {
+            consider(block.x - x, ClipPart::LeftEdge);
+        }
+    }
+    match best {
+        Some((_, id, part)) => TimelineHit::Clip(id, part),
+        None => hit,
+    }
+}
+
 /// What is under `(x, y)` inside an automation block, the grip aside.
 ///
 /// The band is the block; a handle is its point — the last one first, since
@@ -1736,6 +1912,68 @@ impl MoveLimits {
     }
 }
 
+/// How near, in pixels, a dragged edge must come to another clip's edge to
+/// land exactly on it while the snap is off.
+///
+/// > *"when i have snapping set to none, its really hard to snap it exactly
+/// > to an edge but sometimes i have to do it that way to get the result i
+/// > want."*
+///
+/// In pixels, not ticks, so it is the same reach for the hand at every zoom:
+/// zoomed right in it is under a tick and pulls nothing, which is where the
+/// visible steps take over. Alt, held, lets go of it — an edge placed a
+/// hair *beside* another is still possible.
+pub const MAGNET_PX: f32 = 8.0;
+
+/// The edges a snap-off drag measures against, fixed when the drag starts for
+/// the reason [`MoveLimits`] is: the clips the drag is moving are changing
+/// under it.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Magnet {
+    /// The dragged edges, where they were when the drag began.
+    own: Vec<Tick>,
+    /// Every edge of every clip not being dragged.
+    targets: Vec<Tick>,
+}
+
+impl Magnet {
+    fn of(own: Vec<Tick>, selection: &[ClipId], clips: &[ClipInfo]) -> Self {
+        let mut targets: Vec<Tick> = clips
+            .iter()
+            .filter(|clip| !selection.contains(&clip.id))
+            .flat_map(|clip| [clip.start, clip.start + clip.length])
+            .collect();
+        targets.sort_unstable();
+        targets.dedup();
+        Self { own, targets }
+    }
+
+    /// The delta that puts one dragged edge exactly on a target, when one is
+    /// within [`MAGNET_PX`] of where `delta` would put it — and that target.
+    /// The nearest wins.
+    fn pull(&self, delta: Tick, pixels_per_tick: f32) -> Option<(Tick, Tick)> {
+        if pixels_per_tick <= 0.0 {
+            return None;
+        }
+        let reach = (MAGNET_PX / pixels_per_tick) as Tick;
+        let mut best: Option<(Tick, Tick, Tick)> = None;
+        for &edge in &self.own {
+            let at = edge + delta;
+            let from = self.targets.partition_point(|&t| t < at - reach);
+            for &target in self.targets[from..]
+                .iter()
+                .take_while(|&&t| t <= at + reach)
+            {
+                let distance = (target - at).abs();
+                if best.is_none_or(|(nearest, _, _)| distance < nearest) {
+                    best = Some((distance, target - edge, target));
+                }
+            }
+        }
+        best.map(|(_, delta, target)| (delta, target))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum Gesture {
     None,
@@ -1895,6 +2133,12 @@ pub struct Timeline {
     /// The last press asked for a stamp, and the copy it makes is not known
     /// yet. `clips_inserted` makes the copy the thing in hand.
     stamp_pending: bool,
+    /// The edges a snap-off drag may land on, taken when it started — see
+    /// [`Magnet`].
+    magnet: Magnet,
+    /// The edge the drag in hand is sitting on because of it, for the guide
+    /// line the window draws.
+    magnet_at: Option<Tick>,
 }
 
 impl Timeline {
@@ -1913,6 +2157,8 @@ impl Timeline {
             point_menu: None,
             stamp: None,
             stamp_pending: false,
+            magnet: Magnet::default(),
+            magnet_at: None,
         }
     }
 
@@ -2054,7 +2300,13 @@ impl Timeline {
         clips: &[ClipInfo],
         beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
-        let hit = timeline_hit(&self.view, layout, clips, x, y);
+        self.magnet = Magnet::default();
+        self.magnet_at = None;
+        let hit = if button == MouseButton::Left {
+            timeline_grab(&self.view, layout, clips, x, y)
+        } else {
+            timeline_hit(&self.view, layout, clips, x, y)
+        };
 
         // Right-click deletes, as it does in the roll — and keeps deleting
         // while the button is down. Note what it deliberately does *not* do:
@@ -2273,6 +2525,27 @@ impl Timeline {
                         limits: MoveLimits::of(&self.selection, clips),
                     },
                 };
+                // Only with the snap off: on a grid, the grid is where things
+                // land, and two answers to "where" would fight.
+                if self.view.snap == SnapDivision::None {
+                    let own = match &self.gesture {
+                        Gesture::Moving { .. } => self
+                            .selected(clips)
+                            .flat_map(|clip| [clip.start, clip.start + clip.length])
+                            .collect(),
+                        Gesture::Resizing { .. } => self
+                            .selected(clips)
+                            .map(|clip| clip.start + clip.length)
+                            .collect(),
+                        Gesture::TrimmingStart { .. } => self
+                            .selected(clips)
+                            .filter(|clip| clip.kind == ClipKind::Audio)
+                            .map(|clip| clip.start)
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    self.magnet = Magnet::of(own, &self.selection, clips);
+                }
                 Vec::new()
             }
             TimelineHit::Empty { tick, lane } => {
@@ -2361,7 +2634,7 @@ impl Timeline {
         if self.tool == TimelineTool::Select || self.modifiers.ctrl {
             return Vec::new();
         }
-        match timeline_hit(&self.view, layout, clips, x, y) {
+        match timeline_grab(&self.view, layout, clips, x, y) {
             TimelineHit::Empty { tick, lane } => {
                 let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
                 vec![ArrangeEdit::Add { lane, start }]
@@ -2601,7 +2874,7 @@ impl Timeline {
                 let wanted_tick = if unit > 0 {
                     (raw as f64 / unit as f64).round() as Tick * unit
                 } else {
-                    raw
+                    self.magnetised(raw)
                 };
                 // Never before the start of the song, and never above the
                 // first lane — against the limits this gesture *started* with.
@@ -2645,7 +2918,7 @@ impl Timeline {
                 let wanted = if unit > 0 {
                     (raw as f64 / unit as f64).round() as Tick * unit
                 } else {
-                    raw
+                    self.magnetised(raw)
                 };
                 // Not before the song, and never past the other edge: at
                 // least a snap unit of block is left.
@@ -2680,7 +2953,7 @@ impl Timeline {
                 let wanted = if unit > 0 {
                     (raw as f64 / unit as f64).round() as Tick * unit
                 } else {
-                    raw
+                    self.magnetised(raw)
                 };
                 // Never past nothing: the shortest a clip may become is one
                 // snap unit, measured against the length it had when the drag
@@ -2784,6 +3057,34 @@ impl Timeline {
 
     pub fn release(&mut self) {
         self.gesture = Gesture::None;
+        self.magnet = Magnet::default();
+        self.magnet_at = None;
+    }
+
+    /// The edge a snap-off drag is sitting on because it came near it, if it
+    /// is — where the window draws its guide line. See [`MAGNET_PX`].
+    pub fn magnet_tick(&self) -> Option<Tick> {
+        self.magnet_at
+    }
+
+    /// Whether the drag in hand is an edge — the right-hand grip or an audio
+    /// block's left one — so the window keeps the ↔ cursor for all of it
+    /// rather than the hand the pointer's travel over the body would show.
+    pub fn sizing_edge(&self) -> bool {
+        matches!(
+            self.gesture,
+            Gesture::Resizing { .. } | Gesture::TrimmingStart { .. }
+        )
+    }
+
+    /// A snap-off drag's delta, pulled onto a nearby edge unless Alt is held,
+    /// remembering which edge for [`magnet_tick`](Self::magnet_tick).
+    fn magnetised(&mut self, raw: Tick) -> Tick {
+        let pulled = (!self.modifiers.alt)
+            .then(|| self.magnet.pull(raw, self.view.pixels_per_tick))
+            .flatten();
+        self.magnet_at = pulled.map(|(_, target)| target);
+        pulled.map_or(raw, |(delta, _)| delta)
     }
 
     /// [`release`](Self::release), knowing where the button came up — which a
@@ -2829,6 +3130,8 @@ impl Timeline {
             _ => {}
         }
         self.gesture = Gesture::None;
+        self.magnet = Magnet::default();
+        self.magnet_at = None;
         edits
     }
 

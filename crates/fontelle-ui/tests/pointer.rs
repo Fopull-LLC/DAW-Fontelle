@@ -309,6 +309,11 @@ fn a_clip_on_the_arrangement_behaves_like_a_note() {
         Pointer::Grab
     );
     assert_eq!(r.at(block.right() - 2.0, block.y + 4.0), Pointer::ResizeX);
+    // And a hair past it, where the press takes hold of it too.
+    assert_eq!(
+        r.at(block.right() + 3.0, block.y + block.height / 2.0),
+        Pointer::ResizeX
+    );
 }
 
 #[test]
