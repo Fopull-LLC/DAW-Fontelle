@@ -882,14 +882,26 @@ impl<'a> PluginAudioProcessor<'a, FaceShared, FaceMain> for FaceProcessor {
 pub const FACE_WIDTH: u32 = 320;
 pub const FACE_HEIGHT: u32 = 200;
 
+/// The window kind the face embeds into: the platform's own, which is what
+/// the plugins it stands for offer and what the host asks for
+/// (`fontelle_host`'s `embedded_api`). X11 alone was a face that had no
+/// editor on Windows — CI: *"assertion failed: plugin.has_editor()"*.
+fn face_api() -> GuiApiType<'static> {
+    if cfg!(windows) {
+        GuiApiType::WIN32
+    } else {
+        GuiApiType::X11
+    }
+}
+
 impl PluginGuiImpl for FaceMain {
     fn is_api_supported(&mut self, configuration: GuiConfiguration) -> bool {
-        configuration.api_type == GuiApiType::X11 && !configuration.is_floating
+        configuration.api_type == face_api() && !configuration.is_floating
     }
 
     fn get_preferred_api(&mut self) -> Option<GuiConfiguration<'_>> {
         Some(GuiConfiguration {
-            api_type: GuiApiType::X11,
+            api_type: face_api(),
             is_floating: false,
         })
     }
