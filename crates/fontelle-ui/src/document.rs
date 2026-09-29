@@ -1398,6 +1398,11 @@ pub trait StudioHost: DocumentHost {
     fn copy_text(&mut self, _text: &str) -> Result<(), String> {
         Err("this studio cannot reach the clipboard".to_string())
     }
+    /// The desktop's clipboard for the text fields' cut, copy and paste;
+    /// `None` keeps them to their own.
+    fn system_clipboard(&self) -> Option<crate::canvas::SystemClipboard> {
+        None
+    }
     /// Something the network may call from its own thread when a message
     /// lands, to wake the window (§9.2, F48).
     fn set_wake(&mut self, _wake: Wake) {}

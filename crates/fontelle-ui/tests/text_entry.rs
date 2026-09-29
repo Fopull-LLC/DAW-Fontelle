@@ -171,3 +171,92 @@ fn the_caret_is_always_somewhere_it_could_be() {
         }
     }
 }
+
+// ------------------------------------------------------ the desktop clipboard
+
+mod desktop_clipboard {
+    use std::sync::Mutex;
+
+    use fontelle_ui::canvas::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
+    use winit::keyboard::Key;
+
+    fn ctrl(entry: &mut TextEntry, letter: &str, clipboard: &mut TextClipboard) -> TextKey {
+        text_key(
+            entry,
+            &Key::Character(letter.into()),
+            true,
+            false,
+            clipboard,
+        )
+    }
+
+    static WRITTEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    fn holds_a_code() -> Result<String, String> {
+        // What a chat's copy leaves, trailing newline and all.
+        Ok("UL22A6\n".to_string())
+    }
+    fn unreachable_desktop() -> Result<String, String> {
+        Err("no clipboard program".to_string())
+    }
+    fn remember(text: &str) -> Result<(), String> {
+        WRITTEN.lock().unwrap().push(text.to_string());
+        Ok(())
+    }
+
+    /// > *"a share code copied from a chat can't be pasted"*
+    ///
+    /// Ctrl+V read only what Ctrl+C had taken out of another field; the
+    /// desktop's clipboard, where the chat put the code, was never asked.
+    #[test]
+    fn ctrl_v_pastes_what_the_desktop_clipboard_holds() {
+        let mut clipboard = TextClipboard::new(Some(SystemClipboard {
+            read: holds_a_code,
+            write: remember,
+        }));
+        clipboard.text = "an older name".to_string();
+        let mut entry = TextEntry::new("");
+        assert_eq!(ctrl(&mut entry, "v", &mut clipboard), TextKey::Edited);
+        assert_eq!(entry.text(), "UL22A6", "the chat's newline is not typed");
+    }
+
+    #[test]
+    fn with_no_desktop_clipboard_ctrl_v_pastes_what_ctrl_c_took() {
+        for system in [
+            None,
+            Some(SystemClipboard {
+                read: unreachable_desktop,
+                write: remember,
+            }),
+        ] {
+            let mut clipboard = TextClipboard::new(system);
+            let mut from = TextEntry::new("Bass");
+            from.select_all();
+            ctrl(&mut from, "c", &mut clipboard);
+            let mut to = TextEntry::new("");
+            assert_eq!(ctrl(&mut to, "v", &mut clipboard), TextKey::Edited);
+            assert_eq!(to.text(), "Bass");
+        }
+    }
+
+    /// Paste now reads the desktop's, so copy has to write it, or a name
+    /// copied from one field would paste as whatever was there before.
+    #[test]
+    fn ctrl_c_and_ctrl_x_put_the_selection_on_the_desktop_clipboard_too() {
+        let mut clipboard = TextClipboard::new(Some(SystemClipboard {
+            read: unreachable_desktop,
+            write: remember,
+        }));
+        let mut entry = TextEntry::new("Lead synth");
+        entry.select_all();
+        ctrl(&mut entry, "c", &mut clipboard);
+        ctrl(&mut entry, "x", &mut clipboard);
+        let written = WRITTEN.lock().unwrap();
+        assert_eq!(
+            written.iter().filter(|w| *w == "Lead synth").count(),
+            2,
+            "{written:?}"
+        );
+        assert_eq!(entry.text(), "");
+    }
+}

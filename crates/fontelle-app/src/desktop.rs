@@ -149,7 +149,76 @@ pub fn copy_text(text: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    Err("there is no clipboard program here (wl-copy, xclip or xsel)".to_string())
+    Err(NO_CLIPBOARD.to_string())
+}
+
+/// What a machine with none of [`copy_commands`] or [`paste_commands`] is
+/// told: the package that brings the Wayland pair, which is what a Fedora
+/// or Ubuntu desktop is.
+const NO_CLIPBOARD: &str = "there is no clipboard program here (wl-copy, xclip or xsel) — \
+     install wl-clipboard: `sudo dnf install wl-clipboard` or \
+     `sudo apt install wl-clipboard`";
+
+/// The programs that read the desktop's clipboard, in [`copy_commands`]'
+/// order and one for each, printing the text on their standard output.
+pub fn paste_commands() -> Vec<(&'static str, Vec<String>)> {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect();
+    if cfg!(target_os = "macos") {
+        vec![("pbpaste", Vec::new())]
+    } else if cfg!(target_os = "windows") {
+        // `clip` only writes. PowerShell reads, told to answer in UTF-8
+        // rather than the console's code page.
+        vec![(
+            "powershell",
+            args(&[
+                "-NoProfile",
+                "-Command",
+                "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw",
+            ]),
+        )]
+    } else {
+        vec![
+            ("wl-paste", args(&["--no-newline", "--type", "text"])),
+            ("xclip", args(&["-selection", "clipboard", "-o"])),
+            ("xsel", args(&["--clipboard", "--output"])),
+        ]
+    }
+}
+
+/// The text on the desktop's clipboard, for a field's Ctrl+V — so a share
+/// code copied from a chat can be pasted.
+pub fn paste_text() -> Result<String, String> {
+    paste_text_with(&paste_commands())
+}
+
+/// [`paste_text`] with the programs handed in. One that is missing or fails
+/// (`wl-paste` on a clipboard with no text in it, `xclip` with no X server)
+/// passes to the next.
+pub fn paste_text_with(commands: &[(&str, Vec<String>)]) -> Result<String, String> {
+    let mut found_one = false;
+    for (program, args) in commands {
+        let mut command = Command::new(program);
+        command.args(args).stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // No console flashing up over the studio for a paste.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let Ok(output) = command.output() else {
+            continue;
+        };
+        found_one = true;
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+        }
+    }
+    if found_one {
+        Ok(String::new())
+    } else {
+        Err(NO_CLIPBOARD.to_string())
+    }
 }
 
 /// The application id the window announces and the desktop entry is named

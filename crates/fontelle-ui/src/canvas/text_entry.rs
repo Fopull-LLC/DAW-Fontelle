@@ -299,6 +299,63 @@ pub enum TextKey {
     Ignored,
 }
 
+/// The desktop's clipboard, as the studio reaches it: plain functions, so
+/// the window can hold them without holding the studio.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemClipboard {
+    pub read: fn() -> Result<String, String>,
+    pub write: fn(&str) -> Result<(), String>,
+}
+
+/// What the text fields cut, copy and paste through.
+///
+/// > *"a share code copied from a chat can't be pasted"*
+///
+/// Paste read only `text`, what Ctrl+C had taken out of another field. The
+/// desktop's clipboard comes first now, and `text` is what is left on a
+/// machine with no clipboard program.
+#[derive(Debug, Default)]
+pub struct TextClipboard {
+    /// What was last cut or copied in a field.
+    pub text: String,
+    pub system: Option<SystemClipboard>,
+}
+
+impl TextClipboard {
+    pub fn new(system: Option<SystemClipboard>) -> Self {
+        Self {
+            text: String::new(),
+            system,
+        }
+    }
+
+    fn copy(&mut self, text: &str) {
+        self.text.clear();
+        self.text.push_str(text);
+        // Copying nothing leaves the desktop's clipboard as it was, as every
+        // other program's empty copy does.
+        if let Some(system) = self.system
+            && !text.is_empty()
+        {
+            let _ = (system.write)(text);
+        }
+    }
+
+    fn paste(&self) -> String {
+        let from_desktop = self
+            .system
+            .and_then(|system| (system.read)().ok())
+            .filter(|text| !text.is_empty());
+        let text = from_desktop.as_deref().unwrap_or(&self.text);
+        // A field is one line: a copied line's newline, or a tab, is not text
+        // anybody meant to type into it.
+        text.trim_end_matches(['\r', '\n'])
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect()
+    }
+}
+
 /// One key, applied to `entry`.
 ///
 /// **One implementation for every field in the program.** They were three, and
@@ -313,7 +370,7 @@ pub fn text_key(
     key: &winit::keyboard::Key,
     ctrl: bool,
     shift: bool,
-    clipboard: &mut String,
+    clipboard: &mut TextClipboard,
 ) -> TextKey {
     use winit::keyboard::{Key, NamedKey};
     match key {
@@ -351,13 +408,11 @@ pub fn text_key(
                 TextKey::Moved
             }
             "c" => {
-                clipboard.clear();
-                clipboard.push_str(entry.selected_text());
+                clipboard.copy(entry.selected_text());
                 TextKey::Moved
             }
             "x" => {
-                clipboard.clear();
-                clipboard.push_str(entry.selected_text());
+                clipboard.copy(entry.selected_text());
                 if entry.delete_selection() {
                     TextKey::Edited
                 } else {
@@ -365,10 +420,10 @@ pub fn text_key(
                 }
             }
             "v" => {
-                if clipboard.is_empty() {
+                let pasted = clipboard.paste();
+                if pasted.is_empty() {
                     TextKey::Moved
                 } else {
-                    let pasted = clipboard.clone();
                     entry.insert(&pasted);
                     TextKey::Edited
                 }

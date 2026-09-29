@@ -213,7 +213,7 @@ pub use share::{
     SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout, peer_colour,
     share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
 };
-pub use text_entry::{TextEntry, TextKey, text_key};
+pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use timeline::{
     ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, EDGE_REACH_PX, FadeAnatomy, FadeEnd,
     FadeGrip, MAGNET_PX, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,

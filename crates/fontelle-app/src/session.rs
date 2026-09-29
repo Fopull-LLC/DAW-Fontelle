@@ -7790,6 +7790,13 @@ impl StudioHost for Session {
         crate::desktop::copy_text(text)
     }
 
+    fn system_clipboard(&self) -> Option<fontelle_ui::canvas::SystemClipboard> {
+        Some(fontelle_ui::canvas::SystemClipboard {
+            read: crate::desktop::paste_text,
+            write: crate::desktop::copy_text,
+        })
+    }
+
     fn set_setting_text(&mut self, index: usize, text: &str) {
         let rows = crate::settings::setting_rows(&self.settings);
         let Some(row) = rows.get(index).copied() else {

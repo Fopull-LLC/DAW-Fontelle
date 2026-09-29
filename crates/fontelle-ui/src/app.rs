@@ -1790,12 +1790,13 @@ pub struct WindowApp {
     caret_on: bool,
     /// How far through the current half it is, in seconds.
     caret_phase: f32,
-    /// What Ctrl+C took out of a text field, for Ctrl+V to put back.
+    /// What Ctrl+C took out of a text field, for Ctrl+V to put back, and the
+    /// desktop's clipboard when the studio can reach it.
     ///
-    /// Its own string rather than the note clipboard: a name and a bar of
+    /// Its own rather than the note clipboard: a name and a bar of
     /// notes are not the same kind of thing, and pasting one where the other
     /// was expected is the sort of surprise a clipboard should never spring.
-    clipboard_text: String,
+    clipboard_text: crate::canvas::TextClipboard,
     /// What is being renamed, while somebody is typing a name.
     ///
     /// There is no text buffer beside it, and deliberately: every keystroke
@@ -2282,7 +2283,9 @@ impl WindowApp {
             menu_at: ((0.0, 0.0), crate::layout::Rect::ZERO),
             menu_beside: None,
             menu_filter: crate::canvas::TextEntry::default(),
-            clipboard_text: String::new(),
+            clipboard_text: crate::canvas::TextClipboard::new(
+                options.document.as_ref().and_then(|doc| doc.system_clipboard()),
+            ),
             search_entry: crate::canvas::TextEntry::default(),
             rename_entry: crate::canvas::TextEntry::default(),
             field_widths: std::collections::HashMap::new(),

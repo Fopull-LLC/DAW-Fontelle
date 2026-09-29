@@ -468,3 +468,41 @@ fn the_clipboard_is_the_desktops_own_program_given_the_text_on_stdin() {
         );
     }
 }
+
+/// Paste reads the clipboard [`copy_commands`] writes, through the same
+/// family of programs and in the same order, so a code copied in a chat
+/// reaches a field.
+#[test]
+fn the_clipboard_is_read_through_the_programs_that_write_it() {
+    use fontelle_app::desktop::{copy_commands, paste_commands};
+    let reads = paste_commands();
+    assert_eq!(reads.len(), copy_commands().len(), "{reads:?}");
+    if cfg!(target_os = "linux") {
+        let programs: Vec<&str> = reads.iter().map(|(program, _)| *program).collect();
+        assert_eq!(programs, ["wl-paste", "xclip", "xsel"]);
+        assert!(
+            reads[0].1.iter().any(|a| a == "--no-newline"),
+            "{:?}",
+            reads[0]
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_first_clipboard_program_there_is_answers_and_none_names_the_package() {
+    use fontelle_app::desktop::paste_text_with;
+    let read = paste_text_with(&[
+        ("/definitely/not/installed", Vec::new()),
+        ("/bin/echo", vec!["-n".to_string(), "UL22A6".to_string()]),
+    ]);
+    assert_eq!(read.as_deref(), Ok("UL22A6"));
+
+    let nothing = paste_text_with(&[("/definitely/not/installed", Vec::new())]);
+    assert!(
+        nothing
+            .as_ref()
+            .is_err_and(|why| why.contains("wl-clipboard")),
+        "{nothing:?}"
+    );
+}
