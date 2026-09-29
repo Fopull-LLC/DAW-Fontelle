@@ -87,11 +87,23 @@ fn plugin_starred(favorites: &[Favorite], key: &PluginKey) -> bool {
 }
 
 /// What a plugin's row says: its name, and who wrote it when it said.
-fn plugin_label(listing: &PluginListing) -> String {
-    if listing.vendor.is_empty() {
+/// A plugin's row: its name and who made it — and its format, when another
+/// row would otherwise read the same. OB-Xf installs as a CLAP and an LV2,
+/// and two rows saying "OB-Xf — Surge Synth Team" are two rows nobody can
+/// choose between.
+fn plugin_label(listing: &PluginListing, all: &[PluginListing]) -> String {
+    let base = if listing.vendor.is_empty() {
         listing.name.clone()
     } else {
         format!("{} — {}", listing.name, listing.vendor)
+    };
+    let twin = all.iter().any(|other| {
+        other.key != listing.key && other.name == listing.name && other.vendor == listing.vendor
+    });
+    if twin {
+        format!("{base} ({})", listing.key.format.label())
+    } else {
+        base
     }
 }
 
@@ -132,7 +144,7 @@ pub fn effect_menu_rows(
             .filter(|(_, listing)| plugin_starred(favorites, &listing.key))
             .map(|(which, listing)| {
                 (
-                    MenuEntry::new(plugin_label(listing)).starred(true),
+                    MenuEntry::new(plugin_label(listing, plugins)).starred(true),
                     EffectRow::Plugin(which),
                 )
             }),
@@ -230,7 +242,7 @@ pub fn instrument_menu_rows(
             .filter(|(_, listing)| plugin_starred(favorites, &listing.key))
             .map(|(which, listing)| {
                 (
-                    MenuEntry::new(plugin_label(listing)).starred(true),
+                    MenuEntry::new(plugin_label(listing, plugins)).starred(true),
                     InstrumentRow::Plugin(which),
                 )
             }),
@@ -303,7 +315,7 @@ pub fn plugin_picker_rows(
         .filter(|(_, listing)| plugin_starred(favorites, &listing.key))
         .map(|(which, listing)| {
             (
-                MenuEntry::new(plugin_label(listing)).starred(true),
+                MenuEntry::new(plugin_label(listing, listings)).starred(true),
                 PickerRow::Plugin(*which),
             )
         })
@@ -313,7 +325,7 @@ pub fn plugin_picker_rows(
         .map(|(which, listing)| {
             let lit = plugin_starred(favorites, &listing.key);
             (
-                MenuEntry::new(plugin_label(listing)).starred(lit),
+                MenuEntry::new(plugin_label(listing, listings)).starred(lit),
                 PickerRow::Plugin(*which),
             )
         })

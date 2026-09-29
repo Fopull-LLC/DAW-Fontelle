@@ -12,7 +12,7 @@
 //! at the top, what is starred and what a press on a star means are all
 //! checkable without a window.
 
-use fontelle_types::{EffectKind, Favorite, InstrumentKind, PluginKey};
+use fontelle_types::{EffectKind, Favorite, InstrumentKind, PluginFormat, PluginKey};
 use fontelle_ui::PluginListing;
 use fontelle_ui::canvas::{
     CHOSEN_MARK, EffectRow, FAVORITES_HEADING, InstrumentRow, MenuEntry, PickerRow,
@@ -442,4 +442,39 @@ fn a_star_scrolled_out_of_sight_cannot_be_pressed() {
 fn the_star_is_an_icon_the_chrome_draws() {
     assert!(EVERY_ICON.contains(&Icon::Star));
     assert!(EVERY_ICON.contains(&Icon::StarFilled));
+}
+
+/// OB-Xf installs as a CLAP and an LV2, and the picker listed both as
+/// "OB-Xf — Surge Synth Team" twice over — two rows that read the same and
+/// were not. Where a name and vendor would repeat, the row says its format;
+/// where they don't, it says nothing more.
+#[test]
+fn two_builds_of_one_plugin_say_which_format_each_is() {
+    let builds = vec![
+        PluginListing {
+            name: "OB-Xf".to_string(),
+            vendor: "Surge Synth Team".to_string(),
+            key: PluginKey::new(PluginFormat::Clap, "org.surge-synth-team.obxf"),
+        },
+        PluginListing {
+            name: "OB-Xf".to_string(),
+            vendor: "Surge Synth Team".to_string(),
+            key: PluginKey::new(PluginFormat::Lv2, "urn:obxf"),
+        },
+        listing("Alpha", "com.example.alpha"),
+    ];
+    let rows = plugin_picker_rows("Plugin instruments", "", &[], &builds);
+    let labels: Vec<&str> = rows
+        .iter()
+        .filter(|(_, row)| matches!(row, PickerRow::Plugin(_)))
+        .map(|(entry, _)| entry.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "OB-Xf — Surge Synth Team (CLAP)",
+            "OB-Xf — Surge Synth Team (LV2)",
+            "Alpha — Vendor",
+        ]
+    );
 }
