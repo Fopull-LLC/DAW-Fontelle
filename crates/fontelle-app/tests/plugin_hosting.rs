@@ -1461,3 +1461,97 @@ fn a_rebuild_that_did_not_change_a_plugins_state_leaves_what_its_editor_did() {
     rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
     assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.5);
 }
+
+// ----------------------- a knob turned in the plugin's own window (2026-09-29)
+//
+// > *"Every time I log out the instrument resets, this is when I save."*
+//
+// The document kept its own list of a plugin's parameter values and never
+// heard a plugin change one itself — a knob turned in the plugin's window, a
+// preset picked in its own browser. Saving wrote that list beside the
+// plugin's state, and reopening put the list back **over** the state: the
+// patch came back as it was before anybody touched it.
+
+/// The sine on a channel, with `key` played at the top of the song — the
+/// fixture's way of having its own window move its level.
+fn sine_turning_its_own_knob(key: u8) -> (Project, fontelle_types::ChannelId) {
+    let (mut project, channel) = project_with_a_held_note();
+    project.channels[channel].instrument = Some(InstrumentKind::Plugin);
+    project.channels[channel].plugin = Some(PluginState::new(PluginKey::clap(SINE), "Sine"));
+    let clip = project.clips.keys().next().unwrap();
+    let ClipSource::Notes(data) = &mut project.clips[clip].source else {
+        unreachable!()
+    };
+    // After the first block, which carries every starting value and would
+    // otherwise set the level straight back.
+    for note in data.notes.values_mut() {
+        note.key = key;
+        note.start = PPQN / 8;
+    }
+    (project, channel)
+}
+
+fn saved_and_reopened(project: &Project) -> Project {
+    serde_json::from_str(&serde_json::to_string(project).unwrap()).unwrap()
+}
+
+fn level_after_a_reopen(key: u8) -> Option<f64> {
+    let (mut project, channel) = sine_turning_its_own_knob(key);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    let slot = PluginSlot::Channel(channel);
+    project.channels[channel].plugin = rack.snapshot(slot);
+    let reopened = saved_and_reopened(&project);
+    let mut rack = fresh_rack();
+    rack.realise(&reopened, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    rack.snapshot(slot)?.param(7)
+}
+
+#[test]
+fn a_knob_a_plugin_turned_and_reported_is_saved() {
+    assert_eq!(
+        level_after_a_reopen(fontelle_testplug::TURNS_AND_SAYS),
+        Some(fontelle_testplug::OWN_LEVEL_SAID)
+    );
+}
+
+#[test]
+fn a_knob_a_plugin_turned_without_a_word_is_saved() {
+    assert_eq!(
+        level_after_a_reopen(fontelle_testplug::TURNS_QUIETLY),
+        Some(fontelle_testplug::OWN_LEVEL_UNSAID)
+    );
+}
+
+#[test]
+fn a_reported_knob_is_heard_before_anything_is_saved() {
+    // The studio's own knob for it follows the plugin's, so an automation
+    // lane made from it starts where the plugin is.
+    let (project, channel) = sine_turning_its_own_knob(fontelle_testplug::TURNS_AND_SAYS);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    assert_eq!(
+        rack.value(PluginSlot::Channel(channel), 7),
+        Some(fontelle_testplug::OWN_LEVEL_SAID)
+    );
+}
+
+#[test]
+fn a_knob_turned_in_the_plugins_window_is_an_unsaved_change() {
+    // Nothing else says so: the studio's history never saw it, so the title
+    // had no star, quitting asked nothing, and the backup skipped it.
+    let (project, channel) = sine_turning_its_own_knob(fontelle_testplug::TURNS_AND_SAYS);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    assert!(
+        rack.take_changes_heard(),
+        "the plugin's own change was noticed"
+    );
+    assert!(!rack.take_changes_heard(), "and noticed once");
+    render(&project, &mut rack);
+    let _ = rack.snapshot(PluginSlot::Channel(channel));
+    assert!(
+        !rack.take_changes_heard(),
+        "a snapshot has what was heard; nothing is left unsaved"
+    );
+}

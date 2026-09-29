@@ -930,6 +930,18 @@ impl PluginRack {
         }
     }
 
+    /// Whether any plugin changed its own values since this was last asked —
+    /// a knob turned in its window, a preset from its own browser. Those
+    /// edits never pass through the document's history, and this is how
+    /// they become unsaved changes.
+    pub fn take_changes_heard(&mut self) -> bool {
+        let mut any = false;
+        for live in self.live.values_mut() {
+            any |= live.plugin.take_changes_heard();
+        }
+        any
+    }
+
     /// Drives every open editor for one frame, and answers whether any is
     /// still open — which is what tells the window to keep waking up.
     pub fn tick_editors(&mut self) -> bool {

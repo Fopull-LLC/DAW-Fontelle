@@ -769,6 +769,9 @@ impl HostedPlugin {
     /// [`state_needs_processor`](Self::state_needs_processor) for how to
     /// know which to call.
     pub fn snapshot(&mut self) -> PluginState {
+        self.hear_params();
+        // What was heard is in this snapshot, so it is no longer unsaved.
+        self.values.take_heard();
         let mut state = PluginState::new(self.info.key.clone(), self.info.name.clone());
         for (id, value) in self.values.all() {
             state.set_param(id, value);
@@ -788,6 +791,8 @@ impl HostedPlugin {
     /// it. For the other formats the processor is not needed and not
     /// touched.
     pub fn snapshot_with(&mut self, processor: &mut HostedProcessor) -> PluginState {
+        self.hear_params();
+        self.values.take_heard();
         let mut state = PluginState::new(self.info.key.clone(), self.info.name.clone());
         for (id, value) in self.values.all() {
             state.set_param(id, value);
@@ -1454,6 +1459,56 @@ impl HostedPlugin {
             &InputEvents::from_buffer(&events),
             &mut OutputEvents::from_buffer(&mut out),
         );
+    }
+
+    /// Whether the plugin changed any of its values itself since this was
+    /// last asked, or since the last snapshot — see
+    /// [`ParamValues::take_heard`].
+    pub fn take_changes_heard(&self) -> bool {
+        self.values.take_heard()
+    }
+
+    /// Asks the plugin what every parameter is, for a snapshot.
+    ///
+    /// The document's list is what the studio set; a plugin changes its own
+    /// too — a preset picked in its own browser, a knob turned in its window
+    /// while nothing was playing to carry the output event. Saving the list
+    /// unasked saved the patch as it was before any of that, and a reopen
+    /// put it back over the plugin's state. Heard, not set: a value the
+    /// studio has set and not yet sent is still the newer one. LV2 is left
+    /// out — its values arrive through its UI and its state, and it has no
+    /// call that answers one.
+    fn hear_params(&mut self) {
+        let ids: Vec<u32> = self.params.iter().map(|param| param.id).collect();
+        let values = Arc::clone(&self.values);
+        match &self.inner {
+            Inner::Bridged(plugin) => {
+                for id in ids {
+                    values.hear(id, plugin.get_param(id));
+                }
+                return;
+            }
+            Inner::Vst3(plugin) => {
+                for id in ids {
+                    values.hear(id, plugin.get_param(id));
+                }
+                return;
+            }
+            Inner::Lv2(_) => return,
+            _ => {}
+        }
+        let Some(instance) = self.clap() else {
+            return;
+        };
+        let Some(extension) = instance.plugin_handle().get_extension::<PluginParams>() else {
+            return;
+        };
+        for id in ids {
+            if let Some(value) = extension.get_value(&mut instance.plugin_handle(), ClapId::new(id))
+            {
+                values.hear(id, value);
+            }
+        }
     }
 
     /// Reads every parameter's value back off the plugin onto the wire.

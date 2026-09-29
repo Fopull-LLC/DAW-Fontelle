@@ -84,6 +84,9 @@ pub const MAX_STEPS: u32 = 256;
 /// nothing here ever allocates.
 pub struct ParamValues {
     slots: Vec<Slot>,
+    /// Whether the plugin has changed a value itself since this was last
+    /// taken — see [`take_heard`](Self::take_heard).
+    heard: AtomicBool,
 }
 
 struct Slot {
@@ -114,6 +117,7 @@ impl ParamValues {
                     moved: AtomicBool::new(false),
                 })
                 .collect(),
+            heard: AtomicBool::new(false),
         }
     }
 
@@ -127,6 +131,41 @@ impl ParamValues {
         slot.value.store(value.to_bits(), Ordering::Relaxed);
         slot.moved.store(true, Ordering::Release);
         true
+    }
+
+    /// **RT-safe.** What the plugin says a parameter is — a knob turned in
+    /// its own window, a preset picked in its own browser — written without
+    /// marking it, because sending the plugin its own value back is an echo.
+    ///
+    /// Not over a value the studio has set and the plugin has not been sent
+    /// yet: that one is newer than anything the plugin can say.
+    pub fn hear(&self, id: u32, value: f64) -> bool {
+        let Some(slot) = self.slots.iter().find(|slot| slot.id == id) else {
+            return false;
+        };
+        if slot.moved.load(Ordering::Acquire) {
+            return false;
+        }
+        let was = slot.value.swap(value.to_bits(), Ordering::Relaxed);
+        if was != value.to_bits() {
+            self.heard.store(true, Ordering::Release);
+        }
+        true
+    }
+
+    /// **RT-safe.** Says the plugin changed something itself, by a way other
+    /// than [`hear`](Self::hear) — a VST 3 editor's edit arrives as a `set`.
+    pub fn note_heard(&self) {
+        self.heard.store(true, Ordering::Release);
+    }
+
+    /// Whether the plugin changed anything itself since this was last asked.
+    ///
+    /// The document's history never sees a knob turned in a plugin's own
+    /// window, so this is the only way that edit becomes an unsaved change —
+    /// a star in the title, a question on quitting, a backup.
+    pub fn take_heard(&self) -> bool {
+        self.heard.swap(false, Ordering::AcqRel)
     }
 
     /// **RT-safe.** Sets one from a **0..1 lane position** rather than from a

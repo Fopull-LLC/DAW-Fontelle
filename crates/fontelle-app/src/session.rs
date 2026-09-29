@@ -7181,6 +7181,14 @@ impl StudioHost for Session {
         // library listed on its thread since the last one.
         self.register_plugin_libraries();
         let open = self.plugins.tick_editors();
+        // *"Every time I log out the instrument resets, this is when I
+        // save."* A knob turned in a plugin's own window is an edit the
+        // history never saw; without this the title had no star, quitting
+        // asked nothing and the minute's backup skipped it.
+        if self.plugins.take_changes_heard() && !self.dirty {
+            self.dirty = true;
+            self.touch();
+        }
         // An open editor keeps the audio thread running the graph, because
         // an LV2 editor reaches its plugin only through `run` — see
         // `fontelle_engine::IdleGate::set_attended`.

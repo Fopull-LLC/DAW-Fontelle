@@ -840,6 +840,8 @@ impl IComponentHandlerTrait for Handler {
             value
         };
         if self.values.set(id, plain) {
+            // Only an edit in the plugin's own editor comes this way.
+            self.values.note_heard();
             kResultOk
         } else {
             kInvalidArgument

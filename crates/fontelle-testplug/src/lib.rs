@@ -671,7 +671,22 @@ impl<'a, const MIDI: bool> PluginAudioProcessor<'a, SineShared, SineMain<'a, MID
         let mut schedule = [(0u32, 0u8); MAX_SCHEDULED];
         let mut scheduled = 0;
         for event in events.input {
-            if let Some(note) = event.as_event::<NoteOnEvent>() {
+            if let Some(note) = event.as_event::<NoteOnEvent>()
+                && let Some(turned) = own_knob(note.pckn().key.into_specific())
+            {
+                // Not a note: the plugin's own window moving its level, which
+                // a host hears only if it listens — see `TURNS_AND_SAYS`.
+                store(&self.shared.level, turned as f32);
+                if note.pckn().key.into_specific() == Some(u16::from(TURNS_AND_SAYS)) {
+                    let _ = events.output.try_push(ParamValueEvent::new(
+                        event.header().time(),
+                        ClapId::new(7),
+                        clack_plugin::events::Pckn::match_all(),
+                        turned,
+                        Default::default(),
+                    ));
+                }
+            } else if let Some(note) = event.as_event::<NoteOnEvent>() {
                 if scheduled < MAX_SCHEDULED {
                     let key = note.pckn().key.into_specific().unwrap_or(60);
                     schedule[scheduled] = (event.header().time(), key.min(127) as u8 | 0x80);
@@ -855,6 +870,28 @@ impl PluginAudioProcessorParams for SineProcessor<'_> {
                 }
             }
         }
+    }
+}
+
+/// A key that is not a note to the sine but a knob turned **in its own
+/// window**: the level goes to [`OWN_LEVEL_SAID`], and the plugin reports it
+/// the way CLAP says a plugin reports a change it made itself — an output
+/// event. A host that throws a plugin's output events away never hears it,
+/// and saves the level it last set instead.
+pub const TURNS_AND_SAYS: u8 = 1;
+pub const OWN_LEVEL_SAID: f64 = 0.125;
+
+/// And one it does **not** report: a preset chosen in the plugin's own
+/// browser, which a host only learns by asking. The level goes to
+/// [`OWN_LEVEL_UNSAID`].
+pub const TURNS_QUIETLY: u8 = 2;
+pub const OWN_LEVEL_UNSAID: f64 = 0.375;
+
+fn own_knob(key: Option<u16>) -> Option<f64> {
+    match key? {
+        k if k == u16::from(TURNS_AND_SAYS) => Some(OWN_LEVEL_SAID),
+        k if k == u16::from(TURNS_QUIETLY) => Some(OWN_LEVEL_UNSAID),
+        _ => None,
     }
 }
 

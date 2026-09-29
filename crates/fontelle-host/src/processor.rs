@@ -880,6 +880,17 @@ impl ClapProcessor {
             Some(self.steady),
             Some(&transport),
         );
+        // What the plugin said back. A knob turned in its own window reaches
+        // a host as an output event and nowhere else, and one thrown away is
+        // a value the document never learns — and saves the old one of.
+        // *"Every time I log out the instrument resets."*
+        for event in self.replies.iter() {
+            if let Some(value) = event.as_event::<ParamValueEvent>()
+                && let Some(id) = value.param_id()
+            {
+                self.values.hear(u32::from(id), value.value());
+            }
+        }
         self.steady = self.steady.wrapping_add(frames as u64);
         self.events.clear();
     }
