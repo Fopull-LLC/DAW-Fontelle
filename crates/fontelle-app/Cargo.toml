@@ -47,6 +47,11 @@ sha2 = "0.10.9"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"
 
+# The desktop portal's file chooser (`desktop.rs`), for a GNOME with no
+# zenity. Already in the tree: the engine's rtkit request is made through it.
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus = "0.9.12"
+
 # The same two on Windows, plus the desktop's own folder and file dialogs
 # (`desktop.rs`), which run in-process there so they can be owned by the
 # studio's window. Already in the tree under winit and wgpu.

@@ -10,6 +10,10 @@
 //! adds nothing to the dependency graph, works on every desktop that has one,
 //! and says so clearly on a machine that has none.
 //!
+//! A machine with none is an ordinary GNOME, so on Linux the desktop portal
+//! is asked after them, over the blocking `dbus` crate the engine's rtkit
+//! request already brings — no runtime, nothing new in the graph.
+//!
 //! Everything except the `spawn` is a pure function, so the command shapes and
 //! the answer-reading are tested rather than hoped for.
 
@@ -495,7 +499,13 @@ pub fn choose_open_file(
     #[cfg(windows)]
     return win_dialogs::ask(title, start, win_dialogs::Ask::Open { filter });
     #[cfg(not(windows))]
-    run_picker(&open_file_candidates(title, start, filter))
+    ask_desktop(
+        Pick::Open,
+        &open_file_candidates(title, start, filter),
+        title,
+        start,
+        filter,
+    )
 }
 
 /// Asks the user where to save a new file, **blocking** until they answer.
@@ -510,7 +520,190 @@ pub fn choose_save_file(
     #[cfg(windows)]
     return win_dialogs::ask(title, start, win_dialogs::Ask::Save { name: default_name });
     #[cfg(not(windows))]
-    run_picker(&save_file_candidates(title, default_name, start))
+    ask_desktop(
+        Pick::Save,
+        &save_file_candidates(title, default_name, start),
+        title,
+        start,
+        default_name,
+    )
+}
+
+/// What a picker is asked for, so a machine without one can be told which
+/// kind it lacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Folder,
+    Open,
+    Save,
+}
+
+/// A `file://` URI, as the desktop portal answers, read as a path.
+pub fn portal_uri_path(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    // Anything before the path is the host, which for a local file is this one.
+    let raw = &rest.as_bytes()[rest.find('/')?..];
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let escaped = (raw[i] == b'%')
+            .then(|| raw.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                bytes.push(byte);
+                i += 3;
+            }
+            None => {
+                bytes.push(raw[i]);
+                i += 1;
+            }
+        }
+    }
+    #[cfg(unix)]
+    return Some(PathBuf::from(
+        <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(bytes),
+    ));
+    #[cfg(not(unix))]
+    Some(PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// The desktop portal's file chooser, `org.freedesktop.portal.FileChooser`:
+/// the dialog a GNOME, a KDE or a Flatpak session draws itself, reached over
+/// the session bus with nothing to install.
+///
+/// Tried only after kdialog and zenity, so a desktop that has one keeps the
+/// dialog it has always had; this is for the one that has neither, which on
+/// a fresh Fedora Workstation is the usual case.
+#[cfg(target_os = "linux")]
+mod portal {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use dbus::arg::{PropMap, RefArg, Variant};
+    use dbus::blocking::LocalConnection;
+    use dbus::message::MatchRule;
+
+    use super::Pick;
+
+    /// A `Response` seen on the bus: the request it answers, its code, and
+    /// the URIs picked.
+    type Answer = (dbus::Path<'static>, u32, Vec<String>);
+
+    /// `extra` is the offered name for a save, the filter for an open.
+    pub fn ask(
+        pick: Pick,
+        title: &str,
+        start: Option<&Path>,
+        extra: &str,
+    ) -> Result<Option<PathBuf>, String> {
+        let bus = LocalConnection::new_session().map_err(|e| e.to_string())?;
+        let token = format!("fontelle{}", std::process::id());
+
+        // The answer is a signal on a request object, and every one seen is
+        // kept until the call says which request is ours.
+        let answers: Rc<RefCell<Vec<Answer>>> = Rc::default();
+        let seen = Rc::clone(&answers);
+        bus.add_match(
+            MatchRule::new_signal("org.freedesktop.portal.Request", "Response"),
+            move |(code, results): (u32, PropMap), _, message| {
+                let uris = results
+                    .get("uris")
+                    .and_then(|v| v.0.as_iter())
+                    .map(|list| {
+                        list.filter_map(|u| u.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(path) = message.path() {
+                    seen.borrow_mut().push((path.into_static(), code, uris));
+                }
+                true
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut options: PropMap = HashMap::new();
+        let mut put = |key: &str, value: Box<dyn RefArg>| {
+            options.insert(key.to_string(), Variant(value));
+        };
+        put("handle_token", Box::new(token));
+        put("modal", Box::new(true));
+        if let Some(dir) = start {
+            // A byte string, NUL-terminated, as the portal's spec asks.
+            let mut bytes = dir.as_os_str().as_encoded_bytes().to_vec();
+            bytes.push(0);
+            put("current_folder", Box::new(bytes));
+        }
+        match pick {
+            Pick::Folder => put("directory", Box::new(true)),
+            Pick::Save => put("current_name", Box::new(extra.to_string())),
+            Pick::Open if !extra.is_empty() => put(
+                "filters",
+                Box::new(vec![(extra.to_string(), vec![(0u32, extra.to_string())])]),
+            ),
+            Pick::Open => {}
+        }
+
+        let method = if pick == Pick::Save {
+            "SaveFile"
+        } else {
+            "OpenFile"
+        };
+        let proxy = bus.with_proxy(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            Duration::from_secs(10),
+        );
+        let (handle,): (dbus::Path<'static>,) = proxy
+            .method_call(
+                "org.freedesktop.portal.FileChooser",
+                method,
+                ("", title, options),
+            )
+            .map_err(|e| e.to_string())?;
+
+        loop {
+            bus.process(Duration::from_millis(250))
+                .map_err(|e| e.to_string())?;
+            let found = answers.borrow().iter().find(|a| a.0 == handle).cloned();
+            if let Some((_, code, uris)) = found {
+                // 1 is a cancel, 2 a dialog closed some other way: neither
+                // is an answer.
+                return Ok((code == 0)
+                    .then(|| uris.first().and_then(|u| super::portal_uri_path(u)))
+                    .flatten());
+            }
+        }
+    }
+}
+
+/// [`run_picker`] over `candidates`, and on Linux the desktop portal when
+/// none of them is installed. The portal's own failure is not the message
+/// worth showing: [`run_picker`]'s says what to install.
+#[cfg(not(windows))]
+fn ask_desktop(
+    pick: Pick,
+    candidates: &[(&str, Vec<String>)],
+    title: &str,
+    start: Option<&Path>,
+    extra: &str,
+) -> Result<Option<PathBuf>, String> {
+    let answer = run_picker(pick, candidates);
+    #[cfg(target_os = "linux")]
+    if answer.is_err()
+        && let Ok(found) = portal::ask(pick, title, start, extra)
+    {
+        return Ok(found);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (title, start, extra);
+    answer
 }
 
 /// A picker's answer: the folder, or `None` for a cancel.
@@ -539,7 +732,13 @@ pub fn choose_folder(title: &str, start: Option<&Path>) -> Result<Option<PathBuf
     #[cfg(windows)]
     return win_dialogs::ask(title, start, win_dialogs::Ask::Folder);
     #[cfg(not(windows))]
-    run_picker(&picker_candidates(title, start))
+    ask_desktop(
+        Pick::Folder,
+        &picker_candidates(title, start),
+        title,
+        start,
+        "",
+    )
 }
 
 /// [`choose_folder`] with the candidate list handed in.
@@ -548,7 +747,10 @@ pub fn choose_folder(title: &str, start: Option<&Path>) -> Result<Option<PathBuf
 /// answer, fall through a program that is not installed — can be driven with
 /// `/bin/echo` and `/bin/false` instead of by clicking a dialog. Which picker
 /// gets chosen is [`picker_candidates`]'s job and is tested separately.
-pub fn run_picker(candidates: &[(&str, Vec<String>)]) -> Result<Option<PathBuf>, String> {
+pub fn run_picker(
+    pick: Pick,
+    candidates: &[(&str, Vec<String>)],
+) -> Result<Option<PathBuf>, String> {
     let mut tried = Vec::new();
     for (program, args) in candidates {
         match Command::new(program).args(args).output() {
@@ -565,9 +767,18 @@ pub fn run_picker(candidates: &[(&str, Vec<String>)]) -> Result<Option<PathBuf>,
             Err(_) => tried.push(*program),
         }
     }
+    // It said "no folder picker … start Fontelle with --soundfonts" to a
+    // Fedora user asking to save a MIDI file: name what was asked for, and
+    // the package that brings a picker.
+    let what = if pick == Pick::Folder {
+        "folder"
+    } else {
+        "file"
+    };
     Err(format!(
-        "no folder picker on this machine (tried {}) — start Fontelle with \
-         --soundfonts <folder> instead, and it will be remembered",
+        "no {what} picker on this machine (tried {}) — install zenity: \
+         `sudo dnf install zenity` on Fedora, `sudo apt install zenity` on \
+         Debian or Ubuntu",
         tried.join(", ")
     ))
 }

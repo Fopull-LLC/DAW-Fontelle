@@ -116,7 +116,8 @@ fn a_long_path_is_shortened_from_the_left_so_the_end_stays_readable() {
 #[cfg(unix)]
 #[test]
 fn a_picker_that_prints_a_path_gives_a_path_and_one_that_fails_gives_a_cancel() {
-    use fontelle_app::desktop::run_picker;
+    use fontelle_app::desktop::{Pick, run_picker};
+    let run_picker = |candidates: &[(&str, Vec<String>)]| run_picker(Pick::Folder, candidates);
 
     // The answer comes back off stdout, trailing newline and all.
     let picked = run_picker(&[("/bin/echo", vec!["/music/sf2".to_string()])])
@@ -141,10 +142,49 @@ fn a_picker_that_prints_a_path_gives_a_path_and_one_that_fails_gives_a_cancel() 
     // Nothing installed at all is an error worth showing, not silence.
     let nothing = run_picker(&[("/definitely/not/installed", Vec::new())]);
     assert!(nothing.is_err());
-    assert!(
-        nothing.unwrap_err().contains("--soundfonts"),
-        "the message has to name the way out"
+}
+
+/// > *"no folder picker … start Fontelle with --soundfonts"*
+///
+/// said to a Fedora user who had asked to *save* a MIDI file, on a GNOME
+/// with no zenity. The message names what was asked for and the package
+/// that brings a picker, in both families' words.
+#[cfg(unix)]
+#[test]
+fn a_missing_picker_says_what_was_asked_for_and_what_to_install() {
+    use fontelle_app::desktop::{Pick, run_picker};
+    let missing = || vec![("/definitely/not/installed", Vec::new())];
+    for (pick, word) in [
+        (Pick::Folder, "folder"),
+        (Pick::Open, "file"),
+        (Pick::Save, "file"),
+    ] {
+        let why = run_picker(pick, &missing()).expect_err("nothing is installed");
+        assert!(
+            why.contains(&format!("no {word} picker")),
+            "{pick:?}: {why}"
+        );
+        assert!(why.contains("sudo dnf install zenity"), "{pick:?}: {why}");
+        assert!(why.contains("sudo apt install zenity"), "{pick:?}: {why}");
+        assert!(!why.contains("--soundfonts"), "{pick:?}: {why}");
+    }
+}
+
+/// The desktop portal (`org.freedesktop.portal.FileChooser`) answers with
+/// URIs; a picked file is one, percent-encoded.
+#[test]
+fn a_portal_answer_is_read_as_a_path() {
+    use fontelle_app::desktop::portal_uri_path;
+    assert_eq!(
+        portal_uri_path("file:///home/someone/My%20Song%20%231.mid"),
+        Some(PathBuf::from("/home/someone/My Song #1.mid"))
     );
+    assert_eq!(
+        portal_uri_path("file:///music/caf%C3%A9"),
+        Some(PathBuf::from("/music/café"))
+    );
+    assert_eq!(portal_uri_path("https://example.com/x"), None);
+    assert_eq!(portal_uri_path(""), None);
 }
 
 #[test]
