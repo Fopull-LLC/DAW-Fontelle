@@ -10521,8 +10521,11 @@ impl WindowApp {
             bounds.y + bounds.height / 3.0,
         );
         self.open_menu(target, x, y, bounds);
+        // Selected, as a rename is: typing replaces it rather than running
+        // on from its end ("UntitledJam").
         if self.menu.is_some() && !seed.is_empty() {
             self.menu_filter.set(seed);
+            self.menu_filter.select_all();
             self.relayout_menu();
         }
     }
@@ -17065,8 +17068,11 @@ impl WindowApp {
         // After opening, because a fresh menu is unfiltered and this one is
         // seeded — with the name the project already goes by, so Ctrl+S on an
         // unsaved studio is Enter away from done.
+        // Selected, as a rename is: typing replaces it rather than running
+        // on from its end ("UntitledJam").
         if self.menu.is_some() && !seed.is_empty() {
             self.menu_filter.set(seed);
+            self.menu_filter.select_all();
             self.relayout_menu();
         }
     }

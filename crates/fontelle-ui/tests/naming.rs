@@ -54,3 +54,29 @@ fn a_very_long_name_is_shown_from_its_end() {
     );
     assert!(entries[0].label.ends_with(NAME_CARET));
 }
+
+/// The field is drawn over the heading, and the heading's words are its
+/// placeholder — so a prompt that opened with something in it (your name, a
+/// song's current name) said nothing about what it was asking. Sharing a
+/// song asked for two things in a row with nothing to tell them apart. With
+/// anything typed, the prompt still says what it is for, on a row of its own
+/// that is not one you press.
+#[test]
+fn a_prompt_with_something_in_it_still_says_what_it_is_for() {
+    let entries = name_prompt_entries("Your name, as the others will see it", "fopull");
+    let said = entries
+        .iter()
+        .skip(1)
+        .find(|entry| entry.label == "Your name, as the others will see it")
+        .expect("the title below the field");
+    assert!(!said.enabled);
+    // Empty, the placeholder says it; a second copy would be the same words
+    // twice.
+    let entries = name_prompt_entries("Your name, as the others will see it", "");
+    assert!(
+        entries
+            .iter()
+            .skip(1)
+            .all(|entry| entry.label != "Your name, as the others will see it")
+    );
+}

@@ -713,18 +713,24 @@ pub fn name_prompt_entries(title: &str, typed: &str) -> Vec<MenuEntry> {
     } else {
         typed.to_string()
     };
-    vec![
-        MenuEntry::disabled(if typed.is_empty() {
-            format!("{title} \u{2014} type a name{NAME_CARET}")
-        } else {
-            format!("{title} \u{2014} {shown}{NAME_CARET}")
-        }),
-        MenuEntry::new(if typed.trim().is_empty() {
-            "Untitled".to_string()
-        } else {
-            shown
-        }),
-    ]
+    let mut entries = vec![MenuEntry::disabled(if typed.is_empty() {
+        format!("{title} \u{2014} type a name{NAME_CARET}")
+    } else {
+        format!("{title} \u{2014} {shown}{NAME_CARET}")
+    })];
+    // The window draws its text field over that first row, and the field's
+    // placeholder is the title — gone the moment anything is in it. A prompt
+    // that opens with a name already in it (yours, the song's) then said
+    // nothing about what it was asking, and sharing asks two in a row.
+    if !typed.is_empty() {
+        entries.push(MenuEntry::disabled(title));
+    }
+    entries.push(MenuEntry::new(if typed.trim().is_empty() {
+        "Untitled".to_string()
+    } else {
+        shown
+    }));
+    entries
 }
 
 // ------------------------------------------------------------- exporting ---

@@ -7637,13 +7637,8 @@ impl StudioHost for Session {
             SessionRole::Joining
         };
         let status = match role {
-            // Said as waiting: sharing alone does nothing more than this,
-            // and a panel that only gave an instruction read as a feature
-            // that had not started.
             SessionRole::Hosting if peers.is_empty() => {
-                "Waiting for someone to join \u{2014} give them the code; they join from \
-                 their start menu"
-                    .to_string()
+                "Give somebody the code \u{2014} they join from their start menu".to_string()
             }
             SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
             SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
