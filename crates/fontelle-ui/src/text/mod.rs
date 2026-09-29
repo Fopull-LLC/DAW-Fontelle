@@ -82,10 +82,27 @@ pub struct TextContext {
     pub font_system: FontSystem,
 }
 
+/// The face `sans-serif` names, carried in the binary.
+///
+/// `cosmic-text` resolves the generic `sans-serif` to Open Sans on every
+/// platform, and every width the windows were laid out against — Flopsynth's
+/// [`crate::canvas::CHIP_TEXT_ROOM`] holds "Reverse" at 40.7 of its 41 px —
+/// was measured in it. A machine without Open Sans shaped the captions in
+/// whatever the fallback found: CI's Ubuntu runner has DejaVu Sans, a sixth
+/// wider, and there *"Voice runs into the strip at the minimum size (830
+/// past 776)"* — nine controls went to two cells and the Synth page grew
+/// past its window. That was the window any Ubuntu desktop without Open Sans
+/// got. Loaded after the system's faces, so a machine that has Open Sans
+/// installed still draws it; the file is the same v3.003 Regular.
+/// Captions and values are Regular; a Medium request still resolves among
+/// the machine's own faces, as before. OFL 1.1, `fonts/OFL.txt`.
+static OPEN_SANS_REGULAR: &[u8] = include_bytes!("../../fonts/OpenSans-Regular.ttf");
+
 impl TextContext {
     pub fn new() -> Self {
+        let bundled = cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(OPEN_SANS_REGULAR));
         Self {
-            font_system: FontSystem::new(),
+            font_system: FontSystem::new_with_fonts([bundled]),
         }
     }
 
