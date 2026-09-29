@@ -718,6 +718,12 @@ enum MenuTarget {
     TrackPresetCategory(usize),
     /// The new shelf's name.
     TrackPresetNewCategory(usize),
+    /// "Save as…" pressed on the strip across a plugin's own window: what to
+    /// call the preset. Asked in the studio's window, because the plugin's is
+    /// the plugin's — the same prompt the track chain asks with.
+    DevicePresetName(crate::canvas::PresetDevice),
+    DevicePresetCategory(crate::canvas::PresetDevice),
+    DevicePresetNewCategory(crate::canvas::PresetDevice),
 }
 
 impl MenuTarget {
@@ -734,6 +740,8 @@ impl MenuTarget {
             Self::PresetNewCategory(_) => "New category",
             Self::TrackPresetName(_) => "Track preset name",
             Self::TrackPresetNewCategory(_) => "New shelf",
+            Self::DevicePresetName(_) => "Preset name",
+            Self::DevicePresetNewCategory(_) => "New category",
             Self::TypeValue { .. } => "Value",
             Self::WaveFormula { .. } => "Formula",
             _ => return None,
@@ -791,6 +799,10 @@ impl MenuTarget {
             | Self::TrackPresetName(_)
             | Self::TrackPresetCategory(_)
             | Self::TrackPresetNewCategory(_) => None,
+            // A plugin's own window is not one of these to draw in.
+            Self::DevicePresetName(_)
+            | Self::DevicePresetCategory(_)
+            | Self::DevicePresetNewCategory(_) => None,
             Self::Snap { .. } | Self::KeyRoot | Self::KeyScale => None,
             // The settings drop-down is a row of the browser panel, which is in
             // the main window.
@@ -1559,6 +1571,21 @@ pub struct WindowApp {
     /// `pending_save_as`'s sibling, and separate because the two flows can
     /// never be in the air at once but do not otherwise resemble each other.
     pending_track_save: Option<(usize, String)>,
+    /// A "Save as…" from a plugin window's strip, half finished: whose, and
+    /// the name typed, waiting for its category.
+    pending_device_save: Option<(crate::canvas::PresetDevice, String)>,
+    /// What each open plugin editor's strip was last drawn as, and the
+    /// control the pointer was on — so a frame that changed neither renders
+    /// nothing.
+    plugin_headers_drawn: Vec<(
+        crate::canvas::PluginHeaderView,
+        Option<crate::canvas::PresetBarHit>,
+    )>,
+    /// What the strips are drawn with: a GPU device of its own, made the
+    /// first time a plugin's editor opens, since the plugin's window is not
+    /// one of the studio's to draw on. `Err` once it could not be made — the
+    /// strip is then left black rather than tried again every frame.
+    header_renderer: Option<Result<crate::render::Headless, String>>,
     /// And which key chip, in the same panel.
     hover_key: Option<usize>,
     hover_tab: Option<EditorTab>,
@@ -2164,6 +2191,9 @@ impl WindowApp {
             flop_ring: None,
             pending_save_as: None,
             pending_track_save: None,
+            pending_device_save: None,
+            plugin_headers_drawn: Vec::new(),
+            header_renderer: None,
             hover_key: None,
             hover_tab: None,
             knob: None,
@@ -4295,6 +4325,7 @@ impl ApplicationHandler for WindowApp {
             // call fires. See `fontelle_host::gui`.
             self.plugin_editor_open = doc.tick_plugin_editors();
         }
+        self.tick_plugin_headers();
         let started = std::time::Instant::now();
         self.refresh_studio();
         let refreshed = ms_since(started);
@@ -10181,6 +10212,183 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    /// Writes a plugin window's "Save as…" once its name and category are in.
+    fn finish_device_save(&mut self, category: &str) {
+        let Some((device, name)) = self.pending_device_save.take() else {
+            return;
+        };
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.save_preset_as(device, &name, category);
+        }
+        self.after_preset_change();
+    }
+
+    /// The strips across the top of plugins' own editor windows, once a
+    /// frame: what was pressed on them, done; and any whose view changed,
+    /// drawn and handed over.
+    ///
+    /// > *"we need to ensure our presets system works with it kind of like
+    /// > how flx does so that you can use the presets system for all plugins
+    /// > cleanly and it just works."*
+    ///
+    /// The bar is the one this window's editors carry, laid out and hit the
+    /// same way (`plugin_header_layout`), and its presses do what a press on
+    /// that bar does — but for the device the plugin's window *is*, which is
+    /// not the selected channel.
+    fn tick_plugin_headers(&mut self) {
+        let Some(doc) = self.options.document.as_mut() else {
+            return;
+        };
+        let presses = doc.take_plugin_header_presses();
+        let headers = doc.plugin_headers();
+        if headers.is_empty() && self.plugin_headers_drawn.is_empty() {
+            return;
+        }
+        let metrics = self.options.theme.metrics;
+        let hit = |header: &crate::canvas::PluginHeaderView, x: f32, y: f32| {
+            let scale = header.scale.max(0.25);
+            crate::canvas::plugin_header_hit(
+                header.width as f32 / scale,
+                &header.bar,
+                &metrics,
+                x / scale,
+                y / scale,
+            )
+        };
+        let actions: Vec<_> = presses
+            .into_iter()
+            .filter_map(|(device, x, y)| {
+                let header = headers.iter().find(|header| header.device == device)?;
+                Some((device, hit(header, x, y)?))
+            })
+            .collect();
+        for (device, action) in actions {
+            self.press_plugin_header(device, action);
+        }
+        // Asked again: a press may have loaded a preset, and the strip says so
+        // this frame rather than the next.
+        let Some(doc) = self.options.document.as_mut() else {
+            return;
+        };
+        let headers = doc.plugin_headers();
+        self.plugin_headers_drawn
+            .retain(|(drawn, _)| headers.iter().any(|header| header.device == drawn.device));
+        for header in headers {
+            let hover = header.hover.and_then(|(x, y)| hit(&header, x, y));
+            let drawn = self
+                .plugin_headers_drawn
+                .iter()
+                .position(|(drawn, _)| drawn.device == header.device);
+            if drawn.is_some_and(|at| self.plugin_headers_drawn[at] == (header.clone(), hover)) {
+                continue;
+            }
+            let renderer = self
+                .header_renderer
+                .get_or_insert_with(|| crate::render::Headless::new().map_err(|e| e.to_string()));
+            let Ok(renderer) = renderer else {
+                continue;
+            };
+            let pixels = crate::render::plugin_header_pixels(
+                renderer,
+                &self.options.theme,
+                &mut self.labels,
+                &mut self.text,
+                &header.bar,
+                hover,
+                header.width,
+                header.height,
+                header.scale,
+            );
+            if let (Ok(pixels), Some(doc)) = (pixels, self.options.document.as_mut()) {
+                doc.set_plugin_header_pixels(header.device, &pixels, header.width, header.height);
+            }
+            match drawn {
+                Some(at) => self.plugin_headers_drawn[at] = (header, hover),
+                None => self.plugin_headers_drawn.push((header, hover)),
+            }
+        }
+    }
+
+    /// What a press on a plugin window's strip does: what the same press on
+    /// an editor window's bar does, for the plugin's own device.
+    fn press_plugin_header(
+        &mut self,
+        device: crate::canvas::PresetDevice,
+        hit: crate::canvas::PresetBarHit,
+    ) {
+        use crate::canvas::PresetBarHit;
+        let Some(doc) = self.options.document.as_mut() else {
+            return;
+        };
+        match hit {
+            PresetBarHit::Previous => doc.step_preset(device, -1),
+            PresetBarHit::Next => doc.step_preset(device, 1),
+            PresetBarHit::Star => doc.toggle_preset_favorite(device),
+            PresetBarHit::Save => doc.save_preset(device),
+            // The list is the browser's: the plugin's window is the plugin's
+            // and has no room for four hundred rows, and the Presets tab
+            // already searches, groups and stars them.
+            PresetBarHit::Name | PresetBarHit::Category => {
+                doc.open_presets_for(device);
+                self.show_browser_mode(crate::canvas::BrowserMode::Presets);
+                self.bring_studio_forward();
+            }
+            PresetBarHit::SaveAs => {
+                let seed = doc
+                    .plugin_headers()
+                    .into_iter()
+                    .find(|header| header.device == device)
+                    .and_then(|header| header.bar.name)
+                    .unwrap_or_default();
+                self.pending_device_save = None;
+                self.bring_studio_forward();
+                self.dismissed = None;
+                self.menu_filter.clear();
+                let bounds = self.layout.window;
+                let (x, y) = (
+                    bounds.x + bounds.width / 2.0,
+                    bounds.y + bounds.height / 3.0,
+                );
+                self.open_menu(MenuTarget::DevicePresetName(device), x, y, bounds);
+                if self.menu.is_some() && !seed.is_empty() {
+                    self.menu_filter.set(seed);
+                    self.relayout_menu();
+                }
+                return;
+            }
+        }
+        self.after_preset_change();
+    }
+
+    /// Switches the browser to `mode`, as pressing its tab does.
+    fn show_browser_mode(&mut self, mode: crate::canvas::BrowserMode) {
+        self.browser_mode = mode;
+        if let Some(doc) = &mut self.options.document {
+            doc.set_browser_mode(mode);
+        }
+        // The search filters whichever list is showing, and a query typed
+        // against soundfonts means nothing against projects.
+        self.file_scroll = 0;
+        self.preset_scroll = 0;
+        // A different tab is a different list; the arrow-key focus in the
+        // old one means nothing in the new.
+        self.settings_focus = None;
+        // The status line says something different in each mode and the
+        // studio's revision has not moved, so ask for the lists again rather
+        // than waiting for something else to change them.
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.relayout_panels();
+    }
+
+    /// Brings the studio's window in front of a plugin's, where the desktop
+    /// allows it.
+    fn bring_studio_forward(&self) {
+        if let Some(live) = &self.live {
+            live.window.focus_window();
+        }
+    }
+
     fn track_preset_categories(&self, strip: usize) -> Vec<String> {
         match self.options.document.as_ref() {
             Some(doc) => doc.preset_categories(crate::canvas::PresetDevice::Track { strip }),
@@ -14764,25 +14972,7 @@ impl WindowApp {
             }
             BrowserHit::Mode(mode) => {
                 if self.browser_mode != mode {
-                    self.browser_mode = mode;
-                    if let Some(doc) = &mut self.options.document {
-                        doc.set_browser_mode(mode);
-                    }
-                    // The search filters whichever list is showing, and a
-                    // query typed against soundfonts means nothing against
-                    // projects.
-                    self.file_scroll = 0;
-                    self.preset_scroll = 0;
-                    // A different tab is a different list; the arrow-key focus
-                    // in the old one means nothing in the new.
-                    self.settings_focus = None;
-                    // The status line says something different in each mode
-                    // and the studio's revision has not moved, so ask for the
-                    // lists again rather than waiting for something else to
-                    // change them.
-                    self.studio_revision = u64::MAX;
-                    self.refresh_studio();
-                    self.relayout_panels();
+                    self.show_browser_mode(mode);
                 }
             }
             BrowserHit::Kind(kind) => {
@@ -15108,6 +15298,22 @@ impl WindowApp {
             }
             MenuTarget::TrackPresetNewCategory(_) => {
                 crate::canvas::name_prompt_entries("New shelf", self.menu_filter.text())
+            }
+            MenuTarget::DevicePresetName(_) => {
+                crate::canvas::name_prompt_entries("Preset name", self.menu_filter.text())
+            }
+            MenuTarget::DevicePresetNewCategory(_) => {
+                crate::canvas::name_prompt_entries("New category", self.menu_filter.text())
+            }
+            MenuTarget::DevicePresetCategory(device) => {
+                let mut entries = vec![MenuEntry::disabled("Category")];
+                if let Some(doc) = self.options.document.as_ref() {
+                    for category in doc.preset_categories(*device) {
+                        entries.push(MenuEntry::new(category));
+                    }
+                }
+                entries.push(MenuEntry::new(crate::render::NEW_CATEGORY).after_rule());
+                entries
             }
             MenuTarget::TrackPresetCategory(strip) => {
                 let mut entries = vec![MenuEntry::disabled("Shelf")];
@@ -15680,6 +15886,8 @@ impl WindowApp {
                     | MenuTarget::PresetNewCategory(_)
                     | MenuTarget::TrackPresetName(_)
                     | MenuTarget::TrackPresetNewCategory(_)
+                    | MenuTarget::DevicePresetName(_)
+                    | MenuTarget::DevicePresetNewCategory(_)
                     | MenuTarget::TypeValue { .. }
                     | MenuTarget::WaveFormula { .. }
             )
@@ -16353,6 +16561,43 @@ impl WindowApp {
                         self.open_menu(MenuTarget::TrackPresetNewCategory(strip), x, y, bounds);
                     }
                 }
+            }
+            (MenuTarget::DevicePresetName(device), _) => {
+                let device = *device;
+                let name = self.menu_filter.text().trim().to_string();
+                self.menu_filter.clear();
+                if name.is_empty() {
+                    return;
+                }
+                self.pending_device_save = Some((device, name));
+                let ((x, y), bounds) = self.menu_at;
+                self.open_menu(MenuTarget::DevicePresetCategory(device), x, y, bounds);
+            }
+            (MenuTarget::DevicePresetCategory(device), index) => {
+                let device = *device;
+                let categories = match self.options.document.as_ref() {
+                    Some(doc) => doc.preset_categories(device),
+                    None => Vec::new(),
+                };
+                match index.checked_sub(1).and_then(|at| categories.get(at)) {
+                    Some(category) => {
+                        let category = category.clone();
+                        self.finish_device_save(&category);
+                    }
+                    None => {
+                        self.menu_filter.clear();
+                        let ((x, y), bounds) = self.menu_at;
+                        self.open_menu(MenuTarget::DevicePresetNewCategory(device), x, y, bounds);
+                    }
+                }
+            }
+            (MenuTarget::DevicePresetNewCategory(_), _) => {
+                let category = self.menu_filter.text().trim().to_string();
+                self.menu_filter.clear();
+                if category.is_empty() {
+                    return;
+                }
+                self.finish_device_save(&category);
             }
             (MenuTarget::TrackPresetNewCategory(_), _) => {
                 let category = self.menu_filter.text().trim().to_string();

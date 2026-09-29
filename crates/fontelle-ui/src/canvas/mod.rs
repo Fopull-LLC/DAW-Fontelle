@@ -120,8 +120,9 @@ pub use overlays::{
     job_card_layout, project_caption, save_prompt_layout, saved_flash, toast_layout,
 };
 pub use preset_bar::{
-    NO_PRESET, PRESET_MENU_HEADING, PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice,
-    PresetDevice, PresetMenuRow, RANDOM_PRESET, USER_MARK, preset_bar_hit, preset_bar_layout,
+    NO_PRESET, PLUGIN_HEADER_HEIGHT, PRESET_MENU_HEADING, PluginHeaderView, PresetBarHit,
+    PresetBarLayout, PresetBarView, PresetChoice, PresetDevice, PresetMenuRow, RANDOM_PRESET,
+    USER_MARK, plugin_header_hit, plugin_header_layout, preset_bar_hit, preset_bar_layout,
     preset_bar_name, preset_menu, random_preset_row,
 };
 /// Where a zoom should land, given the grid it is zooming and where the

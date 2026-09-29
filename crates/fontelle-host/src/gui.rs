@@ -87,12 +87,18 @@ impl GuiSize {
 }
 
 /// What happened to a plugin's editor window since it was last asked.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GuiPoll {
-    /// The desktop resized the window; the plugin has been told.
+    /// The desktop resized the window; the plugin has been told. The
+    /// plugin's area, below the strip.
     pub resized: Option<GuiSize>,
     /// Somebody pressed the window's close button.
     pub closed: bool,
+    /// Presses on the strip across the top, in its own pixels, in order.
+    pub header_presses: Vec<(i32, i32)>,
+    /// Where the pointer is over the strip, when that changed: `Some(None)`
+    /// when it left.
+    pub header_hover: Option<Option<(i32, i32)>>,
 }
 
 /// Why a plugin's editor could not be opened.
@@ -125,23 +131,96 @@ impl std::error::Error for GuiError {}
 /// The window a plugin draws its editor into.
 ///
 /// A top-level X11 window, made and owned here — see the module note on why it
-/// is not one of `winit`'s. The plugin is given its id and creates its own
-/// child window inside it; everything the desktop does to the frame (a resize,
-/// the close button) arrives through [`poll`](Self::poll).
+/// is not one of `winit`'s. The plugin is given the id of a window inside it
+/// and creates its own child window there; everything the desktop does to the
+/// frame (a resize, the close button) arrives through [`poll`](Self::poll).
+///
+/// # The strip
+///
+/// > *"we need to ensure our presets system works with it kind of like how
+/// > flx does"*
+///
+/// FL Studio wraps a plugin's editor in a bar of its own. So may this: a
+/// window opened [`with a header`](Self::open_with_header) is a strip that
+/// many pixels high across the top — Fontelle's, drawn from pixels the studio
+/// renders ([`set_header`](Self::set_header)), its presses reported by
+/// [`poll`](Self::poll) — and under it the window the plugin is handed. Every
+/// size this type speaks of is the **plugin's** area; the frame is that and
+/// the strip.
 pub struct PluginWindow {
     /// `None` for a window that is not on a screen — see
     /// [`headless`](Self::headless).
     server: Option<OnScreen>,
     size: GuiSize,
+    /// How tall the strip across the top is, in pixels. Zero: no strip, and
+    /// the plugin is handed the frame itself.
+    header: u32,
+    /// Presses a headless window was told of — see
+    /// [`press_header`](Self::press_header).
+    pressed: Vec<(i32, i32)>,
+    /// Where the pointer was over the strip when last reported.
+    hover: Option<(i32, i32)>,
+}
+
+impl PluginWindow {
+    fn offscreen(size: GuiSize, header: u32) -> Self {
+        Self {
+            server: None,
+            size: size.sane(),
+            header,
+            pressed: Vec::new(),
+            hover: None,
+        }
+    }
+
+    /// A window that is not on a screen, with a strip `header` pixels high —
+    /// [`headless`](Self::headless) for the studio's side of the strip.
+    pub fn headless_with_header(width: u32, height: u32, header: u32) -> Self {
+        Self::offscreen(GuiSize { width, height }, header)
+    }
+
+    /// How tall the strip across the top is. Zero for a window with none.
+    pub fn header_height(&self) -> u32 {
+        self.header
+    }
+
+    /// **A headless window only**: what a press on its strip at `(x, y)`
+    /// would report on a screen — the next [`poll`](Self::poll) says so. A
+    /// window on a screen hears its presses from the desktop, and this does
+    /// nothing to it.
+    pub fn press_header(&mut self, x: i32, y: i32) {
+        if self.server.is_none() && y >= 0 && (y as u32) < self.header {
+            self.pressed.push((x, y));
+        }
+    }
+
+    /// The pointer moved to `at` over the strip, or off it — a hover change is
+    /// reported only when it is one.
+    fn hovered(&mut self, at: Option<(i32, i32)>, result: &mut GuiPoll) {
+        if at != self.hover {
+            self.hover = at;
+            result.header_hover = Some(at);
+        }
+    }
 }
 
 /// The half of a [`PluginWindow`] that only exists when there is an X server.
 #[cfg(target_os = "linux")]
 struct OnScreen {
     connection: RustConnection,
+    /// The frame: the strip and, under it, the plugin's window.
     window: u32,
+    /// The window the plugin is handed. The frame itself when there is no
+    /// strip.
+    embed: u32,
     /// The atom the window manager sends when the close button is pressed.
     delete_window: u32,
+    /// What the strip's pixels are drawn with.
+    gc: u32,
+    depth: u8,
+    /// The strip, as the server takes it (BGRX), and its size — kept so an
+    /// expose can put it back.
+    strip: Option<(Vec<u8>, u32, u32)>,
 }
 
 /// The same on Windows: the window's handle and what its window procedure
@@ -164,37 +243,82 @@ enum OnScreen {}
 impl PluginWindow {
     /// Opens a window of `size`, titled `title`, and maps it.
     pub fn open(title: &str, size: GuiSize) -> Result<Self, GuiError> {
+        Self::open_with_header(title, size, 0)
+    }
+
+    /// Opens a window whose plugin area is `size`, with a strip `header`
+    /// pixels high across the top of it — see the type's note.
+    pub fn open_with_header(title: &str, size: GuiSize, header: u32) -> Result<Self, GuiError> {
         let size = size.sane();
         let (connection, screen_index) =
             x11rb::connect(None).map_err(|e| GuiError::NoDisplay(e.to_string()))?;
         let screen = &connection.setup().roots[screen_index];
-        let window = connection
-            .generate_id()
-            .map_err(|e| GuiError::NoDisplay(e.to_string()))?;
+        let (root, visual, black, depth) = (
+            screen.root,
+            screen.root_visual,
+            screen.black_pixel,
+            screen.root_depth,
+        );
+        let fail = |e: &dyn std::fmt::Display| GuiError::NoDisplay(e.to_string());
+        let window = connection.generate_id().map_err(|e| fail(&e))?;
+        // `STRUCTURE_NOTIFY` is the resize; the plugin's own connection asks
+        // for everything else on its own child window, which is how X11
+        // embedding works. The strip's presses, pointer and exposes are the
+        // frame's — a press on the plugin never reaches here unless the plugin
+        // did not want it, and one below the strip is dropped in `poll`.
+        let mut mask = EventMask::STRUCTURE_NOTIFY;
+        if header > 0 {
+            mask = mask
+                | EventMask::EXPOSURE
+                | EventMask::BUTTON_PRESS
+                | EventMask::POINTER_MOTION
+                | EventMask::LEAVE_WINDOW;
+        }
         connection
             .create_window(
                 x11rb::COPY_DEPTH_FROM_PARENT,
                 window,
-                screen.root,
+                root,
                 0,
                 0,
                 size.width as u16,
-                size.height as u16,
+                (size.height + header) as u16,
                 0,
                 WindowClass::INPUT_OUTPUT,
-                screen.root_visual,
+                visual,
                 &CreateWindowAux::new()
                     // Black rather than whatever was on the screen: a plugin
                     // paints its own background, and the frame between the
                     // window appearing and its first paint should not be a
                     // photograph of the desktop.
-                    .background_pixel(screen.black_pixel)
-                    // `STRUCTURE_NOTIFY` is the resize; the plugin's own
-                    // connection asks for everything else on its own child
-                    // window, which is how X11 embedding works.
-                    .event_mask(EventMask::STRUCTURE_NOTIFY),
+                    .background_pixel(black)
+                    .event_mask(mask),
             )
-            .map_err(|e| GuiError::NoDisplay(e.to_string()))?;
+            .map_err(|e| fail(&e))?;
+        let embed = if header > 0 {
+            let embed = connection.generate_id().map_err(|e| fail(&e))?;
+            connection
+                .create_window(
+                    x11rb::COPY_DEPTH_FROM_PARENT,
+                    embed,
+                    window,
+                    0,
+                    header as i16,
+                    size.width as u16,
+                    size.height as u16,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    visual,
+                    &CreateWindowAux::new().background_pixel(black),
+                )
+                .map_err(|e| fail(&e))?;
+            let _ = connection.map_window(embed);
+            embed
+        } else {
+            window
+        };
+        let gc = connection.generate_id().map_err(|e| fail(&e))?;
+        let _ = connection.create_gc(gc, window, &x11rb::protocol::xproto::CreateGCAux::new());
 
         // The close button. Without this the desktop kills the connection
         // instead of telling us, which takes the studio with it.
@@ -217,25 +341,58 @@ impl PluginWindow {
                 &[delete_window],
             );
         }
-        let mut screen_window = Self {
-            server: Some(OnScreen {
-                connection,
-                window,
-                delete_window,
-            }),
-            size,
-        };
+        let mut screen_window = Self::offscreen(size, header);
+        screen_window.server = Some(OnScreen {
+            connection,
+            window,
+            embed,
+            delete_window,
+            gc,
+            depth,
+            strip: None,
+        });
         screen_window.set_title(title);
         if let Some(server) = &screen_window.server {
             server
                 .connection
                 .map_window(server.window)
-                .map_err(|e| GuiError::NoDisplay(e.to_string()))?;
+                .map_err(|e| fail(&e))?;
             let _ = server.connection.flush();
         }
         Ok(screen_window)
     }
 
+    /// The frame's own id — the strip and the plugin's window both. What a
+    /// test sends a press to; a plugin is given [`id`](Self::id).
+    pub fn frame_id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| u64::from(server.window))
+    }
+
+    /// Shows `rgba` — `width` by `height`, row after row — as the strip.
+    ///
+    /// Kept, and put back whenever the server says the strip was uncovered.
+    /// Sent in bands no longer than a request may be: a strip across a wide
+    /// window at twice the scale is more than the 256 KiB a server without
+    /// BIG-REQUESTS takes in one.
+    pub fn set_header(&mut self, rgba: &[u8], width: u32, height: u32) {
+        let header = self.header;
+        let Some(server) = &mut self.server else {
+            return;
+        };
+        if header == 0 || rgba.len() < (width * height * 4) as usize {
+            return;
+        }
+        let bgrx: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], 0])
+            .collect();
+        server.strip = Some((bgrx, width, height.min(header)));
+        paint_strip(server);
+    }
     /// A window that is not on a screen.
     ///
     /// **For tests, and only for tests.** A plugin's editor can be found,
@@ -244,10 +401,7 @@ impl PluginWindow {
     /// display, which is where these tests mostly run. A UI given window `0`
     /// draws nowhere; everything either side of the drawing still happens.
     pub fn headless(width: u32, height: u32) -> Self {
-        Self {
-            server: None,
-            size: GuiSize { width, height }.sane(),
-        }
+        Self::offscreen(GuiSize { width, height }, 0)
     }
 
     /// Whether this window is on a screen at all.
@@ -255,12 +409,13 @@ impl PluginWindow {
         self.server.is_some()
     }
 
-    /// The X11 id a plugin is given as its parent. Zero for a headless one.
-    /// A `u64` because on Windows the same number is an `HWND`.
+    /// The X11 id a plugin is given as its parent — the window under the
+    /// strip, or the frame when there is none. Zero for a headless one. A
+    /// `u64` because on Windows the same number is an `HWND`.
     pub fn id(&self) -> u64 {
         self.server
             .as_ref()
-            .map_or(0, |server| u64::from(server.window))
+            .map_or(0, |server| u64::from(server.embed))
     }
 
     pub fn size(&self) -> GuiSize {
@@ -323,8 +478,16 @@ impl PluginWindow {
             server.window,
             &x11rb::protocol::xproto::ConfigureWindowAux::new()
                 .width(size.width)
-                .height(size.height),
+                .height(size.height + self.header),
         );
+        if server.embed != server.window {
+            let _ = server.connection.configure_window(
+                server.embed,
+                &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                    .width(size.width)
+                    .height(size.height),
+            );
+        }
         let _ = server.connection.flush();
     }
 
@@ -348,17 +511,23 @@ impl PluginWindow {
     /// drawing whenever a plugin window was quiet.
     pub fn poll(&mut self) -> GuiPoll {
         let mut result = GuiPoll::default();
-        let Some(server) = &self.server else {
+        let header = self.header;
+        let Some(server) = &mut self.server else {
+            result.header_presses = std::mem::take(&mut self.pressed);
             return result;
         };
         let delete_window = server.delete_window;
         let mut seen = None;
+        let mut expose = false;
+        let mut pointer = None;
         while let Ok(Some(event)) = server.connection.poll_for_event() {
             match event {
-                X11Event::ConfigureNotify(configure) => {
+                X11Event::ConfigureNotify(configure) if configure.window == server.window => {
+                    // The frame: the plugin's area is what is left under the
+                    // strip.
                     let size = GuiSize {
                         width: u32::from(configure.width),
-                        height: u32::from(configure.height),
+                        height: u32::from(configure.height).saturating_sub(header),
                     };
                     if size != self.size && size.width > 0 && size.height > 0 {
                         seen = Some(size);
@@ -369,12 +538,49 @@ impl PluginWindow {
                 {
                     result.closed = true;
                 }
+                X11Event::Expose(exposed) if exposed.window == server.window => {
+                    expose = true;
+                }
+                X11Event::ButtonPress(press)
+                    if press.event == server.window
+                        && press.detail == 1
+                        && press.event_y >= 0
+                        && (press.event_y as u32) < header =>
+                {
+                    result
+                        .header_presses
+                        .push((i32::from(press.event_x), i32::from(press.event_y)));
+                }
+                X11Event::MotionNotify(motion) if motion.event == server.window => {
+                    let over = motion.event_y >= 0 && (motion.event_y as u32) < header;
+                    pointer = Some(
+                        over.then_some((i32::from(motion.event_x), i32::from(motion.event_y))),
+                    );
+                }
+                X11Event::LeaveNotify(leave) if leave.event == server.window => {
+                    pointer = Some(None);
+                }
                 _ => {}
             }
         }
         if let Some(size) = seen {
             self.size = size;
             result.resized = Some(size);
+            if server.embed != server.window {
+                let _ = server.connection.configure_window(
+                    server.embed,
+                    &x11rb::protocol::xproto::ConfigureWindowAux::new()
+                        .width(size.width)
+                        .height(size.height),
+                );
+                let _ = server.connection.flush();
+            }
+        }
+        if expose {
+            paint_strip(server);
+        }
+        if let Some(at) = pointer {
+            self.hovered(at, &mut result);
         }
         result
     }
@@ -387,7 +593,11 @@ impl PluginWindow {
     /// inferiors included. §2.5's "seen once by a human" for a window this
     /// program does not draw a pixel of.
     pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
-        let size = self.size;
+        // The frame: the strip and the plugin both.
+        let size = GuiSize {
+            width: self.size.width,
+            height: self.size.height + self.header,
+        };
         let server = self.server.as_ref()?;
         let image = server
             .connection
@@ -415,6 +625,41 @@ impl PluginWindow {
     }
 }
 
+/// Puts the strip's pixels on the frame, in bands a request can hold.
+#[cfg(target_os = "linux")]
+fn paint_strip(server: &OnScreen) {
+    let Some((pixels, width, height)) = &server.strip else {
+        return;
+    };
+    let stride = *width as usize * 4;
+    // What one request may carry, less its own header.
+    use x11rb::connection::RequestConnection;
+    let room = server
+        .connection
+        .maximum_request_bytes()
+        .saturating_sub(64)
+        .max(stride);
+    let rows = (room / stride).max(1);
+    let mut y = 0usize;
+    while y < *height as usize {
+        let band = rows.min(*height as usize - y);
+        let _ = server.connection.put_image(
+            x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
+            server.window,
+            server.gc,
+            *width as u16,
+            band as u16,
+            0,
+            y as i16,
+            0,
+            server.depth,
+            &pixels[y * stride..(y + band) * stride],
+        );
+        y += band;
+    }
+    let _ = server.connection.flush();
+}
+
 #[cfg(target_os = "linux")]
 impl Drop for PluginWindow {
     fn drop(&mut self) {
@@ -438,15 +683,22 @@ impl PluginWindow {
         ))
     }
 
+    pub fn open_with_header(title: &str, size: GuiSize, _header: u32) -> Result<Self, GuiError> {
+        Self::open(title, size)
+    }
+
+    pub fn frame_id(&self) -> u64 {
+        0
+    }
+
+    pub fn set_header(&mut self, _rgba: &[u8], _width: u32, _height: u32) {}
+
     pub fn scale(&self) -> f64 {
         1.0
     }
 
     pub fn headless(width: u32, height: u32) -> Self {
-        Self {
-            server: None,
-            size: GuiSize { width, height }.sane(),
-        }
+        Self::offscreen(GuiSize { width, height }, 0)
     }
 
     pub fn is_on_screen(&self) -> bool {
@@ -470,7 +722,10 @@ impl PluginWindow {
     pub fn raise(&mut self) {}
 
     pub fn poll(&mut self) -> GuiPoll {
-        GuiPoll::default()
+        GuiPoll {
+            header_presses: std::mem::take(&mut self.pressed),
+            ..GuiPoll::default()
+        }
     }
 
     pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
@@ -504,29 +759,50 @@ pub fn pump_gui_messages() {
 /// notes what the desktop did to the frame for [`PluginWindow::poll`].
 #[cfg(windows)]
 mod win32 {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-    use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BeginPaint, DIB_RGB_COLORS, EndPaint,
+        GetStockObject, HBRUSH, InvalidateRect, PAINTSTRUCT, SetDIBitsToDevice,
+    };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
         GetClientRect, GetWindowLongPtrW, IDC_ARROW, IsIconic, LoadCursorW, MSG, PM_REMOVE,
         PeekMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
         SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-        ShowWindow, TranslateMessage, WM_CLOSE, WM_SIZE, WNDCLASSEXW, WS_CLIPCHILDREN,
-        WS_OVERLAPPEDWINDOW,
+        ShowWindow, TranslateMessage, WM_CLOSE, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_SIZE,
+        WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
+
+    /// `WM_MOUSELEAVE`, which `windows-sys` files under the common controls.
+    const WM_MOUSELEAVE: u32 = 0x02A3;
 
     use super::GuiSize;
 
     /// What the window procedure has seen since the host last asked.
     #[derive(Default)]
     pub(super) struct Seen {
+        /// The plugin's area — the client area less the strip.
         pub(super) client: Cell<Option<GuiSize>>,
         pub(super) closed: Cell<bool>,
+        /// How tall the strip is; zero for none.
+        pub(super) header: Cell<u32>,
+        /// The window the plugin is in, under the strip — resized with the
+        /// frame. Null when there is no strip.
+        pub(super) embed: Cell<HWND>,
+        /// The strip's pixels, BGRA top-down, and their size.
+        pub(super) strip: RefCell<Option<(Vec<u8>, u32, u32)>>,
+        pub(super) presses: RefCell<Vec<(i32, i32)>>,
+        /// `Some(None)`: the pointer left.
+        pub(super) pointer: Cell<Option<Option<(i32, i32)>>>,
+        pub(super) tracking: Cell<bool>,
     }
 
     const STYLE: u32 = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
@@ -575,10 +851,39 @@ mod win32 {
         (rect.right - rect.left, rect.bottom - rect.top)
     }
 
-    pub(super) fn open(title: &str, size: GuiSize) -> Result<(HWND, Box<Seen>), String> {
+    /// The class the plugin's own window under the strip is made of.
+    fn embed_class() -> &'static [u16] {
+        static CLASS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+        CLASS.get_or_init(|| {
+            let name = wide("FontellePluginEmbed");
+            // SAFETY: as `class`, with the default procedure.
+            unsafe {
+                let class = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    lpfnWndProc: Some(DefWindowProcW),
+                    hInstance: GetModuleHandleW(std::ptr::null()),
+                    hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
+                    hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
+                    lpszClassName: name.as_ptr(),
+                    ..std::mem::zeroed()
+                };
+                RegisterClassExW(&class);
+            }
+            name
+        })
+    }
+
+    pub(super) fn open(
+        title: &str,
+        size: GuiSize,
+        header: u32,
+    ) -> Result<(HWND, Box<Seen>), String> {
         let class = class();
         let title = wide(title);
-        let (width, height) = outer(size);
+        let (width, height) = outer(GuiSize {
+            width: size.width,
+            height: size.height + header,
+        });
         // SAFETY: a top-level window of a registered class, on this thread,
         // whose user data is a `Seen` that outlives it (see `close`).
         unsafe {
@@ -603,6 +908,25 @@ mod win32 {
                 ));
             }
             let seen = Box::new(Seen::default());
+            seen.header.set(header);
+            seen.embed.set(std::ptr::null_mut());
+            if header > 0 {
+                let embed = CreateWindowExW(
+                    0,
+                    embed_class().as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                    0,
+                    header as i32,
+                    size.width as i32,
+                    size.height as i32,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    GetModuleHandleW(std::ptr::null()),
+                    std::ptr::null(),
+                );
+                seen.embed.set(embed);
+            }
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*seen as *const Seen as isize);
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
@@ -619,7 +943,8 @@ mod win32 {
         }
     }
 
-    pub(super) fn client(hwnd: HWND) -> GuiSize {
+    /// The plugin's area: the client area, less the strip.
+    pub(super) fn client(hwnd: HWND, header: u32) -> GuiSize {
         let mut rect = RECT {
             left: 0,
             top: 0,
@@ -630,12 +955,34 @@ mod win32 {
         unsafe { GetClientRect(hwnd, &mut rect) };
         GuiSize {
             width: (rect.right - rect.left).max(0) as u32,
-            height: (rect.bottom - rect.top).max(0) as u32,
+            height: ((rect.bottom - rect.top).max(0) as u32).saturating_sub(header),
         }
     }
 
-    pub(super) fn resize(hwnd: HWND, size: GuiSize) {
-        let (width, height) = outer(size);
+    /// Hands the strip new pixels and asks for it to be painted.
+    pub(super) fn set_strip(hwnd: HWND, seen: &Seen, rgba: &[u8], width: u32, height: u32) {
+        let bgra: Vec<u8> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], 255])
+            .collect();
+        *seen.strip.borrow_mut() = Some((bgra, width, height));
+        let strip = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: seen.header.get() as i32,
+        };
+        // SAFETY: a live window of this thread.
+        unsafe { InvalidateRect(hwnd, &strip, 0) };
+    }
+
+    pub(super) fn resize(hwnd: HWND, size: GuiSize, header: u32) {
+        let (width, height) = outer(GuiSize {
+            width: size.width,
+            height: size.height + header,
+        });
         // SAFETY: a live window of this thread.
         unsafe {
             SetWindowPos(
@@ -687,6 +1034,13 @@ mod win32 {
         }
     }
 
+    /// A mouse message's position, signed: `GET_X_LPARAM`.
+    fn point(lparam: LPARAM) -> (i32, i32) {
+        let x = (lparam & 0xFFFF) as u16 as i16;
+        let y = ((lparam >> 16) & 0xFFFF) as u16 as i16;
+        (i32::from(x), i32::from(y))
+    }
+
     unsafe extern "system" fn procedure(
         hwnd: HWND,
         message: u32,
@@ -704,13 +1058,93 @@ mod win32 {
                 0
             }
             (WM_SIZE, Some(seen)) => {
+                let header = seen.header.get();
                 let width = (lparam as u32) & 0xFFFF;
-                let height = ((lparam as u32) >> 16) & 0xFFFF;
+                let height = (((lparam as u32) >> 16) & 0xFFFF).saturating_sub(header);
                 if width > 0 && height > 0 {
                     seen.client.set(Some(GuiSize { width, height }));
+                    let embed = seen.embed.get();
+                    if !embed.is_null() {
+                        // SAFETY: the child this window made.
+                        unsafe {
+                            SetWindowPos(
+                                embed,
+                                std::ptr::null_mut(),
+                                0,
+                                header as i32,
+                                width as i32,
+                                height as i32,
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            )
+                        };
+                    }
                 }
                 // SAFETY: the default handling of a message this window got.
                 unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+            (WM_PAINT, Some(seen)) if seen.header.get() > 0 => {
+                // SAFETY: a paint of this window, begun and ended here; the
+                // bits are the strip's, top-down (a negative height).
+                unsafe {
+                    let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                    let dc = BeginPaint(hwnd, &mut paint);
+                    if let Some((bits, width, height)) = &*seen.strip.borrow() {
+                        let mut info: BITMAPINFO = std::mem::zeroed();
+                        info.bmiHeader = BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: *width as i32,
+                            biHeight: -(*height as i32),
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB,
+                            ..std::mem::zeroed()
+                        };
+                        SetDIBitsToDevice(
+                            dc,
+                            0,
+                            0,
+                            *width,
+                            *height,
+                            0,
+                            0,
+                            0,
+                            *height,
+                            bits.as_ptr().cast(),
+                            &info,
+                            DIB_RGB_COLORS,
+                        );
+                    }
+                    EndPaint(hwnd, &paint);
+                }
+                0
+            }
+            (WM_LBUTTONDOWN, Some(seen)) => {
+                let (x, y) = point(lparam);
+                if y >= 0 && (y as u32) < seen.header.get() {
+                    seen.presses.borrow_mut().push((x, y));
+                }
+                0
+            }
+            (WM_MOUSEMOVE, Some(seen)) if seen.header.get() > 0 => {
+                let (x, y) = point(lparam);
+                let over = y >= 0 && (y as u32) < seen.header.get();
+                seen.pointer.set(Some(over.then_some((x, y))));
+                if !seen.tracking.replace(true) {
+                    let mut track = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    // SAFETY: a plain request about this window.
+                    unsafe { TrackMouseEvent(&mut track) };
+                }
+                0
+            }
+            (WM_MOUSELEAVE, Some(seen)) => {
+                seen.tracking.set(false);
+                seen.pointer.set(Some(None));
+                0
             }
             // SAFETY: as above.
             _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
@@ -723,21 +1157,46 @@ impl PluginWindow {
     /// Opens a window whose client area is `size`, titled `title`, and shows
     /// it in front.
     pub fn open(title: &str, size: GuiSize) -> Result<Self, GuiError> {
+        Self::open_with_header(title, size, 0)
+    }
+
+    /// Opens a window whose plugin area is `size`, with a strip `header`
+    /// pixels high across its top — see the type's note.
+    pub fn open_with_header(title: &str, size: GuiSize, header: u32) -> Result<Self, GuiError> {
         let size = size.sane();
-        let (hwnd, seen) = win32::open(title, size).map_err(GuiError::NoDisplay)?;
-        let size = win32::client(hwnd);
+        let (hwnd, seen) = win32::open(title, size, header).map_err(GuiError::NoDisplay)?;
+        let size = win32::client(hwnd, header);
         seen.client.set(None);
-        Ok(Self {
-            server: Some(OnScreen { hwnd, seen }),
-            size,
-        })
+        let mut window = Self::offscreen(size, header);
+        window.server = Some(OnScreen { hwnd, seen });
+        Ok(window)
     }
 
     /// See the Linux one: for tests, a window on no screen.
     pub fn headless(width: u32, height: u32) -> Self {
-        Self {
-            server: None,
-            size: GuiSize { width, height }.sane(),
+        Self::offscreen(GuiSize { width, height }, 0)
+    }
+
+    /// The frame's own `HWND`: the strip and the plugin's window both.
+    pub fn frame_id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| server.hwnd as usize as u64)
+    }
+
+    /// Shows `rgba` as the strip — see the Linux one.
+    pub fn set_header(&mut self, rgba: &[u8], width: u32, height: u32) {
+        if self.header == 0 || rgba.len() < (width * height * 4) as usize {
+            return;
+        }
+        if let Some(server) = &self.server {
+            win32::set_strip(
+                server.hwnd,
+                &server.seen,
+                rgba,
+                width,
+                height.min(self.header),
+            );
         }
     }
 
@@ -745,11 +1204,17 @@ impl PluginWindow {
         self.server.is_some()
     }
 
-    /// The `HWND` a plugin is given as its parent. Zero for a headless one.
+    /// The `HWND` a plugin is given as its parent — the window under the
+    /// strip, or the frame when there is none. Zero for a headless one.
     pub fn id(&self) -> u64 {
-        self.server
-            .as_ref()
-            .map_or(0, |server| server.hwnd as usize as u64)
+        self.server.as_ref().map_or(0, |server| {
+            let embed = server.seen.embed.get();
+            if embed.is_null() {
+                server.hwnd as usize as u64
+            } else {
+                embed as usize as u64
+            }
+        })
     }
 
     pub fn size(&self) -> GuiSize {
@@ -780,10 +1245,10 @@ impl PluginWindow {
             self.size = size;
             return;
         };
-        win32::resize(server.hwnd, size);
+        win32::resize(server.hwnd, size, self.header);
         // What the desktop actually gave — a screen smaller than the plugin
         // gets a smaller window — and not news the next time it is polled.
-        self.size = win32::client(server.hwnd);
+        self.size = win32::client(server.hwnd, self.header);
         server.seen.client.set(None);
     }
 
@@ -798,14 +1263,20 @@ impl PluginWindow {
     pub fn poll(&mut self) -> GuiPoll {
         let mut result = GuiPoll::default();
         let Some(server) = &self.server else {
+            result.header_presses = std::mem::take(&mut self.pressed);
             return result;
         };
         result.closed = server.seen.closed.replace(false);
+        result.header_presses = std::mem::take(&mut *server.seen.presses.borrow_mut());
+        let pointer = server.seen.pointer.take();
         if let Some(size) = server.seen.client.take()
             && size != self.size
         {
             self.size = size;
             result.resized = Some(size);
+        }
+        if let Some(at) = pointer {
+            self.hovered(at, &mut result);
         }
         result
     }

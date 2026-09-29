@@ -2152,6 +2152,62 @@ pub const CONFIRM_CANCEL: &str = "Cancel";
 pub const CONFIRM_REMOVE: &str = "Remove";
 pub const SAVE_AS: &str = "Save as\u{2026}";
 
+/// The strip across the top of a hosted plugin's own editor window: the
+/// header's colour, and the preset bar on it — the same bar the studio's own
+/// windows carry, drawn by the same code (`draw_preset_bar`), so a plugin's
+/// presets are worked the way every other device's are.
+pub fn draw_plugin_header(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    width: f32,
+    view: &crate::canvas::PresetBarView,
+    hover: Option<crate::canvas::PresetBarHit>,
+) {
+    fill_rect(
+        scene,
+        crate::layout::Rect::new(0.0, 0.0, width, crate::canvas::PLUGIN_HEADER_HEIGHT),
+        theme.palette.panel_header,
+    );
+    let layout = crate::canvas::plugin_header_layout(width, view, &theme.metrics);
+    draw_preset_bar(scene, theme, labels, &layout, view, hover);
+}
+
+/// The strip as pixels, `width` by `height` at `scale` — RGBA, row after
+/// row — for the plugin's window to show. The window is not one of the
+/// studio's, so there is no surface to draw it on: it is rendered here and
+/// handed over (`fontelle_host::PluginWindow::set_header`).
+///
+/// Shapes its own four strings, so a caller cannot draw a bar with no words
+/// on it by forgetting to.
+#[allow(clippy::too_many_arguments)]
+pub fn plugin_header_pixels(
+    headless: &mut Headless,
+    theme: &Theme,
+    labels: &mut Labels,
+    text: &mut crate::text::TextContext,
+    view: &crate::canvas::PresetBarView,
+    hover: Option<crate::canvas::PresetBarHit>,
+    width: u32,
+    height: u32,
+    scale: f32,
+) -> Result<Vec<u8>, RenderError> {
+    for caption in [
+        crate::canvas::preset_bar_name(view).as_str(),
+        view.category.as_str(),
+        SAVE,
+        SAVE_AS,
+    ] {
+        labels.ensure(caption, &theme.font, text);
+    }
+    let scale = scale.max(0.25);
+    let mut strip = Scene::new();
+    draw_plugin_header(&mut strip, theme, labels, width as f32 / scale, view, hover);
+    let mut scene = Scene::new();
+    scene.append(&strip, Some(Affine::scale(f64::from(scale))));
+    headless.render(&scene, width, height, theme.palette.panel_header)
+}
+
 /// The preset bar, across the right-hand end of an editor window's header
 /// (`docs/flopsynth-plan.md` §P.7).
 ///

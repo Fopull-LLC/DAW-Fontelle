@@ -44,6 +44,13 @@ use crate::theme::Metrics;
 pub enum PresetDevice {
     /// The selected channel's instrument.
     Instrument,
+    /// One channel's instrument, named by its place in the rack — whichever
+    /// channel is selected. What a hosted plugin's own window is: the strip
+    /// across its top is that channel's, and selecting another channel in
+    /// the studio must not change what it loads.
+    Channel {
+        index: usize,
+    },
     Insert {
         strip: usize,
         slot: usize,
@@ -288,6 +295,60 @@ pub fn preset_bar_layout(
         save,
         save_as,
     }
+}
+
+/// One open plugin editor's strip, as the window has to draw it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginHeaderView {
+    /// Whose presets the strip is — the insert, or the channel by its place.
+    pub device: PresetDevice,
+    pub bar: PresetBarView,
+    /// The strip's size in the plugin window's own pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The window's scale: its pixels per logical one.
+    pub scale: f32,
+    /// Where the pointer is over the strip, in its pixels.
+    pub hover: Option<(f32, f32)>,
+}
+
+/// How tall the strip across the top of a hosted plugin's own editor window
+/// is, in logical pixels — the preset bar and a margin round it.
+///
+/// > *"we need to ensure our presets system works with it kind of like how
+/// > flx does"*
+///
+/// The plugin's window is the plugin's, so the bar cannot sit in a header of
+/// the studio's the way it does on an instrument window: the window is made
+/// this much taller and the plugin handed the rest (`fontelle_host::
+/// PluginWindow::open_with_header`).
+pub const PLUGIN_HEADER_HEIGHT: f32 = 32.0;
+
+/// The preset bar across a plugin window `width` wide — the same bar, laid
+/// out the same way, as the one on a studio window's header.
+pub fn plugin_header_layout(
+    width: f32,
+    view: &PresetBarView,
+    metrics: &Metrics,
+) -> PresetBarLayout {
+    preset_bar_layout(
+        Rect::new(0.0, 0.0, width, PLUGIN_HEADER_HEIGHT),
+        metrics.panel_padding,
+        view,
+        metrics,
+    )
+}
+
+/// What a press at `(x, y)` on a plugin window's strip lands on — see
+/// [`preset_bar_hit`].
+pub fn plugin_header_hit(
+    width: f32,
+    view: &PresetBarView,
+    metrics: &Metrics,
+    x: f32,
+    y: f32,
+) -> Option<PresetBarHit> {
+    preset_bar_hit(&plugin_header_layout(width, view, metrics), view, x, y)
 }
 
 /// What a press at `(x, y)` lands on.

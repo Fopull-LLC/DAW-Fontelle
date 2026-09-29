@@ -69,3 +69,69 @@ fn close_button(window: &PluginWindow) {
     // SAFETY: a posted message to a window this thread owns.
     unsafe { PostMessageW(window.id() as usize as *mut _, WM_CLOSE, 0, 0) };
 }
+
+/// The strip across the top, on Windows: the plugin is handed a child window
+/// under it, the sizes are the plugin's, and a press on the strip is the
+/// studio's while one below it is not — the X11 test's claims
+/// (`gui_header.rs`), made of the Win32 window.
+#[test]
+fn on_windows_the_strip_is_the_studios_and_the_rest_is_the_plugins() {
+    const HEADER: u32 = 32;
+    let mut window = PluginWindow::open_with_header(
+        "Synth",
+        GuiSize {
+            width: 640,
+            height: 480,
+        },
+        HEADER,
+    )
+    .expect("a window on Windows");
+    assert_eq!(window.header_height(), HEADER);
+    assert_eq!(
+        window.size(),
+        GuiSize {
+            width: 640,
+            height: 480
+        }
+    );
+    assert_ne!(window.id(), 0);
+    assert_ne!(
+        window.id(),
+        window.frame_id(),
+        "the plugin has a window of its own"
+    );
+
+    let red: Vec<u8> = (0..640 * HEADER).flat_map(|_| [220, 30, 40, 255]).collect();
+    window.set_header(&red, 640, HEADER);
+
+    press(window.frame_id(), 50, 200);
+    press(window.frame_id(), 50, 10);
+    fontelle_host::pump_gui_messages();
+    assert_eq!(window.poll().header_presses, vec![(50, 10)]);
+
+    window.resize(GuiSize {
+        width: 700,
+        height: 400,
+    });
+    fontelle_host::pump_gui_messages();
+    assert_eq!(
+        window.size(),
+        GuiSize {
+            width: 700,
+            height: 400
+        },
+        "the plugin's area, under the strip"
+    );
+}
+
+/// A left press at `(x, y)` of a window's client area.
+fn press(hwnd: u64, x: i32, y: i32) {
+    unsafe extern "system" {
+        fn PostMessageW(hwnd: *mut std::ffi::c_void, msg: u32, wparam: usize, lparam: isize)
+        -> i32;
+    }
+    const WM_LBUTTONDOWN: u32 = 0x0201;
+    let lparam = ((y as isize & 0xFFFF) << 16) | (x as isize & 0xFFFF);
+    // SAFETY: a posted message to a window this thread owns.
+    unsafe { PostMessageW(hwnd as usize as *mut _, WM_LBUTTONDOWN, 0x0001, lparam) };
+}

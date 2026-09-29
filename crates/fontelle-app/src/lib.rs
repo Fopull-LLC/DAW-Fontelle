@@ -41,7 +41,7 @@ pub use bundle::{
 };
 pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::{ImportedAudio, SampleLibrary};
-pub use plugins::{PluginRack, PluginSlot, PluginWiring, plugin_slots};
+pub use plugins::{EditorHeader, PluginRack, PluginSlot, PluginWiring, plugin_slots};
 pub use projects::{
     ProjectEntry, ProjectLibrary, ProjectOrder, SHARED_DIR, find_by_id, unique_name,
 };

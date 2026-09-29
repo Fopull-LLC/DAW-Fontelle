@@ -2478,6 +2478,34 @@ pub trait StudioHost: DocumentHost {
         false
     }
 
+    /// Every open plugin editor's strip — the preset bar of the device it is,
+    /// drawn across the top of the plugin's own window. See
+    /// [`PluginHeaderView`](crate::canvas::PluginHeaderView).
+    fn plugin_headers(&self) -> Vec<crate::canvas::PluginHeaderView> {
+        Vec::new()
+    }
+
+    /// Hands `device`'s editor the strip's pixels, RGBA, as the window
+    /// rendered them.
+    fn set_plugin_header_pixels(
+        &mut self,
+        _device: crate::canvas::PresetDevice,
+        _rgba: &[u8],
+        _width: u32,
+        _height: u32,
+    ) {
+    }
+
+    /// Presses on editors' strips since last asked: whose, and where, in the
+    /// window's own pixels.
+    fn take_plugin_header_presses(&mut self) -> Vec<(crate::canvas::PresetDevice, f32, f32)> {
+        Vec::new()
+    }
+
+    /// Opens the browser's Presets tab on `device`'s presets, with a row
+    /// pressed there going to that device.
+    fn open_presets_for(&mut self, _device: crate::canvas::PresetDevice) {}
+
     /// Walks the plugin folders again.
     ///
     /// A thing somebody asks for rather than something a menu does when it

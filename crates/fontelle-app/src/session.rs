@@ -1297,7 +1297,12 @@ impl Session {
             disgusting_beat_menu: None,
             disgusting_beat_taps: HashMap::new(),
             disgusting_beat_controls: HashMap::new(),
-            plugins: crate::PluginRack::new(),
+            plugins: {
+                let mut rack = crate::PluginRack::new();
+                // The preset bar across the top of every plugin's own window.
+                rack.set_editor_header(fontelle_ui::canvas::PLUGIN_HEADER_HEIGHT.round() as u32);
+                rack
+            },
             plugins_hosted: false,
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
             spectrum_scratch: Vec::new(),
@@ -1409,6 +1414,13 @@ impl Session {
     /// effect" is otherwise counting whatever this machine has installed.
     /// See `PluginRack::search_standard_folders`, which learnt this the day
     /// three hundred and seventy real plugins arrived on the developer's own.
+    /// Plugin editors open on no screen — for a test of the studio's side of
+    /// a plugin's window, which has no display to put one on.
+    pub fn with_headless_plugin_editors(mut self) -> Self {
+        self.plugins.set_headless_editors(true);
+        self
+    }
+
     pub fn with_plugin_folders(mut self, folders: Vec<PathBuf>) -> Self {
         self.plugins.search_standard_folders(false);
         // Nor a plugin's library in the machine's data folders: what a
@@ -7045,6 +7057,61 @@ impl StudioHost for Session {
         self.open_plugin_editor(crate::PluginSlot::Insert { track, slot })
     }
 
+    fn plugin_headers(&self) -> Vec<fontelle_ui::canvas::PluginHeaderView> {
+        self.plugins
+            .editor_headers()
+            .into_iter()
+            .filter_map(|header| {
+                let device = self.device_of_slot(header.slot)?;
+                Some(fontelle_ui::canvas::PluginHeaderView {
+                    device,
+                    bar: self.preset_bar(device),
+                    width: header.width,
+                    height: header.height,
+                    scale: header.scale,
+                    hover: header.hover.map(|(x, y)| (x as f32, y as f32)),
+                })
+            })
+            .collect()
+    }
+
+    fn set_plugin_header_pixels(
+        &mut self,
+        device: PresetDevice,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        if let Some(slot) = self.plugin_slot_of(device) {
+            self.plugins.set_header_pixels(slot, rgba, width, height);
+        }
+    }
+
+    fn take_plugin_header_presses(&mut self) -> Vec<(PresetDevice, f32, f32)> {
+        self.plugins
+            .take_header_presses()
+            .into_iter()
+            .filter_map(|(slot, x, y)| Some((self.device_of_slot(slot)?, x as f32, y as f32)))
+            .collect()
+    }
+
+    fn open_presets_for(&mut self, device: PresetDevice) {
+        let Some(kind) = self.preset_device(device) else {
+            return;
+        };
+        // Where a row pressed there goes: the insert, or the channel — made
+        // the selected one, which is what the browser's rows load onto.
+        match device {
+            PresetDevice::Insert { strip, slot } => self.open_insert = Some((strip, slot)),
+            PresetDevice::Channel { index } => self.select_channel(index),
+            PresetDevice::Instrument | PresetDevice::Track { .. } => {}
+        }
+        self.query.clear();
+        self.browser_mode = fontelle_ui::canvas::BrowserMode::Presets;
+        self.preset_device_open = Some(kind);
+        self.touch();
+    }
+
     fn tick_plugin_editors(&mut self) -> bool {
         // Once a frame, whatever the editors are doing: a plugin's own
         // library listed on its thread since the last one.
@@ -11594,12 +11661,14 @@ impl Session {
     fn preset_device(&self, device: PresetDevice) -> Option<fontelle_types::DeviceKind> {
         use fontelle_types::{DeviceKind, InstrumentKind};
         match device {
-            PresetDevice::Instrument => {
-                let id = self.selected_channel_id()?;
+            PresetDevice::Instrument | PresetDevice::Channel { .. } => {
+                let id = self.device_channel(device)?;
+                let index = match device {
+                    PresetDevice::Channel { index } => index,
+                    _ => self.selected,
+                };
                 let channel = self.project.channels.get(id)?;
-                let kind = channel
-                    .instrument
-                    .or_else(|| self.channel_kind(self.selected))?;
+                let kind = channel.instrument.or_else(|| self.channel_kind(index))?;
                 // A channel playing somebody else's plugin is a device named
                 // by *which* plugin, not by the fact that it is one: a Diva
                 // preset is no use to Surge.
@@ -11632,8 +11701,8 @@ impl Session {
     fn preset_payload(&self, device: PresetDevice) -> Option<fontelle_types::PresetPayload> {
         use fontelle_types::PresetPayload;
         match device {
-            PresetDevice::Instrument => {
-                let id = self.selected_channel_id()?;
+            PresetDevice::Instrument | PresetDevice::Channel { .. } => {
+                let id = self.device_channel(device)?;
                 let channel = self.project.channels.get(id)?;
                 if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin) {
                     return channel.plugin.clone().map(PresetPayload::Plugin);
@@ -11711,8 +11780,8 @@ impl Session {
     /// The preset this device says it was loaded from, if it says one.
     fn preset_ref(&self, device: PresetDevice) -> Option<fontelle_types::PresetRef> {
         match device {
-            PresetDevice::Instrument => {
-                let id = self.selected_channel_id()?;
+            PresetDevice::Instrument | PresetDevice::Channel { .. } => {
+                let id = self.device_channel(device)?;
                 self.project.channels.get(id)?.preset.clone()
             }
             PresetDevice::Insert { strip, slot } => {
@@ -11736,8 +11805,8 @@ impl Session {
     /// Where a command writes this device.
     fn preset_target(&self, device: PresetDevice) -> Option<fontelle_model::PresetTarget> {
         match device {
-            PresetDevice::Instrument => self
-                .selected_channel_id()
+            PresetDevice::Instrument | PresetDevice::Channel { .. } => self
+                .device_channel(device)
                 .map(fontelle_model::PresetTarget::Channel),
             PresetDevice::Insert { strip, slot } => self
                 .mixer_track_ids()
@@ -12920,10 +12989,40 @@ impl Session {
         ))
     }
 
+    /// The preset device a rack slot is: its insert, or its channel by place
+    /// — never "the selected channel", which is a different one the moment
+    /// somebody clicks another.
+    fn device_of_slot(&self, slot: crate::PluginSlot) -> Option<PresetDevice> {
+        match slot {
+            crate::PluginSlot::Channel(id) => self
+                .channel_ids()
+                .iter()
+                .position(|&channel| channel == id)
+                .map(|index| PresetDevice::Channel { index }),
+            crate::PluginSlot::Insert { track, slot } => self
+                .mixer_track_ids()
+                .iter()
+                .position(|&held| held == track)
+                .map(|strip| PresetDevice::Insert { strip, slot }),
+        }
+    }
+
+    /// The channel a preset device names: the selected one, or the one at
+    /// its place.
+    fn device_channel(&self, device: PresetDevice) -> Option<ChannelId> {
+        match device {
+            PresetDevice::Instrument => self.selected_channel_id(),
+            PresetDevice::Channel { index } => self.channel_ids().get(index).copied(),
+            PresetDevice::Insert { .. } | PresetDevice::Track { .. } => None,
+        }
+    }
+
     /// Where the plugin a preset device names sits in the rack.
     fn plugin_slot_of(&self, device: PresetDevice) -> Option<crate::PluginSlot> {
         match device {
-            PresetDevice::Instrument => self.selected_channel_id().map(crate::PluginSlot::Channel),
+            PresetDevice::Instrument | PresetDevice::Channel { .. } => {
+                self.device_channel(device).map(crate::PluginSlot::Channel)
+            }
             PresetDevice::Insert { strip, slot } => {
                 let track = self.mixer_track_ids().get(strip).copied()?;
                 Some(crate::PluginSlot::Insert { track, slot })

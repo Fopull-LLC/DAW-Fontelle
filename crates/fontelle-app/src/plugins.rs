@@ -98,6 +98,10 @@ struct Live {
     /// (a preset was loaded, an undo put an old one back) from one whose copy
     /// is merely old. See [`PluginRack::ensure`].
     blob: Option<String>,
+    /// Presses on the editor's strip since the session last asked.
+    header_presses: Vec<(i32, i32)>,
+    /// Where the pointer is over the strip.
+    header_hover: Option<(i32, i32)>,
 }
 
 impl Live {
@@ -179,6 +183,11 @@ impl Live {
         if let Some(size) = polled.resized {
             self.plugin.resize_editor(size);
         }
+        self.header_presses
+            .extend(polled.header_presses.iter().copied());
+        if let Some(hover) = polled.header_hover {
+            self.header_hover = hover;
+        }
         let asked = self.plugin.take_editor_requests();
         if let Some(size) = asked.resize {
             window.resize(size);
@@ -196,6 +205,8 @@ impl Live {
     fn close_editor(&mut self) {
         self.plugin.close_editor();
         self.editor = None;
+        self.header_presses.clear();
+        self.header_hover = None;
     }
 
     /// Takes the processor back and stops the plugin, so it can be dropped
@@ -213,6 +224,19 @@ impl Live {
             None => !self.plugin.is_active(),
         }
     }
+}
+
+/// One open plugin editor's strip, as the rack knows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorHeader {
+    pub slot: PluginSlot,
+    /// The strip's size, in the window's own pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The window's pixels per logical one.
+    pub scale: f32,
+    /// Where the pointer is over the strip.
+    pub hover: Option<(i32, i32)>,
 }
 
 /// One plugin's own library: still being listed, or listed.
@@ -253,6 +277,13 @@ pub struct PluginRack {
     fresh: Vec<PluginKey>,
     /// Where a plugin's library is looked for beyond what it lists itself.
     preset_roots: fontelle_host::PresetRoots,
+    /// How tall the strip across the top of a plugin's own editor is, in
+    /// pixels — the studio's preset bar, drawn there. Zero: no strip, which
+    /// is what a rack with no studio (a bounce, a test of the rack) has.
+    editor_header: u32,
+    /// Whether an editor opens on no screen — for a test of the studio's
+    /// side of a plugin's window, on a machine with no display.
+    headless_editors: bool,
     /// Plugins whose slot has gone, waiting for their processor to come back
     /// from a graph that has not been freed yet.
     retired: Vec<Live>,
@@ -276,6 +307,8 @@ impl Default for PluginRack {
             libraries: HashMap::new(),
             fresh: Vec::new(),
             preset_roots: fontelle_host::PresetRoots::standard(),
+            editor_header: 0,
+            headless_editors: false,
             retired: Vec::new(),
             message: None,
         }
@@ -599,6 +632,8 @@ impl PluginRack {
                 displays: HashMap::new(),
                 editor: None,
                 blob: state.blob.clone(),
+                header_presses: Vec::new(),
+                header_hover: None,
             };
             live.refresh_displays();
             self.list_library(&found_info, &mut live);
@@ -861,7 +896,15 @@ impl PluginRack {
             return Ok(false);
         }
         let title = live.plugin.name().to_string();
-        let window = PluginWindow::open(&title, GuiSize::FALLBACK).map_err(|e| e.to_string())?;
+        let window = match self.headless_editors {
+            true => PluginWindow::headless_with_header(
+                GuiSize::FALLBACK.width,
+                GuiSize::FALLBACK.height,
+                self.editor_header,
+            ),
+            false => PluginWindow::open_with_header(&title, GuiSize::FALLBACK, self.editor_header)
+                .map_err(|e| e.to_string())?,
+        };
         // The plugin's own idea of how big it should be, asked for while it is
         // being created and applied to the frame afterwards: a window opened
         // at the wrong size and corrected is a window that jumps.
@@ -895,6 +938,72 @@ impl PluginRack {
             any |= live.tick_editor();
         }
         any
+    }
+
+    /// Gives every plugin editor opened from now a strip `height` pixels
+    /// high across its top — see the field.
+    pub fn set_editor_header(&mut self, height: u32) {
+        self.editor_header = height;
+    }
+
+    /// Opens editors on no screen — see the field.
+    pub fn set_headless_editors(&mut self, headless: bool) {
+        self.headless_editors = headless;
+    }
+
+    /// Every open editor that has a strip.
+    pub fn editor_headers(&self) -> Vec<EditorHeader> {
+        let mut headers: Vec<_> = self
+            .live
+            .iter()
+            .filter_map(|(slot, live)| {
+                let window = live.editor.as_ref()?;
+                (window.header_height() > 0).then(|| EditorHeader {
+                    slot: *slot,
+                    width: window.size().width,
+                    height: window.header_height(),
+                    scale: window.scale() as f32,
+                    hover: live.header_hover,
+                })
+            })
+            .collect();
+        headers.sort_by_key(|header| format!("{:?}", header.slot));
+        headers
+    }
+
+    /// The presses on editors' strips since this was last asked, in each
+    /// window's own pixels.
+    pub fn take_header_presses(&mut self) -> Vec<(PluginSlot, i32, i32)> {
+        let mut presses = Vec::new();
+        for (slot, live) in &mut self.live {
+            for (x, y) in live.header_presses.drain(..) {
+                presses.push((*slot, x, y));
+            }
+        }
+        presses
+    }
+
+    /// Hands `slot`'s editor the pixels of its strip.
+    pub fn set_header_pixels(&mut self, slot: PluginSlot, rgba: &[u8], width: u32, height: u32) {
+        if let Some(window) = self
+            .live
+            .get_mut(&slot)
+            .and_then(|live| live.editor.as_mut())
+        {
+            window.set_header(rgba, width, height);
+        }
+    }
+
+    /// **A headless editor only**: a press on its strip — see
+    /// `fontelle_host::PluginWindow::press_header`.
+    pub fn press_header(&mut self, slot: PluginSlot, x: i32, y: i32) {
+        if let Some(window) = self
+            .live
+            .get_mut(&slot)
+            .and_then(|live| live.editor.as_mut())
+        {
+            window.press_header(x, y);
+        }
     }
 }
 
