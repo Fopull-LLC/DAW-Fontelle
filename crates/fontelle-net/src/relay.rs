@@ -2722,7 +2722,13 @@ mod managed_tests {
     /// remainder of the old one: the clock restarts at the reclaim.
     #[test]
     fn a_reclaimed_lobbys_idle_clock_restarts_at_the_reclaim() {
-        let idle = Duration::from_millis(200);
+        // Fontelle's own, not in the engine's copy (hub card 0265): 200 ms
+        // in the engine. The check below lands a quarter window before the
+        // new deadline, and 50 ms of slack was less than a busy macOS
+        // runner's `sleep` overshoots by — Fontelle's CI: *"the old clock
+        // was carried over the reclaim, left: 0, right: 1"*. A second gives
+        // it 250 ms; nothing the test says changed.
+        let idle = Duration::from_millis(1000);
         let relay = TestRelay::managed_limited(
             TablePolicy::with(KEY, 20).reserving("U5FEFJ", KEY),
             Duration::from_secs(30),
