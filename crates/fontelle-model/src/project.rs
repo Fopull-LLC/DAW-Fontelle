@@ -296,6 +296,13 @@ pub struct Project {
     /// existed opens in the 4/4 it was made in.
     #[serde(default = "default_beats_per_bar")]
     pub beats_per_bar: u32,
+    /// The song's key — a root and a scale — or `None` for none. What the
+    /// piano roll dims rows against and fits notes to; the notes themselves
+    /// are never changed by it except through a command that says so.
+    ///
+    /// Defaulted, so a project from before keys opens with none.
+    #[serde(default)]
+    pub key: Option<fontelle_types::KeyScale>,
     pub channels: Arena<ChannelId, Channel>,
     pub mixer: Mixer,
     /// Visual only — TDD §10.3.
@@ -549,6 +556,7 @@ impl Project {
             },
             tempo_map: TempoMap::default(),
             beats_per_bar: default_beats_per_bar(),
+            key: None,
             channels: Arena::default(),
             mixer,
             lanes: Arena::default(),

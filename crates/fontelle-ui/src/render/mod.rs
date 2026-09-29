@@ -461,6 +461,13 @@ pub struct RollChrome<'a> {
     /// written in. Zero when nothing is plugged in, which draws the keyboard
     /// exactly as it always was. See `fontelle_midi::LiveKeys`.
     pub live_keys: u128,
+    /// The song's key as the roll uses it — `None` with no key, and on a
+    /// kit, whose rows are drums. See `canvas::row_shade`.
+    pub scale: Option<crate::canvas::RollScale>,
+    /// The song's key as the chips say it, and the root the root chip shows
+    /// (the one a scale will be built on when none is chosen yet).
+    pub key: Option<&'a fontelle_types::KeyScale>,
+    pub key_root: u8,
 }
 
 /// The instrument editor's contents (TDD §7.2).
@@ -4195,18 +4202,27 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
         // notes are drawn in — see `canvas::key_row`. Measuring the three in
         // three places is how they came to disagree by a pixel, which is what
         // "inconsistant sizing on the notes" looked like.
-        let row = crate::canvas::key_row(v, grid, key.clamp(0, 127) as u8);
-        // A key the instrument cannot play, before the accidental shading and
-        // instead of it: "nothing here sounds" is a stronger statement about a
-        // row than "this one is a black key", and on a drum kit the dead rows
-        // fall on naturals and accidentals alike.
-        if !chrome.key_map.plays(key.clamp(0, 127) as u8) {
-            fill_rect(scene, row.intersection(&grid), p.row_dead);
-        } else if is_accidental(key) && chrome.key_style == crate::canvas::KeyStyle::Piano {
-            // Only in the piano view: the list view has no black keys to
-            // shade rows for, and striping them there would be a pattern
-            // saying something the strip beside it does not.
-            fill_rect(scene, row.intersection(&grid), p.row_accidental);
+        let key_u8 = key.clamp(0, 127) as u8;
+        let row = crate::canvas::key_row(v, grid, key_u8);
+        // One decision, `canvas::row_shade`: a key the instrument cannot play
+        // first ("nothing here sounds" beats anything else a row could say,
+        // and a kit's dead rows fall on naturals and accidentals alike); then
+        // the song's key, which replaces the black-key stripes while it is on;
+        // then the stripes, in the piano view only.
+        let ink = match crate::canvas::row_shade(
+            key_u8,
+            chrome.key_map.plays(key_u8),
+            chrome.key_style,
+            chrome.scale,
+        ) {
+            crate::canvas::RowShade::Dead => Some(p.row_dead),
+            crate::canvas::RowShade::OutOfScale => Some(p.row_out_of_scale),
+            crate::canvas::RowShade::Root => Some(p.row_scale_root),
+            crate::canvas::RowShade::Accidental => Some(p.row_accidental),
+            crate::canvas::RowShade::Plain => None,
+        };
+        if let Some(ink) = ink {
+            fill_rect(scene, row.intersection(&grid), ink);
         }
         // A stronger line under every C.
         if key % 12 == 0 {
@@ -4750,6 +4766,8 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
     let lane_caption = crate::canvas::lane_caption(chrome.lane_property);
     let snap_caption = crate::canvas::snap_caption(chrome.snap);
     let tools_caption = crate::canvas::tools_caption();
+    let scale_caption = crate::canvas::scale_caption(chrome.key);
+    let root_caption = crate::canvas::root_caption(chrome.key_root);
     for (control, rect) in &chrome.toolbar.items {
         if rect.is_empty() {
             continue;
@@ -4759,6 +4777,7 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             RollControl::Velocity => !chrome.layout.velocity.is_empty(),
             RollControl::Ghost => chrome.ghost_filter != GhostFilter::Off,
             RollControl::Tools => chrome.tools_panel.is_some(),
+            RollControl::Scale => chrome.key.is_some(),
             _ => false,
         };
         // The three read-out chips always carry their frame, whether or not
@@ -4774,6 +4793,8 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
                 | RollControl::Ghost
                 | RollControl::Keys
                 | RollControl::Tools
+                | RollControl::Root
+                | RollControl::Scale
         );
         if on || is_chip || chrome.hover == Some(*control) {
             fill_rect_rounded(
@@ -4806,6 +4827,8 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             // says which division is on.
             RollControl::Keys => chrome.key_style.label(),
             RollControl::Tools => &tools_caption,
+            RollControl::Scale => &scale_caption,
+            RollControl::Root => &root_caption,
             other => other.label(),
         };
         let Some(text) = labels.get(caption) else {

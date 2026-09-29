@@ -5525,6 +5525,12 @@ impl DocumentHost for Session {
                 self.run(Box::new(MoveNotes::new(clip, ids, tick_delta, key_delta)));
                 Vec::new()
             }
+            RollEdit::SetKeys { ids, keys } => {
+                // Fitting to the scale: a key each, one command, one undo.
+                self.run(Box::new(fontelle_model::SetNoteKeys::new(clip, ids, keys)));
+                self.history.break_gesture();
+                Vec::new()
+            }
             RollEdit::SetLengths { ids, lengths } => {
                 // The legato tool. One command, so one press of Ctrl+Z takes
                 // the whole phrase back — see `fontelle_model::SetNoteLengths`.
@@ -9389,6 +9395,34 @@ impl StudioHost for Session {
         } else {
             fontelle_ui::canvas::KeyStyle::Piano
         }
+    }
+
+    fn song_key(&self) -> Option<fontelle_types::KeyScale> {
+        self.project.key.clone()
+    }
+
+    fn set_song_key(
+        &mut self,
+        key: Option<fontelle_types::KeyScale>,
+        fitted: Vec<(fontelle_types::NoteId, u8)>,
+    ) {
+        let label = key.as_ref().map_or_else(
+            || "No scale".to_string(),
+            |key| format!("Scale: {}", key.label()),
+        );
+        let mut parts: Vec<Box<dyn fontelle_model::Command>> =
+            vec![Box::new(fontelle_model::SetKey::new(key))];
+        if !fitted.is_empty() {
+            let (ids, keys) = fitted.into_iter().unzip();
+            parts.push(Box::new(fontelle_model::SetNoteKeys::new(
+                self.note_target(),
+                ids,
+                keys,
+            )));
+        }
+        self.run(Box::new(fontelle_model::Compound::new(label, parts)));
+        self.history.break_gesture();
+        self.touch();
     }
 
     fn set_key_style(&mut self, style: fontelle_ui::canvas::KeyStyle) {

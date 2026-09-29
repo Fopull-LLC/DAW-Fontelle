@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 8;
+pub const THEME_FORMAT_VERSION: u32 = 9;
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +195,15 @@ pub struct Palette {
     pub row_dead: Color,
     /// The same key, on the keyboard down the side.
     pub key_dead: Color,
+
+    // --- the scale tool (added in theme format v9) ---
+    /// A row outside the song's key, dimmed. It replaces the black-key
+    /// stripes while a key is on: with a scale, *in or out* is what a row
+    /// needs to say, not *black or white*.
+    pub row_out_of_scale: Color,
+    /// A row on the key's root, in every octave — tinted toward the accent
+    /// so the key reads at a glance.
+    pub row_scale_root: Color,
     /// A note written on a key nothing plays. It is still a note — it can be
     /// selected, moved, and heard the moment the instrument changes — so it
     /// is drawn quietly rather than not at all.
@@ -376,6 +385,8 @@ impl Theme {
                 row_accidental: Color::rgb(0x0a, 0x18, 0x1e),
                 row_dead: Color::rgb(0x05, 0x0d, 0x11),
                 key_dead: Color::rgb(0x53, 0x63, 0x68),
+                row_out_of_scale: Color::rgb(0x07, 0x12, 0x17),
+                row_scale_root: Color::rgb(0x14, 0x2e, 0x38),
                 note_silent: Color::rgb(0x2b, 0x3b, 0x48),
                 param_automated: Color::rgb(0xd0, 0x8a, 0x3c),
                 modulation: Color::rgb(0x9a, 0x6f, 0xd0),
@@ -423,6 +434,8 @@ impl Theme {
                 row_accidental: Color::rgb(0xd8, 0xe4, 0xe7),
                 row_dead: Color::rgb(0xc2, 0xcc, 0xcf),
                 key_dead: Color::rgb(0xcf, 0xd8, 0xda),
+                row_out_of_scale: Color::rgb(0xcf, 0xd9, 0xdc),
+                row_scale_root: Color::rgb(0xd2, 0xe8, 0xf0),
                 note_silent: Color::rgb(0x9c, 0xac, 0xbb),
                 param_automated: Color::rgb(0x8a, 0x55, 0x14),
                 // Darker, for the same reason every other ink is on a light
@@ -632,6 +645,23 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
             }
         }
         from = 8;
+    }
+
+    if from == 8 {
+        // v9 added the scale tool's row inks. A v8 file was written before
+        // a song had a key.
+        let dark = Theme::dark_default().palette;
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            for (key, value) in [
+                ("row_out_of_scale", dark.row_out_of_scale),
+                ("row_scale_root", dark.row_scale_root),
+            ] {
+                palette
+                    .entry(key)
+                    .or_insert_with(|| serde_json::json!(value.to_hex()));
+            }
+        }
+        from = 9;
     }
 
     if from != THEME_FORMAT_VERSION {

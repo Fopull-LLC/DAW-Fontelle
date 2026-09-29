@@ -124,6 +124,8 @@ edits!(
     NudgeNoteProperty,
     SetNotePropertyEach,
     SetNoteLengths,
+    SetNoteKeys,
+    SetKey,
     AddAudioClip,
     RemoveAudioClip,
     SetTrackInput,

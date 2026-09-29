@@ -20,8 +20,8 @@ use fontelle_model::{
     RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane, RenameMixerTrack,
     RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert, SetAudioClip,
     SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
-    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam,
-    SetLoopRange, SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
+    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
+    SetLoopRange, SetNoteKeys, SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
     SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
     SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
     TrimClipStart, load_project, peek_meta, save_project,
@@ -557,6 +557,20 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 s.notes.clone(),
                 NoteProperty::FinePitch,
                 vec![1, 2, 3],
+            ))
+        }),
+        ("SetKey", |_| {
+            Box::new(SetKey::new(Some(fontelle_types::KeyScale::new(
+                4,
+                "phrygian-dominant",
+            ))))
+        }),
+        ("SetKey none", |_| Box::new(SetKey::new(None))),
+        ("SetNoteKeys", |s| {
+            Box::new(SetNoteKeys::new(
+                s.notes_clip,
+                s.notes.clone(),
+                vec![61, 62, 63],
             ))
         }),
         ("SetNoteLengths", |s| {

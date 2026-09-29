@@ -33,6 +33,7 @@ mod param;
 mod patch_data;
 mod plugin;
 mod preset;
+mod scale;
 mod time;
 mod wavetable_edit;
 
@@ -104,6 +105,9 @@ pub use plugin::{PluginFormat, PluginKey, PluginParamValue, PluginState};
 pub use preset::{
     DeviceKind, DisgustingBeatPreset, PRESET_FORMAT_VERSION, Preset, PresetOrigin, PresetPayload,
     PresetRef, TrackChain, TrackInsert, TrackPreset,
+};
+pub use scale::{
+    KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, scale, scale_matches,
 };
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};

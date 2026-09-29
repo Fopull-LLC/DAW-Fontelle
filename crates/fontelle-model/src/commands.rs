@@ -3698,6 +3698,164 @@ impl Command for SetNoteLengths {
     }
 }
 
+/// Gives each note a key of its own, as one edit: what fitting notes to a
+/// scale is, since each note moves by its own amount (a transpose moves
+/// them all by one, and is `MoveNotes`).
+///
+/// Self-inverting, like [`SetNoteLengths`]: it holds the keys it found.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetNoteKeys {
+    home: NoteHome,
+    ids: Vec<NoteId>,
+    keys: Vec<u8>,
+    previous: Vec<u8>,
+    label: String,
+}
+
+impl SetNoteKeys {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, keys: Vec<u8>) -> Self {
+        Self {
+            label: note_count_label("Fit", ids.len()),
+            home: home.into(),
+            ids,
+            keys,
+            previous: Vec::new(),
+        }
+    }
+}
+
+impl Command for SetNoteKeys {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteKeys(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.keys.len() != self.ids.len() {
+            return Err(CommandError(format!(
+                "{} keys for {} notes",
+                self.keys.len(),
+                self.ids.len()
+            )));
+        }
+        let data = notes_of(doc, self.home)?;
+        // Every check before every write, as `SetNoteLengths` does.
+        for (id, key) in self.ids.iter().zip(&self.keys) {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} in this clip")));
+            }
+            if *key > 127 {
+                return Err(CommandError(format!("key {key} is off the keyboard")));
+            }
+        }
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|note| note.key))
+                .collect();
+        }
+        for (id, key) in self.ids.iter().zip(&self.keys) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                note.key = *key;
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied::new("setting a key on each note"));
+        }
+        Box::new(SetNoteKeys::new(
+            self.home,
+            self.ids.clone(),
+            self.previous.clone(),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + self.keys.len()
+            + self.previous.len()
+            + self.label.len()
+    }
+}
+
+/// Sets the song's key ([`Project::key`]), or clears it.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetKey {
+    key: Option<fontelle_types::KeyScale>,
+    /// `None` until applied; then the key it replaced, which may itself be
+    /// none — hence the nested wire form (`docs/handoff.md`, collaboration
+    /// (a)).
+    #[serde(with = "crate::wire::nested")]
+    previous: Option<Option<fontelle_types::KeyScale>>,
+}
+
+impl SetKey {
+    pub fn new(key: Option<fontelle_types::KeyScale>) -> Self {
+        Self {
+            key,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetKey {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetKey(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // A copy written, the old one kept: never a swap into `self`, whose
+        // applied form is what crosses the wire (handoff, collaboration (c)).
+        let previous = doc.key.clone();
+        doc.key = self.key.clone();
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetKey::new(previous.clone())),
+            None => Box::new(NotApplied::new("setting the key")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        if self.key.is_some() {
+            "Set the key"
+        } else {
+            "Clear the key"
+        }
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 // --- Importing -------------------------------------------------------------
 
 /// One part of a file being brought in: an instrument, a row, and its notes.

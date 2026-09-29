@@ -540,3 +540,38 @@ fn the_modulation_ink_is_nobody_elses() {
         }
     }
 }
+
+/// v9 added the scale tool's two row inks: the rows outside the song's key,
+/// dimmed, and the root's rows, marked. A v8 theme gains both, and in both
+/// shipped themes each differs from the rows it sits between — a dimmed row
+/// that looked like a black key's, or a root like a plain row, would say
+/// nothing.
+#[test]
+fn a_v8_theme_gains_the_scale_inks_and_they_read_apart() {
+    let mut json: serde_json::Value =
+        serde_json::from_str(&Theme::dark_default().to_json()).expect("valid JSON");
+    json["format_version"] = serde_json::json!(8);
+    let palette = json["palette"].as_object_mut().expect("an object");
+    for key in ["row_out_of_scale", "row_scale_root"] {
+        palette.remove(key).expect("v9 added this");
+    }
+    let migrated = Theme::from_json(&json.to_string()).expect("a v8 theme must still open");
+    assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+    assert_eq!(
+        migrated.palette.row_out_of_scale,
+        Theme::dark_default().palette.row_out_of_scale
+    );
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let p = &theme.palette;
+        let apart = |a: Color, b: Color| -> u32 {
+            a.0.iter()
+                .zip(b.0.iter())
+                .map(|(x, y)| x.abs_diff(*y) as u32)
+                .sum()
+        };
+        assert!(apart(p.row_out_of_scale, p.panel) >= 20);
+        assert!(apart(p.row_out_of_scale, p.row_accidental) >= 8);
+        assert!(apart(p.row_scale_root, p.panel) >= 20);
+        assert!(apart(p.row_scale_root, p.row_out_of_scale) >= 30);
+    }
+}

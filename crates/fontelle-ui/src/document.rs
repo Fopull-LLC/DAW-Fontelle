@@ -2339,6 +2339,23 @@ pub trait StudioHost: DocumentHost {
     /// Switches it. Undoable like every other edit to the document.
     fn set_key_style(&mut self, _style: crate::canvas::KeyStyle) {}
 
+    /// The song's key — a root and a scale — or `None`. Saved with the song;
+    /// what the roll dims rows against and fits notes to.
+    fn song_key(&self) -> Option<fontelle_types::KeyScale> {
+        None
+    }
+
+    /// Sets the song's key, or clears it, and gives each of `fitted` its new
+    /// key — **one** undo for both, since choosing a scale and seeing the
+    /// notes move onto it is one thing somebody did. `fitted` is the open
+    /// clip's notes, worked out by the window (it knows the selection).
+    fn set_song_key(
+        &mut self,
+        _key: Option<fontelle_types::KeyScale>,
+        _fitted: Vec<(fontelle_types::NoteId, u8)>,
+    ) {
+    }
+
     /// Which keys the selected channel's instrument can play, and what each
     /// one is called. See [`KeyMap`] — [`KeyMap::unknown`] when the channel
     /// has no instrument, which greys nothing.

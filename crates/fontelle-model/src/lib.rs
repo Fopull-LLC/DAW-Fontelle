@@ -40,10 +40,10 @@ pub use commands::{
     ResizeNotes, RestoreAutomationPoints, RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig,
     RestorePluginParam, RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch,
     SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
-    SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetLoopRange, SetNoteLengths,
-    SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam,
-    SetPointCurve, SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput,
-    SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
+    SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetNoteKeys,
+    SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber,
+    SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput,
+    SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
 pub use mixer::{EffectSlot, Mixer, MixerTrack, PanLaw, Send};

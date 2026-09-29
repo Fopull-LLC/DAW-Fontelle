@@ -1152,6 +1152,12 @@ pub enum RollEdit {
         ids: Vec<NoteId>,
         lengths: Vec<Tick>,
     },
+    /// A key for each named note, as one edit — fitting notes to a scale,
+    /// where each moves by its own amount. See `canvas::scale_fit`.
+    SetKeys {
+        ids: Vec<NoteId>,
+        keys: Vec<u8>,
+    },
     /// One value for every named note — the property lane's whole vocabulary.
     ///
     /// The property comes with the edit because the lane can be showing any of
@@ -1338,6 +1344,10 @@ pub enum RollControl {
     /// Switches the strip down the side between the keyboard and a list of
     /// names. The chip says which one is on — see [`KeyStyle`].
     Keys,
+    /// Drops the list of roots for the song's key.
+    Root,
+    /// Drops the scale chooser — see `canvas::scale_menu`.
+    Scale,
     /// Opens the Tools panel: the transposer, the property offset, the
     /// randomizer, and the two importers. Carries a caret for the reason the
     /// lane chip does — a small box with a word in it is a read-out, and
@@ -1362,6 +1372,8 @@ impl RollControl {
             // read-out on this bar: what it says is what is on.
             Self::Keys => "keys",
             Self::Tools => "tools",
+            Self::Root => "root",
+            Self::Scale => "scale",
         }
     }
 
@@ -1400,7 +1412,14 @@ impl RollControl {
             // view — all four are values.
             // The tools chip carries its own caret, for the reason the lane
             // chip does.
-            Self::Snap | Self::Lane | Self::Ghost | Self::Keys | Self::Tools => return None,
+            // The key's two chips say the root and the scale.
+            Self::Snap
+            | Self::Lane
+            | Self::Ghost
+            | Self::Keys
+            | Self::Tools
+            | Self::Root
+            | Self::Scale => return None,
         })
     }
 
@@ -1423,6 +1442,10 @@ impl RollControl {
             Self::Slide => "Slide notes: bend what is sounding, start nothing",
             Self::Keys => "The strip down the side: a keyboard, or a list of names",
             Self::Tools => "Transpose, adjust, randomize \u{2014} and import a file",
+            Self::Root => "The key's root note",
+            Self::Scale => {
+                "The key's scale: dims the rows outside it and fits the notes to it \u{2014} Alt draws off it"
+            }
         })
     }
 
@@ -1459,7 +1482,7 @@ pub struct ToolbarLayout {
 /// in a wide button is a glyph with a gap either side of it. The ones that are
 /// a *read-out* keep their text and keep the room to say it — which division
 /// is which is the same one the icons themselves are chosen by.
-const TOOLBAR: [(RollControl, f32); 16] = [
+const TOOLBAR: [(RollControl, f32); 18] = [
     (RollControl::Tool(Tool::Draw), 26.0),
     (RollControl::Tool(Tool::Paint), 26.0),
     (RollControl::Tool(Tool::Select), 26.0),
@@ -1476,6 +1499,8 @@ const TOOLBAR: [(RollControl, f32); 16] = [
     (RollControl::Ghost, 40.0),
     (RollControl::Keys, 40.0),
     (RollControl::Tools, 46.0),
+    (RollControl::Root, 40.0),
+    (RollControl::Scale, 116.0),
 ];
 
 /// What the lane chip says: the property, and a caret because it opens a menu.
@@ -1748,6 +1773,10 @@ pub struct PianoRoll {
     pub draw_drag: DrawDrag,
     /// Which other instruments show through behind the notes.
     pub ghosts: crate::document::GhostFilter,
+    /// The song's key, when there is one and this instrument is a keyboard
+    /// (a kit's rows are drums, not pitches). A note drawn, painted or
+    /// dragged up and down lands on a row in it unless Alt is held.
+    pub scale: Option<super::RollScale>,
     /// The note every newly drawn note is a copy of — see
     /// [`template`](Self::template).
     template: Note,
@@ -1796,6 +1825,7 @@ impl PianoRoll {
             lane_property: LaneProperty::Velocity,
             draw_drag: DrawDrag::default(),
             ghosts: crate::document::GhostFilter::Off,
+            scale: None,
             template: BLANK_TEMPLATE,
             selection: Vec::new(),
             gesture: Gesture::None,
@@ -1810,6 +1840,15 @@ impl PianoRoll {
 
     pub fn selection(&self) -> &[NoteId] {
         &self.selection
+    }
+
+    /// `key` fitted to the scale, unless there is none or Alt is held —
+    /// Alt frees the pitch the way it frees the time (§16.5).
+    fn scaled_key(&self, key: u8) -> u8 {
+        match self.scale {
+            Some(scale) if !self.modifiers.alt => fontelle_types::fit_to_scale(key, scale.mask),
+            _ => key,
+        }
     }
 
     /// A key the roll wants sounded, once.
@@ -2124,11 +2163,13 @@ impl PianoRoll {
                 }
                 let snap = self.live_snap();
                 let start = snap_tick(tick, snap, beats_per_bar);
+                let key = self.scaled_key(key);
                 let note = self.drawn_note(start, key, self.template.length);
                 // Where the pointer *pressed*, not where the note landed: a
                 // move is a delta from the press, and measuring it from the
                 // snapped start would jump the note by up to half a step the
-                // moment the drag began.
+                // moment the drag began. (The key is the note's: with a scale
+                // on the drag is fitted from the row the note is on.)
                 self.origin = (tick, key);
                 self.gesture = if self.tool == Tool::Paint {
                     Gesture::Painting { last: (start, key) }
@@ -2212,6 +2253,7 @@ impl PianoRoll {
             Gesture::Painting { last } => {
                 let snap = self.live_snap();
                 let start = snap_tick(tick, snap, beats_per_bar);
+                let key = self.scaled_key(key);
                 if (start, key) == last {
                     return Vec::new();
                 }
@@ -2240,7 +2282,7 @@ impl PianoRoll {
                 // off the grid should land on it, which is what dragging a
                 // sloppily-placed note onto the beat is for.
                 let mut wanted_tick = self.snapped_delta(tick, beats_per_bar, limits);
-                let mut wanted_key = (i16::from(key) - i16::from(self.origin.1))
+                let mut wanted_key = (i16::from(self.scaled_key(key)) - i16::from(self.origin.1))
                     .clamp(limits.min_key, limits.max_key);
 
                 // §16.5: Shift constrains to whichever axis the drag is mostly
@@ -2584,6 +2626,36 @@ impl PianoRoll {
     ) -> Vec<RollEdit> {
         if self.selection.is_empty() {
             return Vec::new();
+        }
+        // With a key on, Up and Down step each note to its own next row in
+        // the scale — a semitone for one, a tone for another — the way a drag
+        // lands on the scale's rows. An octave is an octave in any scale, and
+        // Alt frees the pitch here as it does everywhere.
+        if let Some(scale) = self.scale.filter(|_| !self.modifiers.alt)
+            && tick_delta == 0
+            && key_delta.abs() == 1
+        {
+            let (ids, keys): (Vec<NoteId>, Vec<u8>) = self
+                .selection
+                .iter()
+                .filter_map(|id| {
+                    let note = notes.get(*id)?;
+                    let mut key = i16::from(note.key);
+                    loop {
+                        key += key_delta;
+                        if !(0..=127).contains(&key) {
+                            return None;
+                        }
+                        if scale.contains(key as u8) {
+                            return Some((*id, key as u8));
+                        }
+                    }
+                })
+                .unzip();
+            if ids.is_empty() {
+                return Vec::new();
+            }
+            return vec![RollEdit::SetKeys { ids, keys }];
         }
         let limits = MoveLimits::of(&self.selection, notes);
         let tick_delta = tick_delta.max(limits.min_tick);

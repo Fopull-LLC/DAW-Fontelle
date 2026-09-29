@@ -18,6 +18,7 @@ mod piano_roll;
 mod prefabs;
 mod preset_bar;
 mod rack;
+mod roll_scale;
 mod share;
 mod text_entry;
 mod timeline;
@@ -200,6 +201,10 @@ pub use rack::{
     NEW_TRACK, NO_OUTPUT, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, output_menu_layout,
     rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
     route_menu_layout_excluding, scroll_to_show, tab_at, tab_strip,
+};
+pub use roll_scale::{
+    RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
+    scale_fit, scale_menu,
 };
 pub use share::{
     COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, NOBODY_YET,

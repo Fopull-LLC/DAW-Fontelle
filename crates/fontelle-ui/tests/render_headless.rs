@@ -676,6 +676,7 @@ fn shoot_roll_full_ending(
         clip_length,
         &[],
         None,
+        None,
     )
 }
 
@@ -698,6 +699,7 @@ fn shoot_roll_slicing(
         None,
         &[],
         Some((from, to)),
+        None,
     )
 }
 
@@ -719,6 +721,7 @@ fn shoot_roll_recording(
         None,
         takes,
         None,
+        None,
     )
 }
 
@@ -735,6 +738,7 @@ fn shoot_roll_everything(
     clip_length: Option<Tick>,
     takes: &[fontelle_ui::document::NotePreview],
     slice: Option<((f32, f32), (f32, f32))>,
+    song_key: Option<&fontelle_types::KeyScale>,
 ) -> Option<RollShot> {
     let theme = Theme::dark_default();
     let shared = headless()?;
@@ -861,6 +865,9 @@ fn shoot_roll_everything(
                 key_style: fontelle_ui::canvas::KeyStyle::Piano,
                 live_keys,
                 recording: takes,
+                scale: song_key.and_then(fontelle_ui::canvas::RollScale::of),
+                key: song_key,
+                key_root: song_key.map_or(0, |key| key.root),
             }),
             rack: None,
             prefabs: None,
@@ -1731,6 +1738,43 @@ fn a_key_the_instrument_cannot_play_is_drawn_dead_and_one_it_can_is_not() {
         !near(live, shot.theme.palette.row_dead),
         "key 60 is the snare and must not be greyed, found {live:?}"
     );
+}
+
+/// The scale tool: with a key on, the rows outside it are dimmed and its
+/// root is marked, and the black-key stripes give way to both.
+#[test]
+fn a_key_dims_the_rows_outside_it_and_marks_its_root() {
+    let key = fontelle_types::KeyScale::new(9, "natural-minor");
+    let Some(shot) = shoot_roll_everything(
+        &Arena::default(),
+        &[],
+        &[],
+        None,
+        &fontelle_ui::document::KeyMap::unknown(),
+        SnapDivision::Step,
+        0,
+        false,
+        None,
+        &[],
+        None,
+        Some(&key),
+    ) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "roll-scale", RW, RH);
+    let x = tick_to_x(&shot.view, shot.layout.grid, PPQN / 2) as u32 + 5;
+    let row = |key: u8| {
+        (fontelle_ui::canvas::key_to_y(&shot.view, shot.layout.grid, key)
+            + shot.view.key_height / 2.0) as u32
+    };
+    let p = &shot.theme.palette;
+    // A minor: A B C D E F G.
+    assert!(near(shot.at(x, row(69)), p.row_scale_root), "A is the root");
+    assert!(near(shot.at(x, row(66)), p.row_out_of_scale), "F# is out");
+    assert!(near(shot.at(x, row(68)), p.row_out_of_scale), "G# is out");
+    assert!(near(shot.at(x, row(64)), p.panel), "E is in, and plain");
+    // C# is a black key and out: out wins, it is not striped as a black key.
+    assert!(!near(shot.at(x, row(61)), p.row_accidental));
 }
 
 #[test]

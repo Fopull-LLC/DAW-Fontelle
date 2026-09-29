@@ -166,6 +166,8 @@ fn every_roll_toolbar_control_explains_itself() {
         RollControl::Lane,
         RollControl::Ghost,
         RollControl::Slide,
+        RollControl::Root,
+        RollControl::Scale,
     ];
     controls.extend(
         [

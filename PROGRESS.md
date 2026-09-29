@@ -19,6 +19,39 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-29 — the piano roll's scale tool.** *"a scale tool so you
+can chose between any note and the mode or whatever and it will snap all of
+your notes to that scale and dim out all the lanes that arent in that scale.
+should have a good extensive list of scales"*. Seen on `:99` end to end.
+
+- **The catalogue** (`fontelle_types::SCALES`, `scale.rs`): 86 scales in ten
+  families (the modes of major, melodic minor, harmonic minor, harmonic major
+  and double harmonic; pentatonic incl. the Japanese ones; blues and six-note;
+  bebop; symmetric incl. Messiaen's modes; world incl. the thaats), **one row
+  per pitch set** with every other name as a searchable alias (Phrygian
+  dominant is also Spanish, Freygish, Hijaz, Ahava Rabbah). Saved by a
+  permanent `id`, so the list can grow anywhere. Not Tune's `TuneScale`,
+  whose order is stored as a choice index. Tests check every family of modes
+  against the rotations of its parent (`tests/scales.rs`).
+- **The song's key** is `Project::key: Option<KeyScale>` (defaulted, so old
+  songs open), set by `SetKey`; notes are fitted by `SetNoteKeys` (a key
+  each). Both are on the wire. Choosing a scale is one `Compound`: key +
+  every note in the open clip moved to the nearest row in it (ties down), one
+  Ctrl+Z (`StudioHost::set_song_key`).
+- **The roll**: a root chip and a scale chip at the toolbar's end; the scale
+  menu is grouped, ticks the current one, filters as you type, and has *No
+  scale* (notes stay) and *Fit notes to …* (the selection, or all). Rows
+  outside the key are dimmed (`row_out_of_scale`), the root's rows marked
+  (`row_scale_root`) — theme format 9 — via one decision, `row_shade`. Drawn,
+  painted and dragged notes land on the key's rows, Up/Down step each note to
+  its own next degree, Ctrl+Up is still an octave; **Alt frees the pitch** as
+  it frees the time. A kit (named rows) is left alone.
+- First try on `:99` fitted only the selection — the last note drawn is always
+  selected, so one note of three moved. Choosing a scale now fits every note.
+
+**Still open:** a note clip's left-edge trim is planned, not built —
+`docs/note-clip-front-trim.md` (about 35 edits; two decisions are Ty's).
+
 **Released as v0.17.0 on 2026-09-26** — clip edges and the snap-off drag,
 below. Ty asked for the release with the report.
 

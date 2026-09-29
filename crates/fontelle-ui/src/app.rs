@@ -601,6 +601,11 @@ enum MenuTarget {
     Snap {
         timeline: bool,
     },
+    /// The root chip on the roll's toolbar: the song key's root.
+    KeyRoot,
+    /// The scale chip: every scale, grouped, filtered as you type — see
+    /// `canvas::scale_menu`.
+    KeyScale,
     /// A [`ParamKind::Choice`] on the instrument panel or on an effect's own
     /// — a filter's slope, an LFO's shape. The same complaint as
     /// [`MenuTarget::AudioRow`] and the same answer: the list drops down.
@@ -786,7 +791,7 @@ impl MenuTarget {
             | Self::TrackPresetName(_)
             | Self::TrackPresetCategory(_)
             | Self::TrackPresetNewCategory(_) => None,
-            Self::Snap { .. } => None,
+            Self::Snap { .. } | Self::KeyRoot | Self::KeyScale => None,
             // The settings drop-down is a row of the browser panel, which is in
             // the main window.
             Self::SettingChoice(_) => None,
@@ -1806,6 +1811,11 @@ pub struct WindowApp {
     /// selected channel. Cached with the other lists and refreshed on the
     /// host's revision, like the key map it is drawn beside.
     key_style: crate::canvas::KeyStyle,
+    /// The song's key, read once a revision (`StudioHost::song_key`).
+    song_key: Option<fontelle_types::KeyScale>,
+    /// The root the root chip shows: the key's while there is one, and the
+    /// one a scale chosen next will be built on while there is not.
+    key_root: u8,
     /// Which band of the open EQ the controls under the curve describe, and
     /// which handle is drawn as the one in hand.
     ///
@@ -2212,6 +2222,8 @@ impl WindowApp {
             status: String::new(),
             key_map: crate::document::KeyMap::unknown(),
             key_style: crate::canvas::KeyStyle::default(),
+            song_key: None,
+            key_root: 0,
             eq_band: 0,
             eq_drag: None,
             mix_drag: None,
@@ -2654,6 +2666,9 @@ impl WindowApp {
                     ghost_filter: self.roll.ghosts,
                     recording: &self.takes,
                     key_style: self.key_style,
+                    scale: self.roll.scale,
+                    key: self.song_key.as_ref(),
+                    key_root: self.key_root,
                     clip_length: doc.clip_length(),
                     marker_tick: doc.playhead_tick(self.marker),
                     loop_range: self.loop_range.map(|(from, to)| {
@@ -6196,6 +6211,17 @@ impl WindowApp {
         self.tempo = doc.tempo();
         self.key_map = doc.key_map();
         self.key_style = doc.key_style();
+        self.song_key = doc.song_key();
+        if let Some(key) = &self.song_key {
+            self.key_root = key.root;
+        }
+        // Not on a kit: its rows are sounds, not pitches, and neither
+        // dimming them nor moving a snare onto a scale means anything.
+        self.roll.scale = self
+            .song_key
+            .as_ref()
+            .and_then(crate::canvas::RollScale::of)
+            .filter(|_| !self.key_map.is_named());
         let filter = self.roll.ghosts;
         self.ghosts = doc.ghost_notes(filter);
         self.query = doc.query().to_string();
@@ -7002,12 +7028,16 @@ impl WindowApp {
         ] {
             want(&mut self.labels, &mut self.text, style.label());
         }
+        let scale_caption = crate::canvas::scale_caption(self.song_key.as_ref());
+        let root_caption = crate::canvas::root_caption(self.key_root);
         for (control, _) in &self.roll_bar.items {
             let caption = match control {
                 RollControl::Snap => &snap_caption,
                 RollControl::Lane => &lane_caption,
                 RollControl::Ghost => &ghost_caption,
                 RollControl::Tools => &tools_caption,
+                RollControl::Scale => &scale_caption,
+                RollControl::Root => &root_caption,
                 other => other.label(),
             };
             self.labels.ensure(caption, &font, &mut self.text);
@@ -15380,6 +15410,10 @@ impl WindowApp {
                 entries.push(MenuEntry::new("Delete point").after_rule());
                 entries
             }
+            MenuTarget::KeyRoot => crate::canvas::root_menu(self.key_root),
+            MenuTarget::KeyScale => {
+                crate::canvas::scale_menu(self.menu_filter.text(), self.song_key.as_ref()).0
+            }
             // The grid, as a list rather than as six presses round a ring.
             MenuTarget::Snap { timeline } => {
                 let current = if *timeline {
@@ -15658,6 +15692,8 @@ impl WindowApp {
                         | MenuTarget::PresetMenu(_)
                         // A bank of forty chains is a bank you type into.
                         | MenuTarget::TrackPresetMenu(_)
+                        // And eighty-odd scales are a list you type into.
+                        | MenuTarget::KeyScale
                 )
             )
         {
@@ -16609,6 +16645,30 @@ impl WindowApp {
                     doc.end_gesture();
                 }
             }
+            (MenuTarget::KeyRoot, index) => {
+                let root = (index % 12) as u8;
+                self.key_root = root;
+                // A root with a scale is a new key, and the notes follow it;
+                // a root with none waits for the scale.
+                if let Some(key) = self.song_key.clone() {
+                    self.choose_song_key(Some(fontelle_types::KeyScale::new(root, &key.scale)));
+                } else {
+                    self.tree.invalidate(PANEL);
+                }
+            }
+            (MenuTarget::KeyScale, index) => {
+                let rows =
+                    crate::canvas::scale_menu(self.menu_filter.text(), self.song_key.as_ref()).1;
+                match rows.get(index) {
+                    Some(crate::canvas::ScaleMenuRow::NoScale) => self.choose_song_key(None),
+                    Some(crate::canvas::ScaleMenuRow::FitNotes) => self.fit_notes_to_key(),
+                    Some(crate::canvas::ScaleMenuRow::Scale(id)) => {
+                        let key = fontelle_types::KeyScale::new(self.key_root, id);
+                        self.choose_song_key(Some(key));
+                    }
+                    _ => {}
+                }
+            }
             (MenuTarget::Snap { timeline }, index) => {
                 let Some(snap) = crate::canvas::SNAP_DIVISIONS.get(index).copied() else {
                     return;
@@ -16918,6 +16978,8 @@ impl WindowApp {
             RollControl::Ghost => self.cycle_ghosts(),
             RollControl::Slide => self.toggle_slide(),
             RollControl::Keys => self.cycle_key_style(),
+            RollControl::Root => self.open_key_menu(MenuTarget::KeyRoot),
+            RollControl::Scale => self.open_key_menu(MenuTarget::KeyScale),
         }
     }
 
@@ -19053,6 +19115,67 @@ impl WindowApp {
     ///
     /// Under the chip rather than at the pointer, because that is what a
     /// drop-down is: the list appears where the value was.
+    /// Drops the root or the scale list under its chip.
+    fn open_key_menu(&mut self, target: MenuTarget) {
+        let control = match target {
+            MenuTarget::KeyRoot => RollControl::Root,
+            _ => RollControl::Scale,
+        };
+        let Some(chip) = self
+            .roll_bar
+            .items
+            .iter()
+            .find(|(c, _)| *c == control)
+            .map(|(_, rect)| *rect)
+            .filter(|rect| !rect.is_empty())
+        else {
+            return;
+        };
+        let bounds = self.layout.window;
+        self.open_menu(target, chip.x, chip.bottom(), bounds);
+    }
+
+    /// Sets the song's key — or clears it — and fits **every** note in the
+    /// open clip to it, in the same undo: *"it will snap all of your notes to
+    /// that scale"*. Not the selection: the last note drawn is always left
+    /// selected, and on the first try that fitted one note of three.
+    fn choose_song_key(&mut self, key: Option<fontelle_types::KeyScale>) {
+        let fitted = match key.as_ref().and_then(crate::canvas::RollScale::of) {
+            Some(scale) if !self.key_map.is_named() => self
+                .options
+                .document
+                .as_ref()
+                .map(|doc| crate::canvas::scale_fit(doc.notes(), &[], scale.mask))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.set_song_key(key, fitted);
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Fits the open clip's notes (the selection's, when there is one) to
+    /// the key that is on.
+    fn fit_notes_to_key(&mut self) {
+        let Some(scale) = self.roll.scale else {
+            return;
+        };
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let fitted = crate::canvas::scale_fit(doc.notes(), self.roll.selection(), scale.mask);
+        if fitted.is_empty() {
+            return;
+        }
+        let (ids, keys) = fitted.into_iter().unzip();
+        self.apply_roll_edits(vec![crate::canvas::RollEdit::SetKeys { ids, keys }]);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.tree.invalidate(PANEL);
+    }
+
     fn open_snap_menu(&mut self, timeline: bool) {
         let chip = if timeline {
             self.timeline_bar
