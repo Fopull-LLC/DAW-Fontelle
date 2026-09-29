@@ -13,7 +13,10 @@
 #
 # The first job refuses a tag that does not match the version in the tree,
 # so the number the window shows, the tag and the archive names cannot
-# drift apart.
+# drift apart. And **nothing is published from a commit CI has not passed**
+# (the `ci` job): push the commit to main, then tag it. The archives build
+# while CI finishes, so a green release is no slower; a red one publishes
+# nothing. CI was red from v0.8.0 to v0.17.0 and ten releases shipped past it.
 
 name: Release
 
@@ -44,6 +47,18 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI passed on this commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: .github/scripts/ci-passed.sh "${{ github.sha }}" "${{ github.repository }}"
 
   build:
     name: ${{ matrix.target }}
@@ -112,7 +127,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: [version, build]
+    needs: [version, ci, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

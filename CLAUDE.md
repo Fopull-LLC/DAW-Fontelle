@@ -35,6 +35,9 @@ announcement — is Ty's call (PROTOCOL §5). Prepare it, stop at needs-review.
 ## Releases
 
 One version for the whole workspace (`[workspace.package] version`). Bump it,
-commit, tag `vX.Y.Z`, push the tag: `.github/workflows/release.yml` builds the
-four archives and `SHA256SUMS`, and the start menu's updater
-(`crates/fontelle-app/src/updates.rs`) finds them by those exact names.
+commit, push `main`, tag `vX.Y.Z`, push the tag: `.github/workflows/release.yml`
+builds the four archives and `SHA256SUMS`, and the start menu's updater
+(`crates/fontelle-app/src/updates.rs`) finds them by those exact names. It
+publishes only once CI has passed on that commit
+(`.github/scripts/ci-passed.sh`), so a red CI is a release that does not
+happen — look at `gh run list --workflow CI` before tagging.
