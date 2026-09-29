@@ -12,8 +12,8 @@
 
 use fontelle_core::flopsynth::{LayerRole, flopsynth_init};
 use fontelle_core::{
-    Curve, ModDest, ModRoute, ModSource, NoteTrigger, Patch, PrepareContext, SampleStore,
-    Sampler, Source,
+    Curve, ModDest, ModRoute, ModSource, NoteTrigger, Patch, PrepareContext, SampleStore, Sampler,
+    Source,
 };
 use fontelle_dsp::{SynthSource, WavetableId, fft_in_place};
 
@@ -245,4 +245,3 @@ fn an_unmodulated_patch_renders_as_it_did() {
     assert_eq!(out, again);
     assert!(out.iter().any(|s| s.abs() > 0.1));
 }
-
