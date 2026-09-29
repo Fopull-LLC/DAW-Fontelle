@@ -905,6 +905,14 @@ impl QuicClient {
                     // build can verify. Until it does, the session goes ahead
                     // on the dev-trust model — with a warning that reaches the
                     // Console — rather than every managed game failing today.
+                    // Nobody answered: a port blocked on this network, or
+                    // nothing there. Not a certificate — there was none — so
+                    // neither the certificate's sentence nor a second wait
+                    // on the fallback trust. What to say is the caller's.
+                    Err(quinn::ConnectionError::TimedOut) => {
+                        let _ = events_tx.send(Incoming::dropped(SERVER));
+                        return;
+                    }
                     Err(e) => {
                         let Some(any) = fallback else {
                             // No fallback to take: the reason travels with the

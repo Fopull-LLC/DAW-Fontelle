@@ -2480,22 +2480,8 @@ impl WindowApp {
             return;
         }
         if hit == WelcomeHit::NewProject {
-            let Some(doc) = &mut self.options.document else {
+            if !self.ensure_projects_dir("A new project needs a folder to live in") {
                 return;
-            };
-            if !doc.has_projects_dir() {
-                doc.choose_projects_dir();
-                if let Some(said) = doc.take_message() {
-                    self.say_on_welcome(said);
-                    return;
-                }
-                if !doc.has_projects_dir() {
-                    self.say_on_welcome(
-                        "A new project needs a folder to live in \u{2014} choose one to go on"
-                            .to_string(),
-                    );
-                    return;
-                }
             }
             self.ask_for_a_name(NameFor::NewProject, String::new());
             return;
@@ -2547,6 +2533,36 @@ impl WindowApp {
     }
 
     /// Puts a sentence on the start menu's message line.
+    /// Makes sure there is a projects folder, asking for one if there is
+    /// not; `false`, with `why` said where it will be seen, if there still
+    /// is none.
+    ///
+    /// Asked **first**, before any name: sharing a song that was never saved
+    /// asked for your name and the song's, then failed to save it for want
+    /// of a folder and said so only in the status line, and joining asked for
+    /// a name and a code and then refused. *"I see your working on a
+    /// multiplayer function, well it won't let me use that either."*
+    fn ensure_projects_dir(&mut self, why: &str) -> bool {
+        let Some(doc) = &mut self.options.document else {
+            return false;
+        };
+        if doc.has_projects_dir() {
+            return true;
+        }
+        doc.choose_projects_dir();
+        let said = doc.take_message();
+        if doc.has_projects_dir() {
+            return true;
+        }
+        let said = said.unwrap_or_else(|| format!("{why} \u{2014} choose one to go on"));
+        if self.welcome.is_some() {
+            self.say_on_welcome(said);
+        } else {
+            self.show_toast(said, false);
+        }
+        false
+    }
+
     fn say_on_welcome(&mut self, why: String) {
         let width = self
             .welcome
@@ -16311,6 +16327,10 @@ impl WindowApp {
                         Some(Err(e)) => self.say_on_welcome(e),
                         None => {}
                     }
+                } else if let Some(Err(e)) = done {
+                    // In the studio, where the status line is easy to miss
+                    // and a save that did not happen is not.
+                    self.show_toast(e, false);
                 }
                 self.studio_revision = u64::MAX;
                 self.refresh_studio();
@@ -19775,6 +19795,11 @@ impl WindowApp {
         }
         if !doc.has_file() {
             let seed = doc.name().to_string();
+            if !self
+                .ensure_projects_dir("A shared song is saved first, and needs a folder to live in")
+            {
+                return;
+            }
             self.ask_for_a_name(NameFor::SaveAs(Some(Leave::Share)), seed);
             return;
         }
@@ -19789,6 +19814,9 @@ impl WindowApp {
     /// Join a shared song: the name the others see if nobody has typed one,
     /// then the code.
     fn start_join(&mut self) {
+        if !self.ensure_projects_dir("A joined song is copied into your projects folder") {
+            return;
+        }
         if let Some(seed) = self
             .options
             .document

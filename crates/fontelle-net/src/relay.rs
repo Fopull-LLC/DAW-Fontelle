@@ -1582,7 +1582,11 @@ impl RelayHost {
             wake: None,
         };
         let mut fallback = fallback;
-        for i in 0..600 {
+        // Past the relay's own deadline for deciding, with a second to spare:
+        // three seconds gave up on a relay that would have answered at five,
+        // a cold key lookup after a restart.
+        let polls = (HOST_DECISION_DEADLINE + Duration::from_secs(1)).as_millis() as usize / 5;
+        for i in 0..polls {
             let _ = me.poll(); // stashes Hosted{code} / Refused{reason} when it lands
             if let Some(c) = me.code.clone() {
                 return Ok((me, c));
@@ -1599,7 +1603,8 @@ impl RelayHost {
             std::thread::sleep(Duration::from_millis(5));
         }
         Err(format!(
-            "relay {relay_addr}: no lobby code (is a relay running there?)"
+            "nothing answered at the relay ({relay_addr}) \u{2014} this network may block \
+             its UDP port, or it is down for a moment; try again shortly"
         ))
     }
 

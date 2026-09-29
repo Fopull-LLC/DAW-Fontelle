@@ -1019,11 +1019,27 @@ impl Joiner {
                     {
                         doc.meta.shared_revision = Some((self.host_install, confirmed.sync_hash()));
                     }
+                    // Said by how far the join had got. Only a live session
+                    // has a copy to keep; before that, "lost — your copy is
+                    // still open" was untrue twice over.
                     return Some(why.unwrap_or_else(|| {
-                        format!(
-                            "The connection to {} was lost \u{2014} your copy is still open.",
-                            self.host_or_them()
-                        )
+                        match self.stage {
+                            Stage::Live => format!(
+                                "The connection to {} was lost \u{2014} your copy is still open.",
+                                self.host_or_them()
+                            ),
+                            Stage::Waiting => {
+                                "Could not reach the song\u{2019}s host \u{2014} check \
+                             the code, and that this network lets Fontelle reach its relay \
+                             (UDP port 7788)."
+                                    .to_string()
+                            }
+                            Stage::Asking | Stage::Opening => format!(
+                                "The connection to {} was lost before the song arrived \u{2014} \
+                             nothing was copied. Join again to try once more.",
+                                self.host_or_them()
+                            ),
+                        }
                     }));
                 }
                 Incoming::Message(_, _, bytes) => {

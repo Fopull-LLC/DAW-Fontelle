@@ -1761,3 +1761,38 @@ fn a_save_is_signed_with_the_name_the_others_see() {
     alice.save_as("Song").unwrap();
     assert_eq!(alice.project().meta.saved_by, "Alice");
 }
+
+/// > *"I see your working on a multiplayer function, well it won't let me
+/// > use that either."*
+///
+/// A join whose link never reached the host — a network that blocks the
+/// relay's port, a mistyped code on a relay that closes on it — was told
+/// *"The connection to the host was lost — your copy is still open."*, which
+/// is wrong twice: nothing was reached, and there is no copy. It says it
+/// could not reach anyone, and what to check.
+#[test]
+fn a_join_that_never_reached_the_host_says_so() {
+    use std::sync::atomic::AtomicBool;
+    let dir = scratch("unreached");
+    let _cleanup = Cleanup(dir.clone());
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let hub = MemoryHub::new();
+    joiner
+        .join(
+            Box::new(Droppable {
+                inner: hub.connect(),
+                cut: std::sync::Arc::new(AtomicBool::new(true)),
+                told: false,
+            }),
+            options("Bob", PersistentId::derived("bob")),
+        )
+        .unwrap();
+    for _ in 0..5 {
+        joiner.pump_collab();
+    }
+    let why = joiner.collab_ended().expect("Bob is told").to_string();
+    assert!(!why.contains("your copy"), "{why}");
+    assert!(why.contains("reach"), "{why}");
+}
