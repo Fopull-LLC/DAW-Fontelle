@@ -506,3 +506,34 @@ fn the_first_clipboard_program_there_is_answers_and_none_names_the_package() {
         "{nothing:?}"
     );
 }
+
+/// A studio that cannot open the sound card printed why and exited, and
+/// launched from the desktop's menu there is no terminal to print to: the
+/// user saw nothing happen. The reason goes up in a box first, through the
+/// desktop's own program for one, the message whole as one argument.
+#[test]
+fn a_reason_to_stop_can_be_shown_in_the_desktops_own_box() {
+    use fontelle_app::desktop::alert_commands;
+    let why = "failed to open the default output device: \"no default output device\" <&>";
+    let commands = alert_commands("Fontelle could not start", why);
+    if cfg!(target_os = "windows") {
+        // A MessageBoxW, in-process: nothing to spawn.
+        assert!(commands.is_empty(), "{commands:?}");
+        return;
+    }
+    assert!(!commands.is_empty());
+    for (program, args) in &commands {
+        assert!(
+            args.iter().any(|a| a.contains(why)),
+            "{program} carries the whole reason: {args:?}"
+        );
+    }
+    if cfg!(target_os = "linux") {
+        let programs: Vec<&str> = commands.iter().map(|(p, _)| *p).collect();
+        assert_eq!(programs, ["kdialog", "zenity", "notify-send"]);
+        let zenity = &commands[1].1;
+        assert!(zenity.iter().any(|a| a == "--error"), "{zenity:?}");
+        // Pango would read the `<&>` as markup and show nothing.
+        assert!(zenity.iter().any(|a| a == "--no-markup"), "{zenity:?}");
+    }
+}

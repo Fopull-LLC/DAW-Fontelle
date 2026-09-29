@@ -221,6 +221,85 @@ pub fn paste_text_with(commands: &[(&str, Vec<String>)]) -> Result<String, Strin
     }
 }
 
+/// The programs that put `message` up in a box titled `title`, best first.
+/// None on Windows, where [`show_alert`] calls `MessageBoxW` itself.
+pub fn alert_commands(title: &str, message: &str) -> Vec<(&'static str, Vec<String>)> {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect();
+    if cfg!(target_os = "windows") {
+        Vec::new()
+    } else if cfg!(target_os = "macos") {
+        // Handed to AppleScript as arguments, never spliced into its source.
+        vec![(
+            "osascript",
+            args(&[
+                "-e",
+                "on run argv",
+                "-e",
+                "display alert (item 1 of argv) message (item 2 of argv) as critical",
+                "-e",
+                "end run",
+                title,
+                message,
+            ]),
+        )]
+    } else {
+        vec![
+            ("kdialog", args(&["--title", title, "--error", message])),
+            (
+                "zenity",
+                args(&[
+                    "--error",
+                    "--no-markup",
+                    &format!("--title={title}"),
+                    &format!("--text={message}"),
+                ]),
+            ),
+            (
+                "notify-send",
+                args(&["--app-name=Fontelle", title, message]),
+            ),
+        ]
+    }
+}
+
+/// Puts `message` in front of somebody who may have no terminal — a studio
+/// launched from the desktop's menu that is about to exit. Best effort: the
+/// first program that starts is left to show it, and the caller does not
+/// wait for anybody to read it, except on Windows, where the box is the
+/// process's own and it waits for OK.
+pub fn show_alert(title: &str, message: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+        let wide = |s: &str| {
+            s.encode_utf16()
+                .chain(std::iter::once(0))
+                .collect::<Vec<u16>>()
+        };
+        let (title, message) = (wide(title), wide(message));
+        // SAFETY: both are NUL-terminated and outlive the call; no owner.
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    for (program, args) in alert_commands(title, message) {
+        let started = Command::new(program)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        if started.is_ok() {
+            return;
+        }
+    }
+}
+
 /// The application id the window announces and the desktop entry is named
 /// by. **One string, used in three places** — the Wayland app id and the X11
 /// `WM_CLASS` the window sets, the `.desktop` file's name and

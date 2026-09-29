@@ -1554,6 +1554,12 @@ fn main() {
     };
     if let Err(e) = result {
         eprintln!("Fontelle: {e}");
+        // Launched from the desktop's menu there is nobody reading stderr,
+        // and a studio that cannot open the sound card just never appeared
+        // (a Fedora user's report). A terminal has already been told.
+        if window && !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            fontelle_app::desktop::show_alert("Fontelle could not start", &e);
+        }
         std::process::exit(1);
     }
 }
