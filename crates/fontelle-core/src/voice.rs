@@ -2239,12 +2239,6 @@ impl Voice {
                 live_filters[index].cutoff_hz =
                     settings[index].cutoff_hz * 2f32.powf(sums.cutoff_cents[index] / 1200.0);
                 live_filters[index].resonance = settings[index].resonance + sums.resonance[index];
-                if index == 0 && at == 0 && std::env::var("FONTELLE_DEBUG_CUTOFF").is_ok() {
-                    eprintln!(
-                        "NEW cutoff {} cents {} lfo {:?}",
-                        live_filters[0].cutoff_hz, sums.cutoff_cents[0], self.lfo_values
-                    );
-                }
                 live_filters[index].drive =
                     (settings[index].drive + sums.drive[index]).clamp(0.0, 1.0);
                 live_filters[index].character =
