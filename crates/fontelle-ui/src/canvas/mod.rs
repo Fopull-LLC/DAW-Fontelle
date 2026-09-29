@@ -241,5 +241,5 @@ pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL,
     RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL,
     WEBSITE_URL, WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line,
-    update_progress, welcome_hit, welcome_layout,
+    update_progress, welcome_enter, welcome_hint, welcome_hit, welcome_layout,
 };

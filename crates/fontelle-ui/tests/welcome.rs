@@ -14,8 +14,8 @@
 
 use fontelle_ui::UpdateStatus;
 use fontelle_ui::canvas::{
-    REPOSITORY_URL, WEBSITE_URL, WelcomeHit, WelcomeLayout, update_line, welcome_hit,
-    welcome_layout,
+    REPOSITORY_URL, WEBSITE_URL, WelcomeHit, WelcomeLayout, update_line, welcome_enter,
+    welcome_hint, welcome_hit, welcome_layout,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -390,4 +390,44 @@ fn the_join_button_is_the_third_way_in() {
     let (x, y) = centre(layout.join_button);
     assert_eq!(welcome_hit(&layout, x, y), Some(WelcomeHit::Join));
     assert!(fontelle_ui::canvas::JOIN_LABEL.starts_with("Join"));
+}
+
+// ------------------------------------------------- Enter picks up the work ---
+//
+// > *"Every time I log out the instrument resets, this is when I save."*
+//
+// A launch opens on the start menu over a blank Untitled studio, and
+// Escape — the key a person presses to get past a dialog — went into that
+// blank studio, playing the factory Grand Piano. Saved work looked lost.
+// Enter reopens the last project, and the card says so.
+
+fn recent(name: &str, exists: bool) -> fontelle_ui::document::RecentProject {
+    fontelle_ui::document::RecentProject {
+        name: name.to_string(),
+        path: std::path::PathBuf::from(format!("/songs/{name}")),
+        exists,
+    }
+}
+
+#[test]
+fn enter_reopens_the_last_project_and_the_card_says_so() {
+    let list = [recent("Night Drive", true), recent("Older", true)];
+    assert_eq!(welcome_enter(&list), Some(WelcomeHit::Recent(0)));
+    let hint = welcome_hint(&list).expect("a hint");
+    assert!(hint.contains("Night Drive"), "{hint}");
+    assert!(hint.contains("Enter"), "{hint}");
+}
+
+#[test]
+fn enter_skips_a_project_that_is_not_there_any_more() {
+    let list = [recent("Moved", false), recent("Here", true)];
+    assert_eq!(welcome_enter(&list), Some(WelcomeHit::Recent(1)));
+    assert!(welcome_hint(&list).unwrap().contains("Here"));
+}
+
+#[test]
+fn with_nothing_to_reopen_enter_does_nothing_and_says_nothing() {
+    assert_eq!(welcome_enter(&[]), None);
+    assert_eq!(welcome_hint(&[]), None);
+    assert_eq!(welcome_enter(&[recent("Gone", false)]), None);
 }

@@ -314,6 +314,30 @@ pub enum WelcomeHit {
     Help,
 }
 
+/// What Enter does on the card: reopens the newest recent project that is
+/// still there. A launch opens on this card over a blank Untitled studio, and
+/// the key people press to get past a card — Escape — went into that blank
+/// studio, where saved work looked lost: *"Every time I log out the
+/// instrument resets, this is when I save."*
+pub fn welcome_enter(recent: &[crate::document::RecentProject]) -> Option<WelcomeHit> {
+    recent
+        .iter()
+        .position(|project| project.exists)
+        .map(WelcomeHit::Recent)
+}
+
+/// The line the card opens with, saying what Enter does — `None` when it
+/// does nothing.
+pub fn welcome_hint(recent: &[crate::document::RecentProject]) -> Option<String> {
+    let WelcomeHit::Recent(index) = welcome_enter(recent)? else {
+        return None;
+    };
+    Some(format!(
+        "Enter reopens \u{201c}{}\u{201d}",
+        recent[index].name
+    ))
+}
+
 /// What is under `(x, y)`, if anything is.
 pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit> {
     for (i, row) in layout.rows.iter().enumerate() {

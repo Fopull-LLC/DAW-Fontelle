@@ -2370,6 +2370,13 @@ impl WindowApp {
             recent,
             message: TextLayout::default(),
         });
+        if let Some(hint) = self
+            .welcome
+            .as_ref()
+            .and_then(|welcome| crate::canvas::welcome_hint(&welcome.recent))
+        {
+            self.say_on_welcome(hint);
+        }
         // Whatever the host has to say goes on the menu, which is in front
         // of the status line it would otherwise be written on — the last
         // run's crash above all, whose report is one press away under
@@ -2453,12 +2460,19 @@ impl WindowApp {
     /// chosen — and stays for everything else, with what went wrong on its
     /// message line.
     fn press_welcome(&mut self, x: f32, y: f32) {
-        use crate::canvas::{REPOSITORY_URL, WEBSITE_URL, WelcomeHit};
-        use crate::document::UpdateStatus;
         let Some(welcome) = &self.welcome else { return };
         let Some(hit) = crate::canvas::welcome_hit(&welcome.layout, x, y) else {
             return;
         };
+        self.do_welcome(hit);
+    }
+
+    /// What a press on the start menu does — or Enter, which is a press on
+    /// the newest recent project (`canvas::welcome_enter`).
+    fn do_welcome(&mut self, hit: crate::canvas::WelcomeHit) {
+        use crate::canvas::{REPOSITORY_URL, WEBSITE_URL, WelcomeHit};
+        use crate::document::UpdateStatus;
+        let Some(welcome) = &self.welcome else { return };
         // > *"when making a new project from the start screen it doesnt
         // > prompt me to name it first before making it it just names it
         // > untitled automatically."*
@@ -18659,6 +18673,14 @@ impl WindowApp {
         if self.welcome.is_some() {
             if event.logical_key == Key::Named(NamedKey::Escape) {
                 self.close_welcome();
+            } else if event.logical_key == Key::Named(NamedKey::Enter) {
+                if let Some(hit) = self
+                    .welcome
+                    .as_ref()
+                    .and_then(|welcome| crate::canvas::welcome_enter(&welcome.recent))
+                {
+                    self.do_welcome(hit);
+                }
             } else if self.action_of(event, crate::canvas::Context::Studio)
                 == Some(crate::canvas::Action::Help)
             {
