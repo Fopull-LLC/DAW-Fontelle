@@ -87,7 +87,9 @@ run it on `:99` with `env -u WAYLAND_DISPLAY DISPLAY=:99 wine fontelle.exe`.
 Copy fonts into `drive_c/windows/Fonts` first or it panics (*"no default font
 found"*), and make an **Arial** (Liberation Sans with its name records
 rewritten by fontTools): the theme's `sans-serif` is Arial on Windows, and any
-other face changes Flopsynth's layout. Test binaries run the same way
+other face changes Flopsynth's layout. (Since 2026-09-29 the binary carries
+Open Sans Regular, so captions no longer depend on it; `PROGRESS.md`'s top
+entry.) Test binaries run the same way
 (`cargo test --target x86_64-pc-windows-gnu --no-run`, then `wine <test>.exe`);
 set `AeDebug\Debugger` to `false` in the prefix or a test that crashes on
 purpose waits on winedbg. Real Windows plugins: Dexed and Surge XT publish

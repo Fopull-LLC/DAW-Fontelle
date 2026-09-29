@@ -52,6 +52,33 @@ should have a good extensive list of scales"*. Seen on `:99` end to end.
 **Still open:** a note clip's left-edge trim is planned, not built —
 `docs/note-clip-front-trim.md` (about 35 edits; two decisions are Ty's).
 
+**As of 2026-09-29 — CI's failures since v0.8.0, each to its cause**
+Run 36262276886 on `a1a4c85`:
+
+- **fmt**: `crates/fontelle-core/tests/mod_rate.rs`, rustfmt on that file.
+- **Linux, the Grand Piano's page at its minimum size** (*"Voice runs into
+  the strip … (830 past 776)"*): **fonts**. cosmic-text names Open Sans for
+  `sans-serif`; the runner has none and shaped in DejaVu Sans, and nine
+  captions went to two cells. Reproduced here with a DejaVu-only
+  `FONTCONFIG_FILE`. `TextContext::new` now loads Open Sans Regular from the
+  binary (`crates/fontelle-ui/fonts/`, OFL). **Ty's to look at**: Windows and
+  macOS draw Regular text in Open Sans now, not Segoe UI / SF; Medium still
+  resolves among the machine's faces — on this machine that is **Noto Sans
+  Medium**, by fallback, because Arch's Open Sans has no 500.
+- **Windows, five allocation tests** (*"alloc on the RT thread (size=44,
+  align=2)"*): a debug `std::env::var("FONTELLE_DEBUG_CUTOFF")` left in the
+  voice's modulation step — 22 UTF-16 units on Windows. Removed; seen and
+  passing under Wine. Not touched: `fontelle_host::atom::trace()` reads its
+  variable once, lazily, and its first call can be on the audio thread.
+- **Windows, the test face's editor**: the fixture answered X11 only.
+- **macOS, headless renders**: the scrim probes sat on bare window, where a
+  window-coloured scrim is a rounding step (Vulkan rounds one, Metal none);
+  the determinism test allows vello's one-step f32 ordering. Reasoned, not
+  run on a Mac.
+- **macOS, the reclaimed lobby's idle clock**: 50 ms of slack; one second
+  now. That is `relay.rs`, the engine's copy — marked, and hub card `0265`
+  wants telling.
+
 **Released as v0.17.0 on 2026-09-26** — clip edges and the snap-off drag,
 below. Ty asked for the release with the report.
 
