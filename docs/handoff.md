@@ -16,6 +16,33 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-09-29 (hosted plugins: notes, presets, the strip).**
+`PROGRESS.md`'s top entry. Things to know:
+
+(a) **A plugin's reset is not trusted.** `HostedProcessor` keeps the keys it
+started and ends them after the plugin's own reset (`release_held`); a new
+graph's node ends what the old one left. A fixture that is kind (the old
+test sine silenced itself) hides this — the sine now keeps its note through
+a reset, as JUCE does, refuses an unordered event list, and refuses a block
+with no transport.
+
+(b) **A plugin preset has two sources.** Fontelle's own (a `PluginState` in a
+JSON file) and the plugin's library (`PresetOrigin::Plugin`, listed by
+`fontelle_host::own_presets`, loaded by the plugin). Both land in the
+document as the plugin's state through `ApplyPreset`. The rack only loads a
+document blob into a running plugin when it differs from the one it last put
+in or read out (`Live::blob`) — the document's copy is as old as the last
+save.
+
+(c) **The plugin's window is two windows.** `PluginWindow::id()` is the
+child the plugin is handed; `frame_id()` is the frame with the strip. Sizes
+are the child's. `set_editor_header(0)` (a bare `PluginRack`, a bounce)
+means no strip and the old single window.
+
+(d) **Real plugins find what fixtures cannot**: `tests/real_plugins.rs` (all
+`--ignored`) — the reset sweep and the own-library sweep. Narrow with
+`FONTELLE_REAL_ONLY`; Odin2 is skipped by name.
+
 **Updated 2026-09-25 (collaboration, Phase 0).** `docs/collab-plan.md` is
 being built phase by phase; its §18 ledger is the to-do list and its §19 is
 where the tree departs from the text. Things to know before adding a command:

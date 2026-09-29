@@ -63,10 +63,51 @@ of like how flx does"*.
   The browser sends an effect plugin's preset to its open insert (it went to
   the selected channel) and names plugins by name, not id. The test gain
   keeps a **trim** in its state and nowhere else.
-- **Chosen by Ty, being built next:** an FL-style header strip in the
-  plugin's own editor window (◀ name ▶, save), and each plugin's own factory
-  presets listed beside Fontelle's, every format (CLAP preset discovery,
-  `.vstpreset`, LV2 presets, `.fxp` for JUCE plugins like OB-Xf).
+- **A plugin's own library** (Ty chose *every format*; `fontelle_host::
+  own_presets`, `tests/own_presets.rs`): CLAP preset discovery + `preset-load`
+  (Surge XT: 2,946), `.vstpreset` under `<root>/<vendor>/<plugin>`, LV2
+  `pset:Preset`s (port values, and lilv's own state restored into the running
+  instance with the processor recalled), and `.fxp` for JUCE plugins (OB-Xf:
+  488 in its 18 folders). An `.fxp` is a **program** chunk while a CLAP state
+  is the whole plugin; OB-Xf silently kept its patch until
+  `program_into_state` put the file's attributes into the state's
+  `<program>`. Offered only when the chunk starts as the plugin's own state
+  does. They are `PresetOrigin::Plugin` entries in the `PresetBank`
+  (read-only, never `*`), loaded by the plugin and written to the document as
+  its state through the ordinary `ApplyPreset` — one undo, and a saved song
+  keeps the patch. Listed when the rack first opens a plugin, **off the main
+  thread** except LV2 (Surge's takes 0.8–2 s), never instantiating the plugin
+  there. Real sweep: `cargo test -p fontelle-host --test real_plugins
+  every_installed_plugins_own -- --ignored --nocapture`.
+- **Traps found on real plugins:** SpectMorph's entry answers *every* factory
+  id with its plugin factory, so its "provider" was a plugin handed our
+  indexer as its host — refused by pointer now. A `LilvState` is **not**
+  independent of its world (`sord_node_free` crash when the rack dropped its
+  host first) — it holds the `livi::Plugin`, the `Lv2Processor::_world` trap
+  again.
+- **The strip in the plugin's own window** (Ty chose the FL-style header;
+  `gui_header.rs`, `plugin_header.rs` ×2, `plugin_presets.rs`):
+  `PluginWindow::open_with_header` makes the frame the strip plus a child
+  window the plugin is handed (X11 and Win32, the latter run under Wine);
+  sizes are the plugin's area. The strip is the studio's own `draw_preset_bar`
+  rendered by a `Headless` of the App's and put in as pixels
+  (`plugin_header_pixels`; X11 `PutImage` in bands, a DIB on Windows),
+  redrawn only when its view or hover changes. Presses come back through
+  `tick_plugin_editors` → `take_plugin_header_presses` and do what the same
+  press on an editor's bar does; the name opens the browser's Presets tab on
+  that plugin (`open_presets_for`), *Save as…* asks in the studio window
+  (`MenuTarget::DevicePresetName`). A strip is its device by **place** —
+  `PresetDevice::Channel { index }` — never the selected channel. Seen on
+  `:99` with OB-Xf (step, list, save as, hover), Surge XT and Calf
+  Monosynth.
+- **Open:** Odin2 (CLAP) crashes in its own `process` on block one;
+  Vaporizer2 corrupts the heap at teardown (both in the real sweeps, skipped
+  or narrowed). The strip is 32 *physical* px on Windows HiDPI (the window's
+  scale is known only after it is made). The picker lists OB-Xf's CLAP and
+  LV2 builds as two identical rows. A plugin's library is in the browser
+  once that plugin has been opened this session, not for every installed
+  one. On `:99` with no window manager the studio is not raised in front of
+  the plugin when the name is pressed.
 
 **As of 2026-09-29 — the piano roll's scale tool.** *"a scale tool so you
 can chose between any note and the mode or whatever and it will snap all of
