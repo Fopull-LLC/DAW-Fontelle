@@ -15,19 +15,10 @@ use fontelle_types::PluginFormat;
 /// understood yet (2026-09-29).
 const CRASHES: &[&str] = &["Odin2"];
 
+/// The folders the studio itself scans, so a plugin installed where a
+/// distribution puts it (Fedora's `/usr/lib64/…`) is tried here too.
 fn search_paths() -> Vec<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let mut paths = vec![
-        std::path::PathBuf::from("/usr/lib/clap"),
-        std::path::PathBuf::from("/usr/lib/lv2"),
-        std::path::PathBuf::from("/usr/lib/vst3"),
-    ];
-    if let Some(home) = home {
-        paths.push(home.join(".clap"));
-        paths.push(home.join(".lv2"));
-        paths.push(home.join(".vst3"));
-    }
-    paths
+    fontelle_host::search_paths()
 }
 
 fn peak(output: &[Vec<f32>]) -> f32 {

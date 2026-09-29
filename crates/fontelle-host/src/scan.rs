@@ -223,6 +223,9 @@ pub fn search_paths_with(bridges: &crate::Bridges) -> Vec<PathBuf> {
         }
         paths.push(PathBuf::from("/usr/lib/clap"));
         paths.push(PathBuf::from("/usr/local/lib/clap"));
+        // Fedora, openSUSE and RHEL package 64-bit plugins under `lib64`.
+        paths.push(PathBuf::from("/usr/lib64/clap"));
+        paths.push(PathBuf::from("/usr/local/lib64/clap"));
     }
     #[cfg(target_os = "macos")]
     {

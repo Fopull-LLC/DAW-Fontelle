@@ -66,6 +66,7 @@ fn vst3_is_a_format_this_build_hosts() {
 fn the_folders_vst3_nominates_are_searched() {
     // The VST 3 SDK's own list for Linux: `~/.vst3`, `/usr/lib/vst3`,
     // `/usr/local/lib/vst3`; `VST3_PATH` is honoured the way `CLAP_PATH` is.
+    // The `lib64` twins are where Fedora's packages put them.
     let paths = search_paths();
     #[cfg(target_os = "linux")]
     {
@@ -73,6 +74,8 @@ fn the_folders_vst3_nominates_are_searched() {
         assert!(paths.contains(&home.join(".vst3")), "{paths:?}");
         assert!(paths.contains(&"/usr/lib/vst3".into()), "{paths:?}");
         assert!(paths.contains(&"/usr/local/lib/vst3".into()), "{paths:?}");
+        assert!(paths.contains(&"/usr/lib64/vst3".into()), "{paths:?}");
+        assert!(paths.contains(&"/usr/local/lib64/vst3".into()), "{paths:?}");
     }
     #[cfg(not(target_os = "linux"))]
     assert!(!paths.is_empty());

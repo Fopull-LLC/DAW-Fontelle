@@ -110,3 +110,30 @@ fn the_places_plugins_are_installed_are_looked_in_without_being_asked() {
     assert!(!paths.is_empty());
     assert!(paths.iter().all(|path| path.is_absolute()), "{paths:?}");
 }
+
+/// > Plugins installed by Fedora packages are never found.
+///
+/// Fedora, openSUSE and RHEL put 64-bit libraries under `lib64`, and their
+/// plugin packages follow: `dnf install lsp-plugins-clap` lands in
+/// `/usr/lib64/clap`. The CLAP list names only `lib`, which is Debian's and
+/// Arch's layout, so on those systems every packaged plugin was missing.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_lib64_folders_fedora_installs_plugins_in_are_looked_in() {
+    let paths = search_paths();
+    for folder in [
+        "/usr/lib/clap",
+        "/usr/lib64/clap",
+        "/usr/local/lib/clap",
+        "/usr/local/lib64/clap",
+        "/usr/lib64/lv2",
+        "/usr/local/lib64/lv2",
+        "/usr/lib64/vst3",
+        "/usr/local/lib64/vst3",
+    ] {
+        assert!(
+            paths.contains(&folder.into()),
+            "{folder} missing: {paths:?}"
+        );
+    }
+}

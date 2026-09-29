@@ -53,11 +53,14 @@ fn lv2_is_a_format_this_build_hosts() {
 #[test]
 fn the_folders_lv2_nominates_are_searched() {
     // `~/.lv2`, `/usr/lib/lv2` and `/usr/local/lib/lv2` are the LV2
-    // specification's own list for Linux, and `LV2_PATH` overrides it.
+    // specification's own list for Linux, and `LV2_PATH` overrides it. The
+    // `lib64` twins are where Fedora's packages put them.
     let paths = search_paths();
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
     assert!(paths.contains(&home.join(".lv2")), "{paths:?}");
     assert!(paths.contains(&"/usr/lib/lv2".into()), "{paths:?}");
+    assert!(paths.contains(&"/usr/lib64/lv2".into()), "{paths:?}");
+    assert!(paths.contains(&"/usr/local/lib64/lv2".into()), "{paths:?}");
 }
 
 #[test]

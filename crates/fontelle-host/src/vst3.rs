@@ -592,6 +592,9 @@ pub(crate) fn search_paths(home: Option<&PathBuf>) -> Vec<PathBuf> {
         }
         paths.push(PathBuf::from("/usr/lib/vst3"));
         paths.push(PathBuf::from("/usr/local/lib/vst3"));
+        // Fedora, openSUSE and RHEL package 64-bit plugins under `lib64`.
+        paths.push(PathBuf::from("/usr/lib64/vst3"));
+        paths.push(PathBuf::from("/usr/local/lib64/vst3"));
     }
     #[cfg(target_os = "macos")]
     {

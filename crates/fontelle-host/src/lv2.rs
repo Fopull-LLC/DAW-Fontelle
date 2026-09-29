@@ -819,6 +819,9 @@ pub(crate) fn search_paths(home: Option<&PathBuf>) -> Vec<PathBuf> {
         }
         paths.push(PathBuf::from("/usr/lib/lv2"));
         paths.push(PathBuf::from("/usr/local/lib/lv2"));
+        // Fedora, openSUSE and RHEL package 64-bit plugins under `lib64`.
+        paths.push(PathBuf::from("/usr/lib64/lv2"));
+        paths.push(PathBuf::from("/usr/local/lib64/lv2"));
     }
     #[cfg(target_os = "macos")]
     {
