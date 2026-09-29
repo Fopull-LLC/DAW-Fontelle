@@ -400,7 +400,7 @@ pub fn save_file_candidates(
     // The full path the dialog opens on: the start folder, or the home
     // directory, with the offered name already filled in.
     let where_to = |sep: char| {
-        let dir = start.clone().unwrap_or_else(|| "~".to_string());
+        let dir = start.clone().unwrap_or_else(home_dir);
         format!("{dir}{sep}{default_name}")
     };
 
@@ -464,7 +464,7 @@ pub fn open_file_candidates(
         )];
     }
 
-    let dir = start.unwrap_or_else(|| "~".to_string());
+    let dir = start.unwrap_or_else(home_dir);
     vec![
         (
             "kdialog",
@@ -536,6 +536,15 @@ pub enum Pick {
     Folder,
     Open,
     Save,
+}
+
+/// The home directory, spelled out: a picker is a program, not a shell, and
+/// a `~` handed to one is a folder called `~`.
+fn home_dir() -> String {
+    std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.is_empty())
+        .unwrap_or_else(|| "/".to_string())
 }
 
 /// A `file://` URI, as the desktop portal answers, read as a path.

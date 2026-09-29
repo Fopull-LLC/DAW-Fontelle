@@ -170,6 +170,33 @@ fn a_missing_picker_says_what_was_asked_for_and_what_to_install() {
     }
 }
 
+/// With no start folder the open and save pickers were handed a literal
+/// `~`, which only a shell expands; zenity and kdialog were asked to open a
+/// folder called `~` in whatever directory Fontelle was started from.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_picker_with_no_start_folder_opens_at_home_not_at_a_literal_tilde() {
+    let home = std::env::var("HOME").expect("HOME");
+    let all = [
+        save_file_candidates("Export MIDI", "song.mid", None),
+        open_file_candidates("Import preset pack", None, "*.json"),
+    ];
+    for candidates in all {
+        for (program, args) in candidates {
+            assert!(
+                !args.iter().any(|a| a.contains('~')),
+                "{program} is handed a ~ no shell will expand: {args:?}"
+            );
+            if program == "zenity" || program == "kdialog" {
+                assert!(
+                    args.iter().any(|a| a.contains(&home)),
+                    "{program} opens at home: {args:?}"
+                );
+            }
+        }
+    }
+}
+
 /// The desktop portal (`org.freedesktop.portal.FileChooser`) answers with
 /// URIs; a picked file is one, percent-encoded.
 #[test]
