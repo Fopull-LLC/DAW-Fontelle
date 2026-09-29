@@ -38,6 +38,28 @@ pub fn notes_from_capture(
     clip_start: Tick,
     end_sample: Sample,
 ) -> ClipSource {
+    notes_from_looped_capture(events, tempo_map, clip_start, end_sample, None)
+}
+
+/// [`notes_from_capture`], for a take the transport looped over `looping` (in
+/// samples, start and end).
+///
+/// A looping transport stamps what it captures with the song position, and
+/// that jumps back at every seam — so a key held across one reads as a
+/// note-off *before* its note-on, and a take stopped in a later pass stops
+/// before the notes still down were started. Both used to come out as
+/// one-tick slivers: *"one minute is deletes the notes after the other it
+/// keeps them"*. A clock that runs backwards is a seam, and whatever is held
+/// across it ends at the loop's end, where the pass it was played in ended.
+///
+/// Every pass's notes are kept: a loop is for layering.
+pub fn notes_from_looped_capture(
+    events: &[TimedEvent],
+    tempo_map: &TempoMap,
+    clip_start: Tick,
+    end_sample: Sample,
+    looping: Option<(Sample, Sample)>,
+) -> ClipSource {
     let mut notes: Arena<fontelle_types::NoteId, Note> = Arena::new();
     // What is currently down, by key. Keyed rather than a list because a
     // note-off names only a key, and the newest note-on for that key is the
@@ -53,7 +75,19 @@ pub fn notes_from_capture(
         }
     };
 
+    // Where the clock was last, to see it jump back.
+    let mut last = Sample::MIN;
     for event in events {
+        if let Some((_, loop_end)) = looping
+            && event.sample < last
+        {
+            let seam = to_tick(loop_end);
+            let still_held: Vec<u8> = held.keys().copied().collect();
+            for key in still_held {
+                close(&mut held, key, seam);
+            }
+        }
+        last = event.sample;
         let at = to_tick(event.sample);
         match &event.payload {
             // The MIDI decoder already turns a zero-velocity note-on into a
@@ -78,7 +112,12 @@ pub fn notes_from_capture(
     // Whatever is still down when the tape stops ends there. A held chord at
     // the end of a take is a normal way to finish playing; letting it hang
     // forever, or dropping it, are both worse.
-    let end = to_tick(end_sample);
+    // Stopped in a pass after the one the last event was played in: the
+    // tape went round, and what is still down ended at the seam.
+    let end = match looping {
+        Some((_, loop_end)) if end_sample < last => to_tick(loop_end),
+        _ => to_tick(end_sample),
+    };
     let still_held: Vec<u8> = held.keys().copied().collect();
     for key in still_held {
         close(&mut held, key, end);

@@ -52,7 +52,7 @@ pub use prefab::{
     ElementId, MAX_BASE_DEPTH, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve,
 };
 pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};
-pub use recording::notes_from_capture;
+pub use recording::{notes_from_capture, notes_from_looped_capture};
 pub use storage::{
     BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, peek_meta,
     save_project,

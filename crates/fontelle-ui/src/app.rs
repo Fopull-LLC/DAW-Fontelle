@@ -13603,11 +13603,7 @@ impl WindowApp {
         // A stop while the tape is running keeps what was played. Read before
         // the action, because after it the transport is no longer recording
         // and the position is back at the mark.
-        let was_recording = self.view.recording;
-        let stopping = matches!(
-            what,
-            TransportHit::Stop | TransportHit::Play if self.view.playing
-        );
+        let keeping = crate::transport::keeps_take(what, &self.view);
         // The stop button also stops a file that is previewing: *"stopping if i
         // change my selection or press the stop button."* Silenced rather than
         // released, because the point of pressing stop is that it stops now.
@@ -13637,6 +13633,9 @@ impl WindowApp {
                     return;
                 }
                 if decision == TransportAction::SetArmed(false) {
+                    if keeping {
+                        self.keep_take(end);
+                    }
                     self.arm_recording(false);
                     return;
                 }
@@ -13702,7 +13701,7 @@ impl WindowApp {
                 }
             }
         }
-        if was_recording && stopping {
+        if keeping {
             self.keep_take(end);
         }
         self.tick();
@@ -13844,11 +13843,21 @@ impl WindowApp {
             self.refresh_title();
             return;
         }
-        self.status = match doc.keep_take(end_sample) {
-            0 => "nothing was played, so nothing was recorded".to_string(),
-            1 => "recorded 1 note".to_string(),
-            n => format!("recorded {n} notes"),
+        let kept = doc.keep_take(end_sample);
+        // What the document had to say about it wins over the count: a take
+        // refused, or kept past a clip's end, reported only as "recorded 3
+        // notes" is a take somebody goes looking for.
+        let said = doc.take_message();
+        self.status = match (kept, said) {
+            (0, Some(said)) => said,
+            (0, None) => "nothing was played, so nothing was recorded".to_string(),
+            (1, None) => "recorded 1 note".to_string(),
+            (n, None) => format!("recorded {n} notes"),
+            (1, Some(said)) => format!("recorded 1 note \u{2014} {said}"),
+            (n, Some(said)) => format!("recorded {n} notes \u{2014} {said}"),
         };
+        // It may have made a clip to hold the take.
+        self.tree.invalidate(TIMELINE);
         // Kept, so no longer *being* recorded: the notes are the clip's now
         // and draw as its own.
         self.takes.clear();

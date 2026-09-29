@@ -144,3 +144,130 @@ fn the_notes_are_in_the_open_clips_own_ticks() {
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].start, PPQN);
 }
+
+// ------------------------------------------------- where a take lands ---
+//
+// > *"Recording is so weird. One minute is deletes the notes after the other
+// > it keeps them, along with that it won't let me record onto another
+// > track"*
+//
+// A take was written into whichever clip happened to be open, counted from
+// that clip's start. Played before the clip, its notes were dropped; played
+// after it, they were kept where they could not sound; played with no clip
+// open, they were refused — and every one of those said "recorded N notes".
+// A take lands in the clip it was played over, and where there is none it
+// is given one, on the row it was played beside.
+
+fn session_capturing(
+    project: fontelle_model::Project,
+) -> (Session, LiveEventSource, Box<dyn EventSink>) {
+    let (mut source, mut ports) = live_event_channel(1, 64);
+    let (writer, reader) = live_capture_channel(1_024);
+    source.arm_capture(writer);
+    let port: Box<dyn EventSink> = Box::new(ports.claim().expect("a port"));
+    let session = common::a_session_for(project).with_capture(reader);
+    (session, source, port)
+}
+
+/// Every note clip in the project, as (start, length, lane index, the
+/// starts of its notes).
+fn note_clips(session: &Session) -> Vec<(i64, i64, usize, Vec<i64>)> {
+    let project = session.project();
+    let lanes = project.lane_ids();
+    let mut clips: Vec<_> = project
+        .clips
+        .iter()
+        .filter_map(|(id, clip)| {
+            let source = project.clip_source(id)?;
+            let fontelle_model::ClipSource::Notes(data) = source.as_ref() else {
+                return None;
+            };
+            let mut starts: Vec<i64> = data.notes.values().map(|n| n.start).collect();
+            starts.sort();
+            let lane = lanes.iter().position(|l| *l == clip.lane)?;
+            Some((clip.start, clip.length, lane, starts))
+        })
+        .collect();
+    clips.sort();
+    clips
+}
+
+const BAR: i64 = PPQN * 4;
+
+#[test]
+fn a_take_with_no_clip_open_gets_a_clip_of_its_own() {
+    let (mut session, mut source, mut port) =
+        session_capturing(fontelle_app::blank_project(8, 120.0, SR));
+    // The second beat of the second bar.
+    play(&mut source, port.as_mut(), BEAT * 5, on(60));
+    play(&mut source, port.as_mut(), BEAT * 6, off(60));
+    assert_eq!(session.keep_take(BEAT * 8), 1);
+    assert_eq!(
+        note_clips(&session),
+        vec![(BAR, BAR, 0, vec![PPQN])],
+        "a bar's clip where it was played, with the note a beat into it"
+    );
+    assert_eq!(session.take_message(), None, "nothing was refused");
+}
+
+#[test]
+fn a_take_played_before_the_open_clip_is_kept_not_dropped() {
+    let (mut session, mut source, mut port) =
+        session_capturing(common::a_project_with_a_clip(1, 120.0, SR));
+    let clip = Session::first_clip(session.project()).expect("a clip");
+    session.arrange(fontelle_ui::canvas::ArrangeEdit::Move {
+        ids: vec![clip],
+        tick_delta: BAR * 2,
+        lane_delta: 0,
+    });
+    play(&mut source, port.as_mut(), BEAT, on(60));
+    play(&mut source, port.as_mut(), BEAT * 2, off(60));
+    assert_eq!(session.keep_take(BEAT * 3), 1);
+    assert_eq!(
+        note_clips(&session),
+        vec![(0, BAR, 0, vec![PPQN]), (BAR * 2, BAR, 0, vec![])],
+        "its own clip in the first bar; the open one is left alone"
+    );
+}
+
+#[test]
+fn a_take_played_after_the_open_clip_ends_is_kept_where_it_sounds() {
+    let (mut session, mut source, mut port) =
+        session_capturing(common::a_project_with_a_clip(1, 120.0, SR));
+    // The second beat of the *third* bar; the open clip is one bar long.
+    play(&mut source, port.as_mut(), BEAT * 9, on(64));
+    play(&mut source, port.as_mut(), BEAT * 10, off(64));
+    assert_eq!(session.keep_take(BEAT * 12), 1);
+    assert_eq!(
+        note_clips(&session),
+        vec![(0, BAR, 0, vec![]), (BAR * 2, BAR, 0, vec![PPQN])]
+    );
+}
+
+#[test]
+fn a_take_over_the_open_clip_goes_into_it() {
+    let (mut session, mut source, mut port) =
+        session_capturing(common::a_project_with_a_clip(2, 120.0, SR));
+    play(&mut source, port.as_mut(), BEAT * 5, on(60));
+    play(&mut source, port.as_mut(), BEAT * 6, off(60));
+    assert_eq!(session.keep_take(BEAT * 7), 1);
+    assert_eq!(note_clips(&session), vec![(0, BAR * 2, 0, vec![PPQN * 5])]);
+}
+
+#[test]
+fn a_take_that_runs_past_its_clips_end_says_so() {
+    // Starts inside the one-bar clip and goes on into the next: kept in the
+    // clip — a clip never grows to fit — and the part past the end, which
+    // will not sound, is *said*.
+    let (mut session, mut source, mut port) =
+        session_capturing(common::a_project_with_a_clip(1, 120.0, SR));
+    play(&mut source, port.as_mut(), BEAT, on(60));
+    play(&mut source, port.as_mut(), BEAT * 2, off(60));
+    play(&mut source, port.as_mut(), BEAT * 5, on(62));
+    play(&mut source, port.as_mut(), BEAT * 6, off(62));
+    assert_eq!(session.keep_take(BEAT * 7), 2);
+    let said = session
+        .take_message()
+        .expect("the silent note is mentioned");
+    assert!(said.contains("past"), "{said}");
+}

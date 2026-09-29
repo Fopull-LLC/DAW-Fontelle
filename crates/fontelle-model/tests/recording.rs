@@ -5,7 +5,7 @@
 //! one still held when the tape stops — is decided here, where it can be
 //! tested, rather than inside a callback that only a sound card can run.
 
-use fontelle_model::{ClipSource, TempoMap, notes_from_capture};
+use fontelle_model::{ClipSource, TempoMap, notes_from_capture, notes_from_looped_capture};
 use fontelle_types::{EventPayload, NodeId, PPQN, TimedEvent};
 
 const SR: f64 = 48_000.0;
@@ -199,4 +199,79 @@ fn a_note_played_before_the_clip_starts_is_dropped_rather_than_wrapped() {
         192_000,
     );
     assert_eq!(notes(&clip), vec![(0, PPQN, 64, 90)]);
+}
+
+// ------------------------------------------------------- a looping take ---
+//
+// > *"Recording is so weird. One minute is deletes the notes after the other
+// > it keeps them"*
+//
+// While a loop runs, the capture's clock jumps back at every seam. A key held
+// across one had its note-off stamped *earlier* than its note-on, and the
+// take kept it as a one-tick sliver — a note that was played and then, as
+// far as anybody looking at the roll could tell, deleted.
+
+/// One bar at 120 bpm: the loop runs over samples 0..96 000.
+const LOOP: (i64, i64) = (0, 96_000);
+
+#[test]
+fn a_key_held_across_the_loop_seam_ends_at_the_seam() {
+    // Down on beat four of the pass, up half a beat into the next one.
+    let clip = notes_from_looped_capture(
+        &[on(72_000, 64, 100), off(12_000, 64)],
+        &tempo(),
+        0,
+        48_000,
+        Some(LOOP),
+    );
+    assert_eq!(
+        notes(&clip),
+        vec![(3 * PPQN, PPQN, 64, 100)],
+        "the note runs to the end of the pass, not one tick"
+    );
+}
+
+#[test]
+fn a_key_held_when_a_looping_take_stops_ends_at_the_seam() {
+    // Down on beat four; the tape wraps and is stopped on beat one of the
+    // next pass with the key still down.
+    let clip = notes_from_looped_capture(&[on(72_000, 67, 90)], &tempo(), 0, 10_000, Some(LOOP));
+    assert_eq!(notes(&clip), vec![(3 * PPQN, PPQN, 67, 90)]);
+}
+
+#[test]
+fn notes_in_every_pass_of_a_loop_are_kept() {
+    // Beat one in the first pass, beat two in the second: an overdub, both
+    // kept — a loop is for layering.
+    let clip = notes_from_looped_capture(
+        &[
+            on(0, 60, 100),
+            off(12_000, 60),
+            on(24_000, 62, 100),
+            off(36_000, 62),
+        ],
+        &tempo(),
+        0,
+        48_000,
+        Some(LOOP),
+    );
+    assert_eq!(
+        notes(&clip),
+        vec![(0, PPQN / 2, 60, 100), (PPQN, PPQN / 2, 62, 100)]
+    );
+}
+
+#[test]
+fn without_a_loop_a_take_reads_as_it_always_did() {
+    let events = [on(0, 60, 100), off(24_000, 60)];
+    assert_eq!(
+        notes(&notes_from_looped_capture(
+            &events,
+            &tempo(),
+            0,
+            48_000,
+            None
+        )),
+        notes(&notes_from_capture(&events, &tempo(), 0, 48_000)),
+    );
 }

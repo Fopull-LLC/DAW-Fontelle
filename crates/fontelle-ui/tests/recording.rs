@@ -15,7 +15,7 @@
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{
-    TransportAction, TransportHit, TransportHost, TransportView, action, apply, hit,
+    TransportAction, TransportHit, TransportHost, TransportView, action, apply, hit, keeps_take,
     start_counted_take, transport_bar_layout,
 };
 
@@ -255,4 +255,38 @@ fn a_counted_take_does_not_switch_the_metronome_on() {
     host.view.armed = true;
     start_counted_take(&mut host, 0, BEAT * 4);
     assert!(!host.commands.iter().any(|c| c.starts_with("click")));
+}
+
+// ------------------------------------------------- what ends a take ---
+
+/// > *"One minute is deletes the notes after the other it keeps them"*
+///
+/// Stop kept what was played; clicking record again — the same button that
+/// started it, which is how most people stop a take — disarmed and threw
+/// the take away without a word. Every way a take ends keeps it.
+#[test]
+fn every_way_a_take_ends_keeps_it() {
+    let recording = TransportView {
+        playing: true,
+        recording: true,
+        armed: true,
+        ..view()
+    };
+    for hit in [
+        TransportHit::Stop,
+        TransportHit::Play,
+        TransportHit::ToggleRecord,
+    ] {
+        assert!(keeps_take(hit, &recording), "{hit:?} threw the take away");
+    }
+    // Moving the marker or the loop while it runs ends nothing.
+    assert!(!keeps_take(TransportHit::ToggleLoop, &recording));
+    assert!(!keeps_take(TransportHit::ToggleMetronome, &recording));
+    // And with no take running there is nothing to keep.
+    let armed = TransportView {
+        armed: true,
+        ..view()
+    };
+    assert!(!keeps_take(TransportHit::ToggleRecord, &armed));
+    assert!(!keeps_take(TransportHit::Stop, &armed));
 }

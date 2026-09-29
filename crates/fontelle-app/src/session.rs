@@ -5860,6 +5860,70 @@ impl DocumentHost for Session {
 }
 
 impl Session {
+    /// A clip of notes for a take that began over no open clip: whole bars
+    /// from the one it began in to the one it ended in, playing the selected
+    /// instrument, on the open clip's row when that stretch of it is free,
+    /// else the first row that is, else a new row. Opened, as a drawn clip
+    /// is. `None`, with the reason said, when there is nothing to play it.
+    fn clip_for_take(&mut self, first: Tick, last: Tick) -> Option<(ClipId, Tick, Tick)> {
+        let Some(channel) = self
+            .selected_channel_id()
+            .or_else(|| self.project.channels.keys().next())
+        else {
+            self.message =
+                Some("add an instrument first — a take has to play something".to_string());
+            return None;
+        };
+        let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
+        let start = first.div_euclid(bar) * bar;
+        let end = (last.max(first + 1) + bar - 1).div_euclid(bar) * bar;
+        let free = |lane: fontelle_types::LaneId| {
+            !self.project.clips.values().any(|clip| {
+                clip.lane == lane && clip.start < end && start < clip.start + clip.length
+            })
+        };
+        let beside = self.project.clips.get(self.clip).map(|clip| clip.lane);
+        let lane = match beside.filter(|lane| free(*lane)) {
+            Some(lane) => lane,
+            None => match self.lane_ids().into_iter().find(|lane| free(*lane)) {
+                Some(lane) => lane,
+                None => {
+                    let add = self
+                        .apply_for::<fontelle_model::AddLane>(Box::new(
+                            fontelle_model::AddLane::new(format!(
+                                "Lane {}",
+                                self.project.lanes.len() + 1
+                            )),
+                        ))
+                        .ok()?;
+                    add.id()?
+                }
+            },
+        };
+        let clip = Clip {
+            lane,
+            start,
+            length: end - start,
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes: Arena::default(),
+            }),
+            prefab_link: None,
+            color: None,
+            muted: false,
+            loop_length: None,
+        };
+        let id = self
+            .apply_for::<AddClip>(Box::new(AddClip::new(clip)))
+            .ok()?
+            .id()?;
+        self.clip = id;
+        // The prefab picked in the list would otherwise still be where a
+        // take — and the next drawn note — goes.
+        self.prefab = None;
+        Some((id, start, end))
+    }
+
     /// The half of [`DocumentHost::edit`] that has to hand ids back.
     ///
     /// The history owns the command from the moment it is applied, so the ids
@@ -11369,29 +11433,74 @@ impl StudioHost for Session {
             return 0;
         }
 
-        let start = self
-            .project
-            .clips
-            .get(self.clip)
-            .map_or(0, |clip| clip.start);
-        let source =
-            fontelle_model::notes_from_capture(&events, &self.project.tempo_map, start, end_sample);
+        // Read in **song** ticks first, by the clock the transport was
+        // playing to, and only then decided where it goes. It used to be
+        // read against the open clip's start, whatever that clip was — so a
+        // take played before it was dropped, one played after it was kept
+        // where it could not sound, and one with nothing open was refused,
+        // each reported as "recorded N notes". *"One minute is deletes the
+        // notes after the other it keeps them."*
+        let looping = self.transport.as_ref().and_then(|transport| {
+            transport
+                .is_looping()
+                .then(|| transport.loop_range_sample())
+        });
+        let source = fontelle_model::notes_from_looped_capture(
+            &events,
+            &self.effective_tempo,
+            0,
+            end_sample,
+            looping,
+        );
         let ClipSource::Notes(data) = source else {
             return 0; // a capture is always a note clip
         };
-        let notes: Vec<Note> = data.notes.values().cloned().collect();
-        if notes.is_empty() {
+        let mut notes: Vec<Note> = data.notes.values().cloned().collect();
+        let Some(first) = notes.iter().map(|note| note.start).min() else {
             // Played nothing, or only note-offs from a key that was already
             // down when recording began. Not a failure, and not an empty clip.
             return 0;
+        };
+        let last = notes
+            .iter()
+            .map(|note| note.start + note.length)
+            .max()
+            .unwrap_or(first);
+
+        // Into the open clip when it is a clip of notes and the take began
+        // over it; otherwise into a clip of its own, made where it was
+        // played. An audio block that was clicked is "open" too, and a take
+        // written into it was refused outright.
+        let over = self.project.clips.get(self.clip).filter(|clip| {
+            (clip.start..clip.start + clip.length).contains(&first)
+                && self
+                    .project
+                    .clip_source(self.clip)
+                    .is_some_and(|source| matches!(source.as_ref(), ClipSource::Notes(_)))
+        });
+        let (home, offset, end) = match over {
+            Some(clip) => (self.note_target(), clip.start, clip.start + clip.length),
+            None => match self.clip_for_take(first, last) {
+                Some((clip, start, end)) => (fontelle_model::NoteHome::Clip(clip), start, end),
+                None => return 0,
+            },
+        };
+        let past = notes.iter().filter(|note| note.start >= end).count();
+        for note in &mut notes {
+            note.start -= offset;
         }
-        let count = notes.len();
-        // Straight into the clip that is open, through `AddNotes` like every
-        // other way notes arrive — so a take is one undo entry and can be
-        // taken back like anything else.
-        self.insert(self.note_target(), notes);
+        // Through `AddNotes` like every other way notes arrive — so a take
+        // is one undo entry and can be taken back like anything else — and
+        // counted by what it *kept*, not by what was played.
+        let kept = self.insert(home, notes).len();
+        if kept > 0 && past > 0 {
+            self.message = Some(format!(
+                "{past} of the notes you played run past the clip's end and will not sound \
+                 until it is lengthened"
+            ));
+        }
         self.touch();
-        count
+        kept
     }
 
     fn discard_take(&mut self) {

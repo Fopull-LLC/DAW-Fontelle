@@ -510,6 +510,20 @@ pub fn action(hit: TransportHit, view: &TransportView) -> Option<TransportAction
     })
 }
 
+/// Whether pressing `hit` ends a take that is running, and so keeps it.
+///
+/// Stop, pause, and **record again**. The last used to disarm and throw the
+/// take away while stop kept it — *"one minute is deletes the notes after the
+/// other it keeps them"* — and pressing the button that started a take is
+/// how most people end one.
+pub fn keeps_take(hit: TransportHit, view: &TransportView) -> bool {
+    view.recording
+        && matches!(
+            hit,
+            TransportHit::Stop | TransportHit::Play | TransportHit::ToggleRecord
+        )
+}
+
 // --------------------------------------------------------------- the tempo ---
 
 /// The slowest a song may be dragged to. Not zero: a tempo of nothing is a
