@@ -354,11 +354,12 @@ fn the_same_scene_renders_the_same_pixels_twice() {
     // Vulkan here never has. Anything of ours that is not deterministic (a
     // map's order deciding what is drawn over what, a label shaped in
     // another face) moves pixels by far more than one step.
+    assert_eq!(a.pixels.len(), b.pixels.len());
     let off = a
         .pixels
-        .chunks_exact(4)
-        .zip(b.pixels.chunks_exact(4))
-        .filter(|(p, q)| p.iter().zip(q.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .iter()
+        .zip(b.pixels.iter())
+        .filter(|(x, y)| x.abs_diff(**y) > 1)
         .count();
     assert_eq!(
         off, 0,
