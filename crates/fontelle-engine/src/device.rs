@@ -417,12 +417,16 @@ impl AudioDevice {
             .default_output_device()
             .ok_or_else(|| DeviceError("no default output device".into()))?;
 
-        let mut config = device
+        let supported = device
             .default_output_config()
-            .map_err(|e| DeviceError(e.to_string()))?
-            .config();
+            .map_err(|e| DeviceError(e.to_string()))?;
+        let mut config = supported.config();
         config.sample_rate = sample_rate;
-        config.buffer_size = cpal::BufferSize::Fixed(BLOCK_SIZE as u32);
+        config.buffer_size = first_buffer_size_that_opens(
+            &device,
+            config,
+            &output_buffer_sizes(supported.buffer_size()),
+        );
         let channels = config.channels as usize;
 
         let mut first_callback = true;
@@ -698,6 +702,62 @@ impl AudioDevice {
     pub fn stop(&mut self) {
         self.stream = None;
     }
+}
+
+/// The buffer sizes to ask the output device for, best first: one block, when
+/// the device's range has room for it or it does not say, then whatever the
+/// device picks itself.
+///
+/// It was one block and nothing else, so a card that would not take 128
+/// frames was a studio that would not start. The callback already walks
+/// whatever length it is handed a block at a time, so the default costs
+/// latency, not correctness.
+pub fn output_buffer_sizes(supported: &cpal::SupportedBufferSize) -> Vec<cpal::BufferSize> {
+    let block = BLOCK_SIZE as u32;
+    let fits = match supported {
+        cpal::SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&block),
+        cpal::SupportedBufferSize::Unknown => true,
+    };
+    let mut sizes = Vec::with_capacity(2);
+    if fits {
+        sizes.push(cpal::BufferSize::Fixed(block));
+    }
+    sizes.push(cpal::BufferSize::Default);
+    sizes
+}
+
+/// The first of `sizes` a stream opens with, the last taken on trust.
+///
+/// Tried with a silent stream that is never started, because the real
+/// callback is moved into `build_output_stream` and gone if the build fails:
+/// what it owns is `ManuallyDrop`, so it could not be built a second time.
+fn first_buffer_size_that_opens(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    sizes: &[cpal::BufferSize],
+) -> cpal::BufferSize {
+    let (last, rest) = sizes
+        .split_last()
+        .expect("output_buffer_sizes always ends with the default");
+    for size in rest {
+        let trial = cpal::StreamConfig {
+            buffer_size: *size,
+            ..config
+        };
+        let opened = device.build_output_stream(
+            trial,
+            |data: &mut [f32], _: &cpal::OutputCallbackInfo| data.fill(0.0),
+            |_| {},
+            None,
+        );
+        match opened {
+            Ok(_) => return *size,
+            Err(e) => eprintln!(
+                "fontelle: the output would not open with {size:?} ({e}); trying the next size"
+            ),
+        }
+    }
+    *last
 }
 
 /// The real-time promotion handle, in the slot the output callback keeps it in.

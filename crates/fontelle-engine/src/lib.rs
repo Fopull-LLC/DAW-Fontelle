@@ -25,7 +25,7 @@ mod transport;
 mod tune_tap;
 
 pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
-pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
+pub use device::{AudioDevice, BLOCK_SIZE, DeviceError, output_buffer_sizes};
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,
 };
