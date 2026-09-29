@@ -2010,6 +2010,29 @@ pub(crate) struct Vst3Processor {
 unsafe impl Send for Vst3Processor {}
 
 impl Vst3Processor {
+    /// Where the song is, into the context the plugin reads — see
+    /// [`crate::PluginTransport`]. It used to say *playing* always and give
+    /// no tempo, so a synced LFO ran at whatever the plugin assumed.
+    fn set_transport(&mut self, transport: &crate::PluginTransport) {
+        use ProcessContext_::StatesAndFlags_ as F;
+        let mut state = F::kContTimeValid as u32
+            | F::kTempoValid as u32
+            | F::kProjectTimeMusicValid as u32
+            | F::kBarPositionValid as u32
+            | F::kTimeSigValid as u32;
+        if transport.playing {
+            state |= F::kPlaying as u32;
+        }
+        let context = &mut self.context;
+        context.state = state;
+        context.tempo = transport.tempo;
+        context.projectTimeMusic = transport.beats;
+        context.barPositionMusic = transport.bar_start_beats;
+        context.timeSigNumerator = i32::from(transport.numerator);
+        context.timeSigDenominator = i32::from(transport.denominator);
+        context.projectTimeSamples = (transport.seconds * context.sampleRate).round() as i64;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new(
         shared: Arc<Shared>,
@@ -2035,8 +2058,7 @@ impl Vst3Processor {
         let key_in = (0..audio_in.len()).find(|&index| index != main_in);
         let mut context: ProcessContext = unsafe { std::mem::zeroed() };
         context.sampleRate = sample_rate;
-        context.state = ProcessContext_::StatesAndFlags_::kPlaying as u32
-            | ProcessContext_::StatesAndFlags_::kContTimeValid as u32;
+        context.state = ProcessContext_::StatesAndFlags_::kContTimeValid as u32;
         Self {
             in_ptrs: input
                 .iter()
@@ -2239,7 +2261,13 @@ impl Vst3Processor {
 
     /// **RT.** One block. Whatever moved on the wire goes at the top of the
     /// block, before the notes, which is the order the list has to be in.
-    pub(crate) fn run(&mut self, frames: usize, with_input: bool) {
+    pub(crate) fn run(
+        &mut self,
+        frames: usize,
+        with_input: bool,
+        transport: &crate::PluginTransport,
+    ) {
+        self.set_transport(transport);
         let frames = frames.min(self.max_block);
         // The wire, normalised: a stepped parameter's position over its
         // step count, a continuous one as it is.
@@ -2316,7 +2344,6 @@ impl Vst3Processor {
         // the call; the counts are exactly the buses the plugin declared.
         unsafe { self.shared.processor.process(&mut data) };
         self.context.continousTimeSamples += frames as i64;
-        self.context.projectTimeSamples += frames as i64;
         self.events.events.borrow_mut().clear();
         self.changes_in.clear();
     }

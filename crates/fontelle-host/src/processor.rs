@@ -5,6 +5,7 @@ use std::sync::Arc;
 use clack_host::events::Match;
 use clack_host::events::event_types::{
     MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent, ParamValueEvent,
+    TransportEvent,
 };
 use clack_host::prelude::*;
 use clack_host::utils::Cookie;
@@ -28,6 +29,47 @@ const MAX_EVENTS: u32 = 256;
 /// the raw fourteen bits and applies its own range instead.
 const BEND_RANGE_SEMITONES: f64 = 2.0;
 
+/// Where the song is, in the terms a plugin reads it — what a tempo-synced
+/// LFO, arpeggiator or delay inside it follows.
+///
+/// Set once a block by the node that plays the processor
+/// ([`HostedProcessor::set_transport`]), from the graph's own snapshot. The
+/// default is a song standing still at the top, at 120, in 4/4: what a
+/// plugin is told before anything has said otherwise, because **some plugin
+/// is always told something**: CLAP lets a host pass none, and a plugin
+/// given none has a synced LFO or arpeggiator run at whatever it assumed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PluginTransport {
+    pub playing: bool,
+    /// Beats per minute.
+    pub tempo: f64,
+    /// Quarter notes from the top of the song, at the start of the block.
+    pub beats: f64,
+    /// And in seconds.
+    pub seconds: f64,
+    /// Where the bar the block starts in begins, in quarter notes.
+    pub bar_start_beats: f64,
+    /// Which bar that is, from zero.
+    pub bar_number: i32,
+    pub numerator: u16,
+    pub denominator: u16,
+}
+
+impl Default for PluginTransport {
+    fn default() -> Self {
+        Self {
+            playing: false,
+            tempo: 120.0,
+            beats: 0.0,
+            seconds: 0.0,
+            bar_start_beats: 0.0,
+            bar_number: 0,
+            numerator: 4,
+            denominator: 4,
+        }
+    }
+}
+
 /// A plugin's audio half — what the graph holds and the RT thread calls.
 ///
 /// [`Send`] and not [`Sync`], which is exactly the shape CLAP describes: this
@@ -41,6 +83,11 @@ const BEND_RANGE_SEMITONES: f64 = 2.0;
 /// what differs is inside [`Inner`].
 pub struct HostedProcessor {
     inner: Inner,
+    /// Which keys this has started and not ended — so a [`reset`](Self::reset)
+    /// can end them itself rather than trusting the plugin to. See there.
+    held: [bool; 128],
+    /// Where the song is — see [`PluginTransport`].
+    transport: PluginTransport,
 }
 
 enum Inner {
@@ -71,24 +118,32 @@ impl HostedProcessor {
             inner: Inner::Clap(ClapProcessor::new(
                 processor, values, inputs, outputs, dialect, max_block,
             )),
+            held: [false; 128],
+            transport: PluginTransport::default(),
         }
     }
 
     pub(crate) fn lv2(processor: Lv2Processor) -> Self {
         Self {
             inner: Inner::Lv2(Box::new(processor)),
+            held: [false; 128],
+            transport: PluginTransport::default(),
         }
     }
 
     pub(crate) fn bridged(processor: BridgedProcessor) -> Self {
         Self {
             inner: Inner::Bridged(processor),
+            held: [false; 128],
+            transport: PluginTransport::default(),
         }
     }
 
     pub(crate) fn vst3(processor: Vst3Processor) -> Self {
         Self {
             inner: Inner::Vst3(Box::new(processor)),
+            held: [false; 128],
+            transport: PluginTransport::default(),
         }
     }
 
@@ -109,6 +164,7 @@ impl HostedProcessor {
     /// over: both formats require an ordered event list and a plugin is
     /// entitled to stop reading at the first one out of order.
     pub fn note_on(&mut self, frame: usize, key: u8, velocity: f64) {
+        self.held[usize::from(key.min(127))] = true;
         match &mut self.inner {
             Inner::Clap(p) => p.note_on(frame, key, velocity),
             Inner::Lv2(p) => p.note_on(frame, key, velocity),
@@ -119,6 +175,7 @@ impl HostedProcessor {
 
     /// **RT.** Ends a note. See [`note_on`](Self::note_on).
     pub fn note_off(&mut self, frame: usize, key: u8) {
+        self.held[usize::from(key.min(127))] = false;
         match &mut self.inner {
             Inner::Clap(p) => p.note_off(frame, key),
             Inner::Lv2(p) => p.note_off(frame, key),
@@ -208,12 +265,53 @@ impl HostedProcessor {
         }
     }
 
+    /// **RT.** Where the song is, for the next block — see
+    /// [`PluginTransport`]. Copied, so it costs nothing to call every block.
+    pub fn set_transport(&mut self, transport: &PluginTransport) {
+        self.transport = *transport;
+    }
+
+    /// What the next block will be told about the song.
+    pub fn transport(&self) -> PluginTransport {
+        self.transport
+    }
+
+    /// The keys this has started and not yet ended, lowest first.
+    pub fn held_keys(&self) -> impl Iterator<Item = u8> + '_ {
+        (0u8..=127).filter(|&key| self.held[usize::from(key)])
+    }
+
+    /// **RT.** Ends every note this has started and not ended, at `frame`.
+    ///
+    /// What [`reset`](Self::reset) does after the plugin's own reset, and
+    /// what a graph's new node does with a processor the old one left notes
+    /// sounding in (`fontelle_engine::PluginNode`).
+    pub fn release_held(&mut self, frame: usize) {
+        for key in 0u8..=127 {
+            if self.held[usize::from(key)] {
+                self.note_off(frame, key);
+            }
+        }
+    }
+
     /// **RT.** Everything sounding stops now.
     ///
-    /// A note-off per key would be a hundred and twenty-eight events and would
-    /// still leave a plugin's own tail ringing; CLAP's answer is `reset` and
-    /// LV2's is "all sound off", and this is what the graph's `reset` reaches
-    /// for.
+    /// CLAP's answer is `reset` and LV2's is "all sound off", and this is
+    /// what the graph's `reset` reaches for — at a stop, a seek and every
+    /// pass round a loop. **Then a note-off for every key still held**, on
+    /// the next block, because the plugin's answer cannot be trusted:
+    ///
+    /// > *"i tried ob-xf and it was initially working but as soon as i tried
+    /// > actually encorperating it in my arrangement it would just stop
+    /// > producing sound or be doing pitch bends it wasnt doing before"*
+    ///
+    /// CLAP says a reset kills voices, and a JUCE plugin's reset is
+    /// `AudioProcessor::reset`, which is empty unless the plugin fills it.
+    /// OB-Xf's does not: a note held across a loop's seam, whose note-off
+    /// was on the far side of the cut, sounded for good — and once the
+    /// voices ran out the synth fell silent, or a new note glided out of a
+    /// stuck one. Only the keys held, so a plugin that did as it was told
+    /// hears a note-off for nothing it still had rather than 128 of them.
     pub fn reset(&mut self) {
         match &mut self.inner {
             Inner::Clap(p) => p.reset(),
@@ -221,6 +319,7 @@ impl HostedProcessor {
             Inner::Bridged(p) => p.reset(),
             Inner::Vst3(p) => p.reset(),
         }
+        self.release_held(0);
     }
 
     /// **RT.** Runs one block through a plugin that takes audio in.
@@ -233,7 +332,7 @@ impl HostedProcessor {
         match &mut self.inner {
             Inner::Clap(p) => {
                 fill_input(p.main_input(), input, frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), output, frames);
             }
             Inner::Lv2(p) => {
@@ -250,7 +349,7 @@ impl HostedProcessor {
             Inner::Vst3(p) => {
                 fill_input(p.main_input(), input, frames);
                 p.fill_key(None, frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), output, frames);
             }
         }
@@ -273,7 +372,7 @@ impl HostedProcessor {
             Inner::Clap(p) => {
                 fill_input_mut(p.main_input(), bus, frames);
                 p.fill_key(None, frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), bus, frames);
             }
             Inner::Lv2(p) => {
@@ -290,7 +389,7 @@ impl HostedProcessor {
             Inner::Vst3(p) => {
                 fill_input_mut(p.main_input(), bus, frames);
                 p.fill_key(None, frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), bus, frames);
             }
         }
@@ -317,7 +416,7 @@ impl HostedProcessor {
             Inner::Clap(p) => {
                 fill_input_mut(p.main_input(), bus, frames);
                 p.fill_key(Some(key), frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), bus, frames);
             }
             Inner::Lv2(p) => {
@@ -331,7 +430,7 @@ impl HostedProcessor {
             Inner::Vst3(p) => {
                 fill_input_mut(p.main_input(), bus, frames);
                 p.fill_key(Some(key), frames);
-                p.run(frames, true);
+                p.run(frames, true, &self.transport);
                 drain_output(p.main_output(), bus, frames);
             }
         }
@@ -345,7 +444,7 @@ impl HostedProcessor {
         let frames = frames.min(self.max_block());
         match &mut self.inner {
             Inner::Clap(p) => {
-                p.run(frames, false);
+                p.run(frames, false, &self.transport);
                 drain_output(p.main_output(), output, frames);
             }
             Inner::Lv2(p) => {
@@ -357,7 +456,7 @@ impl HostedProcessor {
                 drain_output(p.output(), output, frames);
             }
             Inner::Vst3(p) => {
-                p.run(frames, false);
+                p.run(frames, false, &self.transport);
                 drain_output(p.main_output(), output, frames);
             }
         }
@@ -441,7 +540,8 @@ fn drain_output<O: AsMut<[f32]>>(produced: &[Vec<f32>], output: &mut [O], frames
 struct ClapProcessor {
     processor: StartedPluginAudioProcessor<HostHandlersOf>,
     values: Arc<ParamValues>,
-    /// This block's events, in time order: parameters first, then notes.
+    /// This block's events: notes as they come, parameters at the top of
+    /// the block, sorted into time order before the plugin sees them.
     events: EventBuffer,
     /// Whatever the plugin says back. Read for nothing yet — a plugin's own
     /// parameter gestures land here — but it must exist, because a plugin
@@ -680,10 +780,10 @@ impl ClapProcessor {
         self.steady = 0;
     }
 
-    fn run(&mut self, frames: usize, with_input: bool) {
-        // Whatever moved since the last block, at the top of this one. Before
-        // the notes, because the list has to be in time order and these are
-        // all at frame zero.
+    fn run(&mut self, frames: usize, with_input: bool, transport: &PluginTransport) {
+        // Whatever moved since the last block, at the top of this one — and
+        // sorted in front of the notes below, because the list has to be in
+        // time order and these are all at frame zero.
         //
         // A parameter change is written at the *start* of the block rather
         // than where the knob moved, and that is the same trade
@@ -707,6 +807,13 @@ impl ClapProcessor {
             ));
         });
 
+        // Into time order: the notes were added before the block ran, the
+        // parameters above at frame zero after them — and the very first
+        // block carries every starting value, so a note in it that was not
+        // at frame zero came before them in the list. A plugin that splits
+        // its block at each event (JUCE's wrapper does) reads one out of
+        // order as a stretch of negative length. Stable, and in place.
+        self.events.sort();
         self.replies.clear();
         let input_events = InputEvents::from_buffer(&self.events);
         let mut output_events = OutputEvents::from_buffer(&mut self.replies);
@@ -756,16 +863,47 @@ impl ClapProcessor {
             }))
         };
 
+        let transport = clap_transport(transport);
         let _ = self.processor.process(
             &audio_in,
             &mut audio_out,
             &input_events,
             &mut output_events,
             Some(self.steady),
-            None,
+            Some(&transport),
         );
         self.steady = self.steady.wrapping_add(frames as u64);
         self.events.clear();
+    }
+}
+
+/// [`PluginTransport`] as CLAP's event. Built on the stack each block: it is
+/// a plain struct, and CLAP reads it only for the length of the call.
+fn clap_transport(transport: &PluginTransport) -> TransportEvent {
+    use clack_host::events::event_types::TransportFlags;
+    use clack_host::utils::FixedPoint;
+    let mut flags = TransportFlags::HAS_TEMPO
+        | TransportFlags::HAS_BEATS_TIMELINE
+        | TransportFlags::HAS_SECONDS_TIMELINE
+        | TransportFlags::HAS_TIME_SIGNATURE;
+    if transport.playing {
+        flags |= TransportFlags::IS_PLAYING;
+    }
+    TransportEvent {
+        header: EventHeader::new_core(0, clack_host::events::EventFlags::empty()),
+        flags,
+        song_pos_beats: FixedPoint::from_float(transport.beats),
+        song_pos_seconds: FixedPoint::from_float(transport.seconds),
+        tempo: transport.tempo,
+        tempo_inc: 0.0,
+        loop_start_beats: FixedPoint::from_int(0),
+        loop_end_beats: FixedPoint::from_int(0),
+        loop_start_seconds: FixedPoint::from_int(0),
+        loop_end_seconds: FixedPoint::from_int(0),
+        bar_start: FixedPoint::from_float(transport.bar_start_beats),
+        bar_number: transport.bar_number,
+        time_signature_numerator: transport.numerator,
+        time_signature_denominator: transport.denominator,
     }
 }
 

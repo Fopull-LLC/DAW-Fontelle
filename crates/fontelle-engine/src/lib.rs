@@ -54,7 +54,7 @@ pub use pipewire::{
     PipeWireSource, drop_off_thread, find_pipewire_source, parse_pipewire_default_source,
     parse_pipewire_sources, pipewire_default_source, pipewire_pcm, pipewire_sources, source_menu,
 };
-pub use plugin_node::{PluginNode, PluginRole};
+pub use plugin_node::{PluginNode, PluginRole, plugin_transport};
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,

@@ -368,6 +368,35 @@ fn a_retired_node_parks_its_processor_for_the_next_one() {
     assert!((left[0] - 0.5).abs() < 1e-5, "{}", left[0]);
 }
 
+/// A graph rebuilt while a note is held: the old node parks the processor
+/// with the note still sounding in the plugin, and the note-off can arrive
+/// while the new node has not found the processor yet — dropped, with nothing
+/// left that would ever end the note. A structural edit already restarts a
+/// built-in instrument's voices; the new node ends what the old one left.
+#[test]
+fn a_note_left_held_by_a_retired_node_is_ended_by_the_next() {
+    let (_host, plugin, bay, mut node) = wire(SINE, PluginRole::Instrument);
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK];
+    run(&mut node, &mut [&mut left, &mut right], &[note_on(69)]);
+    assert!(peak(&left) > 0.1);
+    drop(node);
+
+    let mut next = PluginNode::new(
+        Arc::clone(&bay),
+        Arc::clone(plugin.values()),
+        PluginRole::Instrument,
+    );
+    next.prepare(&PrepareContext {
+        sample_rate: 48_000.0,
+        max_block_size: BLOCK as u32,
+    });
+    left.fill(0.0);
+    right.fill(0.0);
+    run(&mut next, &mut [&mut left, &mut right], &[]);
+    assert!(peak(&left) < 1e-6, "still sounding: {}", peak(&left));
+}
+
 #[test]
 fn a_plugin_node_says_what_it_is_in_a_schedule() {
     let (_host, _plugin, _bay, node) = wire(GAIN, PluginRole::Effect);
@@ -793,4 +822,38 @@ fn a_slid_note_that_ends_leaves_the_next_one_unbent() {
         again.abs_diff(unbent) <= 1,
         "the next note is unbent: {again} vs {unbent}"
     );
+}
+
+/// Where the song is, said the way a plugin reads it: quarter notes and
+/// seconds from the top, the bar it is in, the tempo, and whether it is
+/// moving. A tempo-synced LFO or arpeggiator in a plugin follows this.
+#[test]
+fn the_transport_is_said_in_a_plugins_terms() {
+    use fontelle_engine::{TransportSnapshot, TransportState};
+    let snapshot = TransportSnapshot {
+        state: TransportState::Playing,
+        position_sample: 48_000,
+        bpm: 120.0,
+        position_tick: fontelle_types::PPQN as f64 * 9.5,
+        ticks_per_sample: fontelle_types::PPQN as f64 * 2.0 / 48_000.0,
+        beats_per_bar: 4,
+    };
+    let transport = fontelle_engine::plugin_transport(&snapshot, 48_000.0);
+    assert!(transport.playing);
+    assert_eq!(transport.tempo, 120.0);
+    assert!((transport.beats - 9.5).abs() < 1e-9, "{}", transport.beats);
+    assert!(
+        (transport.seconds - 1.0).abs() < 1e-9,
+        "{}",
+        transport.seconds
+    );
+    assert_eq!(transport.bar_number, 2);
+    assert_eq!(transport.bar_start_beats, 8.0);
+    assert_eq!((transport.numerator, transport.denominator), (4, 4));
+
+    let stopped = TransportSnapshot {
+        state: TransportState::Stopped,
+        ..snapshot
+    };
+    assert!(!fontelle_engine::plugin_transport(&stopped, 48_000.0).playing);
 }

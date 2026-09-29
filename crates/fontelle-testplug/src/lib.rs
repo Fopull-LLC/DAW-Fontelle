@@ -36,6 +36,11 @@
 //!   the level, a bend (or tuning) bends it, and channel pressure (or the
 //!   pressure expression) *ducks* it — the opposite of the wheel, so the two
 //!   cannot be mistaken for each other by a host that sent the wrong thing.
+//!   Its `reset` **leaves the note sounding**, as a JUCE plugin's does
+//!   (OB-Xf's, found 2026-09-29), and it renders silence for an event list
+//!   that is not in time order, or with no transport — all three are what
+//!   real plugins do or depend on, and a host that leaned on the kinder
+//!   answers was broken against them.
 
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -77,6 +82,11 @@ pub struct GainShared {
     gain: AtomicU32,
     /// A stepped parameter, so a host has one to draw as a switch.
     invert: AtomicU32,
+    /// A multiplier kept in the plugin's **state and nowhere else** — not a
+    /// parameter. Most of a real plugin is like this (Surge's wavetables, a
+    /// sampler's file, OB-Xf's patch name), and a host that thinks a preset
+    /// is its parameters loses it. Scales the output like the gain.
+    trim: AtomicU32,
 }
 
 impl PluginShared<'_> for GainShared {}
@@ -130,6 +140,7 @@ impl DefaultPluginFactory for GainPlugin {
         Ok(GainShared {
             gain: AtomicU32::new(1.0f32.to_bits()),
             invert: AtomicU32::new(0.0f32.to_bits()),
+            trim: AtomicU32::new(1.0f32.to_bits()),
         })
     }
 
@@ -174,6 +185,7 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
             }
         }
         let gain = load(&self.shared.gain)
+            * load(&self.shared.trim)
             * if load(&self.shared.invert) >= 0.5 {
                 -1.0
             } else {
@@ -373,6 +385,7 @@ impl PluginStateImpl for GainMain<'_> {
         use std::io::Write;
         output.write_all(&load(&self.shared.gain).to_le_bytes())?;
         output.write_all(&load(&self.shared.invert).to_le_bytes())?;
+        output.write_all(&load(&self.shared.trim).to_le_bytes())?;
         Ok(())
     }
 
@@ -388,6 +401,14 @@ impl PluginStateImpl for GainMain<'_> {
             &self.shared.invert,
             f32::from_le_bytes(bytes[4..].try_into().unwrap()),
         );
+        // Written after the first two, so a state saved before it existed
+        // still loads — and leaves the trim at one.
+        let mut trim = [0u8; 4];
+        let trim = match input.read_exact(&mut trim) {
+            Ok(()) => f32::from_le_bytes(trim),
+            Err(_) => 1.0,
+        };
+        store(&self.shared.trim, trim);
         Ok(())
     }
 }
@@ -511,16 +532,34 @@ impl<'a, const MIDI: bool> PluginAudioProcessor<'a, SineShared, SineMain<'a, MID
         })
     }
 
+    /// Leaves the note sounding. CLAP says a reset kills voices; JUCE's
+    /// `AudioProcessor::reset` is empty unless a plugin fills it, and OB-Xf
+    /// does not — so a host that trusts a reset to end the notes it started
+    /// leaves them stuck. This is that plugin.
     fn reset(&mut self) {
-        self.silence();
+        self.phase = 0.0;
     }
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // CLAP allows a free-running host to pass no transport, and a synced
+        // plugin then free-runs. This host always passes one; heard here as
+        // silence if it does not.
+        let untimed = process.transport.is_none();
+        // CLAP: the input list is sorted by time. A plugin that splits its
+        // block at each event takes that at its word, so one out of order is
+        // a sub-block of negative length. Heard here as silence.
+        let mut last = 0;
+        let mut ordered = true;
+        for event in events.input {
+            let time = event.header().time();
+            ordered &= time >= last;
+            last = time;
+        }
         // Notes are kept with the frame they happened on rather than applied
         // up front, because a host's whole job with an event list is to say
         // *when* — and a fixture that ignored the timestamps could not tell a
@@ -575,7 +614,7 @@ impl<'a, const MIDI: bool> PluginAudioProcessor<'a, SineShared, SineMain<'a, MID
         // Handed fewer ports than it declared, it renders nothing — see the
         // note on `PluginAudioPortsImpl`. Silence rather than an error, so a
         // host that got this wrong hears the problem rather than reading it.
-        let refused = audio.output_port_count() < 2;
+        let refused = audio.output_port_count() < 2 || !ordered || untimed;
         let level = if refused {
             0.0
         } else {
@@ -637,19 +676,6 @@ impl<'a, const MIDI: bool> PluginAudioProcessor<'a, SineShared, SineMain<'a, MID
 
 /// The most notes the fixture keeps track of in one block.
 const MAX_SCHEDULED: usize = 64;
-
-impl SineProcessor<'_> {
-    /// CLAP's `reset`: everything sounding stops now.
-    ///
-    /// Implemented because a host has to be able to check that it forwards
-    /// one. It is *optional* in the specification, and a plugin that does not
-    /// implement it keeps ringing through a transport stop — which is a real
-    /// thing hosts live with and worth knowing this fixture does not hide.
-    fn silence(&mut self) {
-        self.key = None;
-        self.phase = 0.0;
-    }
-}
 
 /// The sine's ports: a main pair, and a mono **sub** beside it.
 ///

@@ -79,7 +79,7 @@ pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
 pub use lv2_state::{Lv2Property, Lv2State};
 pub use param::{HostedParam, ParamValues};
 pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHost};
-pub use processor::{HostedProcessor, ProcessorBay};
+pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
 pub use scan::{
     PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with, search_paths,
     search_paths_with,

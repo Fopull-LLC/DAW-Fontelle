@@ -113,6 +113,11 @@ pub struct PluginNode {
     /// What the plugin said it delays by — see
     /// [`latency_samples`](AudioNode::latency_samples).
     latency: u32,
+    /// Whether this node has had the processor yet. The first time it does,
+    /// it came from the graph this one replaced — see [`claim`](Self::claim).
+    claimed: bool,
+    /// The rate the graph runs at, for the transport's seconds.
+    sample_rate: f64,
 }
 
 /// How many channels the scratch holds. A mixer bus is at most stereo.
@@ -158,6 +163,8 @@ impl PluginNode {
             key: None,
             key_buffer: Vec::new(),
             latency: 0,
+            claimed: false,
+            sample_rate: 48_000.0,
         }
     }
 
@@ -225,6 +232,19 @@ impl PluginNode {
         }
         if self.processor.is_none() {
             self.processor = self.bay.take();
+            // **From the graph this one replaced**, with whatever it left
+            // sounding. A note-off that fell in the blocks before this node
+            // found the processor was dropped, and this node's table never
+            // saw the note start, so nothing would ever end it. A structural
+            // edit restarts a built-in instrument's voices; a plugin's are
+            // ended here. Only the first time: a processor coming back from
+            // a recall (a state read) is this node's own, mid-note.
+            if !self.claimed
+                && let Some(processor) = &mut self.processor
+            {
+                processor.release_held(0);
+                self.claimed = true;
+            }
         }
     }
 
@@ -505,6 +525,36 @@ fn place(outputs: &mut [&mut [f32]], frames: usize, gain_db: f32, pan: f32) {
     }
 }
 
+/// Where the song is, said the way a plugin reads it — see
+/// [`fontelle_host::PluginTransport`].
+///
+/// The bar is worked out from the meter in force now, as if it had always
+/// been: the snapshot carries one meter, not the map, and a song that changes
+/// meter part way has its later bars numbered as if it had not. What a synced
+/// LFO or arpeggiator reads — the tempo and the beat — is exact.
+pub fn plugin_transport(
+    snapshot: &crate::TransportSnapshot,
+    sample_rate: f64,
+) -> fontelle_host::PluginTransport {
+    use crate::TransportState;
+    let beats = snapshot.position_tick / fontelle_types::PPQN as f64;
+    let per_bar = f64::from(snapshot.beats_per_bar.max(1));
+    let bar = (beats / per_bar).floor();
+    fontelle_host::PluginTransport {
+        playing: matches!(
+            snapshot.state,
+            TransportState::Playing | TransportState::Recording | TransportState::Rendering
+        ),
+        tempo: f64::from(snapshot.bpm),
+        beats,
+        seconds: snapshot.position_sample as f64 / sample_rate.max(1.0),
+        bar_start_beats: bar * per_bar,
+        bar_number: bar as i32,
+        numerator: snapshot.beats_per_bar.clamp(1, u32::from(u16::MAX)) as u16,
+        denominator: 4,
+    }
+}
+
 /// The plugin's own parameter id, from the tail of an address.
 fn param_id(address: &str) -> Option<u32> {
     address.rsplit_once("/param/")?.1.parse().ok()
@@ -517,6 +567,7 @@ impl AudioNode for PluginNode {
         // which happens on the main thread before the graph is built. A rate
         // change rebuilds the plugin rather than reaching into it here. What
         // is sized here is the node's own scratch — see the type's note.
+        self.sample_rate = f64::from(ctx.sample_rate);
         self.scratch_frames = ctx.max_block_size as usize;
         self.scratch
             .resize(self.scratch_frames * SCRATCH_CHANNELS, 0.0);
@@ -542,6 +593,7 @@ impl AudioNode for PluginNode {
         let Some(processor) = &mut self.processor else {
             return;
         };
+        processor.set_transport(&plugin_transport(&ctx.transport, self.sample_rate));
         let (gain_db, pan) = (self.gain_db, self.pan);
         match self.role {
             PluginRole::Effect => match &self.key {
@@ -574,11 +626,20 @@ impl AudioNode for PluginNode {
 
     fn reset(&mut self) {
         // Nothing is sounding after a reset, so nothing is left for a slide
-        // to bend — and the pitches go with the notes.
-        self.sounding = [None; MAX_SOUNDING];
+        // to bend — and the pitches go with the notes. The processor's reset
+        // ends every note it started (see there); a bend left behind is put
+        // back too, after it, because a channel-wide plugin — every LV2 one —
+        // would otherwise start the next note bent, and the plugin's own
+        // reset may clear what was queued before it.
         if let Some(processor) = &mut self.processor {
             processor.reset();
+            for note in self.sounding.iter().flatten() {
+                if note.sent != 0.0 {
+                    processor.note_tuning(0, note.key, 0.0);
+                }
+            }
         }
+        self.sounding = [None; MAX_SOUNDING];
     }
 
     fn latency_samples(&self) -> u32 {

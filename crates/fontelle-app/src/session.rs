@@ -2353,6 +2353,12 @@ impl Session {
         self.touch();
     }
 
+    /// The session's plugins, open — for a tool, or a test standing in for
+    /// a plugin's own editor.
+    pub fn plugin_rack_mut(&mut self) -> &mut crate::PluginRack {
+        &mut self.plugins
+    }
+
     pub fn project(&self) -> &Project {
         &self.project
     }
@@ -3561,6 +3567,56 @@ impl Session {
     /// The parameters are already there — every knob went through
     /// [`SetPluginParam`](fontelle_model::SetPluginParam) — so what this adds
     /// is the half only the plugin knows.
+    /// Reads one device's plugin state off the running plugin into the
+    /// document — [`capture_plugin_states`](Self::capture_plugin_states) for
+    /// the one a preset is about to be saved from or loaded over.
+    ///
+    /// The document's copy is as old as the last Ctrl+S, and what was done
+    /// in the plugin's own editor since is newer: a preset saved from the
+    /// document's copy was the patch as it was at the last save, and a load
+    /// undone went back to that rather than to what was playing.
+    fn capture_device_plugin(&mut self, device: PresetDevice) {
+        let slot = match device {
+            PresetDevice::Instrument => {
+                let Some(channel) = self.selected_channel_id() else {
+                    return;
+                };
+                crate::PluginSlot::Channel(channel)
+            }
+            PresetDevice::Insert { strip, slot } => {
+                let Some(track) = self.mixer_track_ids().get(strip).copied() else {
+                    return;
+                };
+                crate::PluginSlot::Insert { track, slot }
+            }
+            PresetDevice::Track { .. } => return,
+        };
+        let Some(state) = self.plugins.snapshot(slot) else {
+            return;
+        };
+        let held = match slot {
+            crate::PluginSlot::Channel(channel) => self
+                .project
+                .channels
+                .get_mut(channel)
+                .and_then(|channel| channel.plugin.as_mut()),
+            crate::PluginSlot::Insert { track, slot } => self
+                .project
+                .mixer
+                .tracks
+                .get_mut(track)
+                .and_then(|track| track.inserts.get_mut(slot))
+                .and_then(|insert| insert.plugin.as_mut()),
+        };
+        // Only over the same plugin: a snapshot is of what is open, and the
+        // document may already be asking for something else.
+        if let Some(held) = held
+            && held.key == state.key
+        {
+            *held = state;
+        }
+    }
+
     fn capture_plugin_states(&mut self) {
         let slots: Vec<crate::PluginSlot> = crate::plugin_slots(&self.project);
         for slot in slots {
@@ -11852,6 +11908,14 @@ impl Session {
         let target = self
             .preset_target(device)
             .ok_or("that device is not there")?;
+        // What is playing, into the document before the load replaces it, so
+        // its undo goes back to that — see `capture_device_plugin`.
+        if matches!(
+            self.preset_device(device),
+            Some(fontelle_types::DeviceKind::Plugin(_))
+        ) {
+            self.capture_device_plugin(device);
+        }
         let name = preset.name.clone();
         let mut parts: Vec<Box<dyn Command>> = vec![Box::new(
             fontelle_model::ApplyPreset::from_bank(target, preset, entry.origin),
@@ -11950,6 +12014,9 @@ impl Session {
         let kind = self
             .preset_device(device)
             .ok_or("there is nothing here to save")?;
+        if matches!(kind, fontelle_types::DeviceKind::Plugin(_)) {
+            self.capture_device_plugin(device);
+        }
         let payload = self
             .preset_payload(device)
             .ok_or("this device has no state to save")?;
@@ -12629,7 +12696,7 @@ impl Session {
             .map(|device| {
                 let count = self.preset_bank.for_device(&device).len();
                 fontelle_ui::document::LibraryEntry {
-                    name: device.label(),
+                    name: self.device_label(&device),
                     detail: match count {
                         1 => "1 preset".to_string(),
                         n => format!("{n} presets"),
@@ -12649,7 +12716,7 @@ impl Session {
         let mut heading: Option<String> = None;
         for (index, entry) in entries.iter().enumerate() {
             let group = match searching {
-                true => entry.device.label(),
+                true => self.device_label(&entry.device),
                 false => entry.category.clone(),
             };
             if heading.as_deref() != Some(group.as_str()) {
@@ -12719,6 +12786,28 @@ impl Session {
                     .ok_or("open an effect\u{2019}s window first")?;
                 fontelle_ui::canvas::PresetDevice::Insert { strip, slot }
             }
+            // A plugin's preset goes to that plugin: the insert whose window
+            // is open when it holds it, and otherwise the selected channel —
+            // but only for an instrument. An effect's preset on a channel
+            // would turn the channel into the effect.
+            fontelle_types::DeviceKind::Plugin(key) => {
+                let open = self.open_insert.filter(|&(strip, slot)| {
+                    matches!(
+                        self.preset_device(PresetDevice::Insert { strip, slot }),
+                        Some(fontelle_types::DeviceKind::Plugin(held)) if &held == key
+                    )
+                });
+                match open {
+                    Some((strip, slot)) => PresetDevice::Insert { strip, slot },
+                    None if self.plugin_is_effect(key) => {
+                        return Err(format!(
+                            "open {}\u{2019}s window first",
+                            self.device_label(&entry.device)
+                        ));
+                    }
+                    None => PresetDevice::Instrument,
+                }
+            }
             _ => fontelle_ui::canvas::PresetDevice::Instrument,
         };
         // Through the same command every other route uses, by *entry*: this
@@ -12726,6 +12815,38 @@ impl Session {
         // else entirely. A preset for an effect this slot is not is refused by
         // the command itself, which is where that rule lives.
         self.apply_preset_entry(device, &entry)
+    }
+
+    /// What a device is called in the browser. A plugin by the name it
+    /// gives itself — `com.u-he.diva` means nothing to anybody — from the
+    /// scan when it is installed, and otherwise from a preset of its own,
+    /// which wrote the name down when it was saved.
+    fn device_label(&self, device: &fontelle_types::DeviceKind) -> String {
+        let fontelle_types::DeviceKind::Plugin(key) = device else {
+            return device.label();
+        };
+        if let Some(found) = self.plugins.scan().find(key) {
+            return found.name.clone();
+        }
+        self.preset_bank
+            .for_device(device)
+            .into_iter()
+            .find_map(|entry| match self.preset_bank.load(entry).ok()?.payload {
+                fontelle_types::PresetPayload::Plugin(state) => Some(state.name),
+                _ => None,
+            })
+            .unwrap_or_else(|| device.label())
+    }
+
+    /// Whether the installed plugin `key` names is an effect rather than an
+    /// instrument. One that is not installed is taken for an instrument: its
+    /// preset then goes where an instrument's would, and the channel says it
+    /// is missing.
+    fn plugin_is_effect(&self, key: &fontelle_types::PluginKey) -> bool {
+        self.plugins
+            .scan()
+            .find(key)
+            .is_some_and(|found| !found.is_instrument())
     }
 
     /// What the tab says along its bottom.

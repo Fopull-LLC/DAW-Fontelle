@@ -693,3 +693,95 @@ fn a_plugin_reports_the_latency_it_declares() {
     let sine = sine(&mut host);
     assert_eq!(sine.latency_samples(), 0);
 }
+
+/// > *"i tried ob-xf and it was initially working but as soon as i tried
+/// > actually encorperating it in my arrangement it would just stop
+/// > producing sound or be doing pitch bends it wasnt doing before"*
+///
+/// The graph resets every node at a stop, a seek and each pass round a
+/// loop, and a note held there has its note-off on the far side of the cut.
+/// OB-Xf's reset — JUCE's — leaves its voices sounding, so each one stuck
+/// until the voices ran out or a new note glided out of an old one. The
+/// sine keeps its note through a reset the same way.
+#[test]
+fn a_reset_ends_every_note_the_host_started_whatever_the_plugin_does_with_it() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+
+    processor.note_on(0, 69, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert!(peak(&output) > 0.1, "{}", peak(&output));
+
+    processor.reset();
+    processor.process_instrument(&mut output, 256);
+    assert!(peak(&output) < 1e-6, "still sounding: {}", peak(&output));
+}
+
+/// And a note that ended before the reset is not ended twice: a note-off for
+/// a key nobody is holding is a stray event a plugin may take as its own.
+#[test]
+fn a_reset_ends_only_the_notes_still_held() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.note_on(0, 69, 1.0);
+    processor.note_off(10, 69);
+    processor.note_on(20, 72, 1.0);
+    assert_eq!(processor.held_keys().collect::<Vec<_>>(), vec![72]);
+    processor.reset();
+    assert_eq!(processor.held_keys().count(), 0);
+}
+
+/// A parameter moved in the same block as a note: the parameter is at frame
+/// zero and the note later, so the parameter goes first. CLAP's list is in
+/// time order and a plugin that splits its block at each event depends on
+/// it; the sine renders nothing for a list that is not.
+#[test]
+fn a_parameter_and_a_later_note_in_one_block_reach_the_plugin_in_time_order() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+
+    processor.note_on(100, 69, 1.0);
+    plugin.set_param(0, 0.5);
+    processor.process_instrument(&mut output, 256);
+    assert!(peak(&output) > 0.1, "{}", peak(&output));
+}
+
+/// CLAP lets a free-running host pass no transport, and a plugin given none
+/// has its synced LFOs and arpeggiators free-run. Every block carries one,
+/// even before the song has said where it is; the sine renders silence
+/// without it, so a host that forgets is heard.
+#[test]
+fn an_instrument_is_handed_a_transport_even_before_the_song_says_where_it_is() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.note_on(0, 69, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert!(peak(&output) > 0.1, "{}", peak(&output));
+}
+
+/// And the song's own, once there is one: set before the block, read by it.
+#[test]
+fn the_songs_transport_reaches_the_plugin() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let transport = fontelle_host::PluginTransport {
+        playing: true,
+        tempo: 140.0,
+        beats: 9.5,
+        seconds: 9.5 * 60.0 / 140.0,
+        bar_start_beats: 8.0,
+        bar_number: 2,
+        numerator: 4,
+        denominator: 4,
+    };
+    processor.set_transport(&transport);
+    assert_eq!(processor.transport(), transport);
+}

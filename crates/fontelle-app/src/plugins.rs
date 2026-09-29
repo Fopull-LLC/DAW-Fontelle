@@ -93,6 +93,11 @@ struct Live {
     /// drawing into freed memory. `retire` closes it first, which makes that
     /// unexpressible.
     editor: Option<PluginWindow>,
+    /// The plugin's own state as it was last **put into** the plugin or
+    /// **read off** it — so a rebuild can tell a document whose state is new
+    /// (a preset was loaded, an undo put an old one back) from one whose copy
+    /// is merely old. See [`PluginRack::ensure`].
+    blob: Option<String>,
 }
 
 impl Live {
@@ -461,12 +466,15 @@ impl PluginRack {
     pub fn snapshot(&mut self, slot: PluginSlot) -> Option<PluginState> {
         let live = self.live.get_mut(&slot)?;
         if !live.plugin.state_needs_processor() {
-            return Some(live.plugin.snapshot());
+            let state = live.plugin.snapshot();
+            live.blob = state.blob.clone();
+            return Some(state);
         }
         match live.bay.recall(STATE_RECALL_TIMEOUT) {
             Some(mut processor) => {
                 let state = live.plugin.snapshot_with(&mut processor);
                 live.bay.park(processor);
+                live.blob = state.blob.clone();
                 Some(state)
             }
             None => {
@@ -572,15 +580,58 @@ impl PluginRack {
                 bypassed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 displays: HashMap::new(),
                 editor: None,
+                blob: state.blob.clone(),
             };
             live.refresh_displays();
             self.live.insert(slot, live);
+        } else if self.state_is_new(slot, state) {
+            // > *"non native plugins are not integrated with the presets
+            // > system"*
+            //
+            // **A new state for a plugin that is already open** — a preset
+            // loaded, or an undo putting the one before it back. This used
+            // to happen only on opening, so a preset changed the knobs below
+            // and nothing else: the rest of the patch — most of a real
+            // plugin, which is not parameters — stayed where it was.
+            //
+            // Only when the document's blob differs from the last one this
+            // rack put in or read out. The document's copy is as old as the
+            // last save, and whatever was done in the plugin's own editor
+            // since is newer; a rebuild for something else must not undo it.
+            //
+            // LV2 takes a state only as it is instantiated (`Lv2Plugin::
+            // activate`, the one moment LV2 lets a host restore without
+            // asking whether that is thread-safe), so an LV2 plugin is opened
+            // again with it rather than told in place.
+            if state.key.format == fontelle_types::PluginFormat::Lv2 {
+                if let Some(mut old) = self.live.remove(&slot)
+                    && !old.retire()
+                {
+                    self.retired.push(old);
+                }
+                return self.ensure(slot, state, sample_rate, max_block);
+            }
+            if let Some(live) = self.live.get_mut(&slot) {
+                live.plugin.restore(state);
+                live.blob = state.blob.clone();
+                live.refresh_displays();
+            }
         }
         if let Some(live) = self.live.get_mut(&slot) {
             // Whatever the document says, every time — see `apply_params`.
             live.apply_params(state);
         }
         self.live.get(&slot)
+    }
+
+    /// Whether `state` carries a blob this rack has not put into, or read
+    /// off, the plugin open at `slot`. A document with no blob never is: it
+    /// has nothing of the plugin's own to say.
+    fn state_is_new(&self, slot: PluginSlot, state: &PluginState) -> bool {
+        match (&state.blob, self.live.get(&slot)) {
+            (Some(blob), Some(live)) => live.blob.as_ref() != Some(blob),
+            _ => false,
+        }
     }
 
     /// Closes every plugin, for a run that is over.

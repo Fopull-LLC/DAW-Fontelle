@@ -19,6 +19,55 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-29 (later) — hosted plugins in an arrangement, and in the
+preset system.** *"i tried ob-xf and it was initially working but as soon as
+i tried actually encorperating it in my arrangement it would just stop
+producing sound or be doing pitch bends it wasnt doing before. it also looks
+like non native plugins are not integrated with the presets system ... kind
+of like how flx does"*.
+
+- **Stuck notes (the OB-Xf report).** The graph resets every node at a stop,
+  a seek and each pass round a loop, and trusted the plugin's reset to end
+  the notes held across the cut. CLAP says it does; JUCE's
+  `AudioProcessor::reset` is empty, and OB-Xf's CLAP still sounded at 0.13
+  five seconds after one — so every held note stuck, the voices ran out
+  (silence) or new notes glided out of stuck ones (the "pitch bends").
+  `HostedProcessor` now keeps which keys it started and ends them itself
+  after the plugin's reset (`release_held`); a graph's new `PluginNode` ends
+  what the old one left held the first time it gets the processor (a
+  note-off in the handoff blocks was dropped); a reset puts slide bends back.
+  The test sine now keeps its note through a reset, as JUCE does.
+- **Event order.** Parameter events were pushed at frame 0 *after* the
+  block's notes — on the first block after activation always, since it
+  carries every starting value. The CLAP list is sorted now (`EventBuffer::
+  sort`, in place). The sine renders silence for an unordered list.
+- **Transport.** CLAP got a null transport and VST 3 a context that always
+  said *playing* with no tempo, so synced LFOs/arps free-ran.
+  `PluginTransport`, filled by `fontelle_engine::plugin_transport` every
+  block; the sine renders silence without one. LV2 and bridges still get
+  none.
+- **Real plugins**: `cargo test -p fontelle-host --test real_plugins --
+  --ignored --nocapture` holds a note, resets, and listens. Every installed
+  CLAP/VST 3 instrument is silent after a reset now. **Odin2 crashes** in
+  its own `process` on block one (a null deref, not the transport) — skipped
+  there, not understood. A whole-machine run corrupted the heap at teardown
+  after Vaporizer2; run it narrowed (`FONTELLE_REAL_ONLY`).
+- **Presets** (`tests/plugin_presets.rs`, `plugin_hosting.rs`): the types
+  already had plugin presets; the plumbing lost them. A preset **load** now
+  reaches a plugin that is already open (the rack read a state only when
+  opening one, so only the knobs changed) — `Live::blob` is the last state
+  put in or read out, and only a document blob that differs is loaded, so a
+  rebuild never undoes the plugin's own editor; LV2 is reopened with it. A
+  **save** reads the running plugin first (it wrote the copy from the last
+  Ctrl+S), and so does a load, so its undo goes back to what was playing.
+  The browser sends an effect plugin's preset to its open insert (it went to
+  the selected channel) and names plugins by name, not id. The test gain
+  keeps a **trim** in its state and nowhere else.
+- **Chosen by Ty, being built next:** an FL-style header strip in the
+  plugin's own editor window (◀ name ▶, save), and each plugin's own factory
+  presets listed beside Fontelle's, every format (CLAP preset discovery,
+  `.vstpreset`, LV2 presets, `.fxp` for JUCE plugins like OB-Xf).
+
 **As of 2026-09-29 — the piano roll's scale tool.** *"a scale tool so you
 can chose between any note and the mode or whatever and it will snap all of
 your notes to that scale and dim out all the lanes that arent in that scale.

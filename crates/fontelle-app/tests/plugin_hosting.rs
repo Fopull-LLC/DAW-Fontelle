@@ -1384,3 +1384,80 @@ mod vst3 {
         );
     }
 }
+
+// ------------------------------------------ a plugin's presets (2026-09-29)
+
+/// The test gain's own state: its gain, its switch, and the trim it keeps
+/// nowhere else — see `fontelle-testplug`'s `GainShared::trim`.
+fn gain_blob(gain: f32, invert: f32, trim: f32) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&gain.to_le_bytes());
+    bytes.extend_from_slice(&invert.to_le_bytes());
+    bytes.extend_from_slice(&trim.to_le_bytes());
+    fontelle_types::encode_base64(&bytes)
+}
+
+fn trim_of(state: &PluginState) -> f32 {
+    let bytes = fontelle_types::decode_base64(state.blob.as_ref().expect("the gain keeps state"))
+        .expect("a blob is base64");
+    f32::from_le_bytes(bytes[8..12].try_into().unwrap())
+}
+
+fn project_with_a_gain_insert() -> (Project, fontelle_types::MixerTrackId, PluginSlot) {
+    let (mut project, _channel) = project_with_a_held_note();
+    let master = project.mixer.master.unwrap();
+    project.mixer.tracks[master]
+        .inserts
+        .push(EffectSlot::hosting(PluginState::new(
+            PluginKey::clap(GAIN),
+            "Gain",
+        )));
+    (
+        project,
+        master,
+        PluginSlot::Insert {
+            track: master,
+            slot: 0,
+        },
+    )
+}
+
+/// > *"non native plugins are not integrated with the presets system"*
+///
+/// A preset is the plugin's whole state, and loading one replaces the
+/// document's state for the slot. The rack used to read a state into a
+/// plugin only when it **opened** it, so a preset chosen for a plugin that
+/// was already open changed its knobs and nothing else — every part of the
+/// patch that is not a parameter stayed where it was.
+#[test]
+fn a_new_state_for_a_plugin_that_is_already_open_is_loaded_into_it() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 1.0);
+
+    let mut preset = rack.snapshot(slot).unwrap();
+    preset.blob = Some(gain_blob(1.0, 0.0, 0.25));
+    project.mixer.tracks[master].inserts[0].plugin = Some(preset);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.25);
+}
+
+/// And only a **new** state: the document's copy of a plugin's state is as
+/// old as the last save, and what was done in the plugin's own editor since
+/// is newer. A rebuild for something else must not put the old one back.
+#[test]
+fn a_rebuild_that_did_not_change_a_plugins_state_leaves_what_its_editor_did() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    // Saved: the document holds what the plugin said.
+    project.mixer.tracks[master].inserts[0].plugin = rack.snapshot(slot);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+
+    // Changed in its own editor, which the document hears nothing of.
+    let bytes = fontelle_types::decode_base64(&gain_blob(1.0, 0.0, 0.5)).unwrap();
+    rack.plugin_mut(slot).unwrap().load_state(&bytes);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.5);
+}
