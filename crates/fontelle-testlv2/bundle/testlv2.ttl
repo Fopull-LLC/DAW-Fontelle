@@ -195,3 +195,13 @@
         lv2:maximum 1.0 ;
         lv2:portProperty lv2:toggled ;
     ] .
+
+# The gain at half, as a preset — see the manifest.
+<http://fopull.com/fontelle/testlv2/gain#half>
+    a <http://lv2plug.in/ns/ext/presets#Preset> ;
+    lv2:appliesTo <http://fopull.com/fontelle/testlv2/gain> ;
+    rdfs:label "Half" ;
+    lv2:port [
+        lv2:symbol "gain" ;
+        <http://lv2plug.in/ns/ext/presets#value> 0.5
+    ] .

@@ -29,8 +29,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fontelle_host::{
-    Bridges, GuiSize, HostedParam, HostedPlugin, ParamValues, PluginHost, PluginScan, PluginWindow,
-    ProcessorBay,
+    Bridges, GuiSize, HostedParam, HostedPlugin, OwnPreset, ParamValues, PluginHost, PluginScan,
+    PluginWindow, ProcessorBay,
 };
 use fontelle_model::Project;
 use fontelle_types::{ChannelId, MixerTrackId, PluginKey, PluginState};
@@ -215,6 +215,12 @@ impl Live {
     }
 }
 
+/// One plugin's own library: still being listed, or listed.
+enum Library {
+    Listing(std::sync::mpsc::Receiver<Vec<OwnPreset>>),
+    Ready(Vec<OwnPreset>),
+}
+
 /// The session's plugins.
 pub struct PluginRack {
     /// The bridges found in Fontelle's own folder at startup — see
@@ -239,6 +245,14 @@ pub struct PluginRack {
     /// plugins in it, or dropping the browser — still ask rather than assume.
     scanned: bool,
     live: HashMap<PluginSlot, Live>,
+    /// Each plugin's own library — see [`take_libraries`](Self::take_libraries).
+    /// By plugin rather than by slot: two slots holding the same plugin have
+    /// one library, listed once.
+    libraries: HashMap<PluginKey, Library>,
+    /// Libraries listed and not yet handed to the preset bank.
+    fresh: Vec<PluginKey>,
+    /// Where a plugin's library is looked for beyond what it lists itself.
+    preset_roots: fontelle_host::PresetRoots,
     /// Plugins whose slot has gone, waiting for their processor to come back
     /// from a graph that has not been freed yet.
     retired: Vec<Live>,
@@ -259,6 +273,9 @@ impl Default for PluginRack {
             standard: true,
             scanned: false,
             live: HashMap::new(),
+            libraries: HashMap::new(),
+            fresh: Vec::new(),
+            preset_roots: fontelle_host::PresetRoots::standard(),
             retired: Vec::new(),
             message: None,
         }
@@ -557,6 +574,7 @@ impl PluginRack {
                 return None;
             };
             let path = found.path.clone();
+            let found_info = found.clone();
             let mut plugin = match self.host.open(&path, &state.key) {
                 Ok(plugin) => plugin,
                 Err(e) => {
@@ -583,6 +601,7 @@ impl PluginRack {
                 blob: state.blob.clone(),
             };
             live.refresh_displays();
+            self.list_library(&found_info, &mut live);
             self.live.insert(slot, live);
         } else if self.state_is_new(slot, state) {
             // > *"non native plugins are not integrated with the presets
@@ -622,6 +641,136 @@ impl PluginRack {
             live.apply_params(state);
         }
         self.live.get(&slot)
+    }
+
+    /// Starts listing `live`'s own library, the first time this plugin is
+    /// opened.
+    ///
+    /// **Off the main thread**, but for LV2: Surge XT describes each of its
+    /// three thousand files through its own provider, most of a second the
+    /// studio would otherwise stand still for, the first time Surge is put
+    /// on a channel. The thread is handed the state of the instance this rack
+    /// already has, and never makes one of its own — see
+    /// [`fontelle_host::list_own_presets`]. An LV2 plugin's is listed here
+    /// and now, by the host its instances come from: its presets' state is
+    /// in that host's URIDs, and a library of Turtle is a millisecond.
+    fn list_library(&mut self, info: &fontelle_host::PluginInfo, live: &mut Live) {
+        if self.libraries.contains_key(&info.key) {
+            return;
+        }
+        if info.key.format == fontelle_types::PluginFormat::Lv2 {
+            let listed = self.host.own_lv2_presets(info);
+            self.libraries
+                .insert(info.key.clone(), Library::Ready(listed));
+            self.fresh.push(info.key.clone());
+            return;
+        }
+        let own = live.plugin.save_state();
+        let roots = self.preset_roots.clone();
+        let info = info.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let key = info.key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("plugin-presets".into())
+            .spawn(move || {
+                let _ = sender.send(fontelle_host::list_own_presets(
+                    &info,
+                    &roots,
+                    own.as_deref(),
+                ));
+            });
+        let library = match spawned {
+            Ok(_) => Library::Listing(receiver),
+            Err(_) => Library::Ready(Vec::new()),
+        };
+        self.libraries.insert(key, library);
+    }
+
+    /// Where plugins' libraries are looked for beyond what each lists itself
+    /// — the standard folders unless told otherwise (a test's rig).
+    pub fn set_preset_roots(&mut self, roots: fontelle_host::PresetRoots) {
+        self.preset_roots = roots;
+    }
+
+    /// The libraries listed since this was last asked, as `(name, category)`
+    /// rows for the preset bank. Does not wait.
+    pub fn take_libraries(&mut self) -> Vec<(PluginKey, Vec<(String, String)>)> {
+        for (key, library) in &mut self.libraries {
+            if let Library::Listing(receiver) = library {
+                match receiver.try_recv() {
+                    Ok(listed) => {
+                        *library = Library::Ready(listed);
+                        self.fresh.push(key.clone());
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        *library = Library::Ready(Vec::new());
+                    }
+                }
+            }
+        }
+        std::mem::take(&mut self.fresh)
+            .into_iter()
+            .filter_map(|key| match self.libraries.get(&key) {
+                Some(Library::Ready(listed)) => Some((
+                    key,
+                    listed
+                        .iter()
+                        .map(|preset| (preset.name.clone(), preset.category.clone()))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Waits for every library still being listed — for a headless run and a
+    /// test, which have no next frame to pick one up in.
+    pub fn wait_for_libraries(&mut self) {
+        for (key, library) in &mut self.libraries {
+            if let Library::Listing(receiver) = library {
+                *library = Library::Ready(receiver.recv().unwrap_or_default());
+                self.fresh.push(key.clone());
+            }
+        }
+    }
+
+    /// One preset of a plugin's own library, by what the bank calls it.
+    pub fn own_preset(&self, key: &PluginKey, name: &str, category: &str) -> Option<OwnPreset> {
+        match self.libraries.get(key)? {
+            Library::Ready(listed) => listed
+                .iter()
+                .find(|preset| preset.name == name && preset.category == category)
+                .cloned(),
+            Library::Listing(_) => None,
+        }
+    }
+
+    /// Loads one of a plugin's own presets into the plugin at `slot`, and
+    /// answers with the state it is in now — what the document is to hold.
+    ///
+    /// An LV2 plugin that is running is handed it with its processor recalled
+    /// out of the graph, the way a snapshot reads one.
+    pub fn load_own_preset(
+        &mut self,
+        slot: PluginSlot,
+        preset: &OwnPreset,
+    ) -> Result<PluginState, String> {
+        let live = self.live.get_mut(&slot).ok_or("that plugin is not open")?;
+        if live.plugin.own_preset_needs_processor() {
+            let mut processor = live
+                .bay
+                .recall(STATE_RECALL_TIMEOUT)
+                .ok_or("the audio thread did not hand the plugin over")?;
+            let loaded = live.plugin.load_own_preset_with(&mut processor, preset);
+            live.bay.park(processor);
+            loaded?;
+        } else {
+            live.plugin.load_own_preset(preset)?;
+        }
+        live.refresh_displays();
+        self.snapshot(slot)
+            .ok_or_else(|| "the plugin's state could not be read back".to_string())
     }
 
     /// Whether `state` carries a blob this rack has not put into, or read

@@ -1411,6 +1411,10 @@ impl Session {
     /// three hundred and seventy real plugins arrived on the developer's own.
     pub fn with_plugin_folders(mut self, folders: Vec<PathBuf>) -> Self {
         self.plugins.search_standard_folders(false);
+        // Nor a plugin's library in the machine's data folders: what a
+        // plugin lists itself is all a rig this narrow should see.
+        self.plugins
+            .set_preset_roots(fontelle_host::PresetRoots::none());
         self.plugins.set_folders(folders);
         self.plugins.rescan();
         self
@@ -3576,20 +3580,8 @@ impl Session {
     /// document's copy was the patch as it was at the last save, and a load
     /// undone went back to that rather than to what was playing.
     fn capture_device_plugin(&mut self, device: PresetDevice) {
-        let slot = match device {
-            PresetDevice::Instrument => {
-                let Some(channel) = self.selected_channel_id() else {
-                    return;
-                };
-                crate::PluginSlot::Channel(channel)
-            }
-            PresetDevice::Insert { strip, slot } => {
-                let Some(track) = self.mixer_track_ids().get(strip).copied() else {
-                    return;
-                };
-                crate::PluginSlot::Insert { track, slot }
-            }
-            PresetDevice::Track { .. } => return,
+        let Some(slot) = self.plugin_slot_of(device) else {
+            return;
         };
         let Some(state) = self.plugins.snapshot(slot) else {
             return;
@@ -3615,6 +3607,27 @@ impl Session {
         {
             *held = state;
         }
+    }
+
+    /// Puts every plugin library listed since the last call into the preset
+    /// bank, beside Fontelle's own presets of that plugin.
+    fn register_plugin_libraries(&mut self) {
+        let listed = self.plugins.take_libraries();
+        if listed.is_empty() {
+            return;
+        }
+        for (key, presets) in listed {
+            self.preset_bank
+                .set_library(&fontelle_types::DeviceKind::Plugin(key), &presets);
+        }
+        self.touch();
+    }
+
+    /// Waits for the plugins' libraries still being listed, and puts them in
+    /// the bank — for a headless run and a test, which have no next frame.
+    pub fn settle_plugin_presets(&mut self) {
+        self.plugins.wait_for_libraries();
+        self.register_plugin_libraries();
     }
 
     fn capture_plugin_states(&mut self) {
@@ -3683,6 +3696,7 @@ impl Session {
             f64::from(self.options.sample_rate),
             self.options.block_size as u32,
         );
+        self.register_plugin_libraries();
         if let Some(message) = self.plugins.take_message() {
             self.message = Some(message);
         }
@@ -7032,6 +7046,9 @@ impl StudioHost for Session {
     }
 
     fn tick_plugin_editors(&mut self) -> bool {
+        // Once a frame, whatever the editors are doing: a plugin's own
+        // library listed on its thread since the last one.
+        self.register_plugin_libraries();
         let open = self.plugins.tick_editors();
         // An open editor keeps the audio thread running the graph, because
         // an LV2 editor reaches its plugin only through `run` — see
@@ -11779,6 +11796,14 @@ impl Session {
         // what it would be fresh. A ref whose file has gone is dirty too —
         // there is nothing left to be clean against.
         let dirty = match (&reference, &payload) {
+            // The plugin's own library has nothing to compare with: its
+            // preset is a file only the plugin reads. Clean, then — the
+            // alternative is a `*` that never goes out.
+            (Some(reference), Some(_))
+                if reference.origin == fontelle_types::PresetOrigin::Plugin =>
+            {
+                false
+            }
             (Some(reference), Some(payload)) => self
                 .preset_bank
                 .find(&kind, reference)
@@ -11884,14 +11909,23 @@ impl Session {
         device: PresetDevice,
         entry: &crate::preset_bank::PresetEntry,
     ) -> Result<(), String> {
-        let preset = self.preset_bank.load(entry)?;
+        // A plugin's own preset has no file this program can read: the
+        // plugin loads it, below, once the target is known.
+        let preset = match entry.origin {
+            fontelle_types::PresetOrigin::Plugin => None,
+            _ => Some(self.preset_bank.load(entry)?),
+        };
         // **A chain is not a device's state**: it replaces the whole rack, so
         // it takes `ApplyTrackChain` rather than `ApplyPreset`, and it takes
         // it before `preset_target` is asked — a track has no `PresetTarget`
         // for the same reason.
         if let PresetDevice::Track { strip } = device {
-            let fontelle_types::PresetPayload::Track(chain) = preset.payload else {
-                return Err(format!("{} is not a track chain", preset.name));
+            let Some(fontelle_types::Preset {
+                payload: fontelle_types::PresetPayload::Track(chain),
+                ..
+            }) = preset
+            else {
+                return Err(format!("{} is not a track chain", entry.name));
             };
             let id = self
                 .mixer_track_ids()
@@ -11916,6 +11950,10 @@ impl Session {
         ) {
             self.capture_device_plugin(device);
         }
+        let preset = match preset {
+            Some(preset) => preset,
+            None => self.load_plugins_own(device, entry)?,
+        };
         let name = preset.name.clone();
         let mut parts: Vec<Box<dyn Command>> = vec![Box::new(
             fontelle_model::ApplyPreset::from_bank(target, preset, entry.origin),
@@ -12734,7 +12772,8 @@ impl Session {
                 // tellable from a factory one of the same name (§P.3).
                 detail: match entry.origin {
                     fontelle_types::PresetOrigin::User => "mine".to_string(),
-                    fontelle_types::PresetOrigin::Factory => String::new(),
+                    fontelle_types::PresetOrigin::Factory
+                    | fontelle_types::PresetOrigin::Plugin => String::new(),
                 },
             });
         }
@@ -12838,6 +12877,61 @@ impl Session {
             .unwrap_or_else(|| device.label())
     }
 
+    /// One of a plugin's own presets, loaded into the plugin at `device` by
+    /// the plugin, and the state it is in afterwards as the preset the
+    /// document is to hold — so the load is one `ApplyPreset` like any other,
+    /// its undo puts back what was playing, and a save of the song keeps the
+    /// patch without the plugin's library.
+    fn load_plugins_own(
+        &mut self,
+        device: PresetDevice,
+        entry: &crate::preset_bank::PresetEntry,
+    ) -> Result<fontelle_types::Preset, String> {
+        let Some(fontelle_types::DeviceKind::Plugin(key)) = self.preset_device(device) else {
+            return Err(format!(
+                "\u{201c}{}\u{201d} belongs to a plugin that is not here",
+                entry.name
+            ));
+        };
+        if entry.device != fontelle_types::DeviceKind::Plugin(key.clone()) {
+            return Err(format!(
+                "\u{201c}{}\u{201d} is another plugin\u{2019}s preset",
+                entry.name
+            ));
+        }
+        let slot = self
+            .plugin_slot_of(device)
+            .ok_or("that plugin is not there")?;
+        let own = self
+            .plugins
+            .own_preset(&key, &entry.name, &entry.category)
+            .ok_or_else(|| {
+                format!(
+                    "\u{201c}{}\u{201d} is not in the plugin\u{2019}s library",
+                    entry.name
+                )
+            })?;
+        let state = self.plugins.load_own_preset(slot, &own)?;
+        Ok(fontelle_types::Preset::new(
+            fontelle_types::DeviceKind::Plugin(key),
+            entry.name.clone(),
+            entry.category.clone(),
+            fontelle_types::PresetPayload::Plugin(state),
+        ))
+    }
+
+    /// Where the plugin a preset device names sits in the rack.
+    fn plugin_slot_of(&self, device: PresetDevice) -> Option<crate::PluginSlot> {
+        match device {
+            PresetDevice::Instrument => self.selected_channel_id().map(crate::PluginSlot::Channel),
+            PresetDevice::Insert { strip, slot } => {
+                let track = self.mixer_track_ids().get(strip).copied()?;
+                Some(crate::PluginSlot::Insert { track, slot })
+            }
+            PresetDevice::Track { .. } => None,
+        }
+    }
+
     /// Whether the installed plugin `key` names is an effect rather than an
     /// instrument. One that is not installed is taken for an instrument: its
     /// preset then goes where an instrument's would, and the channel says it
@@ -12854,7 +12948,11 @@ impl Session {
         let (mut factory, mut user) = (0, 0);
         for entry in self.preset_bank.entries() {
             match entry.origin {
-                fontelle_types::PresetOrigin::Factory => factory += 1,
+                // A plugin's own library counts with what shipped: it came
+                // with something, and is nothing the person made.
+                fontelle_types::PresetOrigin::Factory | fontelle_types::PresetOrigin::Plugin => {
+                    factory += 1
+                }
                 fontelle_types::PresetOrigin::User => user += 1,
             }
         }

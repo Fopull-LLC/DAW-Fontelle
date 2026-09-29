@@ -130,6 +130,8 @@ impl Lv2Plugin {
 }
 
 impl Lv2Processor {
+    pub(crate) fn restore_preset(&mut self, _preset: &Lv2Preset) {}
+
     pub(crate) fn max_block(&self) -> usize {
         match *self {}
     }
@@ -177,4 +179,16 @@ impl Lv2Processor {
     pub(crate) fn run(&mut self, _frames: usize) {
         match *self {}
     }
+}
+
+/// An LV2 preset's state — never made off Linux, where nothing lists one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lv2Preset;
+
+pub(crate) fn presets(
+    _world: &World,
+    _features: &Arc<Features>,
+    _uri: &str,
+) -> Vec<crate::OwnPreset> {
+    Vec::new()
 }

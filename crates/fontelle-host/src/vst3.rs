@@ -1678,12 +1678,7 @@ impl Vst3Plugin {
             unsafe { self.controller.getState(ptr.as_ptr()) };
             stream.bytes.borrow().clone()
         };
-        let mut out = STATE_MAGIC.to_vec();
-        out.extend_from_slice(&(component.len() as u32).to_le_bytes());
-        out.extend_from_slice(&component);
-        out.extend_from_slice(&(controller.len() as u32).to_le_bytes());
-        out.extend_from_slice(&controller);
-        Some(out)
+        Some(join_state(&component, &controller))
     }
 
     pub(crate) fn load_state(&mut self, bytes: &[u8]) -> bool {
@@ -1957,7 +1952,19 @@ impl Vst3Plugin {
 
 const STATE_MAGIC: &[u8; 4] = b"FV3S";
 
-fn split_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+/// The component's state and the controller's, as the one blob the document
+/// keeps — [`split_state`] undoes it. A `.vstpreset` carries the same two
+/// halves as chunks, and is loaded by joining them here.
+pub(crate) fn join_state(component: &[u8], controller: &[u8]) -> Vec<u8> {
+    let mut out = STATE_MAGIC.to_vec();
+    out.extend_from_slice(&(component.len() as u32).to_le_bytes());
+    out.extend_from_slice(component);
+    out.extend_from_slice(&(controller.len() as u32).to_le_bytes());
+    out.extend_from_slice(controller);
+    out
+}
+
+pub(crate) fn split_state(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
     let rest = bytes.strip_prefix(STATE_MAGIC)?;
     let (len, rest) = rest.split_first_chunk::<4>()?;
     let len = u32::from_le_bytes(*len) as usize;

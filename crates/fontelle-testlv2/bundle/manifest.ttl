@@ -1,6 +1,7 @@
 @prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
+@prefix pset: <http://lv2plug.in/ns/ext/presets#> .
 
 <http://fopull.com/fontelle/testlv2/gain>
     a lv2:Plugin ;
@@ -35,4 +36,11 @@
 <http://fopull.com/fontelle/testlv2/deaf#ui>
     a ui:X11UI ;
     ui:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
+# The gain's one preset, the way an LV2 plugin ships a library: a
+# `pset:Preset` that applies to it, described in the plugin's own Turtle.
+<http://fopull.com/fontelle/testlv2/gain#half>
+    a pset:Preset ;
+    lv2:appliesTo <http://fopull.com/fontelle/testlv2/gain> ;
     rdfs:seeAlso <testlv2.ttl> .

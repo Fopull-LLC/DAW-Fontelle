@@ -65,7 +65,7 @@ impl std::fmt::Display for HostError {
 impl std::error::Error for HostError {}
 
 /// What this program tells a plugin about itself.
-fn host_info() -> HostInfo {
+pub(crate) fn host_info() -> HostInfo {
     HostInfo::new(
         "Fontelle",
         "Fopull LLC",
@@ -244,10 +244,10 @@ pub struct PluginHost {
     bridges: Arc<Bridges>,
     bundles: HashMap<PathBuf, PluginEntry>,
     /// One lilv world per LV2 bundle — see `lv2` for why not one for all.
-    worlds: HashMap<PathBuf, crate::lv2::World>,
+    pub(crate) worlds: HashMap<PathBuf, crate::lv2::World>,
     /// The feature set every LV2 plugin of this host shares, built on the
     /// first one. It owns a worker thread, which is why there is one.
-    lv2_features: Option<Arc<crate::lv2::Features>>,
+    pub(crate) lv2_features: Option<Arc<crate::lv2::Features>>,
     /// One loaded library per VST 3 bundle — see [`crate::vst3::Module`].
     vst3_modules: HashMap<PathBuf, Arc<crate::vst3::Module>>,
 }
@@ -471,7 +471,7 @@ impl PluginHost {
         })
     }
 
-    fn entry(&mut self, path: &Path) -> Result<&PluginEntry, HostError> {
+    pub(crate) fn entry(&mut self, path: &Path) -> Result<&PluginEntry, HostError> {
         if !self.bundles.contains_key(path) {
             let entry = load_entry(path)?;
             self.bundles.insert(path.to_path_buf(), entry);
@@ -541,8 +541,8 @@ fn text(value: Option<&CStr>) -> String {
 /// extension here, and no display strings) the method says so honestly
 /// rather than pretending.
 pub struct HostedPlugin {
-    info: PluginInfo,
-    inner: Inner,
+    pub(crate) info: PluginInfo,
+    pub(crate) inner: Inner,
     params: Vec<HostedParam>,
     values: Arc<ParamValues>,
     /// The main ports' channel counts — what the bus is copied to and from.
@@ -559,7 +559,7 @@ pub struct HostedPlugin {
     /// What the plugin says it delays by, in samples — see
     /// [`HostedPlugin::latency_samples`].
     latency: u32,
-    active: bool,
+    pub(crate) active: bool,
     /// Whether the plugin's own editor has been created. `destroy` is only
     /// legal after a `create`, and calling it twice is undefined.
     editor_open: bool,
@@ -609,7 +609,7 @@ pub struct EditorRequests {
 }
 
 /// The format-specific half of a [`HostedPlugin`].
-enum Inner {
+pub(crate) enum Inner {
     Clap(PluginInstance<FontelleHost>),
     Lv2(Lv2Plugin),
     Bridged(BridgedPlugin),
@@ -617,7 +617,7 @@ enum Inner {
 }
 
 impl HostedPlugin {
-    fn clap(&mut self) -> Option<&mut PluginInstance<FontelleHost>> {
+    pub(crate) fn clap(&mut self) -> Option<&mut PluginInstance<FontelleHost>> {
         match &mut self.inner {
             Inner::Clap(instance) => Some(instance),
             Inner::Lv2(_) | Inner::Bridged(_) | Inner::Vst3(_) => None,
@@ -1457,7 +1457,7 @@ impl HostedPlugin {
     }
 
     /// Reads every parameter's value back off the plugin onto the wire.
-    fn reread_params(&mut self) {
+    pub(crate) fn reread_params(&mut self) {
         let ids: Vec<u32> = self.params.iter().map(|param| param.id).collect();
         let values = Arc::clone(&self.values);
         if let Inner::Bridged(plugin) = &self.inner {

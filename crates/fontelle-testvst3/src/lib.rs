@@ -68,7 +68,7 @@ pub const VIEW_HEIGHT: u32 = 200;
 /// The marker the gain's **controller** writes into its own state stream,
 /// beside the component's — so a host that saved only one half is found out.
 pub const CONTROLLER_MAGIC: &[u8; 4] = b"FGC1";
-const COMPONENT_MAGIC: &[u8; 4] = b"FGN1";
+pub const COMPONENT_MAGIC: &[u8; 4] = b"FGN1";
 /// The gain's read-only parameter, which reads `1.0` once the controller
 /// has been handed a state stream carrying [`CONTROLLER_MAGIC`].
 pub const SEEN_CONTROLLER_STATE_PARAM: u32 = 3;

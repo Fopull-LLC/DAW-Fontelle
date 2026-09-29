@@ -936,16 +936,22 @@ impl Preset {
     }
 }
 
-/// Whether a preset came with the program or from the user's own bank.
+/// Whether a preset came with the program, from the user's own bank, or
+/// from a hosted plugin's own library.
 ///
-/// Two origins rather than a flag, because they behave differently in exactly
-/// one way that matters everywhere: a factory preset is read-only, so "Save"
-/// is disabled on one and "Save as…" is not.
+/// Origins rather than a flag, because they behave differently in exactly
+/// one way that matters everywhere: only the user's own can be written, so
+/// "Save" is disabled on the others and "Save as…" is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresetOrigin {
     Factory,
     User,
+    /// The library a hosted plugin brought with it — OB-Xf's `.fxp` patches,
+    /// Surge XT's through CLAP's preset discovery, an LV2 plugin's
+    /// `pset:Preset`s. Loaded by the plugin, and read-only like a factory
+    /// preset. Appended: the names are permanent.
+    Plugin,
 }
 
 /// What a device remembers about the preset it was loaded from.

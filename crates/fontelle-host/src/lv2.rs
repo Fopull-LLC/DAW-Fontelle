@@ -58,7 +58,7 @@
 //! [`HostedProcessor`]: crate::HostedProcessor
 //! [`PluginHost`]: crate::PluginHost
 
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -595,6 +595,44 @@ pub(crate) struct Lv2Processor {
 }
 
 impl Lv2Processor {
+    /// Hands the running instance a preset's own state, with the processor
+    /// out of the graph — the only way LV2 allows it (see
+    /// `ProcessorBay::recall`). Port values are not set here: they reach the
+    /// plugin as parameters, through the wire every other value takes.
+    pub(crate) fn restore_preset(&mut self, preset: &Lv2Preset) {
+        let instance = self.instance.raw().instance();
+        let Some(descriptor) = instance.descriptor() else {
+            return;
+        };
+        // lilv's `Instance` keeps its pointer to itself; the C struct it
+        // points at is public in `lilv.h`, and `lilv_state_restore` reads its
+        // descriptor and handle and nothing else.
+        let mut raw = livi::lilv::sys::LilvInstanceImpl {
+            lv2_descriptor: (descriptor as *const lv2_raw::LV2Descriptor).cast(),
+            lv2_handle: instance.handle(),
+            pimpl: std::ptr::null_mut(),
+        };
+        let mut map = forwarding_map(&self.features);
+        let map_feature = lv2_raw::LV2Feature {
+            uri: c"http://lv2plug.in/ns/ext/urid#map".as_ptr(),
+            data: (&mut map as *mut lv2_raw::LV2UridMap).cast(),
+        };
+        let features = [&map_feature as *const lv2_raw::LV2Feature, std::ptr::null()];
+        // SAFETY: the state is lilv's own and alive; the instance is not
+        // running (the caller holds the processor); the feature list is
+        // null-terminated and outlives the call.
+        unsafe {
+            livi::lilv::sys::lilv_state_restore(
+                preset.0.state.as_ptr(),
+                &mut raw,
+                Some(ignore_port_value),
+                std::ptr::null_mut(),
+                0,
+                features.as_ptr(),
+            );
+        }
+    }
+
     pub(crate) fn max_block(&self) -> usize {
         self.max_block
     }
@@ -800,4 +838,168 @@ pub(crate) fn search_paths(home: Option<&PathBuf>) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+// ------------------------------------------------------------ own presets
+
+/// An LV2 preset's state as lilv read it off the Turtle — its properties as
+/// well as its port values, mapped through the host's own URID map so they
+/// mean to the plugin what they meant to whoever wrote them. lilv offers no
+/// way to list what is inside one, so it is kept whole and handed to
+/// `lilv_state_restore`.
+#[derive(Clone)]
+pub struct Lv2Preset(Arc<LilvState>);
+
+/// lilv's state, and the plugin it was read for.
+///
+/// **The plugin handle is what keeps the world alive**, and the state needs
+/// it: its nodes are the world's, and `lilv_state_free` frees them through
+/// it. A state that outlived its world crashed in `sord_node_free` the
+/// moment a rack, which drops its host before its libraries, was dropped —
+/// the `Lv2Processor::_world` trap again. Dropped after `Drop::drop` has
+/// freed the state, as fields are.
+struct LilvState {
+    state: std::ptr::NonNull<livi::lilv::sys::LilvState>,
+    _world: livi::Plugin,
+}
+
+// SAFETY: a `LilvState` is data lilv read out of the world; nothing in it is
+// tied to a thread, it is only read after it is made, and the world it
+// points into is kept alive beside it.
+unsafe impl Send for LilvState {}
+unsafe impl Sync for LilvState {}
+
+impl Drop for LilvState {
+    fn drop(&mut self) {
+        // SAFETY: made by `lilv_state_new_from_world` and freed once, here.
+        unsafe { livi::lilv::sys::lilv_state_free(self.state.as_ptr()) }
+    }
+}
+
+impl PartialEq for Lv2Preset {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for Lv2Preset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Lv2Preset")
+    }
+}
+
+extern "C" fn map_through_features(
+    handle: lv2_raw::LV2UridMapHandle,
+    uri: *const std::os::raw::c_char,
+) -> lv2_raw::LV2Urid {
+    if handle.is_null() || uri.is_null() {
+        return 0;
+    }
+    // SAFETY: `handle` is the `Features` `forwarding_map` was given, alive
+    // for the call; `uri` is the NUL-terminated string LV2 promises.
+    unsafe { (*(handle as *const Features)).urid(CStr::from_ptr(uri)) }
+}
+
+/// A URID map that answers with `features`' own — the one the plugin was
+/// instantiated with, so a key lilv maps is the key the plugin knows.
+fn forwarding_map(features: &Arc<Features>) -> lv2_raw::LV2UridMap {
+    lv2_raw::LV2UridMap {
+        handle: Arc::as_ptr(features) as lv2_raw::LV2UridMapHandle,
+        map: map_through_features,
+    }
+}
+
+unsafe extern "C" fn ignore_port_value(
+    _symbol: *const std::os::raw::c_char,
+    _user: *mut c_void,
+    _value: *const c_void,
+    _size: u32,
+    _type: u32,
+) {
+}
+
+/// The `pset:Preset`s that apply to the plugin `uri` names, read whole: a
+/// label, a bank's label as the category, each port value by index, and
+/// lilv's state.
+pub(crate) fn presets(world: &World, features: &Arc<Features>, uri: &str) -> Vec<crate::OwnPreset> {
+    let Some(handle) = world.plugin_by_uri(uri) else {
+        return Vec::new();
+    };
+    let lilv = world.raw();
+    let plugin = handle.raw();
+    let preset_class = lilv.new_uri("http://lv2plug.in/ns/ext/presets#Preset");
+    let label = lilv.new_uri("http://www.w3.org/2000/01/rdf-schema#label");
+    let port = lilv.new_uri("http://lv2plug.in/ns/lv2core#port");
+    let symbol = lilv.new_uri("http://lv2plug.in/ns/lv2core#symbol");
+    let value = lilv.new_uri("http://lv2plug.in/ns/ext/presets#value");
+    let bank = lilv.new_uri("http://lv2plug.in/ns/ext/presets#bank");
+    let Some(presets) = plugin.related(Some(&preset_class)) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for preset in presets.iter() {
+        let Some(preset_uri) = preset.as_uri().map(str::to_string) else {
+            continue;
+        };
+        let _ = lilv.load_resource(&preset);
+        let name = lilv
+            .get(Some(&preset), Some(&label), None)
+            .and_then(|node| node.as_str().map(str::to_string))
+            .unwrap_or_else(|| {
+                preset_uri
+                    .rsplit(['#', '/'])
+                    .next()
+                    .unwrap_or(&preset_uri)
+                    .to_string()
+            });
+        let category = lilv
+            .get(Some(&preset), Some(&bank), None)
+            .and_then(|bank| lilv.get(Some(&bank), Some(&label), None))
+            .and_then(|node| node.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let mut ports = Vec::new();
+        for entry in lilv.find_nodes(Some(&preset), &port, None).iter() {
+            let (Some(name), Some(set)) = (
+                lilv.get(Some(&entry), Some(&symbol), None),
+                lilv.get(Some(&entry), Some(&value), None),
+            ) else {
+                continue;
+            };
+            let Some(target) = plugin.port_by_symbol(&name) else {
+                continue;
+            };
+            let set = set
+                .as_float()
+                .or_else(|| set.as_int().map(|v| v as f32))
+                .or_else(|| set.as_bool().map(|v| if v { 1.0 } else { 0.0 }));
+            if let Some(set) = set {
+                ports.push((target.index() as u32, set));
+            }
+        }
+        let mut map = forwarding_map(features);
+        // SAFETY: the world and the node are alive; the map is valid for the
+        // call and lilv keeps no pointer to it.
+        let state = unsafe {
+            livi::lilv::sys::lilv_state_new_from_world(
+                lilv.as_ptr(),
+                (&mut map as *mut lv2_raw::LV2UridMap).cast(),
+                preset.as_ptr(),
+            )
+        };
+        found.push(crate::OwnPreset {
+            name,
+            category,
+            source: crate::OwnPresetSource::Lv2 {
+                uri: preset_uri,
+                ports,
+                state: std::ptr::NonNull::new(state).map(|state| {
+                    Lv2Preset(Arc::new(LilvState {
+                        state,
+                        _world: handle.clone(),
+                    }))
+                }),
+            },
+        });
+    }
+    found
 }

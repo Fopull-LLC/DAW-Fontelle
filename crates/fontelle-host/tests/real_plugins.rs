@@ -99,3 +99,65 @@ fn every_installed_instrument_is_silent_after_a_reset() {
     }
     assert!(stuck.is_empty(), "still sounding after a reset: {stuck:?}");
 }
+
+/// Every installed plugin's own library, listed and one of it loaded: how
+/// many, how long the listing took, and whether the plugin's state moved.
+/// `FONTELLE_REAL_ONLY=OB-Xf` for one.
+#[test]
+#[ignore]
+fn every_installed_plugins_own_presets_are_listed_and_load() {
+    let scan = PluginScan::of(&search_paths());
+    let only = std::env::var("FONTELLE_REAL_ONLY").ok();
+    let roots = fontelle_host::PresetRoots::standard();
+    let mut host = PluginHost::new();
+    let mut refused = Vec::new();
+    for info in scan
+        .plugins
+        .iter()
+        .filter(|p| p.key.format.hosted())
+        .filter(|p| only.as_ref().is_none_or(|only| p.name.contains(only)))
+        .filter(|p| only.is_some() || !CRASHES.iter().any(|name| p.name.contains(name)))
+    {
+        // Named first, so a plugin that takes the binary down is the last
+        // line printed.
+        eprintln!("-> {} ({:?})", info.name, info.key.format);
+        let started = std::time::Instant::now();
+        let presets = host.own_presets(info, &roots);
+        let took = started.elapsed();
+        if presets.is_empty() {
+            continue;
+        }
+        let Ok(mut plugin) = host.open(&info.path, &info.key) else {
+            continue;
+        };
+        let Ok(mut processor) = plugin.activate(48_000.0, 256) else {
+            continue;
+        };
+        let before = plugin.snapshot_with(&mut processor);
+        let preset = &presets[presets.len() / 2];
+        let loaded = if plugin.own_preset_needs_processor() {
+            plugin.load_own_preset_with(&mut processor, preset)
+        } else {
+            plugin.load_own_preset(preset)
+        };
+        let moved = plugin.snapshot_with(&mut processor) != before;
+        eprintln!(
+            "{:<32} {:?} {:>5} presets in {:>6.0?}; loaded {:?} ({}): {:?}, state moved {moved}",
+            info.name,
+            info.key.format,
+            presets.len(),
+            took,
+            preset.name,
+            preset.category,
+            loaded.as_ref().map(|_| "ok"),
+        );
+        if loaded.is_err() {
+            refused.push(info.name.clone());
+        }
+        plugin.deactivate(processor);
+    }
+    assert!(
+        refused.is_empty(),
+        "would not load their own presets: {refused:?}"
+    );
+}

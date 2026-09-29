@@ -442,7 +442,7 @@ pub fn preset_menu(choices: &[PresetChoice], query: &str) -> (Vec<MenuEntry>, Ve
                 choice: &PresetChoice| {
         let label = match choice.origin {
             PresetOrigin::User => format!("{}{USER_MARK}", choice.name),
-            PresetOrigin::Factory => choice.name.clone(),
+            PresetOrigin::Factory | PresetOrigin::Plugin => choice.name.clone(),
         };
         entries.push(MenuEntry::new(label).starred(choice.favourite));
         rows.push(PresetMenuRow::Preset(index));

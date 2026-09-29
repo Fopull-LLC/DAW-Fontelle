@@ -468,6 +468,14 @@ impl HostedProcessor {
     ///
     /// The whole reason a snapshot may need the processor — see
     /// [`crate::HostedPlugin::snapshot_with`].
+    /// An LV2 plugin's running instance, handed a preset's own state — see
+    /// `Lv2Processor::restore_preset`. Nothing, for any other format.
+    pub(crate) fn lv2_restore_preset(&mut self, preset: &crate::lv2::Lv2Preset) {
+        if let Inner::Lv2(p) = &mut self.inner {
+            p.restore_preset(preset);
+        }
+    }
+
     pub(crate) fn lv2_save_state(&mut self) -> Option<Vec<u8>> {
         match &mut self.inner {
             Inner::Lv2(p) => p.save_state(),

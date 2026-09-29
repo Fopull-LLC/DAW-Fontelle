@@ -14,4 +14,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 clack-plugin = "0.1.1"
-clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "latency", "clack-plugin"] }
+clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "latency", "preset-discovery", "clack-plugin"] }

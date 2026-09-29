@@ -124,6 +124,7 @@ impl Plugin for GainPlugin {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<clack_extensions::latency::PluginLatency>()
+            .register::<clack_extensions::preset_discovery::PluginPresetLoad>()
             .register::<PluginAudioPorts>();
     }
 }
@@ -409,6 +410,109 @@ impl PluginStateImpl for GainMain<'_> {
             Err(_) => 1.0,
         };
         store(&self.shared.trim, trim);
+        Ok(())
+    }
+}
+
+/// The gain's own presets, the way a CLAP plugin offers a library: a
+/// preset-discovery factory beside the plugin factory lists them, and the
+/// `preset-load` extension loads one by the key the listing gave. Both live
+/// **inside the plugin** (`Location::Plugin`), as Surge XT's factory set
+/// does not but many do. Each sets the trim, which is the part of the gain a
+/// host that loaded only parameters would miss.
+const OWN_PRESETS: [(&CStr, &CStr, f32); 2] = [(c"Loud", c"loud", 2.0), (c"Quiet", c"quiet", 0.25)];
+
+impl clack_extensions::preset_discovery::PluginPresetLoadImpl for GainMain<'_> {
+    fn load_from_location(
+        &mut self,
+        location: clack_extensions::preset_discovery::prelude::Location,
+        load_key: Option<&CStr>,
+    ) -> Result<(), PluginError> {
+        use clack_extensions::preset_discovery::prelude::Location;
+        if location != Location::Plugin {
+            return Err(PluginError::Message("not one of the gain's presets"));
+        }
+        let (_, _, trim) = OWN_PRESETS
+            .iter()
+            .find(|(_, key, _)| Some(*key) == load_key)
+            .ok_or(PluginError::Message("no such preset"))?;
+        store(&self.shared.trim, *trim);
+        Ok(())
+    }
+}
+
+pub struct TestPresets {
+    descriptor: clack_extensions::preset_discovery::prelude::ProviderDescriptor,
+}
+
+impl TestPresets {
+    fn new() -> Self {
+        Self {
+            descriptor: clack_extensions::preset_discovery::prelude::ProviderDescriptor::new(
+                "com.fopull.fontelle.testgain.presets",
+                "Fontelle Test Gain presets",
+            ),
+        }
+    }
+}
+
+impl clack_extensions::preset_discovery::prelude::PresetDiscoveryFactoryImpl for TestPresets {
+    fn provider_count(&self) -> u32 {
+        1
+    }
+
+    fn provider_descriptor(
+        &self,
+        index: u32,
+    ) -> Option<&clack_extensions::preset_discovery::prelude::ProviderDescriptor> {
+        (index == 0).then_some(&self.descriptor)
+    }
+
+    fn create_provider<'a>(
+        &'a self,
+        indexer: clack_extensions::preset_discovery::prelude::IndexerInfo<'a>,
+        provider_id: &CStr,
+    ) -> Option<clack_extensions::preset_discovery::prelude::ProviderInstance<'a>> {
+        use clack_extensions::preset_discovery::prelude::*;
+        if Some(provider_id) != self.descriptor.id() {
+            return None;
+        }
+        Some(ProviderInstance::new(
+            indexer,
+            &self.descriptor,
+            |mut indexer| {
+                indexer
+                    .declare_location(LocationInfo {
+                        name: c"Fontelle Test Gain",
+                        flags: Flags::IS_FACTORY_CONTENT,
+                        location: Location::Plugin,
+                    })
+                    .map_err(|_| PluginError::Message("the indexer refused the location"))?;
+                Ok(GainPresetProvider)
+            },
+        ))
+    }
+}
+
+struct GainPresetProvider;
+
+impl<'a> clack_extensions::preset_discovery::prelude::ProviderImpl<'a> for GainPresetProvider {
+    fn get_metadata(
+        &mut self,
+        location: clack_extensions::preset_discovery::prelude::Location,
+        receiver: &mut clack_extensions::preset_discovery::prelude::MetadataReceiver,
+    ) -> Result<(), PluginError> {
+        use clack_extensions::preset_discovery::prelude::*;
+        if location != Location::Plugin {
+            return Ok(());
+        }
+        for (name, key, _) in OWN_PRESETS {
+            receiver
+                .begin_preset(Some(name), Some(key))
+                .map_err(|_| PluginError::Message("the host refused a preset"))?
+                .add_plugin_id(UniversalPluginId::clap(c"com.fopull.fontelle.testgain"))
+                .add_feature(c"Soft and loud");
+        }
         Ok(())
     }
 }
@@ -984,17 +1088,24 @@ impl PluginGuiImpl for FaceMain {
 
 pub struct TestEntry {
     factory: PluginFactoryWrapper<TestFactory>,
+    presets:
+        clack_extensions::preset_discovery::prelude::PresetDiscoveryFactoryWrapper<TestPresets>,
 }
 
 impl Entry for TestEntry {
     fn new(_bundle_path: Option<&CStr>) -> Result<Self, EntryLoadError> {
         Ok(Self {
             factory: PluginFactoryWrapper::new(TestFactory::new()),
+            presets:
+                clack_extensions::preset_discovery::prelude::PresetDiscoveryFactoryWrapper::new(
+                    TestPresets::new(),
+                ),
         })
     }
 
     fn declare_factories<'a>(&'a self, builder: &mut EntryFactories<'a>) {
         builder.register_factory(&self.factory);
+        builder.register_factory(&self.presets);
     }
 }
 

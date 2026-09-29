@@ -138,7 +138,8 @@ impl PresetBank {
     /// The factory bank cannot change while the program runs — it is in the
     /// binary — so a rescan that re-parsed it would be work for nothing.
     pub fn rescan(&mut self) {
-        self.entries.retain(|e| e.origin == PresetOrigin::Factory);
+        // What shipped, and what the plugins brought, are not in the folder.
+        self.entries.retain(|e| e.origin != PresetOrigin::User);
         self.unreadable
             .retain(|(path, _)| self.factory.contains_key(path));
         self.cache.borrow_mut().clear();
@@ -149,6 +150,30 @@ impl PresetBank {
         walk(&root, &root, 0, &mut found, &mut self.unreadable);
         found.sort_by_key(order);
         self.entries.extend(found);
+    }
+
+    /// Puts `device`'s own library — a hosted plugin's, `(name, category)`
+    /// in the order it listed them — in the bank, in place of whatever it
+    /// held for it before. Read-only entries: nothing is written, and
+    /// [`load`](Self::load) refuses one, because only the plugin can load it.
+    pub fn set_library(&mut self, device: &DeviceKind, presets: &[(String, String)]) {
+        self.entries
+            .retain(|e| !(e.origin == PresetOrigin::Plugin && e.device == *device));
+        let at = self
+            .entries
+            .iter()
+            .position(|e| e.device == *device && e.origin == PresetOrigin::User)
+            .unwrap_or(self.entries.len());
+        let library = presets.iter().map(|(name, category)| PresetEntry {
+            device: device.clone(),
+            name: name.clone(),
+            category: category.clone(),
+            origin: PresetOrigin::Plugin,
+            tags: Vec::new(),
+            notes: String::new(),
+            path: PathBuf::new(),
+        });
+        self.entries.splice(at..at, library);
     }
 
     /// Every preset for one device, factory first and then the user's own,
@@ -202,6 +227,12 @@ impl PresetBank {
 
     /// The preset itself.
     pub fn load(&self, entry: &PresetEntry) -> Result<Preset, String> {
+        if entry.origin == PresetOrigin::Plugin {
+            return Err(format!(
+                "\u{201c}{}\u{201d} is the plugin's own \u{2014} the plugin loads it",
+                entry.name
+            ));
+        }
         if entry.origin == PresetOrigin::Factory {
             return self
                 .factory
@@ -274,7 +305,7 @@ impl PresetBank {
         if entries.is_empty() {
             return Err("there is nothing to pack".to_string());
         }
-        if let Some(factory) = entries.iter().find(|e| e.origin == PresetOrigin::Factory) {
+        if let Some(factory) = entries.iter().find(|e| e.origin != PresetOrigin::User) {
             return Err(format!(
                 "\"{}\" is a factory preset — a pack is for your own",
                 factory.name
@@ -323,7 +354,7 @@ impl PresetBank {
     /// A factory one is refused **here** rather than by a disabled button: a
     /// disabled button is a courtesy, and read-only is a rule.
     pub fn delete(&mut self, entry: &PresetEntry) -> Result<(), String> {
-        if entry.origin == PresetOrigin::Factory {
+        if entry.origin != PresetOrigin::User {
             return Err(format!(
                 "\"{}\" is a factory preset — those are read-only",
                 entry.name

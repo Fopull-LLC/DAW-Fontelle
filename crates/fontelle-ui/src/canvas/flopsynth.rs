@@ -3798,6 +3798,7 @@ fn about_lines(
     match bar.origin {
         Some(fontelle_types::PresetOrigin::Factory) => lines.push("factory preset".to_string()),
         Some(fontelle_types::PresetOrigin::User) => lines.push("your preset".to_string()),
+        Some(fontelle_types::PresetOrigin::Plugin) => lines.push("the plugin's own".to_string()),
         None => {}
     }
     if bar.favourite {
