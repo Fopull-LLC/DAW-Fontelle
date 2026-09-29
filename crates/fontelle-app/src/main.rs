@@ -1313,7 +1313,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     // The previous binary an upgrade could not delete (`updates::install`)
     // goes now, on the launch after — quietly, because it is housekeeping.
-    if let Ok(exe) = std::env::current_exe() {
+    // Also the moment the binary's path is taken for the updater, before an
+    // upgrade can rename it (`updates::launched_exe`).
+    if let Some(exe) = fontelle_app::updates::launched_exe() {
         fontelle_app::updates::tidy(&exe);
     }
     // Before anything else opens a device or reads a file: somebody asking

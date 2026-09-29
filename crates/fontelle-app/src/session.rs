@@ -7915,9 +7915,9 @@ impl StudioHost for Session {
     }
 
     fn upgrade(&mut self) {
-        match std::env::current_exe() {
-            Ok(exe) => self.updater.upgrade(exe),
-            Err(e) => self.message = Some(format!("could not find this binary: {e}")),
+        match crate::updates::launched_exe() {
+            Some(exe) => self.updater.upgrade(exe),
+            None => self.message = Some("could not find this binary".to_string()),
         }
     }
 

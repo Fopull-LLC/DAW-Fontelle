@@ -643,3 +643,56 @@ fn upgrading_reports_how_much_of_the_archive_has_arrived() {
     wait_for(&updater, |s| !matches!(s, UpdateStatus::Downloading { .. }));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// After one upgrade the running binary is the one renamed to `.old` and
+/// deleted, and `current_exe()` names *that*: `fontelle.old (deleted)` on
+/// Linux. A second upgrade in the same run installed beside a file that is
+/// not there. The binary is the one the process was launched as, asked once.
+///
+/// Run as a child from a copy of this test binary, so the copy can be
+/// renamed and deleted the way `install` does it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_binary_to_upgrade_is_the_one_launched_even_after_it_was_replaced() {
+    use fontelle_app::updates::launched_exe;
+    const CHILD: &str = "FONTELLE_TEST_LAUNCHED_EXE";
+    const NAME: &str = "the_binary_to_upgrade_is_the_one_launched_even_after_it_was_replaced";
+
+    if std::env::var_os(CHILD).is_some() {
+        let first = launched_exe().expect("the launched binary");
+        let old = first.with_extension("old");
+        std::fs::rename(&first, &old).expect("renamed as install does");
+        std::fs::remove_file(&old).expect("deleted as install does");
+        let second = launched_exe().expect("still known");
+        println!("FIRST={}", first.display());
+        println!("SECOND={}", second.display());
+        return;
+    }
+
+    let dir = scratch("launched-exe");
+    let copy = dir.join("fontelle");
+    std::fs::copy(std::env::current_exe().unwrap(), &copy).expect("a copy of this test");
+    let output = std::process::Command::new(&copy)
+        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .output()
+        .expect("the child runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Anywhere on a line: the harness prints the test's name in front.
+    let line = |key: &str| {
+        stdout
+            .split(key)
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .unwrap_or_else(|| panic!("no {key} in {stdout}"))
+            .to_string()
+    };
+    assert_eq!(line("FIRST="), copy.display().to_string());
+    assert_eq!(line("SECOND="), copy.display().to_string());
+    std::fs::remove_dir_all(&dir).ok();
+}

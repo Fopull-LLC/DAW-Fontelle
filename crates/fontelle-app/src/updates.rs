@@ -475,6 +475,20 @@ fn find_binary(staging: &Path) -> Option<PathBuf> {
     nested.is_file().then_some(nested)
 }
 
+/// The binary this process was launched as, asked once and kept.
+///
+/// Not `current_exe()` at the moment of an upgrade: after one upgrade the
+/// running binary is the one [`install`] renamed to `.old` and deleted, and
+/// on Linux `current_exe()` then names `fontelle.old (deleted)` — so a
+/// second upgrade in the same run installed beside a file that is not
+/// there. `main` asks first thing, before anything can replace it.
+pub fn launched_exe() -> Option<PathBuf> {
+    static LAUNCHED_AS: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    LAUNCHED_AS
+        .get_or_init(|| std::env::current_exe().ok())
+        .clone()
+}
+
 /// Removes the previous binary an upgrade left beside `exe`, if one is there.
 pub fn tidy(exe: &Path) {
     std::fs::remove_file(exe.with_extension("old")).ok();
