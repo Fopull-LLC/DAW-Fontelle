@@ -346,8 +346,22 @@ fn the_same_scene_renders_the_same_pixels_twice() {
     let (Some(a), Some(b)) = (shoot(Theme::dark_default()), shoot(Theme::dark_default())) else {
         return;
     };
+    // Within one step a channel, not byte for byte: vello hands a tile's
+    // segments their slots with an `atomicAdd` (`path_count.wgsl`) and the
+    // fine pass sums their coverage in that order, in f32, so the GPU's
+    // scheduling can move an edge pixel by a rounding step. Metal did —
+    // macOS CI: *"the same scene rendered differently twice"* — where
+    // Vulkan here never has. Anything of ours that is not deterministic (a
+    // map's order deciding what is drawn over what, a label shaped in
+    // another face) moves pixels by far more than one step.
+    let off = a
+        .pixels
+        .chunks_exact(4)
+        .zip(b.pixels.chunks_exact(4))
+        .filter(|(p, q)| p.iter().zip(q.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .count();
     assert_eq!(
-        a.pixels, b.pixels,
+        off, 0,
         "the same scene rendered differently twice — something in the pipeline is not deterministic"
     );
 }
@@ -5970,8 +5984,20 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
         ),
         "Save is not the weighted button"
     );
+    // Probed over the panel, not the window's bare corner: the scrim is the
+    // window's own colour at 190/255, so over the window it changes nothing
+    // but a rounding step. Vulkan's rounding gave one (6 -> 5) and Metal's
+    // gave none — macOS CI: *"no scrim over the window"*.
+    let (x, y) = (
+        layout.panel.body.right() - 4.0,
+        layout.panel.body.bottom() - 4.0,
+    );
     assert!(
-        at(&prompt, 2.0, H as f32 - 2.0) != at(&bare, 2.0, H as f32 - 2.0),
+        !near(at(&bare, x, y), theme.palette.window),
+        "the probe is over bare window, where a scrim cannot show"
+    );
+    assert!(
+        !near(at(&prompt, x, y), at(&bare, x, y)),
         "no scrim over the window"
     );
 }
@@ -6181,8 +6207,17 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         ink(&asked, &bare, prompt.lines[0]) > 20,
         "the question is not written"
     );
+    // Over the panel, for the reason the save prompt's scrim is.
+    let (x, y) = (
+        layout.panel.body.right() - 4.0,
+        layout.panel.body.bottom() - 4.0,
+    );
     assert!(
-        at(&asked, 2.0, H as f32 - 2.0) != at(&bare, 2.0, H as f32 - 2.0),
+        !near(at(&bare, x, y), theme.palette.window),
+        "the probe is over bare window, where a scrim cannot show"
+    );
+    assert!(
+        !near(at(&asked, x, y), at(&bare, x, y)),
         "no scrim over the window"
     );
 }
