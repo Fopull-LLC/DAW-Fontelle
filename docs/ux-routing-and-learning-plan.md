@@ -100,7 +100,13 @@ The way these fit together, proposed: **one source of guide content**
 the tutorial, as pages behind `?`, and exported for the web manual — so the
 three never disagree and a feature is documented once.
 
-### 6. The settings page is redesigned
+### 6. The settings page is redesigned — as a full page
+
+Ty, 2026-09-30: **a full settings page**, opened by the gear, over the
+studio like the shortcuts page — a section list on the left (MIDI input,
+Folders, Plugins, Updates, and Project for the routing mode) and roomy,
+clearly styled controls on the right; Escape closes it. Not the sidebar.
+
 
 Ty's report on it: *"formatted weird like everything looks like a button
 even when things are just labels, some things just have no or little
