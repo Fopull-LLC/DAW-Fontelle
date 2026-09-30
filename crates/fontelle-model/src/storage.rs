@@ -141,8 +141,13 @@ pub fn load_project(bundle: &Path) -> Result<Project, StorageError> {
     }
     let json = migrate(json, found)?;
 
-    serde_json::from_value(json)
-        .map_err(|e| StorageError::Format(format!("{} could not be read: {e}", path.display())))
+    let mut project: Project = serde_json::from_value(json)
+        .map_err(|e| StorageError::Format(format!("{} could not be read: {e}", path.display())))?;
+    // Not a format change — a song from before tracks had colours reads fine
+    // — but its tracks would all be one grey, and a colour-only route chip
+    // would then say nothing. Written back on the next save.
+    project.mixer.color_legacy_tracks();
+    Ok(project)
 }
 
 /// Reads only what the bundle at `bundle` says about itself — its id, its

@@ -252,6 +252,12 @@ pub struct RackChrome<'a> {
     pub renaming: Option<usize>,
     /// The field's caret and selection, while a row is being renamed.
     pub rename: Option<RenameMarks>,
+    /// Every strip's colour, in `route_names` order, master last — what a
+    /// row's route chip is filled with.
+    pub route_colors: &'a [[u8; 4]],
+    /// The rows feeding the selected mixer strip, and its colour, while the
+    /// mixer is showing (`docs/ux-routing-and-learning-plan.md` §3).
+    pub glow: Option<([u8; 4], &'a [usize])>,
 }
 
 /// Where the caret and the selection of an inline rename are, in points
@@ -393,6 +399,9 @@ pub struct TimelineChrome<'a> {
     /// until the transport stops, and drawn in the record colour so they
     /// cannot be mistaken for notes that are.
     pub take_notes: &'a [crate::document::NotePreview],
+    /// The clips feeding the selected mixer strip, and its colour, while the
+    /// mixer is showing (`docs/ux-routing-and-learning-plan.md` §3).
+    pub glow: Option<([u8; 4], &'a [fontelle_types::ClipId])>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -532,6 +541,13 @@ pub struct MixerChrome<'a> {
     pub cables: &'a [crate::cables::CableLine<fontelle_types::MixerTrackId>],
     /// The send whose knob is under the pointer or being turned.
     pub cable_hot: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
+    /// What feeds each strip, as the caption under its name, in `strips`
+    /// order (`canvas::fed_by_caption`). Shorter is read as nothing.
+    pub fed_by: &'a [String],
+    /// The strip the pointer is naming from elsewhere — a rack row's route
+    /// chip, an audio block — outlined in its colour so where it goes is seen
+    /// from both ends.
+    pub strip_glow: Option<usize>,
 }
 
 /// One EQ, as the editor draws it.
@@ -2591,6 +2607,13 @@ pub fn draw_context_menu(
                 );
             }
         }
+        // Or its colour, when it names one.
+        if let Some(colour) = entry.swatch {
+            let swatch = menu.thumbnail_rect(index);
+            if !swatch.is_empty() {
+                fill_rect_rounded(scene, swatch.inset(1.0), 3.0, Color(colour));
+            }
+        }
         // The caption stops where the star starts, rather than running under
         // it.
         let caption = Rect::new(row.x, row.y, (row.width - star.width).max(0.0), row.height);
@@ -4003,11 +4026,13 @@ fn draw_output_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         let Some(text) = labels.get(&caption) else {
             continue;
         };
+        let colours: Vec<[u8; 4]> = chrome.strips.iter().map(|s| s.color).collect();
+        let text_x = draw_route_swatch(scene, theme, *rect, *choice, &colours);
         draw_text_clipped(
             scene,
             text,
             *rect,
-            rect.x + m.panel_padding.min(rect.width),
+            text_x,
             rect.y + (rect.height - text.height) / 2.0,
             if on {
                 p.panel
@@ -4049,6 +4074,24 @@ fn draw_mixer_strip(
             m.corner_radius,
             m.border_width.max(1.0) * 2.0,
             p.accent,
+        );
+    }
+
+    // Named from elsewhere — a rack row's route chip, an audio block — ringed
+    // in its own colour, so where a sound goes is seen from both ends
+    // (`docs/ux-routing-and-learning-plan.md` §3). Over the selection's ring:
+    // it is the more recent thing the pointer said.
+    if chrome.strip_glow == Some(layout.index) {
+        stroke_rect_rounded(
+            scene,
+            layout.frame.inset(0.5),
+            m.corner_radius,
+            m.border_width.max(1.0) * 2.0,
+            if strip.is_master {
+                p.accent
+            } else {
+                Color(strip.color)
+            },
         );
     }
 
@@ -4119,6 +4162,21 @@ fn draw_mixer_strip(
             } else {
                 p.text_muted
             },
+        );
+    }
+    // What feeds it, under the name, small and muted: an answer to "what
+    // arrives here" that needs no click (`canvas::fed_by_caption`).
+    if !layout.fed.is_empty()
+        && let Some(fed) = chrome.fed_by.get(layout.index).filter(|f| !f.is_empty())
+        && let Some(text) = labels.get_small(fed)
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            layout.fed,
+            layout.fed.x + 2.0,
+            layout.fed.y + (layout.fed.height - text.height) / 2.0,
+            p.text_muted,
         );
     }
     // The same caret the rack's rows and the arrangement's lanes get, so "this
@@ -5307,6 +5365,12 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
             // is the one open in the roll" must not look the same.
             fill_rect(scene, row.frame, p.row_accidental);
         }
+        // Feeding the strip selected in the mixer: ringed in its colour.
+        if let Some((colour, rows)) = chrome.glow
+            && rows.contains(&row.index)
+        {
+            stroke_rect_rounded(scene, row.frame.inset(1.0), 3.0, 2.0, Color(colour));
+        }
         // A channel with no soundfont on it is drawn in the muted ink: a
         // channel that cannot make a sound and looks like one that can is the
         // most confusing thing a rack can do.
@@ -5378,22 +5442,20 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
             );
         }
 
-        // Where the channel goes, as the mixer's own number. Framed like the
-        // switches so it reads as pressable — the lesson the snap chip and the
-        // lane chip both taught, twice.
-        let caption = crate::canvas::route_label(channel.route, chrome.strips);
+        // Where the channel goes, **as the track's colour** — Ty's choice
+        // (`docs/ux-routing-and-learning-plan.md` §4): colour only, the name
+        // in the tip. The master is its grey. Lit with a ring rather than a
+        // fill when pointed at, so the colour it is saying stays said.
+        let strip =
+            crate::canvas::route_strip(channel.route, chrome.route_colors.len().checked_sub(1));
+        let colour = strip
+            .and_then(|strip| chrome.route_colors.get(strip))
+            .map_or(p.border, |c| Color(*c));
         let lit = chrome.hover == Some(RackHit::Route(row.index))
             || chrome.route_menu_open == Some(row.index);
-        fill_rect_rounded(scene, row.route, 2.0, if lit { p.accent } else { p.border });
-        if let Some(text) = labels.get(&caption) {
-            draw_text_clipped(
-                scene,
-                text,
-                row.route,
-                row.route.x + ((row.route.width - text.width) / 2.0).max(0.0),
-                row.route.y + (row.route.height - text.height) / 2.0,
-                if lit { p.panel } else { p.text_muted },
-            );
+        fill_rect_rounded(scene, row.route, 2.0, colour);
+        if lit {
+            stroke_rect_rounded(scene, row.route.inset(-1.0), 3.0, 1.5, p.text);
         }
     }
 
@@ -5454,11 +5516,12 @@ fn draw_route_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &R
         let Some(text) = labels.get(&caption) else {
             continue;
         };
+        let text_x = draw_route_swatch(scene, theme, *rect, *choice, chrome.route_colors);
         draw_text_clipped(
             scene,
             text,
             *rect,
-            rect.x + m.panel_padding.min(rect.width),
+            text_x,
             rect.y + (rect.height - text.height) / 2.0,
             if on {
                 p.panel
@@ -5470,6 +5533,39 @@ fn draw_route_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &R
             },
         );
     }
+}
+
+/// A route menu row's swatch — the destination's colour, the master's grey —
+/// at the row's left, and where the row's name starts after it. A row that
+/// is not a destination (a new track, nowhere) keeps the same indent, so the
+/// names line up.
+///
+/// The route chip is only a colour (`docs/ux-routing-and-learning-plan.md`
+/// §4), so the menu that sets it is where a person learns which is which.
+fn draw_route_swatch(
+    scene: &mut Scene,
+    theme: &Theme,
+    row: Rect,
+    choice: crate::canvas::RouteChoice,
+    colours: &[[u8; 4]],
+) -> f32 {
+    use crate::canvas::RouteChoice;
+    let pad = theme.metrics.panel_padding.min(row.width);
+    let side = (row.height * 0.5).clamp(6.0, 12.0);
+    let colour = match choice {
+        RouteChoice::Track(strip) => colours.get(strip).copied(),
+        RouteChoice::Master => colours.last().copied(),
+        _ => None,
+    };
+    if let Some(colour) = colour {
+        fill_rect_rounded(
+            scene,
+            Rect::new(row.x + pad, row.y + (row.height - side) / 2.0, side, side),
+            2.0,
+            Color(colour),
+        );
+    }
+    row.x + pad + side + 6.0
 }
 
 /// The caption on the rack's add button, in one place so the window can shape
@@ -6481,6 +6577,19 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             None,
             &rounded(block.inset(1.0), 3.0),
         );
+    }
+    // The blocks feeding the strip selected in the mixer, ringed in its
+    // colour over their edges (`docs/ux-routing-and-learning-plan.md` §3).
+    if let Some((colour, ids)) = chrome.glow {
+        for clip in chrome.clips.iter().filter(|clip| ids.contains(&clip.id)) {
+            if !lanes.contains(&clip.lane) {
+                continue;
+            }
+            let block = clip_rect(v, l.grid, clip).intersection(&l.grid);
+            if !block.is_empty() {
+                stroke_rect_rounded(scene, block.inset(1.0), 3.0, 2.0, Color(colour));
+            }
+        }
     }
     // And where two blocks on a row lie over each other, stripes across the
     // part they share — see `canvas::clip_overlaps`. Diagonal, so they read

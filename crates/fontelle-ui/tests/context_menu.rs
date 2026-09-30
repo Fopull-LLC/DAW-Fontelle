@@ -618,3 +618,31 @@ fn a_row_with_a_thumbnail_keeps_a_column_for_it() {
     assert!((points[0].0 - thumb.x).abs() < 0.01 && (points[2].0 - thumb.right()).abs() < 0.01);
     assert!(points[2].1 < points[0].1, "up is more");
 }
+
+/// A row can be a **colour**: the mixer track's Colour menu lists the
+/// palette, each row with its swatch in the picture column
+/// (`docs/ux-routing-and-learning-plan.md` §4, "the user can change it").
+#[test]
+fn a_row_with_a_swatch_keeps_the_picture_column_for_it() {
+    let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let swatched = context_menu_layout(
+        (100.0, 100.0),
+        bounds,
+        &metrics(),
+        font_size(),
+        vec![
+            MenuEntry::disabled("Colour"),
+            MenuEntry::new("Red").with_swatch([0xe0, 0x56, 0x4f, 0xff]),
+            MenuEntry::new("Cyan").with_swatch([0x49, 0xb3, 0xe0, 0xff]),
+        ],
+    );
+    assert!(
+        swatched.thumbnail_rect(0).is_empty(),
+        "the heading has none"
+    );
+    for index in 1..3 {
+        let swatch = swatched.thumbnail_rect(index);
+        assert!(!swatch.is_empty(), "row {index} has its swatch");
+        assert!(swatch.right() <= swatched.label_x(index) + 0.01);
+    }
+}

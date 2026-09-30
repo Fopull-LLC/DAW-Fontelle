@@ -2556,6 +2556,22 @@ pub trait StudioHost: DocumentHost {
     /// would be an index nothing else could use.
     fn select_mixer_track(&mut self, _strip: usize) {}
 
+    /// Recolours strip `strip` — its cap, its route chips, the glow of what
+    /// feeds it (`docs/ux-routing-and-learning-plan.md` §4). One undo step.
+    fn set_track_color(&mut self, _strip: usize, _color: [u8; 4]) {}
+
+    /// Which mixer strips each clip plays into, as indices into
+    /// [`route_names`](StudioHost::route_names), ascending: a note clip every
+    /// strip its notes' channels go to, an audio clip the one it is routed
+    /// to. Automation clips play into nothing and are left out.
+    ///
+    /// The host's half of the linked highlighting
+    /// (`docs/ux-routing-and-learning-plan.md` §3) — the panel has the rack's
+    /// routes already, but not what is inside a clip. Read on the revision.
+    fn clip_routes(&self) -> Vec<(fontelle_types::ClipId, Vec<usize>)> {
+        Vec::new()
+    }
+
     /// Where `strip`'s output goes, as an index into
     /// [`route_names`](StudioHost::route_names) — `None` is the master, the
     /// same spelling [`ChannelInfo::route`] uses and for the same reason.

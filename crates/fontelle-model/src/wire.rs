@@ -193,6 +193,7 @@ edits!(
     RestoreMarker,
     RelocateAssets,
     RestoreAssets,
+    SetMixerTrackColor,
 );
 
 impl Edit {

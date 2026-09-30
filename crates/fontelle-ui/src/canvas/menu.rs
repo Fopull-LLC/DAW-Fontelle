@@ -46,6 +46,9 @@ pub struct MenuEntry {
     /// thumbnail's width (`docs/flopsynth-next.md` §3.3: nobody knows what
     /// "Bitwave" is from the word). A menu with any keeps a column for them.
     pub thumbnail: Option<Vec<f32>>,
+    /// A colour the row names, drawn as a swatch in the picture column — the
+    /// mixer track's Colour menu (`docs/ux-routing-and-learning-plan.md` §4).
+    pub swatch: Option<[u8; 4]>,
 }
 
 impl MenuEntry {
@@ -56,10 +59,17 @@ impl MenuEntry {
             separator: false,
             star: None,
             thumbnail: None,
+            swatch: None,
         }
     }
 
     /// With a picture beside the name.
+    /// With a colour swatch beside the name.
+    pub fn with_swatch(mut self, color: [u8; 4]) -> Self {
+        self.swatch = Some(color);
+        self
+    }
+
     pub fn with_thumbnail(mut self, shape: Vec<f32>) -> Self {
         self.thumbnail = Some(shape);
         self
@@ -72,6 +82,7 @@ impl MenuEntry {
             separator: false,
             thumbnail: None,
             star: None,
+            swatch: None,
         }
     }
 
@@ -270,7 +281,9 @@ impl ContextMenu {
     /// is empty too), and for an index that is not a row.
     /// Whether any row carries a picture — what keeps the column for them.
     fn has_thumbnails(&self) -> bool {
-        self.entries.iter().any(|entry| entry.thumbnail.is_some())
+        self.entries
+            .iter()
+            .any(|entry| entry.thumbnail.is_some() || entry.swatch.is_some())
     }
 
     /// Where row `index`'s picture goes: at the row's left, in the column
@@ -280,7 +293,7 @@ impl ContextMenu {
         let (Some(row), Some(entry)) = (self.rows.get(index), self.entries.get(index)) else {
             return Rect::ZERO;
         };
-        if entry.thumbnail.is_none() || row.is_empty() {
+        if (entry.thumbnail.is_none() && entry.swatch.is_none()) || row.is_empty() {
             return Rect::ZERO;
         }
         Rect::new(
@@ -512,7 +525,10 @@ pub fn context_menu_layout(
         0.0
     };
     // And for the pictures, when any row has one.
-    let thumbs = if entries.iter().any(|entry| entry.thumbnail.is_some()) {
+    let thumbs = if entries
+        .iter()
+        .any(|entry| entry.thumbnail.is_some() || entry.swatch.is_some())
+    {
         THUMB_W + THUMB_GAP
     } else {
         0.0

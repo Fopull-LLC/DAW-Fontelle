@@ -19,6 +19,32 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-30 (night) — UX plan step 1: colours and linked
+highlighting.** `docs/ux-routing-and-learning-plan.md` §3–4, built.
+
+- **Every mixer track has a colour** (`fontelle-model` `TRACK_PALETTE`,
+  `Mixer::next_track_color`, `tests/track_colors.rs`). Twelve hues, the
+  least-used first; the choice is stored in `AddMixerTrack` so a peer and a
+  redo agree. `SetMixerTrackColor` (a new wire edit, added last) recolours,
+  from the strip's right-click **Colour…** menu (swatch rows —
+  `MenuEntry::with_swatch`). A song saved with grey tracks opens with them
+  coloured (`Mixer::color_legacy_tracks` in `load_project`); the master
+  stays grey.
+- **The route chip is the track's colour**, no number; its tip names it
+  (`canvas::route_tip`). The route, output and send menus show each
+  destination's swatch.
+- **What feeds what** (`canvas::strip_sources`, `StudioHost::clip_routes`
+  — a note clip reaches every strip its notes' channels go to, an audio
+  clip its own). While the mixer shows, the **selected strip's rack rows
+  and arrangement blocks are ringed in its colour**; hovering a route chip
+  or an audio block **rings the strip it goes to**; each strip carries a
+  **"fed by" caption** under its name (`Piano +2`, `1 audio clip`).
+- **Seen** in the real window on `:99`: palette, Colour menu, recolour to
+  amber, a route to Track 1 turning the chip red with its tip, the strip
+  ringed from the chip, the piano's row ringed when Track 1 is selected.
+- **Not done:** a hovered route chip does not light the strip's cable
+  (the ring does the job; say if the cable should too).
+
 **As of 2026-09-30 (later) — the Fedora user's second round: crash logs,
 and "vital, serum and surge".** *"instrument plugins now keep the preset
 saved when I log back in, But it might be worth looking into more advanced

@@ -239,3 +239,17 @@ fn a_knob_on_a_wire_turns_by_dragging_up_and_down() {
     );
     assert_eq!(send_knob_db(0.0, 1000.0), MIN_SEND_DB);
 }
+
+#[test]
+fn each_strip_has_a_row_under_its_name_for_what_feeds_it() {
+    // *"'Fed by' list on the strip"* — readable without clicking anything,
+    // so on the strip itself, between the name and the pan.
+    let strips = strips(3);
+    let l = mixer_layout(body(), &metrics(), &strips, 0);
+    for s in l.strips.iter().chain(l.master.iter()) {
+        assert!(!s.fed.is_empty(), "strip {} has room for it", s.index);
+        assert!(s.fed.y >= s.name.bottom() - 1e-3, "under the name");
+        assert!(s.fed.bottom() <= s.pan.y + 1e-3, "above the pan");
+        assert!(s.fed.x >= s.frame.x && s.fed.right() <= s.frame.right());
+    }
+}

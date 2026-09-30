@@ -1085,6 +1085,11 @@ pub struct AddMixerTrack {
     name: String,
     created: Option<MixerTrackId>,
     label: String,
+    /// The colour it was given, chosen the first time it is applied and kept
+    /// — so the peer this edit is sent to, and a redo here, give the track
+    /// the same colour rather than whichever is free by then.
+    #[serde(default)]
+    color: Option<[u8; 4]>,
 }
 
 impl AddMixerTrack {
@@ -1094,6 +1099,7 @@ impl AddMixerTrack {
             label: format!("Add mixer track \"{name}\""),
             name,
             created: None,
+            color: None,
         }
     }
 
@@ -1110,6 +1116,9 @@ impl Command for AddMixerTrack {
 
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let mut track = MixerTrack::new(self.name.clone());
+        track.color = *self
+            .color
+            .get_or_insert_with(|| doc.mixer.next_track_color());
         // Into the master, which is the only destination that is always there.
         track.output = doc.mixer.master;
         match self.created {
@@ -1401,6 +1410,74 @@ impl Command for RenameMixerTrack {
         std::mem::size_of::<Self>()
             + self.name.len()
             + self.previous.as_ref().map_or(0, |p| p.len())
+    }
+}
+
+/// Recolours a mixer track — and so its route chips and the glow of what
+/// feeds it (`docs/ux-routing-and-learning-plan.md` §4).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetMixerTrackColor {
+    id: MixerTrackId,
+    color: [u8; 4],
+    #[serde(default)]
+    previous: Option<[u8; 4]>,
+}
+
+impl SetMixerTrackColor {
+    pub fn new(id: MixerTrackId, color: [u8; 4]) -> Self {
+        Self {
+            id,
+            color,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetMixerTrackColor {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetMixerTrackColor(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let track = doc
+            .mixer
+            .tracks
+            .get_mut(self.id)
+            .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.id)))?;
+        let previous = std::mem::replace(&mut track.color, self.color);
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match self.previous {
+            Some(previous) => Box::new(SetMixerTrackColor::new(self.id, previous)),
+            None => Box::new(NotApplied::new("recolouring a mixer track")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Recolour mixer track"
+    }
+
+    /// Trying colours one after another is one choice.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetMixerTrackColor>() else {
+            return false;
+        };
+        if next.id != self.id {
+            return false;
+        }
+        self.color = next.color;
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
     }
 }
 

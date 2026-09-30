@@ -21,10 +21,10 @@ use fontelle_model::{
     RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert, SetAudioClip,
     SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
     SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
-    SetLoopRange, SetNoteKeys, SetNoteLengths, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart, load_project, peek_meta, save_project,
+    SetLoopRange, SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNoteProperty,
+    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
+    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -397,6 +397,12 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("RenameMixerTrack", |s| {
             Box::new(RenameMixerTrack::new(s.part, "Lead"))
+        }),
+        ("SetMixerTrackColor", |s| {
+            Box::new(SetMixerTrackColor::new(
+                s.part,
+                fontelle_model::TRACK_PALETTE[4],
+            ))
         }),
         ("SetTrackOutput", |s| {
             Box::new(SetTrackOutput::new(s.part, Some(s.bus)))

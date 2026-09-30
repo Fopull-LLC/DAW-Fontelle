@@ -6740,6 +6740,38 @@ impl StudioHost for Session {
         self.touch();
     }
 
+    fn clip_routes(&self) -> Vec<(ClipId, Vec<usize>)> {
+        let ids = self.mixer_track_ids();
+        let master = self.project.mixer.master;
+        // `None` and the master's own id are one destination, as everywhere.
+        let strip = |track: Option<MixerTrackId>| {
+            let track = track.or(master)?;
+            ids.iter().position(|id| *id == track)
+        };
+        self.project
+            .clips
+            .iter()
+            .filter_map(|(id, clip)| {
+                let mut strips: Vec<usize> = match &clip.source {
+                    fontelle_model::ClipSource::Notes(data) => data
+                        .channels()
+                        .into_iter()
+                        .filter_map(|channel| {
+                            strip(self.project.channels.get(channel)?.mixer_track)
+                        })
+                        .collect(),
+                    fontelle_model::ClipSource::Audio(data) => {
+                        strip(data.mixer_track).into_iter().collect()
+                    }
+                    _ => return None,
+                };
+                strips.sort_unstable();
+                strips.dedup();
+                Some((id, strips))
+            })
+            .collect()
+    }
+
     fn track_output(&self, strip: usize) -> Option<usize> {
         let ids = self.mixer_track_ids();
         let output = self.project.mixer.tracks.get(*ids.get(strip)?)?.output?;
@@ -6822,6 +6854,16 @@ impl StudioHost for Session {
             return;
         };
         self.run(Box::new(fontelle_model::RenameMixerTrack::new(id, name)));
+        self.touch();
+    }
+
+    fn set_track_color(&mut self, strip: usize, color: [u8; 4]) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetMixerTrackColor::new(id, color)));
+        // One choice from one menu: the next edit is not folded into it.
+        self.history.break_gesture();
         self.touch();
     }
 

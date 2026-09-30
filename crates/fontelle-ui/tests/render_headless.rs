@@ -1182,7 +1182,7 @@ fn shoot_timeline_switch(
     selection: &[fontelle_types::ClipId],
     stretch: bool,
 ) -> Option<TimelineShot> {
-    shoot_timeline_recording(clips, selection, stretch, &[], None)
+    shoot_timeline_recording(clips, selection, stretch, &[], None, None)
 }
 
 /// The same again, with the pointer over one part of one block.
@@ -1190,7 +1190,7 @@ fn shoot_timeline_hovered(
     clips: &[fontelle_ui::document::ClipInfo],
     hover_clip: Option<(fontelle_types::ClipId, fontelle_ui::canvas::ClipPart)>,
 ) -> Option<TimelineShot> {
-    shoot_timeline_recording(clips, &[], false, &[], hover_clip)
+    shoot_timeline_recording(clips, &[], false, &[], hover_clip, None)
 }
 
 /// The same again, with the notes of a take being recorded into the open
@@ -1201,6 +1201,7 @@ fn shoot_timeline_recording(
     stretch: bool,
     takes: &[fontelle_ui::document::NotePreview],
     hover_clip: Option<(fontelle_types::ClipId, fontelle_ui::canvas::ClipPart)>,
+    glow: Option<([u8; 4], &[fontelle_types::ClipId])>,
 ) -> Option<TimelineShot> {
     use fontelle_ui::canvas::{TimelineView, timeline_layout};
     use fontelle_ui::document::LaneInfo;
@@ -1302,6 +1303,7 @@ fn shoot_timeline_recording(
                 loop_range: None,
                 recording: None,
                 take_notes: takes,
+                glow,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -1875,13 +1877,21 @@ fn the_offbeat_line_is_drawn_with_the_snap_set_to_bars() {
 /// there is something on screen for each of the three things a strip can say.
 #[allow(clippy::type_complexity)]
 fn shoot_mixer() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
-    shoot_mixer_renaming(None)
+    shoot_mixer_lit(None, None)
 }
 
 /// The same, with strip `index` mid-rename and the field's marks — where
 /// the caret is and what is selected, in points from the name's left.
 fn shoot_mixer_renaming(
     renaming: Option<(usize, fontelle_ui::render::RenameMarks)>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
+    shoot_mixer_lit(renaming, None)
+}
+
+/// The same, with one strip lit as the rack's pointer names it.
+fn shoot_mixer_lit(
+    renaming: Option<(usize, fontelle_ui::render::RenameMarks)>,
+    strip_glow: Option<usize>,
 ) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::MixerLayout)> {
     use fontelle_ui::canvas::{format_gain_db, mixer_layout};
     use fontelle_ui::document::MixerStrip;
@@ -1961,6 +1971,13 @@ fn shoot_mixer_renaming(
     let peaks = vec![[0.8, 0.6], [0.2, 0.2], [0.0, 0.0], [0.9, 0.9]];
 
     let l = mixer_layout(layout.panel.body, &theme.metrics, &strips, 0);
+    // What feeds each strip, under its name.
+    let fed_by: Vec<String> = vec![
+        "Kick +1".into(),
+        "Bass".into(),
+        String::new(),
+        "Keys +3".into(),
+    ];
     // The patch bay's cables, hung and come to rest: Drums to the master
     // with its two sends, Bass into Keys, and Keys' output switched off so
     // its cable dangles.
@@ -2002,6 +2019,9 @@ fn shoot_mixer_renaming(
         fontelle_ui::render::SEND_POST,
     ] {
         labels.ensure(caption, &theme.font, &mut text);
+    }
+    for caption in &fed_by {
+        labels.ensure_small(caption, &theme.font, &mut text);
     }
     labels.ensure(&output_label, &theme.font, &mut text);
     labels.ensure("In: none", &theme.font, &mut text);
@@ -2065,6 +2085,8 @@ fn shoot_mixer_renaming(
                 output: None,
                 cables: &cable_lines,
                 cable_hot: None,
+                fed_by: &fed_by,
+                strip_glow,
             }),
             tabs: editor_tabs(layout.panel.header, &theme.metrics),
             tab: EditorTab::Mixer,
@@ -2381,6 +2403,42 @@ fn a_knob_under_automation_wears_a_ring_an_ordinary_knob_does_not() {
 fn shoot_rack(
     renaming: Option<usize>,
 ) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
+    shoot_rack_routed(
+        renaming,
+        [None, None],
+        &[fontelle_model::LEGACY_TRACK_GREY],
+        None,
+    )
+}
+
+/// The same, with the first row's route menu open.
+fn shoot_rack_menu(
+    route_colors: &[[u8; 4]],
+) -> Option<(Vec<u8>, fontelle_ui::canvas::RouteMenu, u32)> {
+    ROUTE_MENU_OPEN.with(|open| open.set(true));
+    let shot = shoot_rack_routed(None, [Some(0), None], route_colors, None);
+    ROUTE_MENU_OPEN.with(|open| open.set(false));
+    let (pixels, _, _, width, _) = shot?;
+    let menu = LAST_ROUTE_MENU.with(|menu| menu.take())?;
+    Some((pixels, menu, width))
+}
+
+thread_local! {
+    /// Whether `shoot_rack_routed` opens the first row's route menu, and the
+    /// menu it drew — a side door so the dozen callers keep their signature.
+    static ROUTE_MENU_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAST_ROUTE_MENU: std::cell::RefCell<Option<fontelle_ui::canvas::RouteMenu>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The same, with each row routed somewhere, the strips' colours, and the
+/// rows a selected strip lights up.
+fn shoot_rack_routed(
+    renaming: Option<usize>,
+    routes: [Option<usize>; 2],
+    route_colors: &[[u8; 4]],
+    glow: Option<([u8; 4], &[usize])>,
+) -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::RackLayout, u32, u32)> {
     use fontelle_ui::canvas::rack_layout;
     use fontelle_ui::document::ChannelInfo;
     use fontelle_ui::render::RackChrome;
@@ -2392,12 +2450,22 @@ fn shoot_rack(
 
     let channels: Vec<ChannelInfo> = ["Bass", "Keys"]
         .iter()
-        .map(|name| ChannelInfo {
+        .zip(routes)
+        .map(|(name, route)| ChannelInfo {
             name: (*name).to_string(),
             muted: false,
             soloed: false,
             has_instrument: true,
-            route: None,
+            route,
+        })
+        .collect();
+    let route_names: Vec<String> = (0..route_colors.len())
+        .map(|n| {
+            if n + 1 == route_colors.len() {
+                "Master".to_string()
+            } else {
+                format!("Track {}", n + 1)
+            }
         })
         .collect();
 
@@ -2413,10 +2481,21 @@ fn shoot_rack(
         DEFAULT_TIMELINE_HEIGHT,
     );
     let rack = rack_layout(layout.rack.body, &theme.metrics, channels.len(), 0);
+    let route_menu = ROUTE_MENU_OPEN.with(|open| open.get()).then(|| {
+        fontelle_ui::canvas::route_menu_layout(
+            rack.rows[0].route,
+            layout.window,
+            &theme.metrics,
+            &route_names,
+        )
+    });
 
     let mut labels = Labels::new();
     for channel in &channels {
         labels.ensure(&channel.name, &theme.font, &mut text);
+    }
+    for name in &route_names {
+        labels.ensure(name, &theme.font, &mut text);
     }
     labels.ensure("Master", &theme.font, &mut text);
     for tab in fontelle_ui::document::RackTab::ALL {
@@ -2451,12 +2530,14 @@ fn shoot_rack(
                 channels: &channels,
                 selected: 0,
                 hover: None,
-                route_names: &["Master".to_string()],
-                strips: 1,
-                route_menu: None,
-                route_menu_open: None,
+                route_names: &route_names,
+                strips: route_names.len(),
+                route_menu: route_menu.as_ref(),
+                route_menu_open: route_menu.as_ref().map(|_| 0),
                 renaming,
                 rename: None,
+                route_colors,
+                glow,
             }),
             prefabs: None,
             browser: None,
@@ -2489,6 +2570,7 @@ fn shoot_rack(
         W,
         RACK_H,
     );
+    LAST_ROUTE_MENU.with(|menu| *menu.borrow_mut() = route_menu);
     Some((pixels, theme, rack, W, RACK_H))
 }
 
@@ -4055,7 +4137,7 @@ fn the_notes_being_recorded_appear_in_the_open_clips_block() {
     open.open = true;
     let takes = std::mem::take(&mut open.notes);
     let clips = vec![open.clone()];
-    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None) else {
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None, None) else {
         return;
     };
     // Where the notes would be drawn if they were the clip's own.
@@ -4077,7 +4159,7 @@ fn the_notes_being_recorded_appear_in_the_open_clips_block() {
     other.open = false;
     other.notes.clear();
     let clips = vec![other.clone()];
-    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None) else {
+    let Some(shot) = shoot_timeline_recording(&clips, &[], false, &takes, None, None) else {
         return;
     };
     let found = shot.at((r.x + r.width / 2.0) as u32, (r.y + r.height / 2.0) as u32);
@@ -4737,6 +4819,8 @@ fn shoot_carry(
                 route_menu_open: None,
                 renaming: None,
                 rename: None,
+                route_colors: &[fontelle_model::LEGACY_TRACK_GREY],
+                glow: None,
             }),
             prefabs: None,
             browser: None,
@@ -6246,4 +6330,185 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         !near(at(&asked, x, y), at(&bare, x, y)),
         "no scrim over the window"
     );
+}
+
+// ----------------------------------------- linked highlighting (2026-09-30)
+//
+// > *"it might be worth adding in a feature that highlights items that are
+// > linked to a mixer track so people can better see what is what."*
+//
+// `docs/ux-routing-and-learning-plan.md` §3–4: the route chip is its track's
+// colour, a selected strip's sources glow in it, the strip the rack points
+// at glows, and each strip says what feeds it.
+
+const TRACK_RED: [u8; 4] = [0xe0, 0x56, 0x4f, 0xff];
+
+fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> Color {
+    let i = ((y * width + x) * 4) as usize;
+    Color(pixels[i..i + 4].try_into().expect("four bytes"))
+}
+
+#[test]
+fn a_route_chip_is_drawn_in_its_tracks_colour() {
+    let grey = fontelle_model::LEGACY_TRACK_GREY;
+    let Some((pixels, _, rack, width, _)) =
+        shoot_rack_routed(None, [Some(0), None], &[TRACK_RED, grey], None)
+    else {
+        return;
+    };
+    let centre = |rect: fontelle_ui::layout::Rect| {
+        (
+            (rect.x + rect.width / 2.0) as u32,
+            (rect.y + rect.height / 2.0) as u32,
+        )
+    };
+    let (x, y) = centre(rack.rows[0].route);
+    assert!(
+        near(pixel(&pixels, width, x, y), Color(TRACK_RED)),
+        "routed to the red track: {:?}",
+        pixel(&pixels, width, x, y)
+    );
+    let (x, y) = centre(rack.rows[1].route);
+    assert!(
+        near(pixel(&pixels, width, x, y), Color(grey)),
+        "no route is the master's grey: {:?}",
+        pixel(&pixels, width, x, y)
+    );
+}
+
+#[test]
+fn the_rows_feeding_the_selected_strip_glow_in_its_colour() {
+    let grey = fontelle_model::LEGACY_TRACK_GREY;
+    let routes = [Some(0), None];
+    let Some((quiet, _, rack, width, _)) =
+        shoot_rack_routed(None, routes, &[TRACK_RED, grey], None)
+    else {
+        return;
+    };
+    let Some((lit, ..)) =
+        shoot_rack_routed(None, routes, &[TRACK_RED, grey], Some((TRACK_RED, &[0])))
+    else {
+        return;
+    };
+    let reds = |pixels: &[u8], row: fontelle_ui::layout::Rect| {
+        // Down the row's left edge, just inside the frame.
+        (row.y as u32 + 2..row.bottom() as u32 - 2)
+            .filter(|y| near(pixel(pixels, width, row.x as u32 + 1, *y), Color(TRACK_RED)))
+            .count()
+    };
+    assert_eq!(reds(&quiet, rack.rows[0].frame), 0, "nothing glows unasked");
+    assert!(
+        reds(&lit, rack.rows[0].frame) > 4,
+        "the row that feeds it glows"
+    );
+    assert_eq!(
+        reds(&lit, rack.rows[1].frame),
+        0,
+        "the one that does not, does not"
+    );
+}
+
+#[test]
+fn the_clips_feeding_the_selected_strip_glow_in_its_colour() {
+    use fontelle_ui::canvas::clip_rect;
+    let colour = [0x4f, 0x8f, 0xd0, 0xff];
+    // Two ids from one arena: `a_clip` mints each from a fresh one, so two
+    // of its clips share an id.
+    let mut ids: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    let mut clips = vec![
+        a_clip(0, PPQN * 4, PPQN * 8, colour),
+        a_clip(1, PPQN * 4, PPQN * 8, colour),
+    ];
+    clips[0].id = ids.insert(());
+    clips[1].id = ids.insert(());
+    let lit_ids = [clips[0].id];
+    let Some(quiet) = shoot_timeline_recording(&clips, &[], false, &[], None, None) else {
+        return;
+    };
+    let Some(lit) =
+        shoot_timeline_recording(&clips, &[], false, &[], None, Some((TRACK_RED, &lit_ids)))
+    else {
+        return;
+    };
+    let edge = |shot: &TimelineShot, clip: &fontelle_ui::document::ClipInfo| {
+        let block = clip_rect(&shot.view, shot.layout.grid, clip);
+        let y = (block.y + block.height / 2.0) as u32;
+        (0..3).any(|d| near(shot.at(block.x as u32 + d, y), Color(TRACK_RED)))
+    };
+    assert!(!edge(&quiet, &clips[0]), "nothing glows unasked");
+    assert!(edge(&lit, &clips[0]), "the block that plays into it glows");
+    assert!(!edge(&lit, &clips[1]), "the other does not");
+}
+
+#[test]
+fn the_strip_the_rack_points_at_glows_and_every_strip_says_what_feeds_it() {
+    let Some((quiet, theme, l)) = shoot_mixer_lit(None, None) else {
+        return;
+    };
+    let Some((lit, ..)) = shoot_mixer_lit(None, Some(1)) else {
+        return;
+    };
+    let strip = l
+        .strips
+        .iter()
+        .find(|s| s.index == 1)
+        .expect("strip 1 is shown");
+    let colour = Color([0x4f, 0x8f, 0xd0, 0xff]);
+    let at = |pixels: &[u8], x: f32, y: f32| pixel(pixels, RW, x as u32, y as u32);
+    let ring = |pixels: &[u8]| {
+        (strip.frame.y as u32 + 10..strip.frame.bottom() as u32 - 10)
+            .filter(|y| near(at(pixels, strip.frame.x + 0.5, *y as f32), colour))
+            .count()
+    };
+    assert!(
+        ring(&lit) > ring(&quiet) + 20,
+        "the strip pointed at is outlined in its colour"
+    );
+
+    // The caption: some ink in the row under the name, where "Bass" is.
+    let fed = strip.fed;
+    let inked = (fed.x as u32..fed.right() as u32)
+        .flat_map(|x| (fed.y as u32..fed.bottom() as u32).map(move |y| (x, y)))
+        .filter(|(x, y)| {
+            let c = pixel(&quiet, RW, *x, *y);
+            c.0.iter()
+                .zip(theme.palette.panel.0.iter())
+                .any(|(a, b)| a.abs_diff(*b) > 40)
+        })
+        .count();
+    assert!(inked > 10, "the caption is drawn: {inked} pixels of ink");
+}
+
+#[test]
+fn the_route_menu_shows_each_tracks_colour_beside_its_name() {
+    // The chip is only a colour, so the menu that sets it is where a person
+    // learns which colour is which track.
+    let grey = fontelle_model::LEGACY_TRACK_GREY;
+    let cyan = [0x49, 0xb3, 0xe0, 0xff];
+    let Some((pixels, menu, width)) = shoot_rack_menu(&[TRACK_RED, cyan, grey]) else {
+        return;
+    };
+    let count = |rect: fontelle_ui::layout::Rect, colour: [u8; 4]| {
+        (rect.x as u32..rect.right() as u32)
+            .flat_map(|x| (rect.y as u32..rect.bottom() as u32).map(move |y| (x, y)))
+            .filter(|(x, y)| near(pixel(&pixels, width, *x, *y), Color(colour)))
+            .count()
+    };
+    let row = |choice| {
+        menu.items
+            .iter()
+            .find(|(c, _)| *c == choice)
+            .map(|(_, rect)| *rect)
+            .expect("the row")
+    };
+    use fontelle_ui::canvas::RouteChoice;
+    assert!(
+        count(row(RouteChoice::Track(0)), TRACK_RED) > 12,
+        "Track 1 is red"
+    );
+    assert!(
+        count(row(RouteChoice::Track(1)), cyan) > 12,
+        "Track 2 is cyan"
+    );
+    assert_eq!(count(row(RouteChoice::Track(1)), TRACK_RED), 0);
 }

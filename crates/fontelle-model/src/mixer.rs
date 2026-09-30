@@ -333,12 +333,43 @@ pub struct MixerTrack {
     pub input: Option<String>,
 }
 
+/// The colours a new mixer track is given, in the order they are handed out.
+///
+/// > *"it might be worth adding in a feature that highlights items that are
+/// > linked to a mixer track so people can better see what is what."*
+///
+/// A channel's route chip **is** its track's colour, and a strip's sources
+/// glow in it (`docs/ux-routing-and-learning-plan.md` §3–4), so the colours
+/// have to be told apart at a glance on the dark theme: twelve hues a
+/// twelfth of the wheel apart, all mid-light and saturated, neighbours in
+/// the order far apart so the first few tracks never look alike.
+pub const TRACK_PALETTE: [[u8; 4]; 12] = [
+    [0xe0, 0x56, 0x4f, 0xff], // red
+    [0x49, 0xb3, 0xe0, 0xff], // cyan
+    [0xe8, 0xc5, 0x47, 0xff], // amber
+    [0xb0, 0x62, 0xd8, 0xff], // violet
+    [0x4f, 0xbf, 0x6c, 0xff], // green
+    [0xe8, 0x91, 0x3a, 0xff], // orange
+    [0x4f, 0x7f, 0xe0, 0xff], // blue
+    [0xd9, 0x57, 0xa8, 0xff], // magenta
+    [0x9c, 0xcc, 0x4a, 0xff], // lime
+    [0x3f, 0xbf, 0xae, 0xff], // teal
+    [0x7a, 0x6a, 0xe0, 0xff], // indigo
+    [0xe0, 0x7a, 0x8f, 0xff], // rose
+];
+
+/// The grey every track was before tracks had colours — and still the
+/// master's, which is where everything arrives rather than one of the things
+/// arriving. A song saved with its tracks this grey opens with them coloured
+/// ([`Mixer::color_legacy_tracks`]).
+pub const LEGACY_TRACK_GREY: [u8; 4] = [0x60, 0x60, 0x68, 0xff];
+
 impl MixerTrack {
     /// A track at unity, centred, with nothing on it and its output to master.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            color: [0x60, 0x60, 0x68, 0xff],
+            color: LEGACY_TRACK_GREY,
             gain_db: 0.0,
             pan: 0.0,
             // A balance control, not a pan law: what arrives on a track's bus
@@ -370,6 +401,45 @@ pub struct Mixer {
 }
 
 impl Mixer {
+    /// The colour the next track should take: whichever palette colour the
+    /// fewest tracks have, the earliest in the palette among equals — so a
+    /// colour freed by a deleted track is the next one used, and a palette
+    /// used up starts again rather than running out. The master is not
+    /// counted: it is grey, and grey is not in the palette.
+    pub fn next_track_color(&self) -> [u8; 4] {
+        let mut uses = [0usize; TRACK_PALETTE.len()];
+        for (id, track) in self.tracks.iter() {
+            if Some(id) == self.master {
+                continue;
+            }
+            if let Some(slot) = TRACK_PALETTE.iter().position(|c| *c == track.color) {
+                uses[slot] += 1;
+            }
+        }
+        let least = uses.iter().copied().min().unwrap_or(0);
+        let slot = uses.iter().position(|n| *n == least).unwrap_or(0);
+        TRACK_PALETTE[slot]
+    }
+
+    /// Gives every track still the old grey a colour of its own, in the
+    /// order they were made. For a song saved before tracks had colours: its
+    /// route chips would otherwise all be one grey and say nothing. A colour
+    /// somebody chose is left alone, and so is the master.
+    pub fn color_legacy_tracks(&mut self) {
+        let ids: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|(id, track)| Some(*id) != self.master && track.color == LEGACY_TRACK_GREY)
+            .map(|(id, _)| id)
+            .collect();
+        for id in ids {
+            let color = self.next_track_color();
+            if let Some(track) = self.tracks.get_mut(id) {
+                track.color = color;
+            }
+        }
+    }
+
     /// Depth-first search over `output` + `sends` for every track; must be run
     /// before committing any routing mutation (TDD §13.2).
     ///

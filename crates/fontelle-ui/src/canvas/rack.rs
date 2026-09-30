@@ -370,9 +370,9 @@ pub const NEW_TRACK: &str = "+ New track";
 /// the same kind of object and two menus with different padding read as a bug.
 const MENU_PAD: f32 = 3.0;
 
-/// Wide enough for a track name, and never narrower than the chip it hangs
-/// from.
-const MENU_WIDTH: f32 = 132.0;
+/// Wide enough for a track name and the swatch before it, and never narrower
+/// than the chip it hangs from.
+const MENU_WIDTH: f32 = 150.0;
 
 /// Drops the route menu from `chip`, kept inside `bounds`.
 ///
@@ -507,5 +507,20 @@ pub fn route_label(route: Option<usize>, strips: usize) -> String {
         // answer as naming it by absence.
         Some(index) if index + 1 < strips => (index + 1).to_string(),
         _ => "0".to_string(),
+    }
+}
+
+/// What the route chip's tip says: the track it goes to, **by name** — the
+/// chip itself is only the track's colour (`docs/ux-routing-and-learning-plan.md`
+/// §4), so the words are here. `None` is the master, which `names` lists
+/// last; a list that has not arrived yet falls back to what the chip is.
+pub fn route_tip(route: Option<usize>, names: &[String]) -> String {
+    let name = match route {
+        Some(strip) => names.get(strip),
+        None => names.last(),
+    };
+    match name {
+        Some(name) => format!("Plays through {name} \u{2014} click to change"),
+        None => "Which mixer track this channel plays through".to_string(),
     }
 }

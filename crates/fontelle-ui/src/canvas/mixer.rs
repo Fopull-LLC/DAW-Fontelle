@@ -85,6 +85,14 @@ const CHAIN_HEIGHT: f32 = 9.0;
 pub const CHAIN_DOT: f32 = 5.0;
 pub const CHAIN_DOT_GAP: f32 = 3.0;
 
+/// How tall the "fed by" caption under a strip's name is: one line of the
+/// small text.
+const FED_HEIGHT: f32 = 14.0;
+
+/// How much of a strip must be left under its name for the caption to be
+/// given room. Below it the caption goes first — the fader is the strip.
+const MIN_STRIP_FOR_FED: f32 = 150.0;
+
 /// How tall the pan control is.
 const PAN_HEIGHT: f32 = 12.0;
 
@@ -149,6 +157,12 @@ pub struct MixerStripLayout {
     pub solo: Rect,
     /// The gain read-out, in decibels. A label, not a control.
     pub value: Rect,
+    /// What feeds the track, as a caption under its name — `Piano +2`
+    /// ([`fed_by_caption`]). *"'Fed by' list on the strip"*, chosen so the
+    /// question "what arrives here" is answered without clicking anything
+    /// (`docs/ux-routing-and-learning-plan.md` §3). Empty on a panel too
+    /// short to spare it, before the fader gives anything up.
+    pub fed: Rect,
     /// **How much processing is on this track**, as one fixed row: a dot per
     /// insert, dimmed where one is switched out.
     ///
@@ -853,6 +867,14 @@ fn strip_layout(
     let row = metrics.row_height.min(inner.height.max(0.0));
 
     let (name, rest) = inner.split_top(row);
+    // The "fed by" caption, off the top of what is left — only while the
+    // strip is tall enough that the fader keeps its travel.
+    let fed_height = if rest.height >= FED_HEIGHT + MIN_STRIP_FOR_FED {
+        FED_HEIGHT
+    } else {
+        0.0
+    };
+    let (fed, rest) = rest.split_top(fed_height);
 
     let value_y = (inner.bottom() - row).max(rest.y);
     let value = Rect::new(
@@ -943,6 +965,7 @@ fn strip_layout(
         solo,
         value,
         chain,
+        fed,
     }
 }
 
@@ -1360,6 +1383,89 @@ pub fn send_x_of_level(level: Rect, db: f32) -> f32 {
     let db = db.clamp(MIN_SEND_DB, MAX_SEND_DB);
     let along = (db - MIN_SEND_DB) / (MAX_SEND_DB - MIN_SEND_DB);
     level.x + level.width * along
+}
+
+/// What arrives on one mixer strip: the channels routed to it and the clips
+/// that play into it.
+///
+/// > *"it might be worth adding in a feature that highlights items that are
+/// > linked to a mixer track so people can better see what is what."*
+///
+/// One answer, drawn three ways (`docs/ux-routing-and-learning-plan.md` §3):
+/// the rack rows and arrangement blocks that glow when the strip is
+/// selected, and the "fed by" caption under the strip's name.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StripSources {
+    /// Rack rows, in rack order.
+    pub channels: Vec<usize>,
+    /// Arrangement clips, in the order the host listed them.
+    pub clips: Vec<fontelle_types::ClipId>,
+}
+
+/// The strip a route arrives on: `None` is the master, the spelling every
+/// route control in the window uses.
+pub fn route_strip(route: Option<usize>, master: Option<usize>) -> Option<usize> {
+    route.or(master)
+}
+
+/// Everything arriving on `strip` directly — a channel whose route is it, a
+/// clip the host says plays into it. `clip_routes` is the host's answer per
+/// clip: a note clip reaches every strip its notes' channels go to, an audio
+/// clip the one it is routed to.
+///
+/// Directly only: a track feeding this one through its output or a send is
+/// the patch cables' to show, and a channel two hops away glowing would say
+/// it was routed here when it is not.
+pub fn strip_sources(
+    strip: usize,
+    master: Option<usize>,
+    channels: &[crate::document::ChannelInfo],
+    clip_routes: &[(fontelle_types::ClipId, Vec<usize>)],
+) -> StripSources {
+    StripSources {
+        channels: channels
+            .iter()
+            .enumerate()
+            .filter(|(_, channel)| route_strip(channel.route, master) == Some(strip))
+            .map(|(index, _)| index)
+            .collect(),
+        clips: clip_routes
+            .iter()
+            .filter(|(_, strips)| strips.contains(&strip))
+            .map(|(id, _)| *id)
+            .collect(),
+    }
+}
+
+/// What a strip says feeds it, in the room under its name: the first
+/// channel's name and how many more — `Piano +2` — counting audio clips
+/// among the more, or only the clips when no channel arrives. A note clip is
+/// not counted: its channel already is. Empty when nothing arrives.
+pub fn fed_by_caption(
+    sources: &StripSources,
+    channels: &[crate::document::ChannelInfo],
+    audio_clips: usize,
+) -> String {
+    let named = sources
+        .channels
+        .first()
+        .and_then(|index| channels.get(*index))
+        .map(|channel| channel.name.as_str());
+    match named {
+        Some(name) => {
+            let more = sources.channels.len() - 1 + audio_clips;
+            if more == 0 {
+                name.to_string()
+            } else {
+                format!("{name} +{more}")
+            }
+        }
+        None => match audio_clips {
+            0 => String::new(),
+            1 => "1 audio clip".to_string(),
+            n => format!("{n} audio clips"),
+        },
+    }
 }
 
 /// How far a send's knob on its cable is dragged to go from off to the top.

@@ -84,6 +84,13 @@ enum FlopMotion {
     Bubble,
 }
 
+/// What the mixer's Colour menu calls each of `fontelle_model::TRACK_PALETTE`,
+/// in its order.
+const TRACK_COLOUR_NAMES: [&str; 12] = [
+    "Red", "Cyan", "Amber", "Violet", "Green", "Orange", "Blue", "Magenta", "Lime", "Teal",
+    "Indigo", "Rose",
+];
+
 /// What a held mouse button is in the middle of doing.
 ///
 /// One value rather than a `bool` plus a guess. The old shape — "a button is
@@ -711,6 +718,9 @@ enum MenuTarget {
     /// A mixer strip's own right-click menu, by position. What a strip does
     /// when you right-click its body: the chain's presets, and rename.
     TrackMenu(usize),
+    /// The palette, for recolouring the strip at this position
+    /// (`docs/ux-routing-and-learning-plan.md` §4).
+    TrackColor(usize),
     /// And the chain bank itself — every track preset there is, grouped by
     /// category, for the strip at this position.
     ///
@@ -803,6 +813,7 @@ impl MenuTarget {
             // The mixer is in the main window, so its menus are too.
             Self::AutomateMixer { .. }
             | Self::TrackMenu(_)
+            | Self::TrackColor(_)
             | Self::TrackPresetMenu(_)
             | Self::TrackPresetName(_)
             | Self::TrackPresetCategory(_)
@@ -1623,6 +1634,12 @@ pub struct WindowApp {
     mixer_routes: Vec<crate::canvas::StripRoute<fontelle_types::MixerTrackId>>,
     /// The send whose knob on its cable is under the pointer.
     hover_cable: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
+    /// Which strips each clip plays into — `StudioHost::clip_routes`, read
+    /// on the revision. What the linked highlighting is worked out from.
+    clip_strips: Vec<(fontelle_types::ClipId, Vec<usize>)>,
+    /// What feeds each strip, as the caption under its name, worked out on
+    /// the revision (`canvas::fed_by_caption`).
+    fed_by: Vec<String>,
     /// A cable knob being turned: where the press was, and the level then.
     /// Here rather than on `Drag`, which is compared, for the reason
     /// `MenuScroll` gives.
@@ -2238,6 +2255,8 @@ impl WindowApp {
             mixer_routes: Vec::new(),
             hover_cable: None,
             cable_drag: None,
+            clip_strips: Vec::new(),
+            fed_by: Vec::new(),
             selected_track: 0,
             track_output: None,
             clip_routes: Vec::new(),
@@ -2690,6 +2709,11 @@ impl WindowApp {
             Vec::new()
         };
         let cable_hot = self.cable_hot();
+        // The mixer strips' colours for the route chips, and — while the mixer
+        // is showing — what feeds the selected strip, to glow.
+        let route_colors: Vec<[u8; 4]> = self.mixer_strips.iter().map(|s| s.color).collect();
+        let (rack_glow, clip_glow) = self.linked_glow();
+        let strip_glow = self.strip_glow();
         let input_label = self.input_caption();
         // The tip's box needs the shaped width of its own words, so it is
         // measured here — after `shape_labels`, before the borrow.
@@ -2805,6 +2829,8 @@ impl WindowApp {
                             _ => None,
                         },
                         rename: self.rename_marks,
+                        route_colors: &route_colors,
+                        glow: rack_glow.as_ref().map(|(c, rows)| (*c, rows.as_slice())),
                     }),
                 prefabs: self
                     .options
@@ -2886,6 +2912,7 @@ impl WindowApp {
                     loop_range: self.loop_range,
                     recording,
                     take_notes: &self.takes,
+                    glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
                     can_paste: self
                         .options
                         .document
@@ -2917,6 +2944,8 @@ impl WindowApp {
                     output: self.track_output,
                     cables: &cable_lines,
                     cable_hot,
+                    fed_by: &self.fed_by,
+                    strip_glow,
                 }),
                 tabs: self.tabs,
                 tab: self.tab,
@@ -3667,6 +3696,7 @@ impl WindowApp {
                 TimelineHit::Clip(id, part) => Some((id, part)),
                 _ => None,
             });
+        let glowing = self.strip_glow();
         if over_clip != self.hover_clip {
             self.hover_clip = over_clip;
             self.tree.invalidate(TIMELINE);
@@ -3706,6 +3736,10 @@ impl WindowApp {
             self.hover_rack = rack;
             self.hover_prefab = prefab;
             self.tree.invalidate(RACK);
+        }
+        // A route chip or an audio block names a strip; the mixer rings it.
+        if self.tab == EditorTab::Mixer && self.strip_glow() != glowing {
+            self.tree.invalidate(PANEL);
         }
         self.refresh_tip();
         self.update_cursor();
@@ -3802,6 +3836,12 @@ impl WindowApp {
             && let Some(tip) = what.tip()
         {
             return Some(shortcut(tip, what.action()));
+        }
+        // The route chip is only a colour; its tip names the track.
+        if let Some(RackHit::Route(row)) = self.hover_rack
+            && let Some(channel) = self.channels.get(row)
+        {
+            return Some(crate::canvas::route_tip(channel.route, &self.route_names));
         }
         if let Some(what) = self.hover_rack
             && let Some(tip) = what.tip()
@@ -6247,6 +6287,7 @@ impl WindowApp {
                 output_on: doc.track_output_on(strip),
             })
             .collect();
+        self.clip_strips = doc.clip_routes();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
         self.track_output_on = doc.track_output_on(self.selected_track);
@@ -6402,6 +6443,7 @@ impl WindowApp {
             .min(self.mixer_strips.len().saturating_sub(2));
 
         self.browser_title = self.browser_heading();
+        self.fed_by = self.fed_by_captions();
         self.relayout_panels();
         self.tree.invalidate(RACK);
         self.tree.invalidate(BROWSER);
@@ -7064,6 +7106,9 @@ impl WindowApp {
                     continue;
                 };
                 self.labels.ensure(&strip.name, &font, &mut self.text);
+                if let Some(fed) = self.fed_by.get(index).filter(|f| !f.is_empty()) {
+                    self.labels.ensure_small(fed, &font, &mut self.text);
+                }
                 self.labels
                     .ensure(&format_gain_db(strip.gain_db), &font, &mut self.text);
                 if self.drag == Drag::Pan(index) {
@@ -8445,6 +8490,87 @@ impl WindowApp {
             }),
             _ => self.hover_cable,
         }
+    }
+
+    /// The master's place among the strips — last, in the order the host
+    /// gives them, but asked rather than assumed.
+    fn master_strip(&self) -> Option<usize> {
+        self.mixer_strips.iter().position(|s| s.is_master)
+    }
+
+    /// What feeds strip `strip` directly (`canvas::strip_sources`).
+    fn sources_of(&self, strip: usize) -> crate::canvas::StripSources {
+        crate::canvas::strip_sources(
+            strip,
+            self.master_strip(),
+            &self.channels,
+            &self.clip_strips,
+        )
+    }
+
+    /// Every strip's "fed by" caption, in strip order.
+    fn fed_by_captions(&self) -> Vec<String> {
+        (0..self.mixer_strips.len())
+            .map(|strip| {
+                let sources = self.sources_of(strip);
+                // Audio clips are counted; a note clip is its channel, which
+                // already is.
+                let audio = sources
+                    .clips
+                    .iter()
+                    .filter(|id| {
+                        self.clips.iter().any(|clip| {
+                            clip.id == **id && clip.kind == crate::document::ClipKind::Audio
+                        })
+                    })
+                    .count();
+                crate::canvas::fed_by_caption(&sources, &self.channels, audio)
+            })
+            .collect()
+    }
+
+    /// **The selected strip's sources glow** in its colour — the rack rows and
+    /// the arrangement blocks that feed it — while the mixer is showing
+    /// (`docs/ux-routing-and-learning-plan.md` §3). Only then: a glow over the
+    /// rack while the piano roll is open would be about a strip you cannot
+    /// see.
+    #[allow(clippy::type_complexity)]
+    fn linked_glow(
+        &self,
+    ) -> (
+        Option<([u8; 4], Vec<usize>)>,
+        Option<([u8; 4], Vec<fontelle_types::ClipId>)>,
+    ) {
+        if self.tab != EditorTab::Mixer {
+            return (None, None);
+        }
+        let Some(strip) = self.mixer_strips.get(self.selected_track) else {
+            return (None, None);
+        };
+        let sources = self.sources_of(self.selected_track);
+        (
+            Some((strip.color, sources.channels)),
+            Some((strip.color, sources.clips)),
+        )
+    }
+
+    /// **The strip the pointer names from elsewhere** — a rack row's route
+    /// chip, or an audio block on the arrangement — so where it goes is seen
+    /// from both ends.
+    fn strip_glow(&self) -> Option<usize> {
+        if let Some(RackHit::Route(row)) = self.hover_rack {
+            let channel = self.channels.get(row)?;
+            return crate::canvas::route_strip(channel.route, self.master_strip());
+        }
+        let (id, _) = self.hover_clip?;
+        let clip = self.clips.iter().find(|clip| clip.id == id)?;
+        if clip.kind != crate::document::ClipKind::Audio {
+            return None;
+        }
+        self.clip_strips
+            .iter()
+            .find(|(clip, _)| *clip == id)
+            .and_then(|(_, strips)| strips.first().copied())
     }
 
     /// Hangs the cables the routing now makes, in the bay the layout now has.
@@ -15473,7 +15599,26 @@ impl WindowApp {
                     MenuEntry::new("Track presets\u{2026}").after_rule(),
                     MenuEntry::new("Save track preset\u{2026}"),
                     MenuEntry::new("Rename").after_rule(),
+                    MenuEntry::new("Colour\u{2026}"),
                 ]
+            }
+            MenuTarget::TrackColor(strip) => {
+                let current = self.mixer_strips.get(*strip).map(|track| track.color);
+                std::iter::once(MenuEntry::disabled("Colour"))
+                    .chain(
+                        fontelle_model::TRACK_PALETTE
+                            .iter()
+                            .zip(TRACK_COLOUR_NAMES)
+                            .map(|(colour, name)| {
+                                let label = if current == Some(*colour) {
+                                    format!("{name} \u{2713}")
+                                } else {
+                                    name.to_string()
+                                };
+                                MenuEntry::new(label).with_swatch(*colour)
+                            }),
+                    )
+                    .collect()
             }
             MenuTarget::TrackPresetMenu(strip) => self.track_preset_rows(*strip).0,
             MenuTarget::TrackPresetName(_) => {
@@ -16702,8 +16847,25 @@ impl WindowApp {
                         self.open_menu(MenuTarget::TrackPresetName(strip), x, y, bounds);
                     }
                     3 => self.start_rename(MenuTarget::MixerTrack(strip)),
+                    4 => self.open_menu(MenuTarget::TrackColor(strip), x, y, bounds),
                     _ => {}
                 }
+            }
+            (MenuTarget::TrackColor(strip), index) => {
+                let strip = *strip;
+                // 0 is the heading.
+                if let Some(colour) = index
+                    .checked_sub(1)
+                    .and_then(|n| fontelle_model::TRACK_PALETTE.get(n))
+                    && let Some(doc) = self.options.document.as_mut()
+                {
+                    doc.set_track_color(strip, *colour);
+                }
+                self.refresh_studio();
+                self.refresh_title();
+                self.tree.invalidate(PANEL);
+                self.tree.invalidate(RACK);
+                self.tree.invalidate(TIMELINE);
             }
             (MenuTarget::TrackPresetMenu(strip), index) => {
                 let strip = *strip;

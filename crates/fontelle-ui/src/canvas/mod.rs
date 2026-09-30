@@ -170,10 +170,11 @@ pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
     MIN_FADER_DB, MIN_SEND_DB, MixerControl, MixerHit, MixerKey, MixerLayout, MixerRightClick,
     MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, PATCH_HEIGHT,
-    SEND_KNOB_TRAVEL, STRIP_WIDTH, SendRowLayout, StripRoute, TrackOptionsLayout, fader_db_at,
-    fader_y_of_db, format_gain_db, format_mix, format_pan, format_send_db, insert_mix_dial,
-    mixer_cables, mixer_hit, mixer_key, mixer_layout, mixer_layout_for, mixer_right_click,
-    name_press, pan_at, pan_x_of, send_knob_db, send_level_at, send_x_of_level, unity_fraction,
+    SEND_KNOB_TRAVEL, STRIP_WIDTH, SendRowLayout, StripRoute, StripSources, TrackOptionsLayout,
+    fader_db_at, fader_y_of_db, fed_by_caption, format_gain_db, format_mix, format_pan,
+    format_send_db, insert_mix_dial, mixer_cables, mixer_hit, mixer_key, mixer_layout,
+    mixer_layout_for, mixer_right_click, name_press, pan_at, pan_x_of, route_strip, send_knob_db,
+    send_level_at, send_x_of_level, strip_sources, unity_fraction,
 };
 pub use notepad::{
     NOTEPAD_BLANK, NOTEPAD_HINT, NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow,
@@ -201,7 +202,7 @@ pub use prefabs::{
 pub use rack::{
     NEW_TRACK, NO_OUTPUT, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, output_menu_layout,
     rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
-    route_menu_layout_excluding, scroll_to_show, tab_at, tab_strip,
+    route_menu_layout_excluding, route_tip, scroll_to_show, tab_at, tab_strip,
 };
 pub use roll_scale::{
     RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
