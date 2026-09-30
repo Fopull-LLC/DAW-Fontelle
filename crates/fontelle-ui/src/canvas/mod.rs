@@ -19,6 +19,7 @@ mod prefabs;
 mod preset_bar;
 mod rack;
 mod roll_scale;
+mod settings_page;
 mod share;
 mod text_entry;
 mod timeline;
@@ -124,6 +125,11 @@ pub use preset_bar::{
     PresetBarLayout, PresetBarView, PresetChoice, PresetDevice, PresetMenuRow, RANDOM_PRESET,
     USER_MARK, plugin_header_hit, plugin_header_layout, preset_bar_hit, preset_bar_layout,
     preset_bar_name, preset_menu, random_preset_row,
+};
+pub use settings_page::{
+    SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingsPageHit, SettingsPageLayout,
+    SettingsPageRow, SettingsSection, settings_page_hit, settings_page_layout,
+    settings_page_row_height, settings_page_scroll_max, settings_page_scrolled, settings_sections,
 };
 /// Where a zoom should land, given the grid it is zooming and where the
 /// pointer is.

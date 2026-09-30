@@ -732,9 +732,11 @@ pub fn scrolled(scroll: usize, by: i32, count: usize) -> usize {
 pub enum SettingControl {
     /// A section title — nothing to touch.
     Heading,
-    /// A press acts (a folder picker, a rescan, an install). The row's value
-    /// column is a caption, not a value, so nothing extra is drawn.
-    Button,
+    /// A press acts (a folder picker, a rescan, an install). `caption` is what
+    /// the button says — a verb, "Choose…", "Rescan" — while the row's value
+    /// stays what it is set to. Empty when there is nothing to press (an
+    /// extension this build cannot load); the value then says why.
+    Button { caption: String },
     /// A number the user drags along a groove or nudges with the arrow keys.
     /// `fraction` (0..=1) is where the handle sits; the value text is the row's
     /// own `detail`.
@@ -769,7 +771,7 @@ pub enum SettingPress {
 pub fn setting_press(control: &SettingControl) -> SettingPress {
     match control {
         SettingControl::Heading => SettingPress::Nothing,
-        SettingControl::Button => SettingPress::Act,
+        SettingControl::Button { .. } => SettingPress::Act,
         SettingControl::Slider { .. } => SettingPress::Drag,
         SettingControl::Choice { .. } => SettingPress::DropDown,
         SettingControl::Switch { .. } => SettingPress::Flip,

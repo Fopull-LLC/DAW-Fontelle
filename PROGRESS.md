@@ -19,6 +19,33 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-30 (night, latest) — UX plan step 3: settings is a full
+page.** `docs/ux-routing-and-learning-plan.md` §6, built. Ty chose *"a full
+settings page"* over redesigning the sidebar tab.
+
+- **The gear opens a page over the studio** (`canvas::settings_page`, drawn
+  by `draw_settings_page`): a section list on the left, the chosen section's
+  rows on the right, a × and Esc to close (Esc first lets go of a focused
+  row). Opening the MIDI/score importer with no folder set opens the page on
+  *Import from* instead of switching the sidebar.
+- **Sections are the host's headings.** The page splits the same flat row
+  list (`settings`, `setting_controls`) at its `Heading` rows
+  (`settings_sections`), so every press, drag, drop-down and prompt is the
+  old index-routed path (`press_settings`; `setting_control_area` now asks
+  the page first). Step 4's *Project* section is one more heading.
+- **Labels look like labels, controls like controls** (the report: *"everything
+  looks like a button even when things are just labels"*): a row is a name,
+  a muted help line under it (`SettingRow::help`, `StudioHost::setting_help`)
+  and one control — a raised button with a verb (`SettingControl::Button {
+  caption }`, `SettingRow::caption`), a sunken box for a choice or text, a
+  groove with a knob, a pill switch. Values no longer say "click"
+  (`tests/input_settings.rs`). Rows and controls light under the pointer.
+- **Seen** on `:99`: every section, a slider drag, a drop-down choice, the
+  name prompt, Rescan's toast, the importer landing on *Import from*, Esc.
+- **Left as is:** the sidebar's settings list (`BrowserMode::Settings`) is
+  no longer reachable — the gear opens the page — but its code and
+  `tests/settings_tab.rs` are still there; removing them is a cleanup.
+
 **As of 2026-09-30 (night, later) — UX plan step 2: selecting a lane, and
 lane solo.** `docs/ux-routing-and-learning-plan.md` §2, built.
 

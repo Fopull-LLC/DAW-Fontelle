@@ -581,7 +581,7 @@ impl SettingRow {
             // What it *does*, because it is a button and because it adds
             // rather than replaces: the standard CLAP locations are searched
             // whether or not anything is listed here.
-            Self::PluginFolder => "Add plugin folder",
+            Self::PluginFolder => "Plugin folders",
             Self::ImportFlFolders => "Use FL Studio's folders",
             Self::PresetFolder => "My presets",
             Self::RescanPlugins => "Rescan plugins",
@@ -641,26 +641,25 @@ impl SettingRow {
             // rule the bank's own status line follows.
             Self::Folder(kind) => match settings.folder(kind) {
                 Some(path) => crate::desktop::elide_path(path, 2),
-                // Never blank: an empty right-hand column reads as a bug, and
-                // "there is nothing here" is the state this whole feature
-                // starts in.
-                None => "Not set \u{2014} click".to_string(),
+                // Never blank: an empty value reads as a bug, and "there is
+                // nothing here" is the state this whole feature starts in.
+                // What a press does is on the button beside it
+                // ([`caption`](Self::caption)), not in the value.
+                None => "Not set".to_string(),
             },
             // The folders are the rows under this one, each named by its
-            // end; the button says what pressing it does.
-            Self::PluginFolder => if settings.plugin_dirs.is_empty() {
-                "Not set \u{2014} click"
-            } else {
-                "Click to add"
-            }
-            .to_string(),
-            Self::PluginDir(_) => "Remove \u{2014} click".to_string(),
-            Self::ImportFlFolders => "Click".to_string(),
+            // end; this one counts them.
+            Self::PluginFolder => match settings.plugin_dirs.len() {
+                0 => "Not set".to_string(),
+                1 => "1 folder of your own".to_string(),
+                n => format!("{n} folders of your own"),
+            },
+            Self::PluginDir(_) | Self::ImportFlFolders | Self::RescanPlugins => String::new(),
             // Never blank, and never "not set": this folder always has an
             // answer, because Fontelle writes to it (see the field).
             Self::PresetFolder => match settings.user_preset_dir() {
                 Some(path) => crate::desktop::elide_path(&path, 2),
-                None => "Nowhere \u{2014} click".to_string(),
+                None => "Nowhere".to_string(),
             },
             // What the extension's state offers: install, remove, or a
             // sentence when this build cannot load it.
@@ -672,12 +671,8 @@ impl SettingRow {
                         None,
                     );
                     match crate::extensions::action_for(&state) {
-                        crate::extensions::ExtensionAction::Install => {
-                            "Not installed \u{2014} click".to_string()
-                        }
-                        crate::extensions::ExtensionAction::Remove => {
-                            "Installed \u{2014} click to remove".to_string()
-                        }
+                        crate::extensions::ExtensionAction::Install => "Not installed".to_string(),
+                        crate::extensions::ExtensionAction::Remove => "Installed".to_string(),
                         crate::extensions::ExtensionAction::None => {
                             "Needs a newer Fontelle".to_string()
                         }
@@ -685,8 +680,6 @@ impl SettingRow {
                 }
                 None => String::new(),
             },
-            // A button says what pressing it does rather than what it is at.
-            Self::RescanPlugins => "Click".to_string(),
             Self::CheckForUpdates => if settings.check_for_updates {
                 "On"
             } else {
@@ -699,6 +692,70 @@ impl SettingRow {
                 .relay
                 .clone()
                 .unwrap_or_else(|| "Floptle Cloud".to_string()),
+        }
+    }
+
+    /// What a button row's button says: what a press does, as a verb. Empty
+    /// for every other row, and for an extension this build cannot load —
+    /// nothing to press, and the value says why.
+    ///
+    /// Apart from [`value`](Self::value) because the settings page draws them
+    /// apart (`docs/ux-routing-and-learning-plan.md` §6): *"everything looks
+    /// like a button even when things are just labels"* was a value that said
+    /// "Not set — click", which is a label and an instruction in one cell.
+    // Takes the settings as `value` does, so a button whose verb depends on
+    // them does not change the call; none does yet.
+    pub fn caption(self, _settings: &Settings) -> String {
+        match self {
+            Self::Folder(_) | Self::PresetFolder => "Choose\u{2026}",
+            Self::PluginFolder => "Add\u{2026}",
+            Self::PluginDir(_) => "Remove",
+            Self::ImportFlFolders => "Import",
+            Self::RescanPlugins => "Rescan",
+            Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
+                Some(extension) => {
+                    let state = crate::extensions::ExtensionState::of(
+                        extension,
+                        crate::extensions::is_installed(extension),
+                        None,
+                    );
+                    match crate::extensions::action_for(&state) {
+                        crate::extensions::ExtensionAction::Install => "Install",
+                        crate::extensions::ExtensionAction::Remove => "Remove",
+                        crate::extensions::ExtensionAction::None => "",
+                    }
+                }
+                None => "",
+            },
+            _ => "",
+        }
+        .to_string()
+    }
+
+    /// One line under the row's name saying what it is for — the page's
+    /// answer to *"some things just have no or little feedback"*: a row
+    /// nobody can explain is a row nobody touches. Empty for a heading.
+    pub fn help(self) -> &'static str {
+        match self {
+            Self::Heading(_) => "",
+            Self::VelocityCurve => "How hard you play maps to how loud a note is",
+            Self::FixedVelocity => "Every note at this velocity, with the Fixed curve",
+            Self::VelocityMin => "The softest a played note can be",
+            Self::VelocityMax => "The loudest a played note can be",
+            Self::Transpose => "Shifts what your MIDI keyboard plays, in semitones",
+            Self::ChannelFilter => "Listen to one MIDI channel, or to all of them",
+            Self::Folder(FolderKind::Midi) => "Where the Import tab looks for MIDI files",
+            Self::Folder(FolderKind::Scores) => "Where the Import tab looks for FL Studio scores",
+            Self::Folder(FolderKind::Audio) => "Where the Import tab looks for audio",
+            Self::PluginFolder => "Searched as well as the standard plugin places",
+            Self::PluginDir(_) => "A folder you added; plugins in it are found at launch",
+            Self::ImportFlFolders => "Adds the plugin folders FL Studio searches",
+            Self::RescanPlugins => "Looks again, after you install a plugin",
+            Self::PresetFolder => "Where your saved presets go and are read from",
+            Self::Extension(_) => "An optional part of Fontelle, downloaded on request",
+            Self::YourName => "What the people you share a project with see",
+            Self::Relay => "Blank for Floptle Cloud, or a host:port of your own",
+            Self::CheckForUpdates => "The start menu asks for a newer Fontelle at launch",
         }
     }
 

@@ -163,8 +163,10 @@ fn every_row_still_says_what_it_is_and_what_it_is_at() {
         if matches!(row, SettingRow::Heading(_)) {
             continue;
         }
+        // A pure action (rescan) says what it does on its button instead
+        // (the settings page, 2026-09-30).
         assert!(
-            !row.value(&settings).is_empty(),
+            !row.value(&settings).is_empty() || !row.caption(&settings).is_empty(),
             "{row:?} does not say what it is at"
         );
     }

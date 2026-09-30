@@ -62,8 +62,9 @@ fn every_folder_is_its_own_row_with_a_remove() {
     assert_eq!(rows[add + 2], SettingRow::PluginDir(1));
     assert_eq!(rows[add + 3], SettingRow::PluginDir(2));
     assert!(SettingRow::PluginDir(1).label(&settings).contains("VST3"));
-    let value = SettingRow::PluginDir(1).value(&settings);
-    assert!(value.to_lowercase().contains("remove"), "got {value:?}");
+    // What a press does is on its button (the settings page, 2026-09-30).
+    let caption = SettingRow::PluginDir(1).caption(&settings);
+    assert!(caption.to_lowercase().contains("remove"), "got {caption:?}");
     assert!(SettingRow::PluginDir(0).is_plugin_row());
     // With nothing set, no folder rows — and the add button's value says so.
     let none = setting_rows(&Settings::default());
@@ -82,11 +83,12 @@ fn the_add_button_stops_counting_once_the_folders_are_listed() {
         plugin_dirs: vec![PathBuf::from("/one/CLAP"), PathBuf::from("/two/VST3")],
         ..Settings::default()
     };
+    // The rows below say which; the value counts them and the button says
+    // what it does.
     let value = SettingRow::PluginFolder.value(&settings);
-    assert!(
-        value.to_lowercase().contains("click"),
-        "the rows below say which; the button says what it does: {value:?}"
-    );
+    assert!(value.contains('2'), "{value:?}");
+    let caption = SettingRow::PluginFolder.caption(&settings);
+    assert!(caption.to_lowercase().starts_with("add"), "{caption:?}");
 }
 
 /// *"sync it to their FL"*: one row reads the folders FL Studio searches

@@ -271,7 +271,12 @@ fn a_text_row_is_typed_into_seeded_with_what_it_holds() {
         setting_press(&SettingControl::Heading),
         SettingPress::Nothing
     );
-    assert_eq!(setting_press(&SettingControl::Button), SettingPress::Act);
+    assert_eq!(
+        setting_press(&SettingControl::Button {
+            caption: "Rescan".to_string()
+        }),
+        SettingPress::Act
+    );
     assert_eq!(
         setting_press(&SettingControl::Switch { on: true }),
         SettingPress::Flip

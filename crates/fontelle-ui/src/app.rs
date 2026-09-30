@@ -1098,6 +1098,14 @@ struct Confirm {
     index: usize,
 }
 
+/// The settings page while it is up: which section it shows, how far that
+/// section is scrolled, and what the pointer is over.
+struct SettingsPage {
+    section: usize,
+    scroll: f32,
+    hover: Option<crate::canvas::SettingsPageHit>,
+}
+
 /// The live window. Public so a caller can read [`WindowApp::frames_drawn`]
 /// after the loop returns.
 pub struct WindowApp {
@@ -1153,6 +1161,12 @@ pub struct WindowApp {
     /// What the last rebind took from whom, shown under the sheet's title
     /// until the next press. Empty for nothing to say.
     keybinds_note: String,
+    /// The settings page, while it is up: opened by the gear, shut by Esc,
+    /// its × or a press off the card (`canvas::settings_page`).
+    settings_page: Option<SettingsPage>,
+    /// The settings file's line — where it is, or what went wrong writing it
+    /// — for the page's header.
+    settings_status: String,
     /// Editors a click has asked for, opened on the next pass of the loop.
     ///
     /// A window can only be created with an `&ActiveEventLoop` in hand, and
@@ -1745,6 +1759,9 @@ pub struct WindowApp {
     /// drawn and pressed as the slider, switch or drop-down it is rather than
     /// as a value clicked to step. Rebuilt with `settings` in `refresh_studio`.
     settings_controls: Vec<crate::canvas::SettingControl>,
+    /// What each settings row is for, parallel to `settings` — the settings
+    /// page's line under each name.
+    settings_help: Vec<String>,
     /// Which settings row the arrow keys are on, once one has been pressed —
     /// the precision path beside the drag. `None` until a row is touched.
     settings_focus: Option<usize>,
@@ -2051,6 +2068,8 @@ impl WindowApp {
             rebind: None,
             keybinds_hover: None,
             keybinds_note: String::new(),
+            settings_page: None,
+            settings_status: String::new(),
             activation: None,
             activation_tried: false,
             file_drag: None,
@@ -2292,6 +2311,7 @@ impl WindowApp {
             browser_mode: BrowserMode::default(),
             settings: Vec::new(),
             settings_controls: Vec::new(),
+            settings_help: Vec::new(),
             settings_focus: None,
             projects: Vec::new(),
             library_count: 0,
@@ -3033,6 +3053,22 @@ impl WindowApp {
                     hover: self.keybinds_hover,
                     note: &self.keybinds_note,
                 }),
+                settings_page: self.settings_page.as_ref().map(|page| {
+                    crate::render::SettingsPageChrome {
+                        section: page.section,
+                        scroll: page.scroll,
+                        entries: &self.settings,
+                        controls: &self.settings_controls,
+                        help: &self.settings_help,
+                        status: &self.settings_status,
+                        hover: page.hover,
+                        focus: self.settings_focus,
+                        dragging: match self.drag {
+                            Drag::SettingSlider(index) => Some(index),
+                            _ => None,
+                        },
+                    }
+                }),
             },
         );
 
@@ -3537,6 +3573,40 @@ impl WindowApp {
             }
             return;
         }
+        // Over the settings page, its own pointer — and a plain one while a
+        // drop-down of its is open, never the pencil of the roll beneath.
+        if self.settings_page.is_some() && self.drag == Drag::None {
+            use crate::canvas::SettingsPageHit;
+            let layout = self.settings_page_layout();
+            let hit = if self.menu.is_some() {
+                SettingsPageHit::Card
+            } else {
+                crate::canvas::settings_page_hit(&layout, x, y)
+            };
+            let wanted = match hit {
+                SettingsPageHit::Close | SettingsPageHit::Section(_) => Pointer::Hand,
+                SettingsPageHit::Row {
+                    index,
+                    on_control: true,
+                } => match self.settings_controls.get(index) {
+                    Some(crate::canvas::SettingControl::Slider { .. }) => Pointer::ResizeX,
+                    Some(crate::canvas::SettingControl::Button { caption })
+                        if caption.is_empty() =>
+                    {
+                        Pointer::Default
+                    }
+                    _ => Pointer::Hand,
+                },
+                _ => Pointer::Default,
+            };
+            if wanted != self.pointer {
+                self.pointer = wanted;
+                if let Some(live) = &self.live {
+                    live.window.set_cursor(system_cursor(wanted));
+                }
+            }
+            return;
+        }
         if let Some(welcome) = &self.welcome {
             let wanted = match crate::canvas::welcome_hit(&welcome.layout, x, y) {
                 Some(_) => Pointer::Hand,
@@ -3653,6 +3723,25 @@ impl WindowApp {
             }
             self.update_cursor();
             return;
+        }
+        // The settings page likewise, while no menu of its own is open over
+        // it: the row and the control under the pointer light up.
+        if self.settings_page.is_some() {
+            let layout = self.settings_page_layout();
+            let over = self
+                .menu
+                .is_none()
+                .then(|| crate::canvas::settings_page_hit(&layout, self.cursor.0, self.cursor.1));
+            if let Some(page) = &mut self.settings_page
+                && page.hover != over
+            {
+                page.hover = over;
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            self.update_cursor();
+            if self.menu.is_none() {
+                return;
+            }
         }
         if let Some(welcome) = &mut self.welcome {
             let over = crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
@@ -3790,7 +3879,7 @@ impl WindowApp {
         // Nothing from under the shortcuts sheet: a tip for a button the
         // sheet is covering would float over the page explaining a control
         // nobody can see.
-        if self.keybinds.is_some() {
+        if self.keybinds.is_some() || self.settings_page.is_some() {
             return None;
         }
         // Nor over the Share panel or a session's question: the Share
@@ -4337,6 +4426,14 @@ impl ApplicationHandler for WindowApp {
                     self.keybinds = Some(crate::canvas::keybinds_scrolled(&layout, scroll, dy));
                     self.tree.invalidate_rect(self.layout.window);
                     // The rows moved under a still pointer.
+                    self.update_hover();
+                } else if self.settings_page.is_some() {
+                    let layout = self.settings_page_layout();
+                    if let Some(page) = &mut self.settings_page {
+                        page.scroll =
+                            crate::canvas::settings_page_scrolled(&layout, page.scroll, dy);
+                    }
+                    self.tree.invalidate_rect(self.layout.window);
                     self.update_hover();
                 } else if self.welcome.is_none() {
                     self.scroll_roll(dx, dy);
@@ -6218,6 +6315,11 @@ impl WindowApp {
         self.projects = doc.projects();
         self.settings = doc.settings();
         self.settings_controls = doc.setting_controls();
+        self.settings_help = doc.setting_help();
+        // The page covers the window, so whatever it shows is the window's.
+        if self.settings_page.is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
         self.library_count = doc.library_count();
         self.selected_channel = doc.selected_channel();
         self.selected_file = doc.selected_file();
@@ -6406,6 +6508,7 @@ impl WindowApp {
             BrowserMode::Settings => doc.settings_status(),
         };
         self.status = doc.take_message().unwrap_or(fallback);
+        self.settings_status = doc.settings_status();
 
         // An editor whose subject has gone — the insert was deleted — closes
         // rather than showing whatever is at that index now. The window *is*
@@ -6839,6 +6942,51 @@ impl WindowApp {
                     self.labels.ensure_small(&keys, &font, &mut self.text);
                     self.labels.ensure_small(bind.does(), &font, &mut self.text);
                 }
+            }
+        }
+
+        // The settings page, under the strings `draw_settings_page` looks
+        // up: names and section titles at the chrome's size, the rest small.
+        if self.settings_page.is_some() {
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::SETTINGS_TITLE,
+            );
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::SETTINGS_CLOSE,
+            );
+            self.labels
+                .ensure_small(crate::canvas::SETTINGS_EMPTY, &font, &mut self.text);
+            if !self.settings_status.is_empty() {
+                let status = self.settings_status.clone();
+                self.labels.ensure_small(&status, &font, &mut self.text);
+            }
+            let rows: Vec<(String, String)> = self
+                .settings
+                .iter()
+                .map(|e| (e.name.clone(), e.detail.clone()))
+                .collect();
+            for (name, detail) in &rows {
+                want(&mut self.labels, &mut self.text, name);
+                self.labels.ensure_small(detail, &font, &mut self.text);
+            }
+            let help = self.settings_help.clone();
+            for line in &help {
+                self.labels.ensure_small(line, &font, &mut self.text);
+            }
+            let captions: Vec<String> = self
+                .settings_controls
+                .iter()
+                .filter_map(|c| match c {
+                    crate::canvas::SettingControl::Button { caption } => Some(caption.clone()),
+                    _ => None,
+                })
+                .collect();
+            for caption in &captions {
+                self.labels.ensure_small(caption, &font, &mut self.text);
             }
         }
 
@@ -7643,6 +7791,12 @@ impl WindowApp {
             if self.press_menu(x, y) {
                 return;
             }
+        }
+        // The settings page is over the studio; a press is its, after the
+        // drop-down and the name prompt it opens, which are menus above it.
+        if self.settings_page.is_some() {
+            self.press_settings_page(button, x, y);
+            return;
         }
         if self.tools_panel.is_some() {
             self.press_tools_panel(x, y);
@@ -10665,6 +10819,12 @@ impl WindowApp {
 
     /// Switches the browser to `mode`, as pressing its tab does.
     fn show_browser_mode(&mut self, mode: crate::canvas::BrowserMode) {
+        // The gear is a page now, not a list in the sidebar (Ty, 2026-09-30:
+        // *"a full settings page"*); the sidebar keeps what it was showing.
+        if mode == BrowserMode::Settings {
+            self.open_settings_page(0);
+            return;
+        }
         self.browser_mode = mode;
         if let Some(doc) = &mut self.options.document {
             doc.set_browser_mode(mode);
@@ -13766,6 +13926,131 @@ impl WindowApp {
         )
     }
 
+    // ------------------------------------------------ the settings page ---
+
+    /// Opens the settings page on its `section`th section. Ty, 2026-09-30:
+    /// *"a full settings page"*, over the studio like the shortcuts page,
+    /// rather than the sidebar tab it was (`docs/ux-routing-and-learning-
+    /// plan.md` §6).
+    fn open_settings_page(&mut self, section: usize) {
+        if self.tempo_entry.is_some() {
+            self.end_tempo_entry(true);
+        }
+        self.settings_focus = None;
+        self.settings_page = Some(SettingsPage {
+            section,
+            scroll: 0.0,
+            hover: None,
+        });
+        // The rows are read on a revision change; ask for them now, so a page
+        // opened before anything else moved is not an empty one.
+        self.studio_revision = u64::MAX;
+        self.refresh_studio();
+        self.tree.invalidate_rect(self.layout.window);
+        self.request_redraw_if_dirty();
+    }
+
+    /// Opens the page on the section headed `title`, or the first.
+    fn open_settings_page_at(&mut self, title: &str) {
+        let sections = crate::canvas::settings_sections(&self.settings_controls);
+        let section = sections
+            .iter()
+            .position(|s| {
+                self.settings
+                    .get(s.heading)
+                    .is_some_and(|e| e.name == title)
+            })
+            .unwrap_or(0);
+        self.open_settings_page(section);
+        // The rows may have only just been read; look again with them in.
+        let sections = crate::canvas::settings_sections(&self.settings_controls);
+        if let Some(at) = sections.iter().position(|s| {
+            self.settings
+                .get(s.heading)
+                .is_some_and(|e| e.name == title)
+        }) && let Some(page) = &mut self.settings_page
+        {
+            page.section = at;
+        }
+    }
+
+    fn close_settings_page(&mut self) {
+        self.settings_focus = None;
+        if self.settings_page.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    /// The page as it is laid out now, from the same numbers the renderer
+    /// lays it out from, so a press and the picture cannot disagree.
+    fn settings_page_layout(&self) -> crate::canvas::SettingsPageLayout {
+        let sections = crate::canvas::settings_sections(&self.settings_controls);
+        let (section, scroll) = self
+            .settings_page
+            .as_ref()
+            .map_or((0, 0.0), |page| (page.section, page.scroll));
+        crate::canvas::settings_page_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            &sections,
+            section,
+            scroll,
+        )
+    }
+
+    /// A press while the page is up. The row presses are the ones the
+    /// sidebar tab had — `press_settings` — routed by index.
+    fn press_settings_page(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
+        use crate::canvas::SettingsPageHit;
+        let layout = self.settings_page_layout();
+        match crate::canvas::settings_page_hit(&layout, x, y) {
+            SettingsPageHit::Close | SettingsPageHit::Outside => self.close_settings_page(),
+            SettingsPageHit::Section(section) => {
+                self.settings_focus = None;
+                if let Some(page) = &mut self.settings_page {
+                    page.section = section;
+                    page.scroll = 0.0;
+                }
+            }
+            SettingsPageHit::Row { index, on_control } => {
+                let back = button == winit::event::MouseButton::Right;
+                // The words of a slider row take the keyboard and nothing
+                // else, as the sidebar's did; everything else acts only from
+                // its control, so the words of a row read as words.
+                let slider = matches!(
+                    self.settings_controls.get(index),
+                    Some(crate::canvas::SettingControl::Slider { .. })
+                );
+                if on_control || slider {
+                    self.press_settings(index, x, y, back);
+                } else {
+                    self.settings_focus = None;
+                }
+            }
+            SettingsPageHit::Card => self.settings_focus = None,
+        }
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// A key while the page is up: it has the keyboard, like the shortcuts
+    /// page. Esc lets go of a focused row, then shuts the page; the arrows
+    /// nudge a focused row.
+    fn settings_page_key(&mut self, event: &winit::event::KeyEvent) {
+        use winit::keyboard::{Key, NamedKey};
+        match (&event.logical_key, self.settings_focus) {
+            (Key::Named(NamedKey::Escape), Some(_)) => self.settings_focus = None,
+            (Key::Named(NamedKey::Escape), None) => self.close_settings_page(),
+            (Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp), Some(index)) => {
+                self.nudge_focused_setting(index, 1)
+            }
+            (Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown), Some(index)) => {
+                self.nudge_focused_setting(index, -1)
+            }
+            _ => {}
+        }
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
     // --------------------------------------------- typing a tempo ---
 
     /// Opens the tempo box for typing: seeded with the tempo as the box shows
@@ -14970,11 +15255,13 @@ impl WindowApp {
     /// an edit is a deliberate drag, pick or flip.
     fn press_settings(&mut self, index: usize, x: f32, y: f32, back: bool) {
         use crate::canvas::SettingControl;
-        let control = self
-            .settings_controls
-            .get(index)
-            .cloned()
-            .unwrap_or(SettingControl::Button);
+        let control =
+            self.settings_controls
+                .get(index)
+                .cloned()
+                .unwrap_or(SettingControl::Button {
+                    caption: String::new(),
+                });
         // Pressing a **value** row gives the settings list the keyboard, so the
         // arrows nudge it — the precision path beside the drag. A button and a
         // heading take no focus: an arrow key must never re-fire a folder
@@ -14991,8 +15278,7 @@ impl WindowApp {
             // A label is not a control; a press on one does nothing.
             SettingPress::Nothing => {}
             SettingPress::Drag => {
-                let row = self.setting_row_rect(index);
-                let area = crate::canvas::setting_control_rect(row, &self.options.theme.metrics);
+                let area = self.setting_control_area(index);
                 // On the groove, the number goes where the press landed and
                 // then follows (absolute, like a fader). On the name, the press
                 // only takes the keyboard so the arrows can nudge it.
@@ -15013,12 +15299,12 @@ impl WindowApp {
             // A flip, not a step: `nudge_setting` toggles the switch here.
             SettingPress::Flip => self.apply_setting_press(index, back),
             SettingPress::DropDown => {
-                let row = self.setting_row_rect(index);
+                let area = self.setting_control_area(index);
                 let bounds = self.layout.window;
                 self.open_menu(
                     MenuTarget::SettingChoice(index),
-                    row.x,
-                    row.bottom(),
+                    area.x,
+                    area.bottom(),
                     bounds,
                 );
             }
@@ -15030,20 +15316,30 @@ impl WindowApp {
         }
     }
 
-    /// Where settings row `index` is, from the layout the panel last drew.
-    fn setting_row_rect(&self, index: usize) -> crate::layout::Rect {
-        self.browser
+    /// Where settings row `index`'s control is: on the page while it is up,
+    /// else in the sidebar list the panel last drew.
+    fn setting_control_area(&self, index: usize) -> crate::layout::Rect {
+        if self.settings_page.is_some() {
+            return self
+                .settings_page_layout()
+                .rows
+                .iter()
+                .find(|row| row.index == index)
+                .map_or(crate::layout::Rect::ZERO, |row| row.control);
+        }
+        let row = self
+            .browser
             .file_rows
             .iter()
             .find(|(i, _)| *i == index)
             .map(|(_, rect)| *rect)
-            .unwrap_or(crate::layout::Rect::ZERO)
+            .unwrap_or(crate::layout::Rect::ZERO);
+        crate::canvas::setting_control_rect(row, &self.options.theme.metrics)
     }
 
     /// Sets settings slider `index` to where the pointer is along its groove.
     fn drag_setting(&mut self, index: usize, x: f32) {
-        let row = self.setting_row_rect(index);
-        let area = crate::canvas::setting_control_rect(row, &self.options.theme.metrics);
+        let area = self.setting_control_area(index);
         let fraction = crate::canvas::setting_slider_at(area, x);
         if let Some(doc) = &mut self.options.document {
             doc.set_setting_fraction(index, fraction);
@@ -17945,15 +18241,16 @@ impl WindowApp {
             }
             None => return,
         };
-        self.browser_mode = if has_dir {
-            BrowserMode::Import
-        } else {
+        if !has_dir {
             self.status = format!(
                 "No {} folder yet \u{2014} choose one here, and it will be remembered",
                 kind.tab_label()
             );
-            BrowserMode::Settings
-        };
+            self.tools_panel = None;
+            self.open_settings_page_at("Import from");
+            return;
+        }
+        self.browser_mode = BrowserMode::Import;
         if let Some(doc) = &mut self.options.document {
             doc.set_browser_mode(self.browser_mode);
         }
@@ -19013,6 +19310,10 @@ impl WindowApp {
         // start menu, because it opens over that too.
         if self.keybinds.is_some() {
             self.keybinds_key(event);
+            return;
+        }
+        if self.settings_page.is_some() {
+            self.settings_page_key(event);
             return;
         }
 

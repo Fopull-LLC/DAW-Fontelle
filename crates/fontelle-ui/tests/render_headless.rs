@@ -12,6 +12,7 @@
 
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
+use fontelle_ui::canvas::SettingControl;
 use fontelle_ui::canvas::{
     DEFAULT_LANE_HEIGHT, LaneProperty, RollView, SnapDivision, Tool, roll_layout, tick_to_x,
     toolbar_layout,
@@ -189,6 +190,7 @@ fn shoot_sized(
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -903,6 +905,7 @@ fn shoot_roll_everything(
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -1323,6 +1326,7 @@ fn shoot_timeline_recording(
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -2105,6 +2109,7 @@ fn shoot_mixer_lit(
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -2560,6 +2565,7 @@ fn shoot_rack_routed(
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -4850,6 +4856,7 @@ fn shoot_carry(
             }),
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -5107,6 +5114,7 @@ fn shoot_welcome_status(
                 message: &message,
             }),
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -5228,7 +5236,7 @@ fn the_start_menu_shows_a_progress_bar_while_an_update_downloads() {
 /// through the real pipeline — `FONTELLE_UI_DUMP=<dir>` writes it out.
 #[test]
 fn shoot_settings_controls() {
-    use fontelle_ui::canvas::{BrowserMode, SettingControl, browser_layout_for};
+    use fontelle_ui::canvas::{BrowserMode, browser_layout_for};
     use fontelle_ui::document::LibraryEntry;
     use fontelle_ui::render::BrowserChrome;
 
@@ -5292,7 +5300,9 @@ fn shoot_settings_controls() {
         ),
         (
             LibraryEntry::file("Add plugin folder", "Not set \u{2014} click"),
-            SettingControl::Button,
+            SettingControl::Button {
+                caption: "Choose\u{2026}".to_string(),
+            },
         ),
     ];
     let entries: Vec<LibraryEntry> = rows.iter().map(|(e, _)| e.clone()).collect();
@@ -5389,6 +5399,7 @@ fn shoot_settings_controls() {
             carry: None,
             welcome: None,
             keybinds: None,
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -5510,6 +5521,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
                 hover: Some(fontelle_ui::canvas::Action::Save),
                 note: "",
             }),
+            settings_page: None,
         },
     );
     let pixels = shared
@@ -5524,6 +5536,258 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
     };
     dump_sized(&pixels, &format!("{}-{suffix}", theme.name), width, height);
     Some((pixels, theme, width, height))
+}
+
+// --- the settings page ---
+
+const SETTINGS_STATUS: &str = "Saved in ~/.config/fontelle/settings.json";
+
+/// The shape the host gives, trimmed: MIDI input, Import from, Plugins and
+/// Updates, one of each kind of control among them.
+fn settings_page_rows() -> (
+    Vec<fontelle_ui::document::LibraryEntry>,
+    Vec<SettingControl>,
+    Vec<String>,
+) {
+    let button = |caption: &str| SettingControl::Button {
+        caption: caption.to_string(),
+    };
+    let rows: Vec<(&str, &str, SettingControl, &str)> = vec![
+        ("MIDI input", "", SettingControl::Heading, ""),
+        (
+            "Velocity curve",
+            "Soft",
+            SettingControl::Choice {
+                options: vec!["Linear".into(), "Soft".into()],
+                chosen: 1,
+            },
+            "How hard you play maps to how loud a note is",
+        ),
+        (
+            "Velocity min",
+            "12",
+            SettingControl::Slider { fraction: 0.1 },
+            "The softest a played note can be",
+        ),
+        (
+            "Keyboard transpose",
+            "+0 st",
+            SettingControl::Slider { fraction: 0.5 },
+            "Shifts what your MIDI keyboard plays, in semitones",
+        ),
+        ("Import from", "", SettingControl::Heading, ""),
+        (
+            "MIDI files",
+            "Not set",
+            button("Choose\u{2026}"),
+            "Where the Import tab looks for MIDI files",
+        ),
+        (
+            "Audio",
+            "\u{2026}/Music/Samples",
+            button("Choose\u{2026}"),
+            "Where the Import tab looks for audio",
+        ),
+        ("Sharing", "", SettingControl::Heading, ""),
+        (
+            "Your name",
+            "Ty",
+            SettingControl::Text { text: "Ty".into() },
+            "What the people you share a project with see",
+        ),
+        ("Updates", "", SettingControl::Heading, ""),
+        (
+            "Check at launch",
+            "On",
+            SettingControl::Switch { on: true },
+            "The start menu asks for a newer Fontelle at launch",
+        ),
+    ];
+    let entries = rows
+        .iter()
+        .map(|(name, detail, _, _)| fontelle_ui::document::LibraryEntry::file(*name, *detail))
+        .collect();
+    let controls = rows.iter().map(|(_, _, c, _)| c.clone()).collect();
+    let help = rows.iter().map(|(_, _, _, h)| h.to_string()).collect();
+    (entries, controls, help)
+}
+
+/// Which row the pointer is on in each section's dump.
+fn settings_page_lit_row(section: usize) -> usize {
+    match section {
+        0 => 2,
+        1 => 5,
+        _ => 0,
+    }
+}
+
+/// The sheet over an otherwise empty studio, at a size the real window
+/// opens at, with every string it looks up shaped — the same contract the
+/// window keeps in `shape_labels`.
+fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, u32, u32)> {
+    use fontelle_ui::canvas::{SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE};
+    let (entries, controls, help) = settings_page_rows();
+    let (width, height) = (1100u32, 700u32);
+    let shared = headless()?;
+    let layout = window_layout(
+        width as f32,
+        height as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let readout = text.layout("0", &theme.font, None);
+
+    let mut labels = Labels::new();
+    labels.ensure(SETTINGS_TITLE, &theme.font, &mut text);
+    labels.ensure(SETTINGS_CLOSE, &theme.font, &mut text);
+    labels.ensure_small(SETTINGS_EMPTY, &theme.font, &mut text);
+    labels.ensure_small(SETTINGS_STATUS, &theme.font, &mut text);
+    for entry in &entries {
+        labels.ensure(&entry.name, &theme.font, &mut text);
+        labels.ensure_small(&entry.detail, &theme.font, &mut text);
+    }
+    for line in &help {
+        labels.ensure_small(line, &theme.font, &mut text);
+    }
+    for control in &controls {
+        if let SettingControl::Button { caption } = control {
+            labels.ensure_small(caption, &theme.font, &mut text);
+        }
+    }
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: bar,
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &readout,
+                tempo: &readout,
+                signature: &readout,
+                mode: &readout,
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+                tempo_field: None,
+            },
+            roll: None,
+            rack: None,
+            prefabs: None,
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "",
+            labels: &labels,
+            status: "",
+            toast: None,
+            confirm: None,
+            notices: Default::default(),
+            tooltip: None,
+            menu: None,
+            carry: None,
+            welcome: None,
+            keybinds: None,
+            // The pointer on the second row's control, so the dump shows a
+            // lit control beside unlit ones.
+            settings_page: Some(fontelle_ui::render::SettingsPageChrome {
+                section,
+                scroll: 0.0,
+                entries: &entries,
+                controls: &controls,
+                help: &help,
+                status: SETTINGS_STATUS,
+                hover: Some(fontelle_ui::canvas::SettingsPageHit::Row {
+                    index: settings_page_lit_row(section),
+                    on_control: true,
+                }),
+                focus: None,
+                dragging: None,
+            }),
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, width, height, theme.palette.window)
+        .expect("rendering a scene that fits in memory");
+    dump_sized(
+        &pixels,
+        &format!("{}-settings-page-{section}", theme.name),
+        width,
+        height,
+    );
+    Some((pixels, theme, width, height))
+}
+
+#[test]
+fn the_settings_page_draws_its_sections_and_real_controls_over_the_studio() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        for section in [0, 1, 2, 3] {
+            let Some((pixels, theme, width, height)) = shoot_settings_page(theme.clone(), section)
+            else {
+                return;
+            };
+            let (_, controls, _) = settings_page_rows();
+            let l = fontelle_ui::canvas::settings_page_layout(
+                fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, height as f32),
+                &theme.metrics,
+                &fontelle_ui::canvas::settings_sections(&controls),
+                section,
+                0.0,
+            );
+            let at = |x: f32, y: f32| {
+                let i = ((y as u32) * width + x as u32) as usize * 4;
+                Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
+            };
+            assert!(
+                near(at(l.frame.x + 6.0, l.frame.y + 6.0), theme.palette.panel),
+                "{}: the card is not the panel colour",
+                theme.name
+            );
+            // The chosen section wears the accent bar at its left edge.
+            let chosen = l.nav[section];
+            assert!(
+                near(
+                    at(chosen.x + 3.0, chosen.y + chosen.height / 2.0),
+                    theme.palette.accent
+                ),
+                "{}: section {section} is not marked as chosen",
+                theme.name
+            );
+            // Every control drew something inside its rect that is not the
+            // card: nothing on the page is only words where it should be a
+            // thing to touch.
+            for row in &l.rows {
+                let c = row.control;
+                let mut differs = 0;
+                for y in c.y as u32..c.bottom() as u32 {
+                    for x in c.x as u32..c.right() as u32 {
+                        if !near(at(x as f32, y as f32), theme.palette.panel) {
+                            differs += 1;
+                        }
+                    }
+                }
+                assert!(
+                    differs > 40,
+                    "{}: row {} drew no control ({differs} pixels)",
+                    theme.name,
+                    row.index
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -6029,6 +6293,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
                 carry: None,
                 welcome: None,
                 keybinds: None,
+                settings_page: None,
             },
         );
         shared
@@ -6221,6 +6486,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
                 carry: None,
                 welcome: None,
                 keybinds: None,
+                settings_page: None,
             },
         );
         shared

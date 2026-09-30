@@ -56,8 +56,11 @@ fn every_row_says_what_it_is_and_what_it_is_at() {
         if let SettingRow::Heading(_) = row {
             continue;
         }
+        // A pure action — rescan, import FL's folders — has no state to be
+        // at; its button's caption is what it says (the settings page,
+        // 2026-09-30). Anything else must say.
         assert!(
-            !value(row, &s).is_empty(),
+            !value(row, &s).is_empty() || !row.caption(&Settings::default()).is_empty(),
             "{row:?} does not say what it is at"
         );
     }
@@ -453,4 +456,69 @@ fn the_sharing_settings_survive_the_file_and_an_older_one_reads() {
     let settings = Settings::from_json(older).expect("a version 6 file still reads");
     assert_eq!(settings.display_name, None);
     assert_eq!(settings.relay, None);
+}
+
+// ------------------------------------------- the settings page (2026-09-30)
+//
+// Ty on the old tab: *"formatted weird like everything looks like a button
+// even when things are just labels, some things just have no or little
+// feedback"* (`docs/ux-routing-and-learning-plan.md` §6). On the page a value
+// is words and a button is a button with its own caption, so a value no
+// longer carries the instruction "click" in it, and every row says in a line
+// what it is for.
+
+#[test]
+fn no_value_tells_you_to_click_it_because_the_button_beside_it_does() {
+    let mut settings = Settings::default();
+    settings.plugin_dirs.push("/usr/lib/clap".into());
+    for row in fontelle_app::settings::setting_rows(&settings) {
+        let value = row.value(&settings).to_lowercase();
+        assert!(!value.contains("click"), "{row:?} says {value:?}");
+    }
+}
+
+#[test]
+fn every_button_row_says_on_its_button_what_a_press_does() {
+    let mut settings = Settings::default();
+    settings.plugin_dirs.push("/usr/lib/clap".into());
+    for row in fontelle_app::settings::setting_rows(&settings) {
+        let caption = row.caption(&settings);
+        if row.control_kind() == fontelle_app::settings::SettingControlKind::Button {
+            // An extension this build cannot load has nothing to press; its
+            // value says why. Everything else is a verb.
+            if let SettingRow::Extension(_) = row
+                && caption.is_empty()
+            {
+                continue;
+            }
+            assert!(!caption.is_empty(), "{row:?} has a button with no caption");
+            assert!(
+                caption.chars().count() <= 16,
+                "{row:?}: {caption:?} is a sentence"
+            );
+        } else {
+            assert!(caption.is_empty(), "{row:?} is not a button: {caption:?}");
+        }
+    }
+    assert_eq!(SettingRow::PluginDir(0).caption(&settings), "Remove");
+    assert_eq!(SettingRow::RescanPlugins.caption(&settings), "Rescan");
+}
+
+#[test]
+fn every_row_but_a_heading_says_in_a_line_what_it_is_for() {
+    let mut settings = Settings::default();
+    settings.plugin_dirs.push("/usr/lib/clap".into());
+    for row in fontelle_app::settings::setting_rows(&settings) {
+        let help = row.help();
+        if let SettingRow::Heading(_) = row {
+            assert!(help.is_empty());
+            continue;
+        }
+        assert!(!help.is_empty(), "{row:?} has no help line");
+        assert!(
+            help.chars().count() <= 90,
+            "{row:?}: one line, not a paragraph"
+        );
+        assert!(!help.ends_with('.'), "{row:?}: a line, not a sentence");
+    }
 }

@@ -207,6 +207,30 @@ fn clicking_the_row_flips_the_switch_and_writes_it_down() {
     assert!(session.checks_for_updates());
 }
 
+#[test]
+fn the_settings_page_gets_a_control_and_a_help_line_for_every_row() {
+    // The page draws a row's name, its help line under it and its control on
+    // the right, from three lists the host gives side by side.
+    use fontelle_ui::canvas::SettingControl;
+    let session = common::a_session_for(common::a_project_with_a_clip(4, 120.0, common::SR));
+    let rows = session.settings();
+    let controls = session.setting_controls();
+    let help = session.setting_help();
+    assert_eq!(controls.len(), rows.len());
+    assert_eq!(help.len(), rows.len());
+    let rescan = rows
+        .iter()
+        .position(|r| r.name == "Rescan plugins")
+        .expect("the rescan row");
+    assert_eq!(
+        controls[rescan],
+        SettingControl::Button {
+            caption: "Rescan".to_string()
+        }
+    );
+    assert!(!help[rescan].is_empty());
+}
+
 // --- what the start menu asks before it prompts for a name ---
 
 #[test]

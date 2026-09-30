@@ -8051,6 +8051,13 @@ impl StudioHost for Session {
             .collect()
     }
 
+    fn setting_help(&self) -> Vec<String> {
+        crate::settings::setting_rows(&self.settings)
+            .iter()
+            .map(|row| row.help().to_string())
+            .collect()
+    }
+
     fn setting_controls(&self) -> Vec<fontelle_ui::canvas::SettingControl> {
         use crate::settings::SettingControlKind as K;
         use fontelle_ui::canvas::SettingControl;
@@ -8059,7 +8066,9 @@ impl StudioHost for Session {
             .iter()
             .map(|row| match row.control_kind() {
                 K::Heading => SettingControl::Heading,
-                K::Button => SettingControl::Button,
+                K::Button => SettingControl::Button {
+                    caption: row.caption(&self.settings),
+                },
                 K::Slider => SettingControl::Slider {
                     fraction: row.fraction(midi).unwrap_or(0.0),
                 },

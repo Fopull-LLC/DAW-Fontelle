@@ -155,6 +155,29 @@ pub struct Chrome<'a> {
     /// start menu included — it is opened from both. See
     /// [`crate::canvas::keybinds_layout`].
     pub keybinds: Option<KeybindsChrome<'a>>,
+    /// The settings page, while it is up. Over the studio and under the
+    /// menus, prompts and modals it opens. See
+    /// [`crate::canvas::settings_page_layout`].
+    pub settings_page: Option<SettingsPageChrome<'a>>,
+}
+
+/// The settings page (`canvas::settings_page`), as the window draws it.
+pub struct SettingsPageChrome<'a> {
+    pub section: usize,
+    pub scroll: f32,
+    /// The host's rows: each a name and the value it is at.
+    pub entries: &'a [crate::document::LibraryEntry],
+    /// What each row is drawn as, parallel to `entries`.
+    pub controls: &'a [crate::canvas::SettingControl],
+    /// The line under each row's name, parallel to `entries`.
+    pub help: &'a [String],
+    /// Where the settings file is, or what went wrong writing it.
+    pub status: &'a str,
+    pub hover: Option<crate::canvas::SettingsPageHit>,
+    /// The row the arrow keys are on, if any.
+    pub focus: Option<usize>,
+    /// The slider being dragged, if one is.
+    pub dragging: Option<usize>,
 }
 
 /// The shortcuts sheet (`canvas::keybinds`), as the window draws it.
@@ -794,6 +817,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // obvious and its explanation most wanted.
     // Over everything else in the window, including the transport bar: a menu
     // drawn under the thing it was opened from is a menu you cannot read.
+    // The settings page goes under it: its drop-downs and its name prompt
+    // are menus, and they open over the page.
+    if let Some(page) = &chrome.settings_page {
+        draw_settings_page(scene, theme, chrome.labels, layout.window, page);
+    }
     draw_context_menu(
         scene,
         theme,
@@ -1049,6 +1077,417 @@ fn draw_keybinds(
         }
     }
     scene.pop_layer();
+}
+
+/// The settings page (`canvas::settings_page`): a scrim, a card, the section
+/// list down its left and the chosen section's rows on its right.
+///
+/// The report it answers is about telling things apart: *"everything looks
+/// like a button even when things are just labels"*. So words are drawn as
+/// words, on nothing — a name, and a muted line under it — and only the thing
+/// you touch has an edge: a button is a raised plate with a verb on it, a
+/// choice and a text field are sunken boxes, a slider is a groove with a knob,
+/// a switch is a pill. And every one of them answers the pointer: it lights
+/// when you are over it, and shows its new state the moment it changes.
+fn draw_settings_page(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    chrome: &SettingsPageChrome<'_>,
+) {
+    use crate::canvas::{
+        SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingControl, SettingsPageHit,
+    };
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect(scene, window, p.window.with_alpha(200));
+    let sections = crate::canvas::settings_sections(chrome.controls);
+    let l =
+        crate::canvas::settings_page_layout(window, m, &sections, chrome.section, chrome.scroll);
+    if l.frame.is_empty() {
+        return;
+    }
+    let radius = m.corner_radius * 2.0;
+    fill_rect_rounded(scene, l.frame, radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, radius, 1.0, p.border);
+    let centred_y = |r: Rect, h: f32| r.y + (r.height - h) / 2.0;
+
+    if let Some(text) = labels.get(SETTINGS_TITLE) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.title,
+            l.title.x,
+            centred_y(l.title, text.height),
+            p.text,
+        );
+    }
+    if !chrome.status.is_empty()
+        && let Some(text) = labels.get_small(chrome.status)
+    {
+        draw_text_clipped(
+            scene,
+            text,
+            l.status,
+            l.status.x,
+            centred_y(l.status, text.height),
+            p.text_muted,
+        );
+    }
+    if !l.close.is_empty() {
+        let lit = chrome.hover == Some(SettingsPageHit::Close);
+        fill_rect_rounded(
+            scene,
+            l.close,
+            m.corner_radius,
+            if lit {
+                p.accent.with_alpha(0x50)
+            } else {
+                p.panel_header
+            },
+        );
+        stroke_rect_rounded(
+            scene,
+            l.close,
+            m.corner_radius,
+            m.border_width,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(SETTINGS_CLOSE) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.close,
+                l.close.x + (l.close.width - text.width) / 2.0,
+                centred_y(l.close, text.height),
+                p.text,
+            );
+        }
+    }
+
+    // The section list: the chosen one lit with a bar on its left edge, the
+    // one under the pointer on a plate, the rest quiet.
+    for (at, (entry, section)) in l.nav.iter().zip(&sections).enumerate() {
+        let chosen = at == l.section;
+        let lit = chrome.hover == Some(SettingsPageHit::Section(at));
+        let plate = entry.inset(2.0);
+        if chosen {
+            fill_rect_rounded(scene, plate, m.corner_radius, p.accent.with_alpha(0x30));
+            fill_rect_rounded(
+                scene,
+                Rect::new(plate.x, plate.y + 4.0, 3.0, (plate.height - 8.0).max(0.0)),
+                1.5,
+                p.accent,
+            );
+        } else if lit {
+            fill_rect_rounded(scene, plate, m.corner_radius, p.panel_header);
+        }
+        let name = chrome
+            .entries
+            .get(section.heading)
+            .map_or("", |e| e.name.as_str());
+        if let Some(text) = labels.get(name) {
+            draw_text_clipped(
+                scene,
+                text,
+                plate,
+                plate.x + 12.0,
+                centred_y(plate, text.height),
+                if chosen || lit { p.text } else { p.text_muted },
+            );
+        }
+    }
+    // A rule between the list and the rows, so the two read as two columns.
+    if !l.body.is_empty() && !l.nav.is_empty() {
+        fill_rect(
+            scene,
+            Rect::new((l.body.x - 12.0).round(), l.body.y, 1.0, l.body.height),
+            p.grid_line,
+        );
+    }
+
+    if l.body.is_empty() {
+        return;
+    }
+    if l.rows.is_empty() {
+        if let Some(text) = labels.get_small(SETTINGS_EMPTY) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.body,
+                l.body.x + 12.0,
+                l.body.y + 12.0,
+                p.text_muted,
+            );
+        }
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            l.body.x as f64,
+            l.body.y as f64,
+            l.body.right() as f64,
+            l.body.bottom() as f64,
+        ),
+    );
+    for (at, row) in l.rows.iter().enumerate() {
+        let Some(entry) = chrome.entries.get(row.index) else {
+            continue;
+        };
+        let control = chrome
+            .controls
+            .get(row.index)
+            .cloned()
+            .unwrap_or(SettingControl::Heading);
+        let over_row =
+            matches!(chrome.hover, Some(SettingsPageHit::Row { index, .. }) if index == row.index);
+        let over_control = chrome.hover
+            == Some(SettingsPageHit::Row {
+                index: row.index,
+                on_control: true,
+            });
+        let focused = chrome.focus == Some(row.index) || chrome.dragging == Some(row.index);
+        if over_row || focused {
+            fill_rect_rounded(
+                scene,
+                row.rect,
+                m.corner_radius,
+                p.panel_header.with_alpha(0x90),
+            );
+        }
+        if at + 1 < l.rows.len() {
+            fill_rect(
+                scene,
+                Rect::new(
+                    row.rect.x + 12.0,
+                    (row.rect.bottom() + 2.0).round(),
+                    (row.rect.width - 24.0).max(0.0),
+                    1.0,
+                ),
+                p.grid_line.with_alpha(0x60),
+            );
+        }
+        if let Some(text) = labels.get(&entry.name) {
+            draw_text_clipped(
+                scene,
+                text,
+                row.label,
+                row.label.x,
+                centred_y(row.label, text.height),
+                p.text,
+            );
+        }
+        if let Some(help) = chrome.help.get(row.index)
+            && let Some(text) = labels.get_small(help)
+        {
+            draw_text_clipped(
+                scene,
+                text,
+                row.help,
+                row.help.x,
+                centred_y(row.help, text.height),
+                p.text_muted,
+            );
+        }
+        draw_settings_page_control(
+            scene,
+            theme,
+            labels,
+            &control,
+            &entry.detail,
+            row.control,
+            over_control,
+            focused,
+        );
+    }
+    scene.pop_layer();
+}
+
+/// One row's control on the settings page. `lit` while the pointer is on it;
+/// `focused` while the arrows are on it or it is being dragged.
+#[allow(clippy::too_many_arguments)]
+fn draw_settings_page_control(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    control: &crate::canvas::SettingControl,
+    value: &str,
+    area: Rect,
+    lit: bool,
+    focused: bool,
+) {
+    use crate::canvas::SettingControl;
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    if area.is_empty() {
+        return;
+    }
+    let edge = if lit || focused { p.accent } else { p.border };
+    let centred_y = |r: Rect, h: f32| r.y + (r.height - h) / 2.0;
+    // The value, right-aligned against `right`, in the small face.
+    let value_before = |scene: &mut Scene, right: f32, ink: Color| {
+        if value.is_empty() {
+            return;
+        }
+        if let Some(text) = labels.get_small(value) {
+            let room = Rect::new(area.x, area.y, (right - area.x).max(0.0), area.height);
+            let x = (right - text.width).max(area.x);
+            draw_text_clipped(scene, text, room, x, centred_y(room, text.height), ink);
+        }
+    };
+    match control {
+        SettingControl::Heading => {}
+        SettingControl::Button { caption } => {
+            if caption.is_empty() {
+                // Nothing to press: the value says why, as words.
+                value_before(scene, area.right(), p.text_muted);
+                return;
+            }
+            let Some(text) = labels.get_small(caption) else {
+                return;
+            };
+            let width = (text.width + 28.0).max(84.0).min(area.width);
+            let plate = Rect::new(area.right() - width, area.y, width, area.height);
+            fill_rect_rounded(
+                scene,
+                plate,
+                m.corner_radius,
+                if lit {
+                    p.accent.with_alpha(0x48)
+                } else {
+                    p.panel_header
+                },
+            );
+            stroke_rect_rounded(scene, plate, m.corner_radius, 1.0, edge);
+            draw_text_clipped(
+                scene,
+                text,
+                plate,
+                plate.x + (plate.width - text.width) / 2.0,
+                centred_y(plate, text.height),
+                p.text,
+            );
+            // What it is set to — a folder, "Installed" — beside the button.
+            value_before(scene, plate.x - 10.0, p.text);
+        }
+        SettingControl::Slider { fraction } => {
+            let groove = crate::canvas::setting_slider_groove(area, m);
+            if groove.is_empty() {
+                return;
+            }
+            let groove = Rect::new(groove.x, centred_y(area, 4.0), groove.width, 4.0);
+            fill_rect_rounded(scene, groove, 2.0, p.border);
+            let handle_x = crate::canvas::setting_slider_x_of(area, *fraction);
+            let filled = Rect::new(
+                groove.x,
+                groove.y,
+                (handle_x - groove.x).max(0.0),
+                groove.height,
+            );
+            if !filled.is_empty() {
+                fill_rect_rounded(scene, filled, 2.0, p.accent);
+            }
+            let knob = (area.height * 0.6).round().max(6.0);
+            let knob_rect = Rect::new(
+                (handle_x - knob / 2.0).clamp(area.x, (groove.right() - knob).max(area.x)),
+                centred_y(area, knob),
+                knob,
+                knob,
+            );
+            if lit || focused {
+                fill_rect_rounded(
+                    scene,
+                    knob_rect.inset(-3.0),
+                    (knob + 6.0) / 2.0,
+                    p.accent.with_alpha(0x40),
+                );
+            }
+            fill_rect_rounded(scene, knob_rect, knob / 2.0, p.text);
+            stroke_rect_rounded(scene, knob_rect, knob / 2.0, 1.0, edge);
+            value_before(scene, area.right(), p.text);
+        }
+        SettingControl::Switch { on } => {
+            let track_h = (area.height * 0.7).round().max(8.0);
+            let track_w = (track_h * 1.9).round().min(area.width);
+            let track = Rect::new(
+                area.right() - track_w,
+                centred_y(area, track_h),
+                track_w,
+                track_h,
+            );
+            let r = track_h / 2.0;
+            fill_rect_rounded(scene, track, r, if *on { p.accent } else { p.border });
+            if lit || focused {
+                stroke_rect_rounded(scene, track.inset(-2.0), r + 2.0, 1.0, p.accent);
+            }
+            let knob = track_h - 4.0;
+            let knob_x = if *on {
+                track.right() - knob - 2.0
+            } else {
+                track.x + 2.0
+            };
+            fill_rect_rounded(
+                scene,
+                Rect::new(knob_x, track.y + 2.0, knob, knob),
+                knob / 2.0,
+                if *on { p.panel } else { p.text_muted },
+            );
+            value_before(
+                scene,
+                track.x - 10.0,
+                if *on { p.text } else { p.text_muted },
+            );
+        }
+        SettingControl::Choice { .. } | SettingControl::Text { .. } => {
+            // A sunken box holding the value, with the mark of what a press
+            // does at its right: a wedge drops down, a pencil types.
+            fill_rect_rounded(scene, area, m.corner_radius, p.window);
+            stroke_rect_rounded(scene, area, m.corner_radius, 1.0, edge);
+            let side = (area.height * 0.45).round();
+            let mark = Rect::new(
+                area.right() - side - 10.0,
+                centred_y(area, side),
+                side,
+                side,
+            );
+            let icon = if matches!(control, SettingControl::Choice { .. }) {
+                crate::icon::Icon::Chevron
+            } else {
+                crate::icon::Icon::Pencil
+            };
+            draw_icon(
+                scene,
+                icon,
+                mark,
+                if lit || focused {
+                    p.accent
+                } else {
+                    p.text_muted
+                },
+            );
+            if let Some(text) = labels.get_small(value) {
+                let room = Rect::new(
+                    area.x + 10.0,
+                    area.y,
+                    (mark.x - 8.0 - area.x - 10.0).max(0.0),
+                    area.height,
+                );
+                draw_text_clipped(
+                    scene,
+                    text,
+                    room,
+                    room.x,
+                    centred_y(room, text.height),
+                    p.text,
+                );
+            }
+        }
+    }
 }
 
 /// The transient banner: a rounded bar with the note, and — when the action can
@@ -7966,7 +8405,7 @@ fn draw_setting_control(
         return;
     }
     match control {
-        SettingControl::Heading | SettingControl::Button => {}
+        SettingControl::Heading | SettingControl::Button { .. } => {}
         SettingControl::Slider { fraction } => {
             let groove = crate::canvas::setting_slider_groove(area, m);
             if groove.is_empty() {

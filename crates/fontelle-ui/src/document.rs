@@ -1486,6 +1486,13 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// One line per settings row saying what it is for, parallel to
+    /// [`settings`](Self::settings) — what the settings page writes under each
+    /// row's name. Empty for a heading.
+    fn setting_help(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Sets slider row `index` to `fraction` of its groove (0..=1), as a drag
     /// does. The host maps the fraction back to the row's own units.
     fn set_setting_fraction(&mut self, index: usize, fraction: f32) {
