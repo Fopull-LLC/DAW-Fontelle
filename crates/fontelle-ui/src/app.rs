@@ -2284,7 +2284,10 @@ impl WindowApp {
             menu_beside: None,
             menu_filter: crate::canvas::TextEntry::default(),
             clipboard_text: crate::canvas::TextClipboard::new(
-                options.document.as_ref().and_then(|doc| doc.system_clipboard()),
+                options
+                    .document
+                    .as_ref()
+                    .and_then(|doc| doc.system_clipboard()),
             ),
             search_entry: crate::canvas::TextEntry::default(),
             rename_entry: crate::canvas::TextEntry::default(),

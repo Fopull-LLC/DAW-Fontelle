@@ -19,6 +19,68 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-29 (evening) — a Fedora user's first go.** From a Reddit
+thread: *"Every time I log out the instrument resets, this is when I save.
+Recording is so weird. One minute is deletes the notes after the other it
+keeps them, along with that it won't let me record onto another track ... I
+see your working on a multiplayer function, well it won't let me use that
+either."* Five read-only investigations (one per report, one Fedora
+first-run audit, one on a 0.15.0 Windows log), then the fixes.
+
+- **The instrument resets** (`plugin_hosting.rs`, `welcome.rs`). The
+  document never heard a CLAP plugin change its own values: output events
+  were thrown away, nothing asked. A save wrote the stale list beside the
+  state and a reopen put it back **over** the state. Now the processor
+  hears `ParamValue` output events (`ParamValues::hear`, never over a value
+  the studio set and has not sent), a snapshot asks the plugin (CLAP,
+  VST 3, bridged; LV2 has no call for it), and a change the plugin made
+  itself marks the project unsaved (`take_changes_heard`, polled in
+  `tick_plugin_editors`). The test sine turns its own level on keys 1 and
+  2, reported and not. Also: a launch lands on the start menu over a blank
+  Untitled studio and Escape went into it — **Enter reopens the newest
+  recent project** and the card says which (`welcome_enter`/`welcome_hint`).
+- **Recording** (`live_take.rs`, `recording.rs` ×2). Ending a take with
+  the record button disarmed and threw it away (Stop kept it) —
+  `transport::keeps_take`. A take was counted from whichever clip was open:
+  before it dropped, after it silent, none open / an audio block clicked
+  refused — each reported as "recorded N notes". A take now goes into the
+  open clip only if it began over it, else into a clip of its own (whole
+  bars, the open clip's row if free, else a free row, else a new one); the
+  count is what was kept, and notes past a clip's end are *said*. A key
+  held across a loop seam was a one-tick sliver (`notes_from_looped_capture`
+  ends it at the seam). The take is read by the tempo playback uses.
+- **Collaboration** (`collab.rs`, `quic_unreached.rs`). The relay was up;
+  the failures were local. With no projects folder Share failed to save
+  after two prompts and said so only in the status line; Join refused after
+  the code — both (and New Project) ask for the folder first
+  (`ensure_projects_dir`). A join that reached nobody said "the connection
+  to the host was lost — your copy is still open"; it is worded by stage
+  now. A QUIC handshake **timeout** was read as a certificate fault (waited
+  twice, or blamed a certificate). Hosting gave up at 3 s, before the
+  relay's 5 s deadline. The two name prompts sharing asks had no visible
+  title once seeded (the field covers the heading) — the title is its own
+  row now, and a seed is selected.
+- **Fedora** (a worktree agent's seven commits, cherry-picked): plugins in
+  `/usr/lib64/{clap,lv2,vst3}` are found; the desktop portal's file dialog
+  when neither kdialog nor zenity is there (blocking `dbus`, already in the
+  tree); pickers start at `$HOME`, not a literal `~`; Ctrl+V pastes the
+  system clipboard (and copy writes it); the output falls back to the
+  device's buffer size when 128 is refused; a start that fails shows a box;
+  a second upgrade in one run installs to the right path.
+- **Also:** the plugin picker names the format when a plugin's CLAP and LV2
+  would read the same.
+- **The 0.15.0 Windows log** (`no clip ClipId(null)` ×18): notes drawn into
+  a new project before any clip existed — fixed in v0.16.0; the take path
+  it also reached is fixed above.
+- **Open:** file dialogs still block the UI thread (GNOME offers "Force
+  Quit" after ~5 s; ten call sites, each using the answer at once — a
+  pending-dialog rework). Logout (SIGTERM) loses *unsaved* work: the
+  minute's backup is written but nothing offers it back. The roll shows only
+  the selected instrument's notes, so a take on another instrument in the
+  same clip "hides" the first — the multi-instrument rule, not changed.
+  kdialog's save filter is always `*.mid`. Plugin editors get scale 1.0 on
+  HiDPI.
+
 **As of 2026-09-29 (later) — hosted plugins in an arrangement, and in the
 preset system.** *"i tried ob-xf and it was initially working but as soon as
 i tried actually encorperating it in my arrangement it would just stop
@@ -103,8 +165,8 @@ of like how flx does"*.
 - **Open:** Odin2 (CLAP) crashes in its own `process` on block one;
   Vaporizer2 corrupts the heap at teardown (both in the real sweeps, skipped
   or narrowed). The strip is 32 *physical* px on Windows HiDPI (the window's
-  scale is known only after it is made). The picker lists OB-Xf's CLAP and
-  LV2 builds as two identical rows. A plugin's library is in the browser
+  scale is known only after it is made). (The picker's two identical OB-Xf
+  rows: fixed that evening.) A plugin's library is in the browser
   once that plugin has been opened this session, not for every installed
   one. On `:99` with no window manager the studio is not raised in front of
   the plugin when the name is pressed.
