@@ -682,12 +682,16 @@ fn a_plugin_reports_the_latency_it_declares() {
     let mut host = host();
     // The fixture gain declares the extension and answers with a fixed
     // number of samples, so a host that never asked is told apart from one
-    // that did.
-    let plugin = gain(&mut host);
+    // that did — and answers only **once activated**, which is when CLAP
+    // lets a host ask (Surge XT complains aloud otherwise). The studio reads
+    // it after `ensure` has activated the plugin.
+    let mut plugin = gain(&mut host);
+    let processor = plugin.activate(48_000.0, 256).expect("it activates");
     assert_eq!(
         plugin.latency_samples(),
         fontelle_testplug::GAIN_LATENCY_SAMPLES
     );
+    plugin.deactivate(processor);
 
     // The sine declares no latency extension at all.
     let sine = sine(&mut host);

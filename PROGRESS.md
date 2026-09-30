@@ -19,6 +19,68 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-30 (later) — the Fedora user's second round: crash logs,
+and "vital, serum and surge".** *"instrument plugins now keep the preset
+saved when I log back in, But it might be worth looking into more advanced
+synths like vital, serum and surge as I'm still experiencing problems with
+those."* Four crash logs came with it (`~/Downloads/kyle willcoxson crash
+logs 9 30 26/`): all **0.17.0** (before the 0.18.0 plugin fixes), all
+SIGSEGV, all *"module: (this platform does not say)"*, four fresh
+`Untitled` sessions inside eight minutes. The session logs were not sent.
+
+- **The Linux crash report names the module now** (`crashlog.rs`,
+  `tests/crash_native.rs`). The handler reads the faulting instruction off
+  the `ucontext`, finds its file in `/proc/self/maps` with `open`/`read`
+  only (`MapsScan`: fixed buffers, no allocation — `dladdr` takes the
+  loader's lock, which the fault may hold), and writes the thread's name
+  (`prctl`) and the fault address. On x86_64 and aarch64; macOS still says
+  it does not say.
+- **A re-read echoed stale values back into the plugin** (`param.rs`
+  `ParamValues::adopt`, `tests/own_presets.rs`). `reread_params` — after a
+  CLAP preset load, after **every state load** (so every project reopen),
+  and every frame for a bridged plugin with its editor open — wrote with
+  `set`, which marks a value to send. A plugin that queues a patch or a
+  state and swaps it in on its next block had the old one read and put
+  back over the new. Now adopted: kept, not sent. The test gain grew a
+  `queued` preset that behaves that way and fails without the fix. **The
+  real Surge was not rescued by it**: driven the studio's way (audio on its
+  own thread, preset from the main one, snapshot, close, reopen, restore),
+  it came back with 0 of 775 parameters moved with and without the fix.
+- **`request_callback` was recorded and never answered**
+  (`HostedPlugin::service_main_thread`, called every frame for every loaded
+  plugin from `tick_plugin_editors`). The test gain's `deferred` preset
+  lands only in `on_main_thread`.
+- **CLAP latency is asked after `activate`**, the only time the spec allows
+  (Surge printed *"It is wrong to query the latency before the plugin is
+  activated"*). The studio already read it after `ensure` activates.
+- **A soak of every installed instrument**
+  (`real_plugins.rs::every_installed_instrument_survives_a_session`, each in
+  a child process so a crash names its plugin): chords with the transport
+  rolling, bends and the mod wheel, odd block sizes, sixteen loop-seam
+  resets, the plugin's own preset, save → close → reopen compared by level,
+  zero crossings and every parameter, and a rate change. **The test is one
+  thread and the studio is two**: loaded from the thread that also runs its
+  blocks, Surge's CLAP preset went silent for good and its state drifted;
+  from a separate audio thread, as in the studio, every preset played and
+  came back whole. So the soak's Surge CLAP failure is the harness, not the
+  studio — read its preset step with that in mind. Whole machine
+  (2026-09-30): 30 instruments pass; 54 samplers and kits are silent with
+  nothing loaded; Surge XT VST 3 and Vitalium pass; **crashes: Odin2
+  (CLAP, known), synthv1 and padthv1 (LV2, SIGSEGV — padthv1 put out NaN
+  first), Calf Wavetable (SIGABRT), Vaporizer2 (killed)** — not looked into.
+  Round trips that came back different, not looked into either: ADLplug,
+  OPNplug, the cellular automaton synth, MDA JX10, Calf Organ, DrumSynth,
+  KR-106 (CLAP).
+- **Kyle's Surge and Vital problems were not reproduced.** What is needed
+  from him: which format he loads (CLAP, VST 3, LV2), whether he is on
+  0.18.0, what "problems" looks like, and the session logs beside the crash
+  reports (the Logs folder link on the start menu).
+- **Not testable here without money or a password:** Serum (paid; on Linux
+  it can only arrive through yabridge — installing `yabridge` needs root,
+  and a free Windows synth through it would test the same path), Vital's
+  own build (free, behind an account at vital.audio; only the 2021 LV2
+  Vitalium is installed).
+
 **As of 2026-09-30 — patch cables in the mixer.** *"right now theres no
 visual indicator at a glance for mixer track routing. in fl studio, theres a
 wire connecting tracks to where they are being sent to, with a knob for how

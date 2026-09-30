@@ -69,12 +69,32 @@ fn a_fault_in_native_code_writes_a_report_and_the_next_launch_calls_it_a_crash()
         "SIGSEGV"
     };
     assert!(text.contains(named), "and what the fault was:\n{text}");
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "linux")) {
         // Which binary the faulting address is inside — here, the test
         // itself; in the field, a plugin's DLL or Fontelle.
+        //
+        // On Linux too, now: four reports from a Fedora user, all SIGSEGV
+        // and all "module: (this platform does not say)", were four
+        // reports that could not say whether the synth he was trying had
+        // crashed or we had.
         assert!(
-            text.contains("crash_native"),
+            text.contains("crash_native") && !text.contains("does not say"),
             "and which module it was in:\n{text}"
+        );
+    }
+    if cfg!(target_os = "linux") {
+        // Which thread: the audio thread, the window's, or a plugin's own.
+        // The kernel keeps fifteen bytes of a thread's name.
+        assert!(
+            text.contains("thread:    a_fault_in_nat"),
+            "and which thread:\n{text}"
+        );
+        // Where: the instruction, and the memory it reached for — here, a
+        // read of address zero.
+        assert!(text.contains("code at:   0x"), "and where:\n{text}");
+        assert!(
+            text.contains("fault at:  0x0000000000000000"),
+            "and what it touched:\n{text}"
         );
     }
 
@@ -85,4 +105,46 @@ fn a_fault_in_native_code_writes_a_report_and_the_next_launch_calls_it_a_crash()
         "a fault is a crash: {verdict:?}"
     );
     crashlog::end(&dir);
+}
+
+/// The lookup the handler makes, on a copy of `/proc/self/maps`: which file
+/// an address is mapped from. Pure, so its edges are tested here rather than
+/// by crashing.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_address_is_found_in_the_file_it_is_mapped_from() {
+    let maps = b"\
+55d0a0000000-55d0a0100000 r-xp 00000000 08:01 1234 /usr/bin/fontelle
+55d0a0100000-55d0a0200000 rw-p 00000000 00:00 0 [heap]
+7f0010000000-7f0010800000 r-xp 00010000 08:01 99 /home/k/.vst3/Vital.vst3/Contents/x86_64-linux/Vital.so
+7f0010800000-7f0010900000 rw-p 00000000 00:00 0
+7f0020000000-7f0020001000 r-xp 00000000 08:01 7 /usr/lib/a path with spaces.so
+";
+    let at = |pc: usize| crashlog::module_in_maps(maps, pc);
+    assert_eq!(
+        at(0x7f0010000040).as_deref(),
+        Some("/home/k/.vst3/Vital.vst3/Contents/x86_64-linux/Vital.so")
+    );
+    assert_eq!(
+        at(0x55d0a0000000).as_deref(),
+        Some("/usr/bin/fontelle"),
+        "start is inside"
+    );
+    assert_eq!(at(0x55d0a0100000).as_deref(), Some("[heap]"), "end is not");
+    assert_eq!(at(0x7f0010800010), None, "anonymous memory has no file");
+    assert_eq!(at(0x1000), None, "nor does nothing at all");
+    assert_eq!(
+        at(0x7f0020000000).as_deref(),
+        Some("/usr/lib/a path with spaces.so")
+    );
+    // Fed in pieces, as the handler reads it — a line split across two reads
+    // is still one line.
+    let mut scan = crashlog::MapsScan::new(0x7f0010000040);
+    for chunk in maps.chunks(7) {
+        scan.feed(chunk);
+    }
+    assert_eq!(
+        std::str::from_utf8(scan.found().unwrap()).unwrap(),
+        "/home/k/.vst3/Vital.vst3/Contents/x86_64-linux/Vital.so"
+    );
 }

@@ -369,6 +369,115 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// Which file an address is mapped from, read out of `/proc/self/maps` a
+/// piece at a time.
+///
+/// For the fault handler, which may not allocate: fixed buffers, fed whatever
+/// `read` returns, a line kept across reads. A line longer than the buffer
+/// is skipped rather than misread — a path that long is a report that says
+/// "not in a file", not one that names the wrong one.
+#[cfg(target_os = "linux")]
+pub struct MapsScan {
+    pc: usize,
+    line: [u8; 512],
+    len: usize,
+    overflow: bool,
+    found: [u8; 512],
+    found_len: Option<usize>,
+}
+
+#[cfg(target_os = "linux")]
+impl MapsScan {
+    pub fn new(pc: usize) -> Self {
+        Self {
+            pc,
+            line: [0; 512],
+            len: 0,
+            overflow: false,
+            found: [0; 512],
+            found_len: None,
+        }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte == b'\n' {
+                self.finish_line();
+            } else if self.len < self.line.len() {
+                self.line[self.len] = byte;
+                self.len += 1;
+            } else {
+                self.overflow = true;
+            }
+        }
+    }
+
+    /// The last line, when the text did not end in a newline.
+    pub fn finish(&mut self) {
+        if self.len > 0 {
+            self.finish_line();
+        }
+    }
+
+    /// The file's path, if the address is in one.
+    pub fn found(&self) -> Option<&[u8]> {
+        self.found_len.map(|len| &self.found[..len])
+    }
+
+    fn finish_line(&mut self) {
+        let (len, overflow) = (self.len, self.overflow);
+        self.len = 0;
+        self.overflow = false;
+        if overflow || self.found_len.is_some() {
+            return;
+        }
+        // `start-end perms offset dev inode   path`, the path being the
+        // rest of the line and allowed spaces of its own.
+        let line = &self.line[..len];
+        let mut fields = line.splitn(6, |b| *b == b' ');
+        let Some(range) = fields.next() else {
+            return;
+        };
+        let mut ends = range.splitn(2, |b| *b == b'-');
+        let (Some(start), Some(end)) = (ends.next().and_then(hex_of), ends.next().and_then(hex_of))
+        else {
+            return;
+        };
+        if !(start..end).contains(&self.pc) {
+            return;
+        }
+        let path = fields.nth(4).unwrap_or(&[]);
+        let path = match path.iter().position(|b| *b != b' ') {
+            Some(first) => &path[first..],
+            None => return,
+        };
+        let len = path.len().min(self.found.len());
+        self.found[..len].copy_from_slice(&path[..len]);
+        self.found_len = Some(len);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn hex_of(digits: &[u8]) -> Option<usize> {
+    if digits.is_empty() || digits.len() > 16 {
+        return None;
+    }
+    digits.iter().try_fold(0usize, |value, digit| {
+        let d = (*digit as char).to_digit(16)?;
+        Some(value << 4 | d as usize)
+    })
+}
+
+/// [`MapsScan`] over a whole copy of the maps, for what is not a handler.
+#[cfg(target_os = "linux")]
+pub fn module_in_maps(maps: &[u8], pc: usize) -> Option<String> {
+    let mut scan = MapsScan::new(pc);
+    scan.feed(maps);
+    scan.finish();
+    scan.found()
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+}
+
 /// Writing a report when native code faults.
 ///
 /// Installed by [`begin`] beside the panic hook. **Chained, never
@@ -400,8 +509,14 @@ mod native {
     /// bytes to a file.
     struct Prepared {
         path: CString,
-        reports: Vec<(libc::c_int, Vec<u8>)>,
+        /// Per signal, the report up to where the module is named and the
+        /// rest after it: on Linux the handler fills in the module, the
+        /// thread and the addresses between the two.
+        reports: Vec<(libc::c_int, Vec<u8>, Vec<u8>)>,
     }
+
+    /// Stands where the module goes while the report is prepared.
+    const MODULE_HERE: &str = "\u{1}module\u{1}";
 
     /// The current run's, swapped whole when `begin` is called again.
     static PREPARED: AtomicPtr<Prepared> = AtomicPtr::new(std::ptr::null_mut());
@@ -417,8 +532,14 @@ mod native {
         let reports = SIGNALS
             .iter()
             .map(|(signal, what)| {
-                let text = super::native_report_text(what, None, marker);
-                (*signal, text.into_bytes())
+                if cfg!(target_os = "linux") {
+                    let text = super::native_report_text(what, Some(MODULE_HERE), marker);
+                    let (head, tail) = text.split_once(MODULE_HERE).unwrap_or((&text, ""));
+                    (*signal, head.as_bytes().to_vec(), tail.as_bytes().to_vec())
+                } else {
+                    let text = super::native_report_text(what, None, marker);
+                    (*signal, text.into_bytes(), Vec::new())
+                }
             })
             .collect();
         // Leaked on purpose: a handler may read it at any moment for the rest
@@ -449,15 +570,16 @@ mod native {
     /// and lets the fault happen again under it.
     extern "C" fn on_fault(
         signal: libc::c_int,
-        _info: *mut libc::siginfo_t,
-        _context: *mut libc::c_void,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
     ) {
-        // SAFETY: only async-signal-safe calls (`open`, `write`, `close`,
-        // `sigaction`, `raise`) on data prepared before any fault.
+        // SAFETY: only async-signal-safe calls (`open`, `read`, `write`,
+        // `close`, `prctl`, `sigaction`, `raise`) on data prepared before
+        // any fault, and on the kernel's own `siginfo`/`ucontext`.
         unsafe {
             let prepared = PREPARED.load(Ordering::Acquire);
             if let Some(prepared) = prepared.as_ref()
-                && let Some((_, text)) = prepared.reports.iter().find(|(s, _)| *s == signal)
+                && let Some((_, head, tail)) = prepared.reports.iter().find(|(s, ..)| *s == signal)
             {
                 let fd = libc::open(
                     prepared.path.as_ptr(),
@@ -465,7 +587,19 @@ mod native {
                     0o644,
                 );
                 if fd >= 0 {
-                    libc::write(fd, text.as_ptr().cast(), text.len());
+                    let put = |bytes: &[u8]| {
+                        libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+                    };
+                    put(head);
+                    #[cfg(target_os = "linux")]
+                    if !tail.is_empty() {
+                        where_it_was(signal, info, context, &put);
+                        // The tail opens with the blank line the module's
+                        // line ended in; ours ended in their own.
+                        put(&tail[1..]);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = (info, context, tail);
                     libc::close(fd);
                 }
             }
@@ -481,6 +615,101 @@ mod native {
                 libc::raise(signal);
             }
         }
+    }
+
+    /// The module, the thread and the addresses, written straight into the
+    /// report: which file the faulting instruction is in (from
+    /// `/proc/self/maps`, read with `open` and `read` — `dladdr` takes the
+    /// loader's lock, which the fault may be holding), the thread's name,
+    /// and for a memory fault the address it reached for.
+    ///
+    /// Four reports from a Fedora user said "module: (this platform does not
+    /// say)", and so could not say whether the synth he was trying had
+    /// crashed or we had.
+    #[cfg(target_os = "linux")]
+    unsafe fn where_it_was(
+        signal: libc::c_int,
+        info: *mut libc::siginfo_t,
+        context: *mut libc::c_void,
+        put: &dyn Fn(&[u8]),
+    ) {
+        // SAFETY: the kernel hands a handler installed with `SA_SIGINFO` a
+        // valid `siginfo_t` and `ucontext_t`; both are only read.
+        unsafe {
+            let pc = code_address(context);
+            let mut scan = super::MapsScan::new(pc);
+            let maps = libc::open(
+                c"/proc/self/maps".as_ptr(),
+                libc::O_RDONLY | libc::O_CLOEXEC,
+            );
+            if pc != 0 && maps >= 0 {
+                let mut buffer = [0u8; 1024];
+                loop {
+                    let n = libc::read(maps, buffer.as_mut_ptr().cast(), buffer.len());
+                    if n <= 0 {
+                        break;
+                    }
+                    scan.feed(&buffer[..n as usize]);
+                }
+                scan.finish();
+            }
+            if maps >= 0 {
+                libc::close(maps);
+            }
+            put(scan
+                .found()
+                .unwrap_or(b"(not in any file \xe2\x80\x94 memory made at run time)"));
+            put(b"\nthread:    ");
+            let mut name = [0u8; 16];
+            if libc::prctl(libc::PR_GET_NAME, name.as_mut_ptr()) == 0 {
+                let len = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+                put(&name[..len]);
+            }
+            put(b"\ncode at:   ");
+            put(&hex(pc));
+            if matches!(signal, libc::SIGSEGV | libc::SIGBUS) && !info.is_null() {
+                put(b"\nfault at:  ");
+                put(&hex((*info).si_addr() as usize));
+            }
+            put(b"\n");
+        }
+    }
+
+    /// Where the faulting instruction is, from the saved registers.
+    #[cfg(target_os = "linux")]
+    unsafe fn code_address(context: *mut libc::c_void) -> usize {
+        if context.is_null() {
+            return 0;
+        }
+        // SAFETY: see `where_it_was`.
+        unsafe {
+            let context = &*(context as *const libc::ucontext_t);
+            #[cfg(target_arch = "x86_64")]
+            {
+                context.uc_mcontext.gregs[libc::REG_RIP as usize] as usize
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                context.uc_mcontext.pc as usize
+            }
+            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+            {
+                let _ = context;
+                0
+            }
+        }
+    }
+
+    /// `0x` and sixteen hex digits, without formatting machinery.
+    #[cfg(target_os = "linux")]
+    fn hex(value: usize) -> [u8; 18] {
+        let mut out = [b'0'; 18];
+        out[1] = b'x';
+        for (i, slot) in out[2..].iter_mut().enumerate() {
+            let digit = (value >> ((15 - i) * 4)) & 0xf;
+            *slot = b"0123456789abcdef"[digit];
+        }
+        out
     }
 }
 

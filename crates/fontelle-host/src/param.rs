@@ -133,6 +133,25 @@ impl ParamValues {
         true
     }
 
+    /// What the plugin says a parameter is **after it has read a preset or a
+    /// state itself**: kept, and not sent back.
+    ///
+    /// Unlike [`hear`](Self::hear), over a value the studio set and has not
+    /// sent — the plugin has just loaded something newer than that. Unlike
+    /// [`set`](Self::set), unmarked: Surge XT queues a patch and swaps it in
+    /// on its next block, so what is read straight after the call is the
+    /// *old* patch, and marking it put the old patch's values back over the
+    /// new one — a Surge preset that came back silent, and a saved song that
+    /// reopened as a different sound.
+    pub fn adopt(&self, id: u32, value: f64) -> bool {
+        let Some(slot) = self.slots.iter().find(|slot| slot.id == id) else {
+            return false;
+        };
+        slot.value.store(value.to_bits(), Ordering::Relaxed);
+        slot.moved.store(false, Ordering::Release);
+        true
+    }
+
     /// **RT-safe.** What the plugin says a parameter is — a knob turned in
     /// its own window, a preset picked in its own browser — written without
     /// marking it, because sending the plugin its own value back is an echo.

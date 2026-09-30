@@ -1708,7 +1708,7 @@ impl Vst3Plugin {
     /// Reads every parameter back off the controller onto the wire.
     pub(crate) fn reread_params(&self, values: &ParamValues) {
         for id in &self.ids {
-            values.set(*id, self.get_param(*id));
+            values.adopt(*id, self.get_param(*id));
         }
     }
 

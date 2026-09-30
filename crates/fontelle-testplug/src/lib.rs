@@ -87,15 +87,33 @@ pub struct GainShared {
     /// sampler's file, OB-Xf's patch name), and a host that thinks a preset
     /// is its parameters loses it. Scales the output like the gain.
     trim: AtomicU32,
+    /// A gain a preset has asked for and the next block will apply — NaN
+    /// when there is none. **Surge XT loads a patch this way**: its
+    /// `preset-load` queues the patch and the audio thread swaps it in, so a
+    /// host that reads the parameters back straight after the call reads the
+    /// patch that was there before.
+    pending_gain: AtomicU32,
+    /// Whether it has been activated — see its latency.
+    activated: std::sync::atomic::AtomicBool,
 }
 
 impl PluginShared<'_> for GainShared {}
 
 pub struct GainMain<'a> {
     shared: &'a GainShared,
+    host: HostMainThreadHandle<'a>,
+    /// A preset asked for that the plugin finishes only in `on_main_thread`
+    /// — see `DEFERRED_PRESET`.
+    deferred: Option<f32>,
 }
 
-impl<'a> PluginMainThread<'a, GainShared> for GainMain<'a> {}
+impl<'a> PluginMainThread<'a, GainShared> for GainMain<'a> {
+    fn on_main_thread(&mut self) {
+        if let Some(gain) = self.deferred.take() {
+            store(&self.shared.pending_gain, gain);
+        }
+    }
+}
 
 pub struct GainPlugin;
 
@@ -109,8 +127,21 @@ pub struct GainPlugin;
 pub const GAIN_LATENCY_SAMPLES: u32 = 137;
 
 impl clack_extensions::latency::PluginLatencyImpl for GainMain<'_> {
+    /// Only once activated: CLAP's latency call is legal while the plugin is
+    /// being activated or is active, and Surge XT says so aloud — *"It is
+    /// wrong to query the latency before the plugin is activated"* — because
+    /// before it knows the rate it cannot know the answer. Asked earlier,
+    /// this says nothing, the way a plugin that means it would.
     fn get(&mut self) -> u32 {
-        GAIN_LATENCY_SAMPLES
+        if self
+            .shared
+            .activated
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            GAIN_LATENCY_SAMPLES
+        } else {
+            0
+        }
     }
 }
 
@@ -142,14 +173,20 @@ impl DefaultPluginFactory for GainPlugin {
             gain: AtomicU32::new(1.0f32.to_bits()),
             invert: AtomicU32::new(0.0f32.to_bits()),
             trim: AtomicU32::new(1.0f32.to_bits()),
+            pending_gain: AtomicU32::new(f32::NAN.to_bits()),
+            activated: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
     fn new_main_thread<'a>(
-        _host: HostMainThreadHandle<'a>,
+        host: HostMainThreadHandle<'a>,
         shared: &'a GainShared,
     ) -> Result<GainMain<'a>, PluginError> {
-        Ok(GainMain { shared })
+        Ok(GainMain {
+            shared,
+            host,
+            deferred: None,
+        })
     }
 }
 
@@ -168,6 +205,9 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
         shared: &'a GainShared,
         config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
+        shared
+            .activated
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(Self {
             shared,
             key: vec![0.0; config.max_frames_count as usize],
@@ -180,6 +220,20 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // A queued preset goes in first, then the block's events — Surge's
+        // order, and the one that shows a host echoing stale values back.
+        let pending = load(&self.shared.pending_gain);
+        if !pending.is_nan() {
+            store(&self.shared.gain, pending);
+            store(&self.shared.pending_gain, f32::NAN);
+            let _ = events.output.try_push(ParamValueEvent::new(
+                0,
+                ClapId::new(0),
+                clack_plugin::events::Pckn::match_all(),
+                f64::from(pending),
+                Default::default(),
+            ));
+        }
         for event in events.input {
             if let Some(value) = event.as_event::<ParamValueEvent>() {
                 take_gain_param(self.shared, value);
@@ -422,6 +476,17 @@ impl PluginStateImpl for GainMain<'_> {
 /// host that loaded only parameters would miss.
 const OWN_PRESETS: [(&CStr, &CStr, f32); 2] = [(c"Loud", c"loud", 2.0), (c"Quiet", c"quiet", 0.25)];
 
+/// And one that sets a **parameter**, queued for the next block — see
+/// `GainShared::pending_gain`. Loaded by key; not in the listing, so the
+/// listing's own test is unchanged.
+const QUEUED_PRESET: (&CStr, f32) = (c"queued", 0.5);
+
+/// One the plugin finishes only when the host calls it back on the main
+/// thread (`request_callback` → `on_main_thread`), as CLAP lets a plugin
+/// defer work — a host that records the request and never answers it has a
+/// preset that never lands.
+const DEFERRED_PRESET: (&CStr, f32) = (c"deferred", 0.25);
+
 impl clack_extensions::preset_discovery::PluginPresetLoadImpl for GainMain<'_> {
     fn load_from_location(
         &mut self,
@@ -431,6 +496,15 @@ impl clack_extensions::preset_discovery::PluginPresetLoadImpl for GainMain<'_> {
         use clack_extensions::preset_discovery::prelude::Location;
         if location != Location::Plugin {
             return Err(PluginError::Message("not one of the gain's presets"));
+        }
+        if load_key == Some(DEFERRED_PRESET.0) {
+            self.deferred = Some(DEFERRED_PRESET.1);
+            self.host.request_callback();
+            return Ok(());
+        }
+        if load_key == Some(QUEUED_PRESET.0) {
+            store(&self.shared.pending_gain, QUEUED_PRESET.1);
+            return Ok(());
         }
         let (_, _, trim) = OWN_PRESETS
             .iter()

@@ -942,6 +942,16 @@ impl PluginRack {
         any
     }
 
+    /// Answers every loaded plugin that asked to be called back on the main
+    /// thread — CLAP's `request_callback`, which this studio recorded and
+    /// never answered. Every plugin, not only those with an editor open:
+    /// what a plugin defers to that call is not only drawing.
+    pub fn service_main_thread(&mut self) {
+        for live in self.live.values_mut() {
+            live.plugin.service_main_thread();
+        }
+    }
+
     /// Drives every open editor for one frame, and answers whether any is
     /// still open — which is what tells the window to keep waking up.
     pub fn tick_editors(&mut self) -> bool {

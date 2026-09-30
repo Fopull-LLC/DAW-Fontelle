@@ -94,6 +94,87 @@ fn a_clap_plugins_own_preset_is_loaded_by_the_plugin() {
     assert_eq!(trim_of(&mut plugin), 0.25);
 }
 
+/// > *"it might be worth looking into more advanced synths like vital, serum
+/// > and surge as I'm still experiencing problems with those"*
+///
+/// Surge XT queues a preset and swaps it in on the next block. Read straight
+/// after the call, its parameters are the **old** patch's — and the host
+/// marked every one of them to be sent, so the next block put the old patch's
+/// values back over the new one. A soak of the real Surge came back silent
+/// with a hybrid patch saved. A preset read back is what the plugin said, not
+/// something to tell it.
+#[test]
+fn a_preset_the_plugin_queues_is_not_overwritten_by_the_values_read_before_it_landed() {
+    let (key, _) = clap_gain();
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    let queued = fontelle_host::OwnPreset {
+        name: "Queued".into(),
+        category: String::new(),
+        source: OwnPresetSource::Clap {
+            location: None,
+            load_key: Some("queued".into()),
+        },
+    };
+    plugin
+        .load_own_preset_with(&mut processor, &queued)
+        .expect("the gain takes it");
+    let input = vec![vec![1.0f32; 64]; 2];
+    let mut output = vec![vec![0.0f32; 64]; 2];
+    for _ in 0..4 {
+        processor.process_effect(&input, &mut output, 64);
+    }
+    assert!(
+        (output[0][63] - 0.5).abs() < 1e-4,
+        "the preset's gain is what plays: {}",
+        output[0][63]
+    );
+    let gain_id = plugin.params()[0].id;
+    assert_eq!(
+        plugin.values().get(gain_id),
+        Some(0.5),
+        "and what the studio's knob says, once the plugin has said so"
+    );
+    plugin.deactivate(processor);
+}
+
+/// CLAP's `request_callback`: a plugin asks, and the host calls its
+/// `on_main_thread` soon after, on the main thread. This host recorded the
+/// request and never answered it — so whatever a plugin put off until then
+/// (a patch finishing loading, among JUCE's CLAP wrappers) never happened.
+/// The studio services every plugin once a frame; so does this.
+#[test]
+fn a_plugin_that_asks_to_be_called_back_on_the_main_thread_is() {
+    let (key, _) = clap_gain();
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    let deferred = fontelle_host::OwnPreset {
+        name: "Deferred".into(),
+        category: String::new(),
+        source: OwnPresetSource::Clap {
+            location: None,
+            load_key: Some("deferred".into()),
+        },
+    };
+    plugin
+        .load_own_preset_with(&mut processor, &deferred)
+        .expect("the gain takes it");
+    let input = vec![vec![1.0f32; 64]; 2];
+    let mut output = vec![vec![0.0f32; 64]; 2];
+    for _ in 0..4 {
+        plugin.service_main_thread();
+        processor.process_effect(&input, &mut output, 64);
+    }
+    assert!(
+        (output[0][63] - 0.25).abs() < 1e-4,
+        "the preset lands once the plugin is called back: {}",
+        output[0][63]
+    );
+    plugin.deactivate(processor);
+}
+
 // -------------------------------------------------------------------- .fxp
 
 /// A VST 2 patch file holding `chunk` as its opaque program chunk.

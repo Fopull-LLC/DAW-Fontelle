@@ -438,17 +438,11 @@ impl PluginHost {
             .plugin_handle()
             .get_extension::<PluginStateExt>()
             .is_some();
-        // What the plugin says it puts between its input and its output, so
-        // the graph can line the rest of the mix up with it (TDD §5.5).
-        // Read once, here: CLAP lets a plugin change it and tell the host,
-        // and following that means rebuilding the graph — which is what
-        // reopening the project or touching the rack does. A plugin that
-        // does not declare the extension answers zero, which is what a host
-        // that cannot ask has to assume.
-        let latency = instance
-            .plugin_handle()
-            .get_extension::<PluginLatency>()
-            .map_or(0, |ext| ext.get(&mut instance.plugin_handle()));
+        // What the plugin puts between its input and its output is **not**
+        // asked here: CLAP allows the question only while the plugin is being
+        // activated or is active — before it knows the rate it cannot know
+        // the answer, and Surge XT says so aloud. `activate` asks.
+        let latency = 0;
         let values = Arc::new(ParamValues::new(&params));
 
         Ok(HostedPlugin {
@@ -957,6 +951,16 @@ impl HostedPlugin {
                             key: self.info.key.clone(),
                             why: e.to_string(),
                         })?;
+                // What it puts between its input and its output, so the graph
+                // can line the rest of the mix up with it (TDD §5.5) — asked
+                // now it is active and knows its rate, the one time CLAP
+                // allows. A plugin that changes it later asks for a restart,
+                // which is a rebuild; one without the extension answers zero,
+                // which is what a host that cannot ask has to assume.
+                self.latency = instance
+                    .plugin_handle()
+                    .get_extension::<PluginLatency>()
+                    .map_or(0, |ext| ext.get(&mut instance.plugin_handle()));
                 let started = stopped
                     .start_processing()
                     .map_err(|e| HostError::Activate {
@@ -1327,6 +1331,28 @@ impl HostedPlugin {
         )
     }
 
+    /// **Answers a CLAP plugin's `request_callback`.** Call once a frame, on
+    /// the main thread, for every plugin that is loaded — not only the ones
+    /// with an editor open.
+    ///
+    /// The spec's half of the bargain: a plugin asks, the host calls its
+    /// `on_main_thread` soon after. This host recorded the request and never
+    /// answered, so whatever a plugin put off until then never happened. The
+    /// other formats have no such call, and nothing is done for them.
+    pub fn service_main_thread(&mut self) {
+        let Inner::Clap(instance) = &mut self.inner else {
+            return;
+        };
+        let asked = instance.access_shared_handler(|shared: &FontelleShared| {
+            shared
+                .wants_callback
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        });
+        if asked {
+            instance.call_on_main_thread_callback();
+        }
+    }
+
     /// **Drives the editor.** Call once per frame while it is open.
     ///
     /// A CLAP editor has no thread of its own: it repaints when the host fires
@@ -1517,7 +1543,7 @@ impl HostedPlugin {
         let values = Arc::clone(&self.values);
         if let Inner::Bridged(plugin) = &self.inner {
             for id in ids {
-                values.set(id, plugin.get_param(id));
+                values.adopt(id, plugin.get_param(id));
             }
             return;
         }
@@ -1534,7 +1560,7 @@ impl HostedPlugin {
         for id in ids {
             if let Some(value) = extension.get_value(&mut instance.plugin_handle(), ClapId::new(id))
             {
-                values.set(id, value);
+                values.adopt(id, value);
             }
         }
     }

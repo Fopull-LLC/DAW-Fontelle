@@ -7180,6 +7180,7 @@ impl StudioHost for Session {
         // Once a frame, whatever the editors are doing: a plugin's own
         // library listed on its thread since the last one.
         self.register_plugin_libraries();
+        self.plugins.service_main_thread();
         let open = self.plugins.tick_editors();
         // *"Every time I log out the instrument resets, this is when I
         // save."* A knob turned in a plugin's own window is an edit the
