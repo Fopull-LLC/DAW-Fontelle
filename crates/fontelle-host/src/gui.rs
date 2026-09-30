@@ -158,7 +158,9 @@ pub struct PluginWindow {
     /// Presses a headless window was told of — see
     /// [`press_header`](Self::press_header).
     pressed: Vec<(i32, i32)>,
-    /// Where the pointer was over the strip when last reported.
+    /// Where the pointer was over the strip when last reported. Read only
+    /// where there is a strip on a screen — X11 and Win32; macOS has none yet.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     hover: Option<(i32, i32)>,
 }
 
@@ -196,6 +198,7 @@ impl PluginWindow {
 
     /// The pointer moved to `at` over the strip, or off it — a hover change is
     /// reported only when it is one.
+    #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     fn hovered(&mut self, at: Option<(i32, i32)>, result: &mut GuiPoll) {
         if at != self.hover {
             self.hover = at;
