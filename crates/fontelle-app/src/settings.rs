@@ -1210,7 +1210,7 @@ impl Settings {
     /// exactly where it is. Overwriting it with defaults would silently lose
     /// the list of folders somebody spent an afternoon assembling.
     pub fn load_from(path: &Path) -> (Self, Option<SettingsError>) {
-        let text = match std::fs::read_to_string(path) {
+        let text = match read_while_saved(path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), None),
             Err(source) => {
@@ -1261,7 +1261,7 @@ impl Settings {
         // A rename over an existing file is atomic on every filesystem this
         // targets, so a reader sees the old settings or the new ones and never
         // half of either.
-        let result = std::fs::rename(&temp, path);
+        let result = while_windows_denies(|| std::fs::rename(&temp, path));
         if result.is_err() {
             std::fs::remove_file(&temp).ok();
         }
@@ -1355,4 +1355,47 @@ impl std::error::Error for SettingsError {
             _ => None,
         }
     }
+}
+
+/// Reads the settings file even while another save is renaming a new one
+/// over it.
+///
+/// On Windows a file open for reading without delete-sharing makes a rename
+/// over it fail, and a rename in flight makes an open fail — both as "Access
+/// is denied". CI's Windows runner hit it in `concurrent_saves_never_leave_a_damaged_file`,
+/// and a user's settings being saved while they are read is the same race.
+/// Opened sharing read, write and delete, and retried briefly on a denial.
+fn read_while_saved(path: &Path) -> std::io::Result<String> {
+    while_windows_denies(|| {
+        use std::io::Read;
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+            options.share_mode(0x1 | 0x2 | 0x4);
+        }
+        let mut text = String::new();
+        options.open(path)?.read_to_string(&mut text)?;
+        Ok(text)
+    })
+}
+
+/// Runs `attempt` again for a moment while Windows answers "Access is
+/// denied" — a rename landing, another reader, a virus scanner holding the
+/// file. Once everywhere else: nowhere else denies for that reason.
+fn while_windows_denies<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let tries = if cfg!(windows) { 50 } else { 1 };
+    let mut result = attempt();
+    for _ in 1..tries {
+        match &result {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                result = attempt();
+            }
+            _ => break,
+        }
+    }
+    result
 }

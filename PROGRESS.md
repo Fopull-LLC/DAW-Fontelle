@@ -71,6 +71,13 @@ SIGSEGV, all *"module: (this platform does not say)"*, four fresh
   Round trips that came back different, not looked into either: ADLplug,
   OPNplug, the cellular automaton synth, MDA JX10, Calf Organ, DrumSynth,
   KR-106 (CLAP).
+- **Windows CI went red on the cables commit**, in `bank.rs::
+  concurrent_saves_never_leave_a_damaged_file`: *"Access is denied"*
+  reading `settings.json` while another save renamed over it. A reader
+  without delete-sharing blocks a rename on Windows and a rename in flight
+  blocks an open — a user's settings read while saved is the same race.
+  `settings.rs` now opens it sharing read/write/delete and retries a denial
+  for up to 100 ms (`while_windows_denies`); only CI can confirm it.
 - **Kyle's Surge and Vital problems were not reproduced.** What is needed
   from him: which format he loads (CLAP, VST 3, LV2), whether he is on
   0.18.0, what "problems" looks like, and the session logs beside the crash
