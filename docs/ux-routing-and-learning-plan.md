@@ -152,8 +152,11 @@ All in the next release (F); built in this order, each useful alone:
    website's gallery is still the six shots from v0.1.0 (Sept 11) in the
    hub's `tasks/fontelle/assets/`. A **showcase song** is made for them in
    a fresh project in a scratch folder — drums, bass, a Flopsynth lead, an
-   audio clip, mixer tracks with sends so the cables show — never one of
-   Ty's projects. Same six views at 1280×720 (the synth window at its own
+   audio clip, mixer tracks with sends so the cables show. Ty's own
+   projects may be shot too where one is more detailed than the showcase
+   (he said so, 2026-09-30) — always from a **copy** of the project, never
+   the original, since opening one writes backups and recent-project
+   entries. Same six views at 1280×720 (the synth window at its own
    size), clean names, handed over on task `0234`'s thread for W; the
    deploy stays Ty's. The in-app guide's screenshots come from the same
    session, and the web manual is built from those.
