@@ -146,3 +146,14 @@ All in the next release (F); built in this order, each useful alone:
    conversion (open question B).
 5. **Guide content and `?` pages**, then the **tutorial overlay** and the
    demo project, then the **web manual** card.
+6. **New screenshots**, once everything above is in (Ty, 2026-09-30: *"we
+   should also get updated screenshots for fontelle in general"* — and
+   only after this release, since it changes most of what they show). The
+   website's gallery is still the six shots from v0.1.0 (Sept 11) in the
+   hub's `tasks/fontelle/assets/`. A **showcase song** is made for them in
+   a fresh project in a scratch folder — drums, bass, a Flopsynth lead, an
+   audio clip, mixer tracks with sends so the cables show — never one of
+   Ty's projects. Same six views at 1280×720 (the synth window at its own
+   size), clean names, handed over on task `0234`'s thread for W; the
+   deploy stays Ty's. The in-app guide's screenshots come from the same
+   session, and the web manual is built from those.
