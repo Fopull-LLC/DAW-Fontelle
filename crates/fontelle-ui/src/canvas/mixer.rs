@@ -14,6 +14,7 @@
 //! **Virtualised like the roll** (§16.4): a project with two hundred tracks
 //! builds a screenful of rectangles, not two hundred.
 
+use crate::cables::{CableKey, CableRole, CableSpec, Pt};
 use crate::document::MixerStrip;
 use crate::layout::Rect;
 use crate::theme::Metrics;
@@ -289,9 +290,151 @@ pub struct MixerLayout {
     /// be drawn and a scroll offset clamped.
     pub total: usize,
     pub scroll: usize,
+    /// The patch bay: a band along the bottom of the panel, under the master
+    /// and the strips, where every track's cables hang between its jacks
+    /// ([`MixerLayout::jacks`]). Empty on a panel too short to spare it.
+    ///
+    /// Under the strips rather than over them, because a cable hanging across
+    /// a fader is a cable in the way of the one gesture a mixer is for. Not
+    /// under the options column: that is about one track, and it keeps its
+    /// height.
+    pub patch: Rect,
+}
+
+/// How tall the patch bay is: a jack, and room under it for a cable to hang.
+pub const PATCH_HEIGHT: f32 = 46.0;
+
+/// How tall a strip must still be for the panel to give the bay room. Below
+/// this the bay goes before the faders do — [`MIN_FADER_HEIGHT`]'s rule, one
+/// step earlier.
+const MIN_STRIP_WITH_PATCH: f32 = 220.0;
+
+/// How far down the bay the jacks sit.
+const JACK_INSET: f32 = 9.0;
+
+/// Where across its strip each jack sits, as a fraction of the width: in on
+/// the left and out on the right, the way the strips read.
+const JACK_IN_AT: f32 = 0.3;
+const JACK_OUT_AT: f32 = 0.7;
+
+/// A strip's two jacks in the patch bay: where cables from other tracks
+/// arrive, and where its own leave.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Jacks {
+    pub input: Pt,
+    pub output: Pt,
+}
+
+/// Where one strip's output goes, as the panel is told it: which track it is
+/// (so a cable keeps its identity when strips move), where its output goes as
+/// an index into the strips — `None` is the master, the spelling every route
+/// control reads — and whether that output is switched on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StripRoute<T> {
+    pub id: T,
+    pub output: Option<usize>,
+    pub output_on: bool,
+}
+
+/// The cables the routing makes: an output from every track that is not the
+/// master, and one per send, each from the track's output jack to its
+/// target's input.
+///
+/// `routes` is in the same order as `strips`. A cable is **lit** when it
+/// leaves the selected strip or arrives at it: the rest stay drawn, dimmer,
+/// so the whole routing reads at a glance and the one being worked on reads
+/// first.
+pub fn mixer_cables<T: Copy>(
+    layout: &MixerLayout,
+    strips: &[MixerStrip],
+    routes: &[StripRoute<T>],
+    selected: usize,
+) -> Vec<CableSpec<T>> {
+    let mut out = Vec::new();
+    if layout.patch.is_empty() {
+        return out;
+    }
+    let master = strips.iter().position(|s| s.is_master);
+    let plug = |target: usize| Some((layout.jacks(target)?.input, routes.get(target)?.id));
+    for (index, (strip, route)) in strips.iter().zip(routes).enumerate() {
+        if strip.is_master {
+            continue;
+        }
+        let Some(jacks) = layout.jacks(index) else {
+            continue;
+        };
+        let target = route.output.or(master);
+        let to = if route.output_on {
+            match target.and_then(plug) {
+                Some(to) => Some(to),
+                // Routed somewhere that is not there — a document without a
+                // master. No cable rather than a loose one that lies about why.
+                None => continue,
+            }
+        } else {
+            None
+        };
+        out.push(CableSpec {
+            key: CableKey {
+                track: route.id,
+                role: CableRole::Output,
+            },
+            from: jacks.output,
+            to,
+            color: strip.color,
+            lit: index == selected || (route.output_on && target == Some(selected)),
+            level_db: None,
+        });
+        for (n, send) in strip.sends.iter().enumerate() {
+            let Some(to) = plug(send.target) else {
+                continue;
+            };
+            out.push(CableSpec {
+                key: CableKey {
+                    track: route.id,
+                    role: CableRole::Send(n),
+                },
+                from: jacks.output,
+                to: Some(to),
+                color: strip.color,
+                lit: index == selected || send.target == selected,
+                level_db: Some(send.level_db),
+            });
+        }
+    }
+    out
 }
 
 impl MixerLayout {
+    /// Strip `index`'s jacks, or `None` without a bay or past the last strip.
+    ///
+    /// A strip scrolled out of the list still has them — off the end of the
+    /// list, where its column would be — so a cable to it runs off towards
+    /// it rather than vanishing. Where it goes is the point.
+    pub fn jacks(&self, index: usize) -> Option<Jacks> {
+        if self.patch.is_empty() || index >= self.total {
+            return None;
+        }
+        let master = self.master.as_ref();
+        let column = match master {
+            Some(m) if m.index == index => m.frame.x,
+            _ => {
+                // Its place among the ordinary strips, which is its index
+                // with the master taken out.
+                let slot = match master {
+                    Some(m) if index > m.index => index - 1,
+                    _ => index,
+                };
+                self.list.x + (slot as f32 - self.scroll as f32) * (STRIP_WIDTH + GAP)
+            }
+        };
+        let y = self.patch.y + JACK_INSET;
+        Some(Jacks {
+            input: [column + STRIP_WIDTH * JACK_IN_AT, y],
+            output: [column + STRIP_WIDTH * JACK_OUT_AT, y],
+        })
+    }
+
     /// The options column's rectangle, or an empty one. For callers — chiefly
     /// tests and the renderer's overlap checks — that want to reason about
     /// where it is without unwrapping it first.
@@ -340,8 +483,18 @@ pub fn mixer_layout_for(
             options: None,
             total: strips.len(),
             scroll,
+            patch: Rect::ZERO,
         };
     }
+
+    // The patch bay comes off the bottom, under the master and the strips —
+    // only while the strips stay tall enough to be worth using.
+    let patch_height = if body.height >= PATCH_HEIGHT + MIN_STRIP_WITH_PATCH {
+        PATCH_HEIGHT
+    } else {
+        0.0
+    };
+    let strip_height = body.height - patch_height;
 
     // The master's column comes off the **left** first, and everything else
     // shares what is left of the panel.
@@ -355,7 +508,7 @@ pub fn mixer_layout_for(
     let (mut rest, master) = match master_index {
         Some(index) => {
             let width = STRIP_WIDTH.min(body.width.max(0.0));
-            let frame = Rect::new(body.x, body.y, width, body.height).clamped();
+            let frame = Rect::new(body.x, body.y, width, strip_height).clamped();
             let rest = Rect::new(
                 frame.right() + GAP * 2.0,
                 body.y,
@@ -390,7 +543,9 @@ pub fn mixer_layout_for(
     } else {
         None
     };
-    let list = rest;
+    // The options column keeps the panel's whole height; the strips give the
+    // bay theirs.
+    let list = Rect::new(rest.x, rest.y, rest.width, strip_height).clamped();
 
     // Whole strips only, for the reason `rack_layout` gives about rows: a
     // strip clipped to a few pixels still draws its fader inside those pixels,
@@ -431,6 +586,19 @@ pub fn mixer_layout_for(
         options_layout(track, frame, metrics, &strips[track])
     });
 
+    let patch = if patch_height > 0.0 {
+        let x = master.as_ref().map_or(list.x, |m| m.frame.x);
+        Rect::new(
+            x,
+            body.bottom() - patch_height,
+            list.right() - x,
+            patch_height,
+        )
+        .clamped()
+    } else {
+        Rect::ZERO
+    };
+
     MixerLayout {
         body,
         list,
@@ -440,6 +608,7 @@ pub fn mixer_layout_for(
         options,
         total: strips.len(),
         scroll,
+        patch,
     }
 }
 
@@ -1191,6 +1360,21 @@ pub fn send_x_of_level(level: Rect, db: f32) -> f32 {
     let db = db.clamp(MIN_SEND_DB, MAX_SEND_DB);
     let along = (db - MIN_SEND_DB) / (MAX_SEND_DB - MIN_SEND_DB);
     level.x + level.width * along
+}
+
+/// How far a send's knob on its cable is dragged to go from off to the top.
+pub const SEND_KNOB_TRAVEL: f32 = 200.0;
+
+/// The level a send's cable knob is asking for, `dy` pixels below where the
+/// press began at `start_db`.
+///
+/// By vertical travel rather than by angle: the knob rides a wire that
+/// swings, so the centre an angle would be measured from is moving under the
+/// pointer. Linear in decibels, like the send's groove in the options column,
+/// so the two read the same.
+pub fn send_knob_db(start_db: f32, dy: f32) -> f32 {
+    let per_pixel = (MAX_SEND_DB - MIN_SEND_DB) / SEND_KNOB_TRAVEL;
+    (start_db - dy * per_pixel).clamp(MIN_SEND_DB, MAX_SEND_DB)
 }
 
 /// What a send's level read-out says. `off` at the bottom, for the reason

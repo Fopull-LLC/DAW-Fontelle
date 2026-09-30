@@ -19,6 +19,47 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-30 — patch cables in the mixer.** *"right now theres no
+visual indicator at a glance for mixer track routing. in fl studio, theres a
+wire connecting tracks to where they are being sent to, with a knob for how
+much is being sent there ... the wires should have nice physicsy looking
+animations so as i reorder mixer tracks or add or change wirings they will
+kind of snap together and jiggle around like real wires"*.
+
+- **The bay** (`canvas/mixer.rs`, `tests/mixer_cables.rs`): a 46 px band
+  along the bottom of the mixer, under the master and the strips (the
+  options column keeps its height), given up before the faders on a short
+  panel. Each strip has an input jack (left) and an output jack (right);
+  `MixerLayout::jacks` extrapolates for strips scrolled out of the list, so
+  a cable runs off the edge towards them. `mixer_cables` turns the routes
+  into cables: every output (to the master when `None`), every send (with a
+  knob), an output switched off as a **loose cable dangling from its strip**
+  — the strip-level mark `docs/handoff.md` item 4 asked for. Cables leaving
+  or arriving at the selected strip are lit; the rest are drawn at 42 %.
+- **The physics** (`src/cables.rs`, `tests/cables.rs`): a 14-piece Verlet
+  rope per cable, fixed 240 Hz substep, a floor with friction. Keyed by
+  `MixerTrackId`, not strip index, so a strip that moves carries its plugs
+  and the rope lags and jiggles. A new cable starts as a small loop at its
+  source and its plug travels to the jack (0.3 s); a reroute unplugs and
+  re-plugs; a removed cable falls and fades; a cable's length **eases**
+  rather than jumps (an instant jump yanked it straight). A whole new set of
+  cables — the window's first read, or another project — arrives already
+  hung. It **sleeps**: `is_moving` goes false ~2 s after the last change and
+  `tick` stops stepping it and releases the animator (§16.3).
+- **The knob**: `Drag::SendKnob`, relative and vertical (200 px is the whole
+  range, `send_knob_db`), since a knob on a swinging wire has no still
+  centre to turn it by angle. Kept a knob's height above the floor.
+- **Seen**: the headless `mixer.png` dump, frame sheets of the simulation
+  rendered offline, and the real binary on `:99` (tracks added, a send made
+  from the options column, its knob dragged to −27 dB). **The nested
+  `Xwayland :99` presents at ~1 fps** ("waited 1009 ms for the surface" in
+  `FONTELLE_TRACE_FRAME`), so animation cannot be judged there — the scene
+  builds in 0.2 ms. Watch it on the real desktop.
+- **Open:** mixer tracks **cannot be reordered** — there is no command and
+  the order is the arena's. The cables already follow a track by id, so a
+  reorder will animate the moment one exists. Also not built: dragging a
+  cable from a jack to make a route (the send menu is still how).
+
 **As of 2026-09-29 (evening) — a Fedora user's first go.** From a Reddit
 thread: *"Every time I log out the instrument resets, this is when I save.
 Recording is so weird. One minute is deletes the notes after the other it

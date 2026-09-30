@@ -226,6 +226,14 @@ enum Drag {
     /// A send's level, dragged along its groove. **Absolute**, like a fader:
     /// a press takes it to where it landed and then follows.
     SendLevel(usize),
+    /// A send's level, by the knob on its cable in the patch bay: the strip
+    /// and the send. **Relative**, dragged up and down — see
+    /// `canvas::send_knob_db` for why a knob on a swinging wire cannot be
+    /// turned by angle.
+    SendKnob {
+        strip: usize,
+        send: usize,
+    },
     /// One insert's wet/dry, dragged along its groove. Absolute, like the
     /// send's level and for the same reason.
     InsertMix(usize),
@@ -1607,6 +1615,18 @@ pub struct WindowApp {
     mixer_peaks: Vec<[f32; 2]>,
     mixer_scroll: usize,
     hover_mixer: Option<MixerHit>,
+    /// The patch cables under the strips (`crate::cables`): where every
+    /// track goes, hung like real wires. Stepped in `tick` while the mixer is
+    /// showing and they are moving; synced whenever the mixer is laid out.
+    cables: crate::cables::Cables<fontelle_types::MixerTrackId>,
+    /// Where each strip's output goes, read with the strips.
+    mixer_routes: Vec<crate::canvas::StripRoute<fontelle_types::MixerTrackId>>,
+    /// The send whose knob on its cable is under the pointer.
+    hover_cable: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
+    /// A cable knob being turned: where the press was, and the level then.
+    /// Here rather than on `Drag`, which is compared, for the reason
+    /// `MenuScroll` gives.
+    cable_drag: Option<(f32, f32)>,
     /// Which strip the track-options column is about, read with the rest of
     /// the studio's lists.
     selected_track: usize,
@@ -2208,11 +2228,16 @@ impl WindowApp {
                 options: None,
                 total: 0,
                 scroll: 0,
+                patch: crate::layout::Rect::ZERO,
             },
             mixer_strips: Vec::new(),
             mixer_peaks: Vec::new(),
             mixer_scroll: 0,
             hover_mixer: None,
+            cables: crate::cables::Cables::new(),
+            mixer_routes: Vec::new(),
+            hover_cable: None,
+            cable_drag: None,
             selected_track: 0,
             track_output: None,
             clip_routes: Vec::new(),
@@ -2659,6 +2684,12 @@ impl WindowApp {
         // inside a closure that already holds a mutable borrow of `self`.
         let beats_per_bar = self.beats_per_bar();
         let output_label = self.output_caption();
+        let cable_lines = if self.tab == EditorTab::Mixer {
+            self.cables.lines()
+        } else {
+            Vec::new()
+        };
+        let cable_hot = self.cable_hot();
         let input_label = self.input_caption();
         // The tip's box needs the shaped width of its own words, so it is
         // measured here — after `shape_labels`, before the borrow.
@@ -2884,6 +2915,8 @@ impl WindowApp {
                     send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
                     route_names: &self.route_names,
                     output: self.track_output,
+                    cables: &cable_lines,
+                    cable_hot,
                 }),
                 tabs: self.tabs,
                 tab: self.tab,
@@ -3191,6 +3224,13 @@ impl WindowApp {
                 self.tree.invalidate(PANEL);
             }
         }
+        // The patch cables swing on, while the panel that draws them is
+        // showing and until they have come to rest.
+        let cables_moving = self.tab == EditorTab::Mixer && self.cables.is_moving();
+        if cables_moving {
+            self.cables.step(dt);
+            self.tree.invalidate(PANEL);
+        }
 
         // The EQ's analyser, read once a frame and only while its window is
         // open — the same rule the mixer's meters follow, and for the same
@@ -3312,6 +3352,7 @@ impl WindowApp {
         // window sleep", rather than two that can disagree.
         let moving = view.playing
             || gliding
+            || cables_moving
             || self.live_keys != 0
             // An open analyser is a moving picture, and it has to keep moving
             // while it falls back to the floor as well as while it is being
@@ -3433,6 +3474,7 @@ impl WindowApp {
             // A row being carried up or down its chain.
             Drag::InsertRow => Some(Pointer::Grabbing),
             Drag::SendLevel(_) => Some(Pointer::ResizeX),
+            Drag::SendKnob { .. } => Some(Pointer::ResizeY),
             Drag::InsertMix(_) => Some(Pointer::ResizeY),
             // A number being dragged up and down, like the tempo box.
             Drag::EqField(_) => Some(Pointer::ResizeY),
@@ -3641,9 +3683,13 @@ impl WindowApp {
         let strip = (self.tab == EditorTab::Mixer)
             .then(|| mixer_hit(&self.mixer, x, y))
             .filter(|hit| *hit != MixerHit::Nothing);
-        if tab != self.hover_tab || strip != self.hover_mixer {
+        let cable = (self.tab == EditorTab::Mixer && self.mixer.patch.contains(x, y))
+            .then(|| self.cables.knob_at(x, y))
+            .flatten();
+        if tab != self.hover_tab || strip != self.hover_mixer || cable != self.hover_cable {
             self.hover_tab = tab;
             self.hover_mixer = strip;
+            self.hover_cable = cable;
             self.tree.invalidate(PANEL);
         }
         // One panel, two lists: only the one that is showing is hit-tested,
@@ -4104,6 +4150,7 @@ impl ApplicationHandler for WindowApp {
                         | Drag::Tempo
                         | Drag::EqHandle(_)
                         | Drag::SendLevel(_)
+                        | Drag::SendKnob { .. }
                         | Drag::InsertMix(_)
                 );
                 // A press on the tempo box that comes up where it went down
@@ -6102,6 +6149,7 @@ impl WindowApp {
             self.preset_scroll,
             self.browser_file_share,
         );
+        self.sync_cables();
     }
 
     /// Re-reads the studio's lists, but only when it says they have changed.
@@ -6190,6 +6238,15 @@ impl WindowApp {
             }
         }
         self.mixer_strips = doc.mixer_strips();
+        // Each strip's route, for the patch cables. By the track's own id so
+        // a cable follows its track when the strips move.
+        self.mixer_routes = (0..self.mixer_strips.len())
+            .map(|strip| crate::canvas::StripRoute {
+                id: doc.mixer_track_id(strip).unwrap_or_default(),
+                output: doc.track_output(strip),
+                output_on: doc.track_output_on(strip),
+            })
+            .collect();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
         self.track_output_on = doc.track_output_on(self.selected_track);
@@ -7934,6 +7991,7 @@ impl WindowApp {
             Drag::RollSelect => self.drag_select_roll(x),
             Drag::InsertRow => self.drag_insert_row(x, y),
             Drag::SendLevel(index) => self.drag_send_level(index, x),
+            Drag::SendKnob { strip, send } => self.drag_send_knob(strip, send, y),
             Drag::InsertMix(slot) => self.drag_insert_mix(slot, y),
             Drag::EqField(field) => self.drag_eq_field(field, y),
             Drag::Pan(strip) => self.drag_pan(strip, x),
@@ -7952,6 +8010,23 @@ impl WindowApp {
     /// long haul rather than one click. The two switches step on the press;
     /// there is nothing to drag.
     fn press_mixer(&mut self, x: f32, y: f32) {
+        // A send's knob, riding its cable in the patch bay. First, because
+        // the bay is under no strip's controls and the knob is the only thing
+        // in it that answers a press.
+        if self.mixer.patch.contains(x, y)
+            && let Some(key) = self.cables.knob_at(x, y)
+            && let Some((strip, send)) = self.cable_send(key)
+        {
+            let db = self
+                .mixer_strips
+                .get(strip)
+                .and_then(|s| s.sends.get(send))
+                .map_or(crate::canvas::MIN_SEND_DB, |s| s.level_db);
+            self.drag = Drag::SendKnob { strip, send };
+            self.cable_drag = Some((y, db));
+            self.tree.invalidate(PANEL);
+            return;
+        }
         match mixer_hit(&self.mixer, x, y) {
             MixerHit::Fader(strip) => {
                 self.drag = Drag::Fader(strip);
@@ -8324,6 +8399,66 @@ impl WindowApp {
         self.refresh_studio();
         self.refresh_title();
         self.tree.invalidate(PANEL);
+    }
+
+    /// A send's cable knob, turned by dragging up and down from the press.
+    fn drag_send_knob(&mut self, strip: usize, send: usize, y: f32) {
+        let Some((from_y, from_db)) = self.cable_drag else {
+            return;
+        };
+        let db = crate::canvas::send_knob_db(from_db, y - from_y);
+        let current = self
+            .mixer_strips
+            .get(strip)
+            .and_then(|s| s.sends.get(send))
+            .map_or(0.0, |s| s.level_db);
+        if (db - current).abs() < 0.001 {
+            return;
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.set_send_level(strip, send, db);
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Which strip and which of its sends a cable is, if it is a send.
+    fn cable_send(
+        &self,
+        key: crate::cables::CableKey<fontelle_types::MixerTrackId>,
+    ) -> Option<(usize, usize)> {
+        let crate::cables::CableRole::Send(send) = key.role else {
+            return None;
+        };
+        let strip = self.mixer_routes.iter().position(|r| r.id == key.track)?;
+        Some((strip, send))
+    }
+
+    /// The send knob to draw lit: the one being turned, else the one under
+    /// the pointer.
+    fn cable_hot(&self) -> Option<crate::cables::CableKey<fontelle_types::MixerTrackId>> {
+        match self.drag {
+            Drag::SendKnob { strip, send } => Some(crate::cables::CableKey {
+                track: self.mixer_routes.get(strip)?.id,
+                role: crate::cables::CableRole::Send(send),
+            }),
+            _ => self.hover_cable,
+        }
+    }
+
+    /// Hangs the cables the routing now makes, in the bay the layout now has.
+    fn sync_cables(&mut self) {
+        let specs = crate::canvas::mixer_cables(
+            &self.mixer,
+            &self.mixer_strips,
+            &self.mixer_routes,
+            self.selected_track,
+        );
+        // A hair above the bay's bottom edge, so a cable lying on the floor
+        // is drawn whole rather than half under the border.
+        let floor = self.mixer.patch.bottom() - 3.0;
+        self.cables.sync(specs, floor);
     }
 
     fn drag_send_level(&mut self, index: usize, x: f32) {

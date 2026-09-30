@@ -527,6 +527,11 @@ pub struct MixerChrome<'a> {
     /// `route_names` — so the menu can say where you are as well as where you
     /// could go.
     pub output: Option<usize>,
+    /// The patch cables as they hang this frame (`crate::cables`), drawn in
+    /// the layout's patch bay.
+    pub cables: &'a [crate::cables::CableLine<fontelle_types::MixerTrackId>],
+    /// The send whose knob is under the pointer or being turned.
+    pub cable_hot: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
 }
 
 /// One EQ, as the editor draws it.
@@ -3423,6 +3428,8 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
         draw_track_options(scene, theme, labels, chrome, options);
     }
 
+    draw_patch_bay(scene, theme, chrome);
+
     // The seam the master sits behind, so the eye reads it as a different kind
     // of thing rather than as the strip that happens to be first. Drawn on its
     // *right*, which is the side the strips are on now that the master is
@@ -3445,6 +3452,160 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
 
     // Last, over everything: an open menu is above the panel it hangs from.
     draw_output_menu(scene, theme, labels, chrome);
+}
+
+/// The patch bay under the strips: a jack pair per strip, and every cable.
+///
+/// The cables are drawn dim and then lit — the selected track's, and the ones
+/// arriving at it, on top — so the whole routing reads at a glance and the
+/// track being worked on reads first. Clipped to the bay: a cable whipping up
+/// when its strip jumps is a cable, not something drawn over a fader.
+fn draw_patch_bay(scene: &mut Scene, theme: &Theme, chrome: &MixerChrome<'_>) {
+    let p = &theme.palette;
+    let bay = chrome.layout.patch;
+    if bay.is_empty() {
+        return;
+    }
+    fill_rect(scene, bay, p.window);
+    fill_rect(
+        scene,
+        Rect::new(bay.x, bay.y, bay.width, theme.metrics.border_width.max(1.0)),
+        p.border,
+    );
+
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            bay.x as f64,
+            bay.y as f64,
+            bay.right() as f64,
+            bay.bottom() as f64,
+        ),
+    );
+
+    let circle = |at: crate::cables::Pt, r: f32| {
+        vello::kurbo::Circle::new((at[0] as f64, at[1] as f64), r as f64)
+    };
+    // The jacks: a dark hole with a rim — the input's rim plain, the
+    // output's in the track's colour, which is also the colour of every
+    // cable that leaves it.
+    let l = &chrome.layout;
+    for layout in l.strips.iter().chain(l.master.iter()) {
+        let Some(jacks) = l.jacks(layout.index) else {
+            continue;
+        };
+        let strip = chrome.strips.get(layout.index);
+        let tint = strip.map_or(p.text_muted, |s| Color(s.color));
+        // The master has no output jack: it goes to the speakers, and a
+        // socket nothing can ever be plugged into is a question, not a mark.
+        let output = strip
+            .is_none_or(|s| !s.is_master)
+            .then_some((jacks.output, tint));
+        for (at, rim) in std::iter::once((jacks.input, p.text_muted)).chain(output) {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                Color::rgba(0, 0, 0, 0xc0).to_peniko(),
+                None,
+                &circle(at, 4.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.5),
+                Affine::IDENTITY,
+                rim.to_peniko(),
+                None,
+                &circle(at, 4.5),
+            );
+        }
+    }
+
+    let dim = chrome.cables.iter().filter(|c| !c.lit);
+    let lit = chrome.cables.iter().filter(|c| c.lit);
+    for cable in dim.chain(lit) {
+        let [a, b] = [cable.points.first(), cable.points.last()];
+        let (Some(&a), Some(&b)) = (a, b) else {
+            continue;
+        };
+        let opacity = cable.alpha * if cable.lit { 1.0 } else { 0.42 };
+        let alpha = |base: u8| (base as f32 * opacity).round() as u8;
+        let width: f32 = match (cable.knob.is_some(), cable.lit) {
+            (false, true) => 3.2,
+            (false, false) => 2.6,
+            (true, _) => 2.0,
+        };
+
+        // Through the midpoints, so the rope's pieces read as one curve.
+        let mut path = BezPath::new();
+        path.move_to((a[0] as f64, a[1] as f64));
+        let points = &cable.points;
+        for i in 1..points.len().saturating_sub(1) {
+            let (q, r) = (points[i], points[i + 1]);
+            path.quad_to(
+                (q[0] as f64, q[1] as f64),
+                (((q[0] + r[0]) / 2.0) as f64, ((q[1] + r[1]) / 2.0) as f64),
+            );
+        }
+        path.line_to((b[0] as f64, b[1] as f64));
+
+        // A dark sleeve under the colour, so a cable crossing another reads
+        // as in front of it rather than as a blend of the two.
+        scene.stroke(
+            &Stroke::new((width + 1.6) as f64).with_caps(vello::kurbo::Cap::Round),
+            Affine::IDENTITY,
+            Color::rgba(0, 0, 0, alpha(0x90)).to_peniko(),
+            None,
+            &path,
+        );
+        scene.stroke(
+            &Stroke::new(width as f64).with_caps(vello::kurbo::Cap::Round),
+            Affine::IDENTITY,
+            Color(cable.color).with_alpha(alpha(0xff)).to_peniko(),
+            None,
+            &path,
+        );
+
+        // The plugs. A loose end is a bare plug, bigger, with nothing to go
+        // into — the "this goes nowhere" the strip had no mark for.
+        let plug = p.text.with_alpha(alpha(0xe0));
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            plug.to_peniko(),
+            None,
+            &circle(a, 2.6),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            plug.to_peniko(),
+            None,
+            &circle(b, if cable.plugged { 2.6 } else { 3.4 }),
+        );
+    }
+
+    // The send knobs, over every cable: a knob under another track's wire
+    // would be one you could not reach.
+    for cable in chrome.cables.iter().filter(|c| c.alpha >= 1.0) {
+        let (Some(knob), Some(db)) = (cable.knob, cable.level_db) else {
+            continue;
+        };
+        let r = crate::cables::KNOB_RADIUS + 1.0;
+        let value = (db - crate::canvas::MIN_SEND_DB)
+            / (crate::canvas::MAX_SEND_DB - crate::canvas::MIN_SEND_DB);
+        draw_knob(
+            scene,
+            theme,
+            Rect::new(knob[0] - r, knob[1] - r, r * 2.0, r * 2.0),
+            value,
+            chrome.cable_hot == Some(cable.key),
+            false,
+        );
+    }
+
+    scene.pop_layer();
 }
 
 /// The track-options column (TDD §13.2, §13.4).

@@ -1961,6 +1961,29 @@ fn shoot_mixer_renaming(
     let peaks = vec![[0.8, 0.6], [0.2, 0.2], [0.0, 0.0], [0.9, 0.9]];
 
     let l = mixer_layout(layout.panel.body, &theme.metrics, &strips, 0);
+    // The patch bay's cables, hung and come to rest: Drums to the master
+    // with its two sends, Bass into Keys, and Keys' output switched off so
+    // its cable dangles.
+    let id = |n: u64| fontelle_types::MixerTrackId::from(slotmap::KeyData::from_ffi(n));
+    let routes: Vec<fontelle_ui::canvas::StripRoute<_>> =
+        [(None, true), (Some(2), true), (None, false), (None, true)]
+            .into_iter()
+            .enumerate()
+            .map(|(n, (output, output_on))| fontelle_ui::canvas::StripRoute {
+                id: id(n as u64 + 1),
+                output,
+                output_on,
+            })
+            .collect();
+    let mut cables = fontelle_ui::cables::Cables::new();
+    cables.sync(
+        fontelle_ui::canvas::mixer_cables(&l, &strips, &routes, 0),
+        l.patch.bottom() - 3.0,
+    );
+    for _ in 0..240 {
+        cables.step(1.0 / 60.0);
+    }
+    let cable_lines = cables.lines();
     let mut labels = Labels::new();
     for caption in [
         "Piano roll",
@@ -2040,6 +2063,8 @@ fn shoot_mixer_renaming(
                 send_menu: None,
                 route_names: &route_names,
                 output: None,
+                cables: &cable_lines,
+                cable_hot: None,
             }),
             tabs: editor_tabs(layout.panel.header, &theme.metrics),
             tab: EditorTab::Mixer,

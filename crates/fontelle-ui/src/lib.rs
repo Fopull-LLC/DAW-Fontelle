@@ -21,6 +21,7 @@ pub mod app;
 pub mod audition;
 pub mod backend;
 pub mod branding;
+pub mod cables;
 pub mod canvas;
 pub mod document;
 pub mod file_drag;

@@ -167,13 +167,13 @@ pub use disgusting_beat::{
 };
 pub use glide::{Glide, wheel_travel};
 pub use mixer::{
-    CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, MAX_FADER_DB, MAX_SEND_DB,
+    CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
     MIN_FADER_DB, MIN_SEND_DB, MixerControl, MixerHit, MixerKey, MixerLayout, MixerRightClick,
-    MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, STRIP_WIDTH,
-    SendRowLayout, TrackOptionsLayout, fader_db_at, fader_y_of_db, format_gain_db, format_mix,
-    format_pan, format_send_db, insert_mix_dial, mixer_hit, mixer_key, mixer_layout,
-    mixer_layout_for, mixer_right_click, name_press, pan_at, pan_x_of, send_level_at,
-    send_x_of_level, unity_fraction,
+    MixerStripLayout, NamePress, OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, PATCH_HEIGHT,
+    SEND_KNOB_TRAVEL, STRIP_WIDTH, SendRowLayout, StripRoute, TrackOptionsLayout, fader_db_at,
+    fader_y_of_db, format_gain_db, format_mix, format_pan, format_send_db, insert_mix_dial,
+    mixer_cables, mixer_hit, mixer_key, mixer_layout, mixer_layout_for, mixer_right_click,
+    name_press, pan_at, pan_x_of, send_knob_db, send_level_at, send_x_of_level, unity_fraction,
 };
 pub use notepad::{
     NOTEPAD_BLANK, NOTEPAD_HINT, NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow,
