@@ -2229,31 +2229,37 @@ fn a_muted_strip_is_drawn_muted_and_a_soloable_one_is_not() {
         let i = ((y * RW + x) * 4) as usize;
         Color(pixels[i..i + 4].try_into().expect("four bytes"))
     };
+    let count = |r: fontelle_ui::layout::Rect, ink: Color| {
+        (r.x as u32..r.right() as u32)
+            .flat_map(|x| (r.y as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .filter(|(x, y)| near(at(*x, *y), ink))
+            .count()
+    };
 
-    // Strip 2 is muted, so its M button carries the accent and strip 0's does
-    // not — which is the only thing on the strip that says a track is off.
+    // Strip 2 is muted, so its mute **icon** is drawn in the mute colour —
+    // Ty: *"turn the mute and solo buttons on the tracks into actual icons
+    // and not letters inside of buttons"* — and strip 0's is not.
     let on = l.strips[2].mute;
     let off = l.strips[0].mute;
     assert!(
-        near(
-            at(
-                (on.x + on.width / 2.0) as u32,
-                (on.y + on.height / 2.0) as u32
-            ),
-            theme.palette.accent
-        ),
-        "a muted track's M should be lit"
+        count(on, theme.palette.meter_peak) > 4,
+        "a muted track's mute icon should be lit"
     );
-    assert!(
-        !near(
-            at(
-                (off.x + off.width / 2.0) as u32,
-                (off.y + off.height / 2.0) as u32
-            ),
-            theme.palette.accent
-        ),
+    assert_eq!(
+        count(off, theme.palette.meter_peak),
+        0,
         "and an unmuted one's should not"
     );
+    // Off, there is no box: the switch's corner is the strip's own ground,
+    // the same as just above it.
+    for r in [l.strips[0].mute, l.strips[0].solo] {
+        let corner = at((r.x + 1.0) as u32, (r.y + 1.0) as u32);
+        let ground = at((r.x + 1.0) as u32, (r.y - 2.0) as u32);
+        assert!(
+            near(corner, ground),
+            "no box behind an icon: {corner:?} vs {ground:?}"
+        );
+    }
 }
 
 #[test]
@@ -2463,7 +2469,8 @@ fn shoot_rack_routed(
         .map(|(name, route)| ChannelInfo {
             name: (*name).to_string(),
             muted: false,
-            soloed: false,
+            // Keys is soloed, so a switch that is on is on screen.
+            soloed: *name == "Keys",
             has_instrument: true,
             route,
         })
@@ -6848,6 +6855,43 @@ fn the_selected_lanes_header_is_lit_and_a_soloed_rows_switch_is_on() {
     let ground = lit.at((header(&lit, 3).x + 20.0) as u32, (off.y + 1.0) as u32);
     for r in [mute_off, off] {
         let corner = lit.at((r.x + 1.0) as u32, (r.y + 1.0) as u32);
+        assert!(
+            near(corner, ground),
+            "no box behind an icon: {corner:?} vs {ground:?}"
+        );
+    }
+}
+
+/// The rack's mute and solo are icons, like the lanes' and the mixer's —
+/// Ty: *"turn the mute and solo buttons on the tracks into actual icons and
+/// not letters inside of buttons"*.
+#[test]
+fn a_racks_mute_and_solo_are_icons_not_lettered_boxes() {
+    let Some((pixels, theme, l, width, _)) = shoot_rack(None) else {
+        return;
+    };
+    let at = |x: u32, y: u32| {
+        let i = ((y * width + x) * 4) as usize;
+        Color(pixels[i..i + 4].try_into().expect("four bytes"))
+    };
+    let count = |r: fontelle_ui::layout::Rect, ink: Color| {
+        (r.x as u32..r.right() as u32)
+            .flat_map(|x| (r.y as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .filter(|(x, y)| near(at(*x, *y), ink))
+            .count()
+    };
+    assert!(
+        count(l.rows[1].solo, theme.palette.accent) > 4,
+        "Keys is soloed"
+    );
+    assert_eq!(
+        count(l.rows[0].solo, theme.palette.accent),
+        0,
+        "Bass is not"
+    );
+    for r in [l.rows[0].mute, l.rows[0].solo] {
+        let corner = at((r.x + 1.0) as u32, (r.y + 1.0) as u32);
+        let ground = at((r.x + 1.0) as u32, (r.y - 1.0) as u32);
         assert!(
             near(corner, ground),
             "no box behind an icon: {corner:?} vs {ground:?}"

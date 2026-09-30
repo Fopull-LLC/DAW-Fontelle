@@ -877,6 +877,42 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     }
 }
 
+/// A mute or solo switch as an icon: muted ink when off (plain ink under the
+/// pointer), its own colour on a soft wash of it when on. No box when off —
+/// a box is what made every switch read as a lettered button.
+fn draw_switch_icon(
+    scene: &mut Scene,
+    p: &crate::theme::Palette,
+    rect: Rect,
+    icon: crate::icon::Icon,
+    on: bool,
+    colour: Color,
+    lit: bool,
+) {
+    if rect.is_empty() {
+        return;
+    }
+    if on {
+        fill_rect_rounded(scene, rect.inset(-1.0), 3.0, colour.with_alpha(0x40));
+    }
+    let side = rect.width.min(rect.height);
+    let glyph = Rect::new(
+        rect.x + (rect.width - side) / 2.0,
+        rect.y + (rect.height - side) / 2.0,
+        side,
+        side,
+    )
+    .inset(1.0);
+    let ink = if on {
+        colour
+    } else if lit {
+        p.text
+    } else {
+        p.text_muted
+    };
+    draw_icon(scene, icon, glyph, ink);
+}
+
 /// The keyboard shortcuts sheet (`canvas::keybinds`): a scrim, a card, and
 /// the catalogue on it in columns — a heading per section, and under it one
 /// line per binding with the key in a chip and what it does beside it.
@@ -4727,36 +4763,26 @@ fn draw_mixer_strip(
         }
     }
 
-    // --- the two switches.
-    for (rect, caption, on, what) in [
-        (layout.mute, "M", strip.mute, MixerHit::Mute(layout.index)),
-        (layout.solo, "S", strip.solo, MixerHit::Solo(layout.index)),
+    // --- the two switches, as icons — Ty: *"turn the mute and solo buttons
+    // on the tracks into actual icons and not letters inside of buttons"*.
+    // The lanes' and the rack's are drawn the same way.
+    for (rect, icon, on, colour, what) in [
+        (
+            layout.mute,
+            crate::icon::Icon::Mute,
+            strip.mute,
+            p.meter_peak,
+            MixerHit::Mute(layout.index),
+        ),
+        (
+            layout.solo,
+            crate::icon::Icon::Solo,
+            strip.solo,
+            p.accent,
+            MixerHit::Solo(layout.index),
+        ),
     ] {
-        if rect.is_empty() {
-            continue;
-        }
-        fill_rect_rounded(
-            scene,
-            rect,
-            m.corner_radius,
-            if on {
-                p.accent
-            } else if hovering(what) {
-                p.border
-            } else {
-                p.window
-            },
-        );
-        if let Some(text) = labels_get(labels, caption) {
-            draw_text_clipped(
-                scene,
-                text,
-                rect,
-                rect.x + ((rect.width - text.width) / 2.0).max(1.0),
-                rect.y + (rect.height - text.height) / 2.0,
-                if on { p.panel } else { p.text_muted },
-            );
-        }
+        draw_switch_icon(scene, p, rect, icon, on, colour, hovering(what));
     }
 
     // --- the read-out. The gain, except while the pan is the thing moving:
@@ -5841,21 +5867,23 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
                 );
             }
         }
-        for (rect, on, caption, colour) in [
-            (row.solo, channel.soloed, "S", p.accent),
-            (row.mute, channel.muted, "M", p.meter_peak),
+        for (rect, on, icon, colour, what) in [
+            (
+                row.solo,
+                channel.soloed,
+                crate::icon::Icon::Solo,
+                p.accent,
+                RackHit::Solo(row.index),
+            ),
+            (
+                row.mute,
+                channel.muted,
+                crate::icon::Icon::Mute,
+                p.meter_peak,
+                RackHit::Mute(row.index),
+            ),
         ] {
-            fill_rect_rounded(scene, rect, 2.0, if on { colour } else { p.border });
-            if let Some(text) = labels.get(caption) {
-                draw_text_clipped(
-                    scene,
-                    text,
-                    rect,
-                    rect.x + ((rect.width - text.width) / 2.0).max(0.0),
-                    rect.y + (rect.height - text.height) / 2.0,
-                    if on { p.panel } else { p.text_muted },
-                );
-            }
+            draw_switch_icon(scene, p, rect, icon, on, colour, chrome.hover == Some(what));
         }
 
         // The button that opens this channel's instrument in a window of its

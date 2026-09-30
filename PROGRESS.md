@@ -56,6 +56,10 @@ codebase that cost real time to rediscover.
 - **Seen** on `:99`: the first-song question, lane chips and a chip-less
   rack, the stray-clip question, *Duplicate it*, the mixer with a track per
   lane and "fed by" right.
+- **The mixer's and the rack's mute and solo are icons too** (Ty asked
+  for *"the tracks"*; the mixer strips are tracks): `draw_switch_icon`, one
+  drawing for both, the lanes' look — muted ink off, own colour on a wash
+  on, no box.
 - **Bug found by looking:** the Enter that named a new song also answered
   the question it raised (a repeat arriving on the slow server); a key now
   answers a question only after it has been up 400 ms. And the window read
