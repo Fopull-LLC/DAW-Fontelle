@@ -328,6 +328,17 @@ pub enum RouteChoice {
     Off,
 }
 
+/// The rack of a lane-style song: no route chips, and the names given their
+/// room. Each lane owns a track there, so a channel has nothing to choose
+/// (`docs/ux-routing-and-learning-plan.md` §1).
+pub fn without_route_chips(mut layout: RackLayout) -> RackLayout {
+    for row in &mut layout.rows {
+        row.name.width = (row.edit.x - 2.0 - row.name.x).max(0.0);
+        row.route = Rect::ZERO;
+    }
+    layout
+}
+
 /// The menu the route chip drops.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouteMenu {

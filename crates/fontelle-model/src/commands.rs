@@ -42,7 +42,7 @@ use crate::project::Project;
 pub struct NotApplied(std::borrow::Cow<'static, str>);
 
 impl NotApplied {
-    fn new(what: &'static str) -> Self {
+    pub(crate) fn new(what: &'static str) -> Self {
         Self(std::borrow::Cow::Borrowed(what))
     }
 }
@@ -2332,6 +2332,17 @@ impl Compound {
 
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
+    }
+
+    /// Parts that have **already been applied**, joined after the fact — what
+    /// [`History::amend`](crate::History::amend) makes of an entry and the
+    /// command that follows it.
+    pub(crate) fn already_applied(label: String, parts: Vec<Box<dyn Command>>) -> Self {
+        Self {
+            label,
+            parts,
+            applied: true,
+        }
     }
 
     /// A compound as it arrives off a wire: its parts are edits, each made

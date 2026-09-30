@@ -134,6 +134,36 @@ impl History {
         Ok(())
     }
 
+    /// Runs `command` as **part of the entry on top**, so one undo takes back
+    /// both — what follows an edit because of it (lane-style's upkeep, which
+    /// gives a new lane its track) is not a step of its own.
+    ///
+    /// Only while that entry is still in the hand: once it has been let go
+    /// of (sent to a shared song, or ended by [`Self::break_gesture`]) it is
+    /// closed, and `command` becomes an entry of its own like any other.
+    pub fn amend(
+        &mut self,
+        mut command: Box<dyn Command>,
+        doc: &mut Project,
+    ) -> Result<(), CommandError> {
+        if self.head_sent || self.gesture_broken || self.undo_stack.is_empty() {
+            return self.apply(command, doc);
+        }
+        crate::arena::minting_in(self.mint_space, || command.apply(doc))?;
+        self.generation += 1;
+        self.redo_stack.clear();
+        let top = self.undo_stack.pop().expect("checked above");
+        let label = top.command.label().to_string();
+        self.undo_stack.push(Entry {
+            key: top.key,
+            command: Box::new(crate::commands::Compound::already_applied(
+                label,
+                vec![top.command, command],
+            )),
+        });
+        Ok(())
+    }
+
     /// Makes every command this history applies from now on mint its ids in
     /// `space` — a joiner's own, so nothing it makes can collide with what
     /// the host or another joiner makes (`docs/collab-plan.md` §18, F55).

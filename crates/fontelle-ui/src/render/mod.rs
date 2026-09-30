@@ -6796,13 +6796,23 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
                 if on { colour } else { p.text_muted },
             );
         }
+        // Lane-style: the lane's track, as its colour — the chip a rack row
+        // wears in rack-style, on the lane that owns the track here.
+        let chip = info
+            .and_then(|i| i.track_color)
+            .map(|colour| (crate::canvas::lane_track_chip(header), colour))
+            .filter(|(chip, _)| !chip.is_empty());
+        if let Some((chip, colour)) = chip {
+            fill_rect_rounded(scene, chip, 2.0, Color(colour));
+        }
+        let name_end = chip.map_or(mute_switch.x, |(chip, _)| chip.x);
         let name_area = if mute_switch.is_empty() {
             header
         } else {
             Rect::new(
                 header.x,
                 header.y,
-                (mute_switch.x - 4.0 - header.x).max(0.0),
+                (name_end - 4.0 - header.x).max(0.0),
                 header.height,
             )
         };

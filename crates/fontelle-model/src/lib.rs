@@ -11,6 +11,7 @@ mod clip;
 mod command;
 mod commands;
 mod lane;
+mod lane_routing;
 mod mixer;
 mod note;
 mod prefab;
@@ -47,6 +48,10 @@ pub use commands::{
     SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
+pub use lane_routing::{
+    LaneConflict, LaneRouting, LaneUpkeep, RoutingMode, SetClipChannel, SetRoutingMode,
+    lane_conflicts,
+};
 pub use mixer::{EffectSlot, LEGACY_TRACK_GREY, Mixer, MixerTrack, PanLaw, Send, TRACK_PALETTE};
 pub use note::{Note, NoteData, NoteHome, NoteProperty};
 pub use prefab::{

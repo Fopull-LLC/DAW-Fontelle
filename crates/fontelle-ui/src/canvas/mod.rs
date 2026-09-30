@@ -208,7 +208,7 @@ pub use prefabs::{
 pub use rack::{
     NEW_TRACK, NO_OUTPUT, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, output_menu_layout,
     rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
-    route_menu_layout_excluding, route_tip, scroll_to_show, tab_at, tab_strip,
+    route_menu_layout_excluding, route_tip, scroll_to_show, tab_at, tab_strip, without_route_chips,
 };
 pub use roll_scale::{
     RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
@@ -228,11 +228,11 @@ pub use timeline::{
     TimelineTool, TimelineToolbar, TimelineView, arrival_row, clip_bands, clip_cuts, clip_grip,
     clip_notes, clip_overlaps, clip_rect, clip_waveform, clip_waveform_core, content_end,
     content_fraction, content_ticks, fade_anatomy, fade_caption, fade_curve, fetching_caption,
-    lane_scroll_to_show, lane_switches, lane_to_y, loop_marks, slice_marks, time_selection,
-    timeline_beat_labels, timeline_grab, timeline_grid_units, timeline_hit, timeline_layout,
-    timeline_snap, timeline_tick_to_x, timeline_toolbar_hit, timeline_toolbar_layout,
-    timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, visible_lanes,
-    y_to_lane,
+    lane_scroll_to_show, lane_switches, lane_to_y, lane_track_chip, loop_marks, slice_marks,
+    time_selection, timeline_beat_labels, timeline_grab, timeline_grid_units, timeline_hit,
+    timeline_layout, timeline_snap, timeline_tick_to_x, timeline_toolbar_hit,
+    timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
+    timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

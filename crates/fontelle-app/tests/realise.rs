@@ -614,3 +614,36 @@ fn a_project_with_no_monitor_schedules_no_node_for_one() {
         "a graph built with no monitor carried one anyway"
     );
 }
+
+// ------------------------------------------- lane-style routing (2026-09-30)
+
+/// In a lane-style project an instrument plays through the track of the lane
+/// it claimed, and its rack route chip — kept, never shown — is not obeyed
+/// (`docs/ux-routing-and-learning-plan.md` §1: the modes never interfere).
+#[test]
+fn in_lane_style_a_channel_plays_through_its_lanes_track_and_not_its_route_chip() {
+    let mut rig = Rig::new();
+    let chip = rig.add_track("Chip", None);
+    rig.add_channel("A", 0.4, chip);
+    fontelle_model::SetRoutingMode::new(fontelle_model::RoutingMode::Lane)
+        .apply(&mut rig.project)
+        .unwrap();
+    // The old route, as a peer or an old file might still set it.
+    for (_, channel) in rig.project.channels.iter_mut() {
+        channel.mixer_track = Some(chip);
+    }
+    let mut upkeep = fontelle_model::LaneUpkeep::due(&rig.project).expect("a lane to give a track");
+    upkeep.apply(&mut rig.project).unwrap();
+    let lane_track = rig.project.lane_track(rig.lane).expect("the lane's track");
+
+    set_flag(&mut rig.project, FlagTarget::TrackMute(chip), true);
+    assert!(
+        peak_mono(&rig.render(4_000)) > 0.1,
+        "muting the route chip's track silenced a lane-style channel"
+    );
+    set_flag(&mut rig.project, FlagTarget::TrackMute(lane_track), true);
+    assert!(
+        peak_mono(&rig.render(4_000)) < 1e-4,
+        "muting the lane's track left its instrument playing"
+    );
+}

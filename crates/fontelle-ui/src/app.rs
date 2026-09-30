@@ -1262,6 +1262,8 @@ pub struct WindowApp {
     /// What the session is waiting on the person for (§4.3, §7.1), drawn as
     /// a card over everything.
     session_question: Option<crate::document::SessionQuestion>,
+    /// When the question went up — a key answers it only after a moment.
+    session_question_shown: Option<std::time::Instant>,
     /// A code typed while there were unsaved changes, held while the save
     /// prompt asks about them (§4.4, rule 3).
     pending_join: Option<String>,
@@ -1762,6 +1764,8 @@ pub struct WindowApp {
     /// What each settings row is for, parallel to `settings` — the settings
     /// page's line under each name.
     settings_help: Vec<String>,
+    /// Whether the song is lane-style — the rack then has no route chips.
+    lane_style: bool,
     /// Which settings row the arrow keys are on, once one has been pressed —
     /// the precision path beside the drag. `None` until a row is touched.
     settings_focus: Option<usize>,
@@ -2122,6 +2126,7 @@ impl WindowApp {
             share_open: false,
             session: Default::default(),
             session_question: None,
+            session_question_shown: None,
             pending_join: None,
             wake: None,
             saved_at: None,
@@ -2312,6 +2317,7 @@ impl WindowApp {
             settings: Vec::new(),
             settings_controls: Vec::new(),
             settings_help: Vec::new(),
+            lane_style: false,
             settings_focus: None,
             projects: Vec::new(),
             library_count: 0,
@@ -6270,6 +6276,9 @@ impl WindowApp {
             self.channels.len(),
             self.rack_scroll,
         );
+        if self.lane_style {
+            self.rack = crate::canvas::without_route_chips(self.rack.clone());
+        }
         self.prefab_panel = crate::canvas::prefab_layout(
             self.layout.rack.body,
             m,
@@ -6316,6 +6325,18 @@ impl WindowApp {
         self.settings = doc.settings();
         self.settings_controls = doc.setting_controls();
         self.settings_help = doc.setting_help();
+        self.lane_style = doc.lane_style();
+        // A question the song itself raised — lane-style's stray clip, the
+        // first new song's routing — arrives with the edit that raised it,
+        // not only while a shared song is open (`read_session`).
+        let question = doc.session_question();
+        if question != self.session_question {
+            if question.is_some() && self.session_question.is_none() {
+                self.session_question_shown = Some(std::time::Instant::now());
+            }
+            self.session_question = question;
+            self.tree.invalidate_rect(self.layout.window);
+        }
         // The page covers the window, so whatever it shows is the window's.
         if self.settings_page.is_some() {
             self.tree.invalidate_rect(self.layout.window);
@@ -19272,6 +19293,16 @@ impl WindowApp {
         // Enter is the answer the question weighted — the safe one — and
         // Escape its last, which is always the one that does nothing.
         if let Some(question) = &self.session_question {
+            // A key answers only a question that has been up a moment: the
+            // Enter that named a new song raised the routing question, and
+            // its repeat was answering it before it was ever seen.
+            if event.repeat
+                || self
+                    .session_question_shown
+                    .is_none_or(|shown| shown.elapsed() < std::time::Duration::from_millis(400))
+            {
+                return;
+            }
             let answer = match &event.logical_key {
                 Key::Named(NamedKey::Enter) => Some(question.default),
                 Key::Named(NamedKey::Escape) => question.buttons.len().checked_sub(1),
@@ -20337,6 +20368,9 @@ impl WindowApp {
             self.tree.invalidate_rect(self.layout.window);
         }
         self.session = session;
+        if question.is_some() && self.session_question.is_none() {
+            self.session_question_shown = Some(std::time::Instant::now());
+        }
         self.session_question = question;
         for notice in notices {
             self.show_toast(notice, false);

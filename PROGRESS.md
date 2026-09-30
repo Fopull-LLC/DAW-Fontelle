@@ -19,6 +19,48 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-01 — UX plan step 4: lane-style routing.**
+`docs/ux-routing-and-learning-plan.md` §1, built.
+
+- **Two modes per song** (`fontelle-model/src/lane_routing.rs`,
+  `Project::lane_routing`, serde-defaulted to rack-style). Everything
+  lane-style keeps (the mode, each lane's track, each instrument's claimed
+  lane) lives in that one struct and is read only through
+  `Project::channel_route` / `clip_route`, which `realise.rs` and the
+  compiler now ask instead of `channel.mixer_track` / `data.mixer_track`.
+  A rack-style song reads nothing new; a lane-style one ignores route chips.
+- **One instrument, one lane** (Ty: *"i definitely do NOT want to have
+  duplicate copies of instruments"*): an instrument claims the first lane
+  its clip lands on. A clip of it on another lane raises a question (via
+  `session_question`): *Take it back*, *Move it here* (the instrument and
+  all its clips go to that lane), or *Duplicate it* (`DuplicateChannel` +
+  the new `SetClipChannel`). One undo each.
+- **`LaneUpkeep`** gives trackless lanes a track (named after the lane) and
+  claims lanes for instruments, computed from the document rather than
+  taught to every command that makes a lane. The session runs it when an
+  edit settles (`let_go`, which replaced every `history.break_gesture()`,
+  and an idle check in `pump`) and folds it into that edit's undo entry
+  (`History::amend`, new). So a drag stays one entry and nobody is asked
+  anything with the button held.
+- **Switching** (`SetRoutingMode`) resets every route to the master and
+  keeps every track (Ty's answer B); the toast says so and counts clips
+  left on a lane their instrument does not play through. Settings page:
+  *Project* section, "Routing in this song" and "New songs start as"
+  (`Settings::new_song_routing`). **The first new song asks** (Rack-style /
+  Lane-style), not as an undo step, and the answer is the default.
+- **What shows:** a lane-style lane header wears its track's colour
+  (`canvas::lane_track_chip`, `LaneInfo::track_color`); the rack has no
+  route chips (`without_route_chips`); renaming a lane renames its track; a
+  lane's own track cannot be deleted; the audio clip editor reads the
+  lane's track and says why a route change does not take.
+- **Seen** on `:99`: the first-song question, lane chips and a chip-less
+  rack, the stray-clip question, *Duplicate it*, the mixer with a track per
+  lane and "fed by" right.
+- **Bug found by looking:** the Enter that named a new song also answered
+  the question it raised (a repeat arriving on the slow server); a key now
+  answers a question only after it has been up 400 ms. And the window read
+  `session_question` only during a shared song — now on every refresh too.
+
 **As of 2026-09-30 (night, latest) — UX plan step 3: settings is a full
 page.** `docs/ux-routing-and-learning-plan.md` §6, built. Ty chose *"a full
 settings page"* over redesigning the sidebar tab.

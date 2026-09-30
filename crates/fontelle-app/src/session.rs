@@ -507,6 +507,18 @@ pub struct Session {
     /// id, so it follows the row through moves and is gone with it. New
     /// material with no row of its own lands here (`Landing::Arrival`).
     selected_lane: Option<fontelle_types::LaneId>,
+    /// Lane-style's upkeep is due: a local edit landed, at this history
+    /// generation and this moment, and the lanes have not been looked at
+    /// since (`settle_lanes`).
+    lanes_unsettled: Option<(u64, std::time::Instant)>,
+    /// The question a stray clip raised in lane-style, while it stands.
+    lane_question: Option<fontelle_model::LaneConflict>,
+    /// The stray clips already known about — asked of, or there when the
+    /// song was switched over — so each is asked about once.
+    known_conflicts: Vec<ClipId>,
+    /// A new song was made with no routing chosen for new songs yet: the
+    /// first-song question is up (`docs/ux-routing-and-learning-plan.md` §1).
+    routing_question: bool,
     /// The length of each sound the window has asked about while it was in
     /// the air (`StudioHost::sound_footprint`): frames and rate, by path, so
     /// a drag that crosses forty bars reads the header once.
@@ -1358,6 +1370,10 @@ impl Session {
             import_kind: fontelle_types::FolderKind::Audio,
             arrival_row: 0,
             selected_lane: None,
+            lanes_unsettled: None,
+            lane_question: None,
+            known_conflicts: Vec::new(),
+            routing_question: false,
             sound_lengths: std::collections::HashMap::new(),
             import_query: String::new(),
             pending_import: None,
@@ -2272,12 +2288,57 @@ impl Session {
             // Not through `name_after`: this document is not the open one.
             let _ = fontelle_model::RenameProject::new(stem.to_string_lossy()).apply(&mut project);
         }
+        // Routed the way new songs are, or asked once the song is open.
+        let asks = self.settings.new_song_routing.is_none();
+        if let Some(mode) = self.settings.new_song_routing {
+            begin_as(&mut project, mode);
+        }
         project.meta.stamp_save(&self.settings.your_name());
         crate::save_project(&project, &path).map_err(|e| e.to_string())?;
         self.projects.rescan();
         let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
         self.adopt(opened, path);
+        self.routing_question = asks;
+        self.touch();
         Ok(())
+    }
+
+    /// The first-song question: how new songs route their sound.
+    fn routing_question_view(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        self.routing_question
+            .then(|| fontelle_ui::document::SessionQuestion {
+                lines: vec![
+                    "How should this song send its sound to the mixer?".to_string(),
+                    "Rack-style: each instrument picks its track, as in FL Studio.".to_string(),
+                    "Lane-style: each lane owns a track, as in Reaper or Logic.".to_string(),
+                    "New songs start the same way; change it in Settings \u{2192} Project."
+                        .to_string(),
+                ],
+                buttons: vec!["Rack-style".to_string(), "Lane-style".to_string()],
+                default: 0,
+            })
+    }
+
+    /// Answers it: the song begins that way, and new songs will too.
+    fn answer_routing_question(&mut self, answer: usize) {
+        use fontelle_model::RoutingMode;
+        self.routing_question = false;
+        let mode = if answer == 1 {
+            RoutingMode::Lane
+        } else {
+            RoutingMode::Rack
+        };
+        self.settings.new_song_routing = Some(mode);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        // How the song began, not an edit to it: not an undo step.
+        begin_as(&mut self.project, mode);
+        self.rebuild_graph();
+        if let Err(e) = <Self as DocumentHost>::save(self) {
+            self.message = Some(e);
+        }
+        self.touch();
     }
 
     /// Replaces everything that is open with `opened`, from `path`.
@@ -2300,6 +2361,13 @@ impl Session {
         self.name_after(&path);
         self.library = opened.library;
         self.history = History::new();
+        self.lanes_unsettled = None;
+        self.lane_question = None;
+        self.known_conflicts = fontelle_model::lane_conflicts(&self.project)
+            .iter()
+            .map(|c| c.clip)
+            .collect();
+        self.routing_question = false;
         self.clip = Session::first_clip(&self.project).unwrap_or_default();
         self.remember_project(&path);
         self.bundle = Some(path);
@@ -2960,7 +3028,7 @@ impl Session {
                     .into_iter()
                     .find(|id| !before.contains(id))
                     .ok_or("the row for the render was not made")?;
-                self.history.break_gesture();
+                self.let_go();
                 self.dirty = true;
                 self.republish();
                 self.touch();
@@ -3776,6 +3844,10 @@ impl Session {
         match self.history.apply(command, &mut self.project) {
             Ok(()) => {
                 self.dirty = true;
+                if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+                    self.lanes_unsettled =
+                        Some((self.history.generation(), std::time::Instant::now()));
+                }
                 self.republish();
                 // **Every accepted command moves the revision.** The window
                 // caches every list it draws and re-reads them only when this
@@ -3798,6 +3870,158 @@ impl Session {
                 self.message = Some(e.to_string());
             }
         }
+    }
+
+    // ------------------------------------------------ lane-style routing ---
+
+    /// Lets go of the gesture in hand — after lane-style's upkeep has had its
+    /// look, so what the upkeep does joins the edit that made it due.
+    fn let_go(&mut self) {
+        self.settle_lanes(true);
+        self.history.break_gesture();
+    }
+
+    /// Lane-style's upkeep, once an edit has settled: every lane gets its
+    /// track and every instrument its lane (`LaneUpkeep`), folded into the
+    /// edit's own undo entry; and a clip that landed on a lane its instrument
+    /// has not claimed raises the question (`docs/ux-routing-and-learning-
+    /// plan.md` §1). After the gesture rather than during it, so a drag is
+    /// one undo entry and nobody is asked anything with the button held.
+    fn settle_lanes(&mut self, ask: bool) {
+        if self.lanes_unsettled.take().is_none() {
+            return;
+        }
+        if let Some(upkeep) = fontelle_model::LaneUpkeep::due(&self.project) {
+            match self.history.amend(Box::new(upkeep), &mut self.project) {
+                Ok(()) => {
+                    self.dirty = true;
+                    self.rebuild_graph();
+                }
+                Err(e) => self.message = Some(e.to_string()),
+            }
+        }
+        let conflicts = fontelle_model::lane_conflicts(&self.project);
+        if ask
+            && let Some(new) = conflicts
+                .iter()
+                .find(|c| !self.known_conflicts.contains(&c.clip))
+        {
+            self.lane_question = Some(*new);
+        }
+        self.known_conflicts = conflicts.iter().map(|c| c.clip).collect();
+        self.touch();
+    }
+
+    /// Switches the open song between rack-style and lane-style routing, as
+    /// one undo step. Routes are reset and tracks kept (Ty's answer B); a
+    /// clip already on a lane its instrument did not claim is not asked
+    /// about — the song was made that way, and the switch says so.
+    pub fn set_routing_mode(&mut self, mode: fontelle_model::RoutingMode) {
+        if self.project.lane_routing.mode == mode {
+            return;
+        }
+        self.let_go();
+        self.run(Box::new(fontelle_model::SetRoutingMode::new(mode)));
+        self.settle_lanes(false);
+        self.lane_question = None;
+        self.history.break_gesture();
+        self.rebuild_graph();
+    }
+
+    /// The lane-style question, while its clip still stands where it did.
+    fn lane_question_view(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        let asked = self.lane_question?;
+        if !fontelle_model::lane_conflicts(&self.project).contains(&asked) {
+            return None;
+        }
+        let instrument = self.project.channels.get(asked.channel)?.name.clone();
+        let claimed = self.project.lanes.get(asked.claimed)?.name.clone();
+        let lane = self.project.lanes.get(asked.lane)?.name.clone();
+        Some(fontelle_ui::document::SessionQuestion {
+            lines: vec![
+                format!("{instrument} already plays through {claimed}\u{2019}s track."),
+                "In lane-style an instrument has one lane.".to_string(),
+                format!("Move it to {lane}, or duplicate it as a new channel for {lane}."),
+            ],
+            buttons: vec![
+                "Take it back".to_string(),
+                "Move it here".to_string(),
+                "Duplicate it".to_string(),
+            ],
+            default: 0,
+        })
+    }
+
+    /// Answers the lane-style question: 0 takes the clip back, 1 moves the
+    /// instrument (and every clip of it) to the new lane, 2 duplicates the
+    /// channel for the new lane. Each one undo step.
+    fn answer_lane_question(&mut self, answer: usize) {
+        let Some(asked) = self.lane_question.take() else {
+            return;
+        };
+        match answer {
+            0 => self.undo(),
+            1 => {
+                let moves: Vec<Box<dyn Command>> = self
+                    .project
+                    .clips
+                    .iter()
+                    .filter(|(id, clip)| {
+                        clip.lane != asked.lane
+                            && matches!(
+                                self.project.clip_source(*id).as_deref(),
+                                Some(fontelle_model::ClipSource::Notes(data))
+                                    if data.channel == asked.channel
+                            )
+                    })
+                    .map(|(id, _)| {
+                        Box::new(fontelle_model::MoveClip::new(id, 0, Some(asked.lane)))
+                            as Box<dyn Command>
+                    })
+                    .collect();
+                let name = self
+                    .project
+                    .channels
+                    .get(asked.channel)
+                    .map_or_else(String::new, |c| c.name.clone());
+                self.run(Box::new(fontelle_model::Compound::new(
+                    format!("Move {name} to its new lane"),
+                    moves,
+                )));
+            }
+            _ => {
+                self.run(Box::new(fontelle_model::DuplicateChannel::new(
+                    asked.channel,
+                )));
+                let copy = self
+                    .history
+                    .last_applied()
+                    .and_then(|c| {
+                        c.as_any()
+                            .downcast_ref::<fontelle_model::DuplicateChannel>()
+                    })
+                    .and_then(|d| d.channel());
+                if let Some(copy) = copy
+                    && let Err(e) = self.history.amend(
+                        Box::new(fontelle_model::SetClipChannel::new(asked.clip, copy)),
+                        &mut self.project,
+                    )
+                {
+                    self.message = Some(e.to_string());
+                }
+            }
+        }
+        if answer != 0 {
+            self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+            self.settle_lanes(false);
+            self.history.break_gesture();
+            self.rebuild_graph();
+        }
+        self.known_conflicts = fontelle_model::lane_conflicts(&self.project)
+            .iter()
+            .map(|c| c.clip)
+            .collect();
+        self.touch();
     }
 
     /// The open clip's home channel, if it is a note clip.
@@ -4218,7 +4442,7 @@ impl Session {
             "Choose preset",
             parts,
         )));
-        self.history.break_gesture();
+        self.let_go();
         // A Flopsynth names no soundfont, so nothing goes in the map that
         // remembers which file a channel's preset came from — and
         // `selected_preset` correctly shows no soundfont highlight.
@@ -4291,7 +4515,7 @@ impl Session {
                 &mut self.project,
             )
             .map_err(|e| e.to_string())?;
-        self.history.break_gesture();
+        self.let_go();
 
         // The browser follows what was loaded. A hit chosen out of a search
         // across the collection is very often in a soundfont that is not open,
@@ -4351,7 +4575,7 @@ impl Session {
             .apply_for::<AddChannel>(Box::new(add))?
             .channel()
             .ok_or("the channel was not created")?;
-        self.history.break_gesture();
+        self.let_go();
 
         self.dirty = true;
         // The new channel is the selected one: you made it to play it. It
@@ -4550,7 +4774,7 @@ impl Session {
                 &mut self.project,
             )
             .map_err(|e| e.to_string())?;
-        self.history.break_gesture();
+        self.let_go();
         // A channel that was a soundfont player is not one any more, so the
         // preset the browser remembered for it would name a sound it no longer
         // plays.
@@ -4853,7 +5077,7 @@ impl Session {
         }
         let role = fontelle_core::flopsynth::layer_role(layer).label();
         self.store_patch(channel, patch);
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
         Ok(format!("{name} loaded into {role}"))
     }
@@ -4953,7 +5177,7 @@ impl Session {
             osc.source = fontelle_dsp::SynthSource::User(index);
         }
         self.store_patch(channel, patch);
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
         Ok(())
     }
@@ -4966,7 +5190,7 @@ impl Session {
         };
         let frame = Self::wavetable_frame(&patch, layer);
         // Its own undo step, whatever stroke was open.
-        self.history.break_gesture();
+        self.let_go();
         self.edit_wavetable(
             layer,
             fontelle_types::WavetableEdit::Formula {
@@ -4974,7 +5198,7 @@ impl Session {
                 text: text.to_string(),
             },
         )?;
-        self.history.break_gesture();
+        self.let_go();
         self.wavetable_formulas.insert(layer, text.to_string());
         Ok(())
     }
@@ -5321,7 +5545,7 @@ impl Session {
             }
             let role = fontelle_core::flopsynth::layer_role(layer).label();
             self.store_patch(channel, patch);
-            self.history.break_gesture();
+            self.let_go();
             self.touch();
             return Ok(format!("{} loaded into {role}", set.label()));
         }
@@ -5388,7 +5612,7 @@ impl Session {
         }
         let role = fontelle_core::flopsynth::layer_role(layer).label();
         self.store_patch(channel, patch);
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
         Ok(if count > 1 {
             format!("{name}: {count} notes loaded into {role}")
@@ -5449,9 +5673,9 @@ impl Session {
     /// (found by the move test, `tests/flopsynth_ui.rs`). The gesture is
     /// broken on either side, the way choosing a preset breaks it.
     fn store_patch_structural(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
-        self.history.break_gesture();
+        self.let_go();
         self.store_patch(channel, patch);
-        self.history.break_gesture();
+        self.let_go();
     }
 
     fn store_patch(&mut self, channel: ChannelId, patch: fontelle_core::Patch) {
@@ -5505,7 +5729,7 @@ impl Session {
                 "Clear instrument",
                 parts,
             )));
-            self.history.break_gesture();
+            self.let_go();
             self.channel_presets.remove(&channel);
             self.patch_cache = None;
             self.dirty = true;
@@ -5516,7 +5740,7 @@ impl Session {
         self.run(Box::new(fontelle_model::SetChannelPatch::new(
             channel, None,
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.channel_presets.remove(&channel);
         self.patch_cache = None;
         self.dirty = true;
@@ -5615,7 +5839,7 @@ impl DocumentHost for Session {
             RollEdit::SetKeys { ids, keys } => {
                 // Fitting to the scale: a key each, one command, one undo.
                 self.run(Box::new(fontelle_model::SetNoteKeys::new(clip, ids, keys)));
-                self.history.break_gesture();
+                self.let_go();
                 Vec::new()
             }
             RollEdit::SetLengths { ids, lengths } => {
@@ -5624,7 +5848,7 @@ impl DocumentHost for Session {
                 self.run(Box::new(fontelle_model::SetNoteLengths::new(
                     clip, ids, lengths,
                 )));
-                self.history.break_gesture();
+                self.let_go();
                 Vec::new()
             }
             RollEdit::Resize { ids, tick_delta } => {
@@ -5658,7 +5882,7 @@ impl DocumentHost for Session {
             }
             RollEdit::Slice { cuts } => {
                 self.run(Box::new(fontelle_model::SliceNotes::new(clip, cuts)));
-                self.history.break_gesture();
+                self.let_go();
                 Vec::new()
             }
             RollEdit::SetSlide { ids, slide } => {
@@ -5722,7 +5946,7 @@ impl DocumentHost for Session {
     }
 
     fn end_gesture(&mut self) {
-        self.history.break_gesture();
+        self.let_go();
     }
 
     fn beats_per_bar(&self) -> u32 {
@@ -6397,7 +6621,7 @@ impl Session {
         if ids.is_empty() {
             return Err(format!("{name} could not be added to this clip"));
         }
-        self.history.break_gesture();
+        self.let_go();
         Ok(format!(
             "Imported {count} note(s) from \u{201c}{name}\u{201d} (FL {})",
             score.version
@@ -6411,6 +6635,9 @@ impl Session {
             .apply(command, &mut self.project)
             .map_err(|e| e.to_string())?;
         self.dirty = true;
+        if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+            self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+        }
         // The second of the two ways into the history — see `run`, which
         // carries the reasoning. Both bump it, so "the document changed" and
         // "the window knows" cannot come apart.
@@ -6419,6 +6646,15 @@ impl Session {
             .last_applied()
             .and_then(|c| c.as_any().downcast_ref::<T>())
             .ok_or_else(|| "the command that was just applied is not on the history".to_string())
+    }
+}
+
+/// Makes a brand-new song rack-style or lane-style — how it began, applied
+/// straight to the document rather than through the history.
+fn begin_as(project: &mut Project, mode: fontelle_model::RoutingMode) {
+    let _ = fontelle_model::SetRoutingMode::new(mode).apply(project);
+    if let Some(mut upkeep) = fontelle_model::LaneUpkeep::due(project) {
+        let _ = upkeep.apply(project);
     }
 }
 
@@ -6496,8 +6732,8 @@ impl StudioHost for Session {
     fn channels(&self) -> Vec<ChannelInfo> {
         self.project
             .channels
-            .values()
-            .map(|channel| ChannelInfo {
+            .iter()
+            .map(|(id, channel)| ChannelInfo {
                 name: channel.name.clone(),
                 // The channel's own switches, not its track's. Since a channel
                 // plays through the master by default, a rack mute that
@@ -6509,8 +6745,9 @@ impl StudioHost for Session {
                 has_instrument: channel.patch_data.is_some() || channel.plugin.is_some(),
                 // What the row's route chip says. `None` is the master, which
                 // the chip writes out by name rather than as a blank.
-                route: channel
-                    .mixer_track
+                route: self
+                    .project
+                    .channel_route(id)
                     .and_then(|id| self.mixer_track_ids().iter().position(|t| *t == id)),
             })
             .collect()
@@ -6566,7 +6803,7 @@ impl StudioHost for Session {
             FlagTarget::ChannelMuted(channel),
             !now,
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
     }
 
@@ -6579,7 +6816,7 @@ impl StudioHost for Session {
             FlagTarget::ChannelSoloed(channel),
             !now,
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
     }
 
@@ -6639,7 +6876,7 @@ impl StudioHost for Session {
                 return;
             }
         };
-        self.history.break_gesture();
+        self.let_go();
         // Selected, because you pressed the plus to write something in it.
         self.prefab = made;
         self.rack_tab = fontelle_ui::document::RackTab::Prefabs;
@@ -6661,7 +6898,7 @@ impl StudioHost for Session {
             return;
         };
         self.run(Box::new(fontelle_model::RemovePrefab::new(id)));
-        self.history.break_gesture();
+        self.let_go();
         if self.prefab == Some(id) {
             self.prefab = None;
         }
@@ -6697,7 +6934,7 @@ impl StudioHost for Session {
                 return None;
             }
         };
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         self.republish();
         made
@@ -6705,7 +6942,7 @@ impl StudioHost for Session {
 
     fn detach_prefab(&mut self, clip: ClipId) {
         self.run(Box::new(fontelle_model::DetachPrefab::new(clip)));
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         self.republish();
     }
@@ -6726,7 +6963,7 @@ impl StudioHost for Session {
                 return Err(e);
             }
         };
-        self.history.break_gesture();
+        self.let_go();
         // The clip keeps its id, so the roll is still on the block it was on —
         // which is the whole reason the command works in place. Opening it
         // again would be a no-op; what does need saying is that the *prefab*
@@ -6758,7 +6995,7 @@ impl StudioHost for Session {
             .and_then(|strip| self.mixer_track_ids().get(strip).copied())
             .filter(|id| Some(*id) != self.project.mixer.master);
         self.run(Box::new(fontelle_model::SetChannelRoute::new(id, track)));
-        self.history.break_gesture();
+        self.let_go();
         // The channel's audio arrives on a different bus now, which is the
         // graph's shape and not a value in it.
         self.rebuild_graph();
@@ -6769,7 +7006,7 @@ impl StudioHost for Session {
         // makes "send the drums to 3" a sentence.
         let name = format!("Track {}", self.project.mixer.tracks.len());
         self.run(Box::new(fontelle_model::AddMixerTrack::new(name)));
-        self.history.break_gesture();
+        self.let_go();
         // The one you just made is the one you are about to put an effect on,
         // so the options column follows it. It lands before the master, which
         // `mixer_track_ids` keeps last.
@@ -6783,8 +7020,24 @@ impl StudioHost for Session {
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return;
         };
+        // In lane-style a lane keeps its track: deleting it would have the
+        // upkeep make it again at once, empty.
+        if let Some(lane) = self
+            .project
+            .lane_ids()
+            .into_iter()
+            .find(|lane| self.project.lane_track(*lane) == Some(id))
+            .filter(|_| self.lane_style())
+        {
+            let name = self.project.lanes[lane].name.clone();
+            self.message = Some(format!(
+                "That track is {name}\u{2019}s \u{2014} in lane-style a lane keeps its track. Delete the lane instead."
+            ));
+            self.touch();
+            return;
+        }
         self.run(Box::new(fontelle_model::RemoveMixerTrack::new(id)));
-        self.history.break_gesture();
+        self.let_go();
         // The list is shorter than the selection now, if the last strip went.
         self.clamp_track_selection();
         self.rebuild_graph();
@@ -6823,11 +7076,12 @@ impl StudioHost for Session {
                         .channels()
                         .into_iter()
                         .filter_map(|channel| {
-                            strip(self.project.channels.get(channel)?.mixer_track)
+                            self.project.channels.get(channel)?;
+                            strip(self.project.channel_route(channel))
                         })
                         .collect(),
-                    fontelle_model::ClipSource::Audio(data) => {
-                        strip(data.mixer_track).into_iter().collect()
+                    fontelle_model::ClipSource::Audio(_) => {
+                        strip(self.project.clip_route(id)).into_iter().collect()
                     }
                     _ => return None,
                 };
@@ -6866,7 +7120,7 @@ impl StudioHost for Session {
         // A loop is refused by the command and reported by `run`, which is
         // what puts the message in front of the user (§13.2).
         self.run(Box::new(fontelle_model::SetTrackOutput::new(id, output)));
-        self.history.break_gesture();
+        self.let_go();
         // The signal arrives on a different bus now, which is the graph's
         // shape rather than a value in it.
         self.rebuild_graph();
@@ -6887,7 +7141,7 @@ impl StudioHost for Session {
             fontelle_model::FlagTarget::TrackOutputOn(id),
             on,
         )));
-        self.history.break_gesture();
+        self.let_go();
         // The bus sum is the edge, so switching it changes the *shape* of the
         // schedule rather than a value in it — see `realise`.
         self.rebuild_graph();
@@ -6910,7 +7164,7 @@ impl StudioHost for Session {
             return;
         }
         self.run(Box::new(fontelle_model::MoveInsert::new(id, from, to)));
-        self.history.break_gesture();
+        self.let_go();
         // Order is what the chain *is*, so the schedule changes.
         self.rebuild_graph();
     }
@@ -6929,7 +7183,7 @@ impl StudioHost for Session {
         };
         self.run(Box::new(fontelle_model::SetMixerTrackColor::new(id, color)));
         // One choice from one menu: the next edit is not folded into it.
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
     }
 
@@ -7334,7 +7588,7 @@ impl StudioHost for Session {
             channel,
             Some(state),
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.patch_cache = None;
         self.rebuild_graph();
         self.touch();
@@ -7373,7 +7627,7 @@ impl StudioHost for Session {
             "Choose plugin",
             parts,
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.channel_presets.remove(&id);
         self.patch_cache = None;
         self.rebuild_graph();
@@ -7389,7 +7643,7 @@ impl StudioHost for Session {
         };
         let state = self.plugins.state_for(found);
         self.run(Box::new(fontelle_model::AddPluginInsert::new(track, state)));
-        self.history.break_gesture();
+        self.let_go();
         self.rebuild_graph();
         self.touch();
     }
@@ -7448,7 +7702,7 @@ impl StudioHost for Session {
             self.message = Some(e.to_string());
             return;
         }
-        self.history.break_gesture();
+        self.let_go();
         // The channel is not playing that preset any more, whatever it was.
         self.channel_presets.remove(&id);
         self.patch_cache = None;
@@ -7485,7 +7739,7 @@ impl StudioHost for Session {
         )) {
             Ok(command) => {
                 let made = command.channel();
-                self.history.break_gesture();
+                self.let_go();
                 // The copy is what you are now working on — you made it to
                 // play it — and the roll follows, the same handshake adding a
                 // channel has.
@@ -7518,7 +7772,7 @@ impl StudioHost for Session {
             return;
         }
         self.run(Box::new(fontelle_model::RemoveChannel::new(id)));
-        self.history.break_gesture();
+        self.let_go();
         self.channel_presets.remove(&id);
         self.patch_cache = None;
         self.selected = self
@@ -7562,7 +7816,7 @@ impl StudioHost for Session {
     fn add_lane(&mut self) {
         let name = format!("Lane {}", self.project.lanes.len() + 1);
         self.run(Box::new(fontelle_model::AddLane::new(name)));
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         self.touch();
     }
@@ -7576,7 +7830,7 @@ impl StudioHost for Session {
         // "Lane 4" is worse than a row called "Lane 11" sitting third.
         let name = format!("Lane {}", self.project.lanes.len() + 1);
         self.run(Box::new(fontelle_model::AddLane::at(name, index)));
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         self.touch();
     }
@@ -7591,7 +7845,7 @@ impl StudioHost for Session {
             .get(self.clip)
             .is_some_and(|clip| clip.lane == id);
         self.run(Box::new(fontelle_model::RemoveLane::new(id)));
-        self.history.break_gesture();
+        self.let_go();
         if opened && let Some(next) = Self::first_clip(&self.project) {
             self.clip = next;
             self.selected = self.channel_index_of_clip().unwrap_or(self.selected);
@@ -7606,7 +7860,26 @@ impl StudioHost for Session {
         let Some(id) = self.lane_ids().get(index).copied() else {
             return;
         };
-        self.run(Box::new(fontelle_model::RenameLane::new(id, name)));
+        // In lane-style the lane's track is named after it, and follows it —
+        // unless somebody named the track something else.
+        let track = self
+            .lane_style()
+            .then(|| self.project.lane_track(id))
+            .flatten()
+            .filter(|track| {
+                self.project.mixer.tracks.get(*track).map(|t| &t.name)
+                    == self.project.lanes.get(id).map(|l| &l.name)
+            });
+        match track {
+            Some(track) => self.run(Box::new(fontelle_model::Compound::new(
+                "Rename lane",
+                vec![
+                    Box::new(fontelle_model::RenameLane::new(id, name)),
+                    Box::new(fontelle_model::RenameMixerTrack::new(track, name)),
+                ],
+            ))),
+            None => self.run(Box::new(fontelle_model::RenameLane::new(id, name))),
+        }
         self.dirty = true;
         self.touch();
     }
@@ -7807,6 +8080,12 @@ impl StudioHost for Session {
     }
 
     fn session_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        if let Some(question) = self.routing_question_view() {
+            return Some(question);
+        }
+        if let Some(question) = self.lane_question_view() {
+            return Some(question);
+        }
         if let Some(question) = self.join_question() {
             return Some(fontelle_ui::document::SessionQuestion {
                 lines: question.lines.clone(),
@@ -7827,6 +8106,14 @@ impl StudioHost for Session {
     }
 
     fn answer_session_question(&mut self, answer: usize) -> Result<(), String> {
+        if self.routing_question {
+            self.answer_routing_question(answer);
+            return Ok(());
+        }
+        if self.lane_question_view().is_some() {
+            self.answer_lane_question(answer);
+            return Ok(());
+        }
         if let Some(question) = self.join_question() {
             let answer = question
                 .buttons
@@ -8047,7 +8334,17 @@ impl StudioHost for Session {
     fn settings(&self) -> Vec<LibraryEntry> {
         crate::settings::setting_rows(&self.settings)
             .iter()
-            .map(|row| LibraryEntry::file(row.label(&self.settings), row.value(&self.settings)))
+            .map(|row| {
+                let value = match row {
+                    // The song's, not the settings file's.
+                    crate::settings::SettingRow::SongRouting => {
+                        crate::settings::routing_label(Some(self.project.lane_routing.mode))
+                            .to_string()
+                    }
+                    _ => row.value(&self.settings),
+                };
+                LibraryEntry::file(row.label(&self.settings), value)
+            })
             .collect()
     }
 
@@ -8073,7 +8370,10 @@ impl StudioHost for Session {
                     fraction: row.fraction(midi).unwrap_or(0.0),
                 },
                 K::Choice => {
-                    let (options, chosen) = row.choices(midi).unwrap_or_default();
+                    let (options, chosen) = row
+                        .routing_choices(&self.settings, self.project.lane_routing.mode)
+                        .or_else(|| row.choices(midi))
+                        .unwrap_or_default();
                     SettingControl::Choice { options, chosen }
                 }
                 // The one switch reads its state off the whole settings, not
@@ -8102,10 +8402,58 @@ impl StudioHost for Session {
     }
 
     fn choose_setting(&mut self, index: usize, option: usize) {
+        use crate::settings::SettingRow;
+        use fontelle_model::RoutingMode;
         let rows = crate::settings::setting_rows(&self.settings);
         let Some(row) = rows.get(index).copied() else {
             return;
         };
+        match row {
+            SettingRow::SongRouting => {
+                let mode = if option == 1 {
+                    RoutingMode::Lane
+                } else {
+                    RoutingMode::Rack
+                };
+                if mode == self.project.lane_routing.mode {
+                    return;
+                }
+                self.set_routing_mode(mode);
+                let mut said = match mode {
+                    RoutingMode::Lane => {
+                        "This song is lane-style now: each lane plays through its own mixer track."
+                            .to_string()
+                    }
+                    RoutingMode::Rack => {
+                        "This song is rack-style now: each instrument's chip chooses its track."
+                            .to_string()
+                    }
+                };
+                said.push_str(" Routes were reset; Ctrl+Z switches back.");
+                let strays = fontelle_model::lane_conflicts(&self.project).len();
+                if strays > 0 {
+                    said.push_str(&format!(
+                        " {strays} clip{} sit on a lane their instrument does not play through.",
+                        if strays == 1 { "" } else { "s" }
+                    ));
+                }
+                self.settings_toast = Some((said, false));
+                return;
+            }
+            SettingRow::NewSongRouting => {
+                self.settings.new_song_routing = match option {
+                    1 => Some(RoutingMode::Rack),
+                    2 => Some(RoutingMode::Lane),
+                    _ => None,
+                };
+                if let Err(e) = self.save_settings() {
+                    self.message = Some(format!("could not write settings: {e}"));
+                }
+                self.touch();
+                return;
+            }
+            _ => {}
+        }
         let before = self.settings.midi_input;
         row.choose(&mut self.settings.midi_input, option);
         if self.settings.midi_input == before {
@@ -8602,7 +8950,7 @@ impl StudioHost for Session {
             return;
         };
         self.run(Box::new(fontelle_model::SetTrackInput::new(id, input)));
-        self.history.break_gesture();
+        self.let_go();
         // Choosing an input is what opens the microphone and what puts the
         // monitor node on that strip — not pressing record. See
         // `sync_audio_input`.
@@ -8672,7 +9020,15 @@ impl StudioHost for Session {
 
     fn audio_clip(&self, clip: ClipId) -> Option<fontelle_types::AudioClipData> {
         match &self.project.clips.get(clip)?.source {
-            ClipSource::Audio(data) => Some(data.clone()),
+            ClipSource::Audio(data) => {
+                let mut data = data.clone();
+                // Where it is heard: in lane-style that is its lane's track,
+                // whatever the clip itself last named.
+                if self.lane_style() {
+                    data.mixer_track = self.project.clip_route(clip);
+                }
+                Some(data)
+            }
             _ => None,
         }
     }
@@ -8688,7 +9044,20 @@ impl StudioHost for Session {
         }
     }
 
-    fn set_audio_clip(&mut self, clip: ClipId, data: fontelle_types::AudioClipData) {
+    fn set_audio_clip(&mut self, clip: ClipId, mut data: fontelle_types::AudioClipData) {
+        // In lane-style the lane decides where a clip is heard; the editor's
+        // route is kept as the clip had it, and a change to it says why.
+        if self.lane_style()
+            && let Some(ClipSource::Audio(held)) = self.project.clips.get(clip).map(|c| &c.source)
+        {
+            if data.mixer_track != self.project.clip_route(clip) {
+                self.message = Some(
+                    "In lane-style a clip plays through its lane\u{2019}s track \u{2014} move it to another lane to change that"
+                        .to_string(),
+                );
+            }
+            data.mixer_track = held.mixer_track;
+        }
         // The clip's length on the arrangement follows its trim: a clip that
         // draws four bars and plays two is the picture lying about the sound.
         // Not its *speed*, though — a clip played at half speed still occupies
@@ -9304,9 +9673,9 @@ impl StudioHost for Session {
         if self.selected_patch().is_none() {
             return;
         }
-        self.history.break_gesture();
+        self.let_go();
         self.run(Box::new(fontelle_model::SwitchChannelAb::new(channel)));
-        self.history.break_gesture();
+        self.let_go();
         self.patch_cache = None;
         self.rebuild_graph();
         self.touch();
@@ -9319,9 +9688,9 @@ impl StudioHost for Session {
         if self.selected_patch().is_none() {
             return;
         }
-        self.history.break_gesture();
+        self.let_go();
         self.run(Box::new(fontelle_model::CopyChannelAb::new(channel)));
-        self.history.break_gesture();
+        self.let_go();
     }
 
     fn init_patch(&mut self) {
@@ -9338,7 +9707,7 @@ impl StudioHost for Session {
         };
         // The patch and the name in one entry: the Init patch came from no
         // preset, so the bar says so rather than "Grand Piano*".
-        self.history.break_gesture();
+        self.let_go();
         self.run(Box::new(fontelle_model::Compound::new(
             "Init",
             vec![
@@ -9359,7 +9728,7 @@ impl StudioHost for Session {
                 )),
             ],
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.channel_presets.remove(&channel);
         self.patch_cache = None;
         self.rebuild_graph();
@@ -9768,7 +10137,7 @@ impl StudioHost for Session {
             )));
         }
         self.run(Box::new(fontelle_model::Compound::new(label, parts)));
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
     }
 
@@ -9780,7 +10149,7 @@ impl StudioHost for Session {
             fontelle_model::FlagTarget::ChannelNamedKeys(id),
             style == fontelle_ui::canvas::KeyStyle::Names,
         )));
-        self.history.break_gesture();
+        self.let_go();
         // The strip is a different width in the two views, so the grid beside
         // it moves: the window has to lay the panel out again, and it does
         // that when the revision moves.
@@ -9966,7 +10335,7 @@ impl StudioHost for Session {
         // A loop is refused by the command and reported by `run`, which is
         // what puts the message in front of the user (§13.2).
         self.run(Box::new(fontelle_model::AddSend::new(id, target)));
-        self.history.break_gesture();
+        self.let_go();
         // A send is a node in the schedule, so this is the graph's shape
         // changing rather than a value in it.
         self.rebuild_graph();
@@ -9983,7 +10352,7 @@ impl StudioHost for Session {
             return;
         }
         self.run(Box::new(fontelle_model::RemoveSend::new(id, index)));
-        self.history.break_gesture();
+        self.let_go();
         self.rebuild_graph();
     }
 
@@ -10022,7 +10391,7 @@ impl StudioHost for Session {
         self.run(Box::new(fontelle_model::SetSendPreFader::new(
             id, index, !pre,
         )));
-        self.history.break_gesture();
+        self.let_go();
         // Where the tap is taken is where the node sits in the schedule.
         self.rebuild_graph();
     }
@@ -10057,7 +10426,7 @@ impl StudioHost for Session {
             notepad.theme = self.preferred_notepad_theme();
         }
         self.run(Box::new(fontelle_model::AddInsert::with_config(id, config)));
-        self.history.break_gesture();
+        self.let_go();
         // A new node in the chain is the graph's *shape*, not a value in it,
         // so this one does need the rebuild that tuning a band does not.
         self.rebuild_graph();
@@ -10068,7 +10437,7 @@ impl StudioHost for Session {
             return;
         };
         self.run(Box::new(fontelle_model::RemoveInsert::new(id, slot)));
-        self.history.break_gesture();
+        self.let_go();
         self.rebuild_graph();
     }
 
@@ -10089,7 +10458,7 @@ impl StudioHost for Session {
         self.run(Box::new(fontelle_model::SetInsertBypassed::new(
             id, slot, !bypassed,
         )));
-        self.history.break_gesture();
+        self.let_go();
         // Straight to the running graph: a bypass is a switch somebody flicks
         // while listening, and rebuilding the graph to flick it would reload
         // every soundfont in the project.
@@ -10204,7 +10573,7 @@ impl StudioHost for Session {
             // drawing happens where it sits (§12.4).
             self.automation_clip = Some(id);
         }
-        self.history.break_gesture();
+        self.let_go();
         self.republish();
         self.touch();
     }
@@ -10215,7 +10584,7 @@ impl StudioHost for Session {
 
     fn set_loop_range(&mut self, range: Option<(Tick, Tick)>) {
         self.run(Box::new(fontelle_model::SetLoopRange::new(range)));
-        self.history.break_gesture();
+        self.let_go();
         // `run` republished, which published the loop — but only if the
         // command was accepted, and this costs two atomic stores either way.
         self.publish_loop();
@@ -10825,7 +11194,7 @@ impl StudioHost for Session {
         };
         let now = self.project.mixer.tracks.get(id).is_some_and(|t| t.mute);
         self.run(Box::new(SetFlag::new(FlagTarget::TrackMute(id), !now)));
-        self.history.break_gesture();
+        self.let_go();
         self.publish_mixer();
     }
 
@@ -10835,7 +11204,7 @@ impl StudioHost for Session {
         };
         let now = self.project.mixer.tracks.get(id).is_some_and(|t| t.solo);
         self.run(Box::new(SetFlag::new(FlagTarget::TrackSolo(id), !now)));
-        self.history.break_gesture();
+        self.let_go();
         self.publish_mixer();
     }
 
@@ -10942,11 +11311,20 @@ impl StudioHost for Session {
         // to move a row.
         self.lane_ids()
             .into_iter()
-            .filter_map(|id| self.project.lanes.get(id))
-            .map(|lane| LaneInfo {
-                name: lane.name.clone(),
-                muted: lane.muted,
-                soloed: lane.soloed,
+            .filter(|id| self.project.lanes.contains_key(*id))
+            .map(|id| {
+                let lane = &self.project.lanes[id];
+                LaneInfo {
+                    name: lane.name.clone(),
+                    muted: lane.muted,
+                    soloed: lane.soloed,
+                    track_color: self
+                        .lane_style()
+                        .then(|| self.project.lane_track(id))
+                        .flatten()
+                        .and_then(|track| self.project.mixer.tracks.get(track))
+                        .map(|track| track.color),
+                }
             })
             .collect()
     }
@@ -11160,14 +11538,14 @@ impl StudioHost for Session {
                     }
                 }
                 self.republish();
-                self.history.break_gesture();
+                self.let_go();
             }
             ArrangeEdit::Remove(ids) => {
                 let opened = ids.contains(&self.clip);
                 for id in ids {
                     self.run(Box::new(RemoveClip::new(id)));
                 }
-                self.history.break_gesture();
+                self.let_go();
                 // The roll cannot go on showing a clip that is not there.
                 if opened && let Some(next) = Self::first_clip(&self.project) {
                     self.clip = next;
@@ -11178,7 +11556,7 @@ impl StudioHost for Session {
                 for id in ids {
                     self.run(Box::new(SetFlag::new(FlagTarget::ClipMuted(id), muted)));
                 }
-                self.history.break_gesture();
+                self.let_go();
             }
             ArrangeEdit::Add { lane, start } => {
                 // Which lane, clamped: clicking below the last one means the
@@ -11233,7 +11611,7 @@ impl StudioHost for Session {
                     // where it is — it is what decided the instrument.
                     self.clip = id;
                 }
-                self.history.break_gesture();
+                self.let_go();
                 self.republish();
                 self.touch();
             }
@@ -11278,7 +11656,7 @@ impl StudioHost for Session {
                         self.clip = id;
                     }
                 }
-                self.history.break_gesture();
+                self.let_go();
                 self.republish();
                 self.touch();
             }
@@ -11341,7 +11719,7 @@ impl StudioHost for Session {
                 for (id, at) in cuts {
                     self.run(Box::new(fontelle_model::SplitClip::new(id, at)));
                 }
-                self.history.break_gesture();
+                self.let_go();
                 self.republish();
                 self.touch();
             }
@@ -11433,7 +11811,7 @@ impl StudioHost for Session {
                     }
                 }
                 self.republish();
-                self.history.break_gesture();
+                self.let_go();
             }
             // --- the points of an automation block, edited where it sits ---
             ArrangeEdit::AddPoint { clip, tick, value } => {
@@ -11450,7 +11828,7 @@ impl StudioHost for Session {
                     // follows moves — the same handshake drawing a note has.
                     points.extend(command.id());
                 }
-                self.history.break_gesture();
+                self.let_go();
                 self.republish();
             }
             ArrangeEdit::MovePoints {
@@ -11472,13 +11850,13 @@ impl StudioHost for Session {
                 self.run(Box::new(fontelle_model::RemoveAutomationPoints::new(
                     clip, ids,
                 )));
-                self.history.break_gesture();
+                self.let_go();
             }
             ArrangeEdit::SetPointCurve { clip, ids, curve } => {
                 self.run(Box::new(fontelle_model::SetPointCurve::new(
                     clip, ids, curve,
                 )));
-                self.history.break_gesture();
+                self.let_go();
             }
         }
         self.touch();
@@ -11551,8 +11929,12 @@ impl StudioHost for Session {
         };
         let now = self.project.lanes.get(id).is_some_and(|l| l.muted);
         self.run(Box::new(SetFlag::new(FlagTarget::LaneMuted(id), !now)));
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
+    }
+
+    fn lane_style(&self) -> bool {
+        self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane
     }
 
     fn toggle_lane_solo(&mut self, lane: usize) {
@@ -11561,13 +11943,13 @@ impl StudioHost for Session {
         };
         let now = self.project.lanes.get(id).is_some_and(|l| l.soloed);
         self.run(Box::new(SetFlag::new(FlagTarget::LaneSoloed(id), !now)));
-        self.history.break_gesture();
+        self.let_go();
         self.touch();
     }
 
     fn move_lane(&mut self, lane: usize, delta: isize) {
         self.run(Box::new(fontelle_model::MoveLane::new(lane, delta)));
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         // The arrangement re-reads its rows only when this moves — a reorder
         // that forgot it would be a document that had changed and a window
@@ -11666,6 +12048,15 @@ impl StudioHost for Session {
 
     fn pump(&mut self) {
         self.pump_previews();
+        // Lane-style's upkeep for an edit nobody let go of — a key press has
+        // no mouse-up — once the history has stood still a moment.
+        if let Some((generation, since)) = self.lanes_unsettled {
+            if generation != self.history.generation() {
+                self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+            } else if since.elapsed() >= std::time::Duration::from_millis(1200) {
+                self.settle_lanes(true);
+            }
+        }
         // **A project that names plugins is hosted on the first frame.** The
         // graph this session was handed was built with no rack (`main.rs`
         // realises before the session exists), so an LSP sampler in a
@@ -12265,7 +12656,7 @@ impl Session {
                 .copied()
                 .ok_or("that track is not there")?;
             self.run(Box::new(fontelle_model::ApplyTrackChain::new(id, chain)));
-            self.history.break_gesture();
+            self.let_go();
             self.dirty = true;
             self.rebuild_graph();
             self.touch();
@@ -12300,7 +12691,7 @@ impl Session {
             "Load preset",
             parts,
         )));
-        self.history.break_gesture();
+        self.let_go();
         if let fontelle_model::PresetTarget::Channel(channel) = target {
             // A preset names no soundfont, so nothing goes in the map that
             // remembers which file a channel's sound came from.
@@ -12422,7 +12813,7 @@ impl Session {
             target,
             Some(reference),
         )));
-        self.history.break_gesture();
+        self.let_go();
         self.dirty = true;
         self.touch();
         Ok(())

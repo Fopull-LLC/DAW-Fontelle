@@ -633,8 +633,8 @@ pub fn realise_hosting(
         // whatever patch it used to have is left where it is and not played
         // (see `Channel::plugin`).
         if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin) {
-            let bus = channel
-                .mixer_track
+            let bus = project
+                .channel_route(channel_id)
                 .and_then(|id| bus_of.get(&id).copied())
                 .unwrap_or([0, 1]);
             param_nodes.insert(
@@ -716,8 +716,10 @@ pub fn realise_hosting(
 
         // `None` is the master, and so is a route at a track that has been
         // deleted since: a part you can hear and fix beats one that vanished.
-        let bus = channel
-            .mixer_track
+        // Asked of the project rather than read off the channel, so a
+        // lane-style project routes by its lanes (`lane_routing.rs`).
+        let bus = project
+            .channel_route(channel_id)
             .and_then(|id| bus_of.get(&id).copied())
             .unwrap_or([0, 1]);
         // Its own two controls are addressable, so a lane can sweep them —

@@ -248,3 +248,42 @@ fn a_clip_on_the_master_is_placed_on_whatever_plays_the_master() {
     assert_eq!(timeline.audio.len(), 1);
     assert_eq!(timeline.audio[0].target, master);
 }
+
+/// In a lane-style project an audio clip plays through its lane's track, not
+/// the track it names (`docs/ux-routing-and-learning-plan.md` §1).
+#[test]
+fn in_lane_style_an_audio_clip_goes_to_its_lanes_player() {
+    use fontelle_model::Command;
+    let mut r = rig();
+    let clip = r.place(
+        0,
+        PPQN * 4,
+        AudioClipData::whole(an_asset(), 100_000, 48_000),
+    );
+    fontelle_model::SetRoutingMode::new(fontelle_model::RoutingMode::Lane)
+        .apply(&mut r.project)
+        .unwrap();
+    fontelle_model::LaneUpkeep::due(&r.project)
+        .unwrap()
+        .apply(&mut r.project)
+        .unwrap();
+    let lane_track = r
+        .project
+        .lane_track(r.project.clips[clip].lane)
+        .expect("the lane's track");
+    let lane_player = node(8);
+    let audio: HashMap<Option<MixerTrackId>, NodeId> =
+        [(Some(r.track), r.player), (Some(lane_track), lane_player)]
+            .into_iter()
+            .collect();
+    let timeline = fontelle_sequencer::compile_with(
+        &r.project,
+        &NodeMaps {
+            audio: &audio,
+            ..Default::default()
+        },
+        fontelle_sequencer::CompileScope::Song,
+    );
+    assert_eq!(timeline.audio.len(), 1);
+    assert_eq!(timeline.audio[0].target, lane_player);
+}

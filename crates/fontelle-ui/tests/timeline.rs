@@ -700,3 +700,18 @@ fn a_lane_header_has_a_mute_and_a_solo_switch_at_its_right_end() {
     let (mute, solo) = lane_switches(Rect::new(10.0, 100.0, 60.0, 32.0));
     assert!(mute.is_empty() && solo.is_empty(), "no room, no switches");
 }
+
+/// In a lane-style song a lane header carries its track's colour in a chip,
+/// the lane's answer to the rack's route chip (`docs/ux-routing-and-
+/// learning-plan.md` §1): left of the switches, clear of them.
+#[test]
+fn a_lanes_track_chip_sits_left_of_its_switches() {
+    use fontelle_ui::canvas::{lane_switches, lane_track_chip};
+    let header = Rect::new(10.0, 100.0, 180.0, 32.0);
+    let (mute, _) = lane_switches(header);
+    let chip = lane_track_chip(header);
+    assert!(!chip.is_empty());
+    assert!(chip.right() < mute.x, "{chip:?} left of {mute:?}");
+    assert!(chip.y >= header.y && chip.bottom() <= header.bottom());
+    assert!(lane_track_chip(Rect::new(10.0, 100.0, 60.0, 32.0)).is_empty());
+}

@@ -3523,3 +3523,19 @@ pub fn lane_switches(header: Rect) -> (Rect, Rect) {
     let mute = Rect::new(solo.x - GAP - side, y, side, side);
     (mute, solo)
 }
+
+/// Where a lane-style lane's track chip sits in its header: a square the
+/// size of a switch, just left of them. Empty where the switches are.
+pub fn lane_track_chip(header: Rect) -> Rect {
+    let (mute, _) = lane_switches(header);
+    if mute.is_empty() {
+        return Rect::ZERO;
+    }
+    let side = (mute.height - 4.0).max(0.0);
+    Rect::new(
+        mute.x - 6.0 - side,
+        mute.y + (mute.height - side) / 2.0,
+        side,
+        side,
+    )
+}

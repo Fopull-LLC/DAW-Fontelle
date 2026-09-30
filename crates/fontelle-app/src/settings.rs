@@ -202,6 +202,12 @@ pub struct Settings {
     /// [`Settings::install_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<fontelle_types::PersistentId>,
+    /// What a new song is routed as — rack-style or lane-style
+    /// (`docs/ux-routing-and-learning-plan.md` §1). `None` until the first
+    /// new song asks; the answer is kept here, and the settings page's
+    /// Project section changes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_song_routing: Option<fontelle_model::RoutingMode>,
 }
 
 fn yes() -> bool {
@@ -239,6 +245,7 @@ impl Default for Settings {
             display_name: None,
             relay: None,
             install: None,
+            new_song_routing: None,
         }
     }
 }
@@ -437,6 +444,11 @@ pub enum SettingRow {
     /// Whether the start menu asks GitHub for a newer release at launch
     /// (`updates.rs`). A switch: a click flips it, either direction.
     CheckForUpdates,
+    /// The open song's routing, rack-style or lane-style. A choice; the
+    /// session answers its value, since it is the song's and not a setting.
+    SongRouting,
+    /// What a new song starts as: ask, rack-style or lane-style. A choice.
+    NewSongRouting,
 }
 
 /// Every row the settings tab shows, in the order it shows them.
@@ -445,7 +457,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 23] = [
+pub const SETTING_ROWS: [SettingRow; 26] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -486,6 +498,12 @@ pub const SETTING_ROWS: [SettingRow; 23] = [
     // other people.
     SettingRow::Heading("Updates"),
     SettingRow::CheckForUpdates,
+    // The song's own routing, and what a new one starts as — the one place
+    // a per-project choice sits among settings that outlive projects, so it
+    // says "this song" in its name (`docs/ux-routing-and-learning-plan.md`).
+    SettingRow::Heading("Project"),
+    SettingRow::SongRouting,
+    SettingRow::NewSongRouting,
 ];
 
 /// Every row the settings tab shows **for these settings**: the skeleton
@@ -588,6 +606,8 @@ impl SettingRow {
             Self::CheckForUpdates => "Check at launch",
             Self::YourName => "Your name",
             Self::Relay => "Relay",
+            Self::SongRouting => "Routing in this song",
+            Self::NewSongRouting => "New songs start as",
         }
     }
 
@@ -687,6 +707,10 @@ impl SettingRow {
             }
             .to_string(),
             Self::YourName => settings.your_name(),
+            // The song's, answered by the session; this is the default a row
+            // shows with no song to ask.
+            Self::SongRouting => routing_label(Some(fontelle_model::RoutingMode::Rack)).to_string(),
+            Self::NewSongRouting => routing_label(settings.new_song_routing).to_string(),
             // Never blank: blank *is* the managed relay, so it says which.
             Self::Relay => settings
                 .relay
@@ -756,6 +780,10 @@ impl SettingRow {
             Self::YourName => "What the people you share a project with see",
             Self::Relay => "Blank for Floptle Cloud, or a host:port of your own",
             Self::CheckForUpdates => "The start menu asks for a newer Fontelle at launch",
+            Self::SongRouting => {
+                "Rack-style: instruments choose tracks. Lane-style: each lane owns a track"
+            }
+            Self::NewSongRouting => "Asked the first time you make a song, unless chosen here",
         }
     }
 
@@ -786,7 +814,9 @@ impl SettingRow {
             | Self::Extension(_)
             | Self::CheckForUpdates
             | Self::YourName
-            | Self::Relay => {}
+            | Self::Relay
+            | Self::SongRouting
+            | Self::NewSongRouting => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -859,7 +889,10 @@ impl SettingRow {
     pub fn control_kind(self) -> SettingControlKind {
         match self {
             Self::Heading(_) => SettingControlKind::Heading,
-            Self::VelocityCurve | Self::ChannelFilter => SettingControlKind::Choice,
+            Self::VelocityCurve
+            | Self::ChannelFilter
+            | Self::SongRouting
+            | Self::NewSongRouting => SettingControlKind::Choice,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }
@@ -959,6 +992,36 @@ impl SettingRow {
         }
     }
 
+    /// The two routing rows' choices: the song's mode (`song`), and what a
+    /// new song starts as. `None` for every other row.
+    pub fn routing_choices(
+        self,
+        settings: &Settings,
+        song: fontelle_model::RoutingMode,
+    ) -> Option<(Vec<String>, usize)> {
+        use fontelle_model::RoutingMode;
+        let label = |mode| routing_label(Some(mode)).to_string();
+        match self {
+            Self::SongRouting => Some((
+                vec![label(RoutingMode::Rack), label(RoutingMode::Lane)],
+                usize::from(song == RoutingMode::Lane),
+            )),
+            Self::NewSongRouting => Some((
+                vec![
+                    routing_label(None).to_string(),
+                    label(RoutingMode::Rack),
+                    label(RoutingMode::Lane),
+                ],
+                match settings.new_song_routing {
+                    None => 0,
+                    Some(RoutingMode::Rack) => 1,
+                    Some(RoutingMode::Lane) => 2,
+                },
+            )),
+            _ => None,
+        }
+    }
+
     /// Sets a drop-down row to its `option`th entry. A no-op on a row that is
     /// not a choice, and on an option past the end of the list.
     pub fn choose(self, settings: &mut MidiInputSettings, option: usize) {
@@ -974,6 +1037,15 @@ impl SettingRow {
             }
             _ => {}
         }
+    }
+}
+
+/// A routing mode as the settings page writes it; `None` is "ask".
+pub fn routing_label(mode: Option<fontelle_model::RoutingMode>) -> &'static str {
+    match mode {
+        None => "Ask me",
+        Some(fontelle_model::RoutingMode::Rack) => "Rack-style",
+        Some(fontelle_model::RoutingMode::Lane) => "Lane-style",
     }
 }
 

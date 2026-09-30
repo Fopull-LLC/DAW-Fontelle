@@ -328,6 +328,11 @@ pub struct Project {
     /// published together for exactly that reason.
     pub loop_range: Option<(Tick, Tick)>,
     pub view_state: ViewState,
+    /// Rack-style or lane-style, and what lane-style keeps
+    /// (`crate::lane_routing`). Defaulted: a project from before the modes
+    /// is rack-style, which is what it was made in.
+    #[serde(default)]
+    pub lane_routing: crate::LaneRouting,
 }
 
 impl Project {
@@ -565,6 +570,7 @@ impl Project {
             markers: Arena::default(),
             loop_range: None,
             view_state: ViewState::default(),
+            lane_routing: crate::LaneRouting::default(),
         }
     }
 }

@@ -1252,6 +1252,7 @@ fn shoot_timeline_recording(
             name: format!("Lane {}", n + 1),
             muted: false,
             soloed: soloed_lane == Some(n),
+            track_color: None,
         })
         .collect();
 

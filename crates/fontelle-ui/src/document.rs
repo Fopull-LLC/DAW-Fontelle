@@ -641,6 +641,10 @@ pub struct LaneInfo {
     /// Soloed: while any row is, only soloed rows play (a sequencer solo,
     /// like the mute).
     pub soloed: bool,
+    /// Its mixer track's colour in a lane-style song — each lane owns a track
+    /// there, and the header says which in the chip the rack's rows wear in
+    /// rack-style. `None` in rack-style.
+    pub track_color: Option<[u8; 4]>,
 }
 
 /// What a row of the browser *is*, so the panel can draw it and route a click.
@@ -2993,6 +2997,12 @@ pub trait StudioHost: DocumentHost {
     fn toggle_lane_mute(&mut self, lane: usize);
     /// Solos the row, or lets it go — a sequencer solo, one undo step.
     fn toggle_lane_solo(&mut self, _lane: usize) {}
+    /// Whether the open song is lane-style: each lane owns a mixer track and
+    /// what is on it plays through it, so the rack shows no route chips
+    /// (`docs/ux-routing-and-learning-plan.md` §1).
+    fn lane_style(&self) -> bool {
+        false
+    }
 
     /// Moves one row up (`-1`) or down (`1`) the stack.
     ///

@@ -26,6 +26,7 @@
 
 use crate::command::Command;
 use crate::commands::*;
+use crate::lane_routing::{LaneUpkeep, SetClipChannel, SetRoutingMode};
 
 /// An edit that could not be read off the wire.
 #[derive(Debug)]
@@ -194,6 +195,9 @@ edits!(
     RelocateAssets,
     RestoreAssets,
     SetMixerTrackColor,
+    SetRoutingMode,
+    LaneUpkeep,
+    SetClipChannel,
 );
 
 impl Edit {

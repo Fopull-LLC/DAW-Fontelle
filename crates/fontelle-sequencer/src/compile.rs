@@ -229,7 +229,8 @@ pub fn compile_with(
         // that a block either falls inside or does not, so it compiles to a
         // placement and there is nothing to schedule.
         if let ClipSource::Audio(data) = source {
-            let Some(&target) = nodes.audio.get(&data.mixer_track) else {
+            // Its own track in rack-style, its lane's in lane-style.
+            let Some(&target) = nodes.audio.get(&project.clip_route(clip_id)) else {
                 continue; // no player for that track yet
             };
             audio_lanes.push(clip.lane);

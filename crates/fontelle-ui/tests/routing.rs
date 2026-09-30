@@ -255,3 +255,23 @@ fn the_off_row_says_so_and_every_row_is_reachable() {
         );
     }
 }
+
+/// In a lane-style song the rack shows no route chips: each lane owns a
+/// track, and a chip there would be a control that does nothing
+/// (`docs/ux-routing-and-learning-plan.md` §1). The name takes the room.
+#[test]
+fn a_lane_style_rack_has_no_route_chip_to_press() {
+    let m = metrics();
+    let rack = rack_layout(body(), &m, 4, 0);
+    let bare = fontelle_ui::canvas::without_route_chips(rack.clone());
+    for (row, was) in bare.rows.iter().zip(&rack.rows) {
+        assert!(row.route.is_empty());
+        assert!(row.name.width > was.name.width, "the name gets the room");
+        assert!(row.name.right() <= row.edit.x);
+        let (x, y) = (
+            was.route.x + was.route.width / 2.0,
+            was.route.y + was.route.height / 2.0,
+        );
+        assert_ne!(rack_hit(&bare, x, y), RackHit::Route(row.index));
+    }
+}
