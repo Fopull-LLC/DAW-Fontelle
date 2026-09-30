@@ -44,6 +44,15 @@ are the first step on the first problem.
   behaves the way that mode's user expects. No mixed state, no "why did
   this go there".
 
+- **One instrument, one lane** (Ty, 2026-09-30, over duplicating
+  instruments per lane — *"i definitely do NOT want to have duplicate
+  copies of instruments"*): in lane-style, the first time an instrument's
+  clip is drawn onto a lane, that instrument **claims the lane** and plays
+  through its track. Drawing the same instrument onto a second lane offers
+  to **move** it there or **duplicate the channel** (a new rack channel,
+  same instrument and settings, claiming the new lane). An instrument is
+  one running copy with one output, as in rack-style.
+
 ### 2. Selecting a lane, and where new material lands
 
 - **A click on a lane header selects it.** It no longer mutes. Mute, solo,
