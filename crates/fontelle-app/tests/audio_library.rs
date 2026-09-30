@@ -189,6 +189,7 @@ fn a_clip_dropped_on_a_track_compiles_to_a_placement_on_that_tracks_player() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let mut data = AudioClipData::whole(

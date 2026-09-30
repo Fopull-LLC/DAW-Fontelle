@@ -503,6 +503,10 @@ pub struct Session {
     /// of the arrangement's screen, kept current by the window
     /// (`StudioHost::set_arrival_row`).
     arrival_row: usize,
+    /// The lane the arrangement has selected — a click on its header — by
+    /// id, so it follows the row through moves and is gone with it. New
+    /// material with no row of its own lands here (`Landing::Arrival`).
+    selected_lane: Option<fontelle_types::LaneId>,
     /// The length of each sound the window has asked about while it was in
     /// the air (`StudioHost::sound_footprint`): frames and rate, by path, so
     /// a drag that crosses forty bars reads the header once.
@@ -969,7 +973,7 @@ impl Session {
         // for the waveform, the editor, the playback and the undo.
         // A take names no row: the middle of the screen, where the person
         // who just pressed stop is looking.
-        let landing = Landing::NewRow(self.arrival_row);
+        let landing = Landing::Arrival;
         self.import_audio_at(&path, at, self.take_track(), landing)?;
         Ok(frames)
     }
@@ -1353,6 +1357,7 @@ impl Session {
             // of the soundfonts tab"*.
             import_kind: fontelle_types::FolderKind::Audio,
             arrival_row: 0,
+            selected_lane: None,
             sound_lengths: std::collections::HashMap::new(),
             import_query: String::new(),
             pending_import: None,
@@ -5882,22 +5887,41 @@ impl Session {
                 clip.lane == lane && clip.start < end && start < clip.start + clip.length
             })
         };
-        let beside = self.project.clips.get(self.clip).map(|clip| clip.lane);
-        let lane = match beside.filter(|lane| free(*lane)) {
-            Some(lane) => lane,
-            None => match self.lane_ids().into_iter().find(|lane| free(*lane)) {
+        // The selected lane first (`Landing::Arrival`'s rule): onto it when
+        // that stretch is free, onto a row of its own under it when not.
+        let selected = self.selected_lane_id();
+        let under_selected = selected
+            .filter(|lane| !free(*lane))
+            .map(|_| self.arrival_index());
+        let beside = selected
+            .filter(|lane| free(*lane))
+            .or_else(|| self.project.clips.get(self.clip).map(|clip| clip.lane));
+        let lane = match under_selected {
+            Some(index) => {
+                let add = self
+                    .apply_for::<fontelle_model::AddLane>(Box::new(fontelle_model::AddLane::at(
+                        format!("Lane {}", self.project.lanes.len() + 1),
+                        index,
+                    )))
+                    .ok()?;
+                add.id()?
+            }
+            None => match beside.filter(|lane| free(*lane)) {
                 Some(lane) => lane,
-                None => {
-                    let add = self
-                        .apply_for::<fontelle_model::AddLane>(Box::new(
-                            fontelle_model::AddLane::new(format!(
-                                "Lane {}",
-                                self.project.lanes.len() + 1
-                            )),
-                        ))
-                        .ok()?;
-                    add.id()?
-                }
+                None => match self.lane_ids().into_iter().find(|lane| free(*lane)) {
+                    Some(lane) => lane,
+                    None => {
+                        let add = self
+                            .apply_for::<fontelle_model::AddLane>(Box::new(
+                                fontelle_model::AddLane::new(format!(
+                                    "Lane {}",
+                                    self.project.lanes.len() + 1
+                                )),
+                            ))
+                            .ok()?;
+                        add.id()?
+                    }
+                },
             },
         };
         let clip = Clip {
@@ -6106,7 +6130,8 @@ impl Session {
         let empty = self.project.clips.is_empty();
         // A file's parts name no row: they arrive as a block where the
         // window is looking (`arrival_row`), not under everything.
-        let command = Box::new(ImportParts::new(what.to_string(), parts).at_row(self.arrival_row));
+        let command =
+            Box::new(ImportParts::new(what.to_string(), parts).at_row(self.arrival_index()));
         let made = self.apply_for::<ImportParts>(command)?.made().to_vec();
         if made.is_empty() {
             return Err(format!("there is nothing in {what} to import"));
@@ -6217,7 +6242,7 @@ impl Session {
             .map(|(from, _)| from.max(0))
             .unwrap_or(0);
         let at = self.project.tempo_map.tick_to_sample(start);
-        let name = self.import_audio_at(path, at, None, Landing::NewRow(self.arrival_row))?;
+        let name = self.import_audio_at(path, at, None, Landing::Arrival)?;
         Ok(format!("Imported \u{201c}{name}\u{201d}"))
     }
 
@@ -6296,6 +6321,10 @@ impl Session {
             // past the last row, the middle of the screen when nothing named
             // a row at all (`arrival_row`).
             Landing::NewRow(index) => clip.at_row(index),
+            Landing::Arrival => match self.selected_lane_id() {
+                Some(lane) if self.lane_is_free(lane, start, start + length) => clip.on_lane(lane),
+                _ => clip.at_row(self.arrival_index()),
+            },
         };
         let command = Box::new(clip);
         self.apply_for::<fontelle_model::AddAudioClip>(command)?;
@@ -6305,6 +6334,34 @@ impl Session {
         self.republish();
         self.collect_if_shared();
         Ok(name)
+    }
+
+    /// The selected lane, if it is still there.
+    fn selected_lane_id(&self) -> Option<fontelle_types::LaneId> {
+        self.selected_lane
+            .filter(|lane| self.project.lanes.contains_key(*lane))
+    }
+
+    /// Whether nothing on `lane` plays between `start` and `end`.
+    fn lane_is_free(&self, lane: fontelle_types::LaneId, start: Tick, end: Tick) -> bool {
+        !self
+            .project
+            .clips
+            .values()
+            .any(|clip| clip.lane == lane && clip.start < end && start < clip.start + clip.length)
+    }
+
+    /// Where a row of its own goes for material with no row: directly under
+    /// the selected lane, or mid-screen with none selected (`arrival_row`).
+    fn arrival_index(&self) -> usize {
+        match self.selected_lane_id() {
+            Some(lane) => self
+                .lane_ids()
+                .iter()
+                .position(|id| *id == lane)
+                .map_or(self.arrival_row, |index| index + 1),
+            None => self.arrival_row,
+        }
     }
 
     /// Imports an FL Studio score into the clip that is open.
@@ -6378,6 +6435,15 @@ enum Landing {
     Onto(fontelle_types::LaneId),
     /// A row of its own at this index in the stack.
     NewRow(usize),
+    /// **No row of its own** — a recording, a double-click in the Import tab:
+    /// onto the selected lane when that stretch of it is free, onto a row of
+    /// its own directly under the selected lane when it is not, and with no
+    /// lane selected a row of its own mid-screen (`arrival_row`).
+    ///
+    /// Ty, `docs/ux-routing-and-learning-plan.md` §2: *"Clicking a lane
+    /// header selects it, and new clips, recordings and imports land on that
+    /// lane."* Never over what is already there.
+    Arrival,
 }
 
 /// How much waveform the sky is handed each frame.
@@ -8218,6 +8284,16 @@ impl StudioHost for Session {
         Ok(())
     }
 
+    fn select_lane(&mut self, lane: Option<usize>) {
+        self.selected_lane = lane.and_then(|index| self.lane_ids().get(index).copied());
+        self.touch();
+    }
+
+    fn selected_lane(&self) -> Option<usize> {
+        let lane = self.selected_lane_id()?;
+        self.lane_ids().iter().position(|id| *id == lane)
+    }
+
     fn set_arrival_row(&mut self, row: usize) {
         self.arrival_row = row;
     }
@@ -8456,7 +8532,7 @@ impl StudioHost for Session {
             // to be given. No row at all is the middle of the screen.
             let landing = match row {
                 Some(row) => self.landing_for(row),
-                None => Landing::NewRow(self.arrival_row),
+                None => Landing::Arrival,
             };
             return self
                 .import_audio_at(path, at.max(0), None, landing)
@@ -10861,6 +10937,7 @@ impl StudioHost for Session {
             .map(|lane| LaneInfo {
                 name: lane.name.clone(),
                 muted: lane.muted,
+                soloed: lane.soloed,
             })
             .collect()
     }
@@ -11465,6 +11542,16 @@ impl StudioHost for Session {
         };
         let now = self.project.lanes.get(id).is_some_and(|l| l.muted);
         self.run(Box::new(SetFlag::new(FlagTarget::LaneMuted(id), !now)));
+        self.history.break_gesture();
+        self.touch();
+    }
+
+    fn toggle_lane_solo(&mut self, lane: usize) {
+        let Some(id) = self.lane_ids().get(lane).copied() else {
+            return;
+        };
+        let now = self.project.lanes.get(id).is_some_and(|l| l.soloed);
+        self.run(Box::new(SetFlag::new(FlagTarget::LaneSoloed(id), !now)));
         self.history.break_gesture();
         self.touch();
     }

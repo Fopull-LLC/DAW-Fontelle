@@ -3498,3 +3498,28 @@ pub fn loop_marks(view: &TimelineView, grid: Rect, clip: &ClipInfo) -> Vec<f32> 
     }
     marks
 }
+
+/// A row's mute and solo switches, at the right end of its header: `(mute,
+/// solo)`, both empty on a header too narrow to spare them — the row's
+/// right-click menu has both anyway.
+///
+/// A click on the header **selects** the row now
+/// (`docs/ux-routing-and-learning-plan.md` §2), so the mute it used to be
+/// needs a place of its own, and the solo is new. Mute first, as the rack has
+/// them.
+pub fn lane_switches(header: Rect) -> (Rect, Rect) {
+    const MIN_HEADER: f32 = 90.0;
+    const GAP: f32 = 3.0;
+    const INSET: f32 = 6.0;
+    if header.width < MIN_HEADER {
+        return (Rect::ZERO, Rect::ZERO);
+    }
+    let side = (header.height - 10.0).clamp(0.0, 16.0);
+    if side <= 0.0 {
+        return (Rect::ZERO, Rect::ZERO);
+    }
+    let y = header.y + (header.height - side) / 2.0;
+    let solo = Rect::new(header.right() - INSET - side, y, side, side);
+    let mute = Rect::new(solo.x - GAP - side, y, side, side);
+    (mute, solo)
+}

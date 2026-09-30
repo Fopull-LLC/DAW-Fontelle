@@ -530,3 +530,67 @@ fn a_file_that_is_not_a_sound_has_no_footprint() {
     assert_eq!(session.sound_footprint(CarriedSound::File(&path), 0), None);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ----------------------------------------- the selected lane (2026-09-30)
+//
+// Ty, `docs/ux-routing-and-learning-plan.md` §2: *"Clicking a lane header
+// selects it, and new clips, recordings and imports land on that lane."*
+// Onto the lane itself while the stretch is free — and under it, on a row of
+// its own, when it is not: never over what is already there.
+
+#[test]
+fn a_sound_with_no_row_of_its_own_goes_onto_the_selected_lane() {
+    let dir = scratch("selected-free");
+    let mut session = a_session_with_rows(&dir);
+    let before = lane_names(&session);
+    session.set_arrival_row(0);
+    session.select_lane(Some(3));
+    assert_eq!(session.selected_lane(), Some(3));
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
+    assert_eq!(lane_names(&session), before, "no row was made");
+    let clips = session.clips();
+    let clip = clips
+        .iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("a clip");
+    assert_eq!(clip.lane, 3, "on the selected lane");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_selected_lane_already_playing_there_gets_a_new_row_under_it() {
+    let dir = scratch("selected-busy");
+    let mut session = a_session_with_rows(&dir);
+    session.set_arrival_row(0);
+    session.select_lane(Some(2));
+    session
+        .drop_file(&a_take(&dir, "One.wav"))
+        .expect("imports");
+    let before = lane_names(&session);
+    session
+        .drop_file(&a_take(&dir, "Two.wav"))
+        .expect("imports");
+    let after = lane_names(&session);
+    assert_eq!(after.len(), before.len() + 1, "one row made");
+    assert_eq!(
+        after[3], "Two.wav",
+        "directly under the selected lane: {after:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn with_no_lane_selected_a_sound_arrives_mid_screen_as_before() {
+    let dir = scratch("unselected");
+    let mut session = a_session_with_rows(&dir);
+    session.select_lane(Some(1));
+    session.select_lane(None);
+    session.set_arrival_row(2);
+    session
+        .drop_file(&a_take(&dir, "Take.wav"))
+        .expect("imports");
+    assert_eq!(lane_names(&session)[2], "Take.wav");
+    std::fs::remove_dir_all(&dir).ok();
+}

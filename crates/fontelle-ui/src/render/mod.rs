@@ -402,6 +402,9 @@ pub struct TimelineChrome<'a> {
     /// The clips feeding the selected mixer strip, and its colour, while the
     /// mixer is showing (`docs/ux-routing-and-learning-plan.md` §3).
     pub glow: Option<([u8; 4], &'a [fontelle_types::ClipId])>,
+    /// The row a click on its header selected, lit — where new material with
+    /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
+    pub selected_lane: Option<usize>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -6317,17 +6320,59 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
         }
         let info = chrome.lanes.get(lane);
         let muted = info.is_some_and(|i| i.muted);
+        let soloed = info.is_some_and(|i| i.soloed);
+        // Selected — a click on the header — lit like a selected rack row:
+        // where new material with no row of its own will land.
+        if chrome.selected_lane == Some(lane) {
+            fill_rect(scene, header, p.selection);
+        }
         fill_rect(
             scene,
             Rect::new(header.x, header.y, 3.0, header.height),
             if muted { p.meter_peak } else { p.accent },
         );
+        // Its mute and solo, at the right end, drawn as the rack draws its
+        // pair. Before the name, so a long name is clipped short of them.
+        let (mute_switch, solo_switch) = crate::canvas::lane_switches(header);
+        // **Icons, not letters in boxes** — Ty: *"turn the mute and solo
+        // buttons on the tracks into actual icons and not letters inside of
+        // buttons"*. The speaker and the headphones, muted ink when off and
+        // their own colour when on, with nothing drawn behind them.
+        for (rect, on, icon, colour) in [
+            (mute_switch, muted, crate::icon::Icon::Mute, p.meter_peak),
+            (solo_switch, soloed, crate::icon::Icon::Solo, p.accent),
+        ] {
+            if rect.is_empty() {
+                continue;
+            }
+            // On, a soft wash of its colour behind it: teal on grey alone was
+            // too quiet a difference to read at a glance.
+            if on {
+                fill_rect_rounded(scene, rect.inset(-1.0), 3.0, colour.with_alpha(0x40));
+            }
+            draw_icon(
+                scene,
+                icon,
+                rect.inset(1.0),
+                if on { colour } else { p.text_muted },
+            );
+        }
+        let name_area = if mute_switch.is_empty() {
+            header
+        } else {
+            Rect::new(
+                header.x,
+                header.y,
+                (mute_switch.x - 4.0 - header.x).max(0.0),
+                header.height,
+            )
+        };
         let name = info.map_or(EMPTY_LANE, |i| i.name.as_str());
         if let Some(text) = labels.get(name) {
             draw_text_clipped(
                 scene,
                 text,
-                header,
+                name_area,
                 header.x + 8.0,
                 header.y + (header.height - text.height) / 2.0,
                 if muted { p.text_muted } else { p.text },

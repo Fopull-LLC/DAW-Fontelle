@@ -900,6 +900,7 @@ fn keep_the_take(
         color: [0xd0, 0x7f, 0x4f, 0xff],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     AddClip::new(Clip {

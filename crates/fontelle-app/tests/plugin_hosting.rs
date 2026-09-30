@@ -116,6 +116,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let channel = project.channels.insert(Channel {

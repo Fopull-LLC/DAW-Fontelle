@@ -63,6 +63,7 @@ fn a_project() -> (Project, ChannelId, LaneId) {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     (project, channel, lane)
@@ -922,6 +923,7 @@ fn an_old_project_keeps_the_order_its_rows_already_had() {
             color: [0; 4],
             muted: false,
             locked: false,
+            soloed: false,
             // What `#[serde(default)]` gives a file that never had the field.
             order: 0,
         });

@@ -53,6 +53,7 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let mut arena = Arena::default();
@@ -174,6 +175,7 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let mut arena = Arena::default();

@@ -638,6 +638,9 @@ pub struct MixerStrip {
 pub struct LaneInfo {
     pub name: String,
     pub muted: bool,
+    /// Soloed: while any row is, only soloed rows play (a sequencer solo,
+    /// like the mute).
+    pub soloed: bool,
 }
 
 /// What a row of the browser *is*, so the panel can draw it and route a click.
@@ -2556,6 +2559,15 @@ pub trait StudioHost: DocumentHost {
     /// would be an index nothing else could use.
     fn select_mixer_track(&mut self, _strip: usize) {}
 
+    /// Selects an arrangement row — a click on its header — or none. New
+    /// material with no row of its own lands on it: a recording, an import
+    /// (`docs/ux-routing-and-learning-plan.md` §2).
+    fn select_lane(&mut self, _lane: Option<usize>) {}
+    /// The row selected, by its place in the stack, if one is.
+    fn selected_lane(&self) -> Option<usize> {
+        None
+    }
+
     /// Recolours strip `strip` — its cap, its route chips, the glow of what
     /// feeds it (`docs/ux-routing-and-learning-plan.md` §4). One undo step.
     fn set_track_color(&mut self, _strip: usize, _color: [u8; 4]) {}
@@ -2972,6 +2984,8 @@ pub trait StudioHost: DocumentHost {
     /// The other direction, for the arrangement's ruler.
     fn sample_of_song_tick(&self, tick: Tick) -> Sample;
     fn toggle_lane_mute(&mut self, lane: usize);
+    /// Solos the row, or lets it go — a sequencer solo, one undo step.
+    fn toggle_lane_solo(&mut self, _lane: usize) {}
 
     /// Moves one row up (`-1`) or down (`1`) the stack.
     ///

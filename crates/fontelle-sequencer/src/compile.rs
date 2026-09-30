@@ -192,11 +192,22 @@ pub fn compile_with(
         })
     };
 
+    // The rows' solo, the same shape as the channels' above: while any row
+    // is soloed only soloed rows play. **The song only** — a clip played on
+    // its own, or one row rendered, was asked for by name, and a solo on
+    // another row is not a reason to hand back silence.
+    let any_lane_soloed =
+        scope == CompileScope::Song && project.lanes.values().any(|lane| lane.soloed);
+
     for (clip_index, (clip_id, clip)) in project.clips.iter().enumerate() {
         if clip.muted || !scope.includes(clip_id, clip.lane) {
             continue;
         }
-        if project.lanes.get(clip.lane).is_some_and(|lane| lane.muted) {
+        if project
+            .lanes
+            .get(clip.lane)
+            .is_some_and(|lane| lane.muted || (any_lane_soloed && !lane.soloed))
+        {
             continue;
         }
 
@@ -746,6 +757,7 @@ mod tests {
             color: [0, 0, 0, 255],
             muted: false,
             locked: false,
+            soloed: false,
             order: 0,
         });
 

@@ -125,6 +125,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         color: [0, 0, 0, 255],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
 

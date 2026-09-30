@@ -767,6 +767,7 @@ fn a_lane(name: String) -> Lane {
         color: [0x4f, 0x8f, 0xd0, 0xff],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     }
 }
@@ -4098,6 +4099,7 @@ impl Command for AddAudioClip {
             color: AUDIO_LANE_COLOR,
             muted: false,
             locked: false,
+            soloed: false,
             order: open_rows(doc, at, 1),
         };
 
@@ -4501,6 +4503,7 @@ impl Command for ImportParts {
                 color: part.color,
                 muted: false,
                 locked: false,
+                soloed: false,
                 order,
             };
             order = order.saturating_add(1);
@@ -6050,6 +6053,9 @@ pub enum FlagTarget {
     /// Draw the roll's key strip as a list of names rather than as a keyboard
     /// — a per-channel view, saved with the song (TDD §16.4).
     ChannelNamedKeys(ChannelId),
+    /// A row's solo (`Lane::soloed`). Last, so the names already on the wire
+    /// keep their places.
+    LaneSoloed(LaneId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -6109,6 +6115,13 @@ impl Command for SetFlag {
             FlagTarget::ClipMuted(id) => {
                 let clip = doc.clips.get_mut(id).ok_or_else(|| no_clip(id))?;
                 std::mem::replace(&mut clip.muted, self.value)
+            }
+            FlagTarget::LaneSoloed(id) => {
+                let lane = doc
+                    .lanes
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError(format!("no lane {id:?}")))?;
+                std::mem::replace(&mut lane.soloed, self.value)
             }
             FlagTarget::LaneMuted(id) => {
                 let lane = doc

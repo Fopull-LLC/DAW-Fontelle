@@ -19,6 +19,33 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-09-30 (night, later) — UX plan step 2: selecting a lane, and
+lane solo.** `docs/ux-routing-and-learning-plan.md` §2, built.
+
+- **A click on a lane header selects it**; a second click lets it go. It
+  used to toggle mute. The header now carries mute and solo **icons** (not
+  letters in boxes — Ty: *"turn the mute and solo buttons on the tracks into
+  actual icons"*) at its right end (`canvas::lane_switches`, empty on a
+  header under 90 px); an icon that is on takes its colour and a soft wash;
+  the selected header is lit like a selected rack row.
+- **Lane solo is new** (`Lane::soloed`, serde-defaulted; `FlagTarget::
+  LaneSoloed`, added last for the wire; `tests/lane_scope.rs`): while any
+  row is soloed only soloed rows play — **in the song only**: clip mode and
+  a lane render were asked for by name and ignore another row's solo.
+  Automation plays through a solo as it does through a mute. "Solo lane" is
+  in the lane menu, between Mute and Move up (the menu's indices shifted).
+- **New material with no row of its own lands on the selected lane**
+  (`Landing::Arrival`, `Session::arrival_index`; `tests/audio_import.rs`,
+  `tests/live_take.rs`): an audio take, an Import-tab double-click, a note
+  take with no clip under it — onto the selected lane when that stretch is
+  free, onto a new row **directly under it** when not, never over what is
+  there. `.mid` imports (several rows at once) go under it. No lane
+  selected: mid-screen, as before.
+- **Seen** in the real window: names and switches on every header, a
+  selected row lit, a soloed row's solo icon on, the menu.
+- **Trap met:** `live_take.rs`'s `play()` and `keep_take()` count
+  **samples**; `BAR` there is ticks. A take "at BAR * 4" is a few beats in.
+
 **As of 2026-09-30 (night) — UX plan step 1: colours and linked
 highlighting.** `docs/ux-routing-and-learning-plan.md` §3–4, built.
 

@@ -603,6 +603,7 @@ pub fn read_midi(
             color: CHANNEL_COLOURS[midi_channel as usize % CHANNEL_COLOURS.len()],
             muted: false,
             locked: false,
+            soloed: false,
             order: 0,
         });
         let length = notes

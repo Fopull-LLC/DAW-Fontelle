@@ -67,6 +67,7 @@ fn fixture() -> (Project, ClipId, LaneId) {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let mut notes = Arena::default();

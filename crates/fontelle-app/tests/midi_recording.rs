@@ -98,6 +98,7 @@ fn armed_project(library: &SampleLibrary, patch: &Patch) -> (Project, fontelle_t
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     (project, lane)

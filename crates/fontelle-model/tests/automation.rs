@@ -209,6 +209,7 @@ fn project_with(clips: &[(Tick, Tick, f64)]) -> Project {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     for (start, length, value) in clips {

@@ -120,6 +120,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
 

@@ -2133,3 +2133,46 @@ fn writing_a_note_tells_the_window_its_lists_have_changed() {
     session.redo();
     assert!(session.revision() > redone, "and so does a redo");
 }
+
+/// Rows can be soloed (`docs/ux-routing-and-learning-plan.md` §2): a
+/// sequencer solo, like the mute — while any row is soloed, only soloed rows
+/// play — and a switch on the row, one undo step.
+#[test]
+fn soloing_a_lane_silences_the_others_until_it_is_let_go() {
+    let dir = a_bank("arrange-lane-solo");
+    let (mut session, _source, mut timeline) = studio_with_timeline(&dir);
+    open_soundfont(&mut session, 0).unwrap();
+    session.set_channel_instrument(0).unwrap();
+    session.edit(RollEdit::Add {
+        note: Note {
+            start: 0,
+            length: PPQN,
+            key: 60,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            channel: None,
+        },
+    });
+    assert!(!timeline.current().events.is_empty());
+    // The notes are on the first row; soloing the second leaves them out.
+    session.add_lane();
+    session.toggle_lane_solo(1);
+    assert!(session.lanes()[1].soloed);
+    assert!(!session.lanes()[0].soloed);
+    assert!(
+        timeline.current().events.is_empty(),
+        "only the soloed row plays, and it has nothing on it"
+    );
+    session.toggle_lane_solo(1);
+    assert!(!session.lanes()[1].soloed);
+    assert!(
+        !timeline.current().events.is_empty(),
+        "let go, everything plays"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

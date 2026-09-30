@@ -264,6 +264,7 @@ fn a_lane(name: &str, order: u32) -> fontelle_model::Lane {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order,
     }
 }

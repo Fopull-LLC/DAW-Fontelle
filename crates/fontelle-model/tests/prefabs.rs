@@ -55,6 +55,7 @@ fn a_lane() -> Lane {
         color: [0, 0, 0, 255],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     }
 }

@@ -165,6 +165,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         color: [0x4f, 0x8f, 0xd0, 0xff],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
 
@@ -381,6 +382,7 @@ pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
             color: [0x4f, 0x8f, 0xd0, 0xff],
             muted: false,
             locked: false,
+            soloed: false,
             order: index as u32,
         }));
     }

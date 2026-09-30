@@ -1640,6 +1640,9 @@ pub struct WindowApp {
     /// What feeds each strip, as the caption under its name, worked out on
     /// the revision (`canvas::fed_by_caption`).
     fed_by: Vec<String>,
+    /// The arrangement row a click on its header selected, read with the
+    /// studio's lists (`StudioHost::selected_lane`).
+    selected_lane: Option<usize>,
     /// A cable knob being turned: where the press was, and the level then.
     /// Here rather than on `Drag`, which is compared, for the reason
     /// `MenuScroll` gives.
@@ -2256,6 +2259,7 @@ impl WindowApp {
             hover_cable: None,
             cable_drag: None,
             clip_strips: Vec::new(),
+            selected_lane: None,
             fed_by: Vec::new(),
             selected_track: 0,
             track_output: None,
@@ -2913,6 +2917,7 @@ impl WindowApp {
                     recording,
                     take_notes: &self.takes,
                     glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
+                    selected_lane: self.selected_lane,
                     can_paste: self
                         .options
                         .document
@@ -6288,6 +6293,7 @@ impl WindowApp {
             })
             .collect();
         self.clip_strips = doc.clip_routes();
+        self.selected_lane = doc.selected_lane();
         self.selected_track = doc.selected_mixer_track();
         self.track_output = doc.track_output(self.selected_track);
         self.track_output_on = doc.track_output_on(self.selected_track);
@@ -13327,10 +13333,37 @@ impl WindowApp {
                     let bounds = self.layout.window;
                     self.open_menu(MenuTarget::Lane(lane), x, y, bounds);
                 }
+                // *"right now you cannot select tracks, clicking on one just
+                // mutes or unmutes it. lets make it so simply clicking on it
+                // selects it"* — Ty. The row's own M and S switches keep a
+                // click each; the rest of the header selects the row, and a
+                // second click lets it go, so "no row selected" (new
+                // material mid-screen) is a click away too.
                 MouseButton::Left => {
+                    let top = crate::canvas::lane_to_y(
+                        &self.timeline.view,
+                        self.timeline_layout.grid,
+                        lane,
+                    );
+                    let header = crate::layout::Rect::new(
+                        self.timeline_layout.headers.x,
+                        top,
+                        self.timeline_layout.headers.width,
+                        self.timeline.view.lane_height,
+                    );
+                    let (mute, solo) = crate::canvas::lane_switches(header);
                     if let Some(doc) = &mut self.options.document {
-                        doc.toggle_lane_mute(lane);
+                        if mute.contains(x, y) {
+                            doc.toggle_lane_mute(lane);
+                        } else if solo.contains(x, y) {
+                            doc.toggle_lane_solo(lane);
+                        } else if doc.selected_lane() == Some(lane) {
+                            doc.select_lane(None);
+                        } else {
+                            doc.select_lane(Some(lane));
+                        }
                     }
+                    self.refresh_studio();
                 }
             }
             self.tree.invalidate(TIMELINE);
@@ -15503,6 +15536,7 @@ impl WindowApp {
             }
             MenuTarget::Lane(index) => {
                 let muted = self.lanes.get(*index).is_some_and(|lane| lane.muted);
+                let soloed = self.lanes.get(*index).is_some_and(|lane| lane.soloed);
                 let can_remove = self
                     .options
                     .document
@@ -15516,6 +15550,7 @@ impl WindowApp {
                     MenuEntry::new("Render to audio"),
                     MenuEntry::new("Rename lane"),
                     MenuEntry::new(if muted { "Unmute lane" } else { "Mute lane" }),
+                    MenuEntry::new(if soloed { "Unsolo lane" } else { "Solo lane" }),
                     // Greyed at the ends rather than left out, for the reason
                     // this function's own docs give.
                     if *index > 0 {
@@ -16482,11 +16517,16 @@ impl WindowApp {
             }
             (MenuTarget::Lane(lane), 5) => {
                 if let Some(doc) = &mut self.options.document {
+                    doc.toggle_lane_solo(*lane);
+                }
+            }
+            (MenuTarget::Lane(lane), 6) => {
+                if let Some(doc) = &mut self.options.document {
                     doc.move_lane(*lane, -1);
                 }
                 self.status = "Row moved up".to_string();
             }
-            (MenuTarget::Lane(lane), 6) => {
+            (MenuTarget::Lane(lane), 7) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.move_lane(*lane, 1);
                 }

@@ -60,6 +60,7 @@ fn a_new_row_goes_under_what_is_already_there() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 7,
     });
     let mut command = import("Take.wav", 0, PPQN);
@@ -178,6 +179,7 @@ fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let notes = project.clips.insert(fontelle_model::Clip {
@@ -670,6 +672,7 @@ fn a_drop_onto_an_existing_row_puts_the_clip_on_it_and_makes_no_new_row() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let lanes = project.lanes.len();
@@ -700,6 +703,7 @@ fn undoing_a_drop_onto_an_existing_row_leaves_that_row_alone() {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
 
@@ -739,6 +743,7 @@ fn a_row(name: &str, order: u32) -> fontelle_model::Lane {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order,
     }
 }

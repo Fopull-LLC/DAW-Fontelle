@@ -12,6 +12,12 @@ pub struct Lane {
     /// mixer operation.
     pub muted: bool,
     pub locked: bool,
+    /// Sequencer-level solo: while any row is soloed, only soloed rows play.
+    /// The lane header's right-click menu and its S switch
+    /// (`docs/ux-routing-and-learning-plan.md` §2). Defaulted, so a project
+    /// written before rows could be soloed opens with none soloed.
+    #[serde(default)]
+    pub soloed: bool,
     /// Where this row sits in the stack, low first.
     ///
     /// The arrangement used to stack rows in the arena's own order, which is

@@ -271,3 +271,52 @@ fn a_take_that_runs_past_its_clips_end_says_so() {
         .expect("the silent note is mentioned");
     assert!(said.contains("past"), "{said}");
 }
+
+// ---------------------------------------- onto the selected lane (2026-09-30)
+//
+// Ty, `docs/ux-routing-and-learning-plan.md` §2: *"new clips, recordings and
+// imports land on that lane"* — the lane selected by a click on its header.
+
+#[test]
+fn a_take_with_its_own_clip_goes_onto_the_selected_lane() {
+    let (mut session, mut source, mut port) =
+        session_capturing(fontelle_app::blank_project(8, 120.0, SR));
+    session.select_lane(Some(3));
+    play(&mut source, port.as_mut(), BEAT * 5, on(60));
+    play(&mut source, port.as_mut(), BEAT * 6, off(60));
+    assert_eq!(session.keep_take(BEAT * 8), 1);
+    assert_eq!(note_clips(&session), vec![(BAR, BAR, 3, vec![PPQN])]);
+}
+
+#[test]
+fn a_take_where_the_selected_lane_is_taken_gets_a_row_under_it() {
+    use fontelle_ui::canvas::ArrangeEdit;
+    let (mut session, mut source, mut port) =
+        session_capturing(fontelle_app::blank_project(8, 120.0, SR));
+    // Something already on the first row in bar five, and another clip open
+    // elsewhere, so the take is a clip of its own.
+    session.arrange(ArrangeEdit::Add {
+        lane: 0,
+        start: BAR * 4,
+    });
+    session.arrange(ArrangeEdit::Add { lane: 5, start: 0 });
+    session.select_lane(Some(0));
+    let rows = session.project().lanes.len();
+    // `play` and `keep_take` count samples: the second beat of bar five.
+    play(&mut source, port.as_mut(), BEAT * 17, on(60));
+    play(&mut source, port.as_mut(), BEAT * 18, off(60));
+    assert_eq!(session.keep_take(BEAT * 20), 1);
+    assert_eq!(
+        session.project().lanes.len(),
+        rows + 1,
+        "one row made: {:?}",
+        note_clips(&session)
+    );
+    assert!(
+        note_clips(&session)
+            .iter()
+            .any(|c| c.0 == BAR * 4 && c.2 == 1 && !c.3.is_empty()),
+        "on the new row directly under the selected one: {:?}",
+        note_clips(&session)
+    );
+}

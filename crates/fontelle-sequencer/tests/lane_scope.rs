@@ -37,6 +37,7 @@ fn a_lane(project: &mut Project, name: &str, order: u32) -> LaneId {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order,
     })
 }
@@ -165,4 +166,76 @@ fn a_muted_row_is_still_muted_when_it_is_the_one_being_rendered() {
         CompileScope::Lane(lanes[0]),
     );
     assert!(keys(&timeline).is_empty());
+}
+
+// ------------------------------------------------ lane solo (2026-09-30)
+//
+// Rows can be soloed as well as muted (`docs/ux-routing-and-learning-plan.md`
+// §2: *"the options like renaming, muting, soloing, rendering, etc. should
+// all just be in the right click menu"*). A sequencer solo, like the mute:
+// while any row is soloed, only soloed rows play.
+
+fn song(project: &Project, nodes: &HashMap<ChannelId, NodeId>) -> Vec<u8> {
+    keys(&compile_with(
+        project,
+        &NodeMaps {
+            channels: nodes,
+            ..Default::default()
+        },
+        CompileScope::Song,
+    ))
+}
+
+#[test]
+fn a_soloed_row_is_the_only_one_heard() {
+    let (mut project, lanes, _channels, nodes) = two_rows();
+    let mut solo =
+        fontelle_model::SetFlag::new(fontelle_model::FlagTarget::LaneSoloed(lanes[0]), true);
+    solo.apply(&mut project).unwrap();
+    assert_eq!(song(&project, &nodes), vec![60]);
+
+    fontelle_model::SetFlag::new(fontelle_model::FlagTarget::LaneSoloed(lanes[1]), true)
+        .apply(&mut project)
+        .unwrap();
+    assert_eq!(
+        song(&project, &nodes),
+        vec![60, 72],
+        "two soloed, both heard"
+    );
+
+    project.lanes[lanes[0]].soloed = false;
+    project.lanes[lanes[1]].soloed = false;
+    assert_eq!(
+        song(&project, &nodes),
+        vec![60, 72],
+        "none soloed, all heard"
+    );
+}
+
+#[test]
+fn undoing_a_solo_lets_every_row_play_again() {
+    let (mut project, lanes, _channels, nodes) = two_rows();
+    let mut solo =
+        fontelle_model::SetFlag::new(fontelle_model::FlagTarget::LaneSoloed(lanes[1]), true);
+    solo.apply(&mut project).unwrap();
+    assert_eq!(song(&project, &nodes), vec![72]);
+    solo.invert().apply(&mut project).unwrap();
+    assert_eq!(song(&project, &nodes), vec![60, 72]);
+}
+
+#[test]
+fn rendering_a_row_is_not_silenced_by_another_rows_solo() {
+    // Asking for one row by name is louder than a solo on another: the render
+    // is of that row, which is the thing asked for.
+    let (mut project, lanes, _channels, nodes) = two_rows();
+    project.lanes[lanes[0]].soloed = true;
+    let timeline = compile_with(
+        &project,
+        &NodeMaps {
+            channels: &nodes,
+            ..Default::default()
+        },
+        CompileScope::Lane(lanes[1]),
+    );
+    assert_eq!(keys(&timeline), vec![72]);
 }

@@ -53,6 +53,7 @@ fn rig() -> Rig {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     Rig {
@@ -71,6 +72,7 @@ impl Rig {
             color: [0; 4],
             muted: false,
             locked: false,
+            soloed: false,
             order: 1,
         })
     }

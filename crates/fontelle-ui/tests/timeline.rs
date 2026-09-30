@@ -671,3 +671,32 @@ fn the_cut_tool_emits_its_edit_when_the_button_comes_up() {
     }
     assert!(t.slice_line().is_none(), "and the stroke is gone after");
 }
+
+/// A row's mute and solo, as two small switches at the right end of its
+/// header (`docs/ux-routing-and-learning-plan.md` §2): a click on the header
+/// selects the row now, so the switches the click used to be need a place of
+/// their own — and the right-click menu has both for a header too narrow.
+#[test]
+fn a_lane_header_has_a_mute_and_a_solo_switch_at_its_right_end() {
+    use fontelle_ui::canvas::lane_switches;
+    let header = Rect::new(10.0, 100.0, 120.0, 32.0);
+    let (mute, solo) = lane_switches(header);
+    for (what, r) in [("mute", mute), ("solo", solo)] {
+        assert!(!r.is_empty(), "{what} has room");
+        assert!(
+            r.x >= header.x
+                && r.right() <= header.right()
+                && r.y >= header.y
+                && r.bottom() <= header.bottom(),
+            "{what} {r:?} is inside {header:?}"
+        );
+        assert!(
+            r.x > header.x + header.width / 2.0,
+            "{what} is at the right end"
+        );
+    }
+    assert!(!mute.intersects(&solo));
+    assert!(mute.x < solo.x, "mute then solo, as the rack has them");
+    let (mute, solo) = lane_switches(Rect::new(10.0, 100.0, 60.0, 32.0));
+    assert!(mute.is_empty() && solo.is_empty(), "no room, no switches");
+}

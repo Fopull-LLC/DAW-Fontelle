@@ -1243,10 +1243,12 @@ fn shoot_timeline_recording(
         }
     }
     let tview = TimelineView::default();
+    let (selected_lane, soloed_lane) = LANE_STATE.with(|state| state.get());
     let lanes: Vec<LaneInfo> = (0..4)
         .map(|n| LaneInfo {
             name: format!("Lane {}", n + 1),
             muted: false,
+            soloed: soloed_lane == Some(n),
         })
         .collect();
 
@@ -1304,6 +1306,7 @@ fn shoot_timeline_recording(
                 recording: None,
                 take_notes: takes,
                 glow,
+                selected_lane,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -6511,4 +6514,76 @@ fn the_route_menu_shows_each_tracks_colour_beside_its_name() {
         "Track 2 is cyan"
     );
     assert_eq!(count(row(RouteChoice::Track(1)), TRACK_RED), 0);
+}
+
+thread_local! {
+    /// The selected row and the soloed row for the next timeline shot — a
+    /// side door, so its callers keep their signature.
+    static LANE_STATE: std::cell::Cell<(Option<usize>, Option<usize>)> =
+        const { std::cell::Cell::new((None, None)) };
+}
+
+fn shoot_timeline_lanes(selected: Option<usize>, soloed: Option<usize>) -> Option<TimelineShot> {
+    LANE_STATE.with(|state| state.set((selected, soloed)));
+    let shot = shoot_timeline(&[]);
+    LANE_STATE.with(|state| state.set((None, None)));
+    if let Some(shot) = &shot {
+        dump_sized(&shot.pixels, "timeline-lanes", RW, RH);
+    }
+    shot
+}
+
+#[test]
+fn the_selected_lanes_header_is_lit_and_a_soloed_rows_switch_is_on() {
+    use fontelle_ui::canvas::{lane_switches, lane_to_y};
+    let Some(plain) = shoot_timeline_lanes(None, None) else {
+        return;
+    };
+    let Some(lit) = shoot_timeline_lanes(Some(1), Some(2)) else {
+        return;
+    };
+    let header = |shot: &TimelineShot, lane: usize| {
+        let y = lane_to_y(&shot.view, shot.layout.grid, lane);
+        fontelle_ui::layout::Rect::new(
+            shot.layout.headers.x,
+            y,
+            shot.layout.headers.width,
+            shot.view.lane_height,
+        )
+    };
+    // Selected: the header's own ground is the selection colour, where the
+    // unselected one is the panel header's.
+    let probe = |shot: &TimelineShot, lane: usize| {
+        let h = header(shot, lane);
+        shot.at((h.x + h.width * 0.45) as u32, (h.y + 3.0) as u32)
+    };
+    assert!(
+        near(probe(&lit, 1), lit.theme.palette.selection) || probe(&lit, 1) != probe(&plain, 1),
+        "the selected header is lit"
+    );
+    assert_eq!(probe(&lit, 0), probe(&plain, 0), "the others are not");
+
+    // Soloed: its solo **icon** is drawn in the accent — Ty: *"turn the mute
+    // and solo buttons on the tracks into actual icons and not letters
+    // inside of buttons"*. So a switch is a glyph, not a filled box.
+    let accent_in = |shot: &TimelineShot, r: fontelle_ui::layout::Rect| {
+        (r.x as u32..r.right() as u32)
+            .flat_map(|x| (r.y as u32..r.bottom() as u32).map(move |y| (x, y)))
+            .filter(|(x, y)| near(shot.at(*x, *y), shot.theme.palette.accent))
+            .count()
+    };
+    let (_, solo) = lane_switches(header(&lit, 2));
+    assert!(accent_in(&lit, solo) > 4, "solo is on");
+    let (mute_off, off) = lane_switches(header(&lit, 3));
+    assert_eq!(accent_in(&lit, off), 0, "and off elsewhere");
+    // Off, there is no box: the corners of the switch are the header's own
+    // ground, the same as a spot in the name area beside it.
+    let ground = lit.at((header(&lit, 3).x + 20.0) as u32, (off.y + 1.0) as u32);
+    for r in [mute_off, off] {
+        let corner = lit.at((r.x + 1.0) as u32, (r.y + 1.0) as u32);
+        assert!(
+            near(corner, ground),
+            "no box behind an icon: {corner:?} vs {ground:?}"
+        );
+    }
 }

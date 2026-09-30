@@ -59,6 +59,7 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let mut add = AddClip::new(Clip {

@@ -66,6 +66,7 @@ fn session() -> Session {
         color: [0; 4],
         muted: false,
         locked: false,
+        soloed: false,
         order: 0,
     });
     let channel = project.channels.insert(Channel {
