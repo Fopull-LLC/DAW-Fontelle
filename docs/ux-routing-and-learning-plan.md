@@ -122,12 +122,15 @@ routing mode's new home) belong in the same design.
   learn for both modes.
 - **F. The next release carries all of it**, tutorial and guide included.
 
-## Still open
+## Settled in the third answer
 
-- **D. The demo project**: its content, and whether it ships in the
-  download (size) or is fetched on first use.
-- **E. The web manual**: file the card to W now, or once the in-app guide
-  exists to export from.
+- **D. The demo project is extremely simple**: only as much song as it takes
+  to teach the necessary things well — a few lanes, an instrument or two,
+  one audio clip, a mixer track with an effect and a send. Small enough to
+  ship in the download.
+- **E. The web manual card waits for the in-app guide.** The web guide is
+  built from it — its screenshots and its text repurposed — so the card to
+  W is filed once the guide exists, with those to hand.
 
 ## Proposed order
 
