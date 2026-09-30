@@ -41,3 +41,13 @@ builds the four archives and `SHA256SUMS`, and the start menu's updater
 publishes only once CI has passed on that commit
 (`.github/scripts/ci-passed.sh`), so a red CI is a release that does not
 happen — look at `gh run list --workflow CI` before tagging.
+
+Nearly every release went red on its first CI run, always on something this
+machine never checked. So:
+
+- `.github/scripts/preflight.sh` runs fmt and clippy for Linux, Windows and
+  macOS (clippy never links, so it cross-checks from here). The pre-push hook
+  runs it. macOS skips `fontelle-app` and `fontelle-net`, which need the
+  macOS SDK for `ring`.
+- **Push `main` when a chunk is done**, not only at release, so CI's tests on
+  the Windows and macOS runners see the work days before the version bump.
