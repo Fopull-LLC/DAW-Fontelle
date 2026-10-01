@@ -19,7 +19,11 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-01 (latest, night) — themes go everywhere; R records.**
+**As of 2026-10-01 (latest, night) — v0.20.0, released by Ty's go:** the
+two entries below plus the guide clips. The guide clips predate the theme
+pictures and the new icons; Ty released without re-recording them.
+
+**As of 2026-10-01 (night) — themes go everywhere; R records.**
 Ty: *"pictures seem quite limiting ... i want themes to be able to get
 detailed in the backgrounds they want to make for each section and even
 have transparency for things that can overlap."* Nothing tagged.
@@ -44,9 +48,10 @@ have transparency for things that can overlap."* Nothing tagged.
   pictures in all seven sections, drawn procedurally by
   `assets/themes/ember/make.py` (2.1 MB, compiled in; `Theme::ember` is
   built once in a `OnceLock`).
-- The Hatsune Miku theme (Ty's, local only, not in the tree) was rebuilt the
-  same way: a stage behind everything, an equalizer in the transport, her
-  twin-tail down the browser, notes, lasers, her name.
+- Ty's own personal theme was rebuilt the same way. Its artwork is
+  licensed, so it lives only in his config folder: never in the tree, a
+  test fixture, a doc, a guide clip or a release. Never name or show it in
+  anything public.
 
 **As of 2026-10-01 (evening) — a round of Ty's fixes for the next
 release: velocity scaling, the wires, the mixer's size, icons, the home page,
