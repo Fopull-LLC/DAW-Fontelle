@@ -692,6 +692,12 @@ impl Lv2Processor {
         }
     }
 
+    /// **RT.** One raw MIDI message, channel and all — what an MPE zone
+    /// speaks through (`HostedProcessor::set_mpe`).
+    pub(crate) fn midi(&mut self, frame: usize, bytes: [u8; 3]) {
+        self.push(frame, bytes);
+    }
+
     pub(crate) fn note_on(&mut self, frame: usize, key: u8, velocity: f64) {
         let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
         self.push(frame, [0x90, key.min(127), velocity.max(1)]);

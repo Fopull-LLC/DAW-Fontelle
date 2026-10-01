@@ -1099,3 +1099,43 @@ fn a_slide_reaches_an_lv2_instrument_as_a_bend_within_two_semitones() {
         "back to unbent: {back} vs {unbent}"
     );
 }
+
+/// **MPE mode** (`docs/note-paths-plan.md` §6): with the plugin's MPE switch
+/// on, each note goes out on a member channel of its own and a slide is that
+/// channel's bend over MPE's 48 semitones — so an octave is an octave, where
+/// the channel bend above stops at two.
+///
+/// The fixture sine takes RPN 0 (the bend range) the way a real MPE synth
+/// does; the zone's set-up says 48 before the first note.
+#[test]
+fn in_mpe_mode_a_slide_reaches_an_lv2_instrument_whole() {
+    let mut host = PluginHost::new();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 4096).unwrap();
+    processor.set_mpe(true);
+    processor.note_on(0, 69, 1.0);
+    let mut output = vec![vec![0.0f32; 4096]];
+    processor.process_instrument(&mut output, 4096);
+    let unbent = crossings(&output[0]);
+    assert!(
+        unbent > 50,
+        "the note sounds on its member channel: {unbent}"
+    );
+
+    processor.note_tuning(0, 69, 12.0);
+    processor.process_instrument(&mut output, 4096);
+    let octave = crossings(&output[0]);
+    assert!(
+        octave.abs_diff(unbent * 2) <= 3,
+        "a whole octave: {octave} vs twice {unbent}"
+    );
+
+    // And the note still ends: its off goes to the channel it is on.
+    processor.note_off(0, 69);
+    processor.process_instrument(&mut output, 4096);
+    processor.process_instrument(&mut output, 4096);
+    assert!(
+        output[0].iter().all(|s| s.abs() < 1e-4),
+        "the note let go on its own channel"
+    );
+}

@@ -930,3 +930,28 @@ fn the_transport_is_said_in_a_plugins_terms() {
     };
     assert!(!fontelle_engine::plugin_transport(&stopped, 48_000.0).playing);
 }
+
+/// A plugin channel with its **MPE switch** on (`PluginNode::with_mpe`): a
+/// note path's glide reaches an LV2 synth as its own channel's bend over 48
+/// semitones, so an octave is an octave where the channel bend stops at two
+/// (`docs/note-paths-plan.md` §6).
+#[cfg(target_os = "linux")]
+#[test]
+fn with_mpe_on_a_glide_reaches_an_lv2_synth_whole() {
+    let (_host, _plugin, _bay, node) = wire_key(
+        &PluginKey::new(
+            fontelle_types::PluginFormat::Lv2,
+            fontelle_testlv2::SINE_URI,
+        ),
+        &lv2_bundle(),
+        PluginRole::Instrument,
+        LONG,
+    );
+    let mut node = node.with_mpe(true);
+    let (unbent, _) = block(&mut node, &[note_on(69)]);
+    let (octave, _) = block(&mut node, &[glide(69, 12.0, 0)]);
+    assert!(
+        octave > unbent * 2 - 6 && octave < unbent * 2 + 6,
+        "unbent {unbent}, an octave up {octave}"
+    );
+}

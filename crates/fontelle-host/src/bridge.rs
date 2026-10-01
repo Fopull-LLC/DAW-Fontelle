@@ -53,6 +53,9 @@ pub struct BridgeFailure {
 struct Loaded {
     /// The table, valid for as long as `_library` is.
     table: *const FontelleBridge,
+    /// The optional raw-MIDI entry point (`MIDI_SYMBOL`), when the bridge
+    /// exports one — what MPE out goes through.
+    midi: Option<fontelle_bridge_abi::MidiFn>,
     format: PluginFormat,
     name: String,
     path: PathBuf,
@@ -267,8 +270,16 @@ fn load_one(path: &Path) -> Result<Loaded, String> {
         ));
     }
     let name = text(bridge.name);
+    // Optional, and looked up by name rather than read from the table: a
+    // bridge built before it existed has no such field to read past.
+    let midi = unsafe {
+        library.get::<fontelle_bridge_abi::MidiFn>(fontelle_bridge_abi::MIDI_SYMBOL.as_bytes())
+    }
+    .ok()
+    .map(|symbol| *symbol);
     Ok(Loaded {
         table,
+        midi,
         format,
         name,
         path: path.to_path_buf(),
@@ -343,6 +354,12 @@ impl BridgedShared {
             .bridge(self.format)
             .expect("a bridged plugin was opened by a bridge that is still loaded")
             .table()
+    }
+
+    fn midi(&self) -> Option<fontelle_bridge_abi::MidiFn> {
+        self.bridges
+            .bridge(self.format)
+            .and_then(|loaded| loaded.midi)
     }
 }
 
@@ -653,6 +670,29 @@ impl BridgedProcessor {
 
     pub(crate) fn channel_pressure(&mut self, frame: usize, value: u8) {
         unsafe { (self.table().channel_pressure)(self.shared.instance, frame as u32, value) };
+    }
+
+    /// Whether the bridge takes raw MIDI — see `MIDI_SYMBOL`.
+    pub(crate) fn takes_midi(&self) -> bool {
+        self.shared.midi().is_some()
+    }
+
+    /// **RT.** One raw MIDI message, channel and all. Nothing when the
+    /// bridge does not take MIDI; the caller asks [`takes_midi`] first.
+    ///
+    /// [`takes_midi`]: Self::takes_midi
+    pub(crate) fn midi(&mut self, frame: usize, bytes: [u8; 3]) {
+        if let Some(midi) = self.shared.midi() {
+            unsafe {
+                midi(
+                    self.shared.instance,
+                    frame as u32,
+                    bytes[0],
+                    bytes[1],
+                    bytes[2],
+                )
+            };
+        }
     }
 
     /// **RT.** One block. Whatever moved on the wire is written first, the

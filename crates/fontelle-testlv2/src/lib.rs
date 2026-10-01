@@ -262,6 +262,12 @@ struct Sine {
     pressure: f32,
     /// The pitch bend, in semitones, over two either way.
     bend: f32,
+    /// How far a full bend goes, in semitones: two until RPN 0 says
+    /// otherwise, the way a real synth's is — so an MPE zone's 48 can be
+    /// told from a channel bend's two.
+    bend_range: f32,
+    /// The RPN the next data entry is for, `(MSB, LSB)`.
+    rpn: (u8, u8),
 }
 
 extern "C" fn sine_instantiate(
@@ -305,6 +311,8 @@ extern "C" fn sine_instantiate(
         wheel: 1.0,
         pressure: 0.0,
         bend: 0.0,
+        bend_range: BEND_RANGE_SEMITONES,
+        rpn: (127, 127),
     }))
     .cast()
 }
@@ -382,10 +390,16 @@ extern "C" fn sine_run(handle: LV2Handle, samples: u32) {
             0xB0 if bytes[1] == 123 => sine.key = None,
             // The mod wheel — see the crate note.
             0xB0 if bytes[1] == 1 => sine.wheel = f32::from(bytes[2] & 0x7F) / 127.0,
+            // RPN 0, the bend range — what an MPE zone's set-up says.
+            0xB0 if bytes[1] == 101 => sine.rpn.0 = bytes[2] & 0x7F,
+            0xB0 if bytes[1] == 100 => sine.rpn.1 = bytes[2] & 0x7F,
+            0xB0 if bytes[1] == 6 && sine.rpn == (0, 0) => {
+                sine.bend_range = f32::from(bytes[2] & 0x7F);
+            }
             0xD0 => sine.pressure = f32::from(bytes[1] & 0x7F) / 127.0,
             0xE0 => {
                 let raw = (i32::from(bytes[2] & 0x7F) << 7) | i32::from(bytes[1] & 0x7F);
-                sine.bend = (raw - 8192) as f32 / 8192.0 * BEND_RANGE_SEMITONES;
+                sine.bend = (raw - 8192) as f32 / 8192.0 * sine.bend_range;
             }
             _ => {}
         }

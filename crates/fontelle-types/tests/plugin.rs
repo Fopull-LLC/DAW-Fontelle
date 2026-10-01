@@ -53,6 +53,7 @@ fn a_plugin_slot_round_trips_through_json() {
             PluginParamValue { id: 7, value: -1.5 },
         ],
         blob: Some("QUJD".to_string()),
+        mpe: false,
     };
     let json = serde_json::to_string(&state).unwrap();
     let read: PluginState = serde_json::from_str(&json).unwrap();

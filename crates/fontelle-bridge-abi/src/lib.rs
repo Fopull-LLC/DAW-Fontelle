@@ -84,6 +84,23 @@ pub const ABI_VERSION: u32 = 3;
 /// The symbol a bridge exports.
 pub const ENTRY_SYMBOL: &str = "fontelle_bridge_entry";
 
+/// The **optional** second symbol: a bridge that exports it takes raw MIDI
+/// with its channel, which is how a note path's slide reaches a VST 2 synth
+/// in its MPE mode — each note on a member channel of its own, bent there
+/// alone (`docs/note-paths-plan.md` §6).
+///
+/// A symbol rather than a field at the end of [`FontelleBridge`], so the
+/// table and [`ABI_VERSION`] stay as they are and every bridge already
+/// installed loads exactly as before; a host that finds no such symbol
+/// keeps sending notes and bends through the table.
+pub const MIDI_SYMBOL: &str = "fontelle_bridge_midi";
+
+/// What [`MIDI_SYMBOL`] names. **Audio thread**, in time order with the
+/// table's notes: one MIDI message of three bytes — status with its
+/// channel, then two data bytes — at `frame` within the coming block.
+pub type MidiFn =
+    unsafe extern "C" fn(instance: Instance, frame: u32, status: u8, data1: u8, data2: u8);
+
 /// The entry point's signature.
 pub type EntryFn = unsafe extern "C" fn() -> *const FontelleBridge;
 
@@ -245,8 +262,8 @@ pub struct FontelleBridge {
     /// A **slide note** arrives here too: the table carries one pitch for
     /// the instrument rather than one per note, so the host converts a
     /// slide into the bend that reaches it, and a slide past the bend's
-    /// range lands at the limit. Per-note pitch is what an ABI 4 would add,
-    /// once there is a bridge that wants it.
+    /// range lands at the limit. Per-note pitch goes through the optional
+    /// [`MIDI_SYMBOL`] instead, as MPE.
     pub pitch_bend: unsafe extern "C" fn(instance: Instance, frame: u32, value: i16),
     /// **Audio thread.** Channel aftertouch at `frame`, `0..=127`.
     pub channel_pressure: unsafe extern "C" fn(instance: Instance, frame: u32, value: u8),

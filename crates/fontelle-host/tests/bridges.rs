@@ -450,3 +450,34 @@ fn a_bend_and_a_slide_reach_a_bridged_instrument() {
 fn the_abi_version_is_three_now_that_a_performance_crosses_it() {
     assert_eq!(fontelle_bridge_abi::ABI_VERSION, 3);
 }
+
+/// **MPE through a bridge** (`docs/note-paths-plan.md` §6). A bridge that
+/// exports [`fontelle_bridge_abi::MIDI_SYMBOL`] takes raw MIDI with its
+/// channel, so in MPE mode a slide reaches a bridged VST 2 synth as its own
+/// member channel's bend — an octave whole, not stopped at two semitones.
+/// A bridge without the symbol keeps the channel bend above; old bridges
+/// load as they always did.
+#[test]
+fn in_mpe_mode_a_slide_reaches_a_bridged_instrument_whole() {
+    let mut host = host();
+    let mut plugin = host.open(&common::bridged_bundle(), &sine_key()).unwrap();
+    let mut processor = plugin.activate(48_000.0, 4096).unwrap();
+    processor.set_mpe(true);
+    processor.note_on(0, 69, 1.0);
+    let mut output = vec![vec![0.0f32; 4096], vec![0.0f32; 4096]];
+    processor.process_instrument(&mut output, 4096);
+    let unbent = crossings(&output[0]);
+    assert!(unbent > 50, "{unbent}");
+
+    processor.note_tuning(0, 69, 12.0);
+    processor.process_instrument(&mut output, 4096);
+    let octave = crossings(&output[0]);
+    assert!(
+        octave.abs_diff(unbent * 2) <= 3,
+        "a whole octave: {octave} vs twice {unbent}"
+    );
+
+    processor.note_off(0, 69);
+    processor.process_instrument(&mut output, 4096);
+    assert!(peak(&output) < 1e-4, "{}", peak(&output));
+}

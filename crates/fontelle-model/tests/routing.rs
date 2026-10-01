@@ -880,3 +880,40 @@ fn strip_key(value: &mut serde_json::Value, key: &str) -> bool {
         _ => false,
     }
 }
+
+/// A plugin channel's **MPE switch** (`docs/note-paths-plan.md` §6): on, an
+/// LV2 or bridged synth hears each note on a channel of its own, so a slide
+/// bends that note alone. Off by default — a synth not in its MPE mode would
+/// hear the zone as noise — and kept with the plugin's own state.
+#[test]
+fn a_plugin_channels_mpe_switch_is_kept_with_the_plugin_and_undone() {
+    let mut project = project();
+    let mut add = AddChannel::new("Synth", None);
+    add.apply(&mut project).unwrap();
+    let channel = add.channel().unwrap();
+    project.channels[channel].plugin = Some(fontelle_types::PluginState::new(
+        fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Lv2, "urn:synth"),
+        "Synth",
+    ));
+    assert!(!project.channels[channel].plugin.as_ref().unwrap().mpe);
+
+    let mut on = SetFlag::new(FlagTarget::ChannelPluginMpe(channel), true);
+    on.apply(&mut project).unwrap();
+    assert!(project.channels[channel].plugin.as_ref().unwrap().mpe);
+    on.invert().apply(&mut project).unwrap();
+    assert!(!project.channels[channel].plugin.as_ref().unwrap().mpe);
+
+    // Written only when on, and an older file reads as off.
+    let state = project.channels[channel].plugin.clone().unwrap();
+    assert!(!serde_json::to_string(&state).unwrap().contains("mpe"));
+
+    // A channel with no plugin has no switch to set.
+    let mut add = AddChannel::new("Piano", None);
+    add.apply(&mut project).unwrap();
+    let bare = add.channel().unwrap();
+    assert!(
+        SetFlag::new(FlagTarget::ChannelPluginMpe(bare), true)
+            .apply(&mut project)
+            .is_err()
+    );
+}

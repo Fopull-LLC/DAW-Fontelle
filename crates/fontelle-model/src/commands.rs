@@ -6179,6 +6179,10 @@ pub enum FlagTarget {
     /// A row's solo (`Lane::soloed`). Last, so the names already on the wire
     /// keep their places.
     LaneSoloed(LaneId),
+    /// A plugin channel's MPE switch (`PluginState::mpe`): each note on a
+    /// channel of its own, so a note path's slide bends that note alone.
+    /// After the solo, for the same reason the solo is last.
+    ChannelPluginMpe(ChannelId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -6273,6 +6277,16 @@ impl Command for SetFlag {
                     .get_mut(id)
                     .ok_or_else(|| CommandError(format!("no channel {id:?}")))?;
                 std::mem::replace(&mut channel.named_keys, self.value)
+            }
+            FlagTarget::ChannelPluginMpe(id) => {
+                let plugin = doc
+                    .channels
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError(format!("no channel {id:?}")))?
+                    .plugin
+                    .as_mut()
+                    .ok_or_else(|| CommandError("that channel plays no plugin".into()))?;
+                std::mem::replace(&mut plugin.mpe, self.value)
             }
         };
         self.previous.get_or_insert(previous);

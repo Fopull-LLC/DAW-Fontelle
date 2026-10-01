@@ -20,6 +20,7 @@ fn channel(name: &str, route: Option<usize>) -> ChannelInfo {
         soloed: false,
         has_instrument: true,
         route,
+        mpe: None,
     }
 }
 

@@ -263,6 +263,10 @@ pub struct ChannelInfo {
     /// and answer — hence a chip on the row rather than a fact you could only
     /// find by reading the file.
     pub route: Option<usize>,
+    /// The channel's **MPE switch** (`PluginState::mpe`), when it has one to
+    /// offer: `None` for a channel that plays no plugin, or one whose format
+    /// carries a slide per note already (CLAP, VST 3).
+    pub mpe: Option<bool>,
 }
 
 /// What is inside a clip, as far as drawing it goes.
@@ -1198,6 +1202,9 @@ pub trait StudioHost: DocumentHost {
     fn rename_channel(&mut self, _index: usize, _name: &str) {}
     /// Takes the instrument off it, leaving a channel that plays nothing.
     fn clear_channel_instrument(&mut self, _index: usize) {}
+    /// Turns a plugin channel's MPE switch on or off — see
+    /// [`ChannelInfo::mpe`]. One undo, and the graph hears it at once.
+    fn set_plugin_mpe(&mut self, _index: usize, _on: bool) {}
 
     // --- the arrangement's rows (TDD §10.3) ---
 

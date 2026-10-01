@@ -2537,6 +2537,7 @@ fn shoot_rack_routed(
             soloed: *name == "Keys",
             has_instrument: true,
             route,
+            mpe: None,
         })
         .collect();
     let route_names: Vec<String> = (0..route_colors.len())
@@ -4822,6 +4823,7 @@ fn shoot_carry(
             soloed: false,
             has_instrument: true,
             route: None,
+            mpe: None,
         })
         .collect();
 

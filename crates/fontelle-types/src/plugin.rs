@@ -200,6 +200,16 @@ pub struct PluginState {
     /// for a slot whose state has not been read back yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<String>,
+    /// Whether the plugin hears notes as **MPE** — each on a MIDI channel of
+    /// its own, so a note path's slide bends that note alone
+    /// (`docs/note-paths-plan.md` §6). Meaningful for an LV2 plugin and a
+    /// bridged one; CLAP and VST 3 carry a slide per note already.
+    ///
+    /// Off unless the player turns it on: a synth not in its own MPE mode
+    /// reads a zone's 48-semitone bends as its usual two, and plays a chord
+    /// spread over fifteen channels as however it plays those.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mpe: bool,
 }
 
 impl PluginState {
@@ -209,6 +219,7 @@ impl PluginState {
             name: name.into(),
             params: Vec::new(),
             blob: None,
+            mpe: false,
         }
     }
 

@@ -7042,6 +7042,18 @@ impl StudioHost for Session {
                     .project
                     .channel_route(id)
                     .and_then(|id| self.mixer_track_ids().iter().position(|t| *t == id)),
+                // Offered only where it means something: a plugin that hears
+                // raw MIDI. CLAP and VST 3 carry a slide per note already.
+                mpe: channel
+                    .plugin
+                    .as_ref()
+                    .filter(|plugin| {
+                        !matches!(
+                            plugin.key.format,
+                            fontelle_types::PluginFormat::Clap | fontelle_types::PluginFormat::Vst3
+                        )
+                    })
+                    .map(|plugin| plugin.mpe),
             })
             .collect()
     }
@@ -8091,6 +8103,19 @@ impl StudioHost for Session {
         self.run(Box::new(fontelle_model::RenameChannel::new(id, name)));
         self.dirty = true;
         self.touch();
+    }
+
+    fn set_plugin_mpe(&mut self, index: usize, on: bool) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        self.run(Box::new(fontelle_model::SetFlag::new(
+            fontelle_model::FlagTarget::ChannelPluginMpe(id),
+            on,
+        )));
+        self.let_go();
+        // The plugin node reads the switch when the graph is built.
+        self.rebuild_graph();
     }
 
     fn clear_channel_instrument(&mut self, index: usize) {

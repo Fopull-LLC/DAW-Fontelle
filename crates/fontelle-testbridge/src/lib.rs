@@ -72,6 +72,12 @@ struct Plugin {
     pressure: f64,
     /// The bend, in semitones.
     bend: f64,
+    /// How far a full bend goes over raw MIDI, in semitones: two until RPN 0
+    /// says otherwise, the way a real synth's is — so MPE's 48 can be told
+    /// from a channel bend's two.
+    bend_range: f64,
+    /// The RPN the next data entry is for, `(MSB, LSB)`.
+    rpn: (u8, u8),
     /// The window the editor was opened into, while it is open. Only the
     /// sine has an editor — see [`HELLO_FROM_THE_EDITOR`].
     editor: Option<u64>,
@@ -167,6 +173,8 @@ unsafe extern "C" fn open(_path: *const c_char, id: *const c_char) -> Instance {
         wheel: 1.0,
         pressure: 0.0,
         bend: 0.0,
+        bend_range: BEND_RANGE_SEMITONES,
+        rpn: (127, 127),
         editor: None,
         greeted: false,
     }))
@@ -334,6 +342,51 @@ unsafe extern "C" fn pitch_bend(instance: Instance, _frame: u32, value: i16) {
 unsafe extern "C" fn channel_pressure(instance: Instance, _frame: u32, value: u8) {
     let p = unsafe { plugin(instance) };
     p.pressure = f64::from(value.min(127)) / 127.0;
+}
+
+/// Raw MIDI, channel and all — the optional `MIDI_SYMBOL`. The sine is one
+/// voice, so a channel only matters as far as a real synth's would: notes
+/// on any channel play, a bend on any channel bends, and RPN 0 sets how far.
+unsafe extern "C" fn midi(instance: Instance, frame: u32, status: u8, data1: u8, data2: u8) {
+    let p = unsafe { plugin(instance) };
+    match status & 0xF0 {
+        0x90 if data2 > 0 => {
+            if p.notes.len() < p.notes.capacity() {
+                p.notes.push((frame, data1, true));
+            }
+        }
+        0x80 | 0x90 => {
+            if p.notes.len() < p.notes.capacity() {
+                p.notes.push((frame, data1, false));
+            }
+        }
+        0xB0 => match data1 {
+            101 => p.rpn.0 = data2,
+            100 => p.rpn.1 = data2,
+            6 if p.rpn == (0, 0) => p.bend_range = f64::from(data2),
+            _ => {}
+        },
+        0xE0 => {
+            let raw = i32::from(data1 & 0x7F) | (i32::from(data2 & 0x7F) << 7);
+            p.bend = f64::from(raw - 8192) / 8192.0 * p.bend_range;
+        }
+        _ => {}
+    }
+}
+
+/// The optional second symbol: raw MIDI.
+///
+/// # Safety
+/// Called through `dlsym`; the function lives as long as the library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fontelle_bridge_midi(
+    instance: Instance,
+    frame: u32,
+    status: u8,
+    data1: u8,
+    data2: u8,
+) {
+    unsafe { midi(instance, frame, status, data1, data2) };
 }
 
 /// How far a full bend goes, in semitones — a keyboard's default, and what

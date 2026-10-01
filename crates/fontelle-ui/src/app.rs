@@ -16647,7 +16647,7 @@ impl WindowApp {
                     .channels
                     .get(*index)
                     .is_some_and(|channel| channel.has_instrument);
-                vec![
+                let mut entries = vec![
                     MenuEntry::new("Open instrument"),
                     MenuEntry::new("Change instrument..."),
                     MenuEntry::new("Rename"),
@@ -16662,7 +16662,21 @@ impl WindowApp {
                     } else {
                         MenuEntry::disabled("Delete instrument")
                     },
-                ]
+                ];
+                // A plugin that hears raw MIDI gets the MPE switch, last and
+                // ruled off: how a slide bends one note of a chord on a synth
+                // in its MPE mode (`docs/note-paths-plan.md` §6).
+                if let Some(on) = self.channels.get(*index).and_then(|channel| channel.mpe) {
+                    if let Some(last) = entries.last_mut() {
+                        *last = last.clone().after_rule();
+                    }
+                    entries.push(MenuEntry::new(if on {
+                        format!("{}Slides as MPE", crate::canvas::CHOSEN_MARK)
+                    } else {
+                        "Slides as MPE".to_string()
+                    }));
+                }
+                entries
             }
             MenuTarget::Lane(index) => {
                 let muted = self.lanes.get(*index).is_some_and(|lane| lane.muted);
@@ -17610,9 +17624,22 @@ impl WindowApp {
                     doc.clear_channel_instrument(*channel);
                 }
             }
-            (MenuTarget::Channel(channel), _) => {
+            (MenuTarget::Channel(channel), 5) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.remove_channel(*channel);
+                }
+            }
+            // The MPE switch, offered after Delete for a plugin that hears
+            // raw MIDI (`menu_entries`).
+            (MenuTarget::Channel(channel), _) => {
+                let on = self.channels.get(*channel).and_then(|c| c.mpe);
+                if let (Some(on), Some(doc)) = (on, &mut self.options.document) {
+                    doc.set_plugin_mpe(*channel, !on);
+                    self.status = if on {
+                        "Slides as one channel bend".to_string()
+                    } else {
+                        "Slides as MPE \u{2014} put the synth in its MPE mode too".to_string()
+                    };
                 }
             }
 

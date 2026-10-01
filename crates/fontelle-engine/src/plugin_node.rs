@@ -118,6 +118,10 @@ pub struct PluginNode {
     claimed: bool,
     /// The rate the graph runs at, for the transport's seconds.
     sample_rate: f64,
+    /// Whether the plugin hears notes as MPE (`PluginState::mpe`), said to
+    /// the processor every block — cheap when it has not changed, and a
+    /// processor handed on from the last graph hears this one's switch.
+    mpe: bool,
 }
 
 /// How many channels the scratch holds. A mixer bus is at most stereo.
@@ -164,6 +168,7 @@ impl PluginNode {
             key_buffer: Vec::new(),
             latency: 0,
             claimed: false,
+            mpe: false,
             sample_rate: 48_000.0,
         }
     }
@@ -174,6 +179,12 @@ impl PluginNode {
     /// this is how it reaches anything that walks the built schedule.
     pub fn with_latency(mut self, latency: u32) -> Self {
         self.latency = latency;
+        self
+    }
+
+    /// Whether the plugin hears notes as MPE — `PluginState::mpe`.
+    pub fn with_mpe(mut self, on: bool) -> Self {
+        self.mpe = on;
         self
     }
 
@@ -600,6 +611,11 @@ impl AudioNode for PluginNode {
 
     fn process(&mut self, ctx: &mut ProcessContext) {
         self.claim();
+        // Before the notes: a switch that changed lets go of what was
+        // sounding the old way, and this block's notes go out the new one.
+        if let Some(processor) = &mut self.processor {
+            processor.set_mpe(self.mpe);
+        }
         self.block_start = ctx.sample_range.start;
         self.take_automation(ctx);
         // A bypassed insert leaves the bus exactly as it arrived: its buffers

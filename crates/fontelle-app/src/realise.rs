@@ -679,7 +679,11 @@ pub fn realise_hosting(
                         // A plugin instrument that reports latency is late
                         // against the other channels on its track until
                         // sources get buffers of their own.
-                        .with_latency(wiring.latency),
+                        .with_latency(wiring.latency)
+                        // Each note on a channel of its own, when the player
+                        // has said the synth is in its MPE mode — how a note
+                        // path's slide bends one note of a chord.
+                        .with_mpe(channel.plugin.as_ref().is_some_and(|p| p.mpe)),
                     ),
                     input_buffers: Vec::new(),
                     output_buffers: bus.to_vec(),

@@ -88,6 +88,10 @@ pub struct HostedProcessor {
     held: [bool; 128],
     /// Where the song is — see [`PluginTransport`].
     transport: PluginTransport,
+    /// The MPE zone notes go out through, while the plugin's MPE switch is
+    /// on (`PluginState::mpe`) and it hears raw MIDI — see
+    /// [`set_mpe`](Self::set_mpe). `None` is one channel, as always.
+    mpe: Option<crate::MpeZone>,
 }
 
 enum Inner {
@@ -100,6 +104,17 @@ enum Inner {
     /// Boxed for the LV2 reason: it carries a buffer table per bus and the
     /// COM objects of a block.
     Vst3(Box<Vst3Processor>),
+}
+
+/// **RT.** One raw MIDI message to a plugin that hears MIDI, channel and
+/// all — what an MPE zone speaks through. A format with no raw MIDI never
+/// has a zone (`HostedProcessor::set_mpe`), so the other arms are nothing.
+fn raw_midi(inner: &mut Inner, frame: usize, bytes: [u8; 3]) {
+    match inner {
+        Inner::Lv2(p) => p.midi(frame, bytes),
+        Inner::Bridged(p) => p.midi(frame, bytes),
+        Inner::Clap(_) | Inner::Vst3(_) => {}
+    }
 }
 
 /// The host handler set, named once so the types below stay readable.
@@ -120,6 +135,7 @@ impl HostedProcessor {
             )),
             held: [false; 128],
             transport: PluginTransport::default(),
+            mpe: None,
         }
     }
 
@@ -128,6 +144,7 @@ impl HostedProcessor {
             inner: Inner::Lv2(Box::new(processor)),
             held: [false; 128],
             transport: PluginTransport::default(),
+            mpe: None,
         }
     }
 
@@ -136,6 +153,7 @@ impl HostedProcessor {
             inner: Inner::Bridged(processor),
             held: [false; 128],
             transport: PluginTransport::default(),
+            mpe: None,
         }
     }
 
@@ -144,6 +162,7 @@ impl HostedProcessor {
             inner: Inner::Vst3(Box::new(processor)),
             held: [false; 128],
             transport: PluginTransport::default(),
+            mpe: None,
         }
     }
 
@@ -165,6 +184,12 @@ impl HostedProcessor {
     /// entitled to stop reading at the first one out of order.
     pub fn note_on(&mut self, frame: usize, key: u8, velocity: f64) {
         self.held[usize::from(key.min(127))] = true;
+        if let Some(zone) = &mut self.mpe {
+            let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+            let inner = &mut self.inner;
+            zone.note_on(key, velocity, &mut |bytes| raw_midi(inner, frame, bytes));
+            return;
+        }
         match &mut self.inner {
             Inner::Clap(p) => p.note_on(frame, key, velocity),
             Inner::Lv2(p) => p.note_on(frame, key, velocity),
@@ -176,6 +201,11 @@ impl HostedProcessor {
     /// **RT.** Ends a note. See [`note_on`](Self::note_on).
     pub fn note_off(&mut self, frame: usize, key: u8) {
         self.held[usize::from(key.min(127))] = false;
+        if let Some(zone) = &mut self.mpe {
+            let inner = &mut self.inner;
+            zone.note_off(key, &mut |bytes| raw_midi(inner, frame, bytes));
+            return;
+        }
         match &mut self.inner {
             Inner::Clap(p) => p.note_off(frame, key),
             Inner::Lv2(p) => p.note_off(frame, key),
@@ -237,6 +267,15 @@ impl HostedProcessor {
     /// table carries one pitch for the instrument as well, so a bridged
     /// plugin is bent the same way an LV2 one is.
     pub fn note_tuning(&mut self, frame: usize, key: u8, semitones: f64) {
+        // In MPE mode the note has a channel of its own, and the bend on it
+        // is its alone — over 48 semitones rather than two.
+        if let Some(zone) = &mut self.mpe {
+            let inner = &mut self.inner;
+            zone.note_bend(key, semitones as f32, &mut |bytes| {
+                raw_midi(inner, frame, bytes)
+            });
+            return;
+        }
         let as_bend = || {
             let fraction = (semitones / BEND_RANGE_SEMITONES).clamp(-1.0, 1.0);
             // MIDI's own asymmetry: a full bend down is 8192 steps and a
@@ -252,6 +291,35 @@ impl HostedProcessor {
             Inner::Lv2(p) => p.pitch_bend(frame, as_bend()),
             Inner::Bridged(p) => p.pitch_bend(frame, as_bend()),
         }
+    }
+
+    /// **RT.** Whether a plugin that hears MIDI hears notes as **MPE**: each
+    /// on a member channel of its own, so a note path's slide is that
+    /// note's bend alone (`docs/note-paths-plan.md` §6).
+    ///
+    /// Only an LV2 plugin, or a bridged one whose bridge takes raw MIDI
+    /// (`MIDI_SYMBOL`), can be: CLAP and VST 3 carry a slide per note
+    /// already, and a bridge without the symbol has one channel to give.
+    /// Cheap when nothing changes, so the graph can say it every block. A
+    /// change lets go of what is sounding first, so no note is left on a
+    /// channel the next one will not look on.
+    pub fn set_mpe(&mut self, on: bool) {
+        let can = match &self.inner {
+            Inner::Lv2(_) => true,
+            Inner::Bridged(p) => p.takes_midi(),
+            Inner::Clap(_) | Inner::Vst3(_) => false,
+        };
+        let on = on && can;
+        if on == self.mpe.is_some() {
+            return;
+        }
+        self.release_held(0);
+        self.mpe = on.then(crate::MpeZone::default);
+    }
+
+    /// Whether notes are going out as MPE — see [`set_mpe`](Self::set_mpe).
+    pub fn mpe(&self) -> bool {
+        self.mpe.is_some()
     }
 
     /// **RT.** Channel aftertouch at `frame`, `0..=127`. MIDI, or the
@@ -320,6 +388,11 @@ impl HostedProcessor {
             Inner::Vst3(p) => p.reset(),
         }
         self.release_held(0);
+        // And the zone is said again before the next note: a reset is where
+        // a plugin may have dropped what it was told.
+        if let Some(zone) = &mut self.mpe {
+            zone.reset();
+        }
     }
 
     /// **RT.** Runs one block through a plugin that takes audio in.
