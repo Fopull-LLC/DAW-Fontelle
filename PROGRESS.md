@@ -19,6 +19,38 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-01 (latest, late night) — note paths: a note slides where
+you draw it.** Ty: *"when dragging out a note, you can press the s key to
+place a point there ... id want to be able to make a note slide as many
+times as i want."* Built on `main`, **not released**: Ty tests it locally
+first. Plan and as-built notes: `docs/note-paths-plan.md`.
+
+- **The model.** `Note::path: Vec<PathPoint { at, offset }>` is relative to
+  the note, so moves and transposes carry the shape with it. `Note` is no
+  longer `Copy` (35 call sites). `pitch_at`, `segments`, `path_after` (a cut
+  through a slide) and `preview_pieces` are on the note. `SetNotePath`
+  (optionally with a length) folds a whole drag into one undo.
+- **Playback.** One `NoteGlide { key, voice_context, semitones,
+  glide_samples }` per slide, addressed to that note alone, ranked after
+  note-ons. Built-in voices use `Sampler::glide_note` → `Voice::glide_by`;
+  CLAP and VST 3 get a per-note tuning through `PluginNode`. LV2 and
+  bridged plugins get **MPE** when the channel's "Slides as MPE" menu
+  switch is on (`PluginState::mpe`, `MpeZone`, the optional
+  `fontelle_bridge_midi` symbol), and the old channel bend otherwise.
+- **The roll.** S while drawing places a point and Backspace takes one
+  back; this is the `Drawing` keymap context, so the studio's S is still
+  the snap. Points are handles: drag one, double-click a note to add one,
+  double-click a point to remove it. The note draws as one ribbon
+  (`render::draw_note_path`, `canvas::path_line`). Hit-testing, the cut
+  tool and the selection box all follow the line. Scale fitting fits every
+  point (`scale_fit_paths`, same undo). The FL slide chip is off the
+  toolbar; old slide notes still play.
+- **MIDI.** A part with slides exports as an MPE lower zone, and an MPE file
+  imports back as one part with paths.
+- Looked at in the headless dump (`roll-paths`) and in the real binary on
+  `:99`: drew hold → slide → hold → slide, played it, added a point by
+  double-click and dragged it.
+
 **As of 2026-10-01 (latest, night) — v0.20.0, released by Ty's go:** the
 two entries below plus the guide clips. The guide clips predate the theme
 pictures and the new icons; Ty released without re-recording them.

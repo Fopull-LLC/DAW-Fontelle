@@ -1,6 +1,30 @@
 # Note paths — a note that slides where you draw it
 
-Designed 2026-10-01. Nothing built. This replaces the slide note.
+Designed and built 2026-10-01, all six phases. **Not released**: Ty tests it
+locally first. This replaces the slide note.
+
+## As built, and where it differs from the plan below
+
+- **Ty's calls**: "build this all out", so D1–D5 went with the recommended
+  options, listed in §8 with what was done for each.
+- **The format** is `PathPoint { at, offset: i8 }`, with no `cents`
+  (D4: whole keys). A defaulted field can add cents later.
+- **Resizing** changes only the length. A point past the end is kept, and
+  the curve is cut where the note stops, so lengthening the note again
+  brings the slide back. Dragging a point that sits on the note's end moves
+  the end with it.
+- **Esc to cancel a drawing** is not built. Backspace takes points back,
+  and Ctrl+Z undoes the whole note.
+- **The MPE switch** is in the rack's channel menu ("Slides as MPE"),
+  offered only for a plugin that hears raw MIDI. Bridges get MIDI through
+  an optional symbol, `fontelle_bridge_midi`, not a new ABI version, so
+  every installed bridge still loads. `fontelle-vst2` exports it (its
+  commit `bd370a6`); a bridge without it keeps the channel bend.
+- **The arrangement preview** draws a slide as a staircase
+  (`Note::preview_pieces`).
+- **MIDI import** reads an MPE lower zone back as one part, each note's bend
+  curve thinned into its path. The export also writes a bend where each
+  slide begins, so a hold reads back as a hold.
 
 Ty: *"when dragging out a note, you can press the s key to place a point there
 so the note extends to that point, then past that point it becomes a slide
@@ -194,20 +218,23 @@ Phases 0–3 are the feature Ty described, playing perfectly on everything
 built-in plus CLAP and VST 3. Phase 4 is what makes chords slide apart on LV2
 and VST 2 synths.
 
-## 8. Decisions that are Ty's
+## 8. Decisions that were Ty's (each was taken as recommended)
 
-- **D1 — old slide notes.** (a) Keep them working and hide the tool
+- **D1 — old slide notes.** *Taken: (a).* The chip is off the toolbar; `A`
+  still marks one, and old songs play as before. (a) Keep them working and hide the tool
   *(recommended)*, or (b) convert them to paths when a project opens. A
   conversion is exact for a single-note line. Under a chord, the old slide
   moved every note to one key, so converting means one path per moved note
   that ends on that key. That is faithful, but it rewrites the file.
-- **D2 — the key.** S mid-drag (as asked; steals the snap key only during a
+- **D2 — the key.** *Taken: S*, in its own keymap context ("Drawing"),
+  rebindable on the shortcuts page. S mid-drag (as asked; steals the snap key only during a
   drag) or another key.
-- **D3 — curve shape.** Straight in semitones *(recommended: what you draw is
+- **D3 — curve shape.** *Taken: straight.* Straight in semitones *(recommended: what you draw is
   what you hear)*, or a per-segment curve handle (ease-in/out), which can come
   later without a format change.
-- **D4 — off-key points.** Whole keys only for now *(recommended)*. A modifier
+- **D4 — off-key points.** *Taken: whole keys.* Whole keys only for now *(recommended)*. A modifier
   for free pitch (microtonal stops) can come later; `cents` is already in the
   format.
-- **D5 — a non-MPE plugin's bend range.** Assume ±2 and clamp (today), or
+- **D5 — a non-MPE plugin's bend range.** *Taken: ±2 and clamp*; the
+  bend-range box is not built (MPE is the way past two semitones). Assume ±2 and clamp (today), or
   expose a *bend range* box per plugin so a ±12 or ±24 synth slides farther.
