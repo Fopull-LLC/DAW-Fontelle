@@ -23,6 +23,7 @@ mod realise;
 pub mod sampling;
 mod session;
 pub mod settings;
+pub mod tour;
 pub mod tune;
 pub mod updates;
 mod window;

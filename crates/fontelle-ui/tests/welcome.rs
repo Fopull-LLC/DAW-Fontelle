@@ -431,3 +431,62 @@ fn with_nothing_to_reopen_enter_does_nothing_and_says_nothing() {
     assert_eq!(welcome_hint(&[]), None);
     assert_eq!(welcome_enter(&[recent("Gone", false)]), None);
 }
+
+// ------------------------------------------ learning Fontelle (2026-10-01)
+//
+// `docs/ux-routing-and-learning-plan.md` §5: the tour is *offered on the start
+// menu on first launch (a "Learn Fontelle" card; never starting by itself)
+// and always reachable from a Learn button there*.
+
+#[test]
+fn the_learn_button_is_always_there_below_the_recent_list() {
+    use fontelle_ui::canvas::{WelcomeHit, welcome_hit, with_learn};
+    let plain = welcome_layout(window(), &metrics(), 20, false);
+    let l = with_learn(plain.clone(), &metrics(), false);
+    assert!(!l.learn.is_empty());
+    assert!(l.learn_card.is_none() && l.learn_dismiss.is_none());
+    assert!(l.learn.bottom() <= l.footer.y, "above the footer");
+    assert!(l.learn.x >= l.recent_heading.x, "in the right column");
+    for row in &l.rows {
+        assert!(!row.frame.intersects(&l.learn), "no recent row under it");
+    }
+    assert!(l.rows.len() <= plain.rows.len());
+    let (x, y) = (
+        l.learn.x + l.learn.width / 2.0,
+        l.learn.y + l.learn.height / 2.0,
+    );
+    assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Learn));
+    assert_eq!(
+        welcome_hit(&plain, x, y).filter(|h| *h == WelcomeHit::Learn),
+        None
+    );
+}
+
+#[test]
+fn on_first_launch_it_is_a_card_with_a_way_to_say_no() {
+    use fontelle_ui::canvas::{WelcomeHit, welcome_hit, with_learn};
+    let l = with_learn(
+        welcome_layout(window(), &metrics(), 20, false),
+        &metrics(),
+        true,
+    );
+    let card = l.learn_card.expect("a card");
+    let dismiss = l.learn_dismiss.expect("a no thanks");
+    for r in [l.learn, dismiss] {
+        assert!(
+            r.x >= card.x
+                && r.right() <= card.right()
+                && r.y >= card.y
+                && r.bottom() <= card.bottom()
+        );
+    }
+    assert!(!l.learn.intersects(&dismiss));
+    for row in &l.rows {
+        assert!(!row.frame.intersects(&card));
+    }
+    let (x, y) = (
+        dismiss.x + dismiss.width / 2.0,
+        dismiss.y + dismiss.height / 2.0,
+    );
+    assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::DismissLearn));
+}

@@ -19,6 +19,44 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-01 (later) — UX plan step 5: the guide and the tour.**
+`docs/ux-routing-and-learning-plan.md` §5, built (the web manual card to W
+waits for step 6's screenshots, as answer E says).
+
+- **One catalogue** (`canvas/guide.rs`, `GUIDE`): ten tour sections and
+  four "Coming from…" ones (Reaper, Logic, Ableton, FL Studio), each a
+  title, paragraphs, an optional target (`GuideTarget`) and an optional
+  choice (`GuideChoice::Routing`, `Vst2`). The tour and the guide both read
+  it, so they cannot disagree (`tests/guide.rs`).
+- **The guide behind `?`** (and F1, and the start menu's `?`): a page like
+  the settings page — sections on the left, the chosen one's pages as
+  wrapped reading on the right, *Keyboard shortcuts* last, which opens the
+  shortcuts page. `help_layout`, `draw_help`.
+- **The tour** (`tour_layout`, `draw_tour`): a card beside the part of the
+  window a step is about, never on it, with the rest dimmed round a ring
+  that glides between steps (260 ms, `TOUR_EASE`). Back, Next, a step chip
+  that drops down the sections to jump to, ×, Esc. A press off the card is
+  the studio's — the tour does not get in the way. Steps about the roll or
+  the mixer bring that tab forward. The routing step sets this song and new
+  songs; the VST 2 step installs the extension through the settings row.
+- **The tour's song** (`fontelle-app/src/tour.rs`, `Session::start_tour`):
+  drums, bass and chords on factory instruments that read no file, a pad
+  written as a WAV into the song's own `recordings/` and imported onto the
+  Vocal lane, and a drum bus with a compressor and a send to a reverb.
+  Rebuilt fresh each time in `<config>/tour/`, kept off the recent list,
+  not an undo step (`tests/tour.rs`).
+- **The start menu** offers it: a *Learn Fontelle* card with *Take the
+  tour* / *No thanks* on first launch (`Settings::tour_offered`), a *Learn
+  Fontelle* button after (`canvas::with_learn`). Never starts by itself.
+- **Seen** on `:99`: the card, the tour from it and from the button, the
+  transport, rack and routing steps, the section jump, Lane-style chosen
+  taking effect at once, the guide and Coming from Reaper, shortcuts.
+- **Bugs found by looking:** the pad was deleted after import (an import
+  names the file in place — now it lives in the bundle); the card was
+  placed against the easing ring (now the target; the ring eases alone);
+  the frame that lands the ring was never drawn (the tick now runs a frame
+  past the ease).
+
 **As of 2026-10-01 — UX plan step 4: lane-style routing.**
 `docs/ux-routing-and-learning-plan.md` §1, built.
 

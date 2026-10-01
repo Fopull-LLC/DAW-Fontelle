@@ -190,6 +190,8 @@ fn shoot_sized(
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -905,6 +907,8 @@ fn shoot_roll_everything(
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -1327,6 +1331,8 @@ fn shoot_timeline_recording(
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -2110,6 +2116,8 @@ fn shoot_mixer_lit(
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -2573,6 +2581,8 @@ fn shoot_rack_routed(
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -4864,6 +4874,8 @@ fn shoot_carry(
             }),
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -5122,6 +5134,8 @@ fn shoot_welcome_status(
                 message: &message,
             }),
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -5407,6 +5421,8 @@ fn shoot_settings_controls() {
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -5529,6 +5545,8 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
                 hover: Some(fontelle_ui::canvas::Action::Save),
                 note: "",
             }),
+            help: None,
+            tour: None,
             settings_page: None,
         },
     );
@@ -5707,6 +5725,8 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
             carry: None,
             welcome: None,
             keybinds: None,
+            help: None,
+            tour: None,
             // The pointer on the second row's control, so the dump shows a
             // lit control beside unlit ones.
             settings_page: Some(fontelle_ui::render::SettingsPageChrome {
@@ -5737,6 +5757,188 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
         height,
     );
     Some((pixels, theme, width, height))
+}
+
+fn shoot_guide(
+    theme: Theme,
+    section: usize,
+    step: Option<usize>,
+) -> Option<(Vec<u8>, Theme, u32, u32)> {
+    use fontelle_ui::canvas::{
+        GUIDE, HELP_CLOSE, HELP_SHORTCUTS, HELP_TITLE, TOUR_BACK, TOUR_DONE, TOUR_NEXT,
+        help_text_width, tour_steps, tour_text_width,
+    };
+    let (width, height) = (1100u32, 700u32);
+    let shared = headless()?;
+    let layout = window_layout(
+        width as f32,
+        height as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let mut text = TextContext::new();
+    let title = text.layout("Fontelle", &theme.font, None);
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let readout = text.layout("0", &theme.font, None);
+
+    let mut labels = Labels::new();
+    for s in [
+        HELP_TITLE,
+        HELP_CLOSE,
+        HELP_SHORTCUTS,
+        TOUR_BACK,
+        TOUR_NEXT,
+        TOUR_DONE,
+        "Rack-style",
+        "Lane-style",
+    ] {
+        labels.ensure(s, &theme.font, &mut text);
+    }
+    for section in GUIDE {
+        labels.ensure(section.title, &theme.font, &mut text);
+        for page in section.pages {
+            labels.ensure(page.title, &theme.font, &mut text);
+        }
+    }
+    let win = fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, height as f32);
+    let help_paragraphs: Vec<Vec<fontelle_ui::text::TextLayout>> = GUIDE[section]
+        .pages
+        .iter()
+        .map(|page| {
+            page.paragraphs
+                .iter()
+                .map(|p| text.layout(p, &theme.font, Some(help_text_width(win))))
+                .collect()
+        })
+        .collect();
+    let steps = tour_steps();
+    let steps_label = step.map(|at| {
+        let (s, _) = steps[at];
+        format!("{} of {} \u{b7} {}", at + 1, steps.len(), GUIDE[s].title)
+    });
+    if let Some(label) = &steps_label {
+        labels.ensure_small(label, &theme.font, &mut text);
+    }
+    let tour_paragraphs: Vec<fontelle_ui::text::TextLayout> = step
+        .map(|at| {
+            let (s, p) = steps[at];
+            GUIDE[s].pages[p]
+                .paragraphs
+                .iter()
+                .map(|t| text.layout(t, &theme.font, Some(tour_text_width(win))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let choices: Vec<String> = step
+        .and_then(|at| {
+            let (s, p) = steps[at];
+            GUIDE[s].pages[p].choice
+        })
+        .map(|_| vec!["Rack-style".to_string(), "Lane-style".to_string()])
+        .unwrap_or_default();
+
+    let mut scene = vello::Scene::new();
+    draw_window(
+        &mut scene,
+        &theme,
+        &layout,
+        &Chrome {
+            field: None,
+            panel_title: &title,
+            transport: TransportChrome {
+                layout: bar,
+                view: TransportView::unavailable(),
+                meters: [Meter::new(); 2],
+                readout: &readout,
+                tempo: &readout,
+                signature: &readout,
+                mode: &readout,
+                hover: None,
+                marker_sample: 0,
+                clip_mode: false,
+                tempo_field: None,
+            },
+            roll: None,
+            rack: None,
+            prefabs: None,
+            browser: None,
+            timeline: None,
+            mixer: None,
+            tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+            tab: fontelle_ui::layout::EditorTab::Roll,
+            hover_tab: None,
+            browser_title: "",
+            labels: &labels,
+            status: "",
+            toast: None,
+            confirm: None,
+            notices: Default::default(),
+            tooltip: None,
+            menu: None,
+            carry: None,
+            welcome: None,
+            keybinds: None,
+            help: step.is_none().then(|| fontelle_ui::render::HelpChrome {
+                section,
+                scroll: 0.0,
+                paragraphs: &help_paragraphs,
+                hover: Some(fontelle_ui::canvas::HelpHit::Shortcuts),
+            }),
+            tour: step.map(|at| fontelle_ui::render::TourChrome {
+                step: at,
+                target: Some(layout.rack.frame),
+                spot: Some(layout.rack.frame),
+                paragraphs: &tour_paragraphs,
+                choices: &choices,
+                chosen: (!choices.is_empty()).then_some(1),
+                steps: steps_label.as_deref().unwrap_or(""),
+                hover: Some(fontelle_ui::canvas::TourHit::Next),
+            }),
+            settings_page: None,
+        },
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, width, height, theme.palette.window)
+        .expect("rendering a scene that fits in memory");
+    dump_sized(
+        &pixels,
+        &match step {
+            Some(at) => format!("{}-tour-{at}", theme.name),
+            None => format!("{}-guide-{section}", theme.name),
+        },
+        width,
+        height,
+    );
+    Some((pixels, theme, width, height))
+}
+
+#[test]
+fn the_guide_and_the_tour_draw_their_cards() {
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let Some((pixels, theme, width, _)) = shoot_guide(theme.clone(), 0, None) else {
+            return;
+        };
+        let win = fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, 700.0);
+        let l = fontelle_ui::canvas::help_layout(win, &theme.metrics, 0, &[], 0.0);
+        let at = |x: f32, y: f32| {
+            let i = ((y as u32) * width + x as u32) as usize * 4;
+            Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
+        };
+        assert!(near(
+            at(l.frame.x + 6.0, l.frame.y + 6.0),
+            theme.palette.panel
+        ));
+        let chosen = l.nav[0];
+        assert!(near(
+            at(chosen.x + 3.0, chosen.y + chosen.height / 2.0),
+            theme.palette.accent
+        ));
+        for step in [0, 4, 8] {
+            assert!(shoot_guide(theme.clone(), 0, Some(step)).is_some());
+        }
+    }
 }
 
 #[test]
@@ -6301,6 +6503,8 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
                 carry: None,
                 welcome: None,
                 keybinds: None,
+                help: None,
+                tour: None,
                 settings_page: None,
             },
         );
@@ -6494,6 +6698,8 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
                 carry: None,
                 welcome: None,
                 keybinds: None,
+                help: None,
+                tour: None,
                 settings_page: None,
             },
         );

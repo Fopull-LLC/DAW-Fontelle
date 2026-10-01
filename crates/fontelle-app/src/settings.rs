@@ -208,6 +208,11 @@ pub struct Settings {
     /// Project section changes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_song_routing: Option<fontelle_model::RoutingMode>,
+    /// Whether the start menu's first-launch offer of the tour has been
+    /// answered — either way, so it is made once (`docs/ux-routing-and-
+    /// learning-plan.md` §5: offered, *never starting by itself*).
+    #[serde(default)]
+    pub tour_offered: bool,
 }
 
 fn yes() -> bool {
@@ -246,6 +251,7 @@ impl Default for Settings {
             relay: None,
             install: None,
             new_song_routing: None,
+            tour_offered: false,
         }
     }
 }

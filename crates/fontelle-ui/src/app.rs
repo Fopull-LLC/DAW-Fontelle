@@ -609,6 +609,8 @@ enum MenuTarget {
     /// entries and which one is on are the host's — see `StudioHost`'s
     /// `setting_controls`, which carries a `Choice`'s options.
     SettingChoice(usize),
+    /// The tour's step chip: the tour's sections, to jump to one.
+    TourSection,
     /// The snap chip, on the roll's toolbar or the arrangement's — which grid
     /// things land on. `true` is the arrangement's; they are two views with
     /// two snaps, which is deliberate (a phrase is written on a finer grid
@@ -825,7 +827,7 @@ impl MenuTarget {
             Self::Snap { .. } | Self::KeyRoot | Self::KeyScale => None,
             // The settings drop-down is a row of the browser panel, which is in
             // the main window.
-            Self::SettingChoice(_) => None,
+            Self::SettingChoice(_) | Self::TourSection => None,
             Self::Channel(_)
             | Self::AddEffect(_)
             | Self::NewInstrument
@@ -1098,6 +1100,32 @@ struct Confirm {
     index: usize,
 }
 
+/// The guide page while it is up (`canvas::guide`): the section it shows,
+/// how far down, what the pointer is on, and the section's paragraphs
+/// wrapped at the width they were shaped for.
+struct HelpState {
+    section: usize,
+    scroll: f32,
+    hover: Option<crate::canvas::HelpHit>,
+    paragraphs: Vec<Vec<TextLayout>>,
+    shaped: Option<(usize, u32)>,
+}
+
+/// The tour while it runs: the step, the spotlight easing from where the
+/// last step's was, and the step's words wrapped for the card.
+struct TourState {
+    step: usize,
+    from: Option<crate::layout::Rect>,
+    moved: std::time::Instant,
+    hover: Option<crate::canvas::TourHit>,
+    paragraphs: Vec<TextLayout>,
+    shaped: Option<(usize, u32)>,
+    label: String,
+}
+
+/// How long the spotlight takes to move between steps.
+const TOUR_EASE: std::time::Duration = std::time::Duration::from_millis(260);
+
 /// The settings page while it is up: which section it shows, how far that
 /// section is scrolled, and what the pointer is over.
 struct SettingsPage {
@@ -1164,6 +1192,13 @@ pub struct WindowApp {
     /// The settings page, while it is up: opened by the gear, shut by Esc,
     /// its × or a press off the card (`canvas::settings_page`).
     settings_page: Option<SettingsPage>,
+    /// The guide behind `?`, while it is up.
+    help: Option<HelpState>,
+    /// The tour step's choice's options and which is set, read off the host
+    /// with the rest of the studio.
+    tour_choices: (Vec<String>, Option<usize>),
+    /// The tour, while it runs.
+    tour: Option<TourState>,
     /// The settings file's line — where it is, or what went wrong writing it
     /// — for the page's header.
     settings_status: String,
@@ -2073,6 +2108,9 @@ impl WindowApp {
             keybinds_hover: None,
             keybinds_note: String::new(),
             settings_page: None,
+            help: None,
+            tour_choices: (Vec::new(), None),
+            tour: None,
             settings_status: String::new(),
             activation: None,
             activation_tried: false,
@@ -2431,11 +2469,20 @@ impl WindowApp {
             });
         let (line, button) = crate::canvas::update_line(&status, &self.options.version);
         let progress = crate::canvas::update_progress(&status);
-        let layout = crate::canvas::welcome_layout(
-            self.layout.window,
+        let offer = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| !doc.tour_offered());
+        let layout = crate::canvas::with_learn(
+            crate::canvas::welcome_layout(
+                self.layout.window,
+                &self.options.theme.metrics,
+                recent.len(),
+                button.is_some() || progress.is_some(),
+            ),
             &self.options.theme.metrics,
-            recent.len(),
-            button.is_some() || progress.is_some(),
+            offer,
         );
         let line = self.text.layout(&line, font, Some(layout.update.width));
         self.welcome = Some(Welcome {
@@ -2483,12 +2530,21 @@ impl WindowApp {
     fn relayout_welcome(&mut self) {
         let window = self.layout.window;
         let metrics = &self.options.theme.metrics;
+        let offer = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| !doc.tour_offered());
         if let Some(welcome) = &mut self.welcome {
-            welcome.layout = crate::canvas::welcome_layout(
-                window,
+            welcome.layout = crate::canvas::with_learn(
+                crate::canvas::welcome_layout(
+                    window,
+                    metrics,
+                    welcome.recent.len(),
+                    welcome.button.is_some() || welcome.progress.is_some(),
+                ),
                 metrics,
-                welcome.recent.len(),
-                welcome.button.is_some() || welcome.progress.is_some(),
+                offer,
             );
             welcome.hover =
                 crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
@@ -2566,7 +2622,27 @@ impl WindowApp {
         // The `?` needs no document: the page is the same one the studio's
         // bar opens, over the start menu.
         if hit == WelcomeHit::Help {
-            self.open_keybinds();
+            self.open_help();
+            return;
+        }
+        // The tour: its song opens and the menu gives way to it. Offered on
+        // first launch and never started by itself (§5).
+        if hit == WelcomeHit::Learn || hit == WelcomeHit::DismissLearn {
+            let Some(doc) = &mut self.options.document else {
+                return;
+            };
+            doc.set_tour_offered();
+            if hit == WelcomeHit::DismissLearn {
+                self.relayout_welcome();
+                return;
+            }
+            match doc.start_tour() {
+                Ok(()) => {
+                    self.close_welcome();
+                    self.begin_tour();
+                }
+                Err(why) => self.say_on_welcome(why),
+            }
             return;
         }
         if hit == WelcomeHit::Join {
@@ -2617,7 +2693,9 @@ impl WindowApp {
             // The menu stays up: the folder opens beside it, and a report
             // is written with the project still to be chosen.
             WelcomeHit::Logs => doc.reveal_logs_dir().map(|()| false),
-            WelcomeHit::Help | WelcomeHit::Join => unreachable!("handled above"),
+            WelcomeHit::Help | WelcomeHit::Join | WelcomeHit::Learn | WelcomeHit::DismissLearn => {
+                unreachable!("handled above")
+            }
         };
         match outcome {
             Ok(true) => self.close_welcome(),
@@ -2776,6 +2854,9 @@ impl WindowApp {
         // scene below is borrowed mutably.
         let field = self.text_field();
         let tempo_field = self.tempo_field();
+        // And the tour's spotlight, which reads the layout and the clock.
+        let tour_spot = self.tour_spot();
+        let tour_target = self.tour_target();
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
         };
@@ -3059,6 +3140,22 @@ impl WindowApp {
                     hover: self.keybinds_hover,
                     note: &self.keybinds_note,
                 }),
+                help: self.help.as_ref().map(|help| crate::render::HelpChrome {
+                    section: help.section,
+                    scroll: help.scroll,
+                    paragraphs: &help.paragraphs,
+                    hover: help.hover,
+                }),
+                tour: self.tour.as_ref().map(|tour| crate::render::TourChrome {
+                    step: tour.step,
+                    target: tour_target,
+                    spot: tour_spot,
+                    paragraphs: &tour.paragraphs,
+                    choices: &self.tour_choices.0,
+                    chosen: self.tour_choices.1,
+                    steps: &tour.label,
+                    hover: tour.hover,
+                }),
                 settings_page: self.settings_page.as_ref().map(|page| {
                     crate::render::SettingsPageChrome {
                         section: page.section,
@@ -3161,6 +3258,10 @@ impl WindowApp {
             .as_mut()
             .is_some_and(|doc| doc.pump_session());
         self.read_session();
+        // The tour's spotlight glides between steps.
+        if self.tour_moving() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
         // "Saved!" rises every frame it is up, and is gone once it has risen.
         if let Some(at) = self.saved_at {
             if at.elapsed().as_secs_f32() > crate::canvas::SAVED_FLASH_SECONDS {
@@ -3730,6 +3831,27 @@ impl WindowApp {
             self.update_cursor();
             return;
         }
+        if self.help.is_some() {
+            let over = crate::canvas::help_hit(&self.help_layout(), self.cursor.0, self.cursor.1);
+            if let Some(help) = &mut self.help
+                && help.hover != Some(over)
+            {
+                help.hover = Some(over);
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            return;
+        }
+        if self.tour.is_some() && self.menu.is_none() {
+            let over = self
+                .tour_layout()
+                .map(|l| crate::canvas::tour_hit(&l, self.cursor.0, self.cursor.1));
+            if let Some(tour) = &mut self.tour
+                && tour.hover != over
+            {
+                tour.hover = over;
+                self.tree.invalidate_rect(self.layout.window);
+            }
+        }
         // The settings page likewise, while no menu of its own is open over
         // it: the row and the control under the pointer light up.
         if self.settings_page.is_some() {
@@ -3885,7 +4007,7 @@ impl WindowApp {
         // Nothing from under the shortcuts sheet: a tip for a button the
         // sheet is covering would float over the page explaining a control
         // nobody can see.
-        if self.keybinds.is_some() || self.settings_page.is_some() {
+        if self.keybinds.is_some() || self.settings_page.is_some() || self.help.is_some() {
             return None;
         }
         // Nor over the Share panel or a session's question: the Share
@@ -4432,6 +4554,13 @@ impl ApplicationHandler for WindowApp {
                     self.keybinds = Some(crate::canvas::keybinds_scrolled(&layout, scroll, dy));
                     self.tree.invalidate_rect(self.layout.window);
                     // The rows moved under a still pointer.
+                    self.update_hover();
+                } else if self.help.is_some() {
+                    let layout = self.help_layout();
+                    if let Some(help) = &mut self.help {
+                        help.scroll = crate::canvas::help_scrolled(&layout, help.scroll, dy);
+                    }
+                    self.tree.invalidate_rect(self.layout.window);
                     self.update_hover();
                 } else if self.settings_page.is_some() {
                     let layout = self.settings_page_layout();
@@ -6326,6 +6455,12 @@ impl WindowApp {
         self.settings_controls = doc.setting_controls();
         self.settings_help = doc.setting_help();
         self.lane_style = doc.lane_style();
+        if let Some(tour) = &self.tour
+            && let Some(&(section, page)) = crate::canvas::tour_steps().get(tour.step)
+            && let Some(choice) = crate::canvas::GUIDE[section].pages[page].choice
+        {
+            self.tour_choices = doc.tour_options(choice);
+        }
         // A question the song itself raised — lane-style's stray clip, the
         // first new song's routing — arrives with the edit that raised it,
         // not only while a shared song is open (`read_session`).
@@ -6659,6 +6794,10 @@ impl WindowApp {
                 crate::canvas::WEBSITE_LABEL,
                 crate::canvas::REPOSITORY_LABEL,
                 crate::canvas::LOGS_LABEL,
+                crate::canvas::LEARN_BUTTON,
+                crate::canvas::LEARN_OFFER,
+                crate::canvas::LEARN_TAKE,
+                crate::canvas::LEARN_DISMISS,
                 "\u{00d7}",
             ] {
                 want(&mut self.labels, &mut self.text, fixed);
@@ -7008,6 +7147,79 @@ impl WindowApp {
                 .collect();
             for caption in &captions {
                 self.labels.ensure_small(caption, &font, &mut self.text);
+            }
+        }
+
+        // The guide page: its titles, and its section's paragraphs wrapped at
+        // the page's width — shaped again when the section or the width moves.
+        if self.help.is_some() {
+            for fixed in [
+                crate::canvas::HELP_TITLE,
+                crate::canvas::HELP_CLOSE,
+                crate::canvas::HELP_SHORTCUTS,
+            ] {
+                want(&mut self.labels, &mut self.text, fixed);
+            }
+            for section in crate::canvas::GUIDE {
+                want(&mut self.labels, &mut self.text, section.title);
+                for page in section.pages {
+                    want(&mut self.labels, &mut self.text, page.title);
+                }
+            }
+            let width = crate::canvas::help_text_width(self.layout.window);
+            let section = self.help.as_ref().map_or(0, |help| help.section);
+            if self.help.as_ref().and_then(|help| help.shaped) != Some((section, width as u32)) {
+                let paragraphs = crate::canvas::GUIDE
+                    .get(section)
+                    .map(|s| {
+                        s.pages
+                            .iter()
+                            .map(|page| {
+                                page.paragraphs
+                                    .iter()
+                                    .map(|p| self.text.layout(p, &font, Some(width)))
+                                    .collect()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(help) = &mut self.help {
+                    help.paragraphs = paragraphs;
+                    help.shaped = Some((section, width as u32));
+                }
+            }
+        }
+        // The tour's card: its title, buttons, choices and chip, and the
+        // step's words wrapped for it.
+        if let Some((step, label)) = self.tour.as_ref().map(|t| (t.step, t.label.clone())) {
+            for fixed in [
+                crate::canvas::TOUR_NEXT,
+                crate::canvas::TOUR_DONE,
+                crate::canvas::TOUR_BACK,
+                crate::canvas::HELP_CLOSE,
+            ] {
+                want(&mut self.labels, &mut self.text, fixed);
+            }
+            self.labels.ensure_small(&label, &font, &mut self.text);
+            let choices = self.tour_choices.0.clone();
+            for choice in &choices {
+                want(&mut self.labels, &mut self.text, choice);
+            }
+            let width = crate::canvas::tour_text_width(self.layout.window);
+            if let Some(&(section, page)) = crate::canvas::tour_steps().get(step) {
+                let page = &crate::canvas::GUIDE[section].pages[page];
+                want(&mut self.labels, &mut self.text, page.title);
+                if self.tour.as_ref().and_then(|t| t.shaped) != Some((step, width as u32)) {
+                    let paragraphs: Vec<TextLayout> = page
+                        .paragraphs
+                        .iter()
+                        .map(|p| self.text.layout(p, &font, Some(width)))
+                        .collect();
+                    if let Some(tour) = &mut self.tour {
+                        tour.paragraphs = paragraphs;
+                        tour.shaped = Some((step, width as u32));
+                    }
+                }
             }
         }
 
@@ -7759,6 +7971,11 @@ impl WindowApp {
             self.tree.invalidate_rect(self.layout.window);
             return;
         }
+        // The guide is a page over the window, like the shortcuts sheet.
+        if self.help.is_some() {
+            self.press_help(x, y);
+            return;
+        }
         // A toast's Undo takes the press before whatever is under it does.
         if button == winit::event::MouseButton::Left
             && self.toast.as_ref().is_some_and(|t| t.undoable)
@@ -7812,6 +8029,11 @@ impl WindowApp {
             if self.press_menu(x, y) {
                 return;
             }
+        }
+        // The tour's card takes what lands on it; everything else goes on to
+        // the studio underneath, which is the point of an interactive tour.
+        if self.tour.is_some() && self.press_tour(x, y) {
+            return;
         }
         // The settings page is over the studio; a press is its, after the
         // drop-down and the name prompt it opens, which are menus above it.
@@ -7913,7 +8135,7 @@ impl WindowApp {
                         return;
                     }
                     TransportHit::Help => {
-                        self.open_keybinds();
+                        self.open_help();
                         return;
                     }
                     TransportHit::Share => {
@@ -14072,6 +14294,237 @@ impl WindowApp {
         self.tree.invalidate_rect(self.layout.window);
     }
 
+    // ----------------------------------------------------- the guide page ---
+
+    /// Opens the guide behind `?` (`canvas::guide`), on its first section.
+    /// The shortcuts page is its last entry.
+    fn open_help(&mut self) {
+        if self.tempo_entry.is_some() {
+            self.end_tempo_entry(true);
+        }
+        self.close_keybinds();
+        if self.help.is_none() {
+            self.help = Some(HelpState {
+                section: 0,
+                scroll: 0.0,
+                hover: None,
+                paragraphs: Vec::new(),
+                shaped: None,
+            });
+        }
+        if let Some(live) = &self.live {
+            live.window.focus_window();
+        }
+        self.tree.invalidate_rect(self.layout.window);
+        self.request_redraw_if_dirty();
+    }
+
+    fn close_help(&mut self) {
+        if self.help.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    fn help_layout(&self) -> crate::canvas::HelpLayout {
+        let (section, scroll, heights) = self.help.as_ref().map_or((0, 0.0, Vec::new()), |help| {
+            (
+                help.section,
+                help.scroll,
+                help.paragraphs
+                    .iter()
+                    .map(|page| page.iter().map(|t| t.height).collect())
+                    .collect(),
+            )
+        });
+        crate::canvas::help_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            section,
+            &heights,
+            scroll,
+        )
+    }
+
+    fn press_help(&mut self, x: f32, y: f32) {
+        use crate::canvas::HelpHit;
+        match crate::canvas::help_hit(&self.help_layout(), x, y) {
+            HelpHit::Close | HelpHit::Outside => self.close_help(),
+            HelpHit::Section(section) => {
+                if let Some(help) = &mut self.help {
+                    help.section = section;
+                    help.scroll = 0.0;
+                }
+            }
+            HelpHit::Shortcuts => {
+                self.close_help();
+                self.open_keybinds();
+            }
+            HelpHit::Card => {}
+        }
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    // ------------------------------------------------------------ the tour ---
+
+    /// Starts the tour on its first step, over whatever song is open (the
+    /// start menu opens the tour's own first).
+    fn begin_tour(&mut self) {
+        self.close_help();
+        self.tour = Some(TourState {
+            step: 0,
+            from: None,
+            moved: std::time::Instant::now(),
+            hover: None,
+            paragraphs: Vec::new(),
+            shaped: None,
+            label: String::new(),
+        });
+        self.tour_to(0);
+    }
+
+    fn end_tour(&mut self) {
+        if self.tour.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+    }
+
+    /// Goes to tour step `step`: the spotlight eases over from where it is,
+    /// and a step about the roll or the mixer brings that one forward.
+    fn tour_to(&mut self, step: usize) {
+        let steps = crate::canvas::tour_steps();
+        let Some(&(section, page)) = steps.get(step) else {
+            self.end_tour();
+            return;
+        };
+        let from = self.tour_spot();
+        let target = crate::canvas::GUIDE[section].pages[page].target;
+        match target {
+            Some(crate::canvas::GuideTarget::Editor) => self.show_tab(EditorTab::Roll),
+            Some(crate::canvas::GuideTarget::Mixer) => self.show_tab(EditorTab::Mixer),
+            _ => {}
+        }
+        if let Some(tour) = &mut self.tour {
+            tour.step = step;
+            tour.from = from;
+            tour.moved = std::time::Instant::now();
+            tour.shaped = None;
+            tour.label = format!(
+                "{} of {} \u{b7} {}",
+                step + 1,
+                steps.len(),
+                crate::canvas::GUIDE[section].title
+            );
+        }
+        self.refresh_tour_choices();
+        self.tree.invalidate_rect(self.layout.window);
+        self.request_redraw_if_dirty();
+    }
+
+    /// What the current step points at, on screen.
+    fn tour_target(&self) -> Option<crate::layout::Rect> {
+        use crate::canvas::GuideTarget;
+        let tour = self.tour.as_ref()?;
+        let &(section, page) = crate::canvas::tour_steps().get(tour.step)?;
+        Some(match crate::canvas::GUIDE[section].pages[page].target? {
+            GuideTarget::Transport => self.layout.transport,
+            GuideTarget::Rack => self.layout.rack.frame,
+            GuideTarget::Browser => self.layout.browser.frame,
+            GuideTarget::Arrangement => self.layout.timeline.frame,
+            GuideTarget::Editor | GuideTarget::Mixer => self.layout.panel.frame,
+        })
+    }
+
+    /// Where the spotlight is now: eased from the last step's to this one's.
+    fn tour_spot(&self) -> Option<crate::layout::Rect> {
+        let tour = self.tour.as_ref()?;
+        let to = self.tour_target()?;
+        let Some(from) = tour.from else {
+            return Some(to);
+        };
+        let t = (tour.moved.elapsed().as_secs_f32() / TOUR_EASE.as_secs_f32()).clamp(0.0, 1.0);
+        let t = 1.0 - (1.0 - t).powi(3);
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Some(crate::layout::Rect::new(
+            mix(from.x, to.x),
+            mix(from.y, to.y),
+            mix(from.width, to.width),
+            mix(from.height, to.height),
+        ))
+    }
+
+    /// Whether the spotlight is still gliding — a frame past the end of the
+    /// ease, so the frame that lands it is drawn too.
+    fn tour_moving(&self) -> bool {
+        self.tour.as_ref().is_some_and(|tour| {
+            tour.from.is_some()
+                && tour.moved.elapsed() < TOUR_EASE + std::time::Duration::from_millis(120)
+        })
+    }
+
+    /// The step's choice's options, asked of the host.
+    fn refresh_tour_choices(&mut self) {
+        let choice = self.tour.as_ref().and_then(|tour| {
+            let &(section, page) = crate::canvas::tour_steps().get(tour.step)?;
+            crate::canvas::GUIDE[section].pages[page].choice
+        });
+        self.tour_choices = match (choice, &self.options.document) {
+            (Some(choice), Some(doc)) => doc.tour_options(choice),
+            _ => (Vec::new(), None),
+        };
+    }
+
+    fn tour_layout(&self) -> Option<crate::canvas::TourLayout> {
+        let tour = self.tour.as_ref()?;
+        let steps = crate::canvas::tour_steps();
+        let body: f32 = tour.paragraphs.iter().map(|t| t.height + 6.0).sum();
+        Some(crate::canvas::tour_layout(
+            self.layout.window,
+            &self.options.theme.metrics,
+            self.tour_target(),
+            body,
+            self.tour_choices.0.len(),
+            tour.step == 0,
+            tour.step + 1 == steps.len(),
+        ))
+    }
+
+    /// A press while the tour runs: `true` when the tour took it. Off the
+    /// card it did not — the studio is still there to be used.
+    fn press_tour(&mut self, x: f32, y: f32) -> bool {
+        use crate::canvas::TourHit;
+        let Some(layout) = self.tour_layout() else {
+            return false;
+        };
+        let step = self.tour.as_ref().map_or(0, |tour| tour.step);
+        match crate::canvas::tour_hit(&layout, x, y) {
+            TourHit::Through => return false,
+            TourHit::Card => {}
+            TourHit::Close => self.end_tour(),
+            TourHit::Next => self.tour_to(step + 1),
+            TourHit::Back => self.tour_to(step.saturating_sub(1)),
+            TourHit::Steps => {
+                let at = layout.steps;
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::TourSection, at.x, at.bottom(), bounds);
+            }
+            TourHit::Choice(option) => {
+                let choice = crate::canvas::tour_steps()
+                    .get(step)
+                    .and_then(|&(s, p)| crate::canvas::GUIDE[s].pages[p].choice);
+                if let (Some(choice), Some(doc)) = (choice, &mut self.options.document) {
+                    doc.choose_tour_option(choice, option);
+                    if let Some((said, _)) = doc.take_settings_toast() {
+                        self.show_toast(said, false);
+                    }
+                }
+                self.refresh_studio();
+                self.refresh_tour_choices();
+            }
+        }
+        self.tree.invalidate_rect(self.layout.window);
+        true
+    }
+
     // --------------------------------------------- typing a tempo ---
 
     /// Opens the tempo box for typing: seeded with the tempo as the box shows
@@ -16380,6 +16833,27 @@ impl WindowApp {
             // is on greyed. The options ride along on the `Choice` control the
             // host already built, so nothing new crosses the boundary.
             MenuTarget::Signature => signature_menu_entries(self.beats_per_bar()),
+            MenuTarget::TourSection => {
+                let steps = crate::canvas::tour_steps();
+                let here = self
+                    .tour
+                    .as_ref()
+                    .and_then(|tour| steps.get(tour.step))
+                    .map(|(section, _)| *section);
+                let mut sections: Vec<usize> = steps.iter().map(|(s, _)| *s).collect();
+                sections.dedup();
+                sections
+                    .into_iter()
+                    .map(|section| {
+                        let title = crate::canvas::GUIDE[section].title;
+                        if Some(section) == here {
+                            MenuEntry::disabled(title)
+                        } else {
+                            MenuEntry::new(title)
+                        }
+                    })
+                    .collect()
+            }
             MenuTarget::SettingChoice(index) => match self.settings_controls.get(*index) {
                 Some(crate::canvas::SettingControl::Choice { options, chosen }) => options
                     .iter()
@@ -17687,6 +18161,17 @@ impl WindowApp {
             // The metre chosen from the signature box's list.
             (MenuTarget::Signature, index) => {
                 self.set_beats_per_bar(beats_per_bar_at(index));
+            }
+            // A jump in the tour, to the first step of the section.
+            (MenuTarget::TourSection, index) => {
+                let steps = crate::canvas::tour_steps();
+                let mut sections: Vec<usize> = steps.iter().map(|(s, _)| *s).collect();
+                sections.dedup();
+                if let Some(section) = sections.get(index)
+                    && let Some(step) = steps.iter().position(|(s, _)| s == section)
+                {
+                    self.tour_to(step);
+                }
             }
             // A settings drop-down: the entry chosen, in one press.
             (MenuTarget::SettingChoice(setting), index) => {
@@ -19271,7 +19756,7 @@ impl WindowApp {
             // which panel you were last looking at, and the editor windows
             // answer this function too.
             Action::Metronome => self.transport(TransportHit::ToggleMetronome),
-            Action::Help => self.open_keybinds(),
+            Action::Help => self.open_help(),
             _ => return false,
         }
         true
@@ -19343,8 +19828,25 @@ impl WindowApp {
             self.keybinds_key(event);
             return;
         }
+        if self.help.is_some() {
+            use winit::keyboard::{Key, NamedKey};
+            if event.logical_key == Key::Named(NamedKey::Escape)
+                || self.action_of(event, crate::canvas::Context::Studio)
+                    == Some(crate::canvas::Action::Help)
+            {
+                self.close_help();
+            }
+            return;
+        }
         if self.settings_page.is_some() {
             self.settings_page_key(event);
+            return;
+        }
+        // Esc ends the tour before it does anything else.
+        if self.tour.is_some()
+            && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+        {
+            self.end_tour();
             return;
         }
 
@@ -19365,7 +19867,7 @@ impl WindowApp {
             } else if self.action_of(event, crate::canvas::Context::Studio)
                 == Some(crate::canvas::Action::Help)
             {
-                self.open_keybinds();
+                self.open_help();
             }
             return;
         }
@@ -20724,8 +21226,8 @@ impl WindowApp {
         // **A bounce and "Saved!" hold the loop awake**: the one is read off
         // another thread and the other moves on its own, and neither is an
         // event this loop would wake for.
-        if self.job.is_some() || self.saved_at.is_some() {
-            let frame = if self.saved_at.is_some() {
+        if self.job.is_some() || self.saved_at.is_some() || self.tour_moving() {
+            let frame = if self.saved_at.is_some() || self.tour_moving() {
                 std::time::Duration::from_millis(16)
             } else {
                 SKY_FRAME

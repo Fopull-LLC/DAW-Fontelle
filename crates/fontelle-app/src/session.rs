@@ -2303,6 +2303,53 @@ impl Session {
         Ok(())
     }
 
+    /// Opens the tour's song (`crate::tour`), fresh: written over the last
+    /// one, in a folder of Fontelle's own beside the settings rather than
+    /// among the user's projects, and kept off the recent list — it is not
+    /// one of theirs.
+    pub fn start_tour(&mut self) -> Result<(), String> {
+        let dir = self
+            .settings_path
+            .as_ref()
+            .and_then(|path| path.parent().map(|dir| dir.join("tour")))
+            .or_else(|| Settings::config_dir().map(|dir| dir.join("tour")))
+            .ok_or("there is nowhere to keep the tour\u{2019}s song")?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join(format!("{}.fontelle", crate::tour::TOUR_NAME));
+        let project = crate::tour::tour_project(self.options.sample_rate);
+        crate::save_project(&project, &path).map_err(|e| e.to_string())?;
+        let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
+        self.adopt(opened, path.clone());
+        self.settings.forget_project(&path);
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        // The one audio clip, imported the way a dropped file is — from a
+        // file kept in the song's own folder, since an import names the file
+        // where it is rather than copying it.
+        let pad = path.join("recordings").join("Tour pad.wav");
+        if let Some(folder) = pad.parent() {
+            std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+        }
+        crate::tour::write_pad(&pad, self.options.sample_rate)?;
+        let lane = self
+            .project
+            .lanes
+            .iter()
+            .find(|(_, lane)| lane.name == crate::tour::TOUR_AUDIO_LANE)
+            .map(|(id, _)| id)
+            .ok_or("the tour\u{2019}s song has no Vocal lane")?;
+        let at = self.project.tempo_map.tick_to_sample(PPQN * 4 * 2);
+        self.import_audio_named(&pad, at, None, Landing::Onto(lane), None)?;
+        // How the song begins, not edits to it.
+        self.history = History::new();
+        self.lanes_unsettled = None;
+        <Self as DocumentHost>::save(self)?;
+        self.rebuild_graph();
+        self.touch();
+        Ok(())
+    }
+
     /// The first-song question: how new songs route their sound.
     fn routing_question_view(&self) -> Option<fontelle_ui::document::SessionQuestion> {
         self.routing_question
@@ -8346,6 +8393,79 @@ impl StudioHost for Session {
                 LibraryEntry::file(row.label(&self.settings), value)
             })
             .collect()
+    }
+
+    fn start_tour(&mut self) -> Result<(), String> {
+        Session::start_tour(self)
+    }
+
+    fn tour_options(
+        &self,
+        choice: fontelle_ui::canvas::GuideChoice,
+    ) -> (Vec<String>, Option<usize>) {
+        use fontelle_ui::canvas::GuideChoice;
+        match choice {
+            GuideChoice::Routing => (
+                vec!["Rack-style".to_string(), "Lane-style".to_string()],
+                self.settings
+                    .new_song_routing
+                    .map(|mode| usize::from(mode == fontelle_model::RoutingMode::Lane)),
+            ),
+            GuideChoice::Vst2 => {
+                let installed = crate::extensions::CATALOGUE
+                    .first()
+                    .is_some_and(crate::extensions::is_installed);
+                (
+                    vec!["Leave it off".to_string(), "Turn it on".to_string()],
+                    installed.then_some(1),
+                )
+            }
+        }
+    }
+
+    fn choose_tour_option(&mut self, choice: fontelle_ui::canvas::GuideChoice, option: usize) {
+        use fontelle_model::RoutingMode;
+        use fontelle_ui::canvas::GuideChoice;
+        match choice {
+            // New songs start this way, and this song is switched to it.
+            GuideChoice::Routing => {
+                let mode = if option == 1 {
+                    RoutingMode::Lane
+                } else {
+                    RoutingMode::Rack
+                };
+                self.settings.new_song_routing = Some(mode);
+                if let Err(e) = self.save_settings() {
+                    self.message = Some(format!("could not write settings: {e}"));
+                }
+                self.set_routing_mode(mode);
+                self.touch();
+            }
+            // Turning it on is the settings page's install; leaving it off
+            // does nothing — removing one is the settings page's, and asks.
+            GuideChoice::Vst2 => {
+                if option != 1 || self.tour_options(GuideChoice::Vst2).1 == Some(1) {
+                    return;
+                }
+                if let Some(index) = crate::settings::setting_rows(&self.settings)
+                    .iter()
+                    .position(|row| *row == crate::settings::SettingRow::Extension(0))
+                {
+                    <Self as StudioHost>::nudge_setting(self, index, 1);
+                }
+            }
+        }
+    }
+
+    fn tour_offered(&self) -> bool {
+        self.settings.tour_offered
+    }
+
+    fn set_tour_offered(&mut self) {
+        self.settings.tour_offered = true;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     fn setting_help(&self) -> Vec<String> {

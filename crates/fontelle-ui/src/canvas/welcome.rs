@@ -123,6 +123,15 @@ pub struct WelcomeLayout {
     pub logs: Rect,
     /// The `?` in the top right corner: the keyboard shortcuts page.
     pub help: Rect,
+    /// "Learn Fontelle": the tour, always one press away. Empty until
+    /// [`with_learn`] places it.
+    pub learn: Rect,
+    /// On first launch the button sits on a card that says what it is…
+    pub learn_card: Option<Rect>,
+    /// …with its words here…
+    pub learn_text: Option<Rect>,
+    /// …and a way to say no.
+    pub learn_dismiss: Option<Rect>,
 }
 
 /// Lays the card out in `window`, with `recent` rows wanted and an update
@@ -289,7 +298,52 @@ pub fn welcome_layout(
         repository,
         logs,
         help,
+        learn: Rect::ZERO,
+        learn_card: None,
+        learn_text: None,
+        learn_dismiss: None,
     }
+}
+
+/// What the Learn button and the first-launch card say.
+pub const LEARN_BUTTON: &str = "Learn Fontelle";
+pub const LEARN_OFFER: &str = "New here? A short tour of a small song shows you around.";
+pub const LEARN_TAKE: &str = "Take the tour";
+pub const LEARN_DISMISS: &str = "No thanks";
+
+/// Places the tour's way in at the foot of the recent list — a button, or
+/// on first launch (`offer`) a card round it with a No thanks. The recent
+/// rows it would cover are dropped; the list is a list of shortcuts, and the
+/// one somebody new needs most is this.
+pub fn with_learn(mut layout: WelcomeLayout, metrics: &Metrics, offer: bool) -> WelcomeLayout {
+    let row = metrics.row_height;
+    let x = layout.recent_heading.x;
+    let width = (layout.footer.right() - x).max(0.0);
+    let bottom = layout.footer.y - STACK_GAP;
+    if offer {
+        let pad = 10.0;
+        let height = pad + 2.0 * row + 6.0 + BUTTON_HEIGHT + pad;
+        let card = Rect::new(x, bottom - height, width, height);
+        let inner = card.inset(pad);
+        let text = Rect::new(inner.x, inner.y, inner.width, 2.0 * row);
+        let half = ((inner.width - BUTTON_GAP) / 2.0).max(0.0);
+        let learn = Rect::new(inner.x, inner.bottom() - BUTTON_HEIGHT, half, BUTTON_HEIGHT);
+        let dismiss = Rect::new(learn.right() + BUTTON_GAP, learn.y, half, BUTTON_HEIGHT);
+        layout.learn = learn;
+        layout.learn_card = Some(card);
+        layout.learn_text = Some(text);
+        layout.learn_dismiss = Some(dismiss);
+    } else {
+        layout.learn = Rect::new(
+            x,
+            bottom - BUTTON_HEIGHT,
+            (width * 0.5).max(0.0),
+            BUTTON_HEIGHT,
+        );
+    }
+    let top = layout.learn_card.unwrap_or(layout.learn).y - BUTTON_GAP;
+    layout.rows.retain(|row| row.frame.bottom() <= top);
+    layout
 }
 
 /// What a press on the card means.
@@ -312,6 +366,10 @@ pub enum WelcomeHit {
     Logs,
     /// The `?`: the keyboard shortcuts page.
     Help,
+    /// "Learn Fontelle" / "Take the tour".
+    Learn,
+    /// "No thanks" on the first-launch card.
+    DismissLearn,
 }
 
 /// What Enter does on the card: reopens the newest recent project that is
@@ -371,6 +429,12 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.help.contains(x, y) {
         return Some(WelcomeHit::Help);
+    }
+    if layout.learn.contains(x, y) {
+        return Some(WelcomeHit::Learn);
+    }
+    if layout.learn_dismiss.is_some_and(|r| r.contains(x, y)) {
+        return Some(WelcomeHit::DismissLearn);
     }
     None
 }

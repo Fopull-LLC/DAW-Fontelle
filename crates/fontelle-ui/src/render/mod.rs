@@ -155,10 +155,43 @@ pub struct Chrome<'a> {
     /// start menu included — it is opened from both. See
     /// [`crate::canvas::keybinds_layout`].
     pub keybinds: Option<KeybindsChrome<'a>>,
+    /// The guide behind `?`, while it is up: a page like the shortcuts one.
+    pub help: Option<HelpChrome<'a>>,
+    /// The tour's card and spotlight, while it runs. Over the studio, under
+    /// the menus it opens.
+    pub tour: Option<TourChrome<'a>>,
     /// The settings page, while it is up. Over the studio and under the
     /// menus, prompts and modals it opens. See
     /// [`crate::canvas::settings_page_layout`].
     pub settings_page: Option<SettingsPageChrome<'a>>,
+}
+
+/// The guide page (`canvas::guide`), as the window draws it.
+pub struct HelpChrome<'a> {
+    pub section: usize,
+    pub scroll: f32,
+    /// The chosen section's paragraphs, per page, already wrapped at
+    /// [`crate::canvas::help_text_width`].
+    pub paragraphs: &'a [Vec<TextLayout>],
+    pub hover: Option<crate::canvas::HelpHit>,
+}
+
+/// The tour's card, as the window draws it.
+pub struct TourChrome<'a> {
+    /// The step, into [`crate::canvas::tour_steps`].
+    pub step: usize,
+    /// What the step points at — where the card is placed against.
+    pub target: Option<Rect>,
+    /// Where the ring is right now, eased from the last step's target.
+    pub spot: Option<Rect>,
+    /// The step's paragraphs, wrapped at [`crate::canvas::tour_text_width`].
+    pub paragraphs: &'a [TextLayout],
+    /// The step's choice's options, and which one is set.
+    pub choices: &'a [String],
+    pub chosen: Option<usize>,
+    /// "3 of 12 · Arranging".
+    pub steps: &'a str,
+    pub hover: Option<crate::canvas::TourHit>,
 }
 
 /// The settings page (`canvas::settings_page`), as the window draws it.
@@ -654,6 +687,9 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             chrome.menu,
             chrome.field.as_ref(),
         );
+        if let Some(help) = &chrome.help {
+            draw_help(scene, theme, chrome.labels, layout.window, help);
+        }
         if let Some(keybinds) = &chrome.keybinds {
             draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
         }
@@ -822,6 +858,9 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(page) = &chrome.settings_page {
         draw_settings_page(scene, theme, chrome.labels, layout.window, page);
     }
+    if let Some(tour) = &chrome.tour {
+        draw_tour(scene, theme, chrome.labels, layout.window, tour);
+    }
     draw_context_menu(
         scene,
         theme,
@@ -871,7 +910,10 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         draw_question(scene, theme, chrome.labels, layout.window, question);
     }
     // And the shortcuts sheet, which is a page rather than a prompt: over
-    // the studio and its menus, under nothing.
+    // the studio and its menus, under nothing. The guide is the same.
+    if let Some(help) = &chrome.help {
+        draw_help(scene, theme, chrome.labels, layout.window, help);
+    }
     if let Some(keybinds) = &chrome.keybinds {
         draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
     }
@@ -911,6 +953,391 @@ fn draw_switch_icon(
         p.text_muted
     };
     draw_icon(scene, icon, glyph, ink);
+}
+
+/// The guide page (`canvas::guide`): a scrim, a card, the sections down its
+/// left and the chosen one's pages on the right, as reading.
+fn draw_help(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    chrome: &HelpChrome<'_>,
+) {
+    use crate::canvas::{GUIDE, GuideKind, HELP_CLOSE, HELP_SHORTCUTS, HELP_TITLE, HelpHit};
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    fill_rect(scene, window, p.window.with_alpha(200));
+    let heights: Vec<Vec<f32>> = chrome
+        .paragraphs
+        .iter()
+        .map(|page| page.iter().map(|t| t.height).collect())
+        .collect();
+    let l = crate::canvas::help_layout(window, m, chrome.section, &heights, chrome.scroll);
+    if l.frame.is_empty() {
+        return;
+    }
+    let radius = m.corner_radius * 2.0;
+    fill_rect_rounded(scene, l.frame, radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, radius, 1.0, p.border);
+    let centred_y = |r: Rect, h: f32| r.y + (r.height - h) / 2.0;
+    if let Some(text) = labels.get(HELP_TITLE) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.title,
+            l.title.x,
+            centred_y(l.title, text.height),
+            p.text,
+        );
+    }
+    if !l.close.is_empty() {
+        let lit = chrome.hover == Some(HelpHit::Close);
+        fill_rect_rounded(
+            scene,
+            l.close,
+            m.corner_radius,
+            if lit {
+                p.accent.with_alpha(0x50)
+            } else {
+                p.panel_header
+            },
+        );
+        stroke_rect_rounded(
+            scene,
+            l.close,
+            m.corner_radius,
+            m.border_width,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(HELP_CLOSE) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.close,
+                l.close.x + (l.close.width - text.width) / 2.0,
+                centred_y(l.close, text.height),
+                p.text,
+            );
+        }
+    }
+    // The list: chosen lit with its bar, hovered on a plate. The "Coming
+    // from" sections are set apart by a rule above the first of them.
+    let first_coming = GUIDE.iter().position(|s| s.kind == GuideKind::ComingFrom);
+    for (at, entry) in l.nav.iter().enumerate() {
+        let chosen = at == l.section;
+        let lit = chrome.hover == Some(HelpHit::Section(at));
+        let plate = entry.inset(2.0);
+        if Some(at) == first_coming {
+            fill_rect(
+                scene,
+                Rect::new(entry.x + 8.0, entry.y, entry.width - 16.0, 1.0),
+                p.grid_line,
+            );
+        }
+        if chosen {
+            fill_rect_rounded(scene, plate, m.corner_radius, p.accent.with_alpha(0x30));
+            fill_rect_rounded(
+                scene,
+                Rect::new(plate.x, plate.y + 4.0, 3.0, (plate.height - 8.0).max(0.0)),
+                1.5,
+                p.accent,
+            );
+        } else if lit {
+            fill_rect_rounded(scene, plate, m.corner_radius, p.panel_header);
+        }
+        if let Some(text) = GUIDE.get(at).and_then(|s| labels.get(s.title)) {
+            draw_text_clipped(
+                scene,
+                text,
+                plate,
+                plate.x + 12.0,
+                centred_y(plate, text.height),
+                if chosen || lit { p.text } else { p.text_muted },
+            );
+        }
+    }
+    if !l.shortcuts.is_empty() {
+        let plate = l.shortcuts.inset(2.0);
+        let lit = chrome.hover == Some(HelpHit::Shortcuts);
+        fill_rect_rounded(
+            scene,
+            plate,
+            m.corner_radius,
+            if lit {
+                p.accent.with_alpha(0x48)
+            } else {
+                p.panel_header
+            },
+        );
+        stroke_rect_rounded(
+            scene,
+            plate,
+            m.corner_radius,
+            1.0,
+            if lit { p.accent } else { p.border },
+        );
+        if let Some(text) = labels.get(HELP_SHORTCUTS) {
+            draw_text_clipped(
+                scene,
+                text,
+                plate,
+                plate.x + 12.0,
+                centred_y(plate, text.height),
+                p.text,
+            );
+        }
+    }
+    if !l.body.is_empty() && !l.nav.is_empty() {
+        fill_rect(
+            scene,
+            Rect::new((l.body.x - 12.0).round(), l.body.y, 1.0, l.body.height),
+            p.grid_line,
+        );
+    }
+    if l.body.is_empty() {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            l.body.x as f64,
+            l.body.y as f64,
+            l.body.right() as f64,
+            l.body.bottom() as f64,
+        ),
+    );
+    let section = GUIDE.get(l.section);
+    for block in &l.blocks {
+        match block.paragraph {
+            None => {
+                let Some(page) = section.and_then(|s| s.pages.get(block.page)) else {
+                    continue;
+                };
+                if let Some(text) = labels.get(page.title) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        block.rect,
+                        block.rect.x,
+                        centred_y(block.rect, text.height),
+                        p.accent,
+                    );
+                }
+            }
+            Some(at) => {
+                if let Some(text) = chrome
+                    .paragraphs
+                    .get(block.page)
+                    .and_then(|page| page.get(at))
+                {
+                    draw_text_clipped(scene, text, block.rect, block.rect.x, block.rect.y, p.text);
+                }
+            }
+        }
+    }
+    scene.pop_layer();
+}
+
+/// The tour: the window dimmed round a ring on what the step is about, and
+/// the card beside it — the title, the words, the step's choice if it has
+/// one, and Back and Next.
+fn draw_tour(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    chrome: &TourChrome<'_>,
+) {
+    use crate::canvas::{GUIDE, HELP_CLOSE, TOUR_BACK, TOUR_DONE, TOUR_NEXT, TourHit};
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let steps = crate::canvas::tour_steps();
+    let Some(&(section, page)) = steps.get(chrome.step) else {
+        return;
+    };
+    let Some(page) = GUIDE.get(section).and_then(|s| s.pages.get(page)) else {
+        return;
+    };
+    let body_height: f32 = chrome.paragraphs.iter().map(|t| t.height + 6.0).sum();
+    let l = crate::canvas::tour_layout(
+        window,
+        m,
+        chrome.target,
+        body_height,
+        chrome.choices.len(),
+        chrome.step == 0,
+        chrome.step + 1 == steps.len(),
+    );
+    // Dimmed round the spotlight, not over it: the part being described is
+    // the one thing at full brightness.
+    if let Some(spot) = chrome.spot.map(|s| s.inset(-6.0)).or(l.spotlight) {
+        let shade = p.window.with_alpha(150);
+        for r in [
+            Rect::new(
+                window.x,
+                window.y,
+                window.width,
+                (spot.y - window.y).max(0.0),
+            ),
+            Rect::new(
+                window.x,
+                spot.bottom(),
+                window.width,
+                (window.bottom() - spot.bottom()).max(0.0),
+            ),
+            Rect::new(window.x, spot.y, (spot.x - window.x).max(0.0), spot.height),
+            Rect::new(
+                spot.right(),
+                spot.y,
+                (window.right() - spot.right()).max(0.0),
+                spot.height,
+            ),
+        ] {
+            fill_rect(scene, r, shade);
+        }
+        stroke_rect_rounded(scene, spot, m.corner_radius * 2.0, 2.0, p.accent);
+    }
+    let radius = m.corner_radius * 2.0;
+    fill_rect_rounded(
+        scene,
+        l.card.inset(-2.0),
+        radius + 2.0,
+        p.window.with_alpha(120),
+    );
+    fill_rect_rounded(scene, l.card, radius, p.panel);
+    stroke_rect_rounded(scene, l.card, radius, 1.0, p.accent.with_alpha(0xa0));
+    let centred_y = |r: Rect, h: f32| r.y + (r.height - h) / 2.0;
+    let plate = |scene: &mut Scene, r: Rect, lit: bool, primary: bool| {
+        let fill = if primary {
+            if lit {
+                p.accent
+            } else {
+                p.accent.with_alpha(0xc8)
+            }
+        } else if lit {
+            p.accent.with_alpha(0x48)
+        } else {
+            p.panel_header
+        };
+        fill_rect_rounded(scene, r, m.corner_radius, fill);
+        stroke_rect_rounded(
+            scene,
+            r,
+            m.corner_radius,
+            1.0,
+            if lit || primary { p.accent } else { p.border },
+        );
+    };
+    // The step chip: where you are, and a way to jump.
+    if !l.steps.is_empty() {
+        let lit = chrome.hover == Some(TourHit::Steps);
+        plate(scene, l.steps, lit, false);
+        if let Some(text) = labels.get_small(chrome.steps) {
+            let room = Rect::new(
+                l.steps.x + 8.0,
+                l.steps.y,
+                (l.steps.width - 24.0).max(0.0),
+                l.steps.height,
+            );
+            draw_text_clipped(
+                scene,
+                text,
+                room,
+                room.x,
+                centred_y(room, text.height),
+                p.text,
+            );
+        }
+        let side = (l.steps.height * 0.4).round();
+        draw_icon(
+            scene,
+            crate::icon::Icon::Chevron,
+            Rect::new(
+                l.steps.right() - side - 6.0,
+                centred_y(l.steps, side),
+                side,
+                side,
+            ),
+            p.text_muted,
+        );
+    }
+    if !l.close.is_empty() {
+        plate(scene, l.close, chrome.hover == Some(TourHit::Close), false);
+        if let Some(text) = labels.get(HELP_CLOSE) {
+            draw_text_clipped(
+                scene,
+                text,
+                l.close,
+                l.close.x + (l.close.width - text.width) / 2.0,
+                centred_y(l.close, text.height),
+                p.text,
+            );
+        }
+    }
+    if let Some(text) = labels.get(page.title) {
+        draw_text_clipped(
+            scene,
+            text,
+            l.title,
+            l.title.x,
+            centred_y(l.title, text.height),
+            p.accent,
+        );
+    }
+    let mut y = l.body.y;
+    for text in chrome.paragraphs {
+        draw_text_clipped(scene, text, l.card, l.body.x, y, p.text);
+        y += text.height + 6.0;
+    }
+    for (at, (r, option)) in l.choices.iter().zip(chrome.choices).enumerate() {
+        let chosen = chrome.chosen == Some(at);
+        let lit = chrome.hover == Some(TourHit::Choice(at));
+        // The one that is set wears the accent like a lit button, so it
+        // reads as chosen rather than as greyed out.
+        plate(scene, *r, lit || chosen, false);
+        if chosen {
+            stroke_rect_rounded(scene, r.inset(1.0), m.corner_radius, 2.0, p.accent);
+        }
+        if let Some(text) = labels.get(option) {
+            draw_text_clipped(
+                scene,
+                text,
+                *r,
+                r.x + 12.0,
+                centred_y(*r, text.height),
+                p.text,
+            );
+        }
+    }
+    let last = chrome.step + 1 == steps.len();
+    for (r, caption, hit, primary) in [
+        (l.back, TOUR_BACK, TourHit::Back, false),
+        (
+            l.next,
+            if last { TOUR_DONE } else { TOUR_NEXT },
+            TourHit::Next,
+            true,
+        ),
+    ] {
+        if r.is_empty() {
+            continue;
+        }
+        plate(scene, r, chrome.hover == Some(hit), primary);
+        if let Some(text) = labels.get(caption) {
+            draw_text_clipped(
+                scene,
+                text,
+                r,
+                r.x + (r.width - text.width) / 2.0,
+                centred_y(r, text.height),
+                if primary { p.panel } else { p.text },
+            );
+        }
+    }
 }
 
 /// The keyboard shortcuts sheet (`canvas::keybinds`): a scrim, a card, and
@@ -1984,6 +2411,50 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         l.join_button,
         hot(WelcomeHit::Join),
     );
+
+    // Learning Fontelle: on first launch a card that says what it is, with
+    // a way to say no; after that, a button, always there.
+    if let Some(card) = l.learn_card {
+        fill_rect_rounded(scene, card, m.corner_radius, p.accent.with_alpha(0x22));
+        stroke_rect_rounded(scene, card, m.corner_radius, 1.0, p.accent.with_alpha(0x90));
+        if let Some(area) = l.learn_text
+            && let Some(text) = labels.get(crate::canvas::LEARN_OFFER)
+        {
+            draw_text_clipped(
+                scene,
+                text,
+                area,
+                area.x,
+                area.y + (area.height - text.height) / 2.0,
+                p.text,
+            );
+        }
+    }
+    if !l.learn.is_empty() {
+        let caption = if l.learn_card.is_some() {
+            crate::canvas::LEARN_TAKE
+        } else {
+            crate::canvas::LEARN_BUTTON
+        };
+        draw_welcome_button(
+            scene,
+            theme,
+            labels,
+            caption,
+            l.learn,
+            hot(WelcomeHit::Learn),
+        );
+    }
+    if let Some(dismiss) = l.learn_dismiss {
+        draw_welcome_button(
+            scene,
+            theme,
+            labels,
+            crate::canvas::LEARN_DISMISS,
+            dismiss,
+            hot(WelcomeHit::DismissLearn),
+        );
+    }
 
     // The recent list.
     draw_line(scene, labels, RECENT_HEADING, l.recent_heading, p.text);

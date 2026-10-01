@@ -393,7 +393,7 @@ impl Action {
             Self::Redo => "Redo",
             Self::ExportWav => "Export as a WAV — asks which stretch, and about the tail",
             Self::ExportMidi => "Export the song as a MIDI file",
-            Self::Help => "This page",
+            Self::Help => "The guide, which opens this page too",
             Self::ShowRoll => "Show the piano roll",
             Self::ShowMixer => "Show the mixer",
             Self::RackTab => "Rack: Instruments or Prefabs",

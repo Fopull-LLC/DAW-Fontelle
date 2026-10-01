@@ -1490,6 +1490,25 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    // --- the tour (`docs/ux-routing-and-learning-plan.md` §5) ---
+    /// Opens the tour's song, fresh each time. The window then runs the tour
+    /// over it.
+    fn start_tour(&mut self) -> Result<(), String> {
+        Err("this studio has no tour".to_string())
+    }
+    /// What a tour step's choice offers, and which option is set now.
+    fn tour_options(&self, _choice: crate::canvas::GuideChoice) -> (Vec<String>, Option<usize>) {
+        (Vec::new(), None)
+    }
+    /// Sets a tour step's choice to its `option`th entry.
+    fn choose_tour_option(&mut self, _choice: crate::canvas::GuideChoice, _option: usize) {}
+    /// Whether the start menu's first-launch offer of the tour was answered.
+    fn tour_offered(&self) -> bool {
+        true
+    }
+    /// Remembers that it was.
+    fn set_tour_offered(&mut self) {}
+
     /// One line per settings row saying what it is for, parallel to
     /// [`settings`](Self::settings) — what the settings page writes under each
     /// row's name. Empty for a heading.

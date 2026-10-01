@@ -7,6 +7,7 @@ mod effect;
 mod favorites;
 mod flopsynth;
 mod glide;
+mod guide;
 mod instrument;
 mod keybinds;
 mod keymap;
@@ -96,6 +97,12 @@ pub use gestures::{
     BADGE_CLICK_SLOP, BadgeGesture, FlopKnobMenu, FlopKnobMenuItem, NUDGE, NUDGE_FINE, Precision,
     Typed, badge_gesture, flop_knob_menu, flopsynth_tip, hover_bubble_rect, inspector_after_click,
     knob_drag, lfo_draw_switch, matrix_tip, nudged, parse_typed, wheel_nudge,
+};
+pub use guide::{
+    GUIDE, GuideChoice, GuideKind, GuidePage, GuideSection, GuideTarget, HELP_CLOSE,
+    HELP_SHORTCUTS, HELP_TITLE, HelpBlock, HelpHit, HelpLayout, TOUR_BACK, TOUR_CARD_WIDTH,
+    TOUR_DONE, TOUR_NEXT, TourHit, TourLayout, help_hit, help_layout, help_scroll_max,
+    help_scrolled, help_text_width, tour_hit, tour_layout, tour_steps, tour_text_width,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
@@ -246,8 +253,9 @@ pub use tune::{
     tune_strings, viewport_points, viewport_rails,
 };
 pub use welcome::{
-    FOOTER_TEXT, JOIN_LABEL, LOGS_LABEL, NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL,
-    RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL,
-    WEBSITE_URL, WelcomeHit, WelcomeLayout, transfer_fraction, transfer_text, update_line,
-    update_progress, welcome_enter, welcome_hint, welcome_hit, welcome_layout,
+    FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,
+    NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING, REPOSITORY_LABEL,
+    REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WelcomeHit, WelcomeLayout,
+    transfer_fraction, transfer_text, update_line, update_progress, welcome_enter, welcome_hint,
+    welcome_hit, welcome_layout, with_learn,
 };
