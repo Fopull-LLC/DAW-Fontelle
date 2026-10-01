@@ -468,6 +468,10 @@ impl Theme {
         p.row_dead = Color::rgb(0x05, 0x07, 0x0b);
         p.row_out_of_scale = Color::rgb(0x09, 0x0c, 0x13);
         p.row_scale_root = Color::rgb(0x18, 0x22, 0x3a);
+        // The keys, in the look's own greys rather than the default's teal.
+        p.key_white = Color::rgb(0xc8, 0xd0, 0xe0);
+        p.key_dead = Color::rgb(0x4a, 0x54, 0x68);
+        p.note_silent = Color::rgb(0x2c, 0x35, 0x4a);
         theme.metrics.corner_radius = 0.0;
         theme.metrics.border_width = 1.0;
         theme
@@ -498,6 +502,9 @@ impl Theme {
         p.row_dead = Color::rgb(0x0c, 0x08, 0x06);
         p.row_out_of_scale = Color::rgb(0x14, 0x0e, 0x0b);
         p.row_scale_root = Color::rgb(0x33, 0x22, 0x18);
+        p.key_white = Color::rgb(0xe2, 0xd6, 0xcc);
+        p.key_dead = Color::rgb(0x5e, 0x50, 0x49);
+        p.note_silent = Color::rgb(0x48, 0x38, 0x30);
         theme.metrics.corner_radius = 7.0;
         theme
     }
@@ -526,6 +533,10 @@ impl Theme {
         p.row_dead = Color::rgb(0xdc, 0xd4, 0xc5);
         p.row_out_of_scale = Color::rgb(0xe9, 0xe2, 0xd5);
         p.row_scale_root = Color::rgb(0xd9, 0xea, 0xe2);
+        p.key_white = Color::rgb(0xfb, 0xf8, 0xf2);
+        p.key_black = Color::rgb(0x3a, 0x32, 0x26);
+        p.key_dead = Color::rgb(0xd6, 0xcd, 0xbd);
+        p.note_silent = Color::rgb(0xb3, 0xa8, 0x96);
         theme.metrics.corner_radius = 8.0;
         theme
     }

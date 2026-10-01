@@ -945,6 +945,14 @@ const BEATS_PER_BAR: u32 = 4;
 #[cfg(target_os = "linux")]
 const APP_ID: &str = "com.fopull.Fontelle";
 
+/// A theme's pictures, decoded for drawing (`render::PanelBackdrops`).
+fn decode_backdrops(theme: &Theme) -> crate::render::PanelBackdrops {
+    crate::theme::BackdropPanel::ALL.map(|panel| {
+        let backdrop = theme.backdrops.get(panel)?;
+        Some((backdrop.decode()?, backdrop.opacity))
+    })
+}
+
 /// What the window is opened with.
 pub struct WindowOptions {
     /// The OS window's title.
@@ -2347,7 +2355,9 @@ impl WindowApp {
                 strip_width: crate::canvas::STRIP_WIDTH,
             },
             mixer_view: crate::canvas::MixerView::default(),
-            backdrops: Default::default(),
+            // The opening theme's pictures — one named with `--theme` is
+            // never worn through `apply_theme`, and drew without them.
+            backdrops: decode_backdrops(&options.theme),
             theme_seen: 0,
             carried_cable: None,
             mixer_strips: Vec::new(),
@@ -9023,10 +9033,7 @@ impl WindowApp {
         if theme == self.options.theme {
             return;
         }
-        self.backdrops = crate::theme::BackdropPanel::ALL.map(|panel| {
-            let backdrop = theme.backdrops.get(panel)?;
-            Some((backdrop.decode()?, backdrop.opacity))
-        });
+        self.backdrops = decode_backdrops(&theme);
         self.options.theme = theme;
         self.relayout_panels();
         self.tree.invalidate_rect(self.layout.window);
