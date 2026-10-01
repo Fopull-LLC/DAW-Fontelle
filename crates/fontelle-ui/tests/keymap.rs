@@ -186,10 +186,13 @@ fn the_defaults_are_the_bindings_the_window_has_always_had() {
     assert_eq!(bound(Action::SelectTool), "E");
     assert_eq!(bound(Action::DeleteTool), "D");
     assert_eq!(bound(Action::SliceTool), "C");
-    assert_eq!(bound(Action::SnapOrStretch), "S");
+    // S is the slide's in the roll and Stretch on the arrangement; the
+    // roll's snap moved to G, and the ghosts to O (Ty, 2026-10-01).
+    assert_eq!(bound(Action::Stretch), "S");
+    assert_eq!(bound(Action::RollSnap), "G");
     assert_eq!(bound(Action::Slide), "A");
     assert_eq!(bound(Action::LaneProperty), "L");
-    assert_eq!(bound(Action::Ghosts), "G");
+    assert_eq!(bound(Action::Ghosts), "O");
     assert_eq!(bound(Action::LegatoOrPlayMode), "Ctrl+L");
     assert_eq!(bound(Action::SelectAll), "Ctrl+A");
     assert_eq!(bound(Action::Copy), "Ctrl+C");
@@ -588,7 +591,7 @@ fn s_places_a_path_point_while_a_note_is_being_drawn() {
     // mid-drag.
     assert_eq!(
         map.action(&chord("S"), Context::Studio),
-        Some(Action::SnapOrStretch)
+        Some(Action::Stretch)
     );
     assert_eq!(
         map.action(&chord("Space"), Context::Drawing),
@@ -601,5 +604,33 @@ fn s_places_a_path_point_while_a_note_is_being_drawn() {
             .iter()
             .any(|b| format!("{b:?}").contains("PathPoint"))),
         "listed on the shortcuts page"
+    );
+}
+
+/// Ty, 2026-10-01, from using it: *"trying to do it again just changes the
+/// snapping grid instead of making a new slide note point ... make s the key
+/// for slide notes only, and change the s key from changing the piano roll
+/// grid snap to now be on the g key when focused in the piano roll."*
+#[test]
+fn s_is_the_slides_and_g_is_the_rolls_snap() {
+    let map = Keymap::default();
+    assert_eq!(
+        map.action(&chord("G"), Context::Studio),
+        Some(Action::RollSnap)
+    );
+    assert_eq!(
+        map.action(&chord("O"), Context::Studio),
+        Some(Action::Ghosts)
+    );
+    // The id the settings file knows the old binding by is kept, so a
+    // rebinding somebody saved still lands on the arrangement's stretch.
+    assert_eq!(Action::Stretch.id(), "snap-or-stretch");
+    assert_eq!(Action::RollSnap.id(), "roll-snap");
+    assert!(Action::Stretch.does().contains("Stretch"));
+    assert!(!Action::Stretch.does().contains("Snap"));
+    // The roll's snap chip says G in its tip.
+    assert_eq!(
+        fontelle_ui::canvas::RollControl::Snap.action(),
+        Some(Action::RollSnap)
     );
 }

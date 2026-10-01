@@ -270,7 +270,11 @@ pub enum Action {
     SelectTool,
     DeleteTool,
     SliceTool,
-    SnapOrStretch,
+    /// Stretch on the arrangement. Was "snap or stretch" — S in the roll
+    /// is the slide's now, and the roll's snap is [`RollSnap`](Self::RollSnap).
+    Stretch,
+    /// The piano roll's snap grid, cycled.
+    RollSnap,
     Slide,
     LaneProperty,
     Ghosts,
@@ -300,7 +304,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -326,7 +330,8 @@ impl Action {
         Self::SelectTool,
         Self::DeleteTool,
         Self::SliceTool,
-        Self::SnapOrStretch,
+        Self::Stretch,
+        Self::RollSnap,
         Self::Slide,
         Self::LaneProperty,
         Self::Ghosts,
@@ -375,7 +380,9 @@ impl Action {
             Self::SelectTool => "select-tool",
             Self::DeleteTool => "delete-tool",
             Self::SliceTool => "slice-tool",
-            Self::SnapOrStretch => "snap-or-stretch",
+            // The old name, kept: a rebinding saved under it must read back.
+            Self::Stretch => "snap-or-stretch",
+            Self::RollSnap => "roll-snap",
             Self::Slide => "slide",
             Self::LaneProperty => "lane-property",
             Self::Ghosts => "ghosts",
@@ -428,7 +435,8 @@ impl Action {
             Self::SelectTool => "Select",
             Self::DeleteTool => "Delete (piano roll)",
             Self::SliceTool => "Slice",
-            Self::SnapOrStretch => "Snap grid (piano roll) / Stretch (arrangement)",
+            Self::Stretch => "Stretch on or off (arrangement)",
+            Self::RollSnap => "Next snap grid (piano roll)",
             Self::Slide => {
                 "FL-style slide notes on or off (older; S while drawing slides one note)"
             }
@@ -497,10 +505,11 @@ impl Action {
             Self::SelectTool => &["E"],
             Self::DeleteTool => &["D"],
             Self::SliceTool => &["C"],
-            Self::SnapOrStretch => &["S"],
+            Self::Stretch => &["S"],
+            Self::RollSnap => &["G"],
             Self::Slide => &["A"],
             Self::LaneProperty => &["L"],
-            Self::Ghosts => &["G"],
+            Self::Ghosts => &["O"],
             Self::SelectAll => &["Ctrl+A"],
             Self::Copy => &["Ctrl+C"],
             Self::Cut => &["Ctrl+X"],

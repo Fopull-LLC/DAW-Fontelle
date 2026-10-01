@@ -1568,7 +1568,7 @@ impl RollControl {
             Self::Tool(Tool::Select) => Action::SelectTool,
             Self::Tool(Tool::Delete) => Action::DeleteTool,
             Self::Tool(Tool::Slice) => Action::SliceTool,
-            Self::Snap => Action::SnapOrStretch,
+            Self::Snap => Action::RollSnap,
             Self::Lane => Action::LaneProperty,
             Self::Ghost => Action::Ghosts,
             Self::Slide => Action::Slide,
@@ -2228,6 +2228,11 @@ impl PianoRoll {
     pub fn takes_path_points(&self) -> bool {
         match &self.gesture {
             Gesture::Pathing { .. } => true,
+            // The end of a path is its last point, so grabbing a drawn
+            // note's end back out is a point drag: S carries on from it.
+            Gesture::MovingPoint { index, base, .. } => {
+                index + 1 == base.path.len() && base.path[*index].at >= base.length
+            }
             Gesture::Resizing { .. } => self.selection.len() == 1,
             Gesture::Moving { .. } => {
                 self.drawn.is_some() && self.selection.as_slice() == [self.drawn.unwrap()]
@@ -2268,6 +2273,19 @@ impl PianoRoll {
                 applied,
             };
             return Vec::new();
+        }
+        // The end point of a path, dragged: it is fixed where the drag has
+        // taken it, and the pointer leads on from there.
+        if let Gesture::MovingPoint {
+            id, base, applied, ..
+        } = self.gesture.clone()
+        {
+            let fixed = applied.1.clone();
+            let live = fixed.last().copied().unwrap_or(fontelle_model::PathPoint {
+                at: applied.0,
+                offset: 0,
+            });
+            return self.path_step(id, base.start, base.key, fixed, live, applied);
         }
         let Some(&id) = self.selection.first() else {
             return Vec::new();

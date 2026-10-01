@@ -20562,9 +20562,17 @@ impl WindowApp {
             Action::PaintTool => self.set_tool(Tool::Paint),
             Action::SelectTool => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
             Action::DeleteTool => self.set_tool(Tool::Delete),
-            // Snap in the roll, Stretch on the arrangement — see
-            // `snap_or_stretch`.
-            Action::SnapOrStretch => self.snap_or_stretch(),
+            // Stretch on the arrangement. **Nothing in the roll**: S there
+            // is the slide's (`Action::PathPoint`), and a key that changed
+            // the grid whenever a drawing was not quite in hand is what made
+            // a second S "just change the snapping grid" (Ty, 2026-10-01).
+            Action::Stretch => self.stretch(),
+            // The roll's grid, on G.
+            Action::RollSnap => {
+                if self.tab == EditorTab::Roll {
+                    self.cycle_snap();
+                }
+            }
             Action::LaneProperty => self.cycle_lane_property(),
             Action::Ghosts => self.cycle_ghosts(),
             // `A` for a slide by default: `S` is the snap and every other
@@ -21017,7 +21025,7 @@ impl WindowApp {
     /// touched it — so pressing `S` while working on the arrangement was
     /// changing a setting on a panel you were not looking at. The
     /// arrangement's snap is its chip, which is where it always was.
-    fn snap_or_stretch(&mut self) {
+    fn stretch(&mut self) {
         if self.focus == Focus::Timeline {
             let edits = self.timeline.toggle_stretch(&self.clips);
             if !edits.is_empty() {
@@ -21032,9 +21040,7 @@ impl WindowApp {
                 "Stretch off \u{2014} an edge drag trims".to_string()
             };
             self.tree.invalidate(TIMELINE);
-            return;
         }
-        self.cycle_snap();
     }
 
     fn cycle_snap(&mut self) {

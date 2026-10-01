@@ -495,3 +495,51 @@ fn a_box_around_where_a_slide_landed_selects_the_note() {
     roll.release_over(x1, y1, grid(), &notes);
     assert!(roll.selection().is_empty());
 }
+
+/// Ty, from using it: dragging a drawn note's end back out and pressing S
+/// *"just changes the snapping grid instead of making a new slide note
+/// point"*. The end of a path is a point, so grabbing it there is a point
+/// drag — and S on the **last** point carries on drawing the path from it.
+#[test]
+fn s_while_dragging_a_paths_last_point_carries_on_drawing() {
+    let mut host = Host::new(DrawDrag::Resize);
+    host.press(0, 60);
+    host.drag(PPQN, 60);
+    host.s();
+    host.drag(PPQN * 2, 67);
+    host.release(PPQN * 2, 67);
+    assert_eq!(host.only().path, vec![point(PPQN, 0), point(PPQN * 2, 7)]);
+
+    // Grab the end again and pull it out: the point moves, so the slide now
+    // lands a beat later. S fixes it there and the pointer leads on.
+    host.press(PPQN * 2, 67);
+    host.drag(PPQN * 3, 67);
+    assert!(host.roll.takes_path_points(), "the last point takes S");
+    host.s();
+    host.drag(PPQN * 4, 62);
+    host.release(PPQN * 4, 62);
+
+    let note = host.only();
+    assert_eq!(
+        note.path,
+        vec![point(PPQN, 0), point(PPQN * 3, 7), point(PPQN * 4, 2)]
+    );
+    assert_eq!(note.length, PPQN * 4);
+
+    // S straight after grabbing the end, before moving, keeps the slide
+    // where it was and holds on from it.
+    host.press(PPQN * 4, 62);
+    host.s();
+    host.drag(PPQN * 5, 62);
+    host.release(PPQN * 5, 62);
+    let note = host.only();
+    assert_eq!(note.path.last(), Some(&point(PPQN * 4, 2)));
+    assert_eq!(note.length, PPQN * 5, "held on to the pointer");
+}
+
+#[test]
+fn s_while_dragging_a_point_in_the_middle_does_nothing() {
+    let mut host = shaped();
+    host.press(PPQN, 60);
+    assert!(!host.roll.takes_path_points());
+}

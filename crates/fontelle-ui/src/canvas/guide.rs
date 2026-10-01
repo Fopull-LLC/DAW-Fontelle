@@ -240,7 +240,7 @@ pub const GUIDE: &[GuideSection] = &[
                 "The piano roll",
                 &[
                     "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
-                    "The chooser beside the tools sets the grid, and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
+                    "The chooser beside the tools sets the grid (G steps through it), and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
                     "To make a note slide, keep the button down after drawing it and press S: the note holds to there, then follows the pointer, flat along a row or sliding up and down. Press S again for each new point, Backspace to take one back, and let go to end it. Drag a point to move it, and double-click a note to add one.",
                 ],
                 Some(Editor),
