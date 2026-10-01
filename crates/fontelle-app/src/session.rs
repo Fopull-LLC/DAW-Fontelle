@@ -6105,9 +6105,33 @@ impl DocumentHost for Session {
                 self.run(Box::new(MoveNotes::new(clip, ids, tick_delta, key_delta)));
                 Vec::new()
             }
-            RollEdit::SetKeys { ids, keys } => {
-                // Fitting to the scale: a key each, one command, one undo.
-                self.run(Box::new(fontelle_model::SetNoteKeys::new(clip, ids, keys)));
+            // A note's path and length, from the S-gesture or a dragged
+            // point. Not broken per step: `SetNotePath::merge_with` folds
+            // the drag into one undo, and the release ends the gesture.
+            RollEdit::Shape { id, length, path } => {
+                self.run(Box::new(
+                    fontelle_model::SetNotePath::new(clip, id, path).with_length(length),
+                ));
+                Vec::new()
+            }
+            RollEdit::SetKeys { ids, keys, paths } => {
+                // Fitting to the scale: a key each, and each sliding note's
+                // path where it lands — one command, one undo.
+                if paths.is_empty() {
+                    self.run(Box::new(fontelle_model::SetNoteKeys::new(clip, ids, keys)));
+                } else {
+                    let mut parts: Vec<Box<dyn fontelle_model::Command>> = Vec::new();
+                    if !ids.is_empty() {
+                        parts.push(Box::new(fontelle_model::SetNoteKeys::new(clip, ids, keys)));
+                    }
+                    for (id, path) in paths {
+                        parts.push(Box::new(fontelle_model::SetNotePath::new(clip, id, path)));
+                    }
+                    self.run(Box::new(fontelle_model::Compound::new(
+                        "Fit to scale".to_string(),
+                        parts,
+                    )));
+                }
                 self.let_go();
                 Vec::new()
             }
@@ -10570,6 +10594,7 @@ impl StudioHost for Session {
         &mut self,
         key: Option<fontelle_types::KeyScale>,
         fitted: Vec<(fontelle_types::NoteId, u8)>,
+        paths: Vec<(fontelle_types::NoteId, Vec<fontelle_model::PathPoint>)>,
     ) {
         let label = key.as_ref().map_or_else(
             || "No scale".to_string(),
@@ -10584,6 +10609,11 @@ impl StudioHost for Session {
                 ids,
                 keys,
             )));
+        }
+        // Each sliding note's path, fitted where it lands — the same undo.
+        let target = self.note_target();
+        for (id, path) in paths {
+            parts.push(Box::new(fontelle_model::SetNotePath::new(target, id, path)));
         }
         self.run(Box::new(fontelle_model::Compound::new(label, parts)));
         self.let_go();
@@ -11812,13 +11842,21 @@ impl StudioHost for Session {
                         // expanded across a loop's passes — the canvas tiles
                         // them the way it tiles the seams. See
                         // `fontelle_ui::document::ClipInfo::notes`.
+                        // A note with a path is drawn as its holds and a
+                        // staircase up each slide (`Note::preview_pieces`):
+                        // the preview has no slant, and a slide drawn as
+                        // the row it left would show a melody as one note.
                         let mut notes: Vec<fontelle_ui::document::NotePreview> = data
                             .notes
                             .values()
-                            .map(|note| fontelle_ui::document::NotePreview {
-                                start: note.start,
-                                length: note.length,
-                                key: note.key,
+                            .flat_map(|note| {
+                                note.preview_pieces().into_iter().map(|(at, length, key)| {
+                                    fontelle_ui::document::NotePreview {
+                                        start: note.start + at,
+                                        length,
+                                        key,
+                                    }
+                                })
                             })
                             .collect();
                         notes.sort_by_key(|note| (note.start, note.key));

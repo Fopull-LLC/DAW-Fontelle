@@ -931,6 +931,8 @@ fn shoot_roll_everything(
             "roll-keymap"
         } else if live_keys != 0 {
             "roll-lit"
+        } else if notes.values().any(|n| n.has_path()) {
+            "roll-paths"
         } else if ghosts.is_empty() {
             "roll"
         } else {
@@ -1014,6 +1016,53 @@ fn the_blade_marks_each_note_it_will_cut() {
     // The three marks are at three different x: a diagonal cuts each row at
     // its own time, and the picture says so.
     assert!(marks[0].x != marks[1].x && marks[1].x != marks[2].x);
+}
+
+/// A note with a **path** is one ribbon: on its row while it holds, along
+/// the slant while it slides, on the row it lands on after — and the row it
+/// left is empty grid once it has gone (`docs/note-paths-plan.md` §4).
+#[test]
+fn a_sliding_note_is_drawn_along_its_path() {
+    let mut notes = Arena::default();
+    let mut sliding = note(0, PPQN * 4, 60);
+    sliding.path = vec![
+        fontelle_model::PathPoint {
+            at: PPQN,
+            offset: 0,
+        },
+        fontelle_model::PathPoint {
+            at: PPQN * 2,
+            offset: 8,
+        },
+    ];
+    notes.insert(sliding);
+    // And a chord sliding apart under it, for the eye.
+    for (key, offset) in [(55u8, 5i8), (52, -3)] {
+        let mut n = note(PPQN * 4, PPQN * 3, key);
+        n.path = vec![fontelle_model::PathPoint { at: PPQN, offset }];
+        notes.insert(n);
+    }
+    let Some(shot) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    let at = |tick: Tick, key: f32| {
+        let x = tick_to_x(&shot.view, shot.layout.grid, tick) as u32;
+        let y = fontelle_ui::canvas::pitch_y(&shot.view, shot.layout.grid, 60, key - 60.0) as u32;
+        shot.at(x, y)
+    };
+    assert!(
+        near(at(PPQN / 2, 60.0), shot.theme.palette.note),
+        "the hold"
+    );
+    assert!(
+        near(at(PPQN + PPQN / 2, 64.0), shot.theme.palette.note),
+        "halfway up the slide"
+    );
+    assert!(near(at(PPQN * 3, 68.0), shot.theme.palette.note), "landed");
+    assert!(
+        !near(at(PPQN * 3, 60.0), shot.theme.palette.note),
+        "the row it left is empty"
+    );
 }
 
 #[test]

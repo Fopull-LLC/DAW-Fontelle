@@ -5821,6 +5821,25 @@ pub fn draw_piano_roll(
 
     // Notes.
     for (id, note) in chrome.notes.iter() {
+        // A note with a **path** is one ribbon through its points — flat
+        // where it holds, slanted where it slides — so a slide reads as the
+        // note going somewhere rather than as a second note
+        // (`docs/note-paths-plan.md` §4).
+        if note.has_path() {
+            if note.start + note.length < ticks.start || note.start > ticks.end {
+                continue;
+            }
+            let selected = chrome.selection.contains(&id);
+            let fill = if selected {
+                p.note_selected
+            } else if chrome.key_map.plays(note.key) {
+                p.note
+            } else {
+                p.note_silent
+            };
+            draw_note_path(scene, v, grid, note, fill, selected, p);
+            continue;
+        }
         let key = i32::from(note.key);
         if !keys.contains(&key) {
             continue;
@@ -9836,6 +9855,82 @@ fn fill_rect(scene: &mut Scene, r: Rect, color: Color) {
         None,
         &KRect::new(r.x as f64, r.y as f64, r.right() as f64, r.bottom() as f64),
     );
+}
+
+/// One note with a path, drawn as a single ribbon a row thick: along the
+/// top of its line from start to end, then back along the bottom. One
+/// outline rather than a shape per segment, so a see-through note colour
+/// does not show a seam at every point.
+///
+/// The handles — a dot at each point — are drawn on every path note, small,
+/// so where a slide begins and lands can be read at a glance; a selected
+/// note's are larger and ringed, since those are the ones a drag will catch.
+fn draw_note_path(
+    scene: &mut Scene,
+    v: &RollView,
+    grid: Rect,
+    note: &fontelle_model::Note,
+    fill: Color,
+    selected: bool,
+    p: &crate::theme::Palette,
+) {
+    let half = (v.key_height.round().max(1.0) - 1.0) / 2.0;
+    let line = crate::canvas::path_line(v, grid, note);
+    let mut ribbon = BezPath::new();
+    for (i, &(x, y)) in line.iter().enumerate() {
+        let top = Point::new(x as f64, (y - half) as f64);
+        if i == 0 {
+            ribbon.move_to(top);
+        } else {
+            ribbon.line_to(top);
+        }
+    }
+    for &(x, y) in line.iter().rev() {
+        ribbon.line_to(Point::new(x as f64, (y + half) as f64));
+    }
+    ribbon.close_path();
+
+    let clip = KRect::new(
+        grid.x as f64,
+        grid.y as f64,
+        grid.right() as f64,
+        grid.bottom() as f64,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &clip,
+    );
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        fill.to_peniko(),
+        None,
+        &ribbon,
+    );
+    let radius = if selected { 3.5 } else { 2.0 };
+    for (_, x, y) in crate::canvas::path_handles(v, grid, note) {
+        let dot = vello::kurbo::Circle::new((x as f64, y as f64), radius);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.text.to_peniko(),
+            None,
+            &dot,
+        );
+        if selected {
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                p.accent.to_peniko(),
+                None,
+                &dot,
+            );
+        }
+    }
+    scene.pop_layer();
 }
 
 fn rounded(r: Rect, radius: f32) -> RoundedRect {

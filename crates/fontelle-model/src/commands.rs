@@ -3106,8 +3106,12 @@ pub struct SetNotePath {
     home: NoteHome,
     id: NoteId,
     path: Vec<crate::PathPoint>,
-    /// The note's path before this ran. `None` until applied.
-    previous: Option<Vec<crate::PathPoint>>,
+    /// The note's new length, when the edit sets one: drawing a path moves
+    /// the note's end with the pointer.
+    #[serde(default)]
+    length: Option<Tick>,
+    /// The note's length and path before this ran. `None` until applied.
+    previous: Option<(Tick, Vec<crate::PathPoint>)>,
 }
 
 impl SetNotePath {
@@ -3116,8 +3120,15 @@ impl SetNotePath {
             home: home.into(),
             id,
             path,
+            length: None,
             previous: None,
         }
+    }
+
+    /// The note's length as well, set in the same edit.
+    pub fn with_length(mut self, length: Tick) -> Self {
+        self.length = Some(length);
+        self
     }
 }
 
@@ -3131,23 +3142,31 @@ impl Command for SetNotePath {
         let Some(note) = data.notes.get_mut(self.id) else {
             return Err(CommandError("that note is gone".into()));
         };
+        if self.length.is_some_and(|length| length < 1) {
+            return Err(CommandError("a note has a length".into()));
+        }
         // Time order is what every reader of a path assumes; a stable sort,
         // so two points at one tick — a step — keep the order they were
         // placed in.
         let mut path = self.path.clone();
         path.sort_by_key(|point| point.at);
-        let previous = std::mem::replace(&mut note.path, path);
+        let was = (note.length, std::mem::replace(&mut note.path, path));
+        if let Some(length) = self.length {
+            note.length = length;
+        }
         // Only the first apply records what was there: a redo re-runs this
         // from a document the inverse has already moved back.
         if self.previous.is_none() {
-            self.previous = Some(previous);
+            self.previous = Some(was);
         }
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
-            Some(previous) => Box::new(SetNotePath::new(self.home, self.id, previous.clone())),
+            Some((length, path)) => {
+                Box::new(SetNotePath::new(self.home, self.id, path.clone()).with_length(*length))
+            }
             None => Box::new(NotApplied::new("shaping a note")),
         }
     }
@@ -3156,8 +3175,20 @@ impl Command for SetNotePath {
         "Shape a note"
     }
 
-    fn merge_with(&mut self, _next: &dyn Command) -> bool {
-        false
+    /// Every step of one drag on one note folds into the first: the new
+    /// shape, the old `previous`.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetNotePath>() else {
+            return false;
+        };
+        if next.home != self.home || next.id != self.id {
+            return false;
+        }
+        self.path = next.path.clone();
+        if next.length.is_some() {
+            self.length = next.length;
+        }
+        true
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

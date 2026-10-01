@@ -118,6 +118,44 @@ impl Note {
         vertices.clone().zip(vertices.skip(1))
     }
 
+    /// This note as bars a row each, `(start, length, key)` from the note's
+    /// own start: a hold is one bar, a slide a staircase of short ones
+    /// through every key between — what a picture with no slant in it (the
+    /// arrangement's preview inside a clip) draws a path as.
+    pub fn preview_pieces(&self) -> Vec<(Tick, Tick, u8)> {
+        let key_at = |offset: i16| (i16::from(self.key) + offset).clamp(0, 127) as u8;
+        let mut pieces = Vec::new();
+        for ((from_at, from), (to_at, to)) in self.segments() {
+            if from_at >= self.length {
+                break;
+            }
+            let end = to_at.min(self.length);
+            if from == to {
+                if end > from_at {
+                    pieces.push((from_at, end - from_at, key_at(i16::from(from))));
+                }
+                continue;
+            }
+            // One step per key, both ends included, sharing the slide's time
+            // evenly: a fifth up is eight short bars.
+            let steps = (i16::from(to) - i16::from(from)).abs() + 1;
+            let direction = (i16::from(to) - i16::from(from)).signum();
+            let span = to_at - from_at;
+            for step in 0..steps {
+                let start = from_at + span * Tick::from(step) / Tick::from(steps);
+                let stop = (from_at + span * Tick::from(step + 1) / Tick::from(steps)).min(end);
+                if stop > start {
+                    pieces.push((
+                        start,
+                        stop - start,
+                        key_at(i16::from(from) + direction * step),
+                    ));
+                }
+            }
+        }
+        pieces
+    }
+
     /// The second half of this note cut `at` ticks in, as its own path: it
     /// starts on the key the pitch had reached there, rounded, and goes on
     /// to the same places — the points after the cut, measured again from

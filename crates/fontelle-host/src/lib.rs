@@ -67,6 +67,7 @@ mod lv2_ui;
 #[cfg(not(target_os = "linux"))]
 #[path = "lv2_ui_stub.rs"]
 mod lv2_ui;
+mod mpe;
 mod own_presets;
 mod param;
 mod plugin;
@@ -78,6 +79,7 @@ pub use atom::{AtomPipe, AtomPipes, MAX_ATOM_BYTES, trace as atom_trace};
 pub use bridge::{BridgeFailure, Bridges, bridge_search_paths};
 pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
 pub use lv2_state::{Lv2Property, Lv2State};
+pub use mpe::MpeZone;
 pub use own_presets::{OwnPreset, OwnPresetSource, PresetRoots, list_own_presets};
 pub use param::{HostedParam, ParamValues};
 pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHost};

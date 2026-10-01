@@ -310,6 +310,7 @@ fn the_arrow_keys_step_each_note_to_its_next_row_in_the_scale() {
         vec![RollEdit::SetKeys {
             ids: vec![e, g],
             keys: vec![65, 69],
+            paths: Vec::new(),
         }]
     );
     // Down: E to D, G to F.
@@ -318,6 +319,7 @@ fn the_arrow_keys_step_each_note_to_its_next_row_in_the_scale() {
         vec![RollEdit::SetKeys {
             ids: vec![e, g],
             keys: vec![62, 65],
+            paths: Vec::new(),
         }]
     );
     // An octave is an octave, in any scale.
@@ -331,4 +333,80 @@ fn the_arrow_keys_step_each_note_to_its_next_row_in_the_scale() {
         roll.nudge(&notes, 0, 1).as_slice(),
         [RollEdit::Move { key_delta: 1, .. }]
     ));
+}
+
+/// A sliding note is fitted **at every point it reaches**, not only where it
+/// starts: a slide from C that lands on F♯ in C major lands on F. The points
+/// are measured from the note's key, so a note whose key moves keeps its
+/// shape relative to it and only the points that land outside move
+/// (`docs/note-paths-plan.md` §3).
+#[test]
+fn fitting_a_sliding_note_fits_each_point_it_lands_on() {
+    use fontelle_model::PathPoint;
+    let mut notes: Arena<NoteId, Note> = Arena::default();
+    let mut sliding = note(0, 60); // C, in
+    sliding.path = vec![
+        PathPoint {
+            at: PPQN / 4,
+            offset: 6,
+        }, // F#, out
+        PathPoint {
+            at: PPQN / 2,
+            offset: 6,
+        },
+        PathPoint {
+            at: PPQN,
+            offset: 1,
+        }, // C#, out
+    ];
+    let id = notes.insert(sliding);
+    let mut inside = note(PPQN * 2, 60);
+    inside.path = vec![PathPoint {
+        at: PPQN / 2,
+        offset: 7,
+    }]; // G, in
+    let fine = notes.insert(inside);
+
+    let fitted = fontelle_ui::canvas::scale_fit_paths(&notes, &[], c_major().mask);
+    assert_eq!(
+        fitted,
+        vec![(
+            id,
+            vec![
+                PathPoint {
+                    at: PPQN / 4,
+                    offset: 5
+                },
+                PathPoint {
+                    at: PPQN / 2,
+                    offset: 5
+                },
+                PathPoint {
+                    at: PPQN,
+                    offset: 0
+                },
+            ]
+        )],
+        "the slide already in the scale is left alone: {fine:?}"
+    );
+
+    // Measured from the key the note fits to: on C# (out), sliding up to E
+    // (in) — the key goes to C, so the landing is four above it.
+    let mut notes: Arena<NoteId, Note> = Arena::default();
+    let mut off_key = note(0, 61);
+    off_key.path = vec![PathPoint {
+        at: PPQN,
+        offset: 3,
+    }];
+    let id = notes.insert(off_key);
+    assert_eq!(
+        fontelle_ui::canvas::scale_fit_paths(&notes, &[], c_major().mask),
+        vec![(
+            id,
+            vec![PathPoint {
+                at: PPQN,
+                offset: 4
+            }]
+        )]
+    );
 }

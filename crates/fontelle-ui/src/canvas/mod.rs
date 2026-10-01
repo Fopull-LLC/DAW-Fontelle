@@ -202,14 +202,15 @@ pub use notepad::{
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,
     LaneMenu, LaneProperty, MAX_LANE_FRACTION, MIN_LANE_HEIGHT, Modifiers, MouseButton,
-    NAMED_KEYBOARD_WIDTH, NotePart, PianoRoll, RollControl, RollEdit, RollHit, RollLayout,
-    RollView, SNAP_DIVISIONS, SnapDivision, Tool, ToolbarLayout, clamp_to_grid, edge_scroll_rate,
-    hit_test, key_row, key_to_y, keyboard_width, keyboard_width_for, lane_baseline_y, lane_caption,
-    lane_height_at, lane_menu_hit, lane_menu_layout, lane_value_of_y, lane_y_of_value,
-    legato_edits, note_at_tick, note_marks, roll_layout, roll_layout_with_keys, roll_past_end,
-    slice_cuts, snap_caption, snap_tick, snap_unit, subdivision_unit, tick_to_x, toolbar_hit,
-    toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
-    x_to_tick, y_to_key, zoom_x, zoom_y,
+    NAMED_KEYBOARD_WIDTH, NotePart, PATH_HANDLE_PX, PianoRoll, RollControl, RollEdit, RollHit,
+    RollLayout, RollView, SNAP_DIVISIONS, SnapDivision, Tool, ToolbarLayout, clamp_to_grid,
+    edge_scroll_rate, hit_test, key_row, key_to_y, keyboard_width, keyboard_width_for,
+    lane_baseline_y, lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout,
+    lane_value_of_y, lane_y_of_value, legato_edits, note_at_tick, note_marks, path_handles,
+    path_line, pitch_y, roll_layout, roll_layout_with_keys, roll_past_end, slice_cuts,
+    snap_caption, snap_tick, snap_unit, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout,
+    tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key,
+    zoom_x, zoom_y,
 };
 pub use prefabs::{
     PrefabHit, PrefabLayout, PrefabRow, prefab_hit, prefab_layout,
@@ -222,7 +223,7 @@ pub use rack::{
 };
 pub use roll_scale::{
     RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
-    scale_fit, scale_menu,
+    scale_fit, scale_fit_paths, scale_menu,
 };
 pub use share::{
     COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, NOBODY_YET,

@@ -15309,14 +15309,30 @@ impl WindowApp {
             return;
         };
         let beats_per_bar = doc.beats_per_bar();
-        let edits = self.roll.press(
-            button,
-            x,
-            y,
-            self.roll_layout.grid,
-            doc.notes(),
-            beats_per_bar,
+        // **A double-click on a note** puts a point of its path there, or
+        // takes out the point it lands on — and only on a note, so a
+        // double-click on bare grid draws as it always did.
+        let doubled = button == MouseButton::Left
+            && self
+                .double_click
+                .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        let on_note = matches!(
+            crate::canvas::hit_test(&self.roll.view, self.roll_layout.grid, doc.notes(), x, y),
+            crate::canvas::RollHit::Note(..)
         );
+        let edits = if doubled && on_note && matches!(self.roll.tool, Tool::Draw | Tool::Select) {
+            self.roll
+                .double_press(x, y, self.roll_layout.grid, doc.notes(), beats_per_bar)
+        } else {
+            self.roll.press(
+                button,
+                x,
+                y,
+                self.roll_layout.grid,
+                doc.notes(),
+                beats_per_bar,
+            )
+        };
         self.apply_roll_edits(edits);
         // A press asks for no sound of its own any more — it only *offers*
         // one, and `release_over` decides. See `PianoRoll::take_audition`: a
@@ -20399,6 +20415,31 @@ impl WindowApp {
             _ => {}
         }
 
+        // **While a note is being drawn**, S places a point of its path and
+        // Backspace takes one back (`docs/note-paths-plan.md` §3) — their own
+        // context, asked first, so the same keys keep their studio meanings
+        // the rest of the time. A held key's repeats are not more points.
+        if self.roll.takes_path_points()
+            && let Some(action) = self.action_of(event, crate::canvas::Context::Drawing)
+            && matches!(
+                action,
+                crate::canvas::Action::PathPoint | crate::canvas::Action::PathPointBack
+            )
+        {
+            if !event.repeat
+                && let Some(doc) = &self.options.document
+            {
+                let edits = if action == crate::canvas::Action::PathPoint {
+                    self.roll.path_point(doc.notes())
+                } else {
+                    self.roll.path_point_back(doc.notes())
+                };
+                self.apply_roll_edits(edits);
+                self.tree.invalidate(PANEL);
+            }
+            return;
+        }
+
         // Everything else is a binding, and the keymap says which — the
         // studio's own context, with the global ones already answered above.
         let Some(action) = self.action_of(event, crate::canvas::Context::Studio) else {
@@ -20534,7 +20575,10 @@ impl WindowApp {
             | Action::ExportWav
             | Action::ExportMidi
             | Action::Help
-            | Action::RemoveBand => {}
+            | Action::RemoveBand
+            // Heard only while a note is being drawn, before the studio asks.
+            | Action::PathPoint
+            | Action::PathPointBack => {}
         }
     }
 
@@ -21000,17 +21044,22 @@ impl WindowApp {
     /// that scale"*. Not the selection: the last note drawn is always left
     /// selected, and on the first try that fitted one note of three.
     fn choose_song_key(&mut self, key: Option<fontelle_types::KeyScale>) {
-        let fitted = match key.as_ref().and_then(crate::canvas::RollScale::of) {
+        let (fitted, paths) = match key.as_ref().and_then(crate::canvas::RollScale::of) {
             Some(scale) if !self.key_map.is_named() => self
                 .options
                 .document
                 .as_ref()
-                .map(|doc| crate::canvas::scale_fit(doc.notes(), &[], scale.mask))
+                .map(|doc| {
+                    (
+                        crate::canvas::scale_fit(doc.notes(), &[], scale.mask),
+                        crate::canvas::scale_fit_paths(doc.notes(), &[], scale.mask),
+                    )
+                })
                 .unwrap_or_default(),
-            _ => Vec::new(),
+            _ => (Vec::new(), Vec::new()),
         };
         if let Some(doc) = &mut self.options.document {
-            doc.set_song_key(key, fitted);
+            doc.set_song_key(key, fitted, paths);
         }
         self.tree.invalidate(PANEL);
     }
@@ -21025,11 +21074,12 @@ impl WindowApp {
             return;
         };
         let fitted = crate::canvas::scale_fit(doc.notes(), self.roll.selection(), scale.mask);
-        if fitted.is_empty() {
+        let paths = crate::canvas::scale_fit_paths(doc.notes(), self.roll.selection(), scale.mask);
+        if fitted.is_empty() && paths.is_empty() {
             return;
         }
         let (ids, keys) = fitted.into_iter().unzip();
-        self.apply_roll_edits(vec![crate::canvas::RollEdit::SetKeys { ids, keys }]);
+        self.apply_roll_edits(vec![crate::canvas::RollEdit::SetKeys { ids, keys, paths }]);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
         }

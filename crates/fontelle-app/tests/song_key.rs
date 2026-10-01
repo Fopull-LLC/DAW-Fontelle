@@ -64,7 +64,7 @@ fn choosing_a_key_fits_the_notes_and_one_undo_takes_both_back() {
     let fitted = scale_fit(session.notes(), &[], mask);
     let before = session.revision();
 
-    session.set_song_key(Some(key.clone()), fitted);
+    session.set_song_key(Some(key.clone()), fitted, Vec::new());
     assert_eq!(session.song_key(), Some(key));
     assert_eq!(keys(&session, &ids), vec![60, 60, 65]);
     assert!(session.revision() > before, "the window hears about it");
@@ -77,8 +77,8 @@ fn choosing_a_key_fits_the_notes_and_one_undo_takes_both_back() {
 #[test]
 fn clearing_the_key_leaves_the_notes_where_they_are() {
     let (mut session, ids) = a_session_with_notes();
-    session.set_song_key(Some(KeyScale::new(0, "major")), Vec::new());
-    session.set_song_key(None, Vec::new());
+    session.set_song_key(Some(KeyScale::new(0, "major")), Vec::new(), Vec::new());
+    session.set_song_key(None, Vec::new(), Vec::new());
     assert_eq!(session.song_key(), None);
     assert_eq!(keys(&session, &ids), vec![60, 61, 66]);
     session.undo();
@@ -91,9 +91,66 @@ fn fitting_again_is_one_edit_of_keys_each_its_own() {
     session.edit(RollEdit::SetKeys {
         ids: vec![ids[1], ids[2]],
         keys: vec![62, 67],
+        paths: Vec::new(),
     });
     session.end_gesture();
     assert_eq!(keys(&session, &ids), vec![60, 62, 67]);
     session.undo();
     assert_eq!(keys(&session, &ids), vec![60, 61, 66]);
+}
+
+/// A sliding note is fitted at each point it lands on, and the key, the
+/// keys and the paths are one undo (`docs/note-paths-plan.md` §3).
+#[test]
+fn choosing_a_key_fits_where_the_slides_land_in_the_same_undo() {
+    use fontelle_model::PathPoint;
+    let mut session = common::a_session_for(common::a_clip_project(1));
+    let mut sliding = note(0, 60);
+    sliding.path = vec![PathPoint {
+        at: PPQN / 2,
+        offset: 6,
+    }]; // to F#
+    let id = session.edit(RollEdit::Add { note: sliding })[0];
+    session.end_gesture();
+
+    let key = KeyScale::new(0, "major");
+    let mask = RollScale::of(&key).unwrap().mask;
+    let fitted = scale_fit(session.notes(), &[], mask);
+    let paths = fontelle_ui::canvas::scale_fit_paths(session.notes(), &[], mask);
+    session.set_song_key(Some(key), fitted, paths);
+    assert_eq!(
+        session.notes()[id].path,
+        vec![PathPoint {
+            at: PPQN / 2,
+            offset: 5
+        }],
+        "lands on F"
+    );
+
+    session.undo();
+    assert_eq!(session.song_key(), None);
+    assert_eq!(
+        session.notes()[id].path,
+        vec![PathPoint {
+            at: PPQN / 2,
+            offset: 6
+        }]
+    );
+
+    // And fitting again from the scale chip is one edit too.
+    session.edit(RollEdit::SetKeys {
+        ids: Vec::new(),
+        keys: Vec::new(),
+        paths: vec![(
+            id,
+            vec![PathPoint {
+                at: PPQN / 2,
+                offset: 7,
+            }],
+        )],
+    });
+    session.end_gesture();
+    assert_eq!(session.notes()[id].path[0].offset, 7);
+    session.undo();
+    assert_eq!(session.notes()[id].path[0].offset, 6);
 }

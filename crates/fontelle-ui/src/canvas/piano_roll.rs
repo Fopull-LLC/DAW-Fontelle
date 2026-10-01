@@ -372,6 +372,61 @@ pub fn key_to_y(view: &RollView, grid: Rect, key: u8) -> f32 {
     grid.y + ((i32::from(view.top_key) - i32::from(key)) as f32 + view.key_offset) * view.key_height
 }
 
+/// The middle of the line a note at `key` bent by `pitch` semitones sits
+/// on — a fraction of a row when the pitch is partway along a slide.
+///
+/// What a path's ribbon is drawn along and hit-tested against, so the two
+/// cannot disagree about where a slide is.
+pub fn pitch_y(view: &RollView, grid: Rect, key: u8, pitch: f32) -> f32 {
+    key_to_y(view, grid, key) + view.key_height / 2.0 - pitch * view.key_height
+}
+
+/// Where on screen each point of `note`'s path is, `(index, x, y)` — the
+/// handles a slide is reshaped by. Points past the note's end are not
+/// played and not shown, so they are not here.
+pub fn path_handles<'a>(
+    view: &RollView,
+    grid: Rect,
+    note: &'a Note,
+) -> impl Iterator<Item = (usize, f32, f32)> + 'a {
+    let (view, grid) = (*view, grid);
+    note.path
+        .iter()
+        .enumerate()
+        .filter(|(_, point)| point.at <= note.length)
+        .map(move |(index, point)| {
+            (
+                index,
+                tick_to_x(&view, grid, note.start + point.at),
+                pitch_y(&view, grid, note.key, f32::from(point.offset)),
+            )
+        })
+}
+
+/// The line a note with a path sits on, on screen: its start, each point it
+/// reaches before its end, and its end — where a point past the end has cut
+/// a slide partway. What the ribbon is drawn along, what the cut tool
+/// crosses and what a selection box catches, so the three agree.
+pub fn path_line(view: &RollView, grid: Rect, note: &Note) -> Vec<(f32, f32)> {
+    let mut line = vec![(0, 0.0)];
+    for point in note.path.iter().filter(|point| point.at < note.length) {
+        line.push((point.at, f32::from(point.offset)));
+    }
+    line.push((note.length, note.pitch_at(note.length)));
+    line.into_iter()
+        .map(|(at, pitch)| {
+            (
+                tick_to_x(view, grid, note.start + at),
+                pitch_y(view, grid, note.key, pitch),
+            )
+        })
+        .collect()
+}
+
+/// How near a point of a path the pointer has to be to catch it, in screen
+/// points either way. The same reach as a note's edge handle.
+pub const PATH_HANDLE_PX: f32 = 6.0;
+
 /// The rectangle one key's row occupies, **snapped to whole pixels**.
 ///
 /// This is what the keyboard, the grid's rows and the notes in them are all
@@ -761,6 +816,29 @@ pub fn snap_tick(tick: Tick, snap: SnapDivision, beats_per_bar: u32) -> Tick {
     ((tick + unit / 2) / unit * unit).max(0)
 }
 
+/// The length and path that the points placed so far and the pointer's
+/// live end make: the note ends at the live end, and a hold to the end is
+/// the note running on rather than a point — so a trailing point level with
+/// the one before it is dropped, and S-then-let-go leaves a plain note.
+fn drawn_shape(
+    fixed: &[fontelle_model::PathPoint],
+    live: fontelle_model::PathPoint,
+) -> (Tick, Vec<fontelle_model::PathPoint>) {
+    let mut path = fixed.to_vec();
+    if path.last() != Some(&live) {
+        path.push(live);
+    }
+    let length = path.last().map_or(1, |point| point.at).max(1);
+    while let Some(last) = path.last() {
+        let before = path.len().checked_sub(2).map_or(0, |i| path[i].offset);
+        if last.offset != before {
+            break;
+        }
+        path.pop();
+    }
+    (length, path)
+}
+
 // ---------------------------------------------------------- hit-testing ---
 
 /// Which bit of a note is under the pointer.
@@ -769,6 +847,9 @@ pub enum NotePart {
     Body,
     LeftEdge,
     RightEdge,
+    /// One of the points of the note's [path](fontelle_model::Note::path),
+    /// by its index there — the handle a slide is reshaped by.
+    Point(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -800,12 +881,30 @@ pub fn hit_test(
     // top is the one that was clicked.
     let mut found = None;
     for (id, note) in notes.iter() {
-        if note.key != key {
+        // A note with a path is where its line is, not on the row it started
+        // on: after a slide up a fifth, the row it left is empty grid. Its
+        // points come first, so a handle sitting on the note's end is the
+        // handle rather than the resize edge.
+        if note.has_path()
+            && let Some((index, _, _)) = path_handles(view, grid, note).find(|&(_, hx, hy)| {
+                (x - hx).abs() <= PATH_HANDLE_PX && (y - hy).abs() <= PATH_HANDLE_PX
+            })
+        {
+            found = Some(RollHit::Note(id, NotePart::Point(index)));
             continue;
         }
         let left = tick_to_x(view, grid, note.start);
         let right = tick_to_x(view, grid, note.start + note.length);
         if x < left || x >= right {
+            continue;
+        }
+        if note.has_path() {
+            let along = x_to_tick(view, grid, x) - note.start;
+            let line = pitch_y(view, grid, note.key, note.pitch_at(along));
+            if (y - line).abs() > view.key_height / 2.0 {
+                continue;
+            }
+        } else if note.key != key {
             continue;
         }
         // A note narrower than two handles has none: dragging a note is more
@@ -1115,6 +1214,15 @@ pub enum RollEdit {
     Add {
         note: Note,
     },
+    /// One note's length and path, together: what drawing a path with S and
+    /// dragging one of its points both change. Together because a path that
+    /// ends on the note's end moves the end with it, and two edits would
+    /// have one undo entry stand between them.
+    Shape {
+        id: NoteId,
+        length: Tick,
+        path: Vec<fontelle_model::PathPoint>,
+    },
     /// Marks notes as slide notes, or unmarks them.
     SetSlide {
         ids: Vec<NoteId>,
@@ -1157,6 +1265,9 @@ pub enum RollEdit {
     SetKeys {
         ids: Vec<NoteId>,
         keys: Vec<u8>,
+        /// And each sliding note's path, fitted where its points land
+        /// (`canvas::scale_fit_paths`) — in the same edit, so one undo.
+        paths: Vec<(NoteId, Vec<fontelle_model::PathPoint>)>,
     },
     /// One value for every named note — the property lane's whole vocabulary.
     ///
@@ -1482,7 +1593,9 @@ pub struct ToolbarLayout {
 /// in a wide button is a glyph with a gap either side of it. The ones that are
 /// a *read-out* keep their text and keep the room to say it — which division
 /// is which is the same one the icons themselves are chosen by.
-const TOOLBAR: [(RollControl, f32); 18] = [
+/// No FL slide chip: a note slides by its own path now (S while drawing,
+/// `docs/note-paths-plan.md`), and `A` still marks an old-style slide.
+const TOOLBAR: [(RollControl, f32); 17] = [
     (RollControl::Tool(Tool::Draw), 26.0),
     (RollControl::Tool(Tool::Paint), 26.0),
     (RollControl::Tool(Tool::Select), 26.0),
@@ -1494,7 +1607,6 @@ const TOOLBAR: [(RollControl, f32); 18] = [
     (RollControl::ZoomOutY, 26.0),
     (RollControl::ZoomInY, 26.0),
     (RollControl::Velocity, 26.0),
-    (RollControl::Slide, 26.0),
     (RollControl::Lane, 62.0),
     (RollControl::Ghost, 40.0),
     (RollControl::Keys, 40.0),
@@ -1705,6 +1817,31 @@ enum Gesture {
     /// again. That is what makes "held still, asks for nothing" true by
     /// construction rather than by a `last` field somebody has to maintain.
     Erasing,
+    /// Drawing a note's **path** — S was pressed while the note was being
+    /// drawn (`docs/note-paths-plan.md` §3). `fixed` is every point placed
+    /// so far; `live` is where the pointer is, which is where the note
+    /// ends.
+    Pathing {
+        id: NoteId,
+        /// The note's start and key, measured when the path began: the
+        /// gesture does not move the note, and reading them back from the
+        /// document it is changing is the oscillation `Moving` warns of.
+        start: Tick,
+        key: u8,
+        fixed: Vec<fontelle_model::PathPoint>,
+        live: fontelle_model::PathPoint,
+        /// What was last asked for, so a pointer standing still asks for
+        /// nothing new.
+        applied: (Tick, Vec<fontelle_model::PathPoint>),
+    },
+    /// Dragging one point of a path. `base` is the note as it was when the
+    /// drag began.
+    MovingPoint {
+        id: NoteId,
+        index: usize,
+        base: Note,
+        applied: (Tick, Vec<fontelle_model::PathPoint>),
+    },
     /// Drawing the cut tool's line.
     ///
     /// Kept in **screen** points rather than in ticks and keys: it is a
@@ -1805,6 +1942,16 @@ pub struct PianoRoll {
     /// The phrase Ctrl+C put there, normalised so its earliest note starts at
     /// tick zero — which is what lets a paste land anywhere.
     clipboard: Vec<Note>,
+    /// The note this press drew, while its drag lasts: the one note the
+    /// path-point key may give a path to mid-move (see
+    /// [`takes_path_points`](Self::takes_path_points)).
+    drawn: Option<NoteId>,
+    /// Where the pointer last was over the grid, unsnapped — where S puts a
+    /// point, since a key press carries no position of its own.
+    pointer: (Tick, u8),
+    /// The bar the last press or drag was measured in, for the same reason:
+    /// a bar snap needs it and a key press does not bring it.
+    beats_per_bar: u32,
 }
 
 /// How far the pointer may wander between press and release and still have
@@ -1835,6 +1982,9 @@ impl PianoRoll {
             click: None,
             pressed_at: (0.0, 0.0),
             clipboard: Vec::new(),
+            drawn: None,
+            pointer: (0, 0),
+            beats_per_bar: 4,
         }
     }
 
@@ -2040,6 +2190,7 @@ impl PianoRoll {
             return;
         };
         self.selection = vec![id];
+        self.drawn = Some(id);
         // Everything either gesture needs comes out of the pending add rather
         // than out of the document. The host has applied the edit by now, so
         // it *could* be looked up — but reading a gesture's limits back out of
@@ -2066,6 +2217,203 @@ impl PianoRoll {
                 };
             }
         }
+    }
+
+    /// Whether a press of the path-point key would do something now: a note
+    /// is being drawn (or a lone note's end dragged), or a path is being
+    /// drawn.
+    ///
+    /// Not while an existing note is being *moved*: a point there would be
+    /// a surprise, and its end is where a path is drawn on.
+    pub fn takes_path_points(&self) -> bool {
+        match &self.gesture {
+            Gesture::Pathing { .. } => true,
+            Gesture::Resizing { .. } => self.selection.len() == 1,
+            Gesture::Moving { .. } => {
+                self.drawn.is_some() && self.selection.as_slice() == [self.drawn.unwrap()]
+            }
+            _ => false,
+        }
+    }
+
+    /// **S** while drawing a note: fixes a point of its path where the
+    /// pointer is (`docs/note-paths-plan.md` §3).
+    ///
+    /// The first press holds the note flat to its end — or to the pointer,
+    /// when that is further on — and from there the pointer leads: moved
+    /// along the row it holds, moved to another row it slides. Each press
+    /// after fixes the point the pointer is at.
+    pub fn path_point(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+        if !self.takes_path_points() {
+            return Vec::new();
+        }
+        if let Gesture::Pathing {
+            id,
+            start,
+            key,
+            mut fixed,
+            live,
+            applied,
+        } = self.gesture.clone()
+        {
+            if fixed.last() != Some(&live) {
+                fixed.push(live);
+            }
+            self.gesture = Gesture::Pathing {
+                id,
+                start,
+                key,
+                fixed,
+                live,
+                applied,
+            };
+            return Vec::new();
+        }
+        let Some(&id) = self.selection.first() else {
+            return Vec::new();
+        };
+        let Some(note) = notes.get(id) else {
+            return Vec::new();
+        };
+        let snapped = snap_tick(self.pointer.0, self.live_snap(), self.beats_per_bar) - note.start;
+        let end = snapped.max(note.length);
+        // A note that already has a path is drawn *on*: its points up to its
+        // end stay, and the end becomes the next one.
+        let mut fixed: Vec<fontelle_model::PathPoint> = note
+            .path
+            .iter()
+            .copied()
+            .filter(|point| point.at < note.length)
+            .collect();
+        let held = note.pitch_at(note.length).round() as i8;
+        let live = fontelle_model::PathPoint {
+            at: end,
+            offset: held,
+        };
+        fixed.push(live);
+        let applied = (note.length, note.path.clone());
+        self.path_step(id, note.start, note.key, fixed, live, applied)
+    }
+
+    /// **Backspace** while drawing a path: takes the last point back, and
+    /// the line runs from the one before it to the pointer again.
+    pub fn path_point_back(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+        let _ = notes;
+        let Gesture::Pathing {
+            id,
+            start,
+            key,
+            mut fixed,
+            live,
+            applied,
+        } = self.gesture.clone()
+        else {
+            return Vec::new();
+        };
+        if fixed.pop().is_none() {
+            return Vec::new();
+        }
+        self.path_step(id, start, key, fixed, live, applied)
+    }
+
+    /// The second press of a double-click on the grid: on a point of a
+    /// path, takes it out; on a note anywhere else, puts a point there — a
+    /// flat one, on the line, which a drag then makes a slide.
+    pub fn double_press(
+        &mut self,
+        x: f32,
+        y: f32,
+        grid: Rect,
+        notes: &Arena<NoteId, Note>,
+        beats_per_bar: u32,
+    ) -> Vec<RollEdit> {
+        // The first press of the pair began a gesture; a double-click is its
+        // own thing, and a drag after it must not carry on with that one.
+        self.gesture = Gesture::None;
+        self.click = None;
+        let RollHit::Note(id, part) = hit_test(&self.view, grid, notes, x, y) else {
+            return Vec::new();
+        };
+        let Some(note) = notes.get(id) else {
+            return Vec::new();
+        };
+        self.selection = vec![id];
+        let mut path = note.path.clone();
+        match part {
+            NotePart::Point(index) => {
+                path.remove(index);
+            }
+            _ => {
+                let tick = x_to_tick(&self.view, grid, x);
+                let at = snap_tick(tick, self.live_snap(), beats_per_bar) - note.start;
+                if at <= 0 || at >= note.length || path.iter().any(|p| p.at == at) {
+                    return Vec::new();
+                }
+                let offset = note.pitch_at(at).round() as i8;
+                let index = path.partition_point(|p| p.at < at);
+                path.insert(index, fontelle_model::PathPoint { at, offset });
+            }
+        }
+        vec![RollEdit::Shape {
+            id,
+            length: note.length,
+            path,
+        }]
+    }
+
+    /// Where the pointer puts the live end of a path: snapped in time, never
+    /// before the last point placed, and on the row it is over (fitted to
+    /// the scale like any drawn note).
+    fn live_point(
+        &self,
+        start: Tick,
+        key: u8,
+        fixed: &[fontelle_model::PathPoint],
+        beats_per_bar: u32,
+    ) -> fontelle_model::PathPoint {
+        let earliest = fixed.last().map_or(1, |point| point.at);
+        let at = (snap_tick(self.pointer.0, self.live_snap(), beats_per_bar) - start).max(earliest);
+        fontelle_model::PathPoint {
+            at,
+            offset: self.offset_of(self.pointer.1, key),
+        }
+    }
+
+    /// How far the row `row` is from `key`, fitted to the scale.
+    fn offset_of(&self, row: u8, key: u8) -> i8 {
+        (i16::from(self.scaled_key(row)) - i16::from(key)).clamp(-128, 127) as i8
+    }
+
+    /// One step of [`Gesture::Pathing`]: the shape `fixed` and `live` make,
+    /// asked for if it is not what was last asked for.
+    fn path_step(
+        &mut self,
+        id: NoteId,
+        start: Tick,
+        key: u8,
+        fixed: Vec<fontelle_model::PathPoint>,
+        live: fontelle_model::PathPoint,
+        applied: (Tick, Vec<fontelle_model::PathPoint>),
+    ) -> Vec<RollEdit> {
+        let shape = drawn_shape(&fixed, live);
+        let edits = if shape == applied {
+            Vec::new()
+        } else {
+            vec![RollEdit::Shape {
+                id,
+                length: shape.0,
+                path: shape.1.clone(),
+            }]
+        };
+        self.gesture = Gesture::Pathing {
+            id,
+            start,
+            key,
+            fixed,
+            live,
+            applied: shape,
+        };
+        edits
     }
 
     /// The ids of notes the host created for a [`RollEdit::Insert`], so a
@@ -2098,6 +2446,12 @@ impl PianoRoll {
         // existing note offers one.
         self.click = None;
         self.pressed_at = (x, y);
+        self.drawn = None;
+        self.pointer = (
+            x_to_tick(&self.view, grid, x),
+            y_to_key(&self.view, grid, y),
+        );
+        self.beats_per_bar = beats_per_bar;
 
         if button == MouseButton::Right || self.tool == Tool::Delete {
             self.gesture = Gesture::Erasing;
@@ -2138,6 +2492,15 @@ impl PianoRoll {
                     y_to_key(&self.view, grid, y),
                 );
                 self.gesture = match part {
+                    NotePart::Point(index) => match notes.get(id) {
+                        Some(note) => Gesture::MovingPoint {
+                            id,
+                            index,
+                            base: note.clone(),
+                            applied: (note.length, note.path.clone()),
+                        },
+                        None => Gesture::None,
+                    },
                     NotePart::RightEdge => Gesture::Resizing {
                         applied_tick: 0,
                         shortest: self.shortest_selected(notes),
@@ -2229,8 +2592,62 @@ impl PianoRoll {
         let (x, y) = clamp_to_grid(grid, x, y);
         let tick = x_to_tick(&self.view, grid, x);
         let key = y_to_key(&self.view, grid, y);
+        self.pointer = (tick, key);
+        self.beats_per_bar = beats_per_bar;
 
         match self.gesture.clone() {
+            Gesture::Pathing {
+                id,
+                start,
+                key: note_key,
+                fixed,
+                applied,
+                ..
+            } => {
+                let live = self.live_point(start, note_key, &fixed, beats_per_bar);
+                self.path_step(id, start, note_key, fixed, live, applied)
+            }
+
+            Gesture::MovingPoint {
+                id,
+                index,
+                base,
+                applied,
+            } => {
+                let Some(point) = base.path.get(index) else {
+                    return Vec::new();
+                };
+                // Between its neighbours in time, never past them: the
+                // points are in time order and a drag must not reorder them.
+                let earliest = index
+                    .checked_sub(1)
+                    .and_then(|i| base.path.get(i))
+                    .map_or(0, |p| p.at);
+                let latest = base.path.get(index + 1).map_or(Tick::MAX, |p| p.at);
+                let snapped = snap_tick(tick, self.live_snap(), beats_per_bar) - base.start;
+                let at = snapped.clamp(earliest, latest);
+                let offset = self.offset_of(key, base.key);
+                let mut path = base.path.clone();
+                path[index] = fontelle_model::PathPoint { at, offset };
+                // A point on the note's end is the end: dragging it on
+                // carries the note's length with it.
+                let length = if point.at >= base.length {
+                    at.max(1)
+                } else {
+                    base.length
+                };
+                if (length, &path) == (applied.0, &applied.1) {
+                    return Vec::new();
+                }
+                self.gesture = Gesture::MovingPoint {
+                    id,
+                    index,
+                    base,
+                    applied: (length, path.clone()),
+                };
+                vec![RollEdit::Shape { id, length, path }]
+            }
+
             Gesture::None
             | Gesture::PendingAdd { .. }
             | Gesture::Lane { .. }
@@ -2359,6 +2776,7 @@ impl PianoRoll {
     /// event, which is what makes one drag one undo entry.
     pub fn release(&mut self) {
         self.gesture = Gesture::None;
+        self.drawn = None;
         // No `release_over`, so nothing can vouch for where the button came
         // up. An unclaimed offer is dropped rather than sounded.
         self.click = None;
@@ -2393,6 +2811,7 @@ impl PianoRoll {
             _ => {}
         }
         self.gesture = Gesture::None;
+        self.drawn = None;
         // The click, if it survived the drag: this is the *only* place the
         // roll ever asks for a sound. See [`take_audition`](Self::take_audition).
         if let Some(click) = self.click.take() {
@@ -2659,7 +3078,11 @@ impl PianoRoll {
             if ids.is_empty() {
                 return Vec::new();
             }
-            return vec![RollEdit::SetKeys { ids, keys }];
+            return vec![RollEdit::SetKeys {
+                ids,
+                keys,
+                paths: Vec::new(),
+            }];
         }
         let limits = MoveLimits::of(&self.selection, notes);
         let tick_delta = tick_delta.max(limits.min_tick);
@@ -2931,6 +3354,17 @@ fn notes_in(view: &RollView, grid: Rect, notes: &Arena<NoteId, Note>, box_: Rect
     notes
         .iter()
         .filter(|(_, note)| {
+            // A path is caught by any stretch of its ribbon the box touches:
+            // each segment's bounds, a row thick.
+            if note.has_path() {
+                let half = view.key_height / 2.0;
+                return path_line(view, grid, note).windows(2).any(|pair| {
+                    let (a, b) = (pair[0], pair[1]);
+                    let top = a.1.min(b.1) - half;
+                    let bottom = a.1.max(b.1) + half;
+                    Rect::new(a.0, top, (b.0 - a.0).max(1.0), bottom - top).intersects(&box_)
+                });
+            }
             let left = tick_to_x(view, grid, note.start);
             let right = tick_to_x(view, grid, note.start + note.length);
             let top = key_to_y(view, grid, note.key);
@@ -2986,6 +3420,22 @@ pub fn slice_cuts(
     }
 
     for (id, note) in notes.iter() {
+        // A note with a path is cut where the stroke crosses its line — on
+        // the slide, or on the row it landed on — not on the row it left.
+        if note.has_path() {
+            let line = path_line(view, grid, note);
+            let crossing = line.windows(2).find_map(|pair| {
+                let (a, b) = (pair[0], pair[1]);
+                segment_crossing(from, to, a, b)
+            });
+            if let Some(x) = crossing {
+                let at = x_to_tick(view, grid, x);
+                if at > note.start && at < note.start + note.length {
+                    cuts.push((id, at));
+                }
+            }
+            continue;
+        }
         let row = key_to_y(view, grid, note.key) + view.key_height / 2.0;
         // Where the segment crosses this row, as a fraction along it. A line
         // that does not cross the row at all — including one lying exactly on
@@ -3005,6 +3455,21 @@ pub fn slice_cuts(
         cuts.push((id, at));
     }
     cuts
+}
+
+/// Where the segment `p0`–`p1` crosses `q0`–`q1`, as an x — or `None` when
+/// they do not meet (parallel ones included).
+fn segment_crossing(p0: (f32, f32), p1: (f32, f32), q0: (f32, f32), q1: (f32, f32)) -> Option<f32> {
+    let r = (p1.0 - p0.0, p1.1 - p0.1);
+    let s = (q1.0 - q0.0, q1.1 - q0.1);
+    let denominator = r.0 * s.1 - r.1 * s.0;
+    if denominator.abs() < f32::EPSILON {
+        return None;
+    }
+    let w = (q0.0 - p0.0, q0.1 - p0.1);
+    let t = (w.0 * s.1 - w.1 * s.0) / denominator;
+    let u = (w.0 * r.1 - w.1 * r.0) / denominator;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some(p0.0 + r.0 * t)
 }
 
 /// **Where the blade will actually cut**, as a mark per note.
@@ -3034,7 +3499,8 @@ pub fn note_marks(
         .filter_map(|(id, at)| {
             let note = notes.get(id)?;
             let x = tick_to_x(view, grid, at);
-            let y = key_to_y(view, grid, note.key);
+            let y = pitch_y(view, grid, note.key, note.pitch_at(at - note.start))
+                - view.key_height / 2.0;
             Some(Rect::new(x - WIDTH / 2.0, y, WIDTH, view.key_height).intersection(&grid))
         })
         .collect()

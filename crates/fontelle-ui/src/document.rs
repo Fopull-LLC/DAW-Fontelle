@@ -2400,10 +2400,14 @@ pub trait StudioHost: DocumentHost {
     /// key — **one** undo for both, since choosing a scale and seeing the
     /// notes move onto it is one thing somebody did. `fitted` is the open
     /// clip's notes, worked out by the window (it knows the selection).
+    ///
+    /// `paths` is the sliding notes' paths, fitted where they land
+    /// (`canvas::scale_fit_paths`) — in the same undo.
     fn set_song_key(
         &mut self,
         _key: Option<fontelle_types::KeyScale>,
         _fitted: Vec<(fontelle_types::NoteId, u8)>,
+        _paths: Vec<(fontelle_types::NoteId, Vec<fontelle_model::PathPoint>)>,
     ) {
     }
 

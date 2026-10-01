@@ -563,3 +563,43 @@ fn r_toggles_recording() {
         "listed under Transport on the shortcuts page"
     );
 }
+
+/// Ty, 2026-10-01: *"when dragging out a note, you can press the s key to
+/// place a point there"*. S is the snap in the studio, so the point is its
+/// own context — **while a note is being drawn** — where S places a point
+/// and Backspace takes one back, and neither collides with the studio's
+/// meaning of the same key. Rebindable like everything else.
+#[test]
+fn s_places_a_path_point_while_a_note_is_being_drawn() {
+    let map = Keymap::default();
+    assert_eq!(map.label(Action::PathPoint), "S");
+    assert_eq!(map.label(Action::PathPointBack), "Backspace");
+    assert_eq!(Action::PathPoint.id(), "path-point");
+    assert_eq!(Action::PathPointBack.id(), "path-point-back");
+    assert_eq!(
+        map.action(&chord("S"), Context::Drawing),
+        Some(Action::PathPoint)
+    );
+    assert_eq!(
+        map.action(&chord("Backspace"), Context::Drawing),
+        Some(Action::PathPointBack)
+    );
+    // The studio's S is still the snap, and the transport still answers
+    // mid-drag.
+    assert_eq!(
+        map.action(&chord("S"), Context::Studio),
+        Some(Action::SnapOrStretch)
+    );
+    assert_eq!(
+        map.action(&chord("Space"), Context::Drawing),
+        Some(Action::Play)
+    );
+    assert!(!Context::Drawing.overlaps(Context::Studio));
+    assert!(
+        fontelle_ui::canvas::KEYBIND_SECTIONS.iter().any(|s| s
+            .binds
+            .iter()
+            .any(|b| format!("{b:?}").contains("PathPoint"))),
+        "listed on the shortcuts page"
+    );
+}

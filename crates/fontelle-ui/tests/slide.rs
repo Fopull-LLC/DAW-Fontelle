@@ -152,31 +152,22 @@ fn a_selection_of_notes_that_are_gone_is_no_edit() {
     assert!(roll.toggle_slide(&notes).is_empty());
 }
 
+/// Ty, 2026-10-01: *"currently i dont like slide notes, they have all the
+/// same limitations of fl studio slide notes."* A note slides by its own path
+/// now (S while drawing — `tests/note_paths.rs`), so the FL chip is off the
+/// toolbar. Slide notes already in a song still play, and the `A` key still
+/// marks them, for anyone who wants the old way.
 #[test]
-fn the_toolbar_carries_the_slide_chip() {
-    use fontelle_ui::canvas::{toolbar_hit, toolbar_layout};
+fn the_toolbar_no_longer_carries_the_slide_chip() {
+    use fontelle_ui::canvas::toolbar_layout;
     use fontelle_ui::layout::Rect;
     use fontelle_ui::theme::Theme;
 
     let m = Theme::dark_default().metrics;
     let bar = toolbar_layout(Rect::new(0.0, 0.0, 900.0, 26.0), &m);
-    let slide = bar
-        .items
-        .iter()
-        .find(|(control, _)| *control == RollControl::Slide)
-        .map(|(_, rect)| *rect)
-        .expect("the roll's toolbar has a slide chip");
-
-    assert_eq!(
-        toolbar_hit(
-            &bar,
-            slide.x + slide.width / 2.0,
-            slide.y + slide.height / 2.0
-        ),
-        Some(RollControl::Slide)
-    );
     assert!(
-        RollControl::Slide.icon().is_some(),
-        "it draws a glyph like every other verb on the bar"
+        bar.items
+            .iter()
+            .all(|(control, _)| *control != RollControl::Slide)
     );
 }

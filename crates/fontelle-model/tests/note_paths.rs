@@ -273,3 +273,77 @@ fn undoing_a_cut_through_a_path_gives_back_the_whole_note() {
     slice.invert().apply(&mut project).unwrap();
     assert_eq!(all_notes(&project, clip), vec![hold_slide_hold()]);
 }
+
+#[test]
+fn a_shape_sets_the_length_with_the_path_and_undo_puts_both_back() {
+    // Drawing a path with S moves the note's end with the pointer; one edit,
+    // so one undo takes both back.
+    let (mut project, clip, ids) = fixture(vec![a_note(0, PPQN, 60)]);
+    let mut set = SetNotePath::new(clip, ids[0], vec![point(PPQN, 0), point(PPQN * 2, 7)])
+        .with_length(PPQN * 2);
+    set.apply(&mut project).unwrap();
+    let shaped = note(&project, clip, ids[0]);
+    assert_eq!(shaped.length, PPQN * 2);
+    assert_eq!(shaped.path.len(), 2);
+
+    set.invert().apply(&mut project).unwrap();
+    let back = note(&project, clip, ids[0]);
+    assert_eq!(back.length, PPQN);
+    assert!(back.path.is_empty());
+}
+
+#[test]
+fn a_drag_of_shapes_is_one_undo() {
+    // Every pointer step of the S-gesture is a shape; they fold into the
+    // first, which keeps what the note was before any of them.
+    let (mut project, clip, ids) = fixture(vec![a_note(0, PPQN, 60)]);
+    let mut first = SetNotePath::new(clip, ids[0], vec![point(PPQN, 0), point(PPQN * 2, 3)])
+        .with_length(PPQN * 2);
+    first.apply(&mut project).unwrap();
+    let mut second = SetNotePath::new(clip, ids[0], vec![point(PPQN, 0), point(PPQN * 3, 5)])
+        .with_length(PPQN * 3);
+    second.apply(&mut project).unwrap();
+    assert!(first.merge_with(&second), "the same note's shape folds");
+
+    first.invert().apply(&mut project).unwrap();
+    let back = note(&project, clip, ids[0]);
+    assert_eq!((back.length, back.path.len()), (PPQN, 0));
+
+    // Another note's is its own entry.
+    let (_, _, other) = fixture(vec![a_note(0, PPQN, 60), a_note(PPQN, PPQN, 62)]);
+    let third = SetNotePath::new(clip, other[1], Vec::new());
+    assert!(!first.merge_with(&third));
+}
+
+#[test]
+fn a_path_previews_as_holds_and_a_staircase_up_each_slide() {
+    // The arrangement draws a clip's notes as small bars, a row each; a
+    // slide is a run of short steps from row to row, which at that size
+    // reads as the slant it is.
+    let note = hold_slide_hold();
+    let pieces = note.preview_pieces();
+    assert_eq!(pieces.first(), Some(&(0, PPQN, 60)), "the hold");
+    assert_eq!(
+        pieces.last(),
+        Some(&(PPQN * 2, PPQN * 2, 67)),
+        "held where it landed"
+    );
+    // Contiguous, end to end, covering the whole note.
+    let mut at = 0;
+    for &(start, length, _) in &pieces {
+        assert_eq!(start, at, "{pieces:?}");
+        assert!(length > 0);
+        at = start + length;
+    }
+    assert_eq!(at, note.length);
+    // The steps climb a key at a time.
+    let keys: Vec<u8> = pieces.iter().map(|p| p.2).collect();
+    assert!(
+        keys.windows(2).all(|w| w[1] >= w[0] && w[1] - w[0] <= 1),
+        "{keys:?}"
+    );
+    assert!(keys.contains(&63), "it passes through the keys between");
+
+    // A plain note is itself.
+    assert_eq!(a_note(PPQN, PPQN, 62).preview_pieces(), vec![(0, PPQN, 62)]);
+}

@@ -82,6 +82,36 @@ pub fn scale_fit(notes: &Arena<NoteId, Note>, only: &[NoteId], mask: u16) -> Vec
         .collect()
 }
 
+/// The sliding notes whose paths land outside the scale, and the path each
+/// fits to — measured from the key [`scale_fit`] gives the note, so the two
+/// together put every point it reaches in the scale.
+pub fn scale_fit_paths(
+    notes: &Arena<NoteId, Note>,
+    only: &[NoteId],
+    mask: u16,
+) -> Vec<(NoteId, Vec<fontelle_model::PathPoint>)> {
+    notes
+        .iter()
+        .filter(|(id, note)| note.has_path() && (only.is_empty() || only.contains(id)))
+        .filter_map(|(id, note)| {
+            let key = i16::from(fit_to_scale(note.key, mask));
+            let path: Vec<fontelle_model::PathPoint> = note
+                .path
+                .iter()
+                .map(|point| {
+                    let reached = (i16::from(note.key) + i16::from(point.offset)).clamp(0, 127);
+                    let fitted = i16::from(fit_to_scale(reached as u8, mask));
+                    fontelle_model::PathPoint {
+                        at: point.at,
+                        offset: (fitted - key).clamp(-128, 127) as i8,
+                    }
+                })
+                .collect();
+            (path != note.path).then_some((id, path))
+        })
+        .collect()
+}
+
 /// How many characters the scale chip shows before it cuts a name short.
 const CHIP_CHARS: usize = 14;
 

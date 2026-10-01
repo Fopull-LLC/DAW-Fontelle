@@ -13,6 +13,13 @@
 //!
 //! What is deliberately not written, each for a reason and none silently:
 //!
+//! - **Note paths are written as MPE.** A part with a sliding note in it
+//!   (`fontelle_model::Note::path`) goes out as an MPE lower zone: the
+//!   configuration message (RPN 6) on the manager channel, every note on a
+//!   member channel of its own, and each slide as that channel's pitch bend
+//!   over MPE's 48 semitones — the one way MIDI can carry a pitch per note,
+//!   and what Bitwig, Ableton, Reaper and Logic read as one. A part with no
+//!   paths is written exactly as it always was.
 //! - **Slide notes.** A slide sounds no voice of its own — it bends whatever
 //!   is already playing (see [`fontelle_model::Note::slide`]). Writing it as
 //!   an ordinary note would double the note it bends, so it is left out. The
@@ -57,7 +64,54 @@ struct PlacedNote {
     off: Tick,
     key: u8,
     velocity: u8,
+    /// The note's own path, relative to `on` (see `Note::path`).
+    path: Vec<fontelle_model::PathPoint>,
 }
+
+impl PlacedNote {
+    /// Where this note's pitch is `at` ticks after it starts: the
+    /// interpolation `Note::pitch_at` does, over the same points.
+    fn pitch_at(&self, at: Tick) -> f32 {
+        let note = fontelle_model::Note {
+            start: 0,
+            length: self.off - self.on,
+            key: self.key,
+            velocity: self.velocity,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            path: self.path.clone(),
+            channel: None,
+        };
+        note.pitch_at(at)
+    }
+
+    /// Whether it slides anywhere before it ends.
+    fn slides(&self) -> bool {
+        let mut previous = 0;
+        for point in &self.path {
+            if point.at >= self.off - self.on {
+                return point.offset != previous;
+            }
+            if point.offset != previous {
+                return true;
+            }
+            previous = point.offset;
+        }
+        false
+    }
+}
+
+/// MPE's default pitch-bend range on a member channel, in semitones — what
+/// the zone is told, and what every slide is scaled by.
+const MPE_BEND_RANGE: f32 = 48.0;
+
+/// How often a slide's bend is written, in ticks: thirty-two to a beat,
+/// smooth to the ear and a few hundred events a slide at most.
+const BEND_STEP: Tick = PPQN / 32;
 
 /// Writes `project` to `path` as a Standard MIDI File.
 pub fn export_midi(project: &Project, path: &Path) -> Result<(), ExportError> {
@@ -110,6 +164,11 @@ pub fn export_project_to_midi(project: &Project) -> Vec<u8> {
 
     // One track per channel that carries notes.
     for (channel, name) in order.iter().zip(names.iter()) {
+        let mine: Vec<&PlacedNote> = placed.iter().filter(|n| n.channel == *channel).collect();
+        if mine.iter().any(|note| note.slides()) {
+            smf.tracks.push(mpe_track(name, &mine));
+            continue;
+        }
         let ch = u4::from(midi_channel(*channel));
         let mut events: Vec<(Tick, bool, TrackEventKind)> = Vec::new();
         for note in placed.iter().filter(|n| n.channel == *channel) {
@@ -163,6 +222,129 @@ pub fn export_project_to_midi(project: &Project) -> Vec<u8> {
     smf.write_std(&mut bytes)
         .expect("writing MIDI into a Vec cannot fail");
     bytes
+}
+
+/// One part as an **MPE lower zone**: the manager channel (1) says the zone
+/// is fifteen members wide, each member's bend range is set to 48, and every
+/// note goes on a member of its own — the one free longest — with its path
+/// as that channel's pitch bend.
+fn mpe_track<'a>(name: &'a [u8], notes: &[&PlacedNote]) -> Vec<TrackEvent<'a>> {
+    const MEMBERS: u8 = 15;
+    // Ranks within one tick: the zone's set-up, then offs, then a member's
+    // bend put back to centre, then ons, then the bends of a slide — which
+    // may start on the note's own first tick.
+    let mut events: Vec<(Tick, u8, TrackEventKind)> = Vec::new();
+    let controller = |channel: u8, controller: u8, value: u8| TrackEventKind::Midi {
+        channel: u4::from(channel),
+        message: MidiMessage::Controller {
+            controller: u7::from(controller),
+            value: u7::from(value),
+        },
+    };
+    let bend = |channel: u8, semitones: f32| {
+        let fraction = (semitones / MPE_BEND_RANGE).clamp(-1.0, 1.0);
+        let value = (fraction * 8192.0).round().clamp(-8192.0, 8191.0) as i16;
+        TrackEventKind::Midi {
+            channel: u4::from(channel),
+            message: MidiMessage::PitchBend {
+                bend: midly::PitchBend::from_int(value),
+            },
+        }
+    };
+    // RPN 6 on the manager: the MPE configuration message.
+    for (number, value) in [(101, 0), (100, 6), (6, MEMBERS)] {
+        events.push((0, 0, controller(0, number, value)));
+    }
+    // RPN 0 on each member: 48 semitones, said rather than assumed, so a
+    // synth that is not listening for MPE still bends by the right amount.
+    for member in 1..=MEMBERS {
+        for (number, value) in [(101, 0), (100, 0), (6, 48), (38, 0)] {
+            events.push((0, 0, controller(member, number, value)));
+        }
+    }
+
+    let mut order: Vec<&PlacedNote> = notes.to_vec();
+    order.sort_by_key(|note| (note.on, note.key));
+    // When each member is next free, and when it was last let go, so a new
+    // note takes the one that has been quiet longest — its last note's
+    // release has had the most time to ring out.
+    let mut free_at: [Tick; MEMBERS as usize] = [Tick::MIN; MEMBERS as usize];
+    for note in order {
+        let index = (0..MEMBERS as usize)
+            .filter(|&i| free_at[i] <= note.on)
+            .min_by_key(|&i| free_at[i])
+            .unwrap_or_else(|| {
+                (0..MEMBERS as usize)
+                    .min_by_key(|&i| free_at[i])
+                    .unwrap_or(0)
+            });
+        free_at[index] = note.off;
+        let member = index as u8 + 1;
+        events.push((note.on, 2, bend(member, 0.0)));
+        events.push((
+            note.on,
+            3,
+            TrackEventKind::Midi {
+                channel: u4::from(member),
+                message: MidiMessage::NoteOn {
+                    key: u7::from(note.key.min(127)),
+                    vel: u7::from(note.velocity.min(127)),
+                },
+            },
+        ));
+        events.push((
+            note.off,
+            1,
+            TrackEventKind::Midi {
+                channel: u4::from(member),
+                message: MidiMessage::NoteOff {
+                    key: u7::from(note.key.min(127)),
+                    vel: u7::from(0),
+                },
+            },
+        ));
+        // Each slide, as a ramp of bends from where it leaves to where it
+        // lands — or to where the note's end cuts it.
+        let length = note.off - note.on;
+        let mut from = (0, 0i8);
+        for point in &note.path {
+            let to = (point.at, point.offset);
+            if to.1 != from.1 && from.0 < length {
+                let end = to.0.min(length);
+                let mut at = from.0;
+                loop {
+                    at = (at + BEND_STEP).min(end);
+                    events.push((note.on + at, 4, bend(member, note.pitch_at(at))));
+                    if at >= end {
+                        break;
+                    }
+                }
+                if to.0 == from.0 {
+                    events.push((note.on + at, 4, bend(member, f32::from(to.1))));
+                }
+            }
+            from = to;
+        }
+    }
+    events.sort_by_key(|(tick, rank, _)| (*tick, *rank));
+
+    let mut track = vec![TrackEvent {
+        delta: u28::from(0u32),
+        kind: TrackEventKind::Meta(MetaMessage::TrackName(name)),
+    }];
+    let mut previous: Tick = 0;
+    for (tick, _, kind) in events {
+        track.push(TrackEvent {
+            delta: delta(previous, tick),
+            kind,
+        });
+        previous = tick;
+    }
+    track.push(TrackEvent {
+        delta: u28::from(0u32),
+        kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+    });
+    track
 }
 
 /// The conductor track: a time signature at the top, then every tempo change.
@@ -279,6 +461,7 @@ fn placed_notes(project: &Project) -> Vec<PlacedNote> {
                     off: off_tick,
                     key: note.key,
                     velocity: note.velocity,
+                    path: note.path.clone(),
                 });
             }
         }

@@ -219,6 +219,10 @@ pub enum Context {
     Studio,
     /// A floating editor window.
     Editor,
+    /// While a note is being drawn in the piano roll — the button still
+    /// down. Its own place, so S can place a point of the note's path
+    /// (`docs/note-paths-plan.md`) without taking the snap from the studio.
+    Drawing,
 }
 
 impl Context {
@@ -288,10 +292,15 @@ pub enum Action {
     SoloTrack,
     // --- editor windows ---
     RemoveBand,
+    // --- drawing a note ---
+    /// Fix a point of the note's path where the pointer is.
+    PathPoint,
+    /// Take the last point of the path back.
+    PathPointBack,
 }
 
 impl Action {
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 42] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -332,6 +341,8 @@ impl Action {
         Self::MuteTrack,
         Self::SoloTrack,
         Self::RemoveBand,
+        Self::PathPoint,
+        Self::PathPointBack,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -379,6 +390,8 @@ impl Action {
             Self::MuteTrack => "mute-track",
             Self::SoloTrack => "solo-track",
             Self::RemoveBand => "remove-band",
+            Self::PathPoint => "path-point",
+            Self::PathPointBack => "path-point-back",
         }
     }
 
@@ -416,7 +429,9 @@ impl Action {
             Self::DeleteTool => "Delete (piano roll)",
             Self::SliceTool => "Slice",
             Self::SnapOrStretch => "Snap grid (piano roll) / Stretch (arrangement)",
-            Self::Slide => "Slide notes on or off",
+            Self::Slide => {
+                "FL-style slide notes on or off (older; S while drawing slides one note)"
+            }
             Self::LaneProperty => "Next property lane: velocity, pan, pitch\u{2026}",
             Self::Ghosts => "Ghost notes from other clips",
             Self::SelectAll => "Select every note",
@@ -430,6 +445,8 @@ impl Action {
             Self::MuteTrack => "Mute the selected track (mixer showing)",
             Self::SoloTrack => "Solo the selected track (mixer showing)",
             Self::RemoveBand => "Remove the selected EQ band",
+            Self::PathPoint => "While drawing a note: a point here — then hold or slide on",
+            Self::PathPointBack => "While drawing a note: take the last point back",
         }
     }
 
@@ -447,6 +464,7 @@ impl Action {
             | Self::ExportMidi
             | Self::Help => Context::Global,
             Self::RemoveBand => Context::Editor,
+            Self::PathPoint | Self::PathPointBack => Context::Drawing,
             _ => Context::Studio,
         }
     }
@@ -496,6 +514,8 @@ impl Action {
             Self::MuteTrack => &["M"],
             Self::SoloTrack => &["N"],
             Self::RemoveBand => &["Delete", "Backspace"],
+            Self::PathPoint => &["S"],
+            Self::PathPointBack => &["Backspace"],
         }
     }
 

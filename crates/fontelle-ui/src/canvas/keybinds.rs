@@ -182,6 +182,18 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
         ],
     },
     KeybindSection {
+        title: "Sliding notes",
+        binds: &[
+            act(Action::PathPoint),
+            act(Action::PathPointBack),
+            fixed("Drag a point", "Move where the slide begins or lands"),
+            fixed(
+                "Double-click",
+                "On a note: add a point there. On a point: take it out",
+            ),
+        ],
+    },
+    KeybindSection {
         title: "Mixer",
         binds: &[act(Action::MuteTrack), act(Action::SoloTrack)],
     },
