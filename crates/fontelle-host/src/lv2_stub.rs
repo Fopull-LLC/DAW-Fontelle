@@ -152,6 +152,10 @@ impl Lv2Processor {
         match *self {}
     }
 
+    pub(crate) fn midi(&mut self, _frame: usize, _bytes: [u8; 3]) {
+        match *self {}
+    }
+
     pub(crate) fn note_on(&mut self, _frame: usize, _key: u8, _velocity: f64) {
         match *self {}
     }
