@@ -381,3 +381,23 @@ fn the_guide_page_shows_each_animation_after_its_title() {
         }
     }
 }
+
+/// The piano roll's page teaches the slide (`docs/note-paths-plan.md`): S
+/// while drawing, and the FL page says where FL's slide notes went.
+#[test]
+fn the_guide_teaches_sliding_a_note() {
+    let text = |title: &str| -> String {
+        GUIDE
+            .iter()
+            .flat_map(|section| section.pages)
+            .find(|page| page.title == title)
+            .unwrap_or_else(|| panic!("a page called {title}"))
+            .paragraphs
+            .join(" ")
+    };
+    let roll = text("The piano roll");
+    assert!(roll.contains("press S") && roll.contains("slide"), "{roll}");
+    assert!(roll.contains("Backspace"), "{roll}");
+    let fl = text("Channel rack, playlist and mixer");
+    assert!(fl.contains("slide"), "{fl}");
+}

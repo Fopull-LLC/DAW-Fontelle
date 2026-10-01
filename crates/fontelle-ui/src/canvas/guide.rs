@@ -241,6 +241,7 @@ pub const GUIDE: &[GuideSection] = &[
                 &[
                     "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
                     "The chooser beside the tools sets the grid, and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
+                    "To make a note slide, keep the button down after drawing it and press S: the note holds to there, then follows the pointer, flat along a row or sliding up and down. Press S again for each new point, Backspace to take one back, and let go to end it. Drag a point to move it, and double-click a note to add one.",
                 ],
                 Some(Editor),
             ),
@@ -352,6 +353,7 @@ pub const GUIDE: &[GuideSection] = &[
             &[
                 "Rack-style routing is FL's: the channel rack is the channel rack, and the coloured chip on a row is its target mixer track. The arrangement is the playlist, where any clip can go on any lane.",
                 "Clips hold notes for one or more instruments, like patterns, and prefabs let one set of notes appear in many places. Most of FL's keys work the same: Space, Ctrl+S, P for the pencil, B for paint, E to select, D to delete.",
+                "A slide is one note here rather than a second note on top: press S while drawing and it slides wherever you take it, as many times as you like. Each note of a chord can slide somewhere different.",
             ],
             None,
         )],
