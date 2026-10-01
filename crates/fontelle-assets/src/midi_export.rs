@@ -311,6 +311,10 @@ fn mpe_track<'a>(name: &'a [u8], notes: &[&PlacedNote]) -> Vec<TrackEvent<'a>> {
             let to = (point.at, point.offset);
             if to.1 != from.1 && from.0 < length {
                 let end = to.0.min(length);
+                // Where the slide leaves, said: a reader joins the bends with
+                // straight lines, and without this one the hold before the
+                // slide would lean into it from the last bend written.
+                events.push((note.on + from.0, 4, bend(member, f32::from(from.1))));
                 let mut at = from.0;
                 loop {
                     at = (at + BEND_STEP).min(end);

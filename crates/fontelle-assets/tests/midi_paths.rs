@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use fontelle_assets::export_project_to_midi;
+use fontelle_assets::{MidiChannels, export_project_to_midi, read_midi};
 use fontelle_model::{
     Arena, Channel, Clip, ClipSource, Lane, Note, NoteData, PathPoint, Project, TempoMap,
 };
@@ -243,5 +243,57 @@ fn a_part_with_no_slides_is_written_as_it_always_was() {
         channels[&0]
             .iter()
             .all(|(_, m)| !matches!(m, MidiMessage::Controller { .. }))
+    );
+}
+
+/// What comes back when a song is read in, as `(start, key, path)`, sorted.
+fn read_back(bytes: &[u8]) -> (usize, Vec<(Tick, u8, Vec<PathPoint>)>) {
+    let back = read_midi(bytes, "song", MidiChannels::All).expect("reads the file we wrote");
+    let mut notes: Vec<(Tick, u8, Vec<PathPoint>)> = back
+        .project
+        .clips
+        .values()
+        .filter_map(|clip| match &clip.source {
+            ClipSource::Notes(data) => Some((clip.start, data)),
+            _ => None,
+        })
+        .flat_map(|(at, data)| {
+            data.notes
+                .values()
+                .map(move |n| (n.start + at, n.key, n.path.clone()))
+        })
+        .collect();
+    notes.sort_by_key(|(start, key, _)| (*start, *key));
+    (back.channels.len(), notes)
+}
+
+/// **An MPE zone reads back as one part with paths**, not fifteen parts of
+/// one note each: the member channels are the zone's, and each note's bend
+/// curve is its path again — the slides a file from Bitwig or from this
+/// program's own export carries.
+#[test]
+fn an_mpe_zone_reads_back_as_one_part_whose_notes_slide() {
+    let melody = with_path(
+        a_note(0, PPQN * 6, 60, 100),
+        &[(PPQN, 0), (PPQN * 2, 7), (PPQN * 3, 7), (PPQN * 4, 3)],
+    );
+    let chord = vec![
+        with_path(a_note(PPQN * 8, PPQN * 2, 60, 100), &[(PPQN, 5)]),
+        with_path(a_note(PPQN * 8, PPQN * 2, 64, 100), &[(PPQN, -2)]),
+    ];
+    let plain = a_note(PPQN * 12, PPQN, 67, 100);
+    let mut all = vec![melody.clone(), plain.clone()];
+    all.extend(chord.clone());
+    let (parts, notes) = read_back(&song(all));
+
+    assert_eq!(parts, 1, "one part, not one per member channel");
+    assert_eq!(notes.len(), 4);
+    assert_eq!(notes[0], (0, 60, melody.path.clone()), "the melody");
+    assert_eq!(notes[1], (PPQN * 8, 60, chord[0].path.clone()));
+    assert_eq!(notes[2], (PPQN * 8, 64, chord[1].path.clone()));
+    assert_eq!(
+        notes[3],
+        (PPQN * 12, 67, Vec::new()),
+        "a plain note stays plain"
     );
 }

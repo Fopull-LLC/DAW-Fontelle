@@ -221,6 +221,10 @@ impl MidiSurvey {
 struct Pending {
     start: Tick,
     velocity: u8,
+    /// The note's own channel's bends while it sounded, `(tick, semitones)` —
+    /// read only inside an MPE zone, where a member channel's bend is one
+    /// note's, and becomes the note's path (`docs/note-paths-plan.md` §6).
+    bends: Vec<(Tick, f32)>,
 }
 
 /// Everything one walk of the file finds, before any of it becomes a document.
@@ -365,6 +369,13 @@ fn scan(
         end: 0,
     };
     let mut pending: HashMap<(u8, u8), Pending> = HashMap::new();
+    // **An MPE lower zone**, when the file says one (RPN 6 on channel 1):
+    // its member channels are one part, and a member's bend is one note's.
+    // The RPN each channel is addressing, and the bend range each has said.
+    let mut zone_members: u8 = 0;
+    let mut rpn: HashMap<u8, (u8, u8)> = HashMap::new();
+    let mut bend_range: HashMap<u8, f32> = HashMap::new();
+    let in_zone = |members: u8, channel: u8| members > 0 && (1..=members).contains(&channel);
 
     for track in &smf.tracks {
         // Delta times are per track and restart at zero, so a format-1 file's
@@ -393,7 +404,42 @@ fn scan(
                 }
                 TrackEventKind::Midi { channel, message } => {
                     let channel = channel.as_int();
+                    // The part a note on this channel belongs to: the zone's
+                    // manager for a member, its own channel otherwise.
+                    let part = if in_zone(zone_members, channel) {
+                        0
+                    } else {
+                        channel
+                    };
                     match message {
+                        MidiMessage::Controller { controller, value }
+                            if matches!(controller.as_int(), 100 | 101 | 6) =>
+                        {
+                            let (value, entry) =
+                                (value.as_int(), rpn.entry(channel).or_insert((127, 127)));
+                            match controller.as_int() {
+                                101 => entry.0 = value,
+                                100 => entry.1 = value,
+                                _ => match *entry {
+                                    (0, 6) if channel == 0 => zone_members = value.min(15),
+                                    (0, 0) => {
+                                        bend_range.insert(channel, f32::from(value));
+                                    }
+                                    _ => {}
+                                },
+                            }
+                        }
+                        MidiMessage::PitchBend { bend } if in_zone(zone_members, channel) => {
+                            // MPE's own default for a member is 48 semitones.
+                            let range = bend_range.get(&channel).copied().unwrap_or(48.0);
+                            let semitones = f32::from(bend.as_int()) / 8192.0 * range;
+                            let at = to_project_ticks(absolute, ticks_per_quarter);
+                            for ((held, _), note) in pending.iter_mut() {
+                                if *held == channel {
+                                    note.bends.push((at, semitones));
+                                }
+                            }
+                        }
                         MidiMessage::ProgramChange { program } => {
                             scan.programs.entry(channel).or_insert(program.as_int());
                         }
@@ -407,16 +453,17 @@ fn scan(
                         // and read literally it starts a silent note that never
                         // ends, so the piece plays as one endless chord.
                         MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
-                            *scan.counts.entry(channel).or_default() += 1;
-                            if !channels_here.contains(&channel) {
-                                channels_here.push(channel);
+                            *scan.counts.entry(part).or_default() += 1;
+                            if !channels_here.contains(&part) {
+                                channels_here.push(part);
                             }
-                            if collect_notes && channels.accepts(channel) {
+                            if collect_notes && channels.accepts(part) {
                                 pending.insert(
                                     (channel, key.as_int()),
                                     Pending {
                                         start: to_project_ticks(absolute, ticks_per_quarter),
                                         velocity: vel.as_int(),
+                                        bends: Vec::new(),
                                     },
                                 );
                             }
@@ -425,7 +472,7 @@ fn scan(
                             scan.end = scan.end.max(absolute);
                             if let Some(start) = pending.remove(&(channel, key.as_int())) {
                                 push_note(
-                                    scan.per_channel.entry(channel).or_default(),
+                                    scan.per_channel.entry(part).or_default(),
                                     key.as_int(),
                                     &start,
                                     to_project_ticks(absolute, ticks_per_quarter),
@@ -441,12 +488,12 @@ fn scan(
         // Anything still held at the end of a track never got its note-off.
         for ((channel, key), start) in pending.drain() {
             let end = start.start + STUCK_NOTE_LENGTH;
-            push_note(
-                scan.per_channel.entry(channel).or_default(),
-                key,
-                &start,
-                end,
-            );
+            let part = if in_zone(zone_members, channel) {
+                0
+            } else {
+                channel
+            };
+            push_note(scan.per_channel.entry(part).or_default(), key, &start, end);
         }
 
         // **A track's name only names a part when the track holds one part.**
@@ -686,9 +733,103 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         release: 0,
         mod_x: 0,
         mod_y: 0,
-        // An imported note is an ordinary one: MIDI has no slide.
+        // An imported note is not an FL slide note; a bend curve it carried
+        // in an MPE zone is its path.
         slide: false,
-        path: Vec::new(),
+        path: path_from_bends(start.start, (end - start.start).max(1), &start.bends),
         channel: None,
     });
+}
+
+/// How far a bend curve may stray from the straight lines its path is made
+/// of, in semitones, before another point is needed.
+const BEND_TOLERANCE: f32 = 0.25;
+
+/// A note's bend curve as its path: the bends joined by straight lines, the
+/// lines thinned to the corners that matter (Ramer–Douglas–Peucker, by pitch),
+/// each corner on a whole key, and a hold to the end left as the note
+/// running on rather than a point — the shape `Note::path` keeps.
+fn path_from_bends(
+    start: Tick,
+    length: Tick,
+    bends: &[(Tick, f32)],
+) -> Vec<fontelle_model::PathPoint> {
+    if bends.iter().all(|(_, semitones)| semitones.abs() < 0.5) {
+        return Vec::new();
+    }
+    let mut curve: Vec<(Tick, f32)> = vec![(0, 0.0)];
+    for &(at, semitones) in bends {
+        let at = (at - start).clamp(0, length);
+        if curve.last().is_some_and(|last| last.0 == at) {
+            curve.pop();
+            if curve.is_empty() {
+                curve.push((at, semitones));
+                continue;
+            }
+        }
+        curve.push((at, semitones));
+    }
+    let held = curve.last().map_or(0.0, |last| last.1);
+    if curve.last().is_some_and(|last| last.0 < length) {
+        curve.push((length, held));
+    }
+    let mut keep = vec![false; curve.len()];
+    keep[0] = true;
+    if let Some(last) = keep.last_mut() {
+        *last = true;
+    }
+    thin(&curve, 0, curve.len() - 1, &mut keep);
+    let mut path: Vec<fontelle_model::PathPoint> = curve
+        .iter()
+        .zip(&keep)
+        .skip(1)
+        .filter(|(_, kept)| **kept)
+        .map(|(&(at, semitones), _)| fontelle_model::PathPoint {
+            at,
+            offset: semitones.round().clamp(-128.0, 127.0) as i8,
+        })
+        .collect();
+    // A note bent from its first tick starts there.
+    if curve[0].1.round() != 0.0 {
+        path.insert(
+            0,
+            fontelle_model::PathPoint {
+                at: 0,
+                offset: curve[0].1.round() as i8,
+            },
+        );
+    }
+    path.dedup();
+    while let Some(last) = path.last() {
+        let before = path.len().checked_sub(2).map_or(0, |i| path[i].offset);
+        if last.offset != before {
+            break;
+        }
+        path.pop();
+    }
+    path
+}
+
+/// Marks the samples of `curve` between `from` and `to` that a straight line
+/// between those two cannot stand in for.
+fn thin(curve: &[(Tick, f32)], from: usize, to: usize, keep: &mut [bool]) {
+    if to <= from + 1 {
+        return;
+    }
+    let (a, b) = (curve[from], curve[to]);
+    let span = (b.0 - a.0).max(1) as f32;
+    let (worst, distance) = (from + 1..to)
+        .map(|i| {
+            let along = (curve[i].0 - a.0) as f32 / span;
+            (i, (curve[i].1 - (a.1 + (b.1 - a.1) * along)).abs())
+        })
+        .fold(
+            (from, 0.0f32),
+            |best, next| if next.1 > best.1 { next } else { best },
+        );
+    if distance > BEND_TOLERANCE {
+        keep[worst] = true;
+        thin(curve, from, worst, keep);
+        thin(curve, worst, to, keep);
+    }
 }
