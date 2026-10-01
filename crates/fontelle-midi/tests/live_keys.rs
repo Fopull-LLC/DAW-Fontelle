@@ -142,8 +142,25 @@ fn a_device_that_goes_away_takes_its_lights_with_it() {
 
 #[test]
 fn a_note_that_is_filtered_out_never_lights() {
-    // Outside the device's velocity window is not this device's note: nothing
-    // sounds, so nothing may light either.
+    // Off the device's channel is not this device's note: nothing sounds,
+    // so nothing may light either.
+    let settings = InputSettings {
+        channel_filter: Some(5),
+        ..InputSettings::default()
+    };
+    let lit = Arc::new(LiveKeys::default());
+    let mut r = MidiRouter::new(node(), 0, DeviceMapping::default())
+        .watching_keys(Arc::clone(&lit))
+        .following_input(Arc::new(LiveMapping::new(settings)));
+    let mut out = Sink;
+
+    r.handle(&[NOTE_ON, 60, 100], &mut out);
+    assert_eq!(lit.snapshot(), 0);
+}
+
+#[test]
+fn a_soft_note_under_the_velocity_range_still_lights() {
+    // The range scales a touch; it never drops one.
     let settings = InputSettings {
         velocity_range: (64, 127),
         ..InputSettings::default()
@@ -155,7 +172,7 @@ fn a_note_that_is_filtered_out_never_lights() {
     let mut out = Sink;
 
     r.handle(&[NOTE_ON, 60, 20], &mut out);
-    assert_eq!(lit.snapshot(), 0);
+    assert_eq!(lit.snapshot(), 1u128 << 60);
 }
 
 #[test]

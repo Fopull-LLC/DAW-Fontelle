@@ -508,7 +508,7 @@ fn play_or_render(
     // no output"*. On the command line it stays opt-in: a headless render must
     // not open every MIDI port on the machine.
     // How that keyboard's notes are read (TDD §14.3): the velocity curve, the
-    // velocity window, transpose and the channel filter. The window's settings
+    // velocity range, transpose and the channel filter. The window's settings
     // tab writes into this same cell, so a change reaches a device that is
     // already plugged in — see `fontelle-midi/tests/input_settings.rs`. The
     // *values* come off the settings file, which `Session::with_input_settings`
@@ -747,6 +747,9 @@ fn play_or_render(
             document,
             welcome,
             version: fontelle_app::updates::CURRENT.to_string(),
+            // A theme named on the command line wins over the settings
+            // page's choice for this run.
+            theme_fixed: std::env::args().any(|a| a == "--theme" || a == "--light"),
         });
         // The keyboards first: closing a device releases whatever it was
         // holding, and those note-offs have to go through a callback that is

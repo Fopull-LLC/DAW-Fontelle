@@ -151,22 +151,20 @@ fn a_transpose_set_from_the_window_moves_the_keyboard() {
 }
 
 #[test]
-fn a_velocity_window_set_from_the_window_filters_what_gets_through() {
+fn a_velocity_range_set_from_the_window_scales_what_is_played() {
     let (mut r, live, mut out) = rig(InputSettings::default());
     live.set(InputSettings {
-        velocity_range: (40, 127),
+        velocity_range: (40, 100),
         ..InputSettings::default()
     });
-    r.handle(&[NOTE_ON, 60, 20], &mut out);
+    r.handle(&[NOTE_ON, 60, 1], &mut out);
     r.handle(&[NOTE_OFF, 60, 0], &mut out);
-    assert!(
-        out.notes().is_empty(),
-        "a note under the window is not this device's note, and neither is its \
-         release: {:?}",
-        out.notes()
+    r.handle(&[NOTE_ON, 62, 127], &mut out);
+    assert_eq!(
+        out.notes(),
+        vec![("on", 60, 40), ("off", 60, 0), ("on", 62, 100)],
+        "the softest touch plays the min and the hardest the max; nothing dropped"
     );
-    r.handle(&[NOTE_ON, 62, 90], &mut out);
-    assert_eq!(out.notes(), vec![("on", 62, 90)]);
 }
 
 #[test]
@@ -236,8 +234,8 @@ fn a_router_with_no_shared_cell_behaves_exactly_as_it_did_before() {
 /// same shared cell the key lights live in — so the window can say "your
 /// keyboard's note on channel 1 was ignored: the channel filter is set to
 /// 16" rather than nothing. *"my midi keyboard isn't working"* was a
-/// settings file with `channel_filter: 15` and a velocity window of
-/// 50–125 in it; the keyboard was working, and silently filtered.
+/// settings file with `channel_filter: 15` in it; the keyboard was
+/// working, and silently filtered.
 #[test]
 fn a_filtered_note_is_counted_with_the_reason() {
     use fontelle_midi::{Ignored, LiveKeys};
@@ -260,14 +258,12 @@ fn a_filtered_note_is_counted_with_the_reason() {
         Some((1, Ignored::Channel(0))),
         "one note, dropped by the channel filter"
     );
-    // On the kept channel but under the velocity window.
-    r.handle(&[NOTE_ON | 15, 60, 20], &mut out);
-    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
-    // A note that gets through changes nothing.
-    r.handle(&[NOTE_ON | 15, 60, 100], &mut out);
-    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
-    assert_eq!(out.notes(), vec![("on", 60, 100)]);
+    // On the kept channel and under the velocity range: scaled, not
+    // dropped — the range is where the touch lands, not a gate.
+    r.handle(&[NOTE_ON | 15, 60, 1], &mut out);
+    assert_eq!(keys.ignored(), Some((1, Ignored::Channel(0))));
+    assert_eq!(out.notes(), vec![("on", 60, 50)]);
     // Note-offs and controllers are not notes nobody heard: not counted.
     r.handle(&[NOTE_OFF, 60, 0], &mut out);
-    assert_eq!(keys.ignored(), Some((2, Ignored::Velocity(20))));
+    assert_eq!(keys.ignored(), Some((1, Ignored::Channel(0))));
 }

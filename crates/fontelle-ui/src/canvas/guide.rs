@@ -256,6 +256,7 @@ pub const GUIDE: &[GuideSection] = &[
                 &[
                     "Press 2, or the Mixer tab, to swap the piano roll for the mixer. Each strip is a track with its fader, pan, mute and solo; + makes a new one.",
                     "Select a strip to see its inspector: where it sends its sound, its effects (+ Add effect) and its sends. The cables along the bottom show where everything goes, and what feeds the selected track lights up.",
+                    "Pick a cable up and drop it on another track to send it there; the knob on a send's plug sets how much goes. Ctrl and the wheel widen the strips, and the cables' top edge drags to give them more room.",
                 ],
                 Some(Mixer),
             ),

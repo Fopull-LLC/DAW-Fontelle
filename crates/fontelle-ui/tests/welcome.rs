@@ -346,6 +346,36 @@ fn the_card_has_a_help_button_in_its_top_corner_and_it_is_pressable() {
     assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Help));
 }
 
+/// Ty, 2026-10-01: *"please also make the settings menu accessible from
+/// the home page."* A gear beside the `?`, the same size, opening the same
+/// page the studio's does — the MIDI keyboard and the audio device are the
+/// first things a person fixes, often before there is a song.
+#[test]
+fn the_card_has_a_settings_button_beside_the_help_button() {
+    for recent in [0, 3, 12] {
+        let l = welcome_layout(window(), &metrics(), recent, true);
+        assert!(!l.settings.is_empty(), "no settings button");
+        assert!(within(l.settings, l.frame));
+        assert!(!overlaps(l.settings, l.help), "on top of the ?");
+        assert!(
+            (l.settings.y - l.help.y).abs() < 1e-3 && l.settings.right() <= l.help.x,
+            "beside the ?, to its left: {:?} {:?}",
+            l.settings,
+            l.help
+        );
+        assert!((l.settings.height - l.help.height).abs() < 1e-3);
+        assert!(!overlaps(l.settings, l.recent_heading), "over the heading");
+        for row in &l.rows {
+            assert!(!overlaps(l.settings, row.frame), "over a recent row");
+        }
+        let (x, y) = (
+            l.settings.x + l.settings.width / 2.0,
+            l.settings.y + l.settings.height / 2.0,
+        );
+        assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Settings));
+    }
+}
+
 /// > *"if you can get the error log that would be helpful" — "where get"*
 ///
 /// The folder the session logs and the crash reports are in, one press from

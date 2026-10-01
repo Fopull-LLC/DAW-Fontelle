@@ -21,9 +21,9 @@ impl Default for DeviceMapping {
     /// A device nobody has configured passes everything through unchanged.
     ///
     /// **Not `#[derive(Default)]`**, which is what this was: a derived
-    /// `velocity_range` is `(0, 0)`, and since the range is a window a note
-    /// must fall inside, that is a default which silently discards every note
-    /// from every device. §14.3's rule that per-device config is "optional
+    /// `velocity_range` is `(0, 0)`, and since a played velocity is scaled
+    /// into the range, that is a default which plays every note from every
+    /// device at the quietest. §14.3's rule that per-device config is "optional
     /// refinement, never required setup" makes the identity mapping the only
     /// correct default, and a range is the one field whose identity value is
     /// not its zero.
@@ -74,8 +74,8 @@ impl MappingTable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputSettings {
     pub velocity_curve: VelocityCurve,
-    /// The window an incoming velocity must fall inside to be this device's
-    /// note at all. Both ends inclusive.
+    /// What a played velocity is scaled into, after the curve: the softest
+    /// touch plays the first, the hardest the second.
     pub velocity_range: (u8, u8),
     pub transpose_semitones: i8,
     /// Which MIDI channel to listen to. `None` is all of them.

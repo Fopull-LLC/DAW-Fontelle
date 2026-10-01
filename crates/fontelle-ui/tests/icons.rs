@@ -164,3 +164,48 @@ fn there_is_a_help_icon_and_it_is_in_the_set_the_tests_walk() {
         "a question mark is a hook and a dot"
     );
 }
+
+/// Ty, 2026-10-01: *"the solo and mute icons that we added are too rigid
+/// looking compared to the nice clean and smooth designed icons we have for
+/// everything else. these 2 stand out because of these jagged hard
+/// edges."* What made them jagged, measured: filled polygons with bare
+/// corners (the cups, the speaker), and a headband that was three straight
+/// pieces meeting at a peak. The rest of the set is stroked with round joins.
+#[test]
+fn mute_and_solo_have_no_hard_corners() {
+    for icon in [Icon::Mute, Icon::Solo] {
+        let all = shapes(icon);
+        for shape in &all {
+            match shape {
+                // A fill is softened by an outline of the same points, which
+                // the round join rounds off.
+                Shape::Poly(points) => assert!(
+                    all.iter().any(|s| matches!(
+                        s,
+                        Shape::Line { points: p, closed: true } if p == points
+                    )),
+                    "{icon:?}: a filled shape with bare corners {points:?}"
+                ),
+                // An open stroke bends gently: no vertex turns it by more
+                // than a fifth of a right angle.
+                Shape::Line {
+                    points,
+                    closed: false,
+                } => {
+                    for w in points.windows(3) {
+                        let a = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                        let b = (w[2].0 - w[1].0, w[2].1 - w[1].1);
+                        let turn = (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
+                        assert!(
+                            turn.abs().to_degrees() <= 25.0,
+                            "{icon:?}: a {:.0}° corner at {:?}",
+                            turn.to_degrees(),
+                            w[1]
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}

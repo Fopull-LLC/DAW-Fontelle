@@ -63,6 +63,11 @@ pub struct Settings {
     pub projects_dir: Option<PathBuf>,
     /// A theme file, if the user has pointed at one (§16.6).
     pub theme: Option<PathBuf>,
+    /// The look chosen on the settings page, by its name in the theme
+    /// library (`themes.rs`). `None` is the default. `default` so a file
+    /// written before there was a choice is not a broken one.
+    #[serde(default)]
+    pub theme_name: Option<String>,
     /// How live MIDI input is read (§14.3).
     ///
     /// `default` rather than required, because a settings file written before
@@ -233,6 +238,7 @@ impl Default for Settings {
             format_version: SETTINGS_FORMAT_VERSION,
             soundfont_dirs: Vec::new(),
             projects_dir: None,
+            theme_name: None,
             theme: None,
             midi_input: MidiInputSettings::default(),
             midi_dir: None,
@@ -455,6 +461,22 @@ pub enum SettingRow {
     SongRouting,
     /// What a new song starts as: ask, rack-style or lane-style. A choice.
     NewSongRouting,
+    /// Which look the window wears, from the theme library. A choice; the
+    /// session answers its list, since the library is a folder.
+    Theme,
+    /// How round the corners are, 0 to 12 px. A slider; changing a built-in
+    /// look saves a copy of it.
+    CornerRounding,
+    /// A picture behind one panel, carried inside the theme. A button:
+    /// choose one, or take it off.
+    Backdrop(fontelle_ui::theme::BackdropPanel),
+    /// How strongly the pictures show. A slider.
+    PictureStrength,
+    /// Adds a `.fontelletheme` file to the library and wears it. A button.
+    ImportTheme,
+    /// Writes the look in use to a `.fontelletheme` file, to send to
+    /// someone. A button.
+    SaveTheme,
 }
 
 /// Every row the settings tab shows, in the order it shows them.
@@ -463,7 +485,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 26] = [
+pub const SETTING_ROWS: [SettingRow; 35] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -499,6 +521,17 @@ pub const SETTING_ROWS: [SettingRow; 26] = [
     SettingRow::Heading("Sharing"),
     SettingRow::YourName,
     SettingRow::Relay,
+    // How the window looks (`themes.rs`): the theme, its two easy knobs, its
+    // pictures, and the way in and out for a `.fontelletheme` file.
+    SettingRow::Heading("Appearance"),
+    SettingRow::Theme,
+    SettingRow::CornerRounding,
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Arrangement),
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Roll),
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Mixer),
+    SettingRow::PictureStrength,
+    SettingRow::ImportTheme,
+    SettingRow::SaveTheme,
     // Under its own heading, because it is about the network rather than
     // about a folder or a keyboard — and not "Sharing"'s, which is about
     // other people.
@@ -614,6 +647,16 @@ impl SettingRow {
             Self::Relay => "Relay",
             Self::SongRouting => "Routing in this song",
             Self::NewSongRouting => "New songs start as",
+            Self::Theme => "Theme",
+            Self::CornerRounding => "Corner rounding",
+            Self::Backdrop(panel) => match panel {
+                fontelle_ui::theme::BackdropPanel::Arrangement => "Arrangement picture",
+                fontelle_ui::theme::BackdropPanel::Roll => "Piano roll picture",
+                fontelle_ui::theme::BackdropPanel::Mixer => "Mixer picture",
+            },
+            Self::PictureStrength => "Picture strength",
+            Self::ImportTheme => "Import a theme",
+            Self::SaveTheme => "Save this theme",
         }
     }
 
@@ -722,6 +765,20 @@ impl SettingRow {
                 .relay
                 .clone()
                 .unwrap_or_else(|| "Floptle Cloud".to_string()),
+            // The theme's, answered by the session, which holds the theme;
+            // these are what a row shows with no session to ask.
+            Self::Theme => settings
+                .theme_name
+                .clone()
+                .unwrap_or_else(|| fontelle_ui::Theme::dark_default().name),
+            Self::CornerRounding => format!(
+                "{} px",
+                fontelle_ui::Theme::dark_default().metrics.corner_radius
+            ),
+            Self::Backdrop(_) => "None".to_string(),
+            Self::PictureStrength => "None set".to_string(),
+            // Pure actions: the button says what they do.
+            Self::ImportTheme | Self::SaveTheme => String::new(),
         }
     }
 
@@ -742,6 +799,10 @@ impl SettingRow {
             Self::PluginDir(_) => "Remove",
             Self::ImportFlFolders => "Import",
             Self::RescanPlugins => "Rescan",
+            Self::ImportTheme => "Import\u{2026}",
+            // "Remove" when one is set; the session knows, and says so.
+            Self::Backdrop(_) => "Choose\u{2026}",
+            Self::SaveTheme => "Save\u{2026}",
             Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
                 Some(extension) => {
                     let state = crate::extensions::ExtensionState::of(
@@ -770,8 +831,8 @@ impl SettingRow {
             Self::Heading(_) => "",
             Self::VelocityCurve => "How hard you play maps to how loud a note is",
             Self::FixedVelocity => "Every note at this velocity, with the Fixed curve",
-            Self::VelocityMin => "The softest a played note can be",
-            Self::VelocityMax => "The loudest a played note can be",
+            Self::VelocityMin => "What your softest touch plays",
+            Self::VelocityMax => "What your hardest touch plays",
             Self::Transpose => "Shifts what your MIDI keyboard plays, in semitones",
             Self::ChannelFilter => "Listen to one MIDI channel, or to all of them",
             Self::Folder(FolderKind::Midi) => "Where the Import tab looks for MIDI files",
@@ -790,6 +851,12 @@ impl SettingRow {
                 "Rack-style: instruments choose tracks. Lane-style: each lane owns a track"
             }
             Self::NewSongRouting => "Asked the first time you make a song, unless chosen here",
+            Self::Theme => "The look of the whole window \u{2014} yours are in the themes folder",
+            Self::CornerRounding => "Square and rigid, or soft and round",
+            Self::Backdrop(_) => "A PNG or JPEG behind the panel, kept inside the theme",
+            Self::PictureStrength => "How strongly the pictures show through",
+            Self::ImportTheme => "Add a .fontelletheme file someone sent you",
+            Self::SaveTheme => "Write this look to a .fontelletheme file to share",
         }
     }
 
@@ -822,7 +889,13 @@ impl SettingRow {
             | Self::YourName
             | Self::Relay
             | Self::SongRouting
-            | Self::NewSongRouting => {}
+            | Self::NewSongRouting
+            | Self::Theme
+            | Self::CornerRounding
+            | Self::Backdrop(_)
+            | Self::PictureStrength
+            | Self::ImportTheme
+            | Self::SaveTheme => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -898,7 +971,10 @@ impl SettingRow {
             Self::VelocityCurve
             | Self::ChannelFilter
             | Self::SongRouting
-            | Self::NewSongRouting => SettingControlKind::Choice,
+            | Self::NewSongRouting
+            | Self::Theme => SettingControlKind::Choice,
+            Self::CornerRounding | Self::PictureStrength => SettingControlKind::Slider,
+            Self::Backdrop(_) | Self::ImportTheme | Self::SaveTheme => SettingControlKind::Button,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }

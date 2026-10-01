@@ -87,12 +87,11 @@ pub struct LiveKeys {
 }
 
 /// Why a played note went nowhere: the settings' channel filter (with the
-/// channel it arrived on, 0-based) or their velocity window (with its
-/// velocity). What the window says instead of nothing.
+/// channel it arrived on, 0-based). What the window says instead of
+/// nothing. The velocity range scales a touch and never drops one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ignored {
     Channel(u8),
-    Velocity(u8),
 }
 
 impl LiveKeys {
@@ -124,7 +123,6 @@ impl LiveKeys {
     pub fn ignore(&self, why: Ignored) {
         let (reason, value) = match why {
             Ignored::Channel(channel) => (1u64, u64::from(channel)),
-            Ignored::Velocity(velocity) => (2u64, u64::from(velocity)),
         };
         let count = (self.ignored.load(Ordering::Relaxed) >> 16) + 1;
         self.ignored
@@ -140,10 +138,7 @@ impl LiveKeys {
             return None;
         }
         let value = (word & 0xff) as u8;
-        let why = match (word >> 8) & 0xff {
-            1 => Ignored::Channel(value),
-            _ => Ignored::Velocity(value),
-        };
+        let why = Ignored::Channel(value);
         Some((count, why))
     }
 
@@ -350,17 +345,6 @@ impl MidiRouter {
                 key,
                 velocity,
             } => {
-                let (low, high) = self.mapping.velocity_range;
-                if velocity < low || velocity > high {
-                    // Outside the device's velocity window: not this device's
-                    // note. Nothing is recorded as held, so the matching
-                    // note-off is dropped too rather than releasing a voice
-                    // that was never started. Counted, so the window can say.
-                    if let Some(lit) = &self.lit {
-                        lit.ignore(Ignored::Velocity(velocity));
-                    }
-                    return 0;
-                }
                 let Some(out_key) = self.map_key(key) else {
                     return 0;
                 };
@@ -376,7 +360,10 @@ impl MidiRouter {
                     sink,
                     EventPayload::NoteOn {
                         key: out_key,
-                        velocity: self.mapping.velocity_curve.apply(velocity),
+                        velocity: self
+                            .mapping
+                            .velocity_curve
+                            .apply_in(velocity, self.mapping.velocity_range),
                         // A MIDI note-on carries none of §16.5's per-note
                         // properties — they are the score's, not the
                         // keyboard's — so a played note is a note as written.
@@ -702,5 +689,27 @@ impl VelocityCurve {
             Self::Hard => normalised * normalised,
         };
         (shaped * 127.0).round().clamp(1.0, 127.0) as u8
+    }
+
+    /// The curve, then the range: the touch is bent and then **scaled**
+    /// into `(low, high)`, so the softest touch plays `low` and the hardest
+    /// `high`. Ty: *"if my velocity max is at 50%, putting the most pressure
+    /// on my midi keyboard will still only play a 50 percent velocity
+    /// note"* — the range was a gate that dropped notes outside it, which
+    /// is not what anyone setting a maximum means.
+    ///
+    /// A fixed velocity is a velocity, not a touch, so the range leaves it
+    /// alone. Floored at 1 for the reason [`apply`](Self::apply) is.
+    pub fn apply_in(self, velocity: u8, (low, high): (u8, u8)) -> u8 {
+        let shaped = self.apply(velocity);
+        if matches!(self, Self::Fixed(_)) {
+            return shaped;
+        }
+        let (low, high) = (low.min(high).min(127), high.max(low).min(127));
+        // 1 is the softest a note-on can be, so 1..=127 spans the range.
+        let t = f32::from(shaped.max(1) - 1) / 126.0;
+        (f32::from(low) + t * f32::from(high - low))
+            .round()
+            .clamp(1.0, 127.0) as u8
     }
 }

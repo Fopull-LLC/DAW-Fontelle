@@ -123,6 +123,9 @@ pub struct WelcomeLayout {
     pub logs: Rect,
     /// The `?` in the top right corner: the keyboard shortcuts page.
     pub help: Rect,
+    /// The gear beside it: the settings page. Ty: *"please also make the
+    /// settings menu accessible from the home page."*
+    pub settings: Rect,
     /// "Learn Fontelle": the tour, always one press away. Empty until
     /// [`with_learn`] places it.
     pub learn: Rect,
@@ -157,6 +160,7 @@ pub fn welcome_layout(
     // left and the recent list starts a heading's height down. A row square,
     // so it reads as a button and not a stray glyph.
     let help = Rect::new(inner.right() - row, inner.y, row, row).clamped();
+    let settings = Rect::new(help.x - BUTTON_GAP - row, inner.y, row, row).clamped();
 
     // The footer first, because everything else stops above it.
     let footer = Rect::new(inner.x, inner.y + inner.height - row, inner.width, row);
@@ -250,11 +254,11 @@ pub fn welcome_layout(
     // footer.
     let right_x = left.x + left.width + GUTTER;
     let right_width = (inner.x + inner.width - right_x).max(0.0);
-    // The heading stops short of the help button beside it.
+    // The heading stops short of the two buttons beside it.
     let recent_heading = Rect::new(
         right_x,
         inner.y,
-        (right_width - row - BUTTON_GAP).max(0.0),
+        (settings.x - BUTTON_GAP - right_x).max(0.0),
         row,
     );
     let rows_top = recent_heading.y + row + BUTTON_GAP;
@@ -298,6 +302,7 @@ pub fn welcome_layout(
         repository,
         logs,
         help,
+        settings,
         learn: Rect::ZERO,
         learn_card: None,
         learn_text: None,
@@ -366,6 +371,8 @@ pub enum WelcomeHit {
     Logs,
     /// The `?`: the keyboard shortcuts page.
     Help,
+    /// The gear: the settings page.
+    Settings,
     /// "Learn Fontelle" / "Take the tour".
     Learn,
     /// "No thanks" on the first-launch card.
@@ -426,6 +433,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.logs.contains(x, y) {
         return Some(WelcomeHit::Logs);
+    }
+    if layout.settings.contains(x, y) {
+        return Some(WelcomeHit::Settings);
     }
     if layout.help.contains(x, y) {
         return Some(WelcomeHit::Help);

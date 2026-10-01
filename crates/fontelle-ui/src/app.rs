@@ -241,6 +241,12 @@ enum Drag {
         strip: usize,
         send: usize,
     },
+    /// A patch cable's far plug, picked up off its jack and carried to
+    /// another track (`carried_cable` says which). The routing changes where
+    /// it is let go — `canvas::cable_drop_target`.
+    Cable,
+    /// The handle along the patch bay's top, giving it more or less room.
+    BaySeam,
     /// One insert's wet/dry, dragged along its groove. Absolute, like the
     /// send's level and for the same reason.
     InsertMix(usize),
@@ -965,6 +971,9 @@ pub struct WindowOptions {
     pub welcome: bool,
     /// The build's version, for the start menu's "Version …" line.
     pub version: String,
+    /// The theme was named on the command line (`--theme`, `--light`): keep
+    /// it, rather than wearing the one chosen on the settings page.
+    pub theme_fixed: bool,
 }
 
 impl Default for WindowOptions {
@@ -979,6 +988,7 @@ impl Default for WindowOptions {
             document: None,
             welcome: false,
             version: String::new(),
+            theme_fixed: false,
         }
     }
 }
@@ -1710,6 +1720,15 @@ pub struct WindowApp {
     /// Here rather than on `Drag`, which is compared, for the reason
     /// `MenuScroll` gives.
     cable_drag: Option<(f32, f32)>,
+    /// The theme's pictures, decoded when it was worn (`apply_theme`).
+    backdrops: crate::render::PanelBackdrops,
+    /// The host's theme revision this window last wore.
+    theme_seen: u64,
+    /// How wide the strips are and how tall the patch bay is — the person's
+    /// choice, by Ctrl+wheel and by the bay's handle.
+    mixer_view: crate::canvas::MixerView,
+    /// The cable whose far plug is in the hand (`Drag::Cable`).
+    carried_cable: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
     /// Which strip the track-options column is about, read with the rest of
     /// the studio's lists.
     selected_track: usize,
@@ -2324,7 +2343,13 @@ impl WindowApp {
                 total: 0,
                 scroll: 0,
                 patch: crate::layout::Rect::ZERO,
+                seam: crate::layout::Rect::ZERO,
+                strip_width: crate::canvas::STRIP_WIDTH,
             },
+            mixer_view: crate::canvas::MixerView::default(),
+            backdrops: Default::default(),
+            theme_seen: 0,
+            carried_cable: None,
             mixer_strips: Vec::new(),
             mixer_peaks: Vec::new(),
             mixer_scroll: 0,
@@ -2638,6 +2663,11 @@ impl WindowApp {
             self.open_help();
             return;
         }
+        // The gear: the settings page, over the card, as over the studio.
+        if hit == WelcomeHit::Settings {
+            self.open_settings_page(0);
+            return;
+        }
         // The tour: its song opens and the menu gives way to it. Offered on
         // first launch and never started by itself (§5).
         if hit == WelcomeHit::Learn || hit == WelcomeHit::DismissLearn {
@@ -2706,7 +2736,11 @@ impl WindowApp {
             // The menu stays up: the folder opens beside it, and a report
             // is written with the project still to be chosen.
             WelcomeHit::Logs => doc.reveal_logs_dir().map(|()| false),
-            WelcomeHit::Help | WelcomeHit::Join | WelcomeHit::Learn | WelcomeHit::DismissLearn => {
+            WelcomeHit::Help
+            | WelcomeHit::Settings
+            | WelcomeHit::Join
+            | WelcomeHit::Learn
+            | WelcomeHit::DismissLearn => {
                 unreachable!("handled above")
             }
         };
@@ -2881,6 +2915,7 @@ impl WindowApp {
             &Chrome {
                 field,
                 panel_title: &self.title,
+                backdrops: self.backdrops.clone(),
                 transport: TransportChrome {
                     layout: self.bar,
                     view: self.view,
@@ -3069,6 +3104,9 @@ impl WindowApp {
                     output: self.track_output,
                     cables: &cable_lines,
                     cable_hot,
+                    carrying_cable: self.drag == Drag::Cable,
+                    seam_hot: self.drag == Drag::BaySeam
+                        || self.hover_mixer == Some(MixerHit::BaySeam),
                     fed_by: &self.fed_by,
                     strip_glow,
                 }),
@@ -3671,6 +3709,8 @@ impl WindowApp {
             Drag::InsertRow => Some(Pointer::Grabbing),
             Drag::SendLevel(_) => Some(Pointer::ResizeX),
             Drag::SendKnob { .. } => Some(Pointer::ResizeY),
+            Drag::Cable => Some(Pointer::Grabbing),
+            Drag::BaySeam => Some(Pointer::ResizeY),
             Drag::InsertMix(_) => Some(Pointer::ResizeY),
             // A number being dragged up and down, like the tempo box.
             Drag::EqField(_) => Some(Pointer::ResizeY),
@@ -3772,7 +3812,19 @@ impl WindowApp {
             tab: self.tab,
             dragging: self.drag_pointer_shape(),
         };
-        let wanted = pointer_at(&scene, x, y);
+        let mut wanted = pointer_at(&scene, x, y);
+        // The wires are the window's, not the layout's: a knob turns, a wire
+        // is picked up.
+        if self.tab == EditorTab::Mixer
+            && self.drag == Drag::None
+            && self.mixer.patch.contains(x, y)
+        {
+            if self.cables.knob_at(x, y).is_some() {
+                wanted = Pointer::ResizeY;
+            } else if self.cables.cable_at(x, y).is_some() {
+                wanted = Pointer::Grab;
+            }
+        }
         if wanted == self.pointer {
             return;
         }
@@ -3951,7 +4003,9 @@ impl WindowApp {
             self.tree.invalidate(BROWSER);
         }
         let tab = editor_tab_at(&self.tabs, x, y);
-        let strip = (self.tab == EditorTab::Mixer)
+        // A wire in the hand lights where it would land (`strip_glow`), not
+        // the control under it.
+        let strip = (self.tab == EditorTab::Mixer && self.drag != Drag::Cable)
             .then(|| mixer_hit(&self.mixer, x, y))
             .filter(|hit| *hit != MixerHit::Nothing);
         let cable = (self.tab == EditorTab::Mixer && self.mixer.patch.contains(x, y))
@@ -4354,6 +4408,9 @@ impl ApplicationHandler for WindowApp {
             // is a note that follows the mouse around on its own.
             WindowEvent::Focused(false) => {
                 self.drag = Drag::None;
+                if self.carried_cable.take().is_some() {
+                    self.cables.let_go();
+                }
                 self.carry = None;
                 self.end_edge_scroll();
                 self.knob = None;
@@ -4458,6 +4515,10 @@ impl ApplicationHandler for WindowApp {
                 // one drag.
                 if matches!(self.drag, Drag::InsertRow) {
                     self.drop_insert_row();
+                }
+                if matches!(self.drag, Drag::Cable) {
+                    let (x, y) = self.cursor;
+                    self.drop_cable(x, y);
                 }
                 // A time selection lands where the button comes up, like a
                 // marquee: that is when it decides what it caught.
@@ -6411,12 +6472,13 @@ impl WindowApp {
         // well would silently overwrite an open editor's geometry with the
         // main panel's every time the sidebar seam was dragged, and every
         // knob in that window would then answer to the wrong pixels.
-        self.mixer = crate::canvas::mixer_layout_for(
+        self.mixer = crate::canvas::mixer_layout_view(
             self.layout.panel.body,
             m,
             &self.mixer_strips,
             self.mixer_scroll,
             Some(self.selected_track),
+            self.mixer_view,
         );
         self.rack = rack_layout(
             self.layout.rack.body,
@@ -6456,6 +6518,7 @@ impl WindowApp {
     /// The alternative — asking for `Vec<ChannelInfo>` every frame — allocates
     /// once a frame for a list that changes when somebody clicks something.
     fn refresh_studio(&mut self) {
+        self.refresh_theme();
         let Some(doc) = &mut self.options.document else {
             return;
         };
@@ -8009,6 +8072,15 @@ impl WindowApp {
                 return;
             }
         }
+        // The settings page opened from the start menu's gear is over the
+        // menu; its drop-downs are menus over the page.
+        if self.welcome.is_some() && self.settings_page.is_some() {
+            if self.menu.is_some() && self.press_menu(x, y) {
+                return;
+            }
+            self.press_settings_page(button, x, y);
+            return;
+        }
         // The start menu is the whole window while it is up — except for
         // the name prompt it opens, which is above it like any menu.
         if self.welcome.is_some() {
@@ -8462,6 +8534,20 @@ impl WindowApp {
             Drag::InsertRow => self.drag_insert_row(x, y),
             Drag::SendLevel(index) => self.drag_send_level(index, x),
             Drag::SendKnob { strip, send } => self.drag_send_knob(strip, send, y),
+            Drag::Cable => {
+                if let Some(key) = self.carried_cable {
+                    self.cables.hold(key, [x, y]);
+                    self.tree.invalidate(PANEL);
+                }
+            }
+            Drag::BaySeam => {
+                let height = crate::canvas::patch_height_at(self.layout.panel.body, y);
+                if (height - self.mixer_view.patch_height).abs() > 0.25 {
+                    self.mixer_view.patch_height = height;
+                    self.relayout_panels();
+                    self.tree.invalidate(PANEL);
+                }
+            }
             Drag::InsertMix(slot) => self.drag_insert_mix(slot, y),
             Drag::EqField(field) => self.drag_eq_field(field, y),
             Drag::Pan(strip) => self.drag_pan(strip, x),
@@ -8494,6 +8580,19 @@ impl WindowApp {
                 .map_or(crate::canvas::MIN_SEND_DB, |s| s.level_db);
             self.drag = Drag::SendKnob { strip, send };
             self.cable_drag = Some((y, db));
+            self.tree.invalidate(PANEL);
+            return;
+        }
+        // Then the wire itself: *"i want to be able to click on a wire to
+        // pick it up and move where its going to from one place to
+        // another."* The far plug comes off its jack into the hand.
+        if self.mixer.patch.contains(x, y)
+            && !self.mixer.seam.contains(x, y)
+            && let Some(key) = self.cables.cable_at(x, y)
+        {
+            self.drag = Drag::Cable;
+            self.carried_cable = Some(key);
+            self.cables.hold(key, [x, y]);
             self.tree.invalidate(PANEL);
             return;
         }
@@ -8541,6 +8640,9 @@ impl WindowApp {
             // *"a plus where you can add a new track there"* — and the new
             // track is selected, because it is the one you are about to put
             // something on.
+            MixerHit::BaySeam => {
+                self.drag = Drag::BaySeam;
+            }
             MixerHit::AddTrack => {
                 if let Some(doc) = &mut self.options.document {
                     doc.add_mixer_track();
@@ -8893,6 +8995,135 @@ impl WindowApp {
         self.tree.invalidate(PANEL);
     }
 
+    /// Wears the host's theme when it has changed — chosen, imported or
+    /// edited on the settings page. A theme named on the command line
+    /// (`WindowOptions::theme_fixed`) is kept.
+    fn refresh_theme(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let revision = doc.theme_revision();
+        if revision == self.theme_seen {
+            return;
+        }
+        self.theme_seen = revision;
+        if self.options.theme_fixed {
+            return;
+        }
+        let Some(theme) = doc.studio_theme() else {
+            return;
+        };
+        self.apply_theme(theme);
+    }
+
+    /// Puts `theme` on the window: its pictures decoded once here rather than
+    /// per frame, everything laid out again (its corners and borders are
+    /// metrics), and everything drawn again, the editor windows too.
+    fn apply_theme(&mut self, theme: Theme) {
+        if theme == self.options.theme {
+            return;
+        }
+        self.backdrops = crate::theme::BackdropPanel::ALL.map(|panel| {
+            let backdrop = theme.backdrops.get(panel)?;
+            Some((backdrop.decode()?, backdrop.opacity))
+        });
+        self.options.theme = theme;
+        self.relayout_panels();
+        self.tree.invalidate_rect(self.layout.window);
+        self.redraw_editors();
+        if let Some(live) = &self.live {
+            live.window.request_redraw();
+        }
+    }
+
+    /// Widens or narrows the mixer's strips by `factor`.
+    fn zoom_mixer(&mut self, factor: f32) {
+        let width = crate::canvas::mixer_zoomed(self.mixer_view.strip_width, factor);
+        if width == self.mixer_view.strip_width {
+            return;
+        }
+        self.mixer_view.strip_width = width;
+        self.relayout_panels();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A carried cable let go at `(x, y)`: rerouted to the track it is over,
+    /// or home again if that changes nothing or is not a track.
+    fn drop_cable(&mut self, x: f32, y: f32) {
+        let Some(key) = self.carried_cable.take() else {
+            return;
+        };
+        self.cables.let_go();
+        self.tree.invalidate(PANEL);
+        let Some(strip) = self.mixer_routes.iter().position(|r| r.id == key.track) else {
+            return;
+        };
+        let Some(target) = crate::canvas::cable_drop_target(&self.mixer, x, y) else {
+            return;
+        };
+        // A track into itself is the shortest feedback loop there is.
+        if target == strip {
+            return;
+        }
+        let master = self.master_strip();
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        match key.role {
+            crate::cables::CableRole::Output => {
+                let route = if Some(target) == master {
+                    None
+                } else {
+                    Some(target)
+                };
+                let on = doc.track_output_on(strip);
+                if doc.track_output(strip) == route && on {
+                    return;
+                }
+                if doc.track_output(strip) != route {
+                    // Refused if it would close a loop, and said so.
+                    doc.set_track_output(strip, route);
+                }
+                // A loose plug put into a jack is an output switched on.
+                if !on && doc.track_output(strip) == route {
+                    doc.set_track_output_on(strip, true);
+                }
+            }
+            crate::cables::CableRole::Send(index) => {
+                let Some(send) = doc
+                    .mixer_strips()
+                    .get(strip)
+                    .and_then(|s| s.sends.get(index))
+                    .cloned()
+                else {
+                    return;
+                };
+                if send.target == target {
+                    return;
+                }
+                // A send has no command that only re-points it (see
+                // `press_send_menu`), so it is a make and a delete — the make
+                // **first**, so a send refused for closing a loop leaves the
+                // old one where it was rather than deleting it. The new one
+                // keeps the old one's level and tap.
+                let before = doc.mixer_strips().get(strip).map_or(0, |s| s.sends.len());
+                doc.add_send(strip, target);
+                let after = doc.mixer_strips().get(strip).map_or(0, |s| s.sends.len());
+                if after <= before {
+                    return;
+                }
+                doc.set_send_level(strip, before, send.level_db);
+                if send.pre_fader {
+                    doc.toggle_send_pre_fader(strip, before);
+                }
+                doc.remove_send(strip, index);
+            }
+        }
+        doc.end_gesture();
+        self.refresh_studio();
+        self.refresh_title();
+    }
+
     /// Which strip and which of its sends a cable is, if it is a send.
     fn cable_send(
         &self,
@@ -8983,6 +9214,11 @@ impl WindowApp {
     /// chip, or an audio block on the arrangement — so where it goes is seen
     /// from both ends.
     fn strip_glow(&self) -> Option<usize> {
+        // A wire in the hand lights the track it would land on.
+        if self.drag == Drag::Cable {
+            let (x, y) = self.cursor;
+            return crate::canvas::cable_drop_target(&self.mixer, x, y);
+        }
         if let Some(RackHit::Route(row)) = self.hover_rack {
             let channel = self.channels.get(row)?;
             return crate::canvas::route_strip(channel.route, self.master_strip());
@@ -18479,6 +18715,13 @@ impl WindowApp {
             self.mixer_peaks.clear();
         }
         self.relayout_panels();
+        // *"whenever you swap windows and say open the mixer again the wires
+        // should kind of look like theyve been disturbed, then settle back
+        // down."* After the relayout, so the shake is of the cables as they
+        // now hang.
+        if tab == EditorTab::Mixer {
+            self.cables.disturb();
+        }
         self.tree.invalidate(PANEL);
     }
 
@@ -19191,6 +19434,16 @@ impl WindowApp {
     /// always about the middle: two ways of being somewhere you did not ask
     /// to be.
     fn zoom(&mut self, x: f32, y: f32) {
+        if self.tab == EditorTab::Mixer
+            && self
+                .layout
+                .panel
+                .body
+                .contains(self.cursor.0, self.cursor.1)
+        {
+            self.zoom_mixer(x);
+            return;
+        }
         if self
             .layout
             .timeline
@@ -19610,6 +19863,15 @@ impl WindowApp {
             return;
         }
 
+        if self.tab == EditorTab::Mixer
+            && self.layout.panel.body.contains(x, y)
+            && self.modifiers.control_key()
+        {
+            // Ctrl+wheel widens the strips, as it widens the arrangement's
+            // bars: *"currently youre only stuck to one size."*
+            self.zoom_mixer(1.15_f32.powf(dy));
+            return;
+        }
         if self.tab == EditorTab::Mixer && self.layout.panel.body.contains(x, y) {
             // The scrolling half only: the master is pinned, and its count is
             // not part of what can scroll past.

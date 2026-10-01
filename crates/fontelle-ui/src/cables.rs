@@ -44,6 +44,14 @@ pub const FADE_SECONDS: f32 = 0.35;
 /// How big the knob on a send's cable is, and so how near a press must land.
 pub const KNOB_RADIUS: f32 = 7.0;
 
+/// How near a wire a press must land to pick it up.
+pub const GRAB_RADIUS: f32 = 6.0;
+
+/// How hard [`Cables::disturb`] shakes a wire, in pixels per substep. Enough
+/// to be seen from across the room; little enough that it settles in about
+/// a second, as a bumped cable does.
+const SHAKE: f32 = 2.4;
+
 /// The substep. Fixed, so a slow frame is more steps rather than one big one
 /// — a rope integrated over a quarter of a second in one step explodes.
 const STEP: f32 = 1.0 / 240.0;
@@ -128,11 +136,50 @@ pub struct CableLine<T> {
     /// 1.0, and falling to nothing once the cable has been removed.
     pub alpha: f32,
     pub level_db: Option<f32>,
-    /// Where the send's knob is — on the wire, at its middle, so it moves
-    /// with it.
+    /// Where the send's knob is — on the plug the wire leaves from. Ty:
+    /// *"the knob ... is kind of odd how its just placed directly in the
+    /// middle of it, instead make the knob be on the origin point that the
+    /// wire is coming from."* It used to ride the middle, which also meant
+    /// it swung away from the pointer while being aimed at.
     pub knob: Option<Pt>,
     /// Whether the far end is in a jack. A loose end is drawn as a bare plug.
     pub plugged: bool,
+}
+
+/// How far along a wire its arrow sits, as a share of its length: near the
+/// jack it feeds, so it reads as an arrowhead, but clear of the plug.
+const ARROW_AT: f32 = 0.75;
+
+impl<T> CableLine<T> {
+    /// Where the wire's one direction mark goes and which way it points (a
+    /// unit vector, source to target), measured along the rope so it swings
+    /// with it. `None` for a wire going nowhere — loose, or in the hand —
+    /// and for one too short to carry it.
+    pub fn arrow(&self) -> Option<(Pt, [f32; 2])> {
+        if !self.plugged || self.points.len() < 2 {
+            return None;
+        }
+        let lengths: Vec<f32> = self
+            .points
+            .windows(2)
+            .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+            .collect();
+        let total: f32 = lengths.iter().sum();
+        if total < 24.0 {
+            return None;
+        }
+        let mut left = total * ARROW_AT;
+        for (w, len) in self.points.windows(2).zip(&lengths) {
+            if left <= *len && *len > 1e-3 {
+                let t = left / len;
+                let dir = [(w[1][0] - w[0][0]) / len, (w[1][1] - w[0][1]) / len];
+                let at = [w[0][0] + dir[0] * len * t, w[0][1] + dir[1] * len * t];
+                return Some((at, dir));
+            }
+            left -= len;
+        }
+        None
+    }
 }
 
 /// What the far end is doing.
@@ -144,6 +191,8 @@ enum Far {
     Plugging { from: Pt, t: f32 },
     /// Hanging free.
     Loose,
+    /// In the hand, being carried somewhere else.
+    Held(Pt),
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +337,92 @@ impl<T: Copy + Eq + Hash> Cables<T> {
         }
     }
 
+    /// Picks `key`'s far plug up and puts it at `at`, or moves it there if
+    /// it is already in the hand. The routing does not change until it is
+    /// let go — that is the window's decision, made from where.
+    pub fn hold(&mut self, key: CableKey<T>, at: Pt) {
+        let at = [at[0], at[1].min(self.floor)];
+        let Some(cable) = self
+            .cables
+            .iter_mut()
+            .find(|c| c.dying.is_none() && c.spec.key == key)
+        else {
+            return;
+        };
+        cable.far = Far::Held(at);
+        self.quiet = 0.0;
+    }
+
+    /// Lets go of whatever is held: it heads for its jack from where the
+    /// hand was. If the window has rerouted it, the sync that says so sends
+    /// it on to the new jack from the same place.
+    pub fn let_go(&mut self) {
+        for cable in &mut self.cables {
+            if let Far::Held(at) = cable.far {
+                cable.far = match cable.spec.to {
+                    Some(_) => Far::Plugging { from: at, t: 0.0 },
+                    None => Far::Loose,
+                };
+                self.quiet = 0.0;
+            }
+        }
+    }
+
+    /// Whether a wire is in the hand.
+    pub fn is_held(&self) -> bool {
+        self.cables.iter().any(|c| matches!(c.far, Far::Held(_)))
+    }
+
+    /// Shakes every wire, as if the bay had been bumped. *"whenever you swap
+    /// windows and say open the mixer again the wires should kind of look
+    /// like theyve been disturbed, then settle back down."* The plugs stay
+    /// in; the rope between them is given a kick and its own physics brings
+    /// it back.
+    ///
+    /// Not random: the same kick every time, varied along each wire and from
+    /// wire to wire so they do not move as one sheet.
+    pub fn disturb(&mut self) {
+        for (k, cable) in self.cables.iter_mut().enumerate() {
+            if cable.dying.is_some() {
+                continue;
+            }
+            let end = if matches!(cable.far, Far::Loose) {
+                SEGMENTS
+            } else {
+                SEGMENTS - 1
+            };
+            let phase = k as f32 * 1.7;
+            let lift = SHAKE * (0.7 + 0.3 * (k as f32 * 2.3).cos());
+            for i in 1..=end {
+                let along = std::f32::consts::PI * i as f32 / SEGMENTS as f32;
+                let v = [
+                    SHAKE * 0.6 * (i as f32 * 0.9 + phase).sin(),
+                    -lift * along.sin(),
+                ];
+                let p = cable.pos[i];
+                cable.prev[i] = [p[0] - v[0], p[1] - v[1]];
+            }
+        }
+        if !self.cables.is_empty() {
+            self.quiet = 0.0;
+        }
+    }
+
+    /// The wire under `(x, y)`, the topmost first. Its knob is
+    /// [`knob_at`](Self::knob_at)'s; ask that first.
+    pub fn cable_at(&self, x: f32, y: f32) -> Option<CableKey<T>> {
+        self.cables.iter().rev().find_map(|c| {
+            if c.dying.is_some() {
+                return None;
+            }
+            let hit = c
+                .pos
+                .windows(2)
+                .any(|w| distance_to_segment([x, y], w[0], w[1]) <= GRAB_RADIUS);
+            hit.then_some(c.spec.key)
+        })
+    }
+
     /// Whether anything will look different next frame. The window holds an
     /// animator on the tree while this is true (§16.3).
     pub fn is_moving(&self) -> bool {
@@ -388,6 +523,14 @@ impl<T: Copy + Eq> Cable<T> {
         let mut moved = spec.from != self.spec.from;
         self.pos[0] = spec.from;
         self.prev[0] = spec.from;
+        if let Far::Held(_) = self.far {
+            // In the hand: the routing may say what it likes until it is let
+            // go.
+            let want = measure(spec.from, spec.to, self.far, floor) / SEGMENTS as f32;
+            moved |= (want - self.want).abs() > 1e-3;
+            self.want = want;
+            return moved;
+        }
         let same_socket = match (self.spec.to, spec.to) {
             (Some((_, a)), Some((_, b))) => a == b,
             (None, None) => true,
@@ -429,6 +572,7 @@ impl<T: Copy + Eq> Cable<T> {
 
         // The far plug's place, if something other than the rope decides it.
         let pinned_far = match (&mut self.far, self.spec.to) {
+            (Far::Held(at), _) => Some(*at),
             (Far::Plugged, Some((to, _))) => Some(to),
             (Far::Plugging { from, t }, Some((to, _))) => {
                 *t += STEP / PLUG_SECONDS;
@@ -452,7 +596,7 @@ impl<T: Copy + Eq> Cable<T> {
         // travelling, never shorter than what reaches it, or the cable goes
         // ruler-straight behind a plug being carried away from its source.
         let mut want = self.want;
-        if let (Far::Plugging { .. }, Some(plug)) = (self.far, pinned_far) {
+        if let (Far::Plugging { .. } | Far::Held(_), Some(plug)) = (self.far, pinned_far) {
             let from = self.spec.from;
             let reach = (plug[0] - from[0]).hypot(plug[1] - from[1]) * 1.1 + 12.0;
             want = want.max(reach / SEGMENTS as f32);
@@ -514,15 +658,25 @@ impl<T: Copy + Eq> Cable<T> {
         fastest
     }
 
-    /// Over the middle of the wire — and never lower than a whole knob
-    /// above the floor: a long send lies on the floor of the bay, and a knob
-    /// drawn there was cut in half by its bottom edge.
+    /// On the plug the wire leaves from — and never lower than a whole knob
+    /// above the floor, or the bay's bottom edge cuts it in half.
     fn knob(&self, floor: f32) -> Option<Pt> {
         (self.spec.level_db.is_some() && self.dying.is_none()).then(|| {
-            let [x, y] = self.pos[SEGMENTS / 2];
+            let [x, y] = self.spec.from;
             [x, y.min(floor - KNOB_RADIUS)]
         })
     }
+}
+
+fn distance_to_segment(p: Pt, a: Pt, b: Pt) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 < 1e-6 {
+        0.0
+    } else {
+        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+    };
+    (p[0] - a[0] - d[0] * t).hypot(p[1] - a[1] - d[1] * t)
 }
 
 /// How long a cable is: enough to hang [`sag_for`] below its plugs, or

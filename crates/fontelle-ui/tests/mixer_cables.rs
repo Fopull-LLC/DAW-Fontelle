@@ -88,11 +88,12 @@ fn the_patch_bay_runs_under_every_strip_and_takes_nothing_from_the_options() {
 }
 
 #[test]
-fn a_short_panel_gives_up_the_bay_before_the_faders() {
+fn a_tiny_panel_gives_up_the_bay_before_the_faders() {
     // The fader floor again: a mixer is its faders. Too short for both, the
-    // cables go.
+    // cables go — but only when even a shrunk bay will not fit
+    // (`tests/mixer_view.rs`).
     let strips = strips(4);
-    let short = Rect::new(10.0, 40.0, 900.0, 150.0);
+    let short = Rect::new(10.0, 40.0, 900.0, 120.0);
     let l = mixer_layout(short, &metrics(), &strips, 0);
     assert!(l.patch.is_empty());
     assert_eq!(l.strips[0].frame.height, short.height);
@@ -209,7 +210,7 @@ fn the_selected_tracks_cables_are_lit_and_so_are_the_ones_arriving_at_it() {
 #[test]
 fn no_bay_no_cables() {
     let strips = strips(3);
-    let l = mixer_layout(Rect::new(10.0, 40.0, 900.0, 150.0), &metrics(), &strips, 0);
+    let l = mixer_layout(Rect::new(10.0, 40.0, 900.0, 120.0), &metrics(), &strips, 0);
     assert!(mixer_cables(&l, &strips, &routes(4), 0).is_empty());
 }
 

@@ -261,20 +261,73 @@ fn a_remapped_pad_plays_the_key_it_was_pointed_at() {
     assert_eq!(out.notes(), vec![("on", 60, 100), ("off", 60, 0)]);
 }
 
+/// The range is what a keyboard's touch is **scaled to**, not a window it
+/// must land in. Ty: *"if my velocity max is at 50%, putting the most
+/// pressure on my midi keyboard will still only play a 50 percent velocity
+/// note."* The softest touch plays the minimum, the hardest the maximum,
+/// and nothing is dropped.
 #[test]
-fn a_velocity_range_excludes_the_notes_outside_it_and_their_note_offs() {
+fn a_velocity_range_scales_the_touch_into_it() {
     let mut r = router(DeviceMapping {
-        velocity_range: (64, 127),
+        velocity_range: (40, 100),
         ..DeviceMapping::default()
     });
     let mut out = Recorder::default();
-
-    r.handle(&[NOTE_ON, 60, 40], &mut out);
-    r.handle(&[NOTE_OFF, 60, 0], &mut out);
-    assert!(
-        out.events.is_empty(),
-        "a note the device filtered out must not produce a lone note-off"
+    for (played, key) in [(127u8, 60u8), (1, 62), (64, 64)] {
+        r.handle(&[NOTE_ON, key, played], &mut out);
+        r.handle(&[NOTE_OFF, key, 0], &mut out);
+    }
+    assert_eq!(
+        out.notes(),
+        vec![
+            ("on", 60, 100),
+            ("off", 60, 0),
+            ("on", 62, 40),
+            ("off", 62, 0),
+            ("on", 64, 70),
+            ("off", 64, 0),
+        ],
+        "hardest is the max, softest the min, the middle in between — and \
+         every note still has its release"
     );
+}
+
+#[test]
+fn a_velocity_max_of_half_caps_the_hardest_touch_at_half() {
+    let mut r = router(DeviceMapping {
+        velocity_range: (0, 64),
+        ..DeviceMapping::default()
+    });
+    let mut out = Recorder::default();
+    r.handle(&[NOTE_ON, 60, 127], &mut out);
+    r.handle(&[NOTE_ON, 62, 1], &mut out);
+    assert_eq!(
+        out.notes(),
+        vec![("on", 60, 64), ("on", 62, 1)],
+        "a range starting at 0 still never plays velocity 0, which is a note-off"
+    );
+}
+
+#[test]
+fn the_curve_bends_the_touch_before_it_is_scaled() {
+    // A curve is the feel of the keyboard; the range is where that feel
+    // lands. Full scale on any curve reaches the max, and a fixed velocity
+    // is a velocity, not a touch — the range leaves it alone.
+    for (curve, expect) in [
+        (VelocityCurve::Hard, 64u8),
+        (VelocityCurve::Soft, 64),
+        (VelocityCurve::Linear, 64),
+        (VelocityCurve::Fixed(100), 100),
+    ] {
+        let mut r = router(DeviceMapping {
+            velocity_curve: curve,
+            velocity_range: (0, 64),
+            ..DeviceMapping::default()
+        });
+        let mut out = Recorder::default();
+        r.handle(&[NOTE_ON, 60, 127], &mut out);
+        assert_eq!(out.notes(), vec![("on", 60, expect)], "{curve:?}");
+    }
 }
 
 #[test]

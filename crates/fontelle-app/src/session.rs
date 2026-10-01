@@ -473,6 +473,10 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// The look the window wears, from the theme library (`themes.rs`), and a
+    /// count the window watches to know it changed.
+    theme: fontelle_ui::Theme,
+    theme_revision: u64,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -697,6 +701,13 @@ const PREVIEW_BUCKETS_MIN: usize = 512;
 /// project full of long takes costs to hold.
 const PREVIEW_BUCKETS_MAX: usize = 1 << 16;
 
+/// How strongly a first picture shows: enough to see, not enough to read
+/// over.
+const DEFAULT_PICTURE_STRENGTH: f32 = 0.35;
+
+/// The roundest a theme's corners go on the settings page's slider.
+const MAX_CORNER_ROUNDING: f32 = 12.0;
+
 /// How loud an oscillator comes on at when a sound is dropped onto it.
 ///
 /// Under the Init patch's own first oscillator (−12 dB) rather than level
@@ -734,6 +745,17 @@ impl Session {
                 _ => <Self as StudioHost>::rescan_plugins(self),
             }
             self.touch();
+            return;
+        }
+        // The Appearance buttons: a picker each, and the theme's.
+        if matches!(
+            row,
+            crate::settings::SettingRow::Backdrop(_)
+                | crate::settings::SettingRow::ImportTheme
+                | crate::settings::SettingRow::SaveTheme
+        ) {
+            let row = *row;
+            self.press_theme_row(row);
             return;
         }
         // An extension row is a button too: install it, or remove it.
@@ -1356,6 +1378,10 @@ impl Session {
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
             open_insert: None,
+            theme: crate::themes::ThemeLibrary::new(Self::themes_dir_for(None))
+                .load(settings.theme_name.as_deref().unwrap_or_default())
+                .unwrap_or_else(fontelle_ui::Theme::dark_default),
+            theme_revision: 1,
             settings,
             settings_path: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -1484,8 +1510,189 @@ impl Session {
             self.message = Some(e.to_string());
         }
         self.settings_path = Some(path);
+        self.theme = self
+            .theme_library()
+            .load(self.settings.theme_name.as_deref().unwrap_or_default())
+            .unwrap_or_else(fontelle_ui::Theme::dark_default);
+        self.theme_revision += 1;
         self.read_import_folder();
         self
+    }
+
+    // ----------------------------------------------------------- themes ---
+
+    /// Where the theme library is: beside the settings file.
+    fn themes_dir_for(settings_path: Option<&Path>) -> PathBuf {
+        settings_path
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(Settings::config_dir)
+            .unwrap_or_else(std::env::temp_dir)
+            .join("themes")
+    }
+
+    /// The looks to choose from: the built-ins, and the user's files.
+    pub fn theme_library(&self) -> crate::themes::ThemeLibrary {
+        crate::themes::ThemeLibrary::new(Self::themes_dir_for(self.settings_path.as_deref()))
+    }
+
+    /// The look in use.
+    pub fn theme(&self) -> fontelle_ui::Theme {
+        self.theme.clone()
+    }
+
+    /// Puts `theme` on the window and remembers its name for next time.
+    fn wear_theme(&mut self, theme: fontelle_ui::Theme) {
+        self.settings.theme_name =
+            (theme.name != fontelle_ui::Theme::dark_default().name).then(|| theme.name.clone());
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.theme = theme;
+        self.theme_revision += 1;
+        self.touch();
+    }
+
+    /// Wears the library's look called `name`.
+    pub fn choose_theme(&mut self, name: &str) -> bool {
+        match self.theme_library().load(name) {
+            Some(theme) => {
+                if theme != self.theme {
+                    self.wear_theme(theme);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Changes the look in use — on a copy of it if it is built in, so a
+    /// built-in look is never written over. The copy is called
+    /// "Midnight (mine)", saved into the library and worn.
+    fn edit_theme(&mut self, edit: impl FnOnce(&mut fontelle_ui::Theme)) -> Result<(), String> {
+        let library = self.theme_library();
+        let mut theme = self.theme.clone();
+        if fontelle_ui::Theme::builtins()
+            .iter()
+            .any(|t| t.name == theme.name)
+        {
+            theme.name = library.unique_name(&format!("{} (mine)", theme.name));
+        }
+        edit(&mut theme);
+        if theme == self.theme {
+            return Ok(());
+        }
+        library.save(&theme)?;
+        self.wear_theme(theme);
+        Ok(())
+    }
+
+    /// Puts the picture at `path` behind `panel`, inside the theme, or takes
+    /// it off with `None`. A file that is not a picture is refused before
+    /// anything is copied.
+    pub fn set_backdrop_from(
+        &mut self,
+        panel: fontelle_ui::theme::BackdropPanel,
+        path: Option<&Path>,
+    ) -> Result<(), String> {
+        let backdrop = match path {
+            Some(path) => {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                Some(
+                    fontelle_ui::theme::Backdrop::from_image_bytes(&bytes, self.picture_strength())
+                        .map_err(|e| e.to_string())?,
+                )
+            }
+            None => None,
+        };
+        if backdrop.is_none() && self.theme.backdrops.get(panel).is_none() {
+            return Ok(());
+        }
+        self.edit_theme(|theme| theme.backdrops.set(panel, backdrop))
+    }
+
+    /// How strongly the pictures show: the strongest one's, or where a first
+    /// picture starts.
+    fn picture_strength(&self) -> f32 {
+        fontelle_ui::theme::BackdropPanel::ALL
+            .iter()
+            .filter_map(|panel| self.theme.backdrops.get(*panel))
+            .map(|b| b.opacity)
+            .fold(None, |most: Option<f32>, o| {
+                Some(most.map_or(o, |m| m.max(o)))
+            })
+            .unwrap_or(DEFAULT_PICTURE_STRENGTH)
+    }
+
+    /// Writes the look in use to `path`, a `.fontelletheme` to send.
+    pub fn export_theme_to(&self, path: &Path) -> Result<(), String> {
+        std::fs::write(path, self.theme.to_json())
+            .map_err(|e| format!("could not write {}: {e}", path.display()))
+    }
+
+    /// Adds the theme at `path` to the library and wears it. Answers the
+    /// name it is listed under.
+    pub fn import_theme_from(&mut self, path: &Path) -> Result<String, String> {
+        let library = self.theme_library();
+        let name = library.import(path)?;
+        if let Some(theme) = library.load(&name) {
+            self.wear_theme(theme);
+        }
+        Ok(name)
+    }
+
+    /// The settings page's Appearance buttons: a picker, then the work.
+    fn press_theme_row(&mut self, row: crate::settings::SettingRow) {
+        use crate::settings::SettingRow;
+        let start = self.settings.projects_dir.clone();
+        let result = match row {
+            SettingRow::Backdrop(panel) if self.theme.backdrops.get(panel).is_some() => self
+                .set_backdrop_from(panel, None)
+                .map(|()| format!("{} picture taken off", panel.label())),
+            SettingRow::Backdrop(panel) => match crate::desktop::choose_open_file(
+                &format!("A picture behind the {}", panel.label().to_lowercase()),
+                start.as_deref(),
+                "*.png *.jpg *.jpeg",
+            ) {
+                Ok(Some(path)) => self
+                    .set_backdrop_from(panel, Some(&path))
+                    .map(|()| format!("{} picture set, in {}", panel.label(), self.theme.name)),
+                Ok(None) => return,
+                Err(e) => Err(e),
+            },
+            SettingRow::ImportTheme => match crate::desktop::choose_open_file(
+                "Import a theme",
+                start.as_deref(),
+                &format!("*.{}", fontelle_ui::theme::THEME_EXTENSION),
+            ) {
+                Ok(Some(path)) => self
+                    .import_theme_from(&path)
+                    .map(|name| format!("Wearing {name}, now in your themes")),
+                Ok(None) => return,
+                Err(e) => Err(e),
+            },
+            SettingRow::SaveTheme => {
+                let name = format!(
+                    "{}.{}",
+                    crate::themes::file_stem(&self.theme.name),
+                    fontelle_ui::theme::THEME_EXTENSION
+                );
+                match crate::desktop::choose_save_file("Save this theme", &name, start.as_deref()) {
+                    Ok(Some(path)) => self
+                        .export_theme_to(&path)
+                        .map(|()| format!("Saved {}", crate::desktop::elide_path(&path, 2))),
+                    Ok(None) => return,
+                    Err(e) => Err(e),
+                }
+            }
+            _ => return,
+        };
+        match result {
+            Ok(said) => self.settings_toast = Some((said, false)),
+            Err(why) => self.message = Some(why),
+        }
+        self.touch();
     }
 
     /// Reads the folder the Import tab opens on, **now**, rather than the
@@ -8394,6 +8601,21 @@ impl StudioHost for Session {
                         crate::settings::routing_label(Some(self.project.lane_routing.mode))
                             .to_string()
                     }
+                    // The theme's, which the session holds.
+                    crate::settings::SettingRow::Theme => self.theme.name.clone(),
+                    crate::settings::SettingRow::CornerRounding => {
+                        format!("{} px", self.theme.metrics.corner_radius.round())
+                    }
+                    crate::settings::SettingRow::Backdrop(panel) => {
+                        if self.theme.backdrops.get(*panel).is_some() {
+                            "Set".to_string()
+                        } else {
+                            "None".to_string()
+                        }
+                    }
+                    crate::settings::SettingRow::PictureStrength => {
+                        format!("{}%", (self.picture_strength() * 100.0).round())
+                    }
                     _ => row.value(&self.settings),
                 };
                 LibraryEntry::file(row.label(&self.settings), value)
@@ -8481,6 +8703,14 @@ impl StudioHost for Session {
             .collect()
     }
 
+    fn theme_revision(&self) -> u64 {
+        self.theme_revision
+    }
+
+    fn studio_theme(&self) -> Option<fontelle_ui::Theme> {
+        Some(self.theme.clone())
+    }
+
     fn setting_controls(&self) -> Vec<fontelle_ui::canvas::SettingControl> {
         use crate::settings::SettingControlKind as K;
         use fontelle_ui::canvas::SettingControl;
@@ -8490,11 +8720,39 @@ impl StudioHost for Session {
             .map(|row| match row.control_kind() {
                 K::Heading => SettingControl::Heading,
                 K::Button => SettingControl::Button {
-                    caption: row.caption(&self.settings),
+                    caption: match row {
+                        crate::settings::SettingRow::Backdrop(panel) => {
+                            if self.theme.backdrops.get(*panel).is_some() {
+                                "Remove".to_string()
+                            } else {
+                                "Choose\u{2026}".to_string()
+                            }
+                        }
+                        _ => row.caption(&self.settings),
+                    },
                 },
                 K::Slider => SettingControl::Slider {
-                    fraction: row.fraction(midi).unwrap_or(0.0),
+                    fraction: match row {
+                        crate::settings::SettingRow::CornerRounding => {
+                            (self.theme.metrics.corner_radius / MAX_CORNER_ROUNDING).clamp(0.0, 1.0)
+                        }
+                        crate::settings::SettingRow::PictureStrength => self.picture_strength(),
+                        _ => row.fraction(midi).unwrap_or(0.0),
+                    },
                 },
+                K::Choice if *row == crate::settings::SettingRow::Theme => {
+                    let options: Vec<String> = self
+                        .theme_library()
+                        .entries()
+                        .into_iter()
+                        .map(|e| e.name)
+                        .collect();
+                    let chosen = options
+                        .iter()
+                        .position(|n| *n == self.theme.name)
+                        .unwrap_or(0);
+                    SettingControl::Choice { options, chosen }
+                }
                 K::Choice => {
                     let (options, chosen) = row
                         .routing_choices(&self.settings, self.project.lane_routing.mode)
@@ -8519,6 +8777,34 @@ impl StudioHost for Session {
         let Some(row) = rows.get(index).copied() else {
             return;
         };
+        match row {
+            crate::settings::SettingRow::CornerRounding => {
+                let radius = (fraction.clamp(0.0, 1.0) * MAX_CORNER_ROUNDING).round();
+                if let Err(e) = self.edit_theme(|t| t.metrics.corner_radius = radius) {
+                    self.message = Some(e);
+                }
+                return;
+            }
+            crate::settings::SettingRow::PictureStrength => {
+                let strength = fraction.clamp(0.0, 1.0);
+                if self.theme.backdrops.is_empty() {
+                    return;
+                }
+                let result = self.edit_theme(|t| {
+                    for panel in fontelle_ui::theme::BackdropPanel::ALL {
+                        if let Some(mut b) = t.backdrops.get(panel).cloned() {
+                            b.opacity = strength;
+                            t.backdrops.set(panel, Some(b));
+                        }
+                    }
+                });
+                if let Err(e) = result {
+                    self.message = Some(e);
+                }
+                return;
+            }
+            _ => {}
+        }
         let before = self.settings.midi_input;
         row.set_fraction(&mut self.settings.midi_input, fraction);
         if self.settings.midi_input == before {
@@ -8535,6 +8821,14 @@ impl StudioHost for Session {
             return;
         };
         match row {
+            SettingRow::Theme => {
+                let entries = self.theme_library().entries();
+                if let Some(entry) = entries.get(option) {
+                    let name = entry.name.clone();
+                    self.choose_theme(&name);
+                }
+                return;
+            }
             SettingRow::SongRouting => {
                 let mode = if option == 1 {
                     RoutingMode::Lane
@@ -9770,10 +10064,6 @@ impl StudioHost for Session {
                 input
                     .channel_filter
                     .map_or("all".to_string(), |c| c.to_string())
-            ),
-            fontelle_midi::Ignored::Velocity(velocity) => format!(
-                "velocity {velocity} note ignored \u{2014} velocity window is {}\u{2013}{} (Settings)",
-                input.velocity_min, input.velocity_max
             ),
         })
     }

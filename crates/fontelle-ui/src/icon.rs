@@ -199,6 +199,18 @@ pub const EVERY_ICON: [Icon; 42] = [
     Icon::People,
 ];
 
+/// Points along a circle's arc, from `from` to `to` degrees (y down, so 270
+/// is the top), in `pieces` straight pieces — a curve in the polyline
+/// vocabulary, smooth once each piece turns only a little.
+fn arc(at: (f32, f32), r: f32, from: f32, to: f32, pieces: usize) -> Vec<(f32, f32)> {
+    (0..=pieces)
+        .map(|i| {
+            let a = (from + (to - from) * i as f32 / pieces as f32).to_radians();
+            (at.0 + r * a.cos(), at.1 + r * a.sin())
+        })
+        .collect()
+}
+
 /// What `icon` is made of, in the unit box.
 pub fn shapes(icon: Icon) -> Vec<Shape> {
     match icon {
@@ -362,31 +374,43 @@ pub fn shapes(icon: Icon) -> Vec<Shape> {
             Shape::closed(&[(0.24, 0.26), (0.76, 0.26), (0.68, 0.90), (0.32, 0.90)]),
             Shape::line(&[(0.38, 0.14), (0.62, 0.14)]),
         ],
-        // A speaker, crossed out.
-        Icon::Mute => vec![
-            Shape::poly(&[
-                (0.10, 0.38),
-                (0.28, 0.38),
-                (0.48, 0.16),
-                (0.48, 0.84),
-                (0.28, 0.62),
-                (0.10, 0.62),
-            ]),
-            Shape::line(&[(0.62, 0.34), (0.90, 0.66)]),
-            Shape::line(&[(0.90, 0.34), (0.62, 0.66)]),
-        ],
-        // Headphones: the band, and the two cups.
-        Icon::Solo => vec![
-            Shape::line(&[
-                (0.14, 0.66),
-                (0.14, 0.46),
-                (0.50, 0.16),
-                (0.86, 0.46),
-                (0.86, 0.66),
-            ]),
-            Shape::poly(&[(0.06, 0.58), (0.24, 0.58), (0.24, 0.88), (0.06, 0.88)]),
-            Shape::poly(&[(0.76, 0.58), (0.94, 0.58), (0.94, 0.88), (0.76, 0.88)]),
-        ],
+        // A speaker, crossed out. Filled and outlined with the same points,
+        // so the round join softens its corners — Ty: *"too rigid looking
+        // compared to the nice clean and smooth designed icons we have for
+        // everything else."*
+        Icon::Mute => {
+            let cone = [
+                (0.12, 0.40),
+                (0.28, 0.40),
+                (0.48, 0.22),
+                (0.48, 0.78),
+                (0.28, 0.60),
+                (0.12, 0.60),
+            ];
+            vec![
+                Shape::poly(&cone),
+                Shape::closed(&cone),
+                Shape::line(&[(0.64, 0.38), (0.88, 0.62)]),
+                Shape::line(&[(0.88, 0.38), (0.64, 0.62)]),
+            ]
+        }
+        // Headphones: a round band, and two soft cups. The band was three
+        // straight pieces meeting at a peak, which is what made it read as
+        // a roof rather than a headband.
+        Icon::Solo => {
+            let mut band = vec![(0.16, 0.66)];
+            band.extend(arc((0.50, 0.58), 0.34, 180.0, 360.0, 12));
+            band.push((0.84, 0.66));
+            let left = [(0.08, 0.60), (0.24, 0.60), (0.24, 0.86), (0.08, 0.86)];
+            let right = [(0.76, 0.60), (0.92, 0.60), (0.92, 0.86), (0.76, 0.86)];
+            vec![
+                Shape::line(&band),
+                Shape::poly(&left),
+                Shape::closed(&left),
+                Shape::poly(&right),
+                Shape::closed(&right),
+            ]
+        }
         // A horseshoe magnet, feet down — the snap glyph everywhere.
         Icon::Magnet => vec![
             Shape::line(&[

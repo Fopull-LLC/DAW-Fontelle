@@ -31,6 +31,12 @@ winit = "0.30.13"
 # start menu draws and the icon the window wears. See `branding.rs` for why
 # the logo is tinted rather than drawn as shipped.
 png = "0.18.1"
+# A theme's backdrop images ride inside the `.fontelletheme` file, so one
+# file shares the whole look: base64 in the JSON (the version already in the
+# tree), and JPEG as well as PNG, because a wallpaper is usually a JPEG.
+base64 = "0.22.1"
+zune-jpeg = "0.4"
+zune-core = "0.4"
 
 # Bringing an editor window to the front under Wayland — see `activation.rs`.
 # `winit` already speaks the protocol to get a window *created* in front, and

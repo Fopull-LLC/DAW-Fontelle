@@ -74,6 +74,8 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+# A picture to put behind a panel, in `tests/themes.rs`.
+png = "0.18.1"
 # Built for its side effect: the CLAP bundle `tests/plugin_hosting.rs` loads.
 fontelle-testplug = { path = "../fontelle-testplug" }
 fontelle-testlv2 = { path = "../fontelle-testlv2" }

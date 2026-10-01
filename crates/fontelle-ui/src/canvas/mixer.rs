@@ -19,12 +19,55 @@ use crate::document::MixerStrip;
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
-/// How wide one channel strip is.
+/// How wide one channel strip is, until somebody zooms.
 ///
-/// Fixed rather than shared out across the panel, because a mixer is a thing
-/// you learn the shape of: a strip that changes width when a track is added is
-/// one whose fader is somewhere new every time you look.
+/// Not shared out across the panel, because a mixer is a thing you learn the
+/// shape of: a strip that changes width when a track is added is one whose
+/// fader is somewhere new every time you look. It changes only when asked —
+/// Ctrl+wheel, like the arrangement ([`mixer_zoomed`]): *"currently youre
+/// only stuck to one size."*
 pub const STRIP_WIDTH: f32 = 76.0;
+
+/// The narrowest a zoom takes a strip: the mute and solo still side by side.
+pub const MIN_STRIP_WIDTH: f32 = 52.0;
+
+/// The widest: a long track name whole, without a mixer of three strips.
+pub const MAX_STRIP_WIDTH: f32 = 160.0;
+
+/// How the mixer is being looked at: what the person chose, not what the
+/// document says. Kept by the window across tab switches.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MixerView {
+    /// See [`STRIP_WIDTH`].
+    pub strip_width: f32,
+    /// How tall the patch bay is asked to be — dragged by its handle
+    /// ([`patch_height_at`]). The panel gives it less when it is short.
+    pub patch_height: f32,
+}
+
+impl Default for MixerView {
+    fn default() -> Self {
+        Self {
+            strip_width: STRIP_WIDTH,
+            patch_height: PATCH_HEIGHT,
+        }
+    }
+}
+
+/// A strip width zoomed by `factor`, kept between the two ends.
+pub fn mixer_zoomed(width: f32, factor: f32) -> f32 {
+    (width * factor).clamp(MIN_STRIP_WIDTH, MAX_STRIP_WIDTH)
+}
+
+/// The bay height a handle dragged to `y` asks for, in a panel of `body`.
+///
+/// Clamped both ways for the reason every seam here is: a bay dragged to
+/// nothing takes its own handle with it, and one dragged over the faders
+/// takes the mixer.
+pub fn patch_height_at(body: Rect, y: f32) -> f32 {
+    let most = (body.height - MIN_STRIP_WITH_PATCH).max(MIN_PATCH_HEIGHT);
+    (body.bottom() - y).clamp(MIN_PATCH_HEIGHT, most)
+}
 
 /// Between strips, and inside one.
 const GAP: f32 = 4.0;
@@ -313,15 +356,41 @@ pub struct MixerLayout {
     /// under the options column: that is about one track, and it keeps its
     /// height.
     pub patch: Rect,
+    /// The handle along the bay's top edge, dragged to give it more or less
+    /// of the panel. Empty without a bay.
+    ///
+    /// > *"i also cant control how big the wiring section is at the bottom
+    /// > its just auto sized so that it dissappears if the mixer doesnt have
+    /// > enough space ... give it a handle where it can be dragged up or
+    /// > down"*
+    pub seam: Rect,
+    /// How wide each strip is here — [`MixerView::strip_width`].
+    pub strip_width: f32,
 }
 
-/// How tall the patch bay is: a jack, and room under it for a cable to hang.
-pub const PATCH_HEIGHT: f32 = 46.0;
+/// The widest a fader gets, however far the strips are zoomed: what a
+/// default strip gives it.
+const MAX_FADER_WIDTH: f32 = 52.0;
 
-/// How tall a strip must still be for the panel to give the bay room. Below
-/// this the bay goes before the faders do — [`MIN_FADER_HEIGHT`]'s rule, one
-/// step earlier.
-const MIN_STRIP_WITH_PATCH: f32 = 220.0;
+/// How tall the patch bay is until somebody drags its handle: a jack, a
+/// couple of sends under it, and room for a cable to hang.
+pub const PATCH_HEIGHT: f32 = 72.0;
+
+/// The shortest a bay is dragged to, or squeezed to by a short panel: one
+/// row of jacks and a little sag.
+pub const MIN_PATCH_HEIGHT: f32 = 24.0;
+
+/// How tall the strips stay however the bay is dragged. Below this the bay
+/// shrinks, and then goes, before the faders give anything up —
+/// [`MIN_FADER_HEIGHT`]'s rule, one step earlier.
+const MIN_STRIP_WITH_PATCH: f32 = 120.0;
+
+/// How tall the bay's handle is to aim at, centred on its top edge.
+const SEAM_HEIGHT: f32 = 6.0;
+
+/// How far apart a strip's send jacks sit, down the column under its
+/// output: a knob and a little air.
+const SEND_JACK_STEP: f32 = 2.0 * crate::cables::KNOB_RADIUS + 3.0;
 
 /// How far down the bay the jacks sit.
 const JACK_INSET: f32 = 9.0;
@@ -403,12 +472,15 @@ pub fn mixer_cables<T: Copy>(
             let Some(to) = plug(send.target) else {
                 continue;
             };
+            let Some(from) = layout.send_jack(index, n) else {
+                continue;
+            };
             out.push(CableSpec {
                 key: CableKey {
                     track: route.id,
                     role: CableRole::Send(n),
                 },
-                from: jacks.output,
+                from,
                 to: Some(to),
                 color: strip.color,
                 lit: index == selected || send.target == selected,
@@ -439,14 +511,28 @@ impl MixerLayout {
                     Some(m) if index > m.index => index - 1,
                     _ => index,
                 };
-                self.list.x + (slot as f32 - self.scroll as f32) * (STRIP_WIDTH + GAP)
+                self.list.x + (slot as f32 - self.scroll as f32) * (self.strip_width + GAP)
             }
         };
         let y = self.patch.y + JACK_INSET;
         Some(Jacks {
-            input: [column + STRIP_WIDTH * JACK_IN_AT, y],
-            output: [column + STRIP_WIDTH * JACK_OUT_AT, y],
+            input: [column + self.strip_width * JACK_IN_AT, y],
+            output: [column + self.strip_width * JACK_OUT_AT, y],
         })
+    }
+
+    /// Where strip `index`'s send number `send` leaves from, with its level
+    /// knob on it: down the column under the output jack, one knob apart, so
+    /// every send is its own knob rather than all of them on one plug. A
+    /// list longer than the bay is deep stacks its last ones on the bottom
+    /// row rather than under the floor.
+    pub fn send_jack(&self, index: usize, send: usize) -> Option<Pt> {
+        let out = self.jacks(index)?.output;
+        let lowest = (self.patch.bottom() - crate::cables::KNOB_RADIUS - 3.0).max(out[1]);
+        Some([
+            out[0],
+            (out[1] + (send + 1) as f32 * SEND_JACK_STEP).min(lowest),
+        ])
     }
 
     /// The options column's rectangle, or an empty one. For callers — chiefly
@@ -485,6 +571,26 @@ pub fn mixer_layout_for(
     scroll: usize,
     selected: Option<usize>,
 ) -> MixerLayout {
+    mixer_layout_view(
+        body,
+        metrics,
+        strips,
+        scroll,
+        selected,
+        MixerView::default(),
+    )
+}
+
+/// The same, as `view` asks: the strips at its width, the bay at its height.
+pub fn mixer_layout_view(
+    body: Rect,
+    metrics: &Metrics,
+    strips: &[MixerStrip],
+    scroll: usize,
+    selected: Option<usize>,
+    view: MixerView,
+) -> MixerLayout {
+    let strip_width = view.strip_width.clamp(MIN_STRIP_WIDTH, MAX_STRIP_WIDTH);
     let master_index = strips.iter().position(|s| s.is_master);
 
     if body.is_empty() {
@@ -498,13 +604,17 @@ pub fn mixer_layout_for(
             total: strips.len(),
             scroll,
             patch: Rect::ZERO,
+            seam: Rect::ZERO,
+            strip_width,
         };
     }
 
-    // The patch bay comes off the bottom, under the master and the strips —
-    // only while the strips stay tall enough to be worth using.
-    let patch_height = if body.height >= PATCH_HEIGHT + MIN_STRIP_WITH_PATCH {
-        PATCH_HEIGHT
+    // The patch bay comes off the bottom, under the master and the strips, at
+    // the height it was given — less on a short panel, so the strips stay
+    // worth using, and none at all only when even its least will not fit.
+    let room = body.height - MIN_STRIP_WITH_PATCH;
+    let patch_height = if room >= MIN_PATCH_HEIGHT {
+        view.patch_height.clamp(MIN_PATCH_HEIGHT, room)
     } else {
         0.0
     };
@@ -521,7 +631,7 @@ pub fn mixer_layout_for(
     // that matters and is independent of which edge it is pinned to.
     let (mut rest, master) = match master_index {
         Some(index) => {
-            let width = STRIP_WIDTH.min(body.width.max(0.0));
+            let width = strip_width.min(body.width.max(0.0));
             let frame = Rect::new(body.x, body.y, width, strip_height).clamped();
             let rest = Rect::new(
                 frame.right() + GAP * 2.0,
@@ -542,7 +652,7 @@ pub fn mixer_layout_for(
     // the strips can still spare it. A mixer is its faders; a window dragged
     // narrow loses the column, not them.
     let wants_options = !strips.is_empty();
-    let room_for_options = rest.width >= OPTIONS_WIDTH + GAP * 2.0 + STRIP_WIDTH * 2.0;
+    let room_for_options = rest.width >= OPTIONS_WIDTH + GAP * 2.0 + strip_width * 2.0;
     let options_frame = if wants_options && room_for_options {
         let x = (rest.right() - OPTIONS_WIDTH).max(rest.x);
         let frame = Rect::new(x, rest.y, (rest.right() - x).max(0.0), rest.height).clamped();
@@ -566,8 +676,8 @@ pub fn mixer_layout_for(
     // on top of the strip beside it.
     let mut out = Vec::new();
     let mut add_track = Rect::ZERO;
-    if !list.is_empty() && STRIP_WIDTH > 0.0 {
-        let columns = ((list.width + GAP) / (STRIP_WIDTH + GAP)).floor() as usize;
+    if !list.is_empty() {
+        let columns = ((list.width + GAP) / (strip_width + GAP)).floor() as usize;
         let ordinary: Vec<usize> = (0..strips.len())
             .filter(|index| Some(*index) != master_index)
             .collect();
@@ -575,9 +685,9 @@ pub fn mixer_layout_for(
         let shown = ordinary.len().saturating_sub(scroll).min(columns);
         let column = |slot: usize| {
             Rect::new(
-                list.x + slot as f32 * (STRIP_WIDTH + GAP),
+                list.x + slot as f32 * (strip_width + GAP),
                 list.y,
-                STRIP_WIDTH,
+                strip_width,
                 list.height,
             )
         };
@@ -622,7 +732,18 @@ pub fn mixer_layout_for(
         options,
         total: strips.len(),
         scroll,
+        seam: if patch.is_empty() {
+            Rect::ZERO
+        } else {
+            Rect::new(
+                patch.x,
+                patch.y - SEAM_HEIGHT / 2.0,
+                patch.width,
+                SEAM_HEIGHT,
+            )
+        },
         patch,
+        strip_width,
     }
 }
 
@@ -926,18 +1047,15 @@ fn strip_layout(
     )
     .clamped();
 
+    // The fader and its meter as one group, centred: a zoomed-in strip is
+    // wider, and a handle stretched across all of it reads as a slab.
     let meter_width = METER_WIDTH.min((middle.width - GAP) / 2.0).max(0.0);
-    let fader = Rect::new(
-        middle.x,
-        middle.y,
-        (middle.width - meter_width - GAP).max(0.0),
-        middle.height,
-    )
-    .clamped();
+    let fader_width = (middle.width - meter_width - GAP).clamp(0.0, MAX_FADER_WIDTH);
+    let group = fader_width + GAP + meter_width;
+    let left = middle.x + ((middle.width - group) / 2.0).max(0.0);
+    let fader = Rect::new(left, middle.y, fader_width, middle.height).clamped();
     let meter = Rect::new(
-        (middle.right() - meter_width)
-            .max(fader.right() + GAP)
-            .min(middle.right()),
+        (fader.right() + GAP).min(middle.right()),
         middle.y,
         meter_width,
         middle.height,
@@ -1022,6 +1140,8 @@ pub enum MixerHit {
     AddTrack,
     /// Something in the track-options column.
     Options(OptionsHit),
+    /// The handle along the patch bay's top, dragged to resize it.
+    BaySeam,
     Nothing,
 }
 
@@ -1110,6 +1230,7 @@ impl MixerHit {
             Self::Mute(_) => "Silence this track",
             Self::Solo(_) => "Hear only this track and what feeds it",
             Self::AddTrack => "Add a mixer track",
+            Self::BaySeam => "Drag to give the patch cables more or less room",
             Self::Options(what) => what.tip(),
             Self::Nothing => return None,
         })
@@ -1191,6 +1312,21 @@ pub fn mixer_key(key: &str) -> Option<MixerKey> {
     }
 }
 
+/// Which strip a wire let go at `(x, y)` lands on: whichever strip's column
+/// it is over, master included, anywhere down the panel — a drop is aimed at
+/// a track, and its jack is a small thing to hit with a swinging plug.
+pub fn cable_drop_target(layout: &MixerLayout, x: f32, y: f32) -> Option<usize> {
+    if !layout.body.contains(x, y) || layout.options_frame().contains(x, y) {
+        return None;
+    }
+    layout
+        .master
+        .iter()
+        .chain(layout.strips.iter())
+        .find(|s| x >= s.frame.x && x < s.frame.right())
+        .map(|s| s.index)
+}
+
 pub fn mixer_hit(layout: &MixerLayout, x: f32, y: f32) -> MixerHit {
     // The options column first. It is over the mixer's own body, and it is the
     // only thing here whose rows are small enough that anything else claiming
@@ -1202,6 +1338,11 @@ pub fn mixer_hit(layout: &MixerLayout, x: f32, y: f32) -> MixerHit {
     }
     if layout.add_track.contains(x, y) {
         return MixerHit::AddTrack;
+    }
+    // Before the strips: the handle's top half is over their bottom edge,
+    // which is a read-out, not a control.
+    if layout.seam.contains(x, y) {
+        return MixerHit::BaySeam;
     }
     // Then the master: it is outside the list, and a list that claimed the
     // whole body would swallow it.

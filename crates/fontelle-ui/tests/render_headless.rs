@@ -157,6 +157,7 @@ fn shoot_sized(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
                 view,
@@ -840,6 +841,7 @@ fn shoot_roll_everything(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view,
@@ -1268,6 +1270,7 @@ fn shoot_timeline_recording(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view,
@@ -2063,6 +2066,7 @@ fn shoot_mixer_lit(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view,
@@ -2099,6 +2103,8 @@ fn shoot_mixer_lit(
                 output: None,
                 cables: &cable_lines,
                 cable_hot: None,
+                carrying_cable: false,
+                seam_hot: false,
                 fed_by: &fed_by,
                 strip_glow,
             }),
@@ -2534,6 +2540,7 @@ fn shoot_rack_routed(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view: TransportView::unavailable(),
@@ -4820,6 +4827,7 @@ fn shoot_carry(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view: TransportView::unavailable(),
@@ -5091,6 +5099,7 @@ fn shoot_welcome_status(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
                 view: TransportView::unavailable(),
@@ -5373,6 +5382,7 @@ fn shoot_settings_controls() {
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
                 view: TransportView::unavailable(),
@@ -5505,6 +5515,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
                 view: TransportView::unavailable(),
@@ -5593,7 +5604,7 @@ fn settings_page_rows() -> (
             "Velocity min",
             "12",
             SettingControl::Slider { fraction: 0.1 },
-            "The softest a played note can be",
+            "What your softest touch plays",
         ),
         (
             "Keyboard transpose",
@@ -5692,6 +5703,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
                 view: TransportView::unavailable(),
@@ -5871,6 +5883,7 @@ fn shoot_guide(
         &Chrome {
             field: None,
             panel_title: &title,
+            backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
                 view: TransportView::unavailable(),
@@ -6498,6 +6511,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
             &Chrome {
                 field: None,
                 panel_title: &title,
+                backdrops: Default::default(),
                 transport: TransportChrome {
                     layout: bar,
                     view: TransportView::unavailable(),
@@ -6693,6 +6707,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             &Chrome {
                 field: None,
                 panel_title: &title,
+                backdrops: Default::default(),
                 transport: TransportChrome {
                     layout: bar,
                     view: TransportView::unavailable(),

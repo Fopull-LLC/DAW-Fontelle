@@ -92,6 +92,10 @@ pub struct QuestionNotice<'a> {
 /// picture testable off a GPU and off a window.
 pub struct Chrome<'a> {
     pub panel_title: &'a TextLayout,
+    /// The theme's pictures, decoded, by [`crate::theme::BackdropPanel`]:
+    /// the arrangement's, the roll's and the mixer's, each with how strongly
+    /// it shows.
+    pub backdrops: PanelBackdrops,
     pub transport: TransportChrome<'a>,
     /// The editor column's contents. `None` draws an empty panel — which is
     /// what a window with no clip open shows.
@@ -604,6 +608,12 @@ pub struct MixerChrome<'a> {
     pub cables: &'a [crate::cables::CableLine<fontelle_types::MixerTrackId>],
     /// The send whose knob is under the pointer or being turned.
     pub cable_hot: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
+    /// A cable's plug is in the hand: the cables are drawn over the whole
+    /// mixer rather than clipped to the bay, so it can be carried up to a
+    /// strip.
+    pub carrying_cable: bool,
+    /// The bay's handle is under the pointer or being dragged.
+    pub seam_hot: bool,
     /// What feeds each strip, as the caption under its name, in `strips`
     /// order (`canvas::fed_by_caption`). Shorter is read as nothing.
     pub fed_by: &'a [String],
@@ -683,6 +693,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // something on it is chosen.
     if let Some(welcome) = &chrome.welcome {
         draw_welcome(scene, theme, chrome.labels, welcome);
+        // The settings page, opened from the card's gear — under the menu,
+        // because its drop-downs are menus.
+        if let Some(page) = &chrome.settings_page {
+            draw_settings_page(scene, theme, chrome.labels, layout.window, page);
+        }
         // The one thing above it: the name prompt *New project* opens.
         draw_context_menu(
             scene,
@@ -749,7 +764,13 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             m,
             p.text,
         );
-        draw_timeline(scene, theme, chrome.labels, timeline);
+        draw_timeline(
+            scene,
+            theme,
+            chrome.labels,
+            timeline,
+            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Arrangement),
+        );
     }
     // The seam between the arrangement and the editor, drawn as a grip so it
     // is visibly a thing you can drag.
@@ -830,11 +851,22 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     match chrome.tab {
         EditorTab::Roll => {
             if let Some(roll) = &chrome.roll {
-                draw_piano_roll(scene, theme, chrome.labels, roll);
+                draw_piano_roll(
+                    scene,
+                    theme,
+                    chrome.labels,
+                    roll,
+                    backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Roll),
+                );
             }
         }
         EditorTab::Mixer => {
             if let Some(mixer) = &chrome.mixer {
+                draw_backdrop(
+                    scene,
+                    mixer.layout.body,
+                    backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Mixer),
+                );
                 draw_mixer(scene, theme, chrome.labels, mixer);
             }
         }
@@ -2391,14 +2423,17 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         draw_progress_bar(scene, theme, rect, progress);
     }
 
-    // What went wrong, in the warning ink, just above the way out of it.
+    // What the card has to say, just above the way out of it — in the
+    // accent, not the warning ink. Ty: *"dont make it red bc that makes it
+    // look like somethings wrong even when its not."* Most of what lands
+    // here is "Enter reopens …" or a picker that was cancelled.
     draw_text_clipped(
         scene,
         chrome.message,
         l.message,
         l.message.x,
         l.message.y,
-        p.meter_peak,
+        p.accent,
     );
 
     // The two ways in.
@@ -2540,20 +2575,26 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
 
     // The `?` in the corner: a plate like the buttons, the glyph from the
     // icon set, lit under the pointer.
-    if !l.help.is_empty() {
-        let hot_help = hot(WelcomeHit::Help);
+    for (frame, icon, what) in [
+        (l.help, crate::icon::Icon::Help, WelcomeHit::Help),
+        (l.settings, crate::icon::Icon::Gear, WelcomeHit::Settings),
+    ] {
+        if frame.is_empty() {
+            continue;
+        }
+        let lit = hot(what);
         fill_rect_rounded(
             scene,
-            l.help,
+            frame,
             m.corner_radius,
-            if hot_help { p.accent } else { p.panel_header },
+            if lit { p.accent } else { p.panel_header },
         );
-        stroke_rect_rounded(scene, l.help, m.corner_radius, m.border_width, p.border);
+        stroke_rect_rounded(scene, frame, m.corner_radius, m.border_width, p.border);
         draw_icon(
             scene,
-            crate::icon::Icon::Help,
-            l.help.inset(l.help.height * 0.2),
-            if hot_help { p.window } else { p.text },
+            icon,
+            frame.inset(frame.height * 0.2),
+            if lit { p.window } else { p.text },
         );
     }
 
@@ -4441,6 +4482,68 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
     draw_output_menu(scene, theme, labels, chrome);
 }
 
+/// A theme's pictures, decoded once when the theme is worn, indexed by
+/// [`crate::theme::BackdropPanel`] in its `ALL` order.
+pub type PanelBackdrops = [Option<(vello::peniko::ImageData, f32)>; 3];
+
+/// One of them, for `panel`.
+fn backdrop_for(
+    backdrops: &PanelBackdrops,
+    panel: crate::theme::BackdropPanel,
+) -> Option<&(vello::peniko::ImageData, f32)> {
+    let index = crate::theme::BackdropPanel::ALL
+        .iter()
+        .position(|p| *p == panel)?;
+    backdrops[index].as_ref()
+}
+
+/// A theme's picture behind a panel: scaled to cover it, centred, clipped
+/// to it, at the strength the theme says. Drawn over the panel's ground and
+/// its row shading and under everything on it — Ty: *"maybe allowing users
+/// to even put background images behind their arrangement or different
+/// panels"*.
+fn draw_backdrop(
+    scene: &mut Scene,
+    area: Rect,
+    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+) {
+    let Some((image, alpha)) = backdrop else {
+        return;
+    };
+    if area.is_empty() || image.width == 0 || image.height == 0 || *alpha <= 0.0 {
+        return;
+    }
+    let scale = (area.width / image.width as f32).max(area.height / image.height as f32);
+    let (w, h) = (image.width as f32 * scale, image.height as f32 * scale);
+    let (x, y) = (
+        area.x + (area.width - w) / 2.0,
+        area.y + (area.height - h) / 2.0,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            area.x as f64,
+            area.y as f64,
+            area.right() as f64,
+            area.bottom() as f64,
+        ),
+    );
+    let brush = vello::peniko::ImageBrush {
+        image: image.clone(),
+        sampler: vello::peniko::ImageSampler::new()
+            .with_quality(vello::peniko::ImageQuality::Medium)
+            .with_alpha(*alpha),
+    };
+    scene.draw_image(
+        &brush,
+        Affine::translate((x as f64, y as f64)) * Affine::scale(scale as f64),
+    );
+    scene.pop_layer();
+}
+
 /// The patch bay under the strips: a jack pair per strip, and every cable.
 ///
 /// The cables are drawn dim and then lit — the selected track's, and the ones
@@ -4457,19 +4560,45 @@ fn draw_patch_bay(scene: &mut Scene, theme: &Theme, chrome: &MixerChrome<'_>) {
     fill_rect(
         scene,
         Rect::new(bay.x, bay.y, bay.width, theme.metrics.border_width.max(1.0)),
-        p.border,
+        if chrome.seam_hot { p.accent } else { p.border },
+    );
+    // The handle: a short grip mid-way along the top edge, so the edge reads
+    // as something to take hold of.
+    let grip = Rect::new(bay.x + bay.width / 2.0 - 18.0, bay.y - 1.5, 36.0, 3.0);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        if chrome.seam_hot {
+            p.accent
+        } else {
+            p.text_muted.with_alpha(0x90)
+        }
+        .to_peniko(),
+        None,
+        &vello::kurbo::RoundedRect::new(
+            grip.x as f64,
+            grip.y as f64,
+            grip.right() as f64,
+            grip.bottom() as f64,
+            1.5,
+        ),
     );
 
+    let clip = if chrome.carrying_cable {
+        chrome.layout.body
+    } else {
+        bay
+    };
     scene.push_layer(
         Fill::NonZero,
         BlendMode::default(),
         1.0,
         Affine::IDENTITY,
         &KRect::new(
-            bay.x as f64,
-            bay.y as f64,
-            bay.right() as f64,
-            bay.bottom() as f64,
+            clip.x as f64,
+            clip.y as f64,
+            clip.right() as f64,
+            clip.bottom() as f64,
         ),
     );
 
@@ -4553,6 +4682,45 @@ fn draw_patch_bay(scene: &mut Scene, theme: &Theme, chrome: &MixerChrome<'_>) {
             None,
             &path,
         );
+
+        // Which way it flows: one small chevron near the jack it feeds,
+        // in the wire's own colour over the same dark sleeve — one mark per
+        // wire rather than a dashed line, so a busy bay stays readable.
+        if let Some((at, dir)) = cable.arrow() {
+            let size = 4.5_f32;
+            let back = [-dir[0] * size, -dir[1] * size];
+            let side = [-dir[1] * size * 0.8, dir[0] * size * 0.8];
+            let tip = [at[0] + dir[0] * size * 0.5, at[1] + dir[1] * size * 0.5];
+            let mut chevron = BezPath::new();
+            chevron.move_to((
+                (tip[0] + back[0] + side[0]) as f64,
+                (tip[1] + back[1] + side[1]) as f64,
+            ));
+            chevron.line_to((tip[0] as f64, tip[1] as f64));
+            chevron.line_to((
+                (tip[0] + back[0] - side[0]) as f64,
+                (tip[1] + back[1] - side[1]) as f64,
+            ));
+            let round = |w: f32| {
+                Stroke::new(w as f64)
+                    .with_caps(vello::kurbo::Cap::Round)
+                    .with_join(vello::kurbo::Join::Round)
+            };
+            scene.stroke(
+                &round(width + 2.4),
+                Affine::IDENTITY,
+                Color::rgba(0, 0, 0, alpha(0x90)).to_peniko(),
+                None,
+                &chevron,
+            );
+            scene.stroke(
+                &round(width.max(2.0)),
+                Affine::IDENTITY,
+                Color(cable.color).with_alpha(alpha(0xff)).to_peniko(),
+                None,
+                &chevron,
+            );
+        }
 
         // The plugs. A loose end is a bare plug, bigger, with nothing to go
         // into — the "this goes nowhere" the strip had no mark for.
@@ -5410,7 +5578,13 @@ fn draw_meter(
 /// bound every loop here. The note scan is still linear in the clip's note
 /// count — filtering, not indexing — which is honest for the sizes this opens
 /// today and is the first thing to change when it is not.
-pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
+pub fn draw_piano_roll(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &RollChrome<'_>,
+    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+) {
     let p = &theme.palette;
     let l = &chrome.layout;
     let v = &chrome.view;
@@ -5462,6 +5636,9 @@ pub fn draw_piano_roll(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome
             );
         }
     }
+
+    // The theme's picture, over the row shading and under the lines.
+    draw_backdrop(scene, grid, backdrop);
 
     // Past the clip's end, before the lines so the grid still reads through
     // it: nothing written out here sounds. See `canvas::roll_past_end`.
@@ -7238,7 +7415,13 @@ fn draw_timeline_toolbar(
     }
 }
 
-fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TimelineChrome<'_>) {
+fn draw_timeline(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &TimelineChrome<'_>,
+    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+) {
     let p = &theme.palette;
     let l = &chrome.layout;
     let v = &chrome.view;
@@ -7357,6 +7540,9 @@ fn draw_timeline(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Tim
             p.border,
         );
     }
+
+    // The theme's picture, over the lane shading and under the grid.
+    draw_backdrop(scene, l.grid, backdrop);
 
     // The grid, faintest level first so the stronger wins where two land on
     // the same tick: bars and every fourth bar always, beats and finer once

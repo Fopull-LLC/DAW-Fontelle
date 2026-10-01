@@ -15,7 +15,7 @@
 //! away when it goes.
 
 use fontelle_ui::cables::{
-    CableKey, CableRole, CableSpec, Cables, KNOB_RADIUS, LOOSE_LENGTH, PLUG_SECONDS, Pt, SEGMENTS,
+    CableKey, CableRole, CableSpec, Cables, LOOSE_LENGTH, PLUG_SECONDS, Pt, SEGMENTS,
 };
 
 const FLOOR: f32 = 200.0;
@@ -319,7 +319,7 @@ fn a_cable_that_goes_away_falls_and_fades_rather_than_vanishing() {
 }
 
 #[test]
-fn a_send_carries_a_knob_at_the_middle_of_its_wire_and_an_output_does_not() {
+fn a_send_carries_a_knob_at_its_origin_and_an_output_does_not() {
     let mut cables = Cables::new();
     cables.sync(
         vec![
@@ -338,7 +338,11 @@ fn a_send_carries_a_knob_at_the_middle_of_its_wire_and_an_output_does_not() {
     };
     let s = lines.iter().find(|l| l.key == send_key).unwrap();
     let knob = s.knob.expect("a send has a knob");
-    assert_eq!(knob, s.points[SEGMENTS / 2], "riding the wire");
+    assert_eq!(
+        knob, s.points[0],
+        "on the plug the wire leaves from — Ty: *\"make the knob be on the \
+         origin point that the wire is coming from\"*"
+    );
     assert_eq!(s.level_db, Some(-12.0));
 
     assert_eq!(cables.knob_at(knob[0] + 2.0, knob[1] - 2.0), Some(send_key));
@@ -397,25 +401,182 @@ fn a_whole_new_mixer_arrives_hung_rather_than_plugging_itself_in() {
 }
 
 #[test]
-fn a_knob_rides_its_wire_but_never_sinks_into_the_floor() {
-    // A send's cable across half the mixer sags onto the floor of the bay,
-    // and a knob drawn there was cut in half by the bay's bottom edge.
+fn a_knob_stays_put_while_its_wire_swings() {
+    // At the origin, a knob is somewhere to aim: it does not ride a swing.
     let mut cables = Cables::new();
     cables.sync(
-        vec![send(2, 0, [700.0, 180.0], ([40.0, 180.0], 1), -6.0)],
+        vec![send(2, 0, [700.0, 120.0], ([40.0, 120.0], 1), -6.0)],
+        FLOOR,
+    );
+    run(&mut cables, 0.1);
+    let knob = cables.lines()[0].knob.unwrap();
+    assert_eq!(knob, [700.0, 120.0]);
+    assert_eq!(cables.knob_at(knob[0], knob[1]).map(|k| k.track), Some(2));
+}
+
+fn a_wire(cables: &mut Cables<usize>) -> Vec<Pt> {
+    cables.sync(
+        vec![output(1, [300.0, 100.0], Some(([40.0, 100.0], 0)))],
+        FLOOR,
+    );
+    run(cables, 6.0);
+    points(cables, out_key(1))
+}
+
+#[test]
+fn a_wire_can_be_found_under_the_pointer_anywhere_along_it() {
+    let mut cables = Cables::new();
+    let p = a_wire(&mut cables);
+    let middle = p[SEGMENTS / 2];
+    assert_eq!(
+        cables.cable_at(middle[0], middle[1] + 2.0),
+        Some(out_key(1))
+    );
+    let near_end = p[SEGMENTS - 2];
+    assert_eq!(cables.cable_at(near_end[0], near_end[1]), Some(out_key(1)));
+    assert_eq!(
+        cables.cable_at(middle[0], middle[1] - 40.0),
+        None,
+        "well off the wire is not the wire"
+    );
+}
+
+#[test]
+fn a_held_wire_follows_the_pointer_and_goes_home_when_let_go() {
+    // *"i want to be able to click on a wire to pick it up and move where
+    // its going to from one place to another."* Held, the far plug is in the
+    // hand; let go somewhere that changes nothing, it goes back to its jack.
+    let mut cables = Cables::new();
+    a_wire(&mut cables);
+    cables.hold(out_key(1), [200.0, 30.0]);
+    assert!(cables.is_moving(), "picking it up wakes it");
+    run(&mut cables, 0.5);
+    assert_eq!(*points(&cables, out_key(1)).last().unwrap(), [200.0, 30.0]);
+    assert!(
+        !cables.lines()[0].plugged,
+        "a plug in the hand is drawn as a bare plug"
+    );
+    cables.hold(out_key(1), [150.0, 60.0]);
+    run(&mut cables, 0.1);
+    assert_eq!(*points(&cables, out_key(1)).last().unwrap(), [150.0, 60.0]);
+
+    // Syncing while held (a meter tick, a relayout) does not drop it.
+    cables.sync(
+        vec![output(1, [300.0, 100.0], Some(([40.0, 100.0], 0)))],
+        FLOOR,
+    );
+    run(&mut cables, 0.1);
+    assert_eq!(*points(&cables, out_key(1)).last().unwrap(), [150.0, 60.0]);
+
+    cables.let_go();
+    run(&mut cables, PLUG_SECONDS + 0.1);
+    assert_eq!(
+        *points(&cables, out_key(1)).last().unwrap(),
+        [40.0, 100.0],
+        "back in its own jack"
+    );
+    assert!(cables.lines()[0].plugged);
+}
+
+#[test]
+fn a_wire_let_go_over_another_track_plugs_in_there() {
+    let mut cables = Cables::new();
+    a_wire(&mut cables);
+    cables.hold(out_key(1), [120.0, 60.0]);
+    run(&mut cables, 0.2);
+    cables.let_go();
+    // The window has rerouted it: the new routing arrives as a sync.
+    cables.sync(
+        vec![output(1, [300.0, 100.0], Some(([130.0, 100.0], 5)))],
+        FLOOR,
+    );
+    run(&mut cables, 0.05);
+    let end = *points(&cables, out_key(1)).last().unwrap();
+    assert!(
+        near(end, [120.0, 60.0], 30.0),
+        "it starts from the hand, not from the old jack: {end:?}"
+    );
+    run(&mut cables, PLUG_SECONDS + 0.1);
+    assert_eq!(*points(&cables, out_key(1)).last().unwrap(), [130.0, 100.0]);
+}
+
+#[test]
+fn opening_the_mixer_again_shakes_the_wires_and_they_settle() {
+    // *"whenever you swap windows and say open the mixer again the wires
+    // should kind of look like theyve been disturbed, then settle back
+    // down."*
+    let mut cables = Cables::new();
+    let rest = a_wire(&mut cables);
+    assert!(!cables.is_moving());
+    cables.disturb();
+    assert!(cables.is_moving(), "a disturbed bay is a moving one");
+    run(&mut cables, 0.15);
+    let shaken = points(&cables, out_key(1));
+    let moved = rest
+        .iter()
+        .zip(&shaken)
+        .map(|(a, b)| (a[0] - b[0]).hypot(a[1] - b[1]))
+        .fold(0.0_f32, f32::max);
+    assert!(moved > 6.0, "visibly: {moved}");
+    assert_eq!(shaken[0], rest[0], "the plugs stay in");
+    assert_eq!(shaken[SEGMENTS], rest[SEGMENTS]);
+    assert!(shaken.iter().all(|p| p[1] <= FLOOR + 1e-3));
+
+    run(&mut cables, 6.0);
+    assert!(!cables.is_moving(), "and it settles");
+    let settled = points(&cables, out_key(1));
+    for (a, b) in rest.iter().zip(&settled) {
+        assert!(near(*a, *b, 1.5), "back where it hung: {a:?} {b:?}");
+    }
+}
+
+/// Ty, watching the bay: *"its hard to tell which direction the wires are
+/// going in sometimes, could you divise a solution that indicates which
+/// direction the wire flows being mindful of too much clutter?"* One small
+/// chevron per wire, three quarters of the way along, pointing the way the
+/// signal goes — along the rope, so it swings with it.
+#[test]
+fn a_plugged_wire_carries_one_arrow_pointing_towards_where_it_goes() {
+    let mut cables = Cables::new();
+    cables.sync(
+        vec![output(1, [300.0, 100.0], Some(([40.0, 100.0], 0)))],
         FLOOR,
     );
     run(&mut cables, 6.0);
     let line = &cables.lines()[0];
-    let knob = line.knob.unwrap();
+    let (at, dir) = line.arrow().expect("a plugged wire has an arrow");
     assert!(
-        line.points[SEGMENTS / 2][1] > FLOOR - KNOB_RADIUS,
-        "the wire itself is lying on the floor"
+        (dir[0].hypot(dir[1]) - 1.0).abs() < 1e-3,
+        "a unit direction"
     );
+    assert!(dir[0] < 0.0, "towards the target, leftwards: {dir:?}");
     assert!(
-        knob[1] <= FLOOR - KNOB_RADIUS + 1e-3,
-        "the knob sits on it: {knob:?}"
+        (at[0] - 40.0).abs() < (at[0] - 300.0).abs(),
+        "nearer where it goes than where it comes from: {at:?}"
     );
-    assert_eq!(knob[0], line.points[SEGMENTS / 2][0], "still over its wire");
-    assert_eq!(cables.knob_at(knob[0], knob[1]).map(|k| k.track), Some(2));
+    // On the rope, not floating beside it.
+    assert!(
+        line.points
+            .windows(2)
+            .any(|w| near(at, w[0], 30.0) && near(at, w[1], 30.0))
+    );
+}
+
+#[test]
+fn a_loose_or_carried_wire_has_no_arrow() {
+    // It goes nowhere yet; its bare plug already says so.
+    let mut cables = Cables::new();
+    cables.sync(vec![output(1, [300.0, 100.0], None)], FLOOR);
+    run(&mut cables, 1.0);
+    assert_eq!(cables.lines()[0].arrow(), None);
+
+    let mut cables = Cables::new();
+    cables.sync(
+        vec![output(1, [300.0, 100.0], Some(([40.0, 100.0], 0)))],
+        FLOOR,
+    );
+    run(&mut cables, 2.0);
+    cables.hold(out_key(1), [200.0, 40.0]);
+    run(&mut cables, 0.2);
+    assert_eq!(cables.lines()[0].arrow(), None);
 }

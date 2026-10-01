@@ -1486,6 +1486,19 @@ pub trait StudioHost: DocumentHost {
     /// anything the window has to interpret: the host says "this one is a
     /// slider at 0.4", and which row means what stays entirely the host's, the
     /// same boundary [`settings`] itself keeps.
+    /// A count that changes whenever the look the window should wear does
+    /// — a theme chosen, imported or edited on the settings page. The window
+    /// compares it each refresh and asks [`studio_theme`](Self::studio_theme)
+    /// only when it moved. `0`, and never moving, for a host with no themes.
+    fn theme_revision(&self) -> u64 {
+        0
+    }
+
+    /// The look the window should wear, or `None` to keep its own.
+    fn studio_theme(&self) -> Option<crate::Theme> {
+        None
+    }
+
     fn setting_controls(&self) -> Vec<crate::canvas::SettingControl> {
         Vec::new()
     }

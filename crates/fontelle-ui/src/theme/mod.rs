@@ -39,7 +39,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 9;
+pub const THEME_FORMAT_VERSION: u32 = 10;
+
+/// What a theme file is called: `Midnight.fontelletheme`. The same JSON as
+/// ever — the name is so a file says what it is when it is sent to someone.
+pub const THEME_EXTENSION: &str = "fontelletheme";
 
 /// An 8-bit sRGB colour with alpha, written to file as hex.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -293,9 +297,239 @@ pub struct Theme {
     pub palette: Palette,
     pub metrics: Metrics,
     pub font: FontTokens,
+    /// Pictures behind the panels, carried inside the file (v10). Optional
+    /// and left out when empty, so a plain theme stays the short file it was.
+    #[serde(default, skip_serializing_if = "Backdrops::is_empty")]
+    pub backdrops: Backdrops,
+}
+
+/// Which panel a backdrop sits behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackdropPanel {
+    Arrangement,
+    Roll,
+    Mixer,
+}
+
+impl BackdropPanel {
+    pub const ALL: [Self; 3] = [Self::Arrangement, Self::Roll, Self::Mixer];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Arrangement => "Arrangement",
+            Self::Roll => "Piano roll",
+            Self::Mixer => "Mixer",
+        }
+    }
+}
+
+/// The pictures a theme puts behind its panels — Ty: *"maybe allowing users
+/// to even put background images behind their arrangement or different
+/// panels"*.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backdrops {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrangement: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mixer: Option<Backdrop>,
+}
+
+impl Backdrops {
+    pub fn is_empty(&self) -> bool {
+        self.arrangement.is_none() && self.roll.is_none() && self.mixer.is_none()
+    }
+
+    pub fn get(&self, panel: BackdropPanel) -> Option<&Backdrop> {
+        match panel {
+            BackdropPanel::Arrangement => self.arrangement.as_ref(),
+            BackdropPanel::Roll => self.roll.as_ref(),
+            BackdropPanel::Mixer => self.mixer.as_ref(),
+        }
+    }
+
+    pub fn set(&mut self, panel: BackdropPanel, backdrop: Option<Backdrop>) {
+        match panel {
+            BackdropPanel::Arrangement => self.arrangement = backdrop,
+            BackdropPanel::Roll => self.roll = backdrop,
+            BackdropPanel::Mixer => self.mixer = backdrop,
+        }
+    }
+}
+
+/// One picture: the image file's own bytes, base64 in the JSON so the theme
+/// is one file to send, and how strongly it shows through.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Backdrop {
+    /// A PNG or a JPEG, as the file was, in base64.
+    pub image: String,
+    /// 0 is not there, 1 is the picture as it is. Drawn over the panel's
+    /// ground and under everything on it.
+    pub opacity: f32,
+}
+
+impl Backdrop {
+    /// A backdrop from an image file's bytes. Refused here, when it is
+    /// chosen, if it is not a picture this build can draw — not later, as a
+    /// blank panel nobody can explain.
+    pub fn from_image_bytes(bytes: &[u8], opacity: f32) -> Result<Self, ThemeError> {
+        decode_image(bytes).map_err(|why| {
+            ThemeError::Format(format!("that is not a PNG or JPEG picture: {why}"))
+        })?;
+        use base64::Engine as _;
+        Ok(Self {
+            image: base64::engine::general_purpose::STANDARD.encode(bytes),
+            opacity: opacity.clamp(0.0, 1.0),
+        })
+    }
+
+    /// The image file's bytes, as they were handed in.
+    pub fn image_bytes(&self) -> Option<Vec<u8>> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.image)
+            .ok()
+    }
+
+    /// The picture, ready to draw. `None` for a file somebody broke by hand.
+    pub fn decode(&self) -> Option<vello::peniko::ImageData> {
+        decode_image(&self.image_bytes()?).ok()
+    }
+}
+
+/// A PNG or a JPEG, by its first bytes.
+pub fn decode_image(bytes: &[u8]) -> Result<vello::peniko::ImageData, String> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return crate::branding::decode_png(bytes);
+    }
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        use zune_core::colorspace::ColorSpace;
+        use zune_core::options::DecoderOptions;
+        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(bytes, options);
+        let rgba = decoder.decode().map_err(|e| format!("{e:?}"))?;
+        let (width, height) = decoder
+            .dimensions()
+            .ok_or_else(|| "no dimensions".to_string())?;
+        if width == 0 || height == 0 || rgba.len() != width * height * 4 {
+            return Err("an empty image".to_string());
+        }
+        return Ok(vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(rgba)),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: width as u32,
+            height: height as u32,
+        });
+    }
+    Err("neither a PNG nor a JPEG".to_string())
 }
 
 impl Theme {
+    /// Every look Fontelle ships, the default first. The library lists these
+    /// before the user's own files, and a built-in is never written over:
+    /// changing one saves a copy.
+    pub fn builtins() -> Vec<Self> {
+        vec![
+            Self::dark_default(),
+            Self::light_default(),
+            Self::midnight(),
+            Self::ember(),
+            Self::paper(),
+        ]
+    }
+
+    /// Square corners, hard rules, a cold blue: the rigid look. Ty: *"maybe
+    /// a theme looks more rigid."*
+    pub fn midnight() -> Self {
+        let mut theme = Self::dark_default();
+        theme.name = "Midnight".to_string();
+        let p = &mut theme.palette;
+        p.window = Color::rgb(0x07, 0x09, 0x0f);
+        p.panel = Color::rgb(0x0f, 0x13, 0x1c);
+        p.panel_header = Color::rgb(0x15, 0x1b, 0x27);
+        p.border = Color::rgb(0x2a, 0x34, 0x4e);
+        p.text = Color::rgb(0xe2, 0xe7, 0xf2);
+        p.text_muted = Color::rgb(0x86, 0x92, 0xae);
+        p.accent = Color::rgb(0x5b, 0x8d, 0xef);
+        p.grid_line_sub = Color::rgb(0x12, 0x17, 0x22);
+        p.grid_line = Color::rgb(0x1d, 0x25, 0x36);
+        p.grid_line_strong = Color::rgb(0x2a, 0x34, 0x4e);
+        p.playhead = Color::rgb(0x6c, 0xd0, 0xff);
+        p.selection = Color::rgba(0x5b, 0x8d, 0xef, 0x50);
+        p.meter = Color::rgb(0x4f, 0xc3, 0xa1);
+        p.note = Color::rgb(0x4a, 0x6f, 0xc4);
+        p.note_selected = Color::rgb(0xb4, 0xc8, 0xf4);
+        p.key_black = Color::rgb(0x15, 0x1b, 0x27);
+        p.row_accidental = Color::rgb(0x0b, 0x0f, 0x17);
+        p.row_dead = Color::rgb(0x05, 0x07, 0x0b);
+        p.row_out_of_scale = Color::rgb(0x09, 0x0c, 0x13);
+        p.row_scale_root = Color::rgb(0x18, 0x22, 0x3a);
+        theme.metrics.corner_radius = 0.0;
+        theme.metrics.border_width = 1.0;
+        theme
+    }
+
+    /// Warm and dark, with softer corners: a room lit by a lamp.
+    pub fn ember() -> Self {
+        let mut theme = Self::dark_default();
+        theme.name = "Ember".to_string();
+        let p = &mut theme.palette;
+        p.window = Color::rgb(0x12, 0x0c, 0x0a);
+        p.panel = Color::rgb(0x1d, 0x15, 0x12);
+        p.panel_header = Color::rgb(0x26, 0x1c, 0x17);
+        p.border = Color::rgb(0x45, 0x33, 0x2a);
+        p.text = Color::rgb(0xf1, 0xe6, 0xdf);
+        p.text_muted = Color::rgb(0xa8, 0x90, 0x82);
+        p.accent = Color::rgb(0xd9, 0x82, 0x4a);
+        p.grid_line_sub = Color::rgb(0x21, 0x18, 0x14);
+        p.grid_line = Color::rgb(0x33, 0x26, 0x20);
+        p.grid_line_strong = Color::rgb(0x45, 0x33, 0x2a);
+        p.playhead = Color::rgb(0xe8, 0xb8, 0x5c);
+        p.selection = Color::rgba(0xd9, 0x82, 0x4a, 0x48);
+        p.meter = Color::rgb(0x9c, 0xbf, 0x5e);
+        p.note = Color::rgb(0xc0, 0x6e, 0x3c);
+        p.note_selected = Color::rgb(0xf4, 0xc8, 0xa2);
+        p.key_black = Color::rgb(0x26, 0x1c, 0x17);
+        p.row_accidental = Color::rgb(0x17, 0x10, 0x0d);
+        p.row_dead = Color::rgb(0x0c, 0x08, 0x06);
+        p.row_out_of_scale = Color::rgb(0x14, 0x0e, 0x0b);
+        p.row_scale_root = Color::rgb(0x33, 0x22, 0x18);
+        theme.metrics.corner_radius = 7.0;
+        theme
+    }
+
+    /// Light and soft: warm paper, rounder corners.
+    pub fn paper() -> Self {
+        let mut theme = Self::light_default();
+        theme.name = "Paper".to_string();
+        let p = &mut theme.palette;
+        p.window = Color::rgb(0xe6, 0xdf, 0xd2);
+        p.panel = Color::rgb(0xf7, 0xf3, 0xea);
+        p.panel_header = Color::rgb(0xee, 0xe7, 0xda);
+        p.border = Color::rgb(0xd2, 0xc7, 0xb3);
+        p.text = Color::rgb(0x2a, 0x25, 0x1d);
+        p.text_muted = Color::rgb(0x6e, 0x63, 0x52);
+        p.accent = Color::rgb(0x2f, 0x72, 0x63);
+        p.grid_line_sub = Color::rgb(0xef, 0xea, 0xdf);
+        p.grid_line = Color::rgb(0xdd, 0xd4, 0xc4);
+        p.grid_line_strong = Color::rgb(0xc8, 0xbc, 0xa6);
+        p.playhead = Color::rgb(0xb0, 0x5a, 0x2a);
+        p.selection = Color::rgba(0x2f, 0x72, 0x63, 0x38);
+        p.meter = Color::rgb(0x3d, 0x85, 0x5a);
+        p.note = Color::rgb(0x3d, 0x6e, 0x8c);
+        p.note_selected = Color::rgb(0x2a, 0x4e, 0x66);
+        p.row_accidental = Color::rgb(0xee, 0xe8, 0xdc);
+        p.row_dead = Color::rgb(0xdc, 0xd4, 0xc5);
+        p.row_out_of_scale = Color::rgb(0xe9, 0xe2, 0xd5);
+        p.row_scale_root = Color::rgb(0xd9, 0xea, 0xe2);
+        theme.metrics.corner_radius = 8.0;
+        theme
+    }
+
     /// The theme Flopsynth's window — the bridge — is painted in, whatever
     /// the studio's: the dark palette, with this theme's metrics and font.
     ///
@@ -316,6 +550,8 @@ impl Theme {
             palette: Self::dark_default().palette,
             metrics: self.metrics,
             font: self.font.clone(),
+            // Its own window: the studio's pictures are not the bridge's.
+            backdrops: Backdrops::default(),
         }
     }
 
@@ -341,6 +577,7 @@ impl Theme {
             palette,
             metrics: self.metrics,
             font: self.font.clone(),
+            backdrops: Backdrops::default(),
         }
     }
 
@@ -402,6 +639,7 @@ impl Theme {
                 size: 13.0,
                 line_height: 1.35,
             },
+            backdrops: Backdrops::default(),
         }
     }
 
@@ -453,6 +691,7 @@ impl Theme {
                 size: 13.0,
                 line_height: 1.35,
             },
+            backdrops: Backdrops::default(),
         }
     }
 
@@ -662,6 +901,11 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
             }
         }
         from = 9;
+    }
+
+    if from == 9 {
+        // v10 added backdrops, which are optional: a v9 file has none.
+        from = 10;
     }
 
     if from != THEME_FORMAT_VERSION {

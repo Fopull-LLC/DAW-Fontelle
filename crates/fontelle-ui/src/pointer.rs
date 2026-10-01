@@ -220,6 +220,7 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
             // switches and the name are clicked.
             MixerHit::Fader(_) => Pointer::ResizeY,
             MixerHit::Pan(_) => Pointer::ResizeX,
+            MixerHit::BaySeam => Pointer::ResizeY,
             MixerHit::Mute(_)
             | MixerHit::Solo(_)
             | MixerHit::Name(_)

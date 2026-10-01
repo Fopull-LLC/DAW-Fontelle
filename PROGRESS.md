@@ -19,7 +19,58 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-01 (latest) — UX plan step 7: the guide shows its actions
+**As of 2026-10-01 (latest, evening) — a round of Ty's fixes for the next
+release: velocity scaling, the wires, the mixer's size, icons, the home page,
+themes.** Nothing tagged.
+
+- **Velocity min/max scale, they no longer gate.** *"if my velocity max is
+  at 50%, putting the most pressure on my midi keyboard will still only play
+  a 50 percent velocity note."* `VelocityCurve::apply_in` bends the touch and
+  then maps 1..=127 onto the range (floored at 1); a fixed velocity is left
+  alone. `Ignored::Velocity` is gone — the range drops nothing now
+  (`fontelle-midi/tests/router.rs`, `input_settings.rs`).
+- **The wires** (`cables.rs`, `canvas/mixer.rs`): a press on a wire picks its
+  far plug up (`Cables::hold`/`let_go`, `Drag::Cable`); let go over a strip
+  it reroutes there (`cable_drop_target`, `App::drop_cable` — a send is
+  re-pointed by *add then remove*, so one refused for a loop keeps the old
+  one, and it keeps its level and tap). A send leaves from **its own jack**
+  under the output, one knob apart, with its knob **on that jack**
+  (`MixerLayout::send_jack`). Opening the mixer tab **shakes the wires**
+  (`Cables::disturb`, `SHAKE`) and they settle. Each plugged wire carries
+  **one chevron** three quarters along, pointing into the jack it feeds
+  (`CableLine::arrow`) — Ty's *"hard to tell which direction the wires are
+  going"*, kept to one mark per wire against clutter.
+- **The mixer's size** (`MixerView`): Ctrl+wheel (and the zoom keys) widen
+  the strips, 52–160 px (`mixer_zoomed`); the fader is capped at its default
+  width and centred so a wide strip is not a slab. The bay is **always
+  there**, 72 px by default, with a grip along its top edge
+  (`MixerHit::BaySeam`, `patch_height_at`); a short panel shrinks it to 24 px
+  before taking it away, and the strips keep 120 px.
+- **Mute and solo icons** are smooth: fills outlined with the same points so
+  the round join softens them, and the headband an arc (`icon::arc`).
+  `tests/icons.rs` holds the rule (no bare-cornered fill, no sharp bend).
+- **The home page**: its notice line is the accent, not the warning red; a
+  gear beside the `?` opens the settings page over it (`WelcomeHit::Settings`).
+- **Themes** (`theme/mod.rs` v10, `fontelle-app/src/themes.rs`): a theme is a
+  `.fontelletheme` file — the same JSON — and may carry **pictures** for the
+  arrangement, the roll and the mixer, base64 inside it (`Backdrops`, PNG or
+  JPEG via `zune-jpeg`), drawn cover-fit over the row shading and under the
+  grid (`draw_backdrop`). Five built-ins (Dark, Light, Midnight — square
+  corners —, Ember, Paper); the user's library is `<config>/themes/`. Settings
+  → **Appearance**: the theme, corner rounding, a picture per panel, picture
+  strength, Import…, Save…. Changing a built-in saves "Name (mine)" and wears
+  it; a built-in is never written over or shadowed (imports are renamed). The
+  window watches `StudioHost::theme_revision` and wears `studio_theme`, unless
+  `--theme`/`--light` fixed it (`WindowOptions::theme_fixed`).
+- **Seen** on `:99`: the gear and the page from the home page, the blue
+  notice, picking up the Bass wire and dropping it on Keys, the shake, the
+  arrows, Ctrl+wheel both ways, the bay dragged taller, the new icons, a
+  theme chosen live with pictures behind all three panels.
+- **Not done**: Escape on a page opened from the home page (the `?` page
+  too, before this) also dismissed the home page under XTEST; not chased.
+  There is no colour editor — a theme's colours are edited in its file.
+
+**As of 2026-10-01 (later still) — UX plan step 7: the guide shows its actions
 being done.** v0.19.0 shipped steps 1–5; Ty then asked that *"the windowed
 tutorials show related gifs of the mentioned actions being performed"*, made
 by me, *"accurate, helpful, and visually polished"* — for the next release.
