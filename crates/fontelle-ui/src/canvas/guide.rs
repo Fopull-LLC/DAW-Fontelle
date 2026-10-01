@@ -47,12 +47,46 @@ pub enum GuideChoice {
     Vst2,
 }
 
+/// A short looping clip of a page's action being done — recorded from the
+/// real binary on the tour's song (`docs/ux-routing-and-learning-plan.md`
+/// step 7). The files are `crate::guide_media`'s; this is only which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GuideMedia {
+    Transport,
+    Rack,
+    Browser,
+    Clips,
+    Lanes,
+    Roll,
+    Mixer,
+    Export,
+    Settings,
+}
+
+impl GuideMedia {
+    pub const ALL: &'static [GuideMedia] = &[
+        GuideMedia::Transport,
+        GuideMedia::Rack,
+        GuideMedia::Browser,
+        GuideMedia::Clips,
+        GuideMedia::Lanes,
+        GuideMedia::Roll,
+        GuideMedia::Mixer,
+        GuideMedia::Export,
+        GuideMedia::Settings,
+    ];
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuidePage {
     pub title: &'static str,
     pub paragraphs: &'static [&'static str],
     pub target: Option<GuideTarget>,
     pub choice: Option<GuideChoice>,
+    /// The action it describes, being done. Only a page that describes one
+    /// has it: a choice is already something to do, and the welcome and the
+    /// *Coming from…* pages are reading.
+    pub media: Option<GuideMedia>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +106,15 @@ const fn page(
         paragraphs,
         target,
         choice: None,
+        media: None,
+    }
+}
+
+/// `page`, showing `media`.
+const fn shows(page: GuidePage, media: GuideMedia) -> GuidePage {
+    GuidePage {
+        media: Some(media),
+        ..page
     }
 }
 
@@ -86,6 +129,7 @@ const fn ask(
         paragraphs,
         target,
         choice: Some(choice),
+        media: None,
     }
 }
 
@@ -108,38 +152,47 @@ pub const GUIDE: &[GuideSection] = &[
     GuideSection {
         title: "Playing the song",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "The transport",
-            &[
-                "Play and stop are here, and on Space and Home. Beside them are loop, record and the metronome (Ctrl+M).",
-                "Click the tempo to type one, or drag it. Song plays the whole arrangement; switch it to Clip to loop only the clip you are editing.",
-            ],
-            Some(Transport),
+        pages: &[shows(
+            page(
+                "The transport",
+                &[
+                    "Play and stop are here, and on Space and Home. Beside them are loop, record and the metronome (Ctrl+M).",
+                    "Click the tempo to type one, or drag it. Song plays the whole arrangement; switch it to Clip to loop only the clip you are editing.",
+                ],
+                Some(Transport),
+            ),
+            GuideMedia::Transport,
         )],
     },
     GuideSection {
         title: "Instruments",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "The channel rack",
-            &[
-                "Every instrument in the song is a row here. + Add instrument adds a built-in synth, a sampler, a soundfont or a plugin.",
-                "The \u{2261} button opens a row's instrument in a window of its own. The headphones solo it and the speaker mutes it. Click a row to choose it: that is the instrument new clips and a MIDI keyboard play.",
-            ],
-            Some(Rack),
+        pages: &[shows(
+            page(
+                "The channel rack",
+                &[
+                    "Every instrument in the song is a row here. + Add instrument adds a built-in synth, a sampler, a soundfont or a plugin.",
+                    "The \u{2261} button opens a row's instrument in a window of its own. The headphones solo it and the speaker mutes it. Click a row to choose it: that is the instrument new clips and a MIDI keyboard play.",
+                ],
+                Some(Rack),
+            ),
+            GuideMedia::Rack,
         )],
     },
     GuideSection {
         title: "Sounds and files",
         kind: GuideKind::Tour,
         pages: &[
-            page(
-                "The browser",
-                &[
-                    "The tabs along the top are sounds, presets, projects, files to import, and settings. Click a sound to hear it; double-click it, or drag it onto a channel, to use it.",
-                    "The Import tab lists your MIDI files, FL Studio scores and audio from folders you choose. Drop a file from your desktop onto the arrangement to bring it in.",
-                ],
-                Some(Browser),
+            shows(
+                page(
+                    "The browser",
+                    &[
+                        "The tabs along the top are sounds, presets, projects, files to import, and settings. Click a sound to hear it; double-click it, or drag it onto a channel, to use it.",
+                        "The Import tab lists your MIDI files, FL Studio scores and audio from folders you choose. Drop a file from your desktop onto the arrangement to bring it in.",
+                    ],
+                    Some(Browser),
+                ),
+                GuideMedia::Browser,
             ),
             ask(
                 "VST 2 plugins",
@@ -156,45 +209,57 @@ pub const GUIDE: &[GuideSection] = &[
         title: "Arranging",
         kind: GuideKind::Tour,
         pages: &[
-            page(
-                "Lanes and clips",
-                &[
-                    "The arrangement is the song from left to right. Double-click an empty spot to draw a clip of the chosen instrument; drag a clip to move it, and drag its right edge to make it longer. Shift and that edge makes it loop.",
-                    "Ctrl+B cuts clips at the marker, Ctrl+D duplicates, Delete removes. Ctrl and the wheel zooms.",
-                ],
-                Some(Arrangement),
+            shows(
+                page(
+                    "Lanes and clips",
+                    &[
+                        "The arrangement is the song from left to right. Double-click an empty spot to draw a clip of the chosen instrument; drag a clip to move it, and drag its right edge to make it longer. Shift and that edge makes it loop.",
+                        "Ctrl+B cuts clips at the marker, Ctrl+D duplicates, Delete removes. Ctrl and the wheel zooms.",
+                    ],
+                    Some(Arrangement),
+                ),
+                GuideMedia::Clips,
             ),
-            page(
-                "Lanes",
-                &[
-                    "Click a lane's name to select it: recordings and imports land there. Its speaker and headphones mute and solo it, and right-clicking the name renames, moves, adds or deletes lanes.",
-                ],
-                Some(Arrangement),
+            shows(
+                page(
+                    "Lanes",
+                    &[
+                        "Click a lane's name to select it: recordings and imports land there. Its speaker and headphones mute and solo it, and right-clicking the name renames, moves, adds or deletes lanes.",
+                    ],
+                    Some(Arrangement),
+                ),
+                GuideMedia::Lanes,
             ),
         ],
     },
     GuideSection {
         title: "Writing notes",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "The piano roll",
-            &[
-                "Open a clip to edit its notes here. With the pencil, click to add a note and drag to set its length; right-click a note to delete it. E selects, and Ctrl drags a box around notes with any tool.",
-                "The chooser beside the tools sets the grid, and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
-            ],
-            Some(Editor),
+        pages: &[shows(
+            page(
+                "The piano roll",
+                &[
+                    "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
+                    "The chooser beside the tools sets the grid, and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
+                ],
+                Some(Editor),
+            ),
+            GuideMedia::Roll,
         )],
     },
     GuideSection {
         title: "Mixing",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "The mixer",
-            &[
-                "Press 2, or the Mixer tab, to swap the piano roll for the mixer. Each strip is a track with its fader, pan, mute and solo; + makes a new one.",
-                "Select a strip to see its inspector: where it sends its sound, its effects (+ Add effect) and its sends. The cables along the bottom show where everything goes, and what feeds the selected track lights up.",
-            ],
-            Some(Mixer),
+        pages: &[shows(
+            page(
+                "The mixer",
+                &[
+                    "Press 2, or the Mixer tab, to swap the piano roll for the mixer. Each strip is a track with its fader, pan, mute and solo; + makes a new one.",
+                    "Select a strip to see its inspector: where it sends its sound, its effects (+ Add effect) and its sends. The cables along the bottom show where everything goes, and what feeds the selected track lights up.",
+                ],
+                Some(Mixer),
+            ),
+            GuideMedia::Mixer,
         )],
     },
     GuideSection {
@@ -214,25 +279,31 @@ pub const GUIDE: &[GuideSection] = &[
     GuideSection {
         title: "Recording and exporting",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "Getting sound in and out",
-            &[
-                "A MIDI keyboard plays the chosen instrument as soon as it is plugged in; record catches what you play. To record audio, give a mixer track an input in its inspector, then press record.",
-                "Ctrl+E exports the song as a WAV and Ctrl+Shift+E as a MIDI file. Ctrl+S saves; Fontelle also keeps backups as you work.",
-            ],
-            Some(Transport),
+        pages: &[shows(
+            page(
+                "Getting sound in and out",
+                &[
+                    "A MIDI keyboard plays the chosen instrument as soon as it is plugged in; record catches what you play. To record audio, give a mixer track an input in its inspector, then press record.",
+                    "Ctrl+E exports the song as a WAV and Ctrl+Shift+E as a MIDI file. Ctrl+S saves; Fontelle also keeps backups as you work.",
+                ],
+                Some(Transport),
+            ),
+            GuideMedia::Export,
         )],
     },
     GuideSection {
         title: "Settings and help",
         kind: GuideKind::Tour,
-        pages: &[page(
-            "Where to find things",
-            &[
-                "The gear in the browser opens Settings: your MIDI keyboard, folders, plugins, extensions and this song's routing. The ? on the transport bar, or F1, opens this guide and every keyboard shortcut.",
-                "That is the tour. Keep playing with the demo, or close it and start a song of your own.",
-            ],
-            Some(Browser),
+        pages: &[shows(
+            page(
+                "Where to find things",
+                &[
+                    "The gear in the browser opens Settings: your MIDI keyboard, folders, plugins, extensions and this song's routing. The ? on the transport bar, or F1, opens this guide and every keyboard shortcut.",
+                    "That is the tour. Keep playing with the demo, or close it and start a song of your own.",
+                ],
+                Some(Browser),
+            ),
+            GuideMedia::Settings,
         )],
     },
     GuideSection {
@@ -317,8 +388,17 @@ const PAGE_GAP: f32 = 18.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HelpBlock {
     pub page: usize,
+    /// `None` for the page's title, or for its animation when `media`.
     pub paragraph: Option<usize>,
+    /// The page's animation, between its title and its words.
+    pub media: bool,
     pub rect: Rect,
+}
+
+/// The shape every guide animation is, wide over tall.
+fn media_height(width: f32) -> f32 {
+    (width * crate::guide_media::MEDIA_HEIGHT as f32 / crate::guide_media::MEDIA_WIDTH as f32)
+        .round()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -417,13 +497,31 @@ pub fn help_layout(
         placed.push(HelpBlock {
             page,
             paragraph: None,
+            media: false,
             rect: Rect::new(body.x, y, body.width, heading),
         });
         y += heading + BLOCK_GAP;
+        // At its own pixels at most: a clip blown up past them is a blur.
+        if GUIDE[section]
+            .pages
+            .get(page)
+            .is_some_and(|p| p.media.is_some())
+        {
+            let width = body.width.min(crate::guide_media::MEDIA_WIDTH as f32);
+            let height = media_height(width);
+            placed.push(HelpBlock {
+                page,
+                paragraph: None,
+                media: true,
+                rect: Rect::new(body.x, y, width, height),
+            });
+            y += height + BLOCK_GAP;
+        }
         for (at, h) in paragraphs.iter().enumerate() {
             placed.push(HelpBlock {
                 page,
                 paragraph: Some(at),
+                media: false,
                 rect: Rect::new(body.x, y, body.width, h.max(0.0)),
             });
             y += h.max(0.0) + BLOCK_GAP;
@@ -502,8 +600,26 @@ pub const TOUR_NEXT: &str = "Next";
 pub const TOUR_DONE: &str = "Finish";
 pub const TOUR_BACK: &str = "Back";
 
-/// How wide a tour card's paragraphs are in `window`.
-pub fn tour_text_width(window: Rect) -> f32 {
+/// How wide a landscape card's clip is: four fifths of its pixels, which
+/// keeps the card short enough to sit beside the arrangement or the editor
+/// in a 720-high window.
+pub const TOUR_MEDIA_WIDTH: f32 = 432.0;
+/// The words beside a clip, a little wider than a plain card's so the card
+/// stays as short as the clip.
+const TOUR_TEXT_WIDE: f32 = 440.0;
+
+/// Whether a card with a clip lies landscape in `window` — clip left, words
+/// right — or stacks the clip over the words.
+fn tour_landscape(window: Rect) -> bool {
+    window.width - 24.0 >= TOUR_MEDIA_WIDTH + TOUR_TEXT_WIDE + 3.0 * TOUR_PAD
+}
+
+/// How wide a tour card's paragraphs are in `window`, for a page with a clip
+/// (`media`) or without.
+pub fn tour_text_width(window: Rect, media: bool) -> f32 {
+    if media && tour_landscape(window) {
+        return TOUR_TEXT_WIDE;
+    }
     (TOUR_CARD_WIDTH.min(window.width - 24.0) - 2.0 * TOUR_PAD).max(0.0)
 }
 
@@ -523,6 +639,8 @@ pub struct TourLayout {
     pub close: Rect,
     /// "3 of 12 — Arranging", which drops down the list of sections.
     pub steps: Rect,
+    /// The page's clip; empty when it has none.
+    pub media: Rect,
 }
 
 /// Lays the tour card out beside `target` (or in the middle when a step
@@ -530,6 +648,10 @@ pub struct TourLayout {
 /// options. Beside, never on: the card must not hide what it describes, so
 /// it goes below the target, then above, right and left, whichever fits
 /// first.
+///
+/// With `media` the card shows the page's clip: to the left of everything
+/// else when the window is wide enough, over the title otherwise.
+#[allow(clippy::too_many_arguments)]
 pub fn tour_layout(
     window: Rect,
     metrics: &Metrics,
@@ -538,23 +660,44 @@ pub fn tour_layout(
     choices: usize,
     first: bool,
     _last: bool,
+    media: bool,
 ) -> TourLayout {
     let row = metrics.row_height.round().max(1.0);
-    let width = TOUR_CARD_WIDTH.min((window.width - 24.0).max(0.0));
+    let landscape = media && tour_landscape(window);
+    let text_w = tour_text_width(window, media);
+    let width = if landscape {
+        TOUR_MEDIA_WIDTH + text_w + 3.0 * TOUR_PAD
+    } else {
+        TOUR_CARD_WIDTH.min((window.width - 24.0).max(0.0))
+    };
+    let media_size = if landscape {
+        (TOUR_MEDIA_WIDTH, media_height(TOUR_MEDIA_WIDTH))
+    } else if media {
+        let w = (width - 2.0 * TOUR_PAD).max(0.0);
+        (w, media_height(w))
+    } else {
+        (0.0, 0.0)
+    };
     let head = (row * 1.4).round();
     let button = (row * 1.5).round();
     let choice_h = (row * 1.6).round();
     // The header row (the step chip and ×), the title under it, then the
-    // words, the choice's options and the buttons.
-    let height = TOUR_PAD
-        + head
+    // words, the choice's options and the buttons — beside the clip, or
+    // under it.
+    let column = head
         + head
         + 4.0
         + body_height.max(0.0)
         + choices as f32 * (choice_h + 6.0)
         + TOUR_GAP
-        + button
-        + TOUR_PAD;
+        + button;
+    let height = if landscape {
+        column.max(media_size.1)
+    } else if media {
+        column + media_size.1 + TOUR_GAP
+    } else {
+        column
+    } + 2.0 * TOUR_PAD;
     let height = height.min((window.height - 24.0).max(0.0));
 
     let spotlight = target.map(|t| t.inset(-SPOT_PAD).intersection(&window).clamped());
@@ -617,7 +760,21 @@ pub fn tour_layout(
         }
     };
 
-    let inner = card.inset(TOUR_PAD).clamped();
+    let card_inner = card.inset(TOUR_PAD).clamped();
+    // Everything but the clip goes in `inner`: the right-hand column of a
+    // landscape card, or the whole card under the clip's row otherwise.
+    let (media, inner) = if landscape {
+        let media = Rect::new(card_inner.x, card_inner.y, media_size.0, media_size.1)
+            .intersection(&card_inner)
+            .clamped();
+        let x = media.right() + TOUR_PAD;
+        let inner = Rect::new(x, card_inner.y, card_inner.right() - x, card_inner.height)
+            .intersection(&card_inner)
+            .clamped();
+        (media, inner)
+    } else {
+        (Rect::ZERO, card_inner)
+    };
     let close = Rect::new(inner.right() - head, inner.y, head, head)
         .intersection(&inner)
         .clamped();
@@ -625,8 +782,18 @@ pub fn tour_layout(
     let steps = Rect::new(close.x - 6.0 - steps_w, inner.y, steps_w, head)
         .intersection(&inner)
         .clamped();
-    // The title sits under the header row, the paragraphs under it.
-    let title = Rect::new(inner.x, inner.y + head, inner.width, head)
+    // Stacked, the clip sits under the header row.
+    let (media, below_head) = if media_size.0 > 0.0 && !landscape {
+        let r = Rect::new(inner.x, inner.y + head + 4.0, media_size.0, media_size.1)
+            .intersection(&inner)
+            .clamped();
+        (r, r.bottom() + TOUR_GAP - 4.0 - head)
+    } else {
+        (media, inner.y)
+    };
+    // The title sits under the header row (and a stacked clip), the
+    // paragraphs under it.
+    let title = Rect::new(inner.x, below_head + head, inner.width, head)
         .intersection(&inner)
         .clamped();
     let body = Rect::new(
@@ -669,6 +836,7 @@ pub fn tour_layout(
         next,
         close,
         steps,
+        media,
     }
 }
 

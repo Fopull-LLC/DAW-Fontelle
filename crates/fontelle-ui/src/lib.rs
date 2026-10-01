@@ -25,6 +25,7 @@ pub mod cables;
 pub mod canvas;
 pub mod document;
 pub mod file_drag;
+pub mod guide_media;
 pub mod icon;
 pub mod layout;
 pub mod motion;

@@ -99,10 +99,11 @@ pub use gestures::{
     knob_drag, lfo_draw_switch, matrix_tip, nudged, parse_typed, wheel_nudge,
 };
 pub use guide::{
-    GUIDE, GuideChoice, GuideKind, GuidePage, GuideSection, GuideTarget, HELP_CLOSE,
+    GUIDE, GuideChoice, GuideKind, GuideMedia, GuidePage, GuideSection, GuideTarget, HELP_CLOSE,
     HELP_SHORTCUTS, HELP_TITLE, HelpBlock, HelpHit, HelpLayout, TOUR_BACK, TOUR_CARD_WIDTH,
-    TOUR_DONE, TOUR_NEXT, TourHit, TourLayout, help_hit, help_layout, help_scroll_max,
-    help_scrolled, help_text_width, tour_hit, tour_layout, tour_steps, tour_text_width,
+    TOUR_DONE, TOUR_MEDIA_WIDTH, TOUR_NEXT, TourHit, TourLayout, help_hit, help_layout,
+    help_scroll_max, help_scrolled, help_text_width, tour_hit, tour_layout, tour_steps,
+    tour_text_width,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,

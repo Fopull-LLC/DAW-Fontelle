@@ -174,6 +174,8 @@ pub struct HelpChrome<'a> {
     /// [`crate::canvas::help_text_width`].
     pub paragraphs: &'a [Vec<TextLayout>],
     pub hover: Option<crate::canvas::HelpHit>,
+    /// The section's clips as they are this frame.
+    pub media: &'a [(crate::canvas::GuideMedia, vello::peniko::ImageData)],
 }
 
 /// The tour's card, as the window draws it.
@@ -192,6 +194,8 @@ pub struct TourChrome<'a> {
     /// "3 of 12 · Arranging".
     pub steps: &'a str,
     pub hover: Option<crate::canvas::TourHit>,
+    /// The step's clip as it is this frame.
+    pub media: Option<&'a vello::peniko::ImageData>,
 }
 
 /// The settings page (`canvas::settings_page`), as the window draws it.
@@ -1112,6 +1116,15 @@ fn draw_help(
     );
     let section = GUIDE.get(l.section);
     for block in &l.blocks {
+        if block.media {
+            let image = section
+                .and_then(|s| s.pages.get(block.page))
+                .and_then(|page| page.media)
+                .and_then(|media| chrome.media.iter().find(|(m, _)| *m == media))
+                .map(|(_, image)| image);
+            draw_guide_clip(scene, block.rect, image, p);
+            continue;
+        }
         match block.paragraph {
             None => {
                 let Some(page) = section.and_then(|s| s.pages.get(block.page)) else {
@@ -1171,6 +1184,7 @@ fn draw_tour(
         chrome.choices.len(),
         chrome.step == 0,
         chrome.step + 1 == steps.len(),
+        page.media.is_some(),
     );
     // Dimmed round the spotlight, not over it: the part being described is
     // the one thing at full brightness.
@@ -1209,6 +1223,7 @@ fn draw_tour(
         p.window.with_alpha(120),
     );
     fill_rect_rounded(scene, l.card, radius, p.panel);
+    draw_guide_clip(scene, l.media, chrome.media, p);
     stroke_rect_rounded(scene, l.card, radius, 1.0, p.accent.with_alpha(0xa0));
     let centred_y = |r: Rect, h: f32| r.y + (r.height - h) / 2.0;
     let plate = |scene: &mut Scene, r: Rect, lit: bool, primary: bool| {
@@ -14009,5 +14024,60 @@ fn draw_disgusting_beat_lane(
         crate::canvas::lane_clear_rect(area),
         "clear",
         chrome.hover == Some(crate::canvas::DisgustingBeatHit::LaneClear { lane: index }),
+    );
+}
+
+/// A guide clip, scaled into `rect` with its corners rounded and a hairline
+/// round it; the panel colour while it has not decoded.
+fn draw_guide_clip(
+    scene: &mut Scene,
+    rect: Rect,
+    image: Option<&vello::peniko::ImageData>,
+    p: &crate::theme::Palette,
+) {
+    if rect.is_empty() {
+        return;
+    }
+    let shape = RoundedRect::new(
+        rect.x as f64,
+        rect.y as f64,
+        rect.right() as f64,
+        rect.bottom() as f64,
+        6.0,
+    );
+    match image.filter(|i| i.width > 0 && i.height > 0) {
+        Some(image) => {
+            let brush = vello::peniko::ImageBrush {
+                image: image.clone(),
+                sampler: vello::peniko::ImageSampler::new()
+                    .with_quality(vello::peniko::ImageQuality::High),
+            };
+            let transform = Affine::translate((rect.x as f64, rect.y as f64))
+                * Affine::scale_non_uniform(
+                    rect.width as f64 / image.width as f64,
+                    rect.height as f64 / image.height as f64,
+                );
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &brush,
+                Some(transform),
+                &shape,
+            );
+        }
+        None => scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.panel.to_peniko(),
+            None,
+            &shape,
+        ),
+    }
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        p.border.to_peniko(),
+        None,
+        &shape,
     );
 }

@@ -5825,10 +5825,36 @@ fn shoot_guide(
             GUIDE[s].pages[p]
                 .paragraphs
                 .iter()
-                .map(|t| text.layout(t, &theme.font, Some(tour_text_width(win))))
+                .map(|t| {
+                    text.layout(
+                        t,
+                        &theme.font,
+                        Some(tour_text_width(win, GUIDE[s].pages[p].media.is_some())),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
+    // Each clip on show at its first frame, the way the window starts one.
+    let clip = |media: fontelle_ui::canvas::GuideMedia| {
+        let anim = fontelle_ui::guide_media::decode_apng(fontelle_ui::guide_media::bytes(media))
+            .expect("a shipped clip decodes");
+        let mut player = fontelle_ui::guide_media::Player::new(anim);
+        player.advance_to(0);
+        (media, player.image())
+    };
+    let media: Vec<_> = match step {
+        Some(at) => {
+            let (s, p) = steps[at];
+            GUIDE[s].pages[p].media.map(clip).into_iter().collect()
+        }
+        None => GUIDE[section]
+            .pages
+            .iter()
+            .filter_map(|p| p.media)
+            .map(clip)
+            .collect(),
+    };
     let choices: Vec<String> = step
         .and_then(|at| {
             let (s, p) = steps[at];
@@ -5883,6 +5909,7 @@ fn shoot_guide(
                 scroll: 0.0,
                 paragraphs: &help_paragraphs,
                 hover: Some(fontelle_ui::canvas::HelpHit::Shortcuts),
+                media: &media,
             }),
             tour: step.map(|at| fontelle_ui::render::TourChrome {
                 step: at,
@@ -5893,6 +5920,7 @@ fn shoot_guide(
                 chosen: (!choices.is_empty()).then_some(1),
                 steps: steps_label.as_deref().unwrap_or(""),
                 hover: Some(fontelle_ui::canvas::TourHit::Next),
+                media: media.first().map(|(_, image)| image),
             }),
             settings_page: None,
         },
@@ -7103,4 +7131,57 @@ fn a_racks_mute_and_solo_are_icons_not_lettered_boxes() {
             "no box behind an icon: {corner:?} vs {ground:?}"
         );
     }
+}
+
+#[test]
+fn a_tour_step_with_a_clip_draws_its_picture_beside_the_words() {
+    // The channel rack's step shows its clip (plan step 7).
+    let steps = fontelle_ui::canvas::tour_steps();
+    let at = steps
+        .iter()
+        .position(|&(s, p)| fontelle_ui::canvas::GUIDE[s].pages[p].media.is_some())
+        .expect("a step with a clip");
+    let Some((pixels, theme, width, height)) = shoot_guide(Theme::dark_default(), 0, Some(at))
+    else {
+        return;
+    };
+    let win = fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, height as f32);
+    let rack = window_layout(
+        width as f32,
+        height as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    )
+    .rack
+    .frame;
+    let (s, p) = steps[at];
+    let mut text = TextContext::new();
+    let body: f32 = fontelle_ui::canvas::GUIDE[s].pages[p]
+        .paragraphs
+        .iter()
+        .map(|t| {
+            let w = fontelle_ui::canvas::tour_text_width(win, true);
+            text.layout(t, &theme.font, Some(w)).height + 6.0
+        })
+        .sum();
+    let l = fontelle_ui::canvas::tour_layout(
+        win,
+        &theme.metrics,
+        Some(rack),
+        body,
+        0,
+        at == 0,
+        false,
+        true,
+    );
+    assert!(!l.media.is_empty());
+    // The clip is a picture, not the card's flat panel: many colours in it.
+    let mut colours = std::collections::HashSet::new();
+    for y in (l.media.y as u32 + 8..l.media.bottom() as u32 - 8).step_by(7) {
+        for x in (l.media.x as u32 + 8..l.media.right() as u32 - 8).step_by(7) {
+            let i = (y * width + x) as usize * 4;
+            colours.insert([pixels[i], pixels[i + 1], pixels[i + 2]]);
+        }
+    }
+    assert!(colours.len() > 20, "{} colours", colours.len());
 }

@@ -1113,6 +1113,17 @@ struct HelpState {
 
 /// The tour while it runs: the step, the spotlight easing from where the
 /// last step's was, and the step's words wrapped for the card.
+/// The guide's clips playing on screen: decoded when one comes into view and
+/// dropped when it goes, all on one clock that restarts with what is shown —
+/// a step's clip starts from its beginning when the step is opened.
+#[derive(Default)]
+struct GuideClips {
+    players: Vec<(crate::canvas::GuideMedia, crate::guide_media::Player)>,
+    /// This frame's pictures, for the chrome to borrow.
+    images: Vec<(crate::canvas::GuideMedia, vello::peniko::ImageData)>,
+    since: Option<std::time::Instant>,
+}
+
 struct TourState {
     step: usize,
     from: Option<crate::layout::Rect>,
@@ -1199,6 +1210,7 @@ pub struct WindowApp {
     tour_choices: (Vec<String>, Option<usize>),
     /// The tour, while it runs.
     tour: Option<TourState>,
+    guide_clips: GuideClips,
     /// The settings file's line — where it is, or what went wrong writing it
     /// — for the page's header.
     settings_status: String,
@@ -2111,6 +2123,7 @@ impl WindowApp {
             help: None,
             tour_choices: (Vec::new(), None),
             tour: None,
+            guide_clips: GuideClips::default(),
             settings_status: String::new(),
             activation: None,
             activation_tried: false,
@@ -3145,6 +3158,7 @@ impl WindowApp {
                     scroll: help.scroll,
                     paragraphs: &help.paragraphs,
                     hover: help.hover,
+                    media: &self.guide_clips.images,
                 }),
                 tour: self.tour.as_ref().map(|tour| crate::render::TourChrome {
                     step: tour.step,
@@ -3155,6 +3169,7 @@ impl WindowApp {
                     chosen: self.tour_choices.1,
                     steps: &tour.label,
                     hover: tour.hover,
+                    media: self.guide_clips.images.first().map(|(_, image)| image),
                 }),
                 settings_page: self.settings_page.as_ref().map(|page| {
                     crate::render::SettingsPageChrome {
@@ -3261,6 +3276,10 @@ impl WindowApp {
         // The tour's spotlight glides between steps.
         if self.tour_moving() {
             self.tree.invalidate_rect(self.layout.window);
+        }
+        // And the guide's clips play.
+        if let Some(rect) = self.advance_guide_clips() {
+            self.tree.invalidate_rect(rect);
         }
         // "Saved!" rises every frame it is up, and is gone once it has risen.
         if let Some(at) = self.saved_at {
@@ -7205,7 +7224,10 @@ impl WindowApp {
             for choice in &choices {
                 want(&mut self.labels, &mut self.text, choice);
             }
-            let width = crate::canvas::tour_text_width(self.layout.window);
+            let width = crate::canvas::tour_text_width(
+                self.layout.window,
+                Self::tour_media_at(step).is_some(),
+            );
             if let Some(&(section, page)) = crate::canvas::tour_steps().get(step) {
                 let page = &crate::canvas::GUIDE[section].pages[page];
                 want(&mut self.labels, &mut self.text, page.title);
@@ -14485,7 +14507,94 @@ impl WindowApp {
             self.tour_choices.0.len(),
             tour.step == 0,
             tour.step + 1 == steps.len(),
+            Self::tour_media_at(tour.step).is_some(),
         ))
+    }
+
+    /// The clips on screen: the tour step's, or those of the guide's open
+    /// section.
+    fn visible_media(&self) -> Vec<crate::canvas::GuideMedia> {
+        if let Some(tour) = &self.tour {
+            return Self::tour_media_at(tour.step).into_iter().collect();
+        }
+        if let Some(help) = &self.help {
+            return crate::canvas::GUIDE
+                .get(help.section)
+                .map(|s| s.pages.iter().filter_map(|p| p.media).collect())
+                .unwrap_or_default();
+        }
+        Vec::new()
+    }
+
+    /// Moves the clips on screen to now; where to redraw when one changed.
+    fn advance_guide_clips(&mut self) -> Option<crate::layout::Rect> {
+        let visible = self.visible_media();
+        let clips = &mut self.guide_clips;
+        let same = clips.players.len() == visible.len()
+            && clips.players.iter().zip(&visible).all(|((m, _), v)| m == v);
+        if !same {
+            clips.players = visible
+                .iter()
+                .filter_map(|&media| {
+                    crate::guide_media::decode_apng(crate::guide_media::bytes(media))
+                        .ok()
+                        .map(|anim| (media, crate::guide_media::Player::new(anim)))
+                })
+                .collect();
+            clips.since = (!clips.players.is_empty()).then(std::time::Instant::now);
+            clips.images.clear();
+        }
+        let since = clips.since?;
+        let ms = since.elapsed().as_millis() as u64;
+        let mut changed = !same;
+        for (_, player) in &mut clips.players {
+            changed |= player.advance_to(ms);
+        }
+        if !changed {
+            return None;
+        }
+        clips.images = clips
+            .players
+            .iter_mut()
+            .map(|(media, player)| (*media, player.image()))
+            .collect();
+        // Only where the clip is: the card's, or the guide's page.
+        if self.tour.is_some() {
+            return self.tour_layout().map(|l| l.media);
+        }
+        Some(self.help_layout().frame)
+    }
+
+    /// When the next frame of a clip on screen is due.
+    fn guide_clip_due(&self) -> Option<std::time::Instant> {
+        let since = self.guide_clips.since?;
+        let ms = since.elapsed().as_millis() as u64;
+        self.guide_clips
+            .players
+            .iter()
+            .map(|(_, player)| {
+                let anim = player.animation();
+                let total = anim.total_ms().max(1);
+                // The end of the frame showing now.
+                let mut t = ms % total;
+                let mut left = 0;
+                for frame in &anim.frames {
+                    if t < frame.delay_ms as u64 {
+                        left = frame.delay_ms as u64 - t;
+                        break;
+                    }
+                    t -= frame.delay_ms as u64;
+                }
+                left.max(1)
+            })
+            .min()
+            .map(|left| std::time::Instant::now() + std::time::Duration::from_millis(left))
+    }
+
+    /// The clip a tour step shows, if its page has one.
+    fn tour_media_at(step: usize) -> Option<crate::canvas::GuideMedia> {
+        let (section, page) = *crate::canvas::tour_steps().get(step)?;
+        crate::canvas::GUIDE[section].pages[page].media
     }
 
     /// A press while the tour runs: `true` when the tour took it. Off the
@@ -21233,6 +21342,11 @@ impl WindowApp {
                 SKY_FRAME
             };
             wake = Some(wake.map_or(now + frame, |w| w.min(now + frame)));
+        }
+
+        // A clip in the guide plays on its own, frame by frame.
+        if let Some(due) = self.guide_clip_due() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 
         // A note waiting out its minimum length has to be woken for, or a

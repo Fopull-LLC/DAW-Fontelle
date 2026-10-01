@@ -1,0 +1,25 @@
+import sys; sys.path.insert(0, sys.argv[1])
+from rec import Rec
+r = Rec((0, 0, 540, 304), fps=20)
+r.start(300, 210)
+r.wait(0.3)
+r.click(25, 25, 0.7)          # play
+r.wait(1.8)
+r.click(55, 25, 0.4)          # stop
+r.wait(0.5)
+r.key('space', 'Space')
+r.wait(1.5)
+r.key('space', 'Space')
+r.wait(0.5)
+r.move(362, 26, 0.7)          # the tempo: drag it down, then back
+r.wait(0.15)
+r.down()
+r.move(362, 66, 0.8)
+r.wait(0.35)
+r.move(362, 38, 0.6)
+r.wait(0.2)
+r.up()
+r.wait(0.5)
+r.move(300, 200, 0.6)
+r.wait(0.2)
+print(r.save(sys.argv[2]), 'frames')

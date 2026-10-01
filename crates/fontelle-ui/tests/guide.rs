@@ -8,8 +8,8 @@
 //! cannot disagree.
 
 use fontelle_ui::canvas::{
-    GUIDE, GuideChoice, GuideKind, HelpHit, TourHit, help_hit, help_layout, help_scroll_max,
-    help_scrolled, tour_hit, tour_layout, tour_steps,
+    GUIDE, GuideChoice, GuideKind, GuideMedia, HelpHit, TourHit, help_hit, help_layout,
+    help_scroll_max, help_scrolled, tour_hit, tour_layout, tour_steps,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -158,7 +158,7 @@ fn a_section_reads_as_its_pages_titles_and_paragraphs_in_order() {
     let expected: usize = GUIDE[section]
         .pages
         .iter()
-        .map(|p| 1 + p.paragraphs.len())
+        .map(|p| 1 + p.paragraphs.len() + p.media.is_some() as usize)
         .sum();
     let visible = l
         .blocks
@@ -214,7 +214,7 @@ fn the_tour_card_sits_beside_what_it_points_at_and_never_on_it() {
         Rect::new(264.0, 360.0, 1008.0, 350.0),
         Rect::new(8.0, 8.0, 1264.0, 36.0),
     ] {
-        let l = tour_layout(window(), &m, Some(target), 120.0, 0, false, false);
+        let l = tour_layout(window(), &m, Some(target), 120.0, 0, false, false, false);
         assert!(within(l.card, window()), "{target:?}: {:?}", l.card);
         assert!(!overlaps(l.card, target), "the card covers {target:?}");
         let spot = l.spotlight.expect("a spotlight");
@@ -224,7 +224,7 @@ fn the_tour_card_sits_beside_what_it_points_at_and_never_on_it() {
 
 #[test]
 fn a_step_with_nothing_to_point_at_is_a_card_in_the_middle() {
-    let l = tour_layout(window(), &metrics(), None, 120.0, 0, true, false);
+    let l = tour_layout(window(), &metrics(), None, 120.0, 0, true, false, false);
     assert!(l.spotlight.is_none());
     let (cx, cy) = centre(l.card);
     assert!((cx - 640.0).abs() < 2.0 && (cy - 360.0).abs() < 60.0);
@@ -233,7 +233,7 @@ fn a_step_with_nothing_to_point_at_is_a_card_in_the_middle() {
 
 #[test]
 fn the_card_has_its_buttons_and_a_choice_has_its_options() {
-    let l = tour_layout(window(), &metrics(), None, 120.0, 2, false, true);
+    let l = tour_layout(window(), &metrics(), None, 120.0, 2, false, true, false);
     assert_eq!(l.choices.len(), 2);
     for r in l
         .choices
@@ -258,4 +258,126 @@ fn the_card_has_its_buttons_and_a_choice_has_its_options() {
     assert_eq!(tour_hit(&l, x, y), TourHit::Choice(1));
     // Off the card the press is the studio's: the tour is not in the way.
     assert_eq!(tour_hit(&l, 2.0, 2.0), TourHit::Through);
+}
+
+// ------------------------------------------------------- the animations
+//
+// `docs/ux-routing-and-learning-plan.md` step 7: *"the windowed tutorials
+// [should] show related gifs of the mentioned actions being performed"*.
+
+/// A page describes an action when it is a tour page that is neither the
+/// welcome nor a choice — the choice is itself the thing to do.
+fn describes_an_action(section: usize, page: usize) -> bool {
+    let p = &GUIDE[section].pages[page];
+    GUIDE[section].kind == GuideKind::Tour && section != 0 && p.choice.is_none()
+}
+
+#[test]
+fn every_page_that_describes_an_action_shows_it_being_done() {
+    for (s, section) in GUIDE.iter().enumerate() {
+        for (p, page) in section.pages.iter().enumerate() {
+            assert_eq!(
+                page.media.is_some(),
+                describes_an_action(s, p),
+                "{} / {}",
+                section.title,
+                page.title
+            );
+        }
+    }
+}
+
+#[test]
+fn no_two_pages_show_the_same_animation() {
+    let mut seen: Vec<GuideMedia> = GUIDE
+        .iter()
+        .flat_map(|s| s.pages.iter().filter_map(|p| p.media))
+        .collect();
+    let count = seen.len();
+    seen.sort_unstable_by_key(|m| *m as usize);
+    seen.dedup();
+    assert_eq!(seen.len(), count);
+    assert_eq!(count, GuideMedia::ALL.len(), "every clip is on a page");
+}
+
+/// The four places a tour step points at in a 1280×720 window.
+fn targets() -> [Rect; 5] {
+    [
+        Rect::new(8.0, 8.0, 1264.0, 36.0),      // the transport
+        Rect::new(8.0, 50.0, 248.0, 280.0),     // the rack
+        Rect::new(8.0, 335.0, 248.0, 375.0),    // the browser
+        Rect::new(264.0, 50.0, 1008.0, 300.0),  // the arrangement
+        Rect::new(264.0, 360.0, 1008.0, 350.0), // the editor and mixer
+    ]
+}
+
+#[test]
+fn a_card_with_an_animation_still_sits_beside_what_it_points_at() {
+    let m = metrics();
+    for target in targets() {
+        let l = tour_layout(window(), &m, Some(target), 150.0, 0, false, false, true);
+        assert!(within(l.card, window()), "{target:?}: {:?}", l.card);
+        assert!(!overlaps(l.card, target), "the card covers {target:?}");
+        assert!(!l.media.is_empty());
+        assert!(within(l.media, l.card));
+    }
+}
+
+#[test]
+fn the_animation_is_wide_and_beside_the_words_when_there_is_room() {
+    let l = tour_layout(window(), &metrics(), None, 150.0, 0, false, false, true);
+    let aspect = l.media.width / l.media.height;
+    assert!(
+        (aspect - 540.0 / 304.0).abs() < 0.02,
+        "the clip's own shape"
+    );
+    assert!(l.media.width >= 400.0, "big enough to follow");
+    assert!(l.media.right() <= l.body.x, "the words are to its right");
+    for r in [l.title, l.body, l.next, l.back, l.steps, l.close] {
+        assert!(!overlaps(l.media, r), "{r:?}");
+    }
+}
+
+#[test]
+fn a_narrow_window_stacks_the_animation_over_the_words() {
+    let narrow = Rect::new(0.0, 0.0, 720.0, 900.0);
+    let l = tour_layout(narrow, &metrics(), None, 150.0, 0, false, false, true);
+    assert!(within(l.card, narrow));
+    assert!(within(l.media, l.card));
+    assert!(l.media.bottom() <= l.body.y + 0.01, "the words under it");
+    let aspect = l.media.width / l.media.height;
+    assert!((aspect - 540.0 / 304.0).abs() < 0.02);
+}
+
+#[test]
+fn a_card_without_an_animation_is_as_it_was() {
+    let with = tour_layout(window(), &metrics(), None, 150.0, 0, false, false, false);
+    assert!(with.media.is_empty());
+    assert!(with.card.width <= 400.0);
+}
+
+#[test]
+fn the_guide_page_shows_each_animation_after_its_title() {
+    for (s, section) in GUIDE.iter().enumerate() {
+        let l = help_layout(window(), &metrics(), s, &heights(s), 0.0);
+        for (p, page) in section.pages.iter().enumerate() {
+            let blocks: Vec<_> = l.blocks.iter().filter(|b| b.page == p).collect();
+            let media: Vec<_> = blocks.iter().filter(|b| b.media).collect();
+            assert_eq!(media.len(), page.media.is_some() as usize, "{}", page.title);
+            if let Some(b) = media.first() {
+                assert!(
+                    blocks[0].paragraph.is_none() && !blocks[0].media,
+                    "the title first"
+                );
+                assert!(blocks[1].media, "then the animation");
+                let aspect = b.rect.width / b.rect.height;
+                assert!((aspect - 540.0 / 304.0).abs() < 0.02);
+                assert!(
+                    b.rect.width <= 540.0 + 0.01,
+                    "never blown up past its pixels"
+                );
+                assert!(b.rect.x >= l.body.x && b.rect.right() <= l.body.right() + 0.01);
+            }
+        }
+    }
 }

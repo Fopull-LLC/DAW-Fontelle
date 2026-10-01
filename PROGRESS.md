@@ -19,6 +19,42 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-01 (latest) — UX plan step 7: the guide shows its actions
+being done.** v0.19.0 shipped steps 1–5; Ty then asked that *"the windowed
+tutorials show related gifs of the mentioned actions being performed"*, made
+by me, *"accurate, helpful, and visually polished"* — for the next release.
+
+- **Nine clips** in `assets/guide/` (transport, rack, browser, clips, lanes,
+  roll, mixer, export, settings), one per page that describes an action
+  (`GuidePage::media`, `GuideMedia`). The welcome, the two choice pages and
+  the *Coming from…* pages have none (`tests/guide.rs`).
+- **Animated PNG**, decoded by the `png` crate already here
+  (`guide_media.rs`: `decode_apng`, `Player`). A frame holds only what
+  changed, as up to three rectangles, all but the last with no delay — so
+  the player lays zero-delay frames together (`tests/guide_media.rs`). Each
+  clip is 0.1–0.6 MB, 10–15 s; decoded only while on screen, one frame laid
+  at a time rather than every frame held whole.
+- **The tour card goes landscape** with a clip (clip left, words right,
+  `TOUR_MEDIA_WIDTH`), so it still fits beside the arrangement and the
+  editor in a 720-high window; a narrow window stacks it. The guide page
+  shows a clip at its own pixels under each page's title.
+- **How they were made** (in the scratchpad, not the tree): the release
+  binary on `:99` driving the *tour's own song* with XTEST, grabbing the
+  region in-process each tick (1 ms a grab), drawing a clean pointer, click
+  rings and key chips over the frames from the script's own record, and an
+  encoder that stores changed rectangles. Two traps: **with vsync on, a grab
+  of the nested server is a frame behind until something else presents** —
+  a drag's result never showed; the recording binary is built with
+  `AutoNoVsync`, source put back after. And adding an instrument or effect
+  **opens its window**, which the script closes as a user would.
+- **What recording found**, all fixed with tests: the guide said a pencil
+  drag sets a note's length, but it moves it (FL's way) — the text now says
+  so; the tour's song was one blue block with grey chips (each instrument
+  now has a coloured track and its lane wears it); its reverb send was at
+  "off"; and starting the tour again kept the last one's exports
+  ("Fontelle tour 2.wav", a pile in the config folder) — it now clears it.
+- The web manual card to W waits for these and reuses them.
+
 **As of 2026-10-01 (later) — UX plan step 5: the guide and the tour.**
 `docs/ux-routing-and-learning-plan.md` §5, built (the web manual card to W
 waits for step 6's screenshots, as answer E says).

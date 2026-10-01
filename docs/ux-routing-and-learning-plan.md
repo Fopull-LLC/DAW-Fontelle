@@ -175,3 +175,28 @@ All in the next release (F); built in this order, each useful alone:
    size), clean names, handed over on task `0234`'s thread for W; the
    deploy stays Ty's. The in-app guide's screenshots come from the same
    session, and the web manual is built from those.
+7. **Animations in the guide** (Ty, 2026-09-30, after v0.19.0 shipped:
+   *"the windowed tutorials [should] show related gifs of the mentioned
+   actions being performed so the animations will make it more interactive
+   and easy to follow"*, and *"you should produce these animations
+   yourself and they should be accurate, helpful, and visually polished"*;
+   next release). One short looping clip per page that describes an
+   action — the transport, the rack, the browser, clips, lanes, the piano
+   roll, the mixer, exporting, settings and help — shown in the tour card
+   and on the guide page alike, the same file in both. The choice pages
+   (routing, VST 2), the welcome and the *Coming from…* pages have none:
+   the first two are already something to do, the others are reading.
+   - **Recorded, not drawn**: each is the real binary on the tour's own
+     song, driven by a script, so what it shows is what the user will see.
+     The X server's cursor is left out and a clean pointer drawn over the
+     frames from the script's own record of where it was, with a ring on
+     each click and a key chip for each shortcut.
+   - **Animated PNG, not GIF**: the same thing to the reader, without GIF's
+     256 colours (the theme's gradients band). The `png` crate already in
+     the tree decodes it; each frame stores only what changed, so a clip is
+     small.
+   - **The tour card goes landscape** when its page has a clip: the clip on
+     the left, the words on the right. Stacked, the card would be too tall
+     to sit beside the arrangement or the editor without covering them; a
+     window too narrow for landscape stacks it.
+   - The web manual (step 5's last item) waits for these, and reuses them.

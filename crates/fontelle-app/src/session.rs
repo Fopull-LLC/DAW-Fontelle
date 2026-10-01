@@ -2316,6 +2316,12 @@ impl Session {
             .ok_or("there is nowhere to keep the tour\u{2019}s song")?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.fontelle", crate::tour::TOUR_NAME));
+        // The last tour's song goes first, with whatever was made in it: an
+        // export left behind made the next one "Fontelle tour 2.wav", and
+        // every tour taken added to the pile in the config folder.
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+        }
         let project = crate::tour::tour_project(self.options.sample_rate);
         crate::save_project(&project, &path).map_err(|e| e.to_string())?;
         let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;

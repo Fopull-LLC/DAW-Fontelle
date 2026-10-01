@@ -12,7 +12,7 @@
 
 use fontelle_model::{
     AddChannel, AddClip, AddInsert, AddMixerTrack, AddSend, Arena, Clip, ClipSource, Command, Lane,
-    Note, NoteData, Project, SetChannelKind, SetChannelRoute, TempoMap,
+    Note, NoteData, Project, SetChannelKind, SetChannelRoute, SetSendLevel, TempoMap,
 };
 use fontelle_types::{ChannelId, EffectKind, InstrumentKind, LaneId, PPQN};
 
@@ -169,9 +169,24 @@ pub fn tour_project(sample_rate: u32) -> Project {
     let mut add = AddMixerTrack::new("Reverb");
     add.apply(&mut project).expect("a track");
     let reverb = add.track().expect("just applied");
-    SetChannelRoute::new(drums, Some(bus))
-        .apply(&mut project)
-        .expect("a route to a track that exists");
+    // And a track each for the bass and the keys, so every instrument's
+    // chip — and every clip — wears a colour of its own: the song the
+    // guide's clips are recorded on should look like one somebody made.
+    let mut routes = vec![(drums, bus)];
+    for (channel, name) in [(bass, "Bass"), (keys, "Keys")] {
+        let mut add = AddMixerTrack::new(name);
+        add.apply(&mut project).expect("a track");
+        routes.push((channel, add.track().expect("just applied")));
+    }
+    for (channel, track) in routes {
+        SetChannelRoute::new(channel, Some(track))
+            .apply(&mut project)
+            .expect("a route to a track that exists");
+        let color = project.mixer.tracks.get(track).expect("just made").color;
+        if let Some(ch) = project.channels.get_mut(channel) {
+            ch.color = color;
+        }
+    }
     AddInsert::new(bus, EffectKind::Compressor)
         .apply(&mut project)
         .expect("an effect");
@@ -181,6 +196,22 @@ pub fn tour_project(sample_rate: u32) -> Project {
     AddSend::new(bus, reverb)
         .apply(&mut project)
         .expect("a send");
+    // A send starts off; this one is to be heard.
+    SetSendLevel::new(bus, 0, -12.0)
+        .apply(&mut project)
+        .expect("the send just made");
+
+    // Clips are drawn in their lane's colour: each instrument's lane in the
+    // instrument's, and the audio clip's in one of its own.
+    for (row, channel) in [(rows[0], drums), (rows[1], bass), (rows[2], keys)] {
+        let color = project.channels.get(channel).expect("made above").color;
+        if let Some(lane) = project.lanes.get_mut(row) {
+            lane.color = color;
+        }
+    }
+    if let Some(lane) = project.lanes.get_mut(rows[3]) {
+        lane.color = fontelle_model::TRACK_PALETTE[4];
+    }
     project
 }
 
