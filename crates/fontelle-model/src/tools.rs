@@ -453,8 +453,8 @@ fn one_arpeggio(chord: &[Note], spec: ArpSpec) -> Vec<Note> {
         let template = chord
             .iter()
             .min_by_key(|note| note.key)
-            .copied()
-            .unwrap_or(chord[0]);
+            .cloned()
+            .unwrap_or_else(|| chord[0].clone());
         out.push(Note {
             start: at_tick,
             length,

@@ -1609,7 +1609,14 @@ impl Voice {
     /// `seconds` of zero arrives immediately, which is what a portamento of
     /// zero has to mean.
     pub fn glide_to(&mut self, key: u8, seconds: f32) {
-        self.glide_target = key as f32 - self.key as f32;
+        self.glide_by(key as f32 - self.key as f32, seconds);
+    }
+
+    /// [`glide_to`](Voice::glide_to) measured from this voice's own key, in
+    /// semitones that may be a fraction — where a note path's glide lands
+    /// when a clip's end cuts it partway.
+    pub fn glide_by(&mut self, semitones: f32, seconds: f32) {
+        self.glide_target = semitones;
         self.set_glide_rate(seconds);
     }
 

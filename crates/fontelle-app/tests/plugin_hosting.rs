@@ -146,6 +146,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     });
     project.clips.insert(Clip {
@@ -601,7 +602,7 @@ fn a_plugin_insert_keyed_to_another_track_hears_that_track() {
             note.channel = Some(kick_channel);
         }
         for (_, note) in kick_notes.iter() {
-            data.notes.insert(*note);
+            data.notes.insert(note.clone());
         }
     }
     // The pad's insert: the fixture gain, which ducks by whatever is on its

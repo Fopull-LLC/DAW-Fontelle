@@ -142,6 +142,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     });
     project.clips.insert(Clip {

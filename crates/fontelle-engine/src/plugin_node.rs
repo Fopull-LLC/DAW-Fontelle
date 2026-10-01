@@ -395,6 +395,30 @@ impl PluginNode {
                     // the top of the next block.
                     send_tuning(processor, sounding, frame);
                 }
+                // One slide of a note's path: the same per-note tuning, on
+                // the one note it names rather than everything in the
+                // context — which is how a chord's notes slide apart.
+                fontelle_types::EventPayload::NoteGlide {
+                    key,
+                    voice_context,
+                    semitones,
+                    glide_samples,
+                } => {
+                    if let Some(note) = sounding
+                        .iter_mut()
+                        .flatten()
+                        .find(|note| note.key == *key && note.context == *voice_context)
+                    {
+                        note.target = *semitones;
+                        note.rate = if *glide_samples == 0 {
+                            note.semitones = note.target;
+                            0.0
+                        } else {
+                            (note.target - note.semitones).abs() / *glide_samples as f32
+                        };
+                    }
+                    send_tuning(processor, sounding, frame);
+                }
                 _ => {}
             }
         }

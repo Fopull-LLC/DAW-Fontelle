@@ -198,6 +198,7 @@ edits!(
     SetRoutingMode,
     LaneUpkeep,
     SetClipChannel,
+    SetNotePath,
 );
 
 impl Edit {

@@ -363,6 +363,30 @@ impl Sampler {
         }
     }
 
+    /// Bends **one** sounding note — the one started on `key` in
+    /// `voice_context` — to `semitones` from that key, over `seconds`: a
+    /// slide of a note's path (`docs/note-paths-plan.md`).
+    ///
+    /// The other notes in the context are left alone, which is the whole
+    /// difference from [`slide`](Self::slide): a chord's notes each have
+    /// their own path, so each can go somewhere else. Nothing sounding on
+    /// that key does nothing, like a slide.
+    pub fn glide_note(&mut self, key: u8, voice_context: u32, semitones: f32, seconds: f32) {
+        if let Some(voice) = self.voices.find_active_mut(key, voice_context) {
+            voice.glide_by(semitones, seconds);
+        }
+    }
+
+    /// Every sounding voice as `(the key it started on, where it is now)`.
+    ///
+    /// What a test of a chord sliding apart needs: two notes mixed together
+    /// cannot be told apart by counting cycles.
+    pub fn sounding_pitches(&self) -> impl Iterator<Item = (u8, f32)> + '_ {
+        self.voices
+            .iter_active()
+            .map(|voice| (voice.key(), voice.sounding_key()))
+    }
+
     /// Moves something about one sounding note (MPE, §4.2): the note at
     /// `key` in `voice_context`, held — a released note keeps what it had.
     /// With nothing sounding there it does nothing, like a slide.

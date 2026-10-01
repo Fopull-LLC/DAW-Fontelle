@@ -571,7 +571,7 @@ impl Tools {
                 // handed over.
                 let chord: Vec<fontelle_model::Note> = selection
                     .iter()
-                    .filter_map(|id| notes.get(*id).copied())
+                    .filter_map(|id| notes.get(*id).cloned())
                     .collect();
                 let made = fontelle_model::arpeggiated(&chord, self.arp);
                 if made.is_empty() {

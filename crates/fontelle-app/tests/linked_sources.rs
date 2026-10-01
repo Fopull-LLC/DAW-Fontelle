@@ -42,6 +42,7 @@ fn a_clip_reaches_the_strips_of_every_channel_it_plays_and_audio_the_one_it_is_r
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel,
     };
     if let ClipSource::Notes(data) = &mut project.clips.get_mut(clip).unwrap().source {

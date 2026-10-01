@@ -42,10 +42,10 @@ pub use commands::{
     RestorePluginParam, RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch,
     SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
     SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange,
-    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNoteProperty, SetNotePropertyEach,
-    SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef,
-    SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip,
-    SwitchChannelAb, TrimClipStart,
+    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
+    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
+    SplitClip, SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
 pub use lane_routing::{
@@ -53,7 +53,7 @@ pub use lane_routing::{
     lane_conflicts,
 };
 pub use mixer::{EffectSlot, LEGACY_TRACK_GREY, Mixer, MixerTrack, PanLaw, Send, TRACK_PALETTE};
-pub use note::{Note, NoteData, NoteHome, NoteProperty};
+pub use note::{Note, NoteData, NoteHome, NoteProperty, PathPoint};
 pub use prefab::{
     ElementId, MAX_BASE_DEPTH, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve,
 };

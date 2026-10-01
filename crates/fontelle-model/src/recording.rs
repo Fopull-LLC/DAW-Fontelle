@@ -147,6 +147,7 @@ pub fn notes_from_looped_capture(
             // A recorded note is an ordinary one: a slide is
             // something you draw, not something a keyboard sends.
             slide: false,
+            path: Vec::new(),
             channel: None,
         });
     }

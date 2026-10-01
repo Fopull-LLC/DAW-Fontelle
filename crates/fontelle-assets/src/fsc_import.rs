@@ -90,7 +90,7 @@ const FINE_PITCH_FROM: (u32, u32) = (3, 3);
 /// One note out of a score, with the thing the score knows about it that this
 /// document's [`Note`] does not: which instrument of the pattern it belonged
 /// to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FscNote {
     pub note: Note,
     /// FL's channel-rack slot, zero-based. Every score in FL's own library
@@ -137,7 +137,7 @@ impl FscScore {
         self.notes
             .iter()
             .filter(|held| rack_channel.is_none_or(|want| held.rack_channel == want))
-            .map(|held| held.note)
+            .map(|held| held.note.clone())
             .collect()
     }
 
@@ -411,6 +411,7 @@ fn read_note(record: &[u8], width: usize, ppq: u32, fine_written: bool) -> FscNo
             mod_x: ((mod_x as i32) * 127 / FL_MOD_MAX) as u8,
             mod_y: ((mod_y as i32) * 127 / FL_MOD_MAX) as u8,
             slide: flags & FL_SLIDE != 0,
+            path: Vec::new(),
             channel: None,
         },
     }

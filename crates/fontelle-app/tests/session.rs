@@ -81,6 +81,7 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                path: Vec::new(),
                 channel: None,
             },
         });
@@ -118,6 +119,7 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -155,6 +157,7 @@ fn redo_puts_it_back() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -254,6 +257,7 @@ fn a_fresh_session_is_clean_and_an_edit_makes_it_dirty() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -285,6 +289,7 @@ fn removing_a_note_takes_its_events_with_it() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });

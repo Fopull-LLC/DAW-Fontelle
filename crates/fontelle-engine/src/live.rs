@@ -222,6 +222,17 @@ fn rt_safe_copy(event: &TimedEvent) -> Option<TimedEvent> {
             glide_samples: *glide_samples,
             voice_context: *voice_context,
         },
+        fontelle_types::EventPayload::NoteGlide {
+            key,
+            voice_context,
+            semitones,
+            glide_samples,
+        } => fontelle_types::EventPayload::NoteGlide {
+            key: *key,
+            voice_context: *voice_context,
+            semitones: *semitones,
+            glide_samples: *glide_samples,
+        },
         fontelle_types::EventPayload::ClipStart => fontelle_types::EventPayload::ClipStart,
         fontelle_types::EventPayload::ClipStop => fontelle_types::EventPayload::ClipStop,
         // Not captured: a recording is notes (`fontelle_model::recording`),

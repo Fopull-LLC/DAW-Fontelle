@@ -67,6 +67,25 @@ pub enum EventPayload {
         glide_samples: u32,
         voice_context: u32,
     },
+    /// Bend **one sounding note** — the one started on `key` in
+    /// `voice_context` — to `semitones` from that key, over `glide_samples`:
+    /// one slide of a note's path (`fontelle_model::Note::path`,
+    /// `docs/note-paths-plan.md`).
+    ///
+    /// The difference from [`NoteSlide`](Self::NoteSlide) is the address.
+    /// That one bends everything in its context to one key, so a chord
+    /// under it moves as a block; this one names its note, so each note of a
+    /// chord can go somewhere else. Like it, it starts no voice and ends
+    /// none, and with nothing sounding there it does nothing.
+    ///
+    /// `semitones` is a fraction because a clip's end can cut a slide
+    /// partway, and the glide then stops where the pitch had got to.
+    NoteGlide {
+        key: u8,
+        voice_context: u32,
+        semitones: f32,
+        glide_samples: u32,
+    },
     /// Something about **one sounding note** moved after it started
     /// (`docs/flopsynth-next.md` §4.2, MPE): its pressure, its bend, its
     /// slide (MPE's timbre, CC 74), or the score's two free values. Each

@@ -688,6 +688,7 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         mod_y: 0,
         // An imported note is an ordinary one: MIDI has no slide.
         slide: false,
+        path: Vec::new(),
         channel: None,
     });
 }

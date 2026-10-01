@@ -2459,11 +2459,11 @@ impl Command for AddNotes {
             self.ids = self
                 .notes
                 .iter()
-                .map(|note| data.notes.insert(*note))
+                .map(|note| data.notes.insert(note.clone()))
                 .collect();
         } else {
             for (id, note) in self.ids.iter().zip(&self.notes) {
-                if !data.notes.insert_at(*id, *note) {
+                if !data.notes.insert_at(*id, note.clone()) {
                     return Err(CommandError("that note id is taken".into()));
                 }
             }
@@ -2582,7 +2582,7 @@ impl Command for RestoreNotes {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         let data = notes_of(doc, self.home)?;
         for (id, note) in &self.notes {
-            if !data.notes.insert_at(*id, *note) {
+            if !data.notes.insert_at(*id, note.clone()) {
                 return Err(CommandError("that note id is taken".into()));
             }
         }
@@ -3095,6 +3095,80 @@ impl Command for RestoreNoteSlides {
     }
 }
 
+/// Gives one note its [path](crate::Note::path) — the points it holds and
+/// slides through after it starts — or takes it away with an empty one.
+///
+/// One note, one path: what a drag of a point or the S-gesture that drew the
+/// note leaves behind. Its own inverse, because a path has nothing in it a
+/// second `SetNotePath` cannot put back.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetNotePath {
+    home: NoteHome,
+    id: NoteId,
+    path: Vec<crate::PathPoint>,
+    /// The note's path before this ran. `None` until applied.
+    previous: Option<Vec<crate::PathPoint>>,
+}
+
+impl SetNotePath {
+    pub fn new(home: impl Into<NoteHome>, id: NoteId, path: Vec<crate::PathPoint>) -> Self {
+        Self {
+            home: home.into(),
+            id,
+            path,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetNotePath {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNotePath(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let data = notes_of(doc, self.home)?;
+        let Some(note) = data.notes.get_mut(self.id) else {
+            return Err(CommandError("that note is gone".into()));
+        };
+        // Time order is what every reader of a path assumes; a stable sort,
+        // so two points at one tick — a step — keep the order they were
+        // placed in.
+        let mut path = self.path.clone();
+        path.sort_by_key(|point| point.at);
+        let previous = std::mem::replace(&mut note.path, path);
+        // Only the first apply records what was there: a redo re-runs this
+        // from a document the inverse has already moved back.
+        if self.previous.is_none() {
+            self.previous = Some(previous);
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetNotePath::new(self.home, self.id, previous.clone())),
+            None => Box::new(NotApplied::new("shaping a note")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Shape a note"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.path.len() * std::mem::size_of::<crate::PathPoint>()
+    }
+}
+
 /// Cuts notes in two — the piano roll's slice tool.
 ///
 /// One command rather than "shorten this, add that", because a slice is **one
@@ -3157,10 +3231,17 @@ impl Command for SliceNotes {
             if *at <= note.start || *at >= note.start + note.length {
                 continue;
             }
-            let mut tail = *note;
+            let mut tail = note.clone();
             tail.start = *at;
             tail.length = note.start + note.length - *at;
             let head_length = *at - note.start;
+            // A note with a path goes on from where its pitch had got to.
+            // The front half keeps its path whole — it plays it until its
+            // new end, which is the cut — so putting its length back is
+            // the whole of the undo.
+            if note.has_path() {
+                (tail.key, tail.path) = note.path_after(head_length);
+            }
 
             // On a redo, the same id the first apply minted — so the
             // commands stacked above this one still point at something. The
@@ -4532,7 +4613,7 @@ impl Command for ImportParts {
             let mut length = 0;
             for note in &part.notes {
                 length = length.max(note.start + note.length);
-                notes.insert(*note);
+                notes.insert(note.clone());
             }
             let clip = Clip {
                 lane: lane_id,
@@ -5803,7 +5884,7 @@ fn flatten_loop(source: &NoteData, period: Tick, length: Tick) -> Arena<NoteId, 
             if start >= length {
                 continue;
             }
-            let mut copy = *note;
+            let mut copy = note.clone();
             copy.start = start;
             copy.length = note.length.min(length - start);
             if copy.length > 0 {
@@ -5834,27 +5915,27 @@ fn split_notes(
             let phase = offset.rem_euclid(period);
             for note in source.notes.values() {
                 if phase == 0 {
-                    back.insert(*note);
+                    back.insert(note.clone());
                     continue;
                 }
                 if note.start >= phase {
-                    let mut moved = *note;
+                    let mut moved = note.clone();
                     moved.start -= phase;
                     back.insert(moved);
                 } else if note.start + note.length > phase {
                     // It is sounding when the second half begins, so the
                     // second half starts part-way through it.
-                    let mut tail = *note;
+                    let mut tail = note.clone();
                     tail.length = note.start + note.length - phase;
                     tail.start = 0;
                     back.insert(tail);
                     // And the head of it comes round again at the end of the
                     // pattern, where it always was.
-                    let mut head = *note;
+                    let mut head = note.clone();
                     head.start = note.start + period - phase;
                     back.insert(head);
                 } else {
-                    let mut moved = *note;
+                    let mut moved = note.clone();
                     moved.start = note.start + period - phase;
                     back.insert(moved);
                 }
@@ -5865,19 +5946,19 @@ fn split_notes(
         None => {
             for note in source.notes.values() {
                 if note.start >= offset {
-                    let mut moved = *note;
+                    let mut moved = note.clone();
                     moved.start -= offset;
                     back.insert(moved);
                 } else if note.start + note.length > offset {
-                    let mut head = *note;
+                    let mut head = note.clone();
                     head.length = offset - note.start;
                     front.insert(head);
-                    let mut tail = *note;
+                    let mut tail = note.clone();
                     tail.start = 0;
                     tail.length = note.start + note.length - offset;
                     back.insert(tail);
                 } else {
-                    front.insert(*note);
+                    front.insert(note.clone());
                 }
             }
         }

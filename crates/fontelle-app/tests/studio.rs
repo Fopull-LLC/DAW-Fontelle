@@ -311,6 +311,7 @@ fn adding_a_channel_selects_it_and_the_roll_writes_it_into_the_open_clip() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -352,6 +353,7 @@ fn selecting_a_channel_opens_that_channels_clip() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -492,6 +494,7 @@ fn drawing_a_note_hands_back_the_id_the_drag_needs() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -504,7 +507,7 @@ fn drawing_a_note_hands_back_the_id_the_drag_needs() {
 
     // A paste hands back one per note, so the pasted phrase arrives selected.
     let pasted = session.edit(RollEdit::Insert(
-        session.notes().values().copied().collect(),
+        session.notes().values().cloned().collect(),
     ));
     assert_eq!(pasted.len(), 1);
 
@@ -527,6 +530,7 @@ fn a_velocity_edit_reaches_the_document() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -819,6 +823,7 @@ fn dragging_a_clip_on_the_arrangement_is_a_command_and_reaches_the_audio_thread(
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -924,6 +929,7 @@ fn muting_a_lane_silences_it_without_touching_its_clips() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -1176,6 +1182,7 @@ fn the_onion_skin_shows_other_channels_notes_lined_up_in_time() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     };
@@ -1231,6 +1238,7 @@ fn the_onion_skin_can_be_filtered_to_one_instrument() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     };
@@ -1276,6 +1284,7 @@ fn a_ghost_carries_the_colour_of_the_instrument_it_came_from() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -1628,6 +1637,7 @@ fn cutting_a_note_makes_two_that_meet_where_it_was_cut() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });
@@ -2013,6 +2023,7 @@ fn a_clips_block_carries_the_notes_that_are_in_it() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                path: Vec::new(),
                 channel: None,
             },
         });
@@ -2101,6 +2112,7 @@ fn writing_a_note_tells_the_window_its_lists_have_changed() {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     };
 
@@ -2146,6 +2158,7 @@ fn soloing_a_lane_silences_the_others_until_it_is_let_go() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });

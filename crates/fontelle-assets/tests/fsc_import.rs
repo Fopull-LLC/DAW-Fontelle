@@ -123,7 +123,7 @@ fn every_field_arrives_in_the_units_this_document_stores() {
     let bytes = build_fsc(NEW, FL_PPQ, &[centred, hard_left, hard_right]);
     let score = read_fsc(&bytes, "Field").expect("reads");
 
-    let n = |i: usize| score.notes[i].note;
+    let n = |i: usize| score.notes[i].note.clone();
     assert_eq!(n(0).pan, 0, "FL's centred pan is this document's centre");
     assert_eq!(n(0).fine_pitch, 0, "FL's centred fine pitch is in tune");
     assert_eq!(n(0).velocity, 100);
@@ -484,7 +484,7 @@ fn a_whole_library_of_real_scores_reads_cleanly() {
                     // Every field inside what the document may hold. A score
                     // read out of the wrong byte offset fails here rather
                     // than arriving as music nobody wrote.
-                    let n = held.note;
+                    let n = held.note.clone();
                     assert!(n.key <= 127, "{}: key {}", path.display(), n.key);
                     assert!(n.velocity >= 1, "{}: velocity 0", path.display());
                     assert!(n.length >= 1, "{}: zero-length note", path.display());

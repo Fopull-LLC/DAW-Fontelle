@@ -29,6 +29,7 @@ fn a_chord() -> Vec<Note> {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         })
         .collect()
@@ -275,6 +276,7 @@ fn two_chords_in_sequence_arpeggiate_separately() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         });
     }

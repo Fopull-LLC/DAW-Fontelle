@@ -380,6 +380,34 @@ pub fn compile_with(
                         voice_context,
                     },
                 });
+                // A note's **path**: a glide at the start of each slide,
+                // addressed to this note alone, and nothing for a hold — the
+                // voice stays wherever the last glide left it. A slide the
+                // note's end cuts goes as far as the pitch gets there, so a
+                // release tail does not go on climbing after the cut.
+                for ((from_at, from), (to_at, to)) in note.segments() {
+                    let begins = on_tick + from_at;
+                    if from == to || begins >= off_tick {
+                        continue;
+                    }
+                    let (ends, semitones) = if on_tick + to_at > off_tick {
+                        (off_tick, note.pitch_at(off_tick - on_tick))
+                    } else {
+                        (on_tick + to_at, f32::from(to))
+                    };
+                    let begin_sample = tempo.tick_to_sample(begins);
+                    events.push(TimedEvent {
+                        sample: begin_sample,
+                        target: node_id,
+                        payload: EventPayload::NoteGlide {
+                            key: note.key,
+                            voice_context,
+                            semitones,
+                            glide_samples: (tempo.tick_to_sample(ends) - begin_sample).max(0)
+                                as u32,
+                        },
+                    });
+                }
                 events.push(TimedEvent {
                     sample: tempo.tick_to_sample(off_tick),
                     target: node_id,
@@ -489,6 +517,9 @@ pub fn compile_with(
 /// 3. **A slide between them.** It bends what is already sounding, so it has to
 ///    arrive after the offs of the notes that ended and before the ons of the
 ///    notes that have not started.
+/// 4. **A note's own glide last of all.** It names the note it bends, and a
+///    path whose first point sits on the note's start (a step up at the
+///    attack) is bending the voice the note-on at that same sample makes.
 fn rank(payload: &EventPayload) -> u8 {
     match payload {
         // A performance event is never compiled from a clip — it comes off a
@@ -506,6 +537,7 @@ fn rank(payload: &EventPayload) -> u8 {
         EventPayload::NoteSlide { .. } | EventPayload::NoteMod { .. } => 3,
         EventPayload::ClipStart => 4,
         EventPayload::NoteOn { .. } => 5,
+        EventPayload::NoteGlide { .. } => 6,
     }
 }
 
@@ -774,6 +806,7 @@ mod tests {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         });
 

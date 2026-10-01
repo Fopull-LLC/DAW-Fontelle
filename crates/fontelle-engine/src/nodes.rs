@@ -260,6 +260,22 @@ impl AudioNode for SamplerNode {
                     };
                     self.sampler.slide(*key, seconds, *voice_context);
                 }
+                // One slide of a note's path: bend the one note it names,
+                // the same seconds-from-samples conversion as above.
+                fontelle_types::EventPayload::NoteGlide {
+                    key,
+                    voice_context,
+                    semitones,
+                    glide_samples,
+                } => {
+                    let seconds = if self.sample_rate > 0.0 {
+                        *glide_samples as f32 / self.sample_rate
+                    } else {
+                        0.0
+                    };
+                    self.sampler
+                        .glide_note(*key, *voice_context, *semitones, seconds);
+                }
                 // The wheels (TDD §7.4). **Performance, not automation**: a
                 // `ParamValue` names one of this patch's own controls by its
                 // §8.2 address, while these three are the fact that a hand

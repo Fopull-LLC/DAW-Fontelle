@@ -270,6 +270,7 @@ fn a_muted_channel_is_dropped_by_the_compiler_rather_than_by_a_fader() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });

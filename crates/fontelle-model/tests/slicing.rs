@@ -30,6 +30,7 @@ fn a_note(start: i64, length: i64, key: u8) -> Note {
         mod_x: 3,
         mod_y: 9,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }

@@ -61,6 +61,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }
@@ -248,7 +249,7 @@ fn drawing_a_note_and_dragging_back_over_its_own_start_does_not_flicker() {
     let [RollEdit::Add { note }] = &edits[..] else {
         panic!("expected one add, got {edits:?}");
     };
-    let id = arena.insert(*note);
+    let id = arena.insert(note.clone());
     roll.note_added(id);
 
     assert_settles(&mut roll, &mut arena, grid().x, y, "sizing a new note");

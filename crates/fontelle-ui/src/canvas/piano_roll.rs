@@ -1879,7 +1879,7 @@ impl PianoRoll {
     ///
     /// `start` and `key` are ignored: those come from where you pressed.
     pub fn template(&self) -> Note {
-        self.template
+        self.template.clone()
     }
 
     /// Replaces the template outright. For a host restoring a session, and for
@@ -1894,7 +1894,7 @@ impl PianoRoll {
     /// one, and letting go of a drag that drew or resized one.
     fn adopt(&mut self, notes: &Arena<NoteId, Note>, id: NoteId) {
         if let Some(note) = notes.get(id) {
-            self.template = *note;
+            self.template = note.clone();
         }
     }
 
@@ -1911,7 +1911,11 @@ impl PianoRoll {
             start,
             length: length.max(1),
             key,
-            ..self.template
+            // The template is the last note clicked, and its shape is not a
+            // property to copy: a note drawn after selecting a slide starts
+            // plain, and the S-gesture gives it its own.
+            path: Vec::new(),
+            ..self.template.clone()
         }
     }
 
@@ -2794,7 +2798,7 @@ impl PianoRoll {
             .iter()
             .map(|note| Note {
                 start: note.start + at,
-                ..*note
+                ..note.clone()
             })
             .collect();
         vec![RollEdit::Insert(notes)]
@@ -2847,7 +2851,7 @@ impl PianoRoll {
         let mut phrase: Vec<Note> = self
             .selection
             .iter()
-            .filter_map(|id| notes.get(*id).copied())
+            .filter_map(|id| notes.get(*id).cloned())
             .collect();
         if phrase.is_empty() {
             return phrase;
@@ -2904,6 +2908,7 @@ const BLANK_TEMPLATE: Note = Note {
     mod_x: 0,
     mod_y: 0,
     slide: false,
+    path: Vec::new(),
     channel: None,
 };
 

@@ -4328,7 +4328,7 @@ impl Session {
             && let Some(channel) = selected
         {
             for (id, note) in data.notes_on(channel) {
-                view.insert_at(id, *note);
+                view.insert_at(id, note.clone());
             }
         }
         self.roll_notes = view;
@@ -6675,7 +6675,7 @@ impl Session {
             };
             parts.push(ImportPart {
                 name: channel.name.clone(),
-                notes: data.notes.values().copied().collect(),
+                notes: data.notes.values().cloned().collect(),
                 pan: channel.pan,
                 volume_db: channel.volume_db,
                 color: IMPORT_COLOURS[index % IMPORT_COLOURS.len()],

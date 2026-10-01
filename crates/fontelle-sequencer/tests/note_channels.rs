@@ -27,6 +27,7 @@ fn a_note(start: Tick, key: u8, channel: Option<ChannelId>) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel,
     }
 }

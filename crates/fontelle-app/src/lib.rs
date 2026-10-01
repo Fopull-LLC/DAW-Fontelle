@@ -184,6 +184,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         });
     };

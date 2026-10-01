@@ -60,6 +60,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }
@@ -198,6 +199,7 @@ fn a_new_note_is_a_copy_of_the_template() {
         mod_x: 3,
         mod_y: 4,
         slide: false,
+        path: Vec::new(),
         channel: None,
     });
 

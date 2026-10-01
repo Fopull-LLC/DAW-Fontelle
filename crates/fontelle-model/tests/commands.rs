@@ -33,6 +33,7 @@ fn a_note(start: i64, key: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }
@@ -853,7 +854,7 @@ fn a_property_command_sets_one_property_and_leaves_the_rest_alone() {
     let ClipSource::Notes(data) = &f.project.clips[f.clip].source else {
         unreachable!()
     };
-    let note = data.notes[f.notes[0]];
+    let note = data.notes[f.notes[0]].clone();
     assert_eq!(note.pan, -40);
     assert_eq!(note.velocity, 100, "velocity is not pan's business");
     assert_eq!(note.fine_pitch, 0);

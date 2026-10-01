@@ -96,6 +96,7 @@ fn a_note(session: &mut Session) {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });

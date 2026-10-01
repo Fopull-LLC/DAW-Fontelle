@@ -140,7 +140,7 @@ fn notes_of(import: &fontelle_assets::MidiImport) -> Vec<fontelle_model::Note> {
         .clips
         .values()
         .filter_map(|clip| match &clip.source {
-            ClipSource::Notes(data) => Some(data.notes.values().copied()),
+            ClipSource::Notes(data) => Some(data.notes.values().cloned()),
             _ => None,
         })
         .flatten()
@@ -162,7 +162,7 @@ fn notes_on(import: &fontelle_assets::MidiImport, midi_channel: u8) -> Vec<fonte
         .values()
         .filter_map(|clip| match &clip.source {
             ClipSource::Notes(data) if data.channel == imported.channel => {
-                Some(data.notes.values().copied())
+                Some(data.notes.values().cloned())
             }
             _ => None,
         })

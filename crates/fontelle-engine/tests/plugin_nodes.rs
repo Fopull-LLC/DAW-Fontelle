@@ -798,6 +798,79 @@ fn a_slide_glides_over_its_length() {
     );
 }
 
+fn glide(key: u8, semitones: f32, glide_samples: u32) -> TimedEvent {
+    TimedEvent {
+        sample: 0,
+        target: NodeId::default(),
+        payload: EventPayload::NoteGlide {
+            key,
+            voice_context: 0,
+            semitones,
+            glide_samples,
+        },
+    }
+}
+
+/// A note path's glide (`docs/note-paths-plan.md`) reaches a CLAP plugin as
+/// the same per-note tuning a slide does — but only on the note it names.
+#[test]
+fn a_glide_bends_the_plugin_note_it_names() {
+    let (_host, _plugin, _bay, mut node) = wire_key(
+        &PluginKey::clap(SINE),
+        &bundle(),
+        PluginRole::Instrument,
+        LONG,
+    );
+    let (unbent, _) = block(&mut node, &[note_on(69)]);
+    let (octave, _) = block(&mut node, &[glide(69, 12.0, 0)]);
+    assert!(
+        octave > unbent * 2 - 6 && octave < unbent * 2 + 6,
+        "unbent {unbent}, an octave up {octave}"
+    );
+}
+
+#[test]
+fn a_glide_for_a_key_not_sounding_bends_nothing() {
+    // Where a slide moves everything in its context, a glide is for its own
+    // note: one naming 57 leaves the 69 that is sounding where it is.
+    let (_host, _plugin, _bay, mut node) = wire_key(
+        &PluginKey::clap(SINE),
+        &bundle(),
+        PluginRole::Instrument,
+        LONG,
+    );
+    let (unbent, _) = block(&mut node, &[note_on(69)]);
+    let (after, _) = block(&mut node, &[glide(57, 12.0, 0)]);
+    assert!(after.abs_diff(unbent) <= 1, "{unbent} vs {after}");
+}
+
+/// A glide with a length glides over it, as a slide does.
+#[test]
+fn a_glide_glides_over_its_length() {
+    let (_host, _plugin, _bay, mut node) = wire_key(
+        &PluginKey::clap(SINE),
+        &bundle(),
+        PluginRole::Instrument,
+        LONG,
+    );
+    let (unbent, _) = block(&mut node, &[note_on(69)]);
+    let (_, _) = block(&mut node, &[glide(69, 12.0, (LONG * 4) as u32)]);
+    let (_, _) = block(&mut node, &[]);
+    let (halfway, _) = block(&mut node, &[]);
+    assert!(
+        halfway > unbent + unbent / 4 && halfway < unbent * 2 - unbent / 4,
+        "halfway through: unbent {unbent}, now {halfway}"
+    );
+    for _ in 0..3 {
+        block(&mut node, &[]);
+    }
+    let (arrived, _) = block(&mut node, &[]);
+    assert!(
+        arrived > unbent * 2 - 6 && arrived < unbent * 2 + 6,
+        "arrived: unbent {unbent}, now {arrived}"
+    );
+}
+
 /// For a plugin that hears pitch as a **channel** bend — every LV2 one — a
 /// slide is undone when the note it bent ends, so the next note on that
 /// channel starts at its own pitch rather than the last slide's.

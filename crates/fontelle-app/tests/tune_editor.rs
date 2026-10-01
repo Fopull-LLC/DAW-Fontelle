@@ -174,6 +174,7 @@ fn the_trace_reads_back_what_the_node_wrote() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         }],
     )

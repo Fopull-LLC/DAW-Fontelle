@@ -46,6 +46,7 @@ fn a_note(key: u8, velocity: u8) -> Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }
@@ -720,6 +721,7 @@ fn the_menus_legato_and_the_keyboards_are_the_same_edit() {
                 mod_x: 0,
                 mod_y: 0,
                 slide: false,
+                path: Vec::new(),
                 channel: None,
             })
         })

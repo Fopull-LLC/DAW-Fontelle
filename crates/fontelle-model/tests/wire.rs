@@ -21,7 +21,7 @@ use fontelle_model::{
     RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert, SetAudioClip,
     SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
     SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
-    SetLoopRange, SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNoteProperty,
+    SetLoopRange, SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
     SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
     SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
     SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
@@ -60,6 +60,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         mod_x: 0,
         mod_y: 0,
         slide: false,
+        path: Vec::new(),
         channel: None,
     }
 }
@@ -537,6 +538,22 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("SetNoteSlide", |s| {
             Box::new(SetNoteSlide::new(s.notes_clip, vec![s.notes[0]], true))
+        }),
+        ("SetNotePath", |s| {
+            Box::new(SetNotePath::new(
+                s.notes_clip,
+                s.notes[0],
+                vec![
+                    fontelle_model::PathPoint {
+                        at: PPQN / 4,
+                        offset: 0,
+                    },
+                    fontelle_model::PathPoint {
+                        at: PPQN / 2,
+                        offset: 5,
+                    },
+                ],
+            ))
         }),
         ("SliceNotes", |s| {
             Box::new(SliceNotes::new(s.notes_clip, vec![(s.notes[0], PPQN / 2)]))

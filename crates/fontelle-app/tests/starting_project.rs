@@ -127,6 +127,7 @@ fn a_note_drawn_with_no_clip_open_is_refused_with_a_sentence() {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         },
     });

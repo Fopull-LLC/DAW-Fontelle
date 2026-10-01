@@ -6,7 +6,7 @@ use fontelle_types::{ChannelId, NoteId};
 /// Per-note pan, fine pitch, release, and two free modulation values are cheap to
 /// store and route through the mod matrix — exactly the per-note character control
 /// that makes sample-based writing expressive (TDD §10.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Note {
     /// Relative to clip start.
     pub start: Tick,
@@ -33,6 +33,25 @@ pub struct Note {
     /// ordinary notes it was made of.
     #[serde(default)]
     pub slide: bool,
+    /// Where this note **goes** after it starts: the points of its path, in
+    /// time order (`docs/note-paths-plan.md`). Empty is a plain note.
+    ///
+    /// Between two points on the same key the note holds; between points on
+    /// different keys it slides, in a straight line of semitones over ticks.
+    /// After the last point it holds where it arrived until its end. The
+    /// path belongs to *this* note, which is what the FL slide note above
+    /// could not do: a chord's three notes can slide to three places.
+    ///
+    /// Each point is relative to the note — its time from the note's start,
+    /// its pitch from the note's key — so moving, copying and transposing the
+    /// note carry the shape with it and no command that changes `start` or
+    /// `key` has to know paths exist.
+    ///
+    /// A point past the note's end is **kept, not dropped**: the path is a
+    /// curve the note plays until it stops, so cutting a note short cuts the
+    /// slide where it is, and lengthening it again gives the slide back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<PathPoint>,
     /// The instrument this note plays, when it is not the clip's own.
     ///
     /// *"clips can have multiple instruments, we just base our interactions
@@ -49,7 +68,80 @@ pub struct Note {
     pub channel: Option<ChannelId>,
 }
 
+/// One point on a note's [path](Note::path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PathPoint {
+    /// Ticks from the note's own start.
+    pub at: Tick,
+    /// Semitones from the note's own key.
+    pub offset: i8,
+}
+
 impl Note {
+    /// Whether this note goes anywhere after it starts.
+    pub fn has_path(&self) -> bool {
+        !self.path.is_empty()
+    }
+
+    /// Where the note's pitch is `at` ticks after it starts, in semitones
+    /// from its key: on the line between the two points either side, and
+    /// held at the last point after it.
+    pub fn pitch_at(&self, at: Tick) -> f32 {
+        let mut previous = (0, 0i8);
+        for point in &self.path {
+            if at <= point.at {
+                let span = point.at - previous.0;
+                if span <= 0 {
+                    return f32::from(point.offset);
+                }
+                let along = (at - previous.0).max(0) as f32 / span as f32;
+                let from = f32::from(previous.1);
+                return from + (f32::from(point.offset) - from) * along;
+            }
+            previous = (point.at, point.offset);
+        }
+        f32::from(previous.1)
+    }
+
+    /// Each line of the path as `((tick, offset), (tick, offset))`, from the
+    /// note's start through every point, then — if the last point is short
+    /// of the end — the hold from there to the end.
+    ///
+    /// What the roll draws and the compiler plays: one list, so the picture
+    /// and the sound cannot disagree about where a slide is.
+    pub fn segments(&self) -> impl Iterator<Item = ((Tick, i8), (Tick, i8))> + '_ {
+        let last = self.path.last().map_or((0, 0), |p| (p.at, p.offset));
+        let tail = (last.0 < self.length).then_some((self.length, last.1));
+        let vertices = std::iter::once((0, 0))
+            .chain(self.path.iter().map(|p| (p.at, p.offset)))
+            .chain(tail);
+        vertices.clone().zip(vertices.skip(1))
+    }
+
+    /// The second half of this note cut `at` ticks in, as its own path: it
+    /// starts on the key the pitch had reached there, rounded, and goes on
+    /// to the same places — the points after the cut, measured again from
+    /// the new key.
+    ///
+    /// A cut mid-slide lands between keys, and a note can only *start* on
+    /// one. The half a semitone this can move is at the seam, where the
+    /// first half's note-off and the second's note-on already are.
+    pub fn path_after(&self, at: Tick) -> (u8, Vec<PathPoint>) {
+        let reached = f32::from(self.key) + self.pitch_at(at);
+        let key = reached.round().clamp(0.0, 127.0) as u8;
+        let path = self
+            .path
+            .iter()
+            .filter(|point| point.at > at)
+            .map(|point| PathPoint {
+                at: point.at - at,
+                offset: (i16::from(self.key) + i16::from(point.offset) - i16::from(key))
+                    .clamp(i16::from(i8::MIN), i16::from(i8::MAX)) as i8,
+            })
+            .collect();
+        (key, path)
+    }
+
     /// The channel this note plays: its own, or `home` — the clip's — when
     /// it has none.
     pub fn channel_or(&self, home: ChannelId) -> ChannelId {

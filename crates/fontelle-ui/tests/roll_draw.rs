@@ -56,7 +56,7 @@ fn host(roll: &mut PianoRoll, arena: &mut Arena<NoteId, Note>, edits: &[RollEdit
     for edit in edits {
         match edit {
             RollEdit::Add { note } => {
-                let id = arena.insert(*note);
+                let id = arena.insert(note.clone());
                 roll.note_added(id);
             }
             RollEdit::Move {

@@ -149,6 +149,7 @@ impl Rig {
             mod_x: 0,
             mod_y: 0,
             slide: false,
+            path: Vec::new(),
             channel: None,
         });
         project.clips.insert(Clip {
