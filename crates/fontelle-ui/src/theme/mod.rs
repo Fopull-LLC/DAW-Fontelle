@@ -249,6 +249,19 @@ pub struct Palette {
     pub mod_performance: Color,
 }
 
+impl Palette {
+    /// The same inks with the grounds made solid: for whatever is drawn
+    /// **over** other content — a page, a menu, a tip — where a see-through
+    /// theme would put two layers of words on top of each other.
+    pub fn solid(&self) -> Self {
+        let mut p = self.clone();
+        for c in [&mut p.window, &mut p.panel, &mut p.panel_header] {
+            *c = c.with_alpha(0xff);
+        }
+        p
+    }
+}
+
 /// Sizes and radii, in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -303,22 +316,123 @@ pub struct Theme {
     pub backdrops: Backdrops,
 }
 
-/// Which panel a backdrop sits behind.
+/// Which part of the window a backdrop sits behind.
+///
+/// Ty: *"i want themes to be able to get detailed in the backgrounds they
+/// want to make for each section"* — so every section has its own, and the
+/// window's own is under all of them, showing through any panel a theme
+/// makes see-through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackdropPanel {
+    /// Under everything: the ground the panels sit on.
+    Window,
+    /// The bar along the top.
+    Transport,
+    /// The channel rack.
+    Channels,
+    /// The sidebar: import, sounds, presets, projects.
+    Browser,
+    /// Behind the arrangement's lanes.
     Arrangement,
+    /// Behind the piano roll's notes.
     Roll,
+    /// Behind the mixer's strips.
     Mixer,
 }
 
 impl BackdropPanel {
-    pub const ALL: [Self; 3] = [Self::Arrangement, Self::Roll, Self::Mixer];
+    pub const ALL: [Self; 7] = [
+        Self::Window,
+        Self::Transport,
+        Self::Channels,
+        Self::Browser,
+        Self::Arrangement,
+        Self::Roll,
+        Self::Mixer,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Window => "Window",
+            Self::Transport => "Transport",
+            Self::Channels => "Channels",
+            Self::Browser => "Browser",
             Self::Arrangement => "Arrangement",
             Self::Roll => "Piano roll",
             Self::Mixer => "Mixer",
+        }
+    }
+}
+
+/// How a picture sits in its section.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackdropFit {
+    /// Scaled to fill the section, cropped where it does not fit; the
+    /// anchor says which part shows.
+    #[default]
+    Cover,
+    /// Scaled to fit whole inside the section, placed by the anchor.
+    Contain,
+    /// Stretched to the section exactly.
+    Stretch,
+    /// Repeated at its own size from the section's corner — for a pattern.
+    Tile,
+}
+
+fn centre() -> [f32; 2] {
+    [0.5, 0.5]
+}
+
+/// Where a `width` × `height` picture is drawn in `area`: one rectangle,
+/// or one per tile. `anchor` is where it sits, 0 to 1 across and down —
+/// `[1.0, 0.5]` puts a contained picture at the right, or shows a covering
+/// one's right-hand side.
+pub fn backdrop_tiles(
+    area: crate::layout::Rect,
+    width: f32,
+    height: f32,
+    fit: BackdropFit,
+    anchor: [f32; 2],
+) -> Vec<crate::layout::Rect> {
+    use crate::layout::Rect;
+    if area.is_empty() || width <= 0.0 || height <= 0.0 {
+        return Vec::new();
+    }
+    let [ax, ay] = [anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)];
+    let placed = |scale: f32| {
+        let (w, h) = (width * scale, height * scale);
+        Rect::new(
+            area.x + (area.width - w) * ax,
+            area.y + (area.height - h) * ay,
+            w,
+            h,
+        )
+    };
+    match fit {
+        BackdropFit::Cover => vec![placed((area.width / width).max(area.height / height))],
+        BackdropFit::Contain => vec![placed((area.width / width).min(area.height / height))],
+        BackdropFit::Stretch => vec![area],
+        BackdropFit::Tile => {
+            let across = (area.width / width).ceil() as usize;
+            let down = (area.height / height).ceil() as usize;
+            // A one-pixel picture over a big panel is a pattern nobody
+            // meant; past this it is not drawn rather than drawn slowly.
+            if across.saturating_mul(down) > 4096 {
+                return Vec::new();
+            }
+            (0..down)
+                .flat_map(|row| {
+                    (0..across).map(move |col| {
+                        Rect::new(
+                            area.x + col as f32 * width,
+                            area.y + row as f32 * height,
+                            width,
+                            height,
+                        )
+                    })
+                })
+                .collect()
         }
     }
 }
@@ -330,6 +444,14 @@ impl BackdropPanel {
 #[serde(deny_unknown_fields)]
 pub struct Backdrops {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrangement: Option<Backdrop>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roll: Option<Backdrop>,
@@ -339,11 +461,15 @@ pub struct Backdrops {
 
 impl Backdrops {
     pub fn is_empty(&self) -> bool {
-        self.arrangement.is_none() && self.roll.is_none() && self.mixer.is_none()
+        BackdropPanel::ALL.iter().all(|p| self.get(*p).is_none())
     }
 
     pub fn get(&self, panel: BackdropPanel) -> Option<&Backdrop> {
         match panel {
+            BackdropPanel::Window => self.window.as_ref(),
+            BackdropPanel::Transport => self.transport.as_ref(),
+            BackdropPanel::Channels => self.channels.as_ref(),
+            BackdropPanel::Browser => self.browser.as_ref(),
             BackdropPanel::Arrangement => self.arrangement.as_ref(),
             BackdropPanel::Roll => self.roll.as_ref(),
             BackdropPanel::Mixer => self.mixer.as_ref(),
@@ -352,6 +478,10 @@ impl Backdrops {
 
     pub fn set(&mut self, panel: BackdropPanel, backdrop: Option<Backdrop>) {
         match panel {
+            BackdropPanel::Window => self.window = backdrop,
+            BackdropPanel::Transport => self.transport = backdrop,
+            BackdropPanel::Channels => self.channels = backdrop,
+            BackdropPanel::Browser => self.browser = backdrop,
             BackdropPanel::Arrangement => self.arrangement = backdrop,
             BackdropPanel::Roll => self.roll = backdrop,
             BackdropPanel::Mixer => self.mixer = backdrop,
@@ -369,6 +499,13 @@ pub struct Backdrop {
     /// 0 is not there, 1 is the picture as it is. Drawn over the panel's
     /// ground and under everything on it.
     pub opacity: f32,
+    /// How it sits in its section. Cover when the file does not say.
+    #[serde(default)]
+    pub fit: BackdropFit,
+    /// Where, 0 to 1 across and down ([`backdrop_tiles`]). The middle when
+    /// the file does not say.
+    #[serde(default = "centre")]
+    pub anchor: [f32; 2],
 }
 
 impl Backdrop {
@@ -383,6 +520,8 @@ impl Backdrop {
         Ok(Self {
             image: base64::engine::general_purpose::STANDARD.encode(bytes),
             opacity: opacity.clamp(0.0, 1.0),
+            fit: BackdropFit::Cover,
+            anchor: centre(),
         })
     }
 
@@ -477,8 +616,19 @@ impl Theme {
         theme
     }
 
-    /// Warm and dark, with softer corners: a room lit by a lamp.
+    /// Warm and dark, with softer corners, and a fire behind the glass:
+    /// the built-in that shows what a theme's pictures can do — smoke and
+    /// drifting embers under see-through panels, a line of heat under the
+    /// transport, sparks climbing the side panels and the arrangement, a
+    /// bed of coals under the mixer. Its pictures are drawn by
+    /// `assets/themes/ember/make.py`. Built once: the library lists the
+    /// built-ins often, and these carry two megabytes of pictures.
     pub fn ember() -> Self {
+        static EMBER: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
+        EMBER.get_or_init(Self::ember_built).clone()
+    }
+
+    fn ember_built() -> Self {
         let mut theme = Self::dark_default();
         theme.name = "Ember".to_string();
         let p = &mut theme.palette;
@@ -505,6 +655,63 @@ impl Theme {
         p.key_white = Color::rgb(0xe2, 0xd6, 0xcc);
         p.key_dead = Color::rgb(0x5e, 0x50, 0x49);
         p.note_silent = Color::rgb(0x48, 0x38, 0x30);
+        // See-through, so the fire behind the window shows; the words on
+        // them still sit on something.
+        p.panel = p.panel.with_alpha(0xc8);
+        p.panel_header = p.panel_header.with_alpha(0xd4);
+        p.row_accidental = p.row_accidental.with_alpha(0xa0);
+        p.row_out_of_scale = p.row_out_of_scale.with_alpha(0xa0);
+        let picture = |bytes: &[u8], opacity: f32, fit: BackdropFit, anchor: [f32; 2]| {
+            let mut b = Backdrop::from_image_bytes(bytes, opacity)
+                .expect("Ember's pictures are compiled in and decode");
+            b.fit = fit;
+            b.anchor = anchor;
+            Some(b)
+        };
+        theme.backdrops = Backdrops {
+            window: picture(
+                include_bytes!("../../../../assets/themes/ember/window.jpg"),
+                1.0,
+                BackdropFit::Cover,
+                [0.5, 1.0],
+            ),
+            transport: picture(
+                include_bytes!("../../../../assets/themes/ember/transport.png"),
+                1.0,
+                BackdropFit::Stretch,
+                centre(),
+            ),
+            channels: picture(
+                include_bytes!("../../../../assets/themes/ember/channels.png"),
+                0.9,
+                BackdropFit::Cover,
+                [0.0, 1.0],
+            ),
+            browser: picture(
+                include_bytes!("../../../../assets/themes/ember/browser.png"),
+                0.9,
+                BackdropFit::Cover,
+                [0.5, 1.0],
+            ),
+            arrangement: picture(
+                include_bytes!("../../../../assets/themes/ember/arrangement.png"),
+                0.85,
+                BackdropFit::Cover,
+                [1.0, 1.0],
+            ),
+            roll: picture(
+                include_bytes!("../../../../assets/themes/ember/roll.png"),
+                1.0,
+                BackdropFit::Stretch,
+                centre(),
+            ),
+            mixer: picture(
+                include_bytes!("../../../../assets/themes/ember/mixer.png"),
+                0.9,
+                BackdropFit::Cover,
+                [0.5, 1.0],
+            ),
+        };
         theme.metrics.corner_radius = 7.0;
         theme
     }

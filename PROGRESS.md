@@ -19,7 +19,36 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-01 (latest, evening) — a round of Ty's fixes for the next
+**As of 2026-10-01 (latest, night) — themes go everywhere; R records.**
+Ty: *"pictures seem quite limiting ... i want themes to be able to get
+detailed in the backgrounds they want to make for each section and even
+have transparency for things that can overlap."* Nothing tagged.
+
+- **A picture per section** (`BackdropPanel::ALL`, seven): the window (under
+  everything), the transport bar, the channel rack (and prefabs), the
+  browser, the arrangement's lanes, the roll's grid, the mixer. Each has a
+  **fit** (`cover`/`contain`/`stretch`/`tile`) and an **anchor** (0–1 across
+  and down), defaulted when a file leaves them out; placement is the pure
+  `theme::backdrop_tiles`. Drawn by `render::draw_backdrop_rounded`,
+  clipped to the panel's own rounded shape, between its ground and its
+  border (`draw_panel_frame_with`).
+- **See-through panels**: palette colours already took alpha; the panel
+  frame now fills body and header apart (no double layer), the patch bay
+  takes the panels' alpha, and the window ground is forced solid so partial
+  redraws never pile up. Settings → Appearance → *Panel see-through* (0–80 %)
+  sets the alpha of the panel, header and row-shading inks on a copy.
+- **The time bar's groove is see-through** (`render::ruler_track_ink`).
+- **R toggles recording** (`Action::Record`, global): off is the button's own
+  disarm (take kept); on arms with the last chosen mode without asking.
+- **Ember is the showcase built-in**: see-through panels over a fire —
+  pictures in all seven sections, drawn procedurally by
+  `assets/themes/ember/make.py` (2.1 MB, compiled in; `Theme::ember` is
+  built once in a `OnceLock`).
+- The Hatsune Miku theme (Ty's, local only, not in the tree) was rebuilt the
+  same way: a stage behind everything, an equalizer in the transport, her
+  twin-tail down the browser, notes, lasers, her name.
+
+**As of 2026-10-01 (evening) — a round of Ty's fixes for the next
 release: velocity scaling, the wires, the mixer's size, icons, the home page,
 themes.** Nothing tagged.
 

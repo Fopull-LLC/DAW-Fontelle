@@ -686,7 +686,18 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // The ground. Also painted by `RenderParams::base_color`, but painting it
     // here too is what keeps this function the whole picture — a partial
     // redraw clips to a dirty region and never gets a fresh base.
-    fill_rect(scene, layout.window, p.window);
+    // Solid, whatever the theme says: every partial redraw starts from it,
+    // and a see-through ground would pile up frame on frame.
+    fill_rect(
+        scene,
+        layout.window,
+        Color([p.window.0[0], p.window.0[1], p.window.0[2], 0xff]),
+    );
+    draw_backdrop(
+        scene,
+        layout.window,
+        backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Window),
+    );
 
     // The start menu is the whole picture while it is up. Not an overlay on
     // a dimmed studio: a launch shows a menu, and the studio appears when
@@ -715,10 +726,21 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         return;
     }
 
-    draw_transport_bar(scene, theme, chrome.labels, &chrome.transport);
+    draw_transport_bar(
+        scene,
+        theme,
+        chrome.labels,
+        &chrome.transport,
+        backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Transport),
+    );
 
     if let Some(rack) = &chrome.rack {
-        draw_panel_frame(scene, theme, &rack.panel);
+        draw_panel_frame_with(
+            scene,
+            theme,
+            &rack.panel,
+            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Channels),
+        );
         draw_label(
             scene,
             chrome.labels,
@@ -730,7 +752,12 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         draw_rack(scene, theme, chrome.labels, rack);
     }
     if let Some(prefabs) = &chrome.prefabs {
-        draw_panel_frame(scene, theme, &prefabs.panel);
+        draw_panel_frame_with(
+            scene,
+            theme,
+            &prefabs.panel,
+            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Channels),
+        );
         draw_label(
             scene,
             chrome.labels,
@@ -742,7 +769,12 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         draw_prefabs(scene, theme, chrome.labels, prefabs);
     }
     if let Some(browser) = &chrome.browser {
-        draw_panel_frame(scene, theme, &browser.panel);
+        draw_panel_frame_with(
+            scene,
+            theme,
+            &browser.panel,
+            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Browser),
+        );
         draw_label(
             scene,
             chrome.labels,
@@ -1001,7 +1033,9 @@ fn draw_help(
     chrome: &HelpChrome<'_>,
 ) {
     use crate::canvas::{GUIDE, GuideKind, HELP_CLOSE, HELP_SHORTCUTS, HELP_TITLE, HelpHit};
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(200));
     let heights: Vec<Vec<f32>> = chrome
@@ -1198,7 +1232,9 @@ fn draw_tour(
     chrome: &TourChrome<'_>,
 ) {
     use crate::canvas::{GUIDE, HELP_CLOSE, TOUR_BACK, TOUR_DONE, TOUR_NEXT, TourHit};
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let steps = crate::canvas::tour_steps();
     let Some(&(section, page)) = steps.get(chrome.step) else {
@@ -1401,7 +1437,9 @@ fn draw_keybinds(
         KEYBIND_SECTIONS, KEYBINDS_CLOSE, KEYBINDS_HINT, KEYBINDS_LISTENING, KEYBINDS_PRESS,
         KEYBINDS_RESET, KEYBINDS_TITLE, KeybindRow,
     };
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(200));
     let l = crate::canvas::keybinds_layout(window, m, chrome.scroll);
@@ -1609,7 +1647,9 @@ fn draw_settings_page(
     use crate::canvas::{
         SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingControl, SettingsPageHit,
     };
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(200));
     let sections = crate::canvas::settings_sections(chrome.controls);
@@ -2010,7 +2050,9 @@ fn draw_toast(
     text: &str,
     undoable: bool,
 ) {
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let l = crate::canvas::toast_layout(window, m, undoable);
     if l.frame.is_empty() {
@@ -2323,7 +2365,9 @@ fn draw_question(
     window: Rect,
     question: &QuestionNotice<'_>,
 ) {
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(190));
     let l = crate::canvas::choice_prompt_layout(
@@ -3526,7 +3570,9 @@ pub fn draw_context_menu(
     if menu.frame.is_empty() {
         return;
     }
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     // A border against the panel's own ground, for the reason `draw_lane_menu`
     // gives: it reads as "in front of" without needing a blur.
@@ -3775,7 +3821,9 @@ fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
     let Some(text) = labels_get(chrome.labels, caption) else {
         return;
     };
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     // Its own outline, because it floats over whatever is underneath: without
     // one a tip over a panel reads as a hole in the panel.
@@ -3939,6 +3987,7 @@ pub fn draw_transport_bar(
     theme: &Theme,
     labels: &Labels,
     chrome: &TransportChrome<'_>,
+    picture: Option<&PanelPicture>,
 ) {
     let l = &chrome.layout;
     let view = &chrome.view;
@@ -3957,6 +4006,7 @@ pub fn draw_transport_bar(
         None,
         &bar,
     );
+    draw_backdrop_rounded(scene, l.bar, m.corner_radius, picture);
     if m.border_width > 0.0 {
         scene.stroke(
             &Stroke::new(m.border_width as f64),
@@ -4482,15 +4532,37 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
     draw_output_menu(scene, theme, labels, chrome);
 }
 
-/// A theme's pictures, decoded once when the theme is worn, indexed by
-/// [`crate::theme::BackdropPanel`] in its `ALL` order.
-pub type PanelBackdrops = [Option<(vello::peniko::ImageData, f32)>; 3];
+/// One section's picture, decoded once when the theme is worn.
+#[derive(Debug, Clone)]
+pub struct PanelPicture {
+    pub image: vello::peniko::ImageData,
+    pub opacity: f32,
+    pub fit: crate::theme::BackdropFit,
+    pub anchor: [f32; 2],
+}
+
+/// A theme's pictures, indexed by [`crate::theme::BackdropPanel`] in its
+/// `ALL` order.
+pub type PanelBackdrops = [Option<PanelPicture>; 7];
+
+/// Decodes `theme`'s pictures for drawing.
+pub fn decode_backdrops(theme: &Theme) -> PanelBackdrops {
+    crate::theme::BackdropPanel::ALL.map(|panel| {
+        let b = theme.backdrops.get(panel)?;
+        Some(PanelPicture {
+            image: b.decode()?,
+            opacity: b.opacity,
+            fit: b.fit,
+            anchor: b.anchor,
+        })
+    })
+}
 
 /// One of them, for `panel`.
 fn backdrop_for(
     backdrops: &PanelBackdrops,
     panel: crate::theme::BackdropPanel,
-) -> Option<&(vello::peniko::ImageData, f32)> {
+) -> Option<&PanelPicture> {
     let index = crate::theme::BackdropPanel::ALL
         .iter()
         .position(|p| *p == panel)?;
@@ -4502,45 +4574,58 @@ fn backdrop_for(
 /// its row shading and under everything on it — Ty: *"maybe allowing users
 /// to even put background images behind their arrangement or different
 /// panels"*.
-fn draw_backdrop(
+fn draw_backdrop(scene: &mut Scene, area: Rect, backdrop: Option<&PanelPicture>) {
+    draw_backdrop_rounded(scene, area, 0.0, backdrop);
+}
+
+/// The same, clipped to `area` with its corners rounded by `radius` — a
+/// panel's own shape, so a picture does not poke out of its corners.
+fn draw_backdrop_rounded(
     scene: &mut Scene,
     area: Rect,
-    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+    radius: f32,
+    backdrop: Option<&PanelPicture>,
 ) {
-    let Some((image, alpha)) = backdrop else {
+    let Some(picture) = backdrop else {
         return;
     };
-    if area.is_empty() || image.width == 0 || image.height == 0 || *alpha <= 0.0 {
+    let image = &picture.image;
+    if area.is_empty() || picture.opacity <= 0.0 {
         return;
     }
-    let scale = (area.width / image.width as f32).max(area.height / image.height as f32);
-    let (w, h) = (image.width as f32 * scale, image.height as f32 * scale);
-    let (x, y) = (
-        area.x + (area.width - w) / 2.0,
-        area.y + (area.height - h) / 2.0,
+    let tiles = crate::theme::backdrop_tiles(
+        area,
+        image.width as f32,
+        image.height as f32,
+        picture.fit,
+        picture.anchor,
     );
+    if tiles.is_empty() {
+        return;
+    }
     scene.push_layer(
         Fill::NonZero,
         BlendMode::default(),
         1.0,
         Affine::IDENTITY,
-        &KRect::new(
-            area.x as f64,
-            area.y as f64,
-            area.right() as f64,
-            area.bottom() as f64,
-        ),
+        &rounded(area, radius),
     );
     let brush = vello::peniko::ImageBrush {
         image: image.clone(),
         sampler: vello::peniko::ImageSampler::new()
             .with_quality(vello::peniko::ImageQuality::Medium)
-            .with_alpha(*alpha),
+            .with_alpha(picture.opacity),
     };
-    scene.draw_image(
-        &brush,
-        Affine::translate((x as f64, y as f64)) * Affine::scale(scale as f64),
-    );
+    for tile in tiles {
+        scene.draw_image(
+            &brush,
+            Affine::translate((tile.x as f64, tile.y as f64))
+                * Affine::scale_non_uniform(
+                    tile.width as f64 / image.width as f64,
+                    tile.height as f64 / image.height as f64,
+                ),
+        );
+    }
     scene.pop_layer();
 }
 
@@ -4556,7 +4641,10 @@ fn draw_patch_bay(scene: &mut Scene, theme: &Theme, chrome: &MixerChrome<'_>) {
     if bay.is_empty() {
         return;
     }
-    fill_rect(scene, bay, p.window);
+    // The ground's colour, as see-through as the panels, so a theme's
+    // mixer picture reaches the bottom of the panel rather than stopping
+    // at the bay.
+    fill_rect(scene, bay, p.window.with_alpha(p.panel.0[3]));
     fill_rect(
         scene,
         Rect::new(bay.x, bay.y, bay.width, theme.metrics.border_width.max(1.0)),
@@ -5129,7 +5217,9 @@ fn draw_output_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
     if menu.frame.is_empty() {
         return;
     }
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
     fill_rect_rounded(
@@ -5478,7 +5568,7 @@ fn draw_ruler(scene: &mut Scene, theme: &Theme, ruler: Rect, view: &TransportVie
     // A groove rather than the bar's own colour, so the playhead has something
     // to travel along even at position zero.
     let track = ruler.inset(ruler.height * 0.3);
-    fill_rect(scene, track, p.grid_line);
+    fill_rect(scene, track, ruler_track_ink(p));
 
     if view.looping && view.length_samples > 0 {
         let (from, to) = view.loop_range_samples;
@@ -5518,6 +5608,16 @@ fn draw_ruler(scene: &mut Scene, theme: &Theme, ruler: Rect, view: &TransportVie
         p.playhead,
     );
 }
+
+/// The time bar's groove: see-through, so the bar — and a theme's picture
+/// behind it — shows through. Ty: *"the time bar at the top should be semi
+/// transparent in general instead of being a solid color."*
+pub fn ruler_track_ink(p: &crate::theme::Palette) -> Color {
+    p.grid_line.with_alpha(RULER_TRACK_ALPHA)
+}
+
+/// How much of the groove is there: a little over half.
+const RULER_TRACK_ALPHA: u8 = 0x8c;
 
 /// The little flag on the time marker's stem.
 const MARKER_FLAG_WIDTH: f32 = 6.0;
@@ -5583,7 +5683,7 @@ pub fn draw_piano_roll(
     theme: &Theme,
     labels: &Labels,
     chrome: &RollChrome<'_>,
-    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+    backdrop: Option<&PanelPicture>,
 ) {
     let p = &theme.palette;
     let l = &chrome.layout;
@@ -6256,20 +6356,35 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
 /// A panel's ground, header strip and border — the three things every docked
 /// panel has and none of them is worth writing twice.
 fn draw_panel_frame(scene: &mut Scene, theme: &Theme, panel: &PanelLayout) {
+    draw_panel_frame_with(scene, theme, panel, None);
+}
+
+/// A panel's ground, its header, its section picture over both, and its
+/// border. The body and the header are filled apart, not one over the
+/// other, so a see-through theme's header is as see-through as its body.
+fn draw_panel_frame_with(
+    scene: &mut Scene,
+    theme: &Theme,
+    panel: &PanelLayout,
+    picture: Option<&PanelPicture>,
+) {
     let p = &theme.palette;
     let m = &theme.metrics;
     if panel.frame.is_empty() {
         return;
     }
+    let r = m.corner_radius as f64;
     let frame = rounded(panel.frame, m.corner_radius);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        p.panel.to_peniko(),
-        None,
-        &frame,
-    );
-    if !panel.header.is_empty() {
+    let f = panel.frame;
+    if panel.header.is_empty() {
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.panel.to_peniko(),
+            None,
+            &frame,
+        );
+    } else {
         let h = panel.header;
         scene.fill(
             Fill::NonZero,
@@ -6278,10 +6393,22 @@ fn draw_panel_frame(scene: &mut Scene, theme: &Theme, panel: &PanelLayout) {
             None,
             &RoundedRect::from_rect(
                 KRect::new(h.x as f64, h.y as f64, h.right() as f64, h.bottom() as f64),
-                RoundedRectRadii::new(m.corner_radius as f64, m.corner_radius as f64, 0.0, 0.0),
+                RoundedRectRadii::new(r, r, 0.0, 0.0),
+            ),
+        );
+        let top = h.bottom().min(f.bottom());
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            p.panel.to_peniko(),
+            None,
+            &RoundedRect::from_rect(
+                KRect::new(f.x as f64, top as f64, f.right() as f64, f.bottom() as f64),
+                RoundedRectRadii::new(0.0, 0.0, r, r),
             ),
         );
     }
+    draw_backdrop_rounded(scene, panel.frame, m.corner_radius, picture);
     if m.border_width > 0.0 {
         scene.stroke(
             &Stroke::new(m.border_width as f64),
@@ -6617,7 +6744,9 @@ fn draw_route_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &R
     if menu.frame.is_empty() {
         return;
     }
-    let p = &theme.palette;
+    // Drawn over other content: solid grounds (`Palette::solid`).
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect_rounded(scene, menu.frame, m.corner_radius, p.border);
     fill_rect_rounded(
@@ -7420,7 +7549,7 @@ fn draw_timeline(
     theme: &Theme,
     labels: &Labels,
     chrome: &TimelineChrome<'_>,
-    backdrop: Option<&(vello::peniko::ImageData, f32)>,
+    backdrop: Option<&PanelPicture>,
 ) {
     let p = &theme.palette;
     let l = &chrome.layout;

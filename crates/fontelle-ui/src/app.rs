@@ -945,14 +945,6 @@ const BEATS_PER_BAR: u32 = 4;
 #[cfg(target_os = "linux")]
 const APP_ID: &str = "com.fopull.Fontelle";
 
-/// A theme's pictures, decoded for drawing (`render::PanelBackdrops`).
-fn decode_backdrops(theme: &Theme) -> crate::render::PanelBackdrops {
-    crate::theme::BackdropPanel::ALL.map(|panel| {
-        let backdrop = theme.backdrops.get(panel)?;
-        Some((backdrop.decode()?, backdrop.opacity))
-    })
-}
-
 /// What the window is opened with.
 pub struct WindowOptions {
     /// The OS window's title.
@@ -2357,7 +2349,7 @@ impl WindowApp {
             mixer_view: crate::canvas::MixerView::default(),
             // The opening theme's pictures — one named with `--theme` is
             // never worn through `apply_theme`, and drew without them.
-            backdrops: decode_backdrops(&options.theme),
+            backdrops: crate::render::decode_backdrops(&options.theme),
             theme_seen: 0,
             carried_cable: None,
             mixer_strips: Vec::new(),
@@ -9033,7 +9025,7 @@ impl WindowApp {
         if theme == self.options.theme {
             return;
         }
-        self.backdrops = decode_backdrops(&theme);
+        self.backdrops = crate::render::decode_backdrops(&theme);
         self.options.theme = theme;
         self.relayout_panels();
         self.tree.invalidate_rect(self.layout.window);
@@ -20134,6 +20126,16 @@ impl WindowApp {
             // which panel you were last looking at, and the editor windows
             // answer this function too.
             Action::Metronome => self.transport(TransportHit::ToggleMetronome),
+            // *"r toggle recording on or off (should just continue with
+            // whatever your last selected option is)"*: no menu, the last
+            // mode. Off is the button's own disarm, take kept and all.
+            Action::Record => {
+                if self.view.armed {
+                    self.transport(TransportHit::ToggleRecord);
+                } else {
+                    self.arm_recording(true);
+                }
+            }
             Action::Help => self.open_help(),
             _ => return false,
         }
@@ -20525,6 +20527,7 @@ impl WindowApp {
             Action::Play
             | Action::Stop
             | Action::Metronome
+            | Action::Record
             | Action::Save
             | Action::Undo
             | Action::Redo

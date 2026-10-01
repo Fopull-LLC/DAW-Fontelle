@@ -163,3 +163,160 @@ fn a_jpeg_backdrop_decodes_too() {
     let image = b.decode().expect("decodes");
     assert_eq!((image.width, image.height), (4, 3));
 }
+
+// ---------------------------------------- every section, and how it sits ---
+//
+// Ty, 2026-10-01: *"pictures seem quite limiting right now they only go
+// behind the piano roll and arrangement ... i want themes to be able to get
+// detailed in the backgrounds they want to make for each section and even
+// have transparency for things that can overlap."*
+
+use fontelle_ui::layout::Rect;
+use fontelle_ui::theme::{BackdropFit, backdrop_tiles};
+
+#[test]
+fn every_section_of_the_window_can_have_a_picture() {
+    let names: Vec<&str> = BackdropPanel::ALL.iter().map(|p| p.label()).collect();
+    for wanted in [
+        "Window",
+        "Transport",
+        "Channels",
+        "Browser",
+        "Arrangement",
+        "Piano roll",
+        "Mixer",
+    ] {
+        assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
+    }
+    let mut theme = Theme::dark_default();
+    for panel in BackdropPanel::ALL {
+        theme.backdrops.set(
+            panel,
+            Some(Backdrop::from_image_bytes(&tiny_png(), 0.5).unwrap()),
+        );
+    }
+    let back = Theme::from_json(&theme.to_json()).unwrap();
+    for panel in BackdropPanel::ALL {
+        assert!(back.backdrops.get(panel).is_some(), "{panel:?} lost");
+    }
+}
+
+#[test]
+fn a_picture_written_without_a_fit_covers_from_the_centre() {
+    let mut json: serde_json::Value = serde_json::from_str(
+        &{
+            let mut t = Theme::dark_default();
+            t.backdrops.set(
+                BackdropPanel::Mixer,
+                Some(Backdrop::from_image_bytes(&tiny_png(), 0.5).unwrap()),
+            );
+            t
+        }
+        .to_json(),
+    )
+    .unwrap();
+    let mixer = json["backdrops"]["mixer"].as_object_mut().unwrap();
+    mixer.remove("fit");
+    mixer.remove("anchor");
+    let read = Theme::from_json(&json.to_string()).unwrap();
+    let b = read.backdrops.get(BackdropPanel::Mixer).unwrap();
+    assert_eq!(b.fit, BackdropFit::Cover);
+    assert_eq!(b.anchor, [0.5, 0.5]);
+}
+
+fn area() -> Rect {
+    Rect::new(100.0, 50.0, 400.0, 100.0)
+}
+
+#[test]
+fn cover_fills_the_area_and_the_anchor_says_which_part_shows() {
+    // A square picture over a 4:1 panel: scaled to the width, its middle
+    // shows by default, its top with the anchor at the top.
+    let middle = backdrop_tiles(area(), 200.0, 200.0, BackdropFit::Cover, [0.5, 0.5]);
+    assert_eq!(middle, vec![Rect::new(100.0, -100.0, 400.0, 400.0)]);
+    let top = backdrop_tiles(area(), 200.0, 200.0, BackdropFit::Cover, [0.5, 0.0]);
+    assert_eq!(top, vec![Rect::new(100.0, 50.0, 400.0, 400.0)]);
+}
+
+#[test]
+fn contain_shows_all_of_it_where_the_anchor_puts_it() {
+    let right = backdrop_tiles(area(), 200.0, 200.0, BackdropFit::Contain, [1.0, 0.5]);
+    assert_eq!(right, vec![Rect::new(400.0, 50.0, 100.0, 100.0)]);
+}
+
+#[test]
+fn stretch_is_the_area_itself() {
+    let s = backdrop_tiles(area(), 7.0, 3.0, BackdropFit::Stretch, [0.2, 0.9]);
+    assert_eq!(s, vec![area()]);
+}
+
+#[test]
+fn tile_repeats_the_picture_at_its_own_size_over_the_whole_area() {
+    let tiles = backdrop_tiles(area(), 64.0, 64.0, BackdropFit::Tile, [0.0, 0.0]);
+    // 400 / 64 → 7 across, 100 / 64 → 2 down, from the area's corner.
+    assert_eq!(tiles.len(), 7 * 2);
+    assert_eq!(tiles[0], Rect::new(100.0, 50.0, 64.0, 64.0));
+    for t in &tiles {
+        assert!(t.x < area().right() && t.y < area().bottom());
+    }
+    assert!(
+        backdrop_tiles(area(), 0.0, 10.0, BackdropFit::Tile, [0.0, 0.0]).is_empty(),
+        "an empty picture is nothing, not an endless loop"
+    );
+}
+
+#[test]
+fn the_time_bars_groove_is_see_through() {
+    // *"the time bar at the top should be semi transparent in general
+    // instead of being a solid color."*
+    for theme in Theme::builtins() {
+        let ink = fontelle_ui::render::ruler_track_ink(&theme.palette);
+        assert!(
+            ink.0[3] < 0xff && ink.0[3] > 0x30,
+            "{}: {ink:?}",
+            theme.name
+        );
+    }
+}
+
+/// Ember is the built-in that shows what a theme can do: a picture in
+/// every section, and panels the window's picture shows through. Ty: *"revise
+/// the ember ... to be more detailed and flashy to showcase the visual
+/// design flexibility."*
+#[test]
+fn ember_has_a_picture_in_every_section_and_see_through_panels() {
+    let ember = Theme::ember();
+    for panel in BackdropPanel::ALL {
+        let b = ember
+            .backdrops
+            .get(panel)
+            .unwrap_or_else(|| panic!("{panel:?} has no picture"));
+        assert!(b.decode().is_some(), "{panel:?}'s picture decodes");
+    }
+    assert!(
+        ember.palette.panel.0[3] < 0xff,
+        "the panels are see-through"
+    );
+    assert!(
+        ember.palette.panel.0[3] >= 0xa0,
+        "and still something to read on"
+    );
+    assert_eq!(ember.palette.window.0[3], 0xff);
+}
+
+#[test]
+fn what_is_drawn_over_other_content_gets_solid_grounds() {
+    // A see-through settings page over the start menu was two layers of
+    // words on top of each other.
+    let ember = Theme::ember();
+    let solid = ember.palette.solid();
+    for c in [solid.window, solid.panel, solid.panel_header] {
+        assert_eq!(c.0[3], 0xff, "{c:?}");
+    }
+    assert_eq!(
+        solid.panel.0[..3],
+        ember.palette.panel.0[..3],
+        "same colour"
+    );
+    assert_eq!(solid.accent, ember.palette.accent, "inks untouched");
+}

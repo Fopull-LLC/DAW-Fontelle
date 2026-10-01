@@ -156,7 +156,7 @@ pub const GUIDE: &[GuideSection] = &[
             page(
                 "The transport",
                 &[
-                    "Play and stop are here, and on Space and Home. Beside them are loop, record and the metronome (Ctrl+M).",
+                    "Play and stop are here, and on Space and Home. Beside them are loop, record (R) and the metronome (Ctrl+M).",
                     "Click the tempo to type one, or drag it. Song plays the whole arrangement; switch it to Clip to loop only the clip you are editing.",
                 ],
                 Some(Transport),

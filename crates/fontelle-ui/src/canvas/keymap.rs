@@ -236,6 +236,10 @@ pub enum Action {
     Play,
     Stop,
     Metronome,
+    /// Recording on or off. On, it arms with whatever was last chosen —
+    /// audio, notes or automation — rather than asking, which the record
+    /// button still does.
+    Record,
     /// Legato with notes selected, song/clip mode without — one key, and
     /// the selection decides. See `WindowApp::legato_or_play_mode`.
     LegatoOrPlayMode,
@@ -287,10 +291,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 40] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
+        Self::Record,
         Self::LegatoOrPlayMode,
         Self::Save,
         Self::Undo,
@@ -337,6 +342,7 @@ impl Action {
             Self::Play => "play",
             Self::Stop => "stop",
             Self::Metronome => "metronome",
+            Self::Record => "record",
             Self::LegatoOrPlayMode => "legato-or-play-mode",
             Self::Save => "save",
             Self::Undo => "undo",
@@ -387,6 +393,7 @@ impl Action {
             Self::Play => "Play from the marker; again to stop and come back to it",
             Self::Stop => "Stop, and go to the start of the song",
             Self::Metronome => "Metronome on or off",
+            Self::Record => "Recording on or off, as last chosen",
             Self::LegatoOrPlayMode => "Legato on the selected notes; Song or Clip mode with none",
             Self::Save => "Save",
             Self::Undo => "Undo",
@@ -432,6 +439,7 @@ impl Action {
             Self::Play
             | Self::Stop
             | Self::Metronome
+            | Self::Record
             | Self::Save
             | Self::Undo
             | Self::Redo
@@ -449,6 +457,7 @@ impl Action {
             Self::Play => &["Space"],
             Self::Stop => &["Home"],
             Self::Metronome => &["Ctrl+M"],
+            Self::Record => &["R"],
             Self::LegatoOrPlayMode => &["Ctrl+L"],
             Self::Save => &["Ctrl+S"],
             Self::Undo => &["Ctrl+Z"],

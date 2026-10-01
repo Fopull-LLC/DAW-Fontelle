@@ -111,6 +111,7 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::Play),
             act(Action::Stop),
             act(Action::Metronome),
+            act(Action::Record),
             act(Action::LegatoOrPlayMode),
         ],
     },

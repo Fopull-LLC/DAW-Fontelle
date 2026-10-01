@@ -128,9 +128,14 @@ fn the_page_has_an_appearance_section_with_a_theme_chooser() {
     assert_eq!(*chosen, 0, "the default look until one is chosen");
     for name in [
         "Corner rounding",
+        "Window picture",
+        "Transport picture",
+        "Channels picture",
+        "Browser picture",
         "Arrangement picture",
         "Piano roll picture",
         "Mixer picture",
+        "Panel see-through",
         "Picture strength",
         "Import a theme",
         "Save this theme",
@@ -269,5 +274,34 @@ fn an_imported_theme_is_chosen_at_once() {
         panic!()
     };
     assert_eq!(options[chosen], "Rust");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// *"even have transparency for things that can overlap"*: the panels can
+/// be made see-through, so a picture behind the whole window shows through
+/// them. The ground under everything stays solid.
+#[test]
+fn panel_see_through_makes_the_panels_translucent_on_a_copy() {
+    let dir = scratch("see-through");
+    let mut session = studio(&dir);
+    let row = row(&session, "Panel see-through");
+    assert!(matches!(
+        session.setting_controls()[row],
+        SettingControl::Slider { .. }
+    ));
+    session.set_setting_fraction(row, 0.5);
+    let theme = session.theme();
+    assert_eq!(theme.name, "Fontelle Dark (mine)");
+    let alpha = |c: fontelle_ui::theme::Color| c.0[3];
+    assert!(alpha(theme.palette.panel) < 0xff && alpha(theme.palette.panel) > 0x40);
+    assert_eq!(
+        alpha(theme.palette.panel),
+        alpha(theme.palette.panel_header)
+    );
+    assert_eq!(alpha(theme.palette.window), 0xff, "the ground stays solid");
+    let SettingControl::Slider { fraction } = session.setting_controls()[row] else {
+        panic!()
+    };
+    assert!((fraction - 0.5).abs() < 0.02, "{fraction}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

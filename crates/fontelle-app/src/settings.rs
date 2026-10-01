@@ -472,6 +472,9 @@ pub enum SettingRow {
     Backdrop(fontelle_ui::theme::BackdropPanel),
     /// How strongly the pictures show. A slider.
     PictureStrength,
+    /// How see-through the panels are, so the window's picture shows
+    /// through them. A slider; the ground under everything stays solid.
+    PanelSeeThrough,
     /// Adds a `.fontelletheme` file to the library and wears it. A button.
     ImportTheme,
     /// Writes the look in use to a `.fontelletheme` file, to send to
@@ -485,7 +488,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 35] = [
+pub const SETTING_ROWS: [SettingRow; 40] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -526,10 +529,15 @@ pub const SETTING_ROWS: [SettingRow; 35] = [
     SettingRow::Heading("Appearance"),
     SettingRow::Theme,
     SettingRow::CornerRounding,
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Window),
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Transport),
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Channels),
+    SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Browser),
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Arrangement),
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Roll),
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Mixer),
     SettingRow::PictureStrength,
+    SettingRow::PanelSeeThrough,
     SettingRow::ImportTheme,
     SettingRow::SaveTheme,
     // Under its own heading, because it is about the network rather than
@@ -650,11 +658,16 @@ impl SettingRow {
             Self::Theme => "Theme",
             Self::CornerRounding => "Corner rounding",
             Self::Backdrop(panel) => match panel {
+                fontelle_ui::theme::BackdropPanel::Window => "Window picture",
+                fontelle_ui::theme::BackdropPanel::Transport => "Transport picture",
+                fontelle_ui::theme::BackdropPanel::Channels => "Channels picture",
+                fontelle_ui::theme::BackdropPanel::Browser => "Browser picture",
                 fontelle_ui::theme::BackdropPanel::Arrangement => "Arrangement picture",
                 fontelle_ui::theme::BackdropPanel::Roll => "Piano roll picture",
                 fontelle_ui::theme::BackdropPanel::Mixer => "Mixer picture",
             },
             Self::PictureStrength => "Picture strength",
+            Self::PanelSeeThrough => "Panel see-through",
             Self::ImportTheme => "Import a theme",
             Self::SaveTheme => "Save this theme",
         }
@@ -777,6 +790,7 @@ impl SettingRow {
             ),
             Self::Backdrop(_) => "None".to_string(),
             Self::PictureStrength => "None set".to_string(),
+            Self::PanelSeeThrough => "0%".to_string(),
             // Pure actions: the button says what they do.
             Self::ImportTheme | Self::SaveTheme => String::new(),
         }
@@ -855,6 +869,7 @@ impl SettingRow {
             Self::CornerRounding => "Square and rigid, or soft and round",
             Self::Backdrop(_) => "A PNG or JPEG behind the panel, kept inside the theme",
             Self::PictureStrength => "How strongly the pictures show through",
+            Self::PanelSeeThrough => "Let the window's picture show through the panels",
             Self::ImportTheme => "Add a .fontelletheme file someone sent you",
             Self::SaveTheme => "Write this look to a .fontelletheme file to share",
         }
@@ -894,6 +909,7 @@ impl SettingRow {
             | Self::CornerRounding
             | Self::Backdrop(_)
             | Self::PictureStrength
+            | Self::PanelSeeThrough
             | Self::ImportTheme
             | Self::SaveTheme => {}
             Self::VelocityCurve => {
@@ -973,7 +989,9 @@ impl SettingRow {
             | Self::SongRouting
             | Self::NewSongRouting
             | Self::Theme => SettingControlKind::Choice,
-            Self::CornerRounding | Self::PictureStrength => SettingControlKind::Slider,
+            Self::CornerRounding | Self::PictureStrength | Self::PanelSeeThrough => {
+                SettingControlKind::Slider
+            }
             Self::Backdrop(_) | Self::ImportTheme | Self::SaveTheme => SettingControlKind::Button,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider

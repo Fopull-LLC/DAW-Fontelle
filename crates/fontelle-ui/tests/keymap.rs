@@ -541,3 +541,25 @@ fn the_controls_a_key_also_drives_name_their_action_so_their_tips_read_the_map()
         Some(Action::Search)
     );
 }
+
+/// Ty, 2026-10-01: *"please also make r toggle recording on or off (should
+/// just continue with whatever your last selected option is for audio,
+/// notes, automation)"*. A transport key like Space, so it works from any
+/// panel; the window arms with the last mode rather than asking.
+#[test]
+fn r_toggles_recording() {
+    let map = Keymap::default();
+    assert_eq!(map.label(Action::Record), "R");
+    assert_eq!(Action::Record.id(), "record");
+    assert_eq!(
+        Action::Record.context(),
+        fontelle_ui::canvas::Context::Global
+    );
+    assert!(
+        fontelle_ui::canvas::KEYBIND_SECTIONS
+            .iter()
+            .any(|s| s.title == "Transport"
+                && s.binds.iter().any(|b| format!("{b:?}").contains("Record"))),
+        "listed under Transport on the shortcuts page"
+    );
+}

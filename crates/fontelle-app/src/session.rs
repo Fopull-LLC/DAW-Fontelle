@@ -705,6 +705,10 @@ const PREVIEW_BUCKETS_MAX: usize = 1 << 16;
 /// over.
 const DEFAULT_PICTURE_STRENGTH: f32 = 0.35;
 
+/// The most see-through the settings page makes a panel: past this the
+/// words on it have nothing to sit on.
+const MAX_SEE_THROUGH: f32 = 0.8;
+
 /// The roundest a theme's corners go on the settings page's slider.
 const MAX_CORNER_ROUNDING: f32 = 12.0;
 
@@ -1623,6 +1627,11 @@ impl Session {
                 Some(most.map_or(o, |m| m.max(o)))
             })
             .unwrap_or(DEFAULT_PICTURE_STRENGTH)
+    }
+
+    /// How see-through the panels are: 0 solid, up to [`MAX_SEE_THROUGH`].
+    fn see_through(&self) -> f32 {
+        1.0 - f32::from(self.theme.palette.panel.0[3]) / 255.0
     }
 
     /// Writes the look in use to `path`, a `.fontelletheme` to send.
@@ -8616,6 +8625,9 @@ impl StudioHost for Session {
                     crate::settings::SettingRow::PictureStrength => {
                         format!("{}%", (self.picture_strength() * 100.0).round())
                     }
+                    crate::settings::SettingRow::PanelSeeThrough => {
+                        format!("{}%", (self.see_through() * 100.0).round())
+                    }
                     _ => row.value(&self.settings),
                 };
                 LibraryEntry::file(row.label(&self.settings), value)
@@ -8737,6 +8749,9 @@ impl StudioHost for Session {
                             (self.theme.metrics.corner_radius / MAX_CORNER_ROUNDING).clamp(0.0, 1.0)
                         }
                         crate::settings::SettingRow::PictureStrength => self.picture_strength(),
+                        crate::settings::SettingRow::PanelSeeThrough => {
+                            self.see_through() / MAX_SEE_THROUGH
+                        }
                         _ => row.fraction(midi).unwrap_or(0.0),
                     },
                 },
@@ -8781,6 +8796,24 @@ impl StudioHost for Session {
             crate::settings::SettingRow::CornerRounding => {
                 let radius = (fraction.clamp(0.0, 1.0) * MAX_CORNER_ROUNDING).round();
                 if let Err(e) = self.edit_theme(|t| t.metrics.corner_radius = radius) {
+                    self.message = Some(e);
+                }
+                return;
+            }
+            crate::settings::SettingRow::PanelSeeThrough => {
+                let see = fraction.clamp(0.0, 1.0) * MAX_SEE_THROUGH;
+                let alpha = (255.0 * (1.0 - see)).round() as u8;
+                if let Err(e) = self.edit_theme(|t| {
+                    let p = &mut t.palette;
+                    for c in [
+                        &mut p.panel,
+                        &mut p.panel_header,
+                        &mut p.row_accidental,
+                        &mut p.row_out_of_scale,
+                    ] {
+                        *c = c.with_alpha(alpha);
+                    }
+                }) {
                     self.message = Some(e);
                 }
                 return;
