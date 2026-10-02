@@ -444,7 +444,7 @@ fn a_studio_keeps_one_install_id_for_good() {
 /// Settings format 7 carries the three, and a format-6 file still reads.
 #[test]
 fn the_sharing_settings_survive_the_file_and_an_older_one_reads() {
-    assert_eq!(fontelle_app::settings::SETTINGS_FORMAT_VERSION, 7);
+    const { assert!(fontelle_app::settings::SETTINGS_FORMAT_VERSION >= 7) };
     let mut settings = Settings::default();
     SettingRow::YourName.set_text(&mut settings, "Alice");
     SettingRow::Relay.set_text(&mut settings, "10.0.0.2:7788");

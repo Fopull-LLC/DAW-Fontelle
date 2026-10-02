@@ -1506,6 +1506,13 @@ pub trait StudioHost: DocumentHost {
         None
     }
 
+    /// How much a theme's backdrops may move — Settings ▸ Appearance's
+    /// Effects, rate, resolution and "hold still while playing" (hub card
+    /// 0366). Read each pass of the loop; cheap.
+    fn backdrop_motion(&self) -> crate::backdrop::Motion {
+        crate::backdrop::Motion::default()
+    }
+
     fn setting_controls(&self) -> Vec<crate::canvas::SettingControl> {
         Vec::new()
     }

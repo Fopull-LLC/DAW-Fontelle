@@ -80,6 +80,9 @@ impl TextLayout {
 /// directories — so there is one per window, not one per string.
 pub struct TextContext {
     pub font_system: FontSystem,
+    /// The theme fonts already in [`font_system`](Self::font_system), by
+    /// their bytes' hash, so wearing a theme again loads nothing twice.
+    theme_fonts: std::collections::HashSet<u64>,
 }
 
 /// The face `sans-serif` names, carried in the binary.
@@ -103,7 +106,43 @@ impl TextContext {
         let bundled = cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(OPEN_SANS_REGULAR));
         Self {
             font_system: FontSystem::new_with_fonts([bundled]),
+            theme_fonts: Default::default(),
         }
+    }
+
+    /// Loads the fonts `theme` carries, so its [`FontTokens`] can name them,
+    /// and answers the families each newly loaded file brought — the names
+    /// a theme writes in `family` and `display`. A font already loaded is
+    /// not loaded again; one that does not parse brings nothing.
+    ///
+    /// Never unloaded: a theme worn and taken off leaves its faces in the
+    /// database, a few megabytes at worst, rather than a shaped label left
+    /// pointing at a face that has gone.
+    pub fn load_theme_fonts(&mut self, theme: &crate::theme::Theme) -> Vec<String> {
+        use std::hash::{Hash, Hasher};
+        let mut families = Vec::new();
+        for font in &theme.fonts {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            font.data.hash(&mut h);
+            if !self.theme_fonts.insert(h.finish()) {
+                continue;
+            }
+            let Some(bytes) = font.bytes() else { continue };
+            let db = self.font_system.db_mut();
+            let ids = db.load_font_source(cosmic_text::fontdb::Source::Binary(
+                std::sync::Arc::new(bytes),
+            ));
+            for id in ids {
+                if let Some(face) = db.face(id) {
+                    for (name, _) in &face.families {
+                        if !families.contains(name) {
+                            families.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+        families
     }
 
     /// Shapes `text` in `font`, wrapping at `max_width` when one is given.
@@ -327,6 +366,7 @@ impl Labels {
             family: font.family.clone(),
             size: font.size * SMALL_LABEL,
             line_height: font.line_height,
+            display: None,
         };
         let layout = context.layout(text, &small, None);
         self.small
@@ -361,6 +401,7 @@ impl Labels {
             family: font.family.clone(),
             size: style.size(),
             line_height: 1.0,
+            display: None,
         };
         let layout = context.layout_weighted(text, &sized, None, style.weight());
         self.styled.insert(key, Shaped { frame, layout });
@@ -392,6 +433,7 @@ impl Labels {
             family: "monospace".to_string(),
             size: size_px.max(1.0),
             line_height: 1.0,
+            display: None,
         };
         let layout = context.layout(text, &font, None);
         self.mono.insert(key, Shaped { frame, layout });

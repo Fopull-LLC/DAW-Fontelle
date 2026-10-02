@@ -35,11 +35,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod looks;
+
 /// The revision of the theme format this build writes.
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 10;
+pub const THEME_FORMAT_VERSION: u32 = 11;
 
 /// What a theme file is called: `Midnight.fontelletheme`. The same JSON as
 /// ever — the name is so a file says what it is when it is sent to someone.
@@ -300,6 +302,22 @@ pub struct FontTokens {
     pub size: f32,
     /// A multiple of `size`.
     pub line_height: f32,
+    /// A face for titles — the editor panel's heading and the start menu's
+    /// — where a theme wants one apart from its text face (v11). `None`
+    /// draws titles in `family`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+}
+
+impl FontTokens {
+    /// The same tokens in the display face, for a title.
+    pub fn for_titles(&self) -> Self {
+        Self {
+            family: self.display.clone().unwrap_or_else(|| self.family.clone()),
+            display: None,
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,11 +325,21 @@ pub struct FontTokens {
 pub struct Theme {
     pub format_version: u32,
     pub name: String,
+    /// One line saying what the look is, shown in the picker (v11).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
     pub palette: Palette,
     pub metrics: Metrics,
     pub font: FontTokens,
-    /// Pictures behind the panels, carried inside the file (v10). Optional
-    /// and left out when empty, so a plain theme stays the short file it was.
+    /// Fonts carried inside the file (v11), named by [`FontTokens::family`]
+    /// and [`FontTokens::display`] by their own family names — so a look
+    /// with a face of its own is still one file to send.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fonts: Vec<ThemeFont>,
+    /// What is behind the panels, carried inside the file: since v10
+    /// pictures, since v11 a stack of layers per section, moving ones among
+    /// them. Optional and left out when empty, so a plain theme stays the
+    /// short file it was.
     #[serde(default, skip_serializing_if = "Backdrops::is_empty")]
     pub backdrops: Backdrops,
 }
@@ -378,6 +406,29 @@ pub enum BackdropFit {
     Stretch,
     /// Repeated at its own size from the section's corner — for a pattern.
     Tile,
+    /// At its own size, a pixel to a point, placed by the anchor — Floptle's
+    /// `Natural`, for a logo in a corner.
+    Natural,
+}
+
+impl BackdropFit {
+    pub const ALL: [Self; 5] = [
+        Self::Cover,
+        Self::Contain,
+        Self::Stretch,
+        Self::Tile,
+        Self::Natural,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cover => "Cover",
+            Self::Contain => "Contain",
+            Self::Stretch => "Stretch",
+            Self::Tile => "Tile",
+            Self::Natural => "Natural size",
+        }
+    }
 }
 
 fn centre() -> [f32; 2] {
@@ -395,23 +446,43 @@ pub fn backdrop_tiles(
     fit: BackdropFit,
     anchor: [f32; 2],
 ) -> Vec<crate::layout::Rect> {
+    backdrop_tiles_scaled(area, width, height, fit, anchor, 1.0, [0.0, 0.0])
+}
+
+/// The same, at `scale` times the size the fit gives (a tile's too), moved
+/// by `offset` points after it is placed. Stretch is the area whatever the
+/// scale: that is what it says.
+pub fn backdrop_tiles_scaled(
+    area: crate::layout::Rect,
+    width: f32,
+    height: f32,
+    fit: BackdropFit,
+    anchor: [f32; 2],
+    scale: f32,
+    offset: [f32; 2],
+) -> Vec<crate::layout::Rect> {
     use crate::layout::Rect;
-    if area.is_empty() || width <= 0.0 || height <= 0.0 {
+    if area.is_empty() || width <= 0.0 || height <= 0.0 || scale <= 0.0 {
         return Vec::new();
     }
     let [ax, ay] = [anchor[0].clamp(0.0, 1.0), anchor[1].clamp(0.0, 1.0)];
-    let placed = |scale: f32| {
-        let (w, h) = (width * scale, height * scale);
+    let placed = |fitted: f32| {
+        let (w, h) = (width * fitted * scale, height * fitted * scale);
         Rect::new(
-            area.x + (area.width - w) * ax,
-            area.y + (area.height - h) * ay,
+            area.x + (area.width - w) * ax + offset[0],
+            area.y + (area.height - h) * ay + offset[1],
             w,
             h,
         )
     };
+    let cover = (area.width / width).max(area.height / height);
+    let contain = (area.width / width).min(area.height / height);
+    // A tile is the picture at its own size, scaled.
+    let (width, height) = (width * scale, height * scale);
     match fit {
-        BackdropFit::Cover => vec![placed((area.width / width).max(area.height / height))],
-        BackdropFit::Contain => vec![placed((area.width / width).min(area.height / height))],
+        BackdropFit::Cover => vec![placed(cover)],
+        BackdropFit::Contain => vec![placed(contain)],
+        BackdropFit::Natural => vec![placed(1.0)],
         BackdropFit::Stretch => vec![area],
         BackdropFit::Tile => {
             let across = (area.width / width).ceil() as usize;
@@ -437,55 +508,262 @@ pub fn backdrop_tiles(
     }
 }
 
-/// The pictures a theme puts behind its panels — Ty: *"maybe allowing users
-/// to even put background images behind their arrangement or different
-/// panels"*.
+/// What a theme puts behind its panels — Ty: *"maybe allowing users to
+/// even put background images behind their arrangement or different
+/// panels"* — as one stack of [`Layer`]s per section, drawn bottom to top
+/// over the panel's ground and under everything on it (v11; a v10 file's
+/// one picture per section reads as a stack of one).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Backdrops {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub channels: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub arrangement: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roll: Option<Backdrop>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mixer: Option<Backdrop>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub window: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transport: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub browser: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangement: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roll: Vec<Layer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mixer: Vec<Layer>,
 }
 
 impl Backdrops {
     pub fn is_empty(&self) -> bool {
-        BackdropPanel::ALL.iter().all(|p| self.get(*p).is_none())
+        BackdropPanel::ALL
+            .iter()
+            .all(|p| self.layers(*p).is_empty())
     }
 
+    /// `panel`'s stack, bottom first.
+    pub fn layers(&self, panel: BackdropPanel) -> &[Layer] {
+        match panel {
+            BackdropPanel::Window => &self.window,
+            BackdropPanel::Transport => &self.transport,
+            BackdropPanel::Channels => &self.channels,
+            BackdropPanel::Browser => &self.browser,
+            BackdropPanel::Arrangement => &self.arrangement,
+            BackdropPanel::Roll => &self.roll,
+            BackdropPanel::Mixer => &self.mixer,
+        }
+    }
+
+    pub fn layers_mut(&mut self, panel: BackdropPanel) -> &mut Vec<Layer> {
+        match panel {
+            BackdropPanel::Window => &mut self.window,
+            BackdropPanel::Transport => &mut self.transport,
+            BackdropPanel::Channels => &mut self.channels,
+            BackdropPanel::Browser => &mut self.browser,
+            BackdropPanel::Arrangement => &mut self.arrangement,
+            BackdropPanel::Roll => &mut self.roll,
+            BackdropPanel::Mixer => &mut self.mixer,
+        }
+    }
+
+    /// `panel`'s picture: the topmost picture layer, the one the settings
+    /// page's *Choose…* sets.
     pub fn get(&self, panel: BackdropPanel) -> Option<&Backdrop> {
-        match panel {
-            BackdropPanel::Window => self.window.as_ref(),
-            BackdropPanel::Transport => self.transport.as_ref(),
-            BackdropPanel::Channels => self.channels.as_ref(),
-            BackdropPanel::Browser => self.browser.as_ref(),
-            BackdropPanel::Arrangement => self.arrangement.as_ref(),
-            BackdropPanel::Roll => self.roll.as_ref(),
-            BackdropPanel::Mixer => self.mixer.as_ref(),
+        self.layers(panel).iter().rev().find_map(|l| match l {
+            Layer::Image(b) => Some(b),
+            _ => None,
+        })
+    }
+
+    /// Sets `panel`'s picture, or takes its pictures off with `None`. The
+    /// section's other layers stay where they are and the picture goes on
+    /// top of them: a picture chosen over a moving theme keeps it moving
+    /// under the picture.
+    pub fn set(&mut self, panel: BackdropPanel, backdrop: Option<Backdrop>) {
+        let layers = self.layers_mut(panel);
+        layers.retain(|l| !matches!(l, Layer::Image(_)));
+        if let Some(b) = backdrop {
+            layers.push(Layer::Image(b));
         }
     }
 
-    pub fn set(&mut self, panel: BackdropPanel, backdrop: Option<Backdrop>) {
-        match panel {
-            BackdropPanel::Window => self.window = backdrop,
-            BackdropPanel::Transport => self.transport = backdrop,
-            BackdropPanel::Channels => self.channels = backdrop,
-            BackdropPanel::Browser => self.browser = backdrop,
-            BackdropPanel::Arrangement => self.arrangement = backdrop,
-            BackdropPanel::Roll => self.roll = backdrop,
-            BackdropPanel::Mixer => self.mixer = backdrop,
+    /// Every shader layer, by the section it is in.
+    pub fn shaders(&self) -> impl Iterator<Item = (BackdropPanel, &ShaderLayer)> {
+        BackdropPanel::ALL.into_iter().flat_map(move |panel| {
+            self.layers(panel).iter().filter_map(move |l| match l {
+                Layer::Shader(s) => Some((panel, s)),
+                _ => None,
+            })
+        })
+    }
+
+    pub fn has_shaders(&self) -> bool {
+        self.shaders().next().is_some()
+    }
+
+    /// Whether anything here moves: a shader with a speed. One at speed 0
+    /// is drawn once and held, and holds nothing awake.
+    pub fn is_animated(&self) -> bool {
+        self.shaders()
+            .any(|(_, s)| s.speed != 0.0 && s.opacity > 0.0)
+    }
+}
+
+/// One layer of a section's stack.
+///
+/// The four kinds Floptle's themes have (`floptle-theme/src/model.rs`), so a
+/// look moves between the two programs without a new idea in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Layer {
+    /// A picture, carried in the file.
+    Image(Backdrop),
+    /// A moving picture drawn by a WGSL shader — see [`crate::backdrop`]
+    /// for what it is handed.
+    Shader(ShaderLayer),
+    /// A wash from one colour to another.
+    Gradient(GradientLayer),
+    /// A flat colour over what is under it.
+    Solid { color: Color },
+}
+
+/// How a layer goes over what is under it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Blend {
+    /// Over, as a picture is.
+    #[default]
+    Normal,
+    /// Added to what is under it: light, for a glow.
+    Add,
+}
+
+impl Blend {
+    fn is_normal(&self) -> bool {
+        *self == Blend::Normal
+    }
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn ninety() -> f32 {
+    90.0
+}
+
+/// A shader layer. Its picture spans the whole window, so two sections
+/// showing the same one read as one scene through both.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShaderLayer {
+    /// `builtin:<name>` for one Fontelle ships, or the WGSL itself — the
+    /// one function `fn backdrop(uv, px) -> vec4<f32>` — so a theme with a
+    /// shader of its own is still one file.
+    pub shader: String,
+    #[serde(default = "one")]
+    pub opacity: f32,
+    /// How fast it moves; 0 holds one frame.
+    #[serde(default = "one")]
+    pub speed: f32,
+    /// A size the shader may scale its pattern by.
+    #[serde(default = "one")]
+    pub scale: f32,
+    /// Up to four colours for it; unset ones are the theme's own — see
+    /// [`ShaderLayer::colors_for`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<Color>,
+    /// Up to eight numbers it may read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<f32>,
+    /// A PNG or JPEG it may sample, base64 like a picture layer's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Blend::is_normal")]
+    pub blend: Blend,
+}
+
+impl ShaderLayer {
+    /// `shader` at full strength and speed, in the theme's colours.
+    pub fn new(shader: &str) -> Self {
+        Self {
+            shader: shader.to_string(),
+            opacity: 1.0,
+            speed: 1.0,
+            scale: 1.0,
+            colors: Vec::new(),
+            params: Vec::new(),
+            image: None,
+            blend: Blend::Normal,
         }
+    }
+
+    /// The four colours the shader is handed: the layer's, then the
+    /// theme's accent, playhead, window and text for any it leaves out —
+    /// Floptle's accent, accent_hi, ground and text, as near as Fontelle's
+    /// palette has them.
+    pub fn colors_for(&self, palette: &Palette) -> [Color; 4] {
+        let fallback = [
+            palette.accent,
+            palette.playhead,
+            palette.window,
+            palette.text,
+        ];
+        std::array::from_fn(|i| self.colors.get(i).copied().unwrap_or(fallback[i]))
+    }
+
+    /// The eight numbers, zeros for any left out.
+    pub fn params8(&self) -> [f32; 8] {
+        std::array::from_fn(|i| self.params.get(i).copied().unwrap_or(0.0))
+    }
+}
+
+/// A gradient layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GradientLayer {
+    /// `[position 0–1, colour]`, in order.
+    pub stops: Vec<(f32, Color)>,
+    /// Degrees: 90 runs top to bottom, 0 left to right.
+    #[serde(default = "ninety")]
+    pub angle: f32,
+    /// From the middle outward instead.
+    #[serde(default)]
+    pub radial: bool,
+    #[serde(default = "one")]
+    pub opacity: f32,
+    #[serde(default, skip_serializing_if = "Blend::is_normal")]
+    pub blend: Blend,
+}
+
+/// A font file carried inside a theme: TrueType or OpenType, base64.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeFont {
+    pub data: String,
+}
+
+impl ThemeFont {
+    /// A font from a `.ttf` or `.otf` file's bytes. Refused here, when it is
+    /// chosen, if it is not one.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ThemeError> {
+        let magic = bytes.get(..4).unwrap_or_default();
+        let sfnt = [&[0x00, 0x01, 0x00, 0x00][..], b"OTTO", b"true", b"ttcf"];
+        if !sfnt.contains(&magic) {
+            return Err(ThemeError::Format(
+                "that is not a TrueType or OpenType font".to_string(),
+            ));
+        }
+        use base64::Engine as _;
+        Ok(Self {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+    }
+
+    /// The font file's bytes, as they were handed in.
+    pub fn bytes(&self) -> Option<Vec<u8>> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(&self.data)
+            .ok()
     }
 }
 
@@ -506,6 +784,25 @@ pub struct Backdrop {
     /// the file does not say.
     #[serde(default = "centre")]
     pub anchor: [f32; 2],
+    #[serde(default, skip_serializing_if = "Blend::is_normal")]
+    pub blend: Blend,
+    /// Times the size the fit gives it (v11).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub scale: f32,
+    /// Points it is moved by once placed, across and down (v11).
+    #[serde(default, skip_serializing_if = "is_zero2")]
+    pub offset: [f32; 2],
+    /// Sampled nearest-neighbour: for pixel art (v11).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixelated: bool,
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+fn is_zero2(v: &[f32; 2]) -> bool {
+    *v == [0.0, 0.0]
 }
 
 impl Backdrop {
@@ -522,6 +819,10 @@ impl Backdrop {
             opacity: opacity.clamp(0.0, 1.0),
             fit: BackdropFit::Cover,
             anchor: centre(),
+            blend: Blend::Normal,
+            scale: 1.0,
+            offset: [0.0, 0.0],
+            pixelated: false,
         })
     }
 
@@ -571,14 +872,38 @@ impl Theme {
     /// Every look Fontelle ships, the default first. The library lists these
     /// before the user's own files, and a built-in is never written over:
     /// changing one saves a copy.
+    ///
+    /// Built once: the library lists them often, and between them they
+    /// carry pictures and fonts worth a megabyte or two.
     pub fn builtins() -> Vec<Self> {
-        vec![
-            Self::dark_default(),
-            Self::light_default(),
-            Self::midnight(),
-            Self::ember(),
-            Self::paper(),
-        ]
+        static BUILTINS: std::sync::OnceLock<Vec<Theme>> = std::sync::OnceLock::new();
+        BUILTINS
+            .get_or_init(|| {
+                vec![
+                    // The five Fontelle has had since v0.20.0, in their order:
+                    // a settings file remembers a look by name, and tests and
+                    // people by place.
+                    Self::dark_default(),
+                    Self::light_default(),
+                    Self::midnight(),
+                    Self::ember(),
+                    Self::paper(),
+                    // Hub card 0366's, for different tastes.
+                    looks::still_water(),
+                    looks::sunroom(),
+                    looks::control_room(),
+                    looks::lofi_rain(),
+                    looks::neon_grid(),
+                    looks::phosphor(),
+                    looks::bubblegum(),
+                    looks::nebula(),
+                    looks::aurora(),
+                    looks::stage(),
+                    looks::high_contrast(),
+                    looks::high_contrast_light(),
+                ]
+            })
+            .clone()
     }
 
     /// Square corners, hard rules, a cold blue: the rigid look. Ty: *"maybe
@@ -586,6 +911,8 @@ impl Theme {
     pub fn midnight() -> Self {
         let mut theme = Self::dark_default();
         theme.name = "Midnight".to_string();
+        theme.description =
+            "Square corners and hard rules in a cold blue, over a slow night mist.".to_string();
         let p = &mut theme.palette;
         p.window = Color::rgb(0x07, 0x09, 0x0f);
         p.panel = Color::rgb(0x0f, 0x13, 0x1c);
@@ -613,6 +940,21 @@ impl Theme {
         p.note_silent = Color::rgb(0x2c, 0x35, 0x4a);
         theme.metrics.corner_radius = 0.0;
         theme.metrics.border_width = 1.0;
+        // Hub card 0366: a slow cold-blue backdrop, seen through panels
+        // only a little see-through — the rigid look stays rigid.
+        p.panel = p.panel.with_alpha(0xd4);
+        p.panel_header = p.panel_header.with_alpha(0xe4);
+        p.row_accidental = p.row_accidental.with_alpha(0xb0);
+        p.row_out_of_scale = p.row_out_of_scale.with_alpha(0xb0);
+        theme.backdrops.window = vec![Layer::Shader(ShaderLayer {
+            colors: vec![
+                looks::hex(0x5b8def),
+                looks::hex(0x2a4a9a),
+                looks::hex(0x07090f),
+                looks::hex(0xc8d4f0),
+            ],
+            ..ShaderLayer::new("builtin:midnight")
+        })];
         theme
     }
 
@@ -631,6 +973,8 @@ impl Theme {
     fn ember_built() -> Self {
         let mut theme = Self::dark_default();
         theme.name = "Ember".to_string();
+        theme.description =
+            "Warm and dark, with smoke and embers rising from a fire behind the glass.".to_string();
         let p = &mut theme.palette;
         p.window = Color::rgb(0x12, 0x0c, 0x0a);
         p.panel = Color::rgb(0x1d, 0x15, 0x12);
@@ -657,8 +1001,10 @@ impl Theme {
         p.note_silent = Color::rgb(0x48, 0x38, 0x30);
         // See-through, so the fire behind the window shows; the words on
         // them still sit on something.
-        p.panel = p.panel.with_alpha(0xc8);
+        p.panel = p.panel.with_alpha(0xc4);
         p.panel_header = p.panel_header.with_alpha(0xd4);
+        // Quieter text a shade lighter: it sits on moving light now.
+        p.text_muted = Color::rgb(0xb0, 0x98, 0x88);
         p.row_accidental = p.row_accidental.with_alpha(0xa0);
         p.row_out_of_scale = p.row_out_of_scale.with_alpha(0xa0);
         let picture = |bytes: &[u8], opacity: f32, fit: BackdropFit, anchor: [f32; 2]| {
@@ -666,51 +1012,40 @@ impl Theme {
                 .expect("Ember's pictures are compiled in and decode");
             b.fit = fit;
             b.anchor = anchor;
-            Some(b)
+            Layer::Image(b)
         };
+        // Hub card 0366: the fire moves now. Smoke and rising embers are a
+        // shader behind the whole window; the line of heat under the
+        // transport and the bed of coals under the mixer stay pictures,
+        // over it; the side panels and the arrangement are lit from below.
+        let fire = looks::hex(0xff7a1a);
+        let lit = |strength: u8| looks::glow(fire.with_alpha(0), fire.with_alpha(strength), 1.0);
         theme.backdrops = Backdrops {
-            window: picture(
-                include_bytes!("../../../../assets/themes/ember/window.jpg"),
-                1.0,
-                BackdropFit::Cover,
-                [0.5, 1.0],
-            ),
-            transport: picture(
+            window: vec![Layer::Shader(ShaderLayer {
+                colors: vec![
+                    looks::hex(0xe0702a),
+                    looks::hex(0xffa040),
+                    looks::hex(0x120c0a),
+                    looks::hex(0xffe2a8),
+                ],
+                ..ShaderLayer::new("builtin:embers")
+            })],
+            transport: vec![picture(
                 include_bytes!("../../../../assets/themes/ember/transport.png"),
                 1.0,
                 BackdropFit::Stretch,
                 centre(),
-            ),
-            channels: picture(
-                include_bytes!("../../../../assets/themes/ember/channels.png"),
-                0.9,
-                BackdropFit::Cover,
-                [0.0, 1.0],
-            ),
-            browser: picture(
-                include_bytes!("../../../../assets/themes/ember/browser.png"),
-                0.9,
-                BackdropFit::Cover,
-                [0.5, 1.0],
-            ),
-            arrangement: picture(
-                include_bytes!("../../../../assets/themes/ember/arrangement.png"),
-                0.85,
-                BackdropFit::Cover,
-                [1.0, 1.0],
-            ),
-            roll: picture(
-                include_bytes!("../../../../assets/themes/ember/roll.png"),
-                1.0,
-                BackdropFit::Stretch,
-                centre(),
-            ),
-            mixer: picture(
+            )],
+            channels: vec![lit(0x20)],
+            browser: vec![lit(0x20)],
+            arrangement: vec![lit(0x18)],
+            roll: vec![lit(0x14)],
+            mixer: vec![picture(
                 include_bytes!("../../../../assets/themes/ember/mixer.png"),
                 0.9,
                 BackdropFit::Cover,
                 [0.5, 1.0],
-            ),
+            )],
         };
         theme.metrics.corner_radius = 7.0;
         theme
@@ -720,6 +1055,8 @@ impl Theme {
     pub fn paper() -> Self {
         let mut theme = Self::light_default();
         theme.name = "Paper".to_string();
+        theme.description =
+            "Warm paper and dark ink, rounder corners, the sheet's grain behind.".to_string();
         let p = &mut theme.palette;
         p.window = Color::rgb(0xe6, 0xdf, 0xd2);
         p.panel = Color::rgb(0xf7, 0xf3, 0xea);
@@ -744,6 +1081,23 @@ impl Theme {
         p.key_black = Color::rgb(0x3a, 0x32, 0x26);
         p.key_dead = Color::rgb(0xd6, 0xcd, 0xbd);
         p.note_silent = Color::rgb(0xb3, 0xa8, 0x96);
+        // Quieter text darkened to AA on the header too.
+        p.text_muted = Color::rgb(0x5f, 0x55, 0x46);
+        // Hub card 0366: the sheet's grain and fibres, drawn once — speed 0,
+        // so it costs nothing after the first frame — and seen faintly
+        // through the panels.
+        p.panel = p.panel.with_alpha(0xf0);
+        p.panel_header = p.panel_header.with_alpha(0xf4);
+        theme.backdrops.window = vec![Layer::Shader(ShaderLayer {
+            colors: vec![
+                looks::hex(0x8a7a60),
+                looks::hex(0x8a7a60),
+                looks::hex(0xe6dfd2),
+                looks::hex(0x2a251d),
+            ],
+            speed: 0.0,
+            ..ShaderLayer::new("builtin:paper")
+        })];
         theme.metrics.corner_radius = 8.0;
         theme
     }
@@ -765,9 +1119,15 @@ impl Theme {
         Self {
             format_version: self.format_version,
             name: self.name.clone(),
+            description: self.description.clone(),
             palette: Self::dark_default().palette,
             metrics: self.metrics,
-            font: self.font.clone(),
+            // The default's face too: every width the bridge was laid out
+            // against was measured in it (`text::OPEN_SANS_REGULAR`), and a
+            // theme's own face or a larger size pushes its captions out of
+            // their cells.
+            font: Self::dark_default().font,
+            fonts: Vec::new(),
             // Its own window: the studio's pictures are not the bridge's.
             backdrops: Backdrops::default(),
         }
@@ -792,9 +1152,11 @@ impl Theme {
         Self {
             format_version: self.format_version,
             name: self.name.clone(),
+            description: self.description.clone(),
             palette,
             metrics: self.metrics,
             font: self.font.clone(),
+            fonts: self.fonts.clone(),
             backdrops: Backdrops::default(),
         }
     }
@@ -805,6 +1167,7 @@ impl Theme {
         Self {
             format_version: THEME_FORMAT_VERSION,
             name: "Fontelle Dark".to_string(),
+            description: "The default: near-neutral teal, sober and still.".to_string(),
             palette: Palette {
                 // The primary ramp's dark end carries the structure. Kept
                 // near-neutral on purpose: a fully saturated teal UI reads as
@@ -815,7 +1178,9 @@ impl Theme {
                 panel_header: Color::rgb(0x11, 0x26, 0x2e),
                 border: Color::rgb(0x1f, 0x40, 0x4c),
                 text: Color::rgb(0xdc, 0xe8, 0xec),
-                text_muted: Color::rgb(0x6e, 0x93, 0xa0),
+                // Lifted from #6e93a0 (5.1:1) to 6.3:1 on the panel and
+                // 5.8:1 on its header: the quiet text is read for hours too.
+                text_muted: Color::rgb(0x7f, 0xa3, 0xb0),
                 // The top of the primary ramp: the one colour that says
                 // Fontelle.
                 accent: Color::rgb(0x40, 0x85, 0x9c),
@@ -856,7 +1221,9 @@ impl Theme {
                 family: "sans-serif".to_string(),
                 size: 13.0,
                 line_height: 1.35,
+                display: None,
             },
+            fonts: Vec::new(),
             backdrops: Backdrops::default(),
         }
     }
@@ -867,6 +1234,7 @@ impl Theme {
         Self {
             format_version: THEME_FORMAT_VERSION,
             name: "Fontelle Light".to_string(),
+            description: "The default in daylight: the same teal, from the other end.".to_string(),
             palette: Palette {
                 // The same three ramps, read from the other end.
                 window: Color::rgb(0xc9, 0xd6, 0xda),
@@ -874,8 +1242,11 @@ impl Theme {
                 panel_header: Color::rgb(0xd3, 0xe0, 0xe4),
                 border: Color::rgb(0xa9, 0xc0, 0xc7),
                 text: Color::rgb(0x06, 0x10, 0x13),
-                text_muted: Color::rgb(0x31, 0x62, 0x72),
-                accent: Color::rgb(0x31, 0x62, 0x72),
+                // AA on the header as well as the panel (it was 4.98:1
+                // there), and an accent of its own: it was the quiet text's
+                // ink, so an active control read as a label.
+                text_muted: Color::rgb(0x2b, 0x56, 0x64),
+                accent: Color::rgb(0x1f, 0x6f, 0x8b),
                 grid_line_sub: Color::rgb(0xdf, 0xe8, 0xea),
                 grid_line: Color::rgb(0xc0, 0xd0, 0xd5),
                 grid_line_strong: Color::rgb(0xa9, 0xc0, 0xc7),
@@ -908,7 +1279,9 @@ impl Theme {
                 family: "sans-serif".to_string(),
                 size: 13.0,
                 line_height: 1.35,
+                display: None,
             },
+            fonts: Vec::new(),
             backdrops: Backdrops::default(),
         }
     }
@@ -941,8 +1314,43 @@ impl Theme {
         }
         let json = migrate(json, found)?;
 
-        serde_json::from_value(json)
-            .map_err(|e| ThemeError::Format(format!("this theme could not be read: {e}")))
+        let theme: Self = serde_json::from_value(json)
+            .map_err(|e| ThemeError::Format(format!("this theme could not be read: {e}")))?;
+        // What serde cannot say: a shader is handed four colours and eight
+        // numbers, and a fifth would be silently dropped.
+        for (panel, shader) in theme.backdrops.shaders() {
+            if shader.colors.len() > 4 {
+                return Err(ThemeError::Format(format!(
+                    "the {} section's shader has {} colours; a shader takes at most four",
+                    panel.label(),
+                    shader.colors.len()
+                )));
+            }
+            if shader.params.len() > 8 {
+                return Err(ThemeError::Format(format!(
+                    "the {} section's shader has {} numbers; a shader takes at most eight",
+                    panel.label(),
+                    shader.params.len()
+                )));
+            }
+        }
+        Ok(theme)
+    }
+
+    /// Each shader in the theme that will not compile, by its section, with
+    /// the compiler's reason. Its section shows its plain colour instead;
+    /// this is so the person wearing it can be told why.
+    pub fn shader_problems(&self) -> Vec<(BackdropPanel, String)> {
+        self.backdrops
+            .shaders()
+            .filter_map(|(panel, layer)| {
+                let why = match crate::backdrop::source_of(&layer.shader) {
+                    Some(body) => crate::backdrop::validate(&body).err()?,
+                    None => format!("there is no built-in shader called {}", layer.shader),
+                };
+                Some((panel, why))
+            })
+            .collect()
     }
 
     pub fn load_from_file(path: &Path) -> Result<Self, ThemeError> {
@@ -1124,6 +1532,22 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
     if from == 9 {
         // v10 added backdrops, which are optional: a v9 file has none.
         from = 10;
+    }
+
+    if from == 10 {
+        // v11 made each section a stack of layers. A v10 section was one
+        // picture, which is a stack of one picture layer.
+        if let Some(backdrops) = json.get_mut("backdrops").and_then(|b| b.as_object_mut()) {
+            for (_, section) in backdrops.iter_mut() {
+                if let Some(picture) = section.as_object_mut() {
+                    let mut layer = serde_json::Map::new();
+                    layer.insert("kind".to_string(), serde_json::json!("image"));
+                    layer.extend(std::mem::take(picture));
+                    *section = serde_json::Value::Array(vec![serde_json::Value::Object(layer)]);
+                }
+            }
+        }
+        from = 11;
     }
 
     if from != THEME_FORMAT_VERSION {

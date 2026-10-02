@@ -963,3 +963,101 @@ pub fn elide_path(path: &Path, keep: usize) -> String {
         parts[parts.len() - keep..].join(&sep.to_string())
     )
 }
+
+// ------------------------------------------------------- reduce motion ---
+
+/// Whether the desktop asks programs for less motion, where that can be
+/// read: KDE's animation speed at "Instant", GNOME's *Reduce Animation*,
+/// macOS's *Reduce motion*, Windows's *Show animations* off. `false` where
+/// it cannot be read. Asked once, at launch: with Effects never chosen on
+/// the settings page, it starts the theme's backdrops Still (hub card 0366).
+pub fn reduce_motion() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(home_dir()).join(".config"));
+        if let Some(reduce) = std::fs::read_to_string(config.join("kdeglobals"))
+            .ok()
+            .and_then(|text| kde_reduces_motion(&text))
+        {
+            return reduce;
+        }
+        // Only where GNOME's settings are what the desktop reads: elsewhere
+        // the key exists, unread, at whatever it was installed as.
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        if desktop.to_ascii_lowercase().contains("gnome")
+            && let Ok(out) = Command::new("gsettings")
+                .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+                .output()
+        {
+            return gnome_reduces_motion(&String::from_utf8_lossy(&out.stdout)).unwrap_or(false);
+        }
+        false
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "1")
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SystemParametersInfoW(
+                action: u32,
+                param: u32,
+                value: *mut std::ffi::c_void,
+                win_ini: u32,
+            ) -> i32;
+        }
+        const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
+        let mut on: i32 = 1;
+        // SAFETY: the call writes one BOOL through a pointer to a live i32.
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                (&mut on as *mut i32).cast(),
+                0,
+            )
+        };
+        ok != 0 && on == 0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        false
+    }
+}
+
+/// KDE's answer, from `kdeglobals`: `AnimationDurationFactor=0` under
+/// `[KDE]` is the animation-speed slider at "Instant". `None` when the file
+/// does not say.
+pub fn kde_reduces_motion(kdeglobals: &str) -> Option<bool> {
+    let mut in_kde = false;
+    for line in kdeglobals.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_kde = line == "[KDE]";
+            continue;
+        }
+        if !in_kde {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("AnimationDurationFactor=") {
+            return value.trim().parse::<f32>().ok().map(|f| f <= 0.0);
+        }
+    }
+    None
+}
+
+/// GNOME's answer, from `gsettings get org.gnome.desktop.interface
+/// enable-animations`: animations off is motion reduced.
+pub fn gnome_reduces_motion(output: &str) -> Option<bool> {
+    match output.trim() {
+        "false" => Some(true),
+        "true" => Some(false),
+        _ => None,
+    }
+}

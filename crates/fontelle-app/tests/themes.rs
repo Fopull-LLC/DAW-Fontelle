@@ -213,7 +213,7 @@ fn a_picture_goes_behind_a_panel_inside_the_theme() {
             .load("Fontelle Dark (mine)")
             .unwrap()
             .backdrops
-            .arrangement
+            .get(BackdropPanel::Arrangement)
             .is_some()
     );
     // The strength slider sets how much shows.

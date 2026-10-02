@@ -648,6 +648,9 @@ fn play_or_render(
             // *"doesnt render anything sometimes"* was a rebuild leaving it
             // on a meter nothing wrote to. See `Session::with_master_meter`.
             .with_master_meter(realised.master.clone())
+            // Whether the desktop asks for less motion: a theme's backdrops
+            // start Still there until the settings page says otherwise.
+            .with_reduce_motion(fontelle_app::desktop::reduce_motion())
             // And the cell the MIDI hub's routers read, so a keyboard plays
             // whichever instrument is selected — including after a rebuild has
             // renumbered every node.

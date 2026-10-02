@@ -1722,6 +1722,22 @@ pub struct WindowApp {
     cable_drag: Option<(f32, f32)>,
     /// The theme's pictures, decoded when it was worn (`apply_theme`).
     backdrops: crate::render::PanelBackdrops,
+    /// Its moving pictures: drawn on this thread, before each frame, into
+    /// textures vello shows (hub card 0366). Made with the first frame that
+    /// needs one.
+    backdrop_gpu: Option<crate::backdrop::BackdropRenderer>,
+    backdrop_clock: crate::backdrop::BackdropClock,
+    /// Whether anybody can see the window — what lets a moving backdrop
+    /// hold the loop awake ([`crate::backdrop::backdrop_wake`]).
+    sight: crate::backdrop::WindowSight,
+    /// The host's [`crate::backdrop::Motion`], read each pass.
+    motion: crate::backdrop::Motion,
+    /// When the next moving-backdrop frame is due, while one is.
+    backdrop_due: Option<std::time::Instant>,
+    /// The next frame redraws the moving pictures, not only the scene.
+    backdrop_redraw: bool,
+    /// Shaders already reported as not compiling, so each is said once.
+    backdrop_errors: std::collections::HashSet<String>,
     /// The host's theme revision this window last wore.
     theme_seen: u64,
     /// How wide the strips are and how tall the patch bay is — the person's
@@ -2110,7 +2126,8 @@ struct Editor {
 impl WindowApp {
     fn new(options: WindowOptions) -> Self {
         let mut text = TextContext::new();
-        let title = text.layout(&options.panel_title, &options.theme.font, None);
+        text.load_theme_fonts(&options.theme);
+        let title = text.layout(&options.panel_title, &options.theme.font.for_titles(), None);
         let layout = window_layout_with(
             options.size.0 as f32,
             options.size.1 as f32,
@@ -2350,6 +2367,19 @@ impl WindowApp {
             // The opening theme's pictures — one named with `--theme` is
             // never worn through `apply_theme`, and drew without them.
             backdrops: crate::render::decode_backdrops(&options.theme),
+            backdrop_gpu: None,
+            backdrop_clock: Default::default(),
+            // Seen until the compositor says otherwise: a window that opens
+            // without focus gets a Focused(false) to say so.
+            sight: crate::backdrop::WindowSight {
+                focused: true,
+                occluded: false,
+                minimized: false,
+            },
+            motion: Default::default(),
+            backdrop_due: None,
+            backdrop_redraw: true,
+            backdrop_errors: Default::default(),
             theme_seen: 0,
             carried_cable: None,
             mixer_strips: Vec::new(),
@@ -2484,10 +2514,10 @@ impl WindowApp {
     /// Puts the start menu up and starts the update check.
     fn open_welcome(&mut self) {
         let font = &self.options.theme.font;
+        // In the theme's display face, where it has one.
         let big = crate::theme::FontTokens {
-            family: font.family.clone(),
             size: font.size * 2.0,
-            line_height: font.line_height,
+            ..font.for_titles()
         };
         let title = self.text.layout("Fontelle", &big, None);
         let version = format!("Version {}", self.options.version);
@@ -2837,7 +2867,7 @@ impl WindowApp {
         let room = self.layout.panel.header.width - 2.0 * self.options.theme.metrics.panel_padding;
         self.title = self.text.layout(
             &self.options.panel_title,
-            &self.options.theme.font,
+            &self.options.theme.font.for_titles(),
             (room > 0.0).then_some(room),
         );
         // A resize invalidates the lot: the compositor hands back a surface
@@ -2910,6 +2940,76 @@ impl WindowApp {
             return;
         };
 
+        // **The theme's moving pictures**, drawn into their textures before
+        // the scene that shows them is built (hub card 0366). On this
+        // thread, from what the loop already read: nothing here touches the
+        // audio thread. A frame the backdrop did not ask for (a hover, a
+        // meter) shows the pictures as they were.
+        let mut backdrops = self.backdrops.clone();
+        if self.options.theme.backdrops.has_shaders()
+            && self.motion.effects != crate::backdrop::Effects::Off
+        {
+            let moving = self.backdrop_due.is_some();
+            let time = self
+                .backdrop_clock
+                .advance(std::time::Instant::now(), moving);
+            let (w, h) = (
+                self.layout.window.width.max(1.0),
+                self.layout.window.height.max(1.0),
+            );
+            let inside = self.cursor.0 >= 0.0
+                && self.cursor.1 >= 0.0
+                && self.cursor.0 < w
+                && self.cursor.1 < h;
+            let frame = crate::backdrop::BackdropFrame {
+                time,
+                pointer: [
+                    (self.cursor.0 / w).clamp(0.0, 1.0),
+                    (self.cursor.1 / h).clamp(0.0, 1.0),
+                    if inside { 1.0 } else { 0.0 },
+                    0.0,
+                ],
+                beat: crate::backdrop::song_beat(
+                    self.view.playing,
+                    self.view.available.then_some(self.view.position_beats),
+                    time,
+                ),
+                // The master meter the bar already shows, as 0–1 over the
+                // bottom 60 dB.
+                level: ((self.meters[0].level_db.max(self.meters[1].level_db) + 60.0) / 60.0)
+                    .clamp(0.0, 1.0),
+                redraw: moving && self.backdrop_redraw,
+            };
+            self.backdrop_redraw = false;
+            let gpu = self.backdrop_gpu.get_or_insert_with(|| {
+                crate::backdrop::BackdropRenderer::new(&device.device, &device.queue)
+            });
+            let uses = crate::render::backdrop_uses(
+                &self.layout,
+                self.options.document.is_some(),
+                self.welcome.is_some(),
+                self.tab,
+            );
+            let report = gpu.prepare(
+                &device.device,
+                &device.queue,
+                renderer,
+                &self.options.theme,
+                &uses,
+                [live.surface.config.width, live.surface.config.height],
+                live.window.scale_factor() as f32,
+                self.motion.scale,
+                &frame,
+            );
+            for (shader, why) in report.errors {
+                if self.backdrop_errors.insert(shader.clone()) {
+                    let name = shader.lines().next().unwrap_or_default();
+                    eprintln!("fontelle: a theme shader did not compile ({name}): {why}");
+                }
+            }
+            backdrops.shaders = gpu.frames().clone();
+        }
+
         draw_window(
             &mut self.scene,
             &self.options.theme,
@@ -2917,7 +3017,7 @@ impl WindowApp {
             &Chrome {
                 field,
                 panel_title: &self.title,
-                backdrops: self.backdrops.clone(),
+                backdrops,
                 transport: TransportChrome {
                     layout: self.bar,
                     view: self.view,
@@ -3293,6 +3393,50 @@ impl WindowApp {
         self.frames += 1;
     }
 
+    /// Asks for a frame when a moving backdrop is due one (hub card 0366).
+    ///
+    /// The only thing that keeps a moving theme moving: the loop is
+    /// `ControlFlow::Wait`, and [`crate::backdrop::backdrop_wake`] says when
+    /// it may wake for one — at most the rate the settings give, and never
+    /// while the window is unfocused, occluded or minimised, or Effects is
+    /// Still or Off.
+    fn tick_backdrops(&mut self, now: std::time::Instant) {
+        use crate::backdrop::Effects;
+        if let Some(doc) = &self.options.document {
+            let motion = doc.backdrop_motion();
+            if motion != self.motion {
+                if (motion.effects == Effects::Off) != (self.motion.effects == Effects::Off)
+                    || motion.scale != self.motion.scale
+                {
+                    self.tree.invalidate_rect(self.layout.window);
+                }
+                self.backdrops.colours_only = motion.effects == Effects::Off;
+                self.motion = motion;
+            }
+        }
+        let animated = self.options.theme.backdrops.is_animated();
+        if animated && self.motion.effects == Effects::Moving {
+            // Asked only while it could matter: on X11 it is a round trip.
+            self.sight.minimized = self
+                .live
+                .as_ref()
+                .and_then(|live| live.window.is_minimized())
+                .unwrap_or(false);
+        }
+        match crate::backdrop::backdrop_wake(&self.motion, animated, self.sight, self.view.playing)
+        {
+            Some(interval) => {
+                let due = *self.backdrop_due.get_or_insert(now);
+                if now >= due {
+                    self.backdrop_redraw = true;
+                    self.tree.invalidate_rect(self.layout.window);
+                    self.backdrop_due = Some(now + interval);
+                }
+            }
+            None => self.backdrop_due = None,
+        }
+    }
+
     /// Reads the engine once, folds it into the meters, and dirties only what
     /// moved.
     ///
@@ -3349,6 +3493,8 @@ impl WindowApp {
             self.tree.invalidate_rect(self.layout.window);
         }
         let now = std::time::Instant::now();
+        // A moving theme moves, at its own rate, while somebody can see it.
+        self.tick_backdrops(now);
         // Clamped: a window that was dragged, minimised, or simply not
         // scheduled for a second must not make the meters jump a second's
         // worth of release in one step.
@@ -4408,7 +4554,11 @@ impl ApplicationHandler for WindowApp {
             // dialog, a window drag. Without this the drag stays armed and the
             // next pointer move continues it with the button already up, which
             // is a note that follows the mouse around on its own.
+            WindowEvent::Focused(true) => {
+                self.sight.focused = true;
+            }
             WindowEvent::Focused(false) => {
+                self.sight.focused = false;
                 self.drag = Drag::None;
                 if self.carried_cable.take().is_some() {
                     self.cables.let_go();
@@ -4687,7 +4837,11 @@ impl ApplicationHandler for WindowApp {
 
             // The compositor threw our pixels away, or is about to show them
             // again. Either way what we believe is on screen is no longer true.
+            WindowEvent::Occluded(true) => {
+                self.sight.occluded = true;
+            }
             WindowEvent::Occluded(false) => {
+                self.sight.occluded = false;
                 self.tree.invalidate_rect(self.layout.window);
                 if let Some(live) = &self.live {
                     live.window.request_redraw();
@@ -9026,6 +9180,30 @@ impl WindowApp {
             return;
         }
         self.backdrops = crate::render::decode_backdrops(&theme);
+        self.backdrop_redraw = true;
+        self.backdrop_errors.clear();
+        // Its fonts, before anything is shaped in them; and every label
+        // shaped again when the face or size changed, since the cache is
+        // keyed by the string alone.
+        self.text.load_theme_fonts(&theme);
+        if theme.font != self.options.theme.font {
+            self.labels = Labels::new();
+            // The start menu's name was shaped when it opened, which is
+            // before the studio's theme arrives at a launch.
+            if let Some(welcome) = &mut self.welcome {
+                let big = crate::theme::FontTokens {
+                    size: theme.font.size * 2.0,
+                    ..theme.font.for_titles()
+                };
+                welcome.title = self.text.layout("Fontelle", &big, None);
+            }
+            let room = self.layout.panel.header.width - 2.0 * theme.metrics.panel_padding;
+            self.title = self.text.layout(
+                &self.options.panel_title,
+                &theme.font.for_titles(),
+                (room > 0.0).then_some(room),
+            );
+        }
         self.options.theme = theme;
         self.relayout_panels();
         self.tree.invalidate_rect(self.layout.window);
@@ -10025,6 +10203,7 @@ impl WindowApp {
                     family: "monospace".to_string(),
                     size: text_px,
                     line_height: 1.0,
+                    display: None,
                 },
                 None,
             )
@@ -21615,7 +21794,7 @@ impl WindowApp {
                 self.layout.panel.header.width - 2.0 * self.options.theme.metrics.panel_padding;
             self.title = self.text.layout(
                 &self.options.panel_title,
-                &self.options.theme.font,
+                &self.options.theme.font.for_titles(),
                 (room > 0.0).then_some(room),
             );
             self.tree.invalidate(PANEL);
@@ -21697,6 +21876,13 @@ impl WindowApp {
                 SKY_FRAME
             };
             wake = Some(wake.map_or(now + frame, |w| w.min(now + frame)));
+        }
+
+        // **A moving theme wakes the loop at its own rate** — the only cap
+        // on it, since the surface does not wait for vsync — and not at all
+        // while nobody can see it (`tick_backdrops`).
+        if let Some(due) = self.backdrop_due {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 
         // A clip in the guide plays on its own, frame by frame.

@@ -696,7 +696,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     draw_backdrop(
         scene,
         layout.window,
-        backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Window),
+        backdrop_for(
+            &chrome.backdrops,
+            crate::theme::BackdropPanel::Window,
+            layout.window,
+        ),
     );
 
     // The start menu is the whole picture while it is up. Not an overlay on
@@ -731,7 +735,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         theme,
         chrome.labels,
         &chrome.transport,
-        backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Transport),
+        backdrop_for(
+            &chrome.backdrops,
+            crate::theme::BackdropPanel::Transport,
+            layout.window,
+        ),
     );
 
     if let Some(rack) = &chrome.rack {
@@ -739,7 +747,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             scene,
             theme,
             &rack.panel,
-            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Channels),
+            backdrop_for(
+                &chrome.backdrops,
+                crate::theme::BackdropPanel::Channels,
+                layout.window,
+            ),
         );
         draw_label(
             scene,
@@ -756,7 +768,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             scene,
             theme,
             &prefabs.panel,
-            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Channels),
+            backdrop_for(
+                &chrome.backdrops,
+                crate::theme::BackdropPanel::Channels,
+                layout.window,
+            ),
         );
         draw_label(
             scene,
@@ -773,7 +789,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             scene,
             theme,
             &browser.panel,
-            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Browser),
+            backdrop_for(
+                &chrome.backdrops,
+                crate::theme::BackdropPanel::Browser,
+                layout.window,
+            ),
         );
         draw_label(
             scene,
@@ -801,7 +821,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             theme,
             chrome.labels,
             timeline,
-            backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Arrangement),
+            backdrop_for(
+                &chrome.backdrops,
+                crate::theme::BackdropPanel::Arrangement,
+                layout.window,
+            ),
         );
     }
     // The seam between the arrangement and the editor, drawn as a grip so it
@@ -888,7 +912,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
                     theme,
                     chrome.labels,
                     roll,
-                    backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Roll),
+                    backdrop_for(
+                        &chrome.backdrops,
+                        crate::theme::BackdropPanel::Roll,
+                        layout.window,
+                    ),
                 );
             }
         }
@@ -897,7 +925,11 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
                 draw_backdrop(
                     scene,
                     mixer.layout.body,
-                    backdrop_for(&chrome.backdrops, crate::theme::BackdropPanel::Mixer),
+                    backdrop_for(
+                        &chrome.backdrops,
+                        crate::theme::BackdropPanel::Mixer,
+                        layout.window,
+                    ),
                 );
                 draw_mixer(scene, theme, chrome.labels, mixer);
             }
@@ -3989,7 +4021,7 @@ pub fn draw_transport_bar(
     theme: &Theme,
     labels: &Labels,
     chrome: &TransportChrome<'_>,
-    picture: Option<&PanelPicture>,
+    picture: Option<Section<'_>>,
 ) {
     let l = &chrome.layout;
     let view = &chrome.view;
@@ -4541,42 +4573,124 @@ pub struct PanelPicture {
     pub opacity: f32,
     pub fit: crate::theme::BackdropFit,
     pub anchor: [f32; 2],
+    pub blend: crate::theme::Blend,
+    pub scale: f32,
+    pub offset: [f32; 2],
+    pub pixelated: bool,
 }
 
-/// A theme's pictures, indexed by [`crate::theme::BackdropPanel`] in its
-/// `ALL` order.
-pub type PanelBackdrops = [Option<PanelPicture>; 7];
+/// One layer of a section's stack, ready to draw.
+#[derive(Debug, Clone)]
+pub enum PanelLayer {
+    Picture(PanelPicture),
+    /// A shader's picture, found by its key in [`PanelBackdrops::shaders`].
+    Shader {
+        key: u64,
+        opacity: f32,
+        blend: crate::theme::Blend,
+    },
+    Gradient(crate::theme::GradientLayer),
+    Solid(Color),
+}
 
-/// Decodes `theme`'s pictures for drawing.
+pub use crate::backdrop::ShaderFrames;
+
+/// A theme's backdrops as the window draws them: each section's stack,
+/// indexed by [`crate::theme::BackdropPanel`] in its `ALL` order, decoded
+/// once when the theme is worn — and this frame's shader pictures, which
+/// the window's [`crate::backdrop::BackdropRenderer`] makes.
+#[derive(Debug, Clone, Default)]
+pub struct PanelBackdrops {
+    pub layers: [Vec<PanelLayer>; 7],
+    pub shaders: ShaderFrames,
+    /// Effects at Off: colours only, no picture and no shader.
+    pub colours_only: bool,
+}
+
+/// Decodes `theme`'s backdrops for drawing.
 pub fn decode_backdrops(theme: &Theme) -> PanelBackdrops {
-    crate::theme::BackdropPanel::ALL.map(|panel| {
-        let b = theme.backdrops.get(panel)?;
-        Some(PanelPicture {
-            image: b.decode()?,
-            opacity: b.opacity,
-            fit: b.fit,
-            anchor: b.anchor,
-        })
-    })
+    use crate::theme::Layer;
+    PanelBackdrops {
+        layers: crate::theme::BackdropPanel::ALL.map(|panel| {
+            theme
+                .backdrops
+                .layers(panel)
+                .iter()
+                .filter_map(|layer| {
+                    Some(match layer {
+                        Layer::Image(b) => PanelLayer::Picture(PanelPicture {
+                            image: b.decode()?,
+                            opacity: b.opacity,
+                            fit: b.fit,
+                            anchor: b.anchor,
+                            blend: b.blend,
+                            scale: b.scale,
+                            offset: b.offset,
+                            pixelated: b.pixelated,
+                        }),
+                        Layer::Shader(s) => PanelLayer::Shader {
+                            key: crate::backdrop::layer_key(s, &theme.palette),
+                            opacity: s.opacity,
+                            blend: s.blend,
+                        },
+                        Layer::Gradient(g) => PanelLayer::Gradient(g.clone()),
+                        Layer::Solid { color } => PanelLayer::Solid(*color),
+                    })
+                })
+                .collect()
+        }),
+        shaders: ShaderFrames::default(),
+        colours_only: false,
+    }
 }
 
-/// One of them, for `panel`.
+/// One section's stack, with what it needs to draw: the frame's shader
+/// pictures and the window they span.
+#[derive(Debug, Clone, Copy)]
+pub struct Section<'a> {
+    layers: &'a [PanelLayer],
+    shaders: &'a ShaderFrames,
+    window: Rect,
+    colours_only: bool,
+}
+
+/// `panel`'s stack; `None` when it has nothing in it.
 fn backdrop_for(
     backdrops: &PanelBackdrops,
     panel: crate::theme::BackdropPanel,
-) -> Option<&PanelPicture> {
+    window: Rect,
+) -> Option<Section<'_>> {
     let index = crate::theme::BackdropPanel::ALL
         .iter()
         .position(|p| *p == panel)?;
-    backdrops[index].as_ref()
+    let layers = &backdrops.layers[index];
+    (!layers.is_empty()).then_some(Section {
+        layers,
+        shaders: &backdrops.shaders,
+        window,
+        colours_only: backdrops.colours_only,
+    })
 }
 
-/// A theme's picture behind a panel: scaled to cover it, centred, clipped
-/// to it, at the strength the theme says. Drawn over the panel's ground and
-/// its row shading and under everything on it — Ty: *"maybe allowing users
-/// to even put background images behind their arrangement or different
-/// panels"*.
-fn draw_backdrop(scene: &mut Scene, area: Rect, backdrop: Option<&PanelPicture>) {
+/// Draws `panel`'s stack over `area`, clipped to it with its corners
+/// rounded by `radius`; `window` is what a shader's picture spans. What
+/// every section draws through, public so a test can draw one alone.
+pub fn draw_section(
+    scene: &mut Scene,
+    area: Rect,
+    radius: f32,
+    window: Rect,
+    backdrops: &PanelBackdrops,
+    panel: crate::theme::BackdropPanel,
+) {
+    draw_backdrop_rounded(scene, area, radius, backdrop_for(backdrops, panel, window));
+}
+
+/// A theme's backdrop behind a panel, clipped to it. Drawn over the panel's
+/// ground and its row shading and under everything on it — Ty: *"maybe
+/// allowing users to even put background images behind their arrangement or
+/// different panels"*.
+fn draw_backdrop(scene: &mut Scene, area: Rect, backdrop: Option<Section<'_>>) {
     draw_backdrop_rounded(scene, area, 0.0, backdrop);
 }
 
@@ -4586,49 +4700,188 @@ fn draw_backdrop_rounded(
     scene: &mut Scene,
     area: Rect,
     radius: f32,
-    backdrop: Option<&PanelPicture>,
+    backdrop: Option<Section<'_>>,
 ) {
-    let Some(picture) = backdrop else {
+    let Some(section) = backdrop else {
         return;
     };
-    let image = &picture.image;
-    if area.is_empty() || picture.opacity <= 0.0 {
+    if area.is_empty() || section.colours_only {
         return;
     }
-    let tiles = crate::theme::backdrop_tiles(
-        area,
-        image.width as f32,
-        image.height as f32,
-        picture.fit,
-        picture.anchor,
-    );
-    if tiles.is_empty() {
-        return;
-    }
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::default(),
-        1.0,
-        Affine::IDENTITY,
-        &rounded(area, radius),
-    );
-    let brush = vello::peniko::ImageBrush {
-        image: image.clone(),
-        sampler: vello::peniko::ImageSampler::new()
-            .with_quality(vello::peniko::ImageQuality::Medium)
-            .with_alpha(picture.opacity),
+    let clip = rounded(area, radius);
+    let blend_mode = |blend: crate::theme::Blend| match blend {
+        crate::theme::Blend::Normal => BlendMode::default(),
+        crate::theme::Blend::Add => {
+            BlendMode::new(vello::peniko::Mix::Normal, vello::peniko::Compose::Plus)
+        }
     };
-    for tile in tiles {
-        scene.draw_image(
-            &brush,
-            Affine::translate((tile.x as f64, tile.y as f64))
-                * Affine::scale_non_uniform(
-                    tile.width as f64 / image.width as f64,
-                    tile.height as f64 / image.height as f64,
-                ),
-        );
+    for layer in section.layers {
+        match layer {
+            PanelLayer::Picture(picture) => {
+                let image = &picture.image;
+                if picture.opacity <= 0.0 {
+                    continue;
+                }
+                let tiles = crate::theme::backdrop_tiles_scaled(
+                    area,
+                    image.width as f32,
+                    image.height as f32,
+                    picture.fit,
+                    picture.anchor,
+                    picture.scale,
+                    picture.offset,
+                );
+                if tiles.is_empty() {
+                    continue;
+                }
+                scene.push_layer(
+                    Fill::NonZero,
+                    blend_mode(picture.blend),
+                    picture.opacity,
+                    Affine::IDENTITY,
+                    &clip,
+                );
+                let brush = vello::peniko::ImageBrush {
+                    image: image.clone(),
+                    sampler: vello::peniko::ImageSampler::new().with_quality(
+                        if picture.pixelated {
+                            vello::peniko::ImageQuality::Low
+                        } else {
+                            vello::peniko::ImageQuality::Medium
+                        },
+                    ),
+                };
+                for tile in tiles {
+                    scene.draw_image(
+                        &brush,
+                        Affine::translate((tile.x as f64, tile.y as f64))
+                            * Affine::scale_non_uniform(
+                                tile.width as f64 / image.width as f64,
+                                tile.height as f64 / image.height as f64,
+                            ),
+                    );
+                }
+                scene.pop_layer();
+            }
+            PanelLayer::Shader {
+                key,
+                opacity,
+                blend,
+            } => {
+                // Not drawn yet, or did not compile: the section shows its
+                // own colour.
+                let Some(image) = section.shaders.get(*key) else {
+                    continue;
+                };
+                let w = section.window;
+                if *opacity <= 0.0 || w.is_empty() {
+                    continue;
+                }
+                scene.push_layer(
+                    Fill::NonZero,
+                    blend_mode(*blend),
+                    *opacity,
+                    Affine::IDENTITY,
+                    &clip,
+                );
+                let brush = vello::peniko::ImageBrush {
+                    image: image.clone(),
+                    sampler: vello::peniko::ImageSampler::new()
+                        .with_quality(vello::peniko::ImageQuality::Medium),
+                };
+                // The picture spans the whole window, so every section
+                // showing it shows its own part of one scene.
+                scene.draw_image(
+                    &brush,
+                    Affine::translate((w.x as f64, w.y as f64))
+                        * Affine::scale_non_uniform(
+                            w.width as f64 / image.width as f64,
+                            w.height as f64 / image.height as f64,
+                        ),
+                );
+                scene.pop_layer();
+            }
+            PanelLayer::Gradient(g) => {
+                if g.opacity <= 0.0 || g.stops.is_empty() {
+                    continue;
+                }
+                let stops: Vec<vello::peniko::ColorStop> = g
+                    .stops
+                    .iter()
+                    .map(|(at, c)| vello::peniko::ColorStop::from((*at, c.to_peniko())))
+                    .collect();
+                let (cx, cy) = (
+                    (area.x + area.width / 2.0) as f64,
+                    (area.y + area.height / 2.0) as f64,
+                );
+                let gradient = if g.radial {
+                    let r = (area.width.hypot(area.height) / 2.0) as f64;
+                    vello::peniko::Gradient::new_radial((cx, cy), r as f32)
+                } else {
+                    // Through the middle, far enough each way to reach the
+                    // corners at any angle.
+                    let (s, c) = (g.angle as f64).to_radians().sin_cos();
+                    let reach =
+                        ((area.width as f64 * c).abs() + (area.height as f64 * s).abs()) / 2.0;
+                    vello::peniko::Gradient::new_linear(
+                        (cx - c * reach, cy - s * reach),
+                        (cx + c * reach, cy + s * reach),
+                    )
+                }
+                .with_stops(stops.as_slice());
+                scene.push_layer(
+                    Fill::NonZero,
+                    blend_mode(g.blend),
+                    g.opacity,
+                    Affine::IDENTITY,
+                    &clip,
+                );
+                scene.fill(Fill::NonZero, Affine::IDENTITY, &gradient, None, &clip);
+                scene.pop_layer();
+            }
+            PanelLayer::Solid(color) => {
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    color.to_peniko(),
+                    None,
+                    &clip,
+                );
+            }
+        }
     }
-    scene.pop_layer();
+}
+
+/// Every section on screen this frame and where it is: what the window's
+/// backdrop renderer draws shader pictures for. Follows `draw_window`'s own
+/// choices — the start menu shows only the window's ground; the editor
+/// panel shows the roll or the mixer, whichever tab is on.
+pub fn backdrop_uses(
+    layout: &WindowLayout,
+    has_studio: bool,
+    welcome: bool,
+    tab: EditorTab,
+) -> Vec<(crate::theme::BackdropPanel, Rect)> {
+    use crate::theme::BackdropPanel as P;
+    let mut uses = vec![(P::Window, layout.window)];
+    if welcome {
+        return uses;
+    }
+    uses.push((P::Transport, layout.transport));
+    if has_studio {
+        uses.push((P::Channels, layout.rack.frame));
+        uses.push((P::Browser, layout.browser.frame));
+        if !layout.timeline.frame.is_empty() {
+            uses.push((P::Arrangement, layout.timeline.frame));
+        }
+    }
+    let editor = match tab {
+        EditorTab::Roll => P::Roll,
+        EditorTab::Mixer => P::Mixer,
+    };
+    uses.push((editor, layout.panel.frame));
+    uses.retain(|(_, r)| !r.is_empty());
+    uses
 }
 
 /// The patch bay under the strips: a jack pair per strip, and every cable.
@@ -5618,6 +5871,17 @@ pub fn ruler_track_ink(p: &crate::theme::Palette) -> Color {
     p.grid_line.with_alpha(RULER_TRACK_ALPHA)
 }
 
+/// The arrangement's bar ruler: the header's ink, see-through, so the
+/// lanes' ground and a theme's backdrop show through it. Ty: *"it kind of
+/// blends with the rest of the menus right now instead of seeming like part
+/// of the arrangement window"* — it was the header's own solid ink.
+pub fn timeline_ruler_ink(p: &crate::theme::Palette) -> Color {
+    p.panel_header.with_alpha(TIMELINE_RULER_ALPHA)
+}
+
+/// About half: the bar numbers stay on something, the lanes show through.
+const TIMELINE_RULER_ALPHA: u8 = 0x70;
+
 /// How much of the groove is there: a little over half.
 const RULER_TRACK_ALPHA: u8 = 0x8c;
 
@@ -5685,7 +5949,7 @@ pub fn draw_piano_roll(
     theme: &Theme,
     labels: &Labels,
     chrome: &RollChrome<'_>,
-    backdrop: Option<&PanelPicture>,
+    backdrop: Option<Section<'_>>,
 ) {
     let p = &theme.palette;
     let l = &chrome.layout;
@@ -6387,7 +6651,7 @@ fn draw_panel_frame_with(
     scene: &mut Scene,
     theme: &Theme,
     panel: &PanelLayout,
-    picture: Option<&PanelPicture>,
+    picture: Option<Section<'_>>,
 ) {
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -7570,7 +7834,7 @@ fn draw_timeline(
     theme: &Theme,
     labels: &Labels,
     chrome: &TimelineChrome<'_>,
-    backdrop: Option<&PanelPicture>,
+    backdrop: Option<Section<'_>>,
 ) {
     let p = &theme.palette;
     let l = &chrome.layout;
@@ -8682,7 +8946,7 @@ fn draw_timeline_ruler(
     if l.ruler.is_empty() {
         return;
     }
-    fill_rect(scene, l.ruler, p.panel_header);
+    fill_rect(scene, l.ruler, timeline_ruler_ink(p));
 
     let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
     let ticks = timeline_visible_ticks(v, l.grid);
@@ -9983,6 +10247,9 @@ pub struct Headless {
     context: RenderContext,
     dev_id: usize,
     renderer: Renderer,
+    /// A theme's moving backdrops, drawn as the window draws them, so the
+    /// dump stays the way to look at a theme. Made on first use.
+    backdrops: Option<crate::backdrop::BackdropRenderer>,
 }
 
 impl Headless {
@@ -10010,7 +10277,50 @@ impl Headless {
             context,
             dev_id,
             renderer,
+            backdrops: None,
         })
+    }
+
+    /// Draws `theme`'s shader pictures for a `width` × `height` pixel frame
+    /// at `ppp` pixels per point — what the window does before each frame
+    /// ([`crate::backdrop::BackdropRenderer::prepare`]). Read them back with
+    /// [`shader_frames`](Self::shader_frames) and hand them to the scene.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_backdrops(
+        &mut self,
+        theme: &Theme,
+        uses: &[(crate::theme::BackdropPanel, Rect)],
+        width: u32,
+        height: u32,
+        ppp: f32,
+        scale: f32,
+        frame: &crate::backdrop::BackdropFrame,
+    ) -> crate::backdrop::BackdropReport {
+        let device = &self.context.devices[self.dev_id].device;
+        let queue = &self.context.devices[self.dev_id].queue;
+        let backdrops = self
+            .backdrops
+            .get_or_insert_with(|| crate::backdrop::BackdropRenderer::new(device, queue));
+        backdrops.prepare(
+            device,
+            queue,
+            &mut self.renderer,
+            theme,
+            uses,
+            [width, height],
+            ppp,
+            scale,
+            frame,
+        )
+    }
+
+    /// The shader pictures [`prepare_backdrops`](Self::prepare_backdrops)
+    /// made.
+    pub fn shader_frames(&self) -> ShaderFrames {
+        self.backdrops
+            .as_ref()
+            .map(|b| b.frames().clone())
+            .unwrap_or_default()
     }
 
     /// Renders `scene` and returns tightly packed RGBA8, row-major from the

@@ -19,6 +19,7 @@
 pub mod activation;
 pub mod app;
 pub mod audition;
+pub mod backdrop;
 pub mod backend;
 pub mod branding;
 pub mod cables;

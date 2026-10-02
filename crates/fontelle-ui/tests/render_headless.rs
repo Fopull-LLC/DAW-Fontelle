@@ -5104,6 +5104,7 @@ fn shoot_welcome_status(
         family: theme.font.family.clone(),
         size: theme.font.size * 2.0,
         line_height: theme.font.line_height,
+        display: None,
     };
     let big_title = text.layout("Fontelle", &big, None);
     let bar = transport_bar_layout(layout.transport, &theme.metrics);
@@ -6189,6 +6190,7 @@ fn shoot_notepad(
                 family: "monospace".to_string(),
                 size: text_px,
                 line_height: 1.0,
+                display: None,
             },
             None,
         )

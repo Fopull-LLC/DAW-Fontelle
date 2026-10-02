@@ -1382,6 +1382,7 @@ dependencies = [
  "cosmic-text",
  "fontelle-model",
  "fontelle-types",
+ "naga",
  "png",
  "serde",
  "serde_json",

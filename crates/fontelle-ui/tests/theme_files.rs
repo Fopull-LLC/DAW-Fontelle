@@ -215,7 +215,8 @@ fn a_picture_written_without_a_fit_covers_from_the_centre() {
         .to_json(),
     )
     .unwrap();
-    let mixer = json["backdrops"]["mixer"].as_object_mut().unwrap();
+    // Since v11 a section is a stack; the picture is its one layer.
+    let mixer = json["backdrops"]["mixer"][0].as_object_mut().unwrap();
     mixer.remove("fit");
     mixer.remove("anchor");
     let read = Theme::from_json(&json.to_string()).unwrap();
@@ -279,20 +280,24 @@ fn the_time_bars_groove_is_see_through() {
     }
 }
 
-/// Ember is the built-in that shows what a theme can do: a picture in
-/// every section, and panels the window's picture shows through. Ty: *"revise
-/// the ember ... to be more detailed and flashy to showcase the visual
-/// design flexibility."*
+/// Ember is the built-in that shows what a theme can do: something behind
+/// every section, and panels the window's backdrop shows through. Ty:
+/// *"revise the ember ... to be more detailed and flashy to showcase the
+/// visual design flexibility."* Since hub card 0366 its fire moves: a
+/// shader behind the window, its heat and coals still pictures.
 #[test]
-fn ember_has_a_picture_in_every_section_and_see_through_panels() {
+fn ember_has_a_layer_in_every_section_and_see_through_panels() {
     let ember = Theme::ember();
     for panel in BackdropPanel::ALL {
-        let b = ember
-            .backdrops
-            .get(panel)
-            .unwrap_or_else(|| panic!("{panel:?} has no picture"));
-        assert!(b.decode().is_some(), "{panel:?}'s picture decodes");
+        assert!(
+            !ember.backdrops.layers(panel).is_empty(),
+            "{panel:?} has nothing behind it"
+        );
+        if let Some(b) = ember.backdrops.get(panel) {
+            assert!(b.decode().is_some(), "{panel:?}'s picture decodes");
+        }
     }
+    assert!(ember.backdrops.is_animated());
     assert!(
         ember.palette.panel.0[3] < 0xff,
         "the panels are see-through"
@@ -319,4 +324,101 @@ fn what_is_drawn_over_other_content_gets_solid_grounds() {
         "same colour"
     );
     assert_eq!(solid.accent, ember.palette.accent, "inks untouched");
+}
+
+/// Ty, 2026-10-02: *"by default can you go ahead and make the arrangement
+/// time bar semi transparent. it kind of blends with the rest of the menus
+/// right now instead of seeming like part of the arrangement window"*. It
+/// was the header's own solid ink.
+#[test]
+fn the_arrangements_time_bar_is_see_through_and_not_the_headers_ink() {
+    for theme in Theme::builtins() {
+        let ink = fontelle_ui::render::timeline_ruler_ink(&theme.palette);
+        assert!(
+            ink.0[3] >= 0x30 && ink.0[3] <= 0xa0,
+            "{}: {ink:?}",
+            theme.name
+        );
+        assert_ne!(ink, theme.palette.panel_header, "{}", theme.name);
+    }
+}
+
+// ------------------------------------------- how a picture behaves (v11) ---
+//
+// Ty, 2026-10-02: *"im noticing that the piano roll images stretch out. this
+// should be configurable for people making their themes how their images
+// behaive ... we want to offer maximum customization."* Floptle's image
+// layer has a natural size, a scale and an offset; so does this one now.
+
+use fontelle_ui::theme::{Layer, backdrop_tiles_scaled};
+
+#[test]
+fn natural_size_draws_a_picture_at_its_own_size_where_the_anchor_puts_it() {
+    let r = backdrop_tiles_scaled(
+        area(),
+        50.0,
+        20.0,
+        BackdropFit::Natural,
+        [1.0, 1.0],
+        1.0,
+        [0.0, 0.0],
+    );
+    assert_eq!(r, vec![Rect::new(450.0, 130.0, 50.0, 20.0)]);
+}
+
+#[test]
+fn scale_sizes_a_fitted_picture_and_offset_moves_it() {
+    // Contained (100x100 in a 400x100 area), at half size, bottom right,
+    // nudged 10 points left and 4 up.
+    let r = backdrop_tiles_scaled(
+        area(),
+        200.0,
+        200.0,
+        BackdropFit::Contain,
+        [1.0, 1.0],
+        0.5,
+        [-10.0, -4.0],
+    );
+    assert_eq!(r, vec![Rect::new(440.0, 96.0, 50.0, 50.0)]);
+    // A tiled pattern's tiles are scaled too.
+    let tiles = backdrop_tiles_scaled(
+        area(),
+        64.0,
+        64.0,
+        BackdropFit::Tile,
+        [0.0, 0.0],
+        0.5,
+        [0.0, 0.0],
+    );
+    assert_eq!(tiles[0], Rect::new(100.0, 50.0, 32.0, 32.0));
+    // Stretch ignores the scale: it is the area, as the word says.
+    let s = backdrop_tiles_scaled(
+        area(),
+        7.0,
+        3.0,
+        BackdropFit::Stretch,
+        [0.5, 0.5],
+        2.0,
+        [0.0, 0.0],
+    );
+    assert_eq!(s, vec![area()]);
+}
+
+#[test]
+fn a_picture_keeps_its_size_offset_and_pixel_look_in_the_file() {
+    let mut b = Backdrop::from_image_bytes(&tiny_png(), 0.5).unwrap();
+    assert_eq!((b.scale, b.offset, b.pixelated), (1.0, [0.0, 0.0], false));
+    b.fit = BackdropFit::Natural;
+    b.scale = 0.4;
+    b.offset = [-20.0, -16.0];
+    b.pixelated = true;
+    let mut theme = Theme::dark_default();
+    theme.backdrops.set(BackdropPanel::Roll, Some(b.clone()));
+    let text = theme.to_json();
+    assert!(text.contains("\"natural\""), "{text}");
+    let back = Theme::from_json(&text).unwrap();
+    assert_eq!(
+        back.backdrops.layers(BackdropPanel::Roll),
+        &[Layer::Image(b)][..]
+    );
 }

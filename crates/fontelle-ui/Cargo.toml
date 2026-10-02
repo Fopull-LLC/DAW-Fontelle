@@ -37,6 +37,10 @@ png = "0.18.1"
 base64 = "0.22.1"
 zune-jpeg = "0.4"
 zune-core = "0.4"
+# A theme's moving backdrop is WGSL, checked with naga before wgpu sees it:
+# wgpu's answer to a bad shader is a panic on another thread. The version
+# wgpu 29 already links, with its WGSL reader on.
+naga = { version = "29.0.4", features = ["wgsl-in"] }
 
 # Bringing an editor window to the front under Wayland — see `activation.rs`.
 # `winit` already speaks the protocol to get a window *created* in front, and

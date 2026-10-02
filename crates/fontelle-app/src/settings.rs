@@ -42,11 +42,12 @@ pub use fontelle_types::FolderKind;
 /// Two since the settings file grew [`MidiInputSettings`], three since it grew
 /// the two import folders, four since it grew the favourites, six since it
 /// grew the recent projects and the update switch, seven since it grew the
-/// three a shared song needs (`docs/collab-plan.md` §10.4). Every added field carries
+/// three a shared song needs (`docs/collab-plan.md` §10.4), eight since it
+/// grew how much a theme's backdrops may move (hub card 0366). Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 7;
+pub const SETTINGS_FORMAT_VERSION: u32 = 8;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.
@@ -218,7 +219,46 @@ pub struct Settings {
     /// learning-plan.md` §5: offered, *never starting by itself*).
     #[serde(default)]
     pub tour_offered: bool,
+    /// How much a theme's backdrops move: Moving, Still or Off. `None` until
+    /// chosen, which follows the desktop's reduce-motion switch where one can
+    /// be read ([`Settings::backdrop_motion`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backdrop_effects: Option<fontelle_ui::backdrop::Effects>,
+    /// The most frames a second a moving backdrop draws.
+    #[serde(default = "thirty")]
+    pub backdrop_fps: u16,
+    /// A backdrop's resolution, as a percentage of the window's.
+    #[serde(default = "fifty")]
+    pub backdrop_scale_percent: u16,
+    /// Hold every backdrop still while the transport plays. Off by default:
+    /// the music is the point.
+    #[serde(default)]
+    pub hold_backdrops_while_playing: bool,
+    /// Keep backdrops moving while another window has the focus. On by
+    /// default: Ty likes *"lots of moving windows"*.
+    #[serde(default = "yes")]
+    pub backdrops_when_unfocused: bool,
 }
+
+fn thirty() -> u16 {
+    30
+}
+
+fn fifty() -> u16 {
+    50
+}
+
+/// The Backdrop rate row's steps, in frames a second.
+pub const BACKDROP_RATES: [u16; 4] = [15, 24, 30, 60];
+
+/// The Backdrop resolution row's steps: a percentage of the window's, and
+/// what the row calls it.
+pub const BACKDROP_RESOLUTIONS: [(u16, &str); 4] = [
+    (25, "Quarter"),
+    (50, "Half"),
+    (75, "Three quarters"),
+    (100, "Full"),
+];
 
 fn yes() -> bool {
     true
@@ -258,11 +298,34 @@ impl Default for Settings {
             install: None,
             new_song_routing: None,
             tour_offered: false,
+            backdrop_effects: None,
+            backdrop_fps: thirty(),
+            backdrop_scale_percent: fifty(),
+            hold_backdrops_while_playing: false,
+            backdrops_when_unfocused: true,
         }
     }
 }
 
 impl Settings {
+    /// How much the window's backdrops may move. `reduce_motion` is the
+    /// desktop's own switch (`desktop::reduce_motion`): with Effects never
+    /// chosen, a desktop that asks for less motion starts Fontelle Still.
+    pub fn backdrop_motion(&self, reduce_motion: bool) -> fontelle_ui::backdrop::Motion {
+        use fontelle_ui::backdrop::{Effects, Motion};
+        Motion {
+            effects: self.backdrop_effects.unwrap_or(if reduce_motion {
+                Effects::Still
+            } else {
+                Effects::Moving
+            }),
+            fps: f32::from(self.backdrop_fps.clamp(5, 60)),
+            scale: f32::from(self.backdrop_scale_percent.clamp(25, 100)) / 100.0,
+            hold_while_playing: self.hold_backdrops_while_playing,
+            when_unfocused: self.backdrops_when_unfocused,
+        }
+    }
+
     /// The name the people this studio shares with see: the one typed on the
     /// settings page, or the computer's user name, or — with neither — a word
     /// rather than nothing.
@@ -480,7 +543,40 @@ pub enum SettingRow {
     /// Writes the look in use to a `.fontelletheme` file, to send to
     /// someone. A button.
     SaveTheme,
+    /// Moving, Still or Off: how much a theme's backdrops move. A choice.
+    BackdropEffects,
+    /// The most frames a second a moving backdrop draws. A choice.
+    BackdropRate,
+    /// A backdrop's resolution against the window's. A choice.
+    BackdropResolution,
+    /// Hold backdrops still while the transport plays. A switch.
+    HoldBackdrops,
+    /// Keep backdrops moving while another window has the focus. A switch.
+    BackdropsUnfocused,
+    /// How a section's picture fits it: cover, contain, stretch, tile,
+    /// natural size. A choice; listed only under a section that has one.
+    PictureFit(fontelle_ui::theme::BackdropPanel),
+    /// How big it is against what the fit gives, 10–300 %. A slider.
+    PictureSize(fontelle_ui::theme::BackdropPanel),
+    /// Where it sits: one of nine places. A choice.
+    PicturePlace(fontelle_ui::theme::BackdropPanel),
 }
+
+/// The Picture position row's nine places, and the anchor each is.
+pub const PICTURE_PLACES: [(&str, [f32; 2]); 9] = [
+    ("Top left", [0.0, 0.0]),
+    ("Top", [0.5, 0.0]),
+    ("Top right", [1.0, 0.0]),
+    ("Left", [0.0, 0.5]),
+    ("Centre", [0.5, 0.5]),
+    ("Right", [1.0, 0.5]),
+    ("Bottom left", [0.0, 1.0]),
+    ("Bottom", [0.5, 1.0]),
+    ("Bottom right", [1.0, 1.0]),
+];
+
+/// The Picture size row's range: a tenth to three times.
+pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 
 /// Every row the settings tab shows, in the order it shows them.
 ///
@@ -488,7 +584,7 @@ pub enum SettingRow {
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 40] = [
+pub const SETTING_ROWS: [SettingRow; 45] = [
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -538,6 +634,12 @@ pub const SETTING_ROWS: [SettingRow; 40] = [
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Mixer),
     SettingRow::PictureStrength,
     SettingRow::PanelSeeThrough,
+    // How much the theme moves — under its pictures, which are what moves.
+    SettingRow::BackdropEffects,
+    SettingRow::BackdropRate,
+    SettingRow::BackdropResolution,
+    SettingRow::HoldBackdrops,
+    SettingRow::BackdropsUnfocused,
     SettingRow::ImportTheme,
     SettingRow::SaveTheme,
     // Under its own heading, because it is about the network rather than
@@ -561,9 +663,28 @@ pub const SETTING_ROWS: [SettingRow; 40] = [
 /// looking the position up in this same list — so the two cannot disagree
 /// about which folder the third row removes.
 pub fn setting_rows(settings: &Settings) -> Vec<SettingRow> {
+    setting_rows_with(settings, |_| false)
+}
+
+/// The same, with a section's three picture rows under its picture row
+/// wherever `has_picture` says that section has one — the theme is the
+/// session's, so the session says.
+pub fn setting_rows_with(
+    settings: &Settings,
+    has_picture: impl Fn(fontelle_ui::theme::BackdropPanel) -> bool,
+) -> Vec<SettingRow> {
     let mut rows = Vec::with_capacity(SETTING_ROWS.len() + settings.plugin_dirs.len());
     for row in SETTING_ROWS {
         rows.push(row);
+        if let SettingRow::Backdrop(panel) = row
+            && has_picture(panel)
+        {
+            rows.extend([
+                SettingRow::PictureFit(panel),
+                SettingRow::PictureSize(panel),
+                SettingRow::PicturePlace(panel),
+            ]);
+        }
         if row == SettingRow::PluginFolder {
             rows.extend((0..settings.plugin_dirs.len()).map(SettingRow::PluginDir));
         }
@@ -670,6 +791,14 @@ impl SettingRow {
             Self::PanelSeeThrough => "Panel see-through",
             Self::ImportTheme => "Import a theme",
             Self::SaveTheme => "Save this theme",
+            Self::BackdropEffects => "Effects",
+            Self::BackdropRate => "Backdrop rate",
+            Self::BackdropResolution => "Backdrop resolution",
+            Self::HoldBackdrops => "Hold backdrops still while playing",
+            Self::BackdropsUnfocused => "Keep backdrops moving when not focused",
+            Self::PictureFit(panel) => picture_row_label(panel, "fit"),
+            Self::PictureSize(panel) => picture_row_label(panel, "size"),
+            Self::PicturePlace(panel) => picture_row_label(panel, "position"),
         }
     }
 
@@ -794,6 +923,23 @@ impl SettingRow {
             Self::PanelSeeThrough => "0%".to_string(),
             // Pure actions: the button says what they do.
             Self::ImportTheme | Self::SaveTheme => String::new(),
+            Self::BackdropEffects => settings.backdrop_motion(false).effects.label().to_string(),
+            Self::BackdropRate => format!("{} fps", settings.backdrop_fps),
+            Self::BackdropResolution => backdrop_resolution_label(settings.backdrop_scale_percent),
+            Self::HoldBackdrops => if settings.hold_backdrops_while_playing {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
+            Self::BackdropsUnfocused => if settings.backdrops_when_unfocused {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
+            // The picture's, answered by the session, which holds the theme.
+            Self::PictureFit(_) | Self::PictureSize(_) | Self::PicturePlace(_) => String::new(),
         }
     }
 
@@ -869,6 +1015,16 @@ impl SettingRow {
             Self::PanelSeeThrough => "Let the window's picture show through the panels",
             Self::ImportTheme => "Add a .fontelletheme file someone sent you",
             Self::SaveTheme => "Write this look to a .fontelletheme file to share",
+            Self::BackdropEffects => {
+                "Moving pictures as the theme draws them, held still, or colours only"
+            }
+            Self::BackdropRate => "How often a moving backdrop is drawn; lower costs less",
+            Self::BackdropResolution => "How sharp a moving backdrop is; lower costs less",
+            Self::HoldBackdrops => "Nothing behind the panels moves while the song plays",
+            Self::BackdropsUnfocused => "Off: only the window you are working in moves",
+            Self::PictureFit(_) => "Cover, contain, stretch to fit, tile, or its own size",
+            Self::PictureSize(_) => "Larger or smaller than the fit makes it",
+            Self::PicturePlace(_) => "Which corner or edge it sits against",
         }
     }
 
@@ -908,7 +1064,15 @@ impl SettingRow {
             | Self::PictureStrength
             | Self::PanelSeeThrough
             | Self::ImportTheme
-            | Self::SaveTheme => {}
+            | Self::SaveTheme
+            | Self::BackdropEffects
+            | Self::BackdropRate
+            | Self::BackdropResolution
+            | Self::HoldBackdrops
+            | Self::BackdropsUnfocused
+            | Self::PictureFit(_)
+            | Self::PictureSize(_)
+            | Self::PicturePlace(_) => {}
             Self::VelocityCurve => {
                 let all = VelocityCurveSetting::ALL;
                 let at = all
@@ -990,6 +1154,12 @@ impl SettingRow {
                 SettingControlKind::Slider
             }
             Self::Backdrop(_) | Self::ImportTheme | Self::SaveTheme => SettingControlKind::Button,
+            Self::BackdropEffects | Self::BackdropRate | Self::BackdropResolution => {
+                SettingControlKind::Choice
+            }
+            Self::HoldBackdrops | Self::BackdropsUnfocused => SettingControlKind::Switch,
+            Self::PictureFit(_) | Self::PicturePlace(_) => SettingControlKind::Choice,
+            Self::PictureSize(_) => SettingControlKind::Slider,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }
@@ -1087,6 +1257,68 @@ impl SettingRow {
             }
             _ => None,
         }
+    }
+
+    /// The three backdrop rows' choices: what each lists and which it is on.
+    /// `None` for every other row.
+    pub fn backdrop_choices(
+        self,
+        settings: &Settings,
+        reduce_motion: bool,
+    ) -> Option<(Vec<String>, usize)> {
+        use fontelle_ui::backdrop::Effects;
+        Some(match self {
+            Self::BackdropEffects => {
+                let now = settings.backdrop_motion(reduce_motion).effects;
+                (
+                    Effects::ALL.iter().map(|e| e.label().to_string()).collect(),
+                    Effects::ALL.iter().position(|e| *e == now).unwrap_or(0),
+                )
+            }
+            Self::BackdropRate => (
+                BACKDROP_RATES.iter().map(|r| format!("{r} fps")).collect(),
+                BACKDROP_RATES
+                    .iter()
+                    .position(|r| *r == settings.backdrop_fps)
+                    .unwrap_or(2),
+            ),
+            Self::BackdropResolution => (
+                BACKDROP_RESOLUTIONS
+                    .iter()
+                    .map(|(_, name)| name.to_string())
+                    .collect(),
+                BACKDROP_RESOLUTIONS
+                    .iter()
+                    .position(|(p, _)| *p == settings.backdrop_scale_percent)
+                    .unwrap_or(1),
+            ),
+            _ => return None,
+        })
+    }
+
+    /// Sets a backdrop row to its `option`th choice. Answers whether it was
+    /// one.
+    pub fn choose_backdrop(self, settings: &mut Settings, option: usize) -> bool {
+        use fontelle_ui::backdrop::Effects;
+        match self {
+            Self::BackdropEffects => {
+                if let Some(e) = Effects::ALL.get(option) {
+                    settings.backdrop_effects = Some(*e);
+                }
+            }
+            Self::BackdropRate => {
+                if let Some(r) = BACKDROP_RATES.get(option) {
+                    settings.backdrop_fps = *r;
+                }
+            }
+            Self::BackdropResolution => {
+                if let Some((p, _)) = BACKDROP_RESOLUTIONS.get(option) {
+                    settings.backdrop_scale_percent = *p;
+                }
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// The two routing rows' choices: the song's mode (`song`), and what a
@@ -1624,4 +1856,40 @@ fn while_windows_denies<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> s
         }
     }
     result
+}
+
+/// What the Backdrop resolution row calls `percent`.
+fn backdrop_resolution_label(percent: u16) -> String {
+    BACKDROP_RESOLUTIONS
+        .iter()
+        .find(|(p, _)| *p == percent)
+        .map_or_else(|| format!("{percent}%"), |(_, name)| name.to_string())
+}
+
+/// "Piano roll picture fit", and the rest: a section's picture rows' names.
+fn picture_row_label(panel: fontelle_ui::theme::BackdropPanel, what: &str) -> &'static str {
+    use fontelle_ui::theme::BackdropPanel as P;
+    match (panel, what) {
+        (P::Window, "fit") => "Window picture fit",
+        (P::Window, "size") => "Window picture size",
+        (P::Window, _) => "Window picture position",
+        (P::Transport, "fit") => "Transport picture fit",
+        (P::Transport, "size") => "Transport picture size",
+        (P::Transport, _) => "Transport picture position",
+        (P::Channels, "fit") => "Channels picture fit",
+        (P::Channels, "size") => "Channels picture size",
+        (P::Channels, _) => "Channels picture position",
+        (P::Browser, "fit") => "Browser picture fit",
+        (P::Browser, "size") => "Browser picture size",
+        (P::Browser, _) => "Browser picture position",
+        (P::Arrangement, "fit") => "Arrangement picture fit",
+        (P::Arrangement, "size") => "Arrangement picture size",
+        (P::Arrangement, _) => "Arrangement picture position",
+        (P::Roll, "fit") => "Piano roll picture fit",
+        (P::Roll, "size") => "Piano roll picture size",
+        (P::Roll, _) => "Piano roll picture position",
+        (P::Mixer, "fit") => "Mixer picture fit",
+        (P::Mixer, "size") => "Mixer picture size",
+        (P::Mixer, _) => "Mixer picture position",
+    }
 }

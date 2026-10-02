@@ -477,6 +477,10 @@ pub struct Session {
     /// count the window watches to know it changed.
     theme: fontelle_ui::Theme,
     theme_revision: u64,
+    /// Whether the desktop asks for less motion (`desktop::reduce_motion`),
+    /// read once at launch: with Effects never chosen, it starts the
+    /// backdrops Still.
+    reduce_motion: bool,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -724,7 +728,7 @@ impl Session {
     /// One settings row pressed — [`StudioHost::nudge_setting`]'s work,
     /// which is that and the toast.
     fn press_setting(&mut self, index: usize, delta: i32) {
-        let rows = crate::settings::setting_rows(&self.settings);
+        let rows = self.setting_rows();
         let Some(row) = rows.get(index) else {
             return;
         };
@@ -770,6 +774,23 @@ impl Session {
         }
         // A switch, by the same rule: not a value to step, so it is flipped
         // here rather than in `nudge`, which only sees the MIDI half.
+        if *row == crate::settings::SettingRow::BackdropsUnfocused {
+            self.settings.backdrops_when_unfocused = !self.settings.backdrops_when_unfocused;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::HoldBackdrops {
+            self.settings.hold_backdrops_while_playing =
+                !self.settings.hold_backdrops_while_playing;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
         if *row == crate::settings::SettingRow::CheckForUpdates {
             self.settings.check_for_updates = !self.settings.check_for_updates;
             if let Err(e) = self.save_settings() {
@@ -1405,6 +1426,7 @@ impl Session {
                 .load(settings.theme_name.as_deref().unwrap_or_default())
                 .unwrap_or_else(fontelle_ui::Theme::dark_default),
             theme_revision: 1,
+            reduce_motion: false,
             settings,
             settings_path: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -1525,6 +1547,13 @@ impl Session {
         )
     }
 
+    /// Says whether the desktop asks for less motion. The studio passes
+    /// `desktop::reduce_motion()`; a test leaves it false.
+    pub fn with_reduce_motion(mut self, reduce: bool) -> Self {
+        self.reduce_motion = reduce;
+        self
+    }
+
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
         let (settings, error) = Settings::load_from(&path);
         self.preset_bank.set_user_dir(settings.user_preset_dir());
@@ -1570,6 +1599,28 @@ impl Session {
             (theme.name != fontelle_ui::Theme::dark_default().name).then(|| theme.name.clone());
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
+        }
+        // A shader that will not compile shows its section's colour; the
+        // person wearing it is told which and why (hub card 0366).
+        let problems = theme.shader_problems();
+        if let Some((panel, why)) = problems.first() {
+            let reason = why
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("error: ");
+            let more = match problems.len() {
+                1 => String::new(),
+                n => format!(" ({} more)", n - 1),
+            };
+            self.settings_toast = Some((
+                format!(
+                    "{}: the {} backdrop's shader does not compile, so it shows its colour{more} \u{2014} {reason}",
+                    theme.name,
+                    panel.label()
+                ),
+                false,
+            ));
         }
         self.theme = theme;
         self.theme_revision += 1;
@@ -1670,6 +1721,38 @@ impl Session {
         Ok(name)
     }
 
+    /// The settings page's rows for this studio: the settings', with a
+    /// section's picture rows under every section the theme has a picture in.
+    fn setting_rows(&self) -> Vec<crate::settings::SettingRow> {
+        crate::settings::setting_rows_with(&self.settings, |panel| {
+            self.theme.backdrops.get(panel).is_some()
+        })
+    }
+
+    /// Changes `panel`'s picture in the theme, on a copy if it is built in.
+    fn edit_picture(
+        &mut self,
+        panel: fontelle_ui::theme::BackdropPanel,
+        edit: impl FnOnce(&mut fontelle_ui::theme::Backdrop),
+    ) {
+        let Some(mut picture) = self.theme.backdrops.get(panel).cloned() else {
+            return;
+        };
+        edit(&mut picture);
+        // In place, so the picture keeps its place in the section's stack.
+        let result = self.edit_theme(|t| {
+            for layer in t.backdrops.layers_mut(panel).iter_mut().rev() {
+                if let fontelle_ui::theme::Layer::Image(b) = layer {
+                    *b = picture;
+                    break;
+                }
+            }
+        });
+        if let Err(e) = result {
+            self.message = Some(e);
+        }
+    }
+
     /// The settings page's Appearance buttons: a picker, then the work.
     fn press_theme_row(&mut self, row: crate::settings::SettingRow) {
         use crate::settings::SettingRow;
@@ -1717,7 +1800,12 @@ impl Session {
             _ => return,
         };
         match result {
-            Ok(said) => self.settings_toast = Some((said, false)),
+            // Unless wearing it had something more to say.
+            Ok(said) => {
+                if self.settings_toast.is_none() {
+                    self.settings_toast = Some((said, false));
+                }
+            }
             Err(why) => self.message = Some(why),
         }
         self.touch();
@@ -8545,7 +8633,7 @@ impl StudioHost for Session {
     }
 
     fn set_setting_text(&mut self, index: usize, text: &str) {
-        let rows = crate::settings::setting_rows(&self.settings);
+        let rows = self.setting_rows();
         let Some(row) = rows.get(index).copied() else {
             return;
         };
@@ -8683,7 +8771,7 @@ impl StudioHost for Session {
     }
 
     fn settings(&self) -> Vec<LibraryEntry> {
-        crate::settings::setting_rows(&self.settings)
+        self.setting_rows()
             .iter()
             .map(|row| {
                 let value = match row {
@@ -8710,6 +8798,24 @@ impl StudioHost for Session {
                     crate::settings::SettingRow::PanelSeeThrough => {
                         format!("{}%", (self.see_through() * 100.0).round())
                     }
+                    crate::settings::SettingRow::PictureFit(panel) => self
+                        .theme
+                        .backdrops
+                        .get(*panel)
+                        .map(|b| b.fit.label().to_string())
+                        .unwrap_or_default(),
+                    crate::settings::SettingRow::PictureSize(panel) => self
+                        .theme
+                        .backdrops
+                        .get(*panel)
+                        .map(|b| format!("{}%", (b.scale * 100.0).round()))
+                        .unwrap_or_default(),
+                    crate::settings::SettingRow::PicturePlace(panel) => self
+                        .theme
+                        .backdrops
+                        .get(*panel)
+                        .map(|b| picture_place(b.anchor).0.to_string())
+                        .unwrap_or_default(),
                     _ => row.value(&self.settings),
                 };
                 LibraryEntry::file(row.label(&self.settings), value)
@@ -8769,7 +8875,8 @@ impl StudioHost for Session {
                 if option != 1 || self.tour_options(GuideChoice::Vst2).1 == Some(1) {
                     return;
                 }
-                if let Some(index) = crate::settings::setting_rows(&self.settings)
+                if let Some(index) = self
+                    .setting_rows()
                     .iter()
                     .position(|row| *row == crate::settings::SettingRow::Extension(0))
                 {
@@ -8791,7 +8898,7 @@ impl StudioHost for Session {
     }
 
     fn setting_help(&self) -> Vec<String> {
-        crate::settings::setting_rows(&self.settings)
+        self.setting_rows()
             .iter()
             .map(|row| row.help().to_string())
             .collect()
@@ -8805,11 +8912,15 @@ impl StudioHost for Session {
         Some(self.theme.clone())
     }
 
+    fn backdrop_motion(&self) -> fontelle_ui::backdrop::Motion {
+        self.settings.backdrop_motion(self.reduce_motion)
+    }
+
     fn setting_controls(&self) -> Vec<fontelle_ui::canvas::SettingControl> {
         use crate::settings::SettingControlKind as K;
         use fontelle_ui::canvas::SettingControl;
         let midi = &self.settings.midi_input;
-        crate::settings::setting_rows(&self.settings)
+        self.setting_rows()
             .iter()
             .map(|row| match row.control_kind() {
                 K::Heading => SettingControl::Heading,
@@ -8831,6 +8942,13 @@ impl StudioHost for Session {
                             (self.theme.metrics.corner_radius / MAX_CORNER_ROUNDING).clamp(0.0, 1.0)
                         }
                         crate::settings::SettingRow::PictureStrength => self.picture_strength(),
+                        crate::settings::SettingRow::PictureSize(panel) => {
+                            let (low, high) = crate::settings::PICTURE_SIZE_RANGE;
+                            self.theme
+                                .backdrops
+                                .get(*panel)
+                                .map_or(0.0, |b| ((b.scale - low) / (high - low)).clamp(0.0, 1.0))
+                        }
                         crate::settings::SettingRow::PanelSeeThrough => {
                             self.see_through() / MAX_SEE_THROUGH
                         }
@@ -8850,9 +8968,40 @@ impl StudioHost for Session {
                         .unwrap_or(0);
                     SettingControl::Choice { options, chosen }
                 }
+                K::Choice if matches!(row, crate::settings::SettingRow::PictureFit(_)) => {
+                    let crate::settings::SettingRow::PictureFit(panel) = row else {
+                        unreachable!()
+                    };
+                    let all = fontelle_ui::theme::BackdropFit::ALL;
+                    let now = self.theme.backdrops.get(*panel).map(|b| b.fit);
+                    SettingControl::Choice {
+                        options: all.iter().map(|f| f.label().to_string()).collect(),
+                        chosen: all.iter().position(|f| Some(*f) == now).unwrap_or(0),
+                    }
+                }
+                K::Choice if matches!(row, crate::settings::SettingRow::PicturePlace(_)) => {
+                    let crate::settings::SettingRow::PicturePlace(panel) = row else {
+                        unreachable!()
+                    };
+                    let anchor = self
+                        .theme
+                        .backdrops
+                        .get(*panel)
+                        .map_or([0.5, 0.5], |b| b.anchor);
+                    SettingControl::Choice {
+                        options: crate::settings::PICTURE_PLACES
+                            .iter()
+                            .map(|(name, _)| name.to_string())
+                            .collect(),
+                        chosen: picture_place(anchor).1,
+                    }
+                }
                 K::Choice => {
                     let (options, chosen) = row
-                        .routing_choices(&self.settings, self.project.lane_routing.mode)
+                        .backdrop_choices(&self.settings, self.reduce_motion)
+                        .or_else(|| {
+                            row.routing_choices(&self.settings, self.project.lane_routing.mode)
+                        })
                         .or_else(|| row.choices(midi))
                         .unwrap_or_default();
                     SettingControl::Choice { options, chosen }
@@ -8860,7 +9009,13 @@ impl StudioHost for Session {
                 // The one switch reads its state off the whole settings, not
                 // the MIDI half — see `nudge_setting`, which flips it here too.
                 K::Switch => SettingControl::Switch {
-                    on: self.settings.check_for_updates,
+                    on: if *row == crate::settings::SettingRow::HoldBackdrops {
+                        self.settings.hold_backdrops_while_playing
+                    } else if *row == crate::settings::SettingRow::BackdropsUnfocused {
+                        self.settings.backdrops_when_unfocused
+                    } else {
+                        self.settings.check_for_updates
+                    },
                 },
                 K::Text => SettingControl::Text {
                     text: row.text(&self.settings),
@@ -8870,7 +9025,7 @@ impl StudioHost for Session {
     }
 
     fn set_setting_fraction(&mut self, index: usize, fraction: f32) {
-        let rows = crate::settings::setting_rows(&self.settings);
+        let rows = self.setting_rows();
         let Some(row) = rows.get(index).copied() else {
             return;
         };
@@ -8898,6 +9053,15 @@ impl StudioHost for Session {
                 }) {
                     self.message = Some(e);
                 }
+                return;
+            }
+            crate::settings::SettingRow::PictureSize(panel) => {
+                let (low, high) = crate::settings::PICTURE_SIZE_RANGE;
+                let scale = low + fraction.clamp(0.0, 1.0) * (high - low);
+                // To the percent, so a drag does not write a file per pixel
+                // of difference nobody can see.
+                let scale = (scale * 100.0).round() / 100.0;
+                self.edit_picture(panel, |b| b.scale = scale);
                 return;
             }
             crate::settings::SettingRow::PictureStrength => {
@@ -8931,10 +9095,32 @@ impl StudioHost for Session {
     fn choose_setting(&mut self, index: usize, option: usize) {
         use crate::settings::SettingRow;
         use fontelle_model::RoutingMode;
-        let rows = crate::settings::setting_rows(&self.settings);
+        let rows = self.setting_rows();
         let Some(row) = rows.get(index).copied() else {
             return;
         };
+        match row {
+            SettingRow::PictureFit(panel) => {
+                if let Some(fit) = fontelle_ui::theme::BackdropFit::ALL.get(option).copied() {
+                    self.edit_picture(panel, |b| b.fit = fit);
+                }
+                return;
+            }
+            SettingRow::PicturePlace(panel) => {
+                if let Some((_, anchor)) = crate::settings::PICTURE_PLACES.get(option).copied() {
+                    self.edit_picture(panel, |b| b.anchor = anchor);
+                }
+                return;
+            }
+            _ => {}
+        }
+        if row.choose_backdrop(&mut self.settings, option) {
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
         match row {
             SettingRow::Theme => {
                 let entries = self.theme_library().entries();
@@ -9028,7 +9214,7 @@ impl StudioHost for Session {
     }
 
     fn settings_confirm(&self, index: usize) -> Option<String> {
-        let rows = crate::settings::setting_rows(&self.settings);
+        let rows = self.setting_rows();
         // Only the irreversible destructive press asks first: uninstalling an
         // installed extension, which a click cannot bring back (it is a
         // download). Everything else acts and offers an undo instead.
@@ -14480,3 +14666,17 @@ type RelayAnswer = Result<(Box<dyn fontelle_net::Transport>, String), String>;
 /// What the roll says when there is no clip for it to write into.
 const NOTHING_OPEN: &str =
     "Draw a clip on the arrangement first \u{2014} the roll writes into the clip that is open";
+
+/// The Picture position row's name for `anchor`, and its place in the list:
+/// the nearest of the nine, so a hand-written anchor still reads as one.
+fn picture_place(anchor: [f32; 2]) -> (&'static str, usize) {
+    crate::settings::PICTURE_PLACES
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let d = |p: [f32; 2]| (p[0] - anchor[0]).powi(2) + (p[1] - anchor[1]).powi(2);
+            d(a.1).total_cmp(&d(b.1))
+        })
+        .map(|(i, (name, _))| (*name, i))
+        .unwrap_or(("Centre", 4))
+}
