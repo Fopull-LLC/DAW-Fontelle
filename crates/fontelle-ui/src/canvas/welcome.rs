@@ -243,11 +243,17 @@ pub fn welcome_layout(
     } else {
         (new_button, open_button)
     };
+    // Everything between the update line and the buttons: two sentences
+    // land here at launch — how the last run ended, and an extension out of
+    // date — and two rows cut the second off. The text sits at its foot
+    // (`render`), just above the way out, however much room there is.
+    let message_bottom = new_button.y - STACK_GAP;
+    let message_top = (above).min(message_bottom - 2.0 * row);
     let message = Rect::new(
         left.x,
-        new_button.y - STACK_GAP - 2.0 * row,
+        message_top,
         left.width,
-        2.0 * row,
+        (message_bottom - message_top).max(0.0),
     );
 
     // The right column: a heading, then rows until they would reach the

@@ -799,6 +799,25 @@ impl Session {
         self.message = Some(said.into());
     }
 
+    /// Says, as the studio opens, that an installed extension is older than
+    /// this Fontelle needs, and where to update it: *"make sure it lets
+    /// users know that its out of date if it is and they need to do that"*
+    /// (Ty). After whatever the launch already said ([`announce`]), not
+    /// instead of it — there is one line. Its row in Settings says so too,
+    /// with an Update button.
+    ///
+    /// [`announce`]: Self::announce
+    pub fn announce_extension_notices(&mut self) {
+        if let Some(said) = crate::extensions::CATALOGUE.iter().find_map(|extension| {
+            crate::extensions::notice(extension, &crate::extensions::state_here(extension))
+        }) {
+            self.message = Some(match self.message.take() {
+                Some(before) => format!("{}. {said}", before.trim_end_matches('.')),
+                None => said,
+            });
+        }
+    }
+
     /// Hands the session a capture ring **that is being recorded**, and what
     /// the device it came from opened at (TDD §15.4).
     ///
@@ -3855,8 +3874,7 @@ impl Session {
         let Some(extension) = crate::extensions::CATALOGUE.get(which) else {
             return;
         };
-        let installed = crate::extensions::is_installed(extension);
-        let state = crate::extensions::ExtensionState::of(extension, installed, None);
+        let state = crate::extensions::state_here(extension);
         match crate::extensions::action_for(&state) {
             crate::extensions::ExtensionAction::None => {
                 self.message = Some(format!("{} needs a newer Fontelle", extension.name));
@@ -3880,21 +3898,36 @@ impl Session {
                     Err(why) => self.message = Some(why),
                 }
             }
-            crate::extensions::ExtensionAction::Install => {
+            // An update is an install over the one there: the new library is
+            // renamed into place, and the version beside it is rewritten.
+            crate::extensions::ExtensionAction::Install
+            | crate::extensions::ExtensionAction::Update => {
                 if self.plugins.has_open_plugins() {
                     self.message =
                         Some("Close the project before changing an extension".to_string());
                     return;
                 }
-                self.message = Some(format!("Installing {}\u{2026}", extension.name));
+                let updating = matches!(
+                    crate::extensions::action_for(&state),
+                    crate::extensions::ExtensionAction::Update
+                );
+                self.message = Some(format!(
+                    "{} {}\u{2026}",
+                    if updating { "Updating" } else { "Installing" },
+                    extension.name
+                ));
                 let target = crate::updates::target_triple();
                 let fetch: crate::updates::Fetcher = Box::new(crate::updates::fetch_with_progress);
                 match crate::extensions::install(extension, &target, &fetch, &mut |_, _| {}) {
                     Ok(()) => {
-                        self.message = Some(format!(
-                            "Installed {} \u{2014} its plugins are found on the next scan",
-                            extension.name
-                        ));
+                        self.message = Some(if updating {
+                            format!("Updated {}", extension.name)
+                        } else {
+                            format!(
+                                "Installed {} \u{2014} its plugins are found on the next scan",
+                                extension.name
+                            )
+                        });
                         self.plugins.reload_bridges();
                         <Self as StudioHost>::rescan_plugins(self);
                     }
@@ -9001,7 +9034,11 @@ impl StudioHost for Session {
         // download). Everything else acts and offers an undo instead.
         if let crate::settings::SettingRow::Extension(which) = rows.get(index).copied()? {
             let extension = crate::extensions::CATALOGUE.get(which)?;
-            if crate::extensions::is_installed(extension) {
+            // Asked of what the button does, not of whether it is installed:
+            // an out-of-date install's button updates, and that asks nothing.
+            if crate::extensions::action_for(&crate::extensions::state_here(extension))
+                == crate::extensions::ExtensionAction::Remove
+            {
                 return Some(format!("Remove the {} extension?", extension.name));
             }
         }

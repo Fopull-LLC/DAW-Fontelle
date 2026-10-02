@@ -56,6 +56,11 @@ pub struct Extension {
     /// The GitHub repository it is released from, `owner/name`.
     pub repo: &'static str,
     pub kind: ExtensionKind,
+    /// The oldest release this build of Fontelle wants: an install older
+    /// than this — or one with no version beside it, which predates
+    /// installs recording one — is **out of date**, said on its settings row
+    /// and once at launch. Known offline, so it does not wait on a check.
+    pub needs: updates::Version,
 }
 
 impl Extension {
@@ -115,6 +120,9 @@ pub const CATALOGUE: &[Extension] = &[Extension {
     summary: "Loads plugins in the VST 2.4 format, including ones yabridge makes of Windows plugins.",
     repo: "Fopull-LLC/fontelle-vst2",
     kind: ExtensionKind::Bridge { abi: ABI_VERSION },
+    // 0.2.0 takes raw MIDI (`fontelle_bridge_midi`), which "Slides as MPE"
+    // needs to bend one note of a chord on a VST 2 synth.
+    needs: updates::Version::new(0, 2, 0),
 }];
 
 /// The extension with this id, if it is in the catalogue.
@@ -156,6 +164,27 @@ pub fn is_installed(extension: &Extension) -> bool {
     installed_path(extension).is_some_and(|path| path.exists())
 }
 
+/// Where the release an installed extension came from is written: a text
+/// file beside its library, `<library>.version`.
+fn version_path(extension: &Extension) -> Option<PathBuf> {
+    installed_path(extension).map(|path| {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(".version");
+        path.with_file_name(name)
+    })
+}
+
+/// Which release the installed extension is, when the install said.
+/// `None` for one not installed, and for one installed before installs
+/// recorded it — which [`ExtensionState::of`] reads as older than any.
+pub fn installed_version(extension: &Extension) -> Option<updates::Version> {
+    if !is_installed(extension) {
+        return None;
+    }
+    let text = std::fs::read_to_string(version_path(extension)?).ok()?;
+    updates::Version::parse(text.trim())
+}
+
 /// What state an extension is in, for the row that shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionState {
@@ -165,6 +194,9 @@ pub enum ExtensionState {
     Installed,
     /// Installed, and a newer release is out.
     UpdateAvailable { to: updates::Version },
+    /// Installed, but older than this Fontelle needs ([`Extension::needs`]):
+    /// something it does now will not work until it is updated.
+    OutOfDate { needs: updates::Version },
     /// In the catalogue, but this build's ABI is too old to load it — a
     /// bridge from a later Fontelle. Never fetched.
     NeedsNewerFontelle,
@@ -173,9 +205,12 @@ pub enum ExtensionState {
 impl ExtensionState {
     /// The state, given whether it is installed and what the newest release
     /// is (from a check; `None` when none was made or it failed).
+    /// `installed_version` is what [`installed_version`] read: `None` for an
+    /// install that predates recording it, which is older than any release.
     pub fn of(
         extension: &Extension,
         installed: bool,
+        installed_version: Option<updates::Version>,
         latest: Option<updates::Version>,
     ) -> ExtensionState {
         if !extension.loadable() {
@@ -184,14 +219,40 @@ impl ExtensionState {
         if !installed {
             return ExtensionState::NotInstalled;
         }
-        // An installed bridge carries no version stamp on disk — the ABI is
-        // the only compatibility fact — so this build cannot tell a current
-        // install from an old one, and does not pretend to: an installed
-        // extension reads as installed. The `latest` a check found is kept
-        // for the day a stamp exists.
-        let _ = latest;
-        ExtensionState::Installed
+        if installed_version.is_none_or(|version| version < extension.needs) {
+            return ExtensionState::OutOfDate {
+                needs: extension.needs,
+            };
+        }
+        match latest {
+            Some(to) if installed_version.is_some_and(|version| version < to) => {
+                ExtensionState::UpdateAvailable { to }
+            }
+            _ => ExtensionState::Installed,
+        }
     }
+}
+
+/// What the studio says at launch about an extension in `state`: only when
+/// it is out of date — which one, and where to update it.
+pub fn notice(extension: &Extension, state: &ExtensionState) -> Option<String> {
+    match state {
+        ExtensionState::OutOfDate { needs } => Some(format!(
+            "The {} extension is out of date \u{2014} update it in Settings, under Extensions (this Fontelle needs {needs})",
+            extension.name
+        )),
+        _ => None,
+    }
+}
+
+/// The state of `extension` as it is on this machine, with no check made.
+pub fn state_here(extension: &Extension) -> ExtensionState {
+    ExtensionState::of(
+        extension,
+        is_installed(extension),
+        installed_version(extension),
+        None,
+    )
 }
 
 /// The action a row's button performs.
@@ -201,6 +262,8 @@ pub enum ExtensionAction {
     Install,
     /// Delete it.
     Remove,
+    /// Fetch the newest release over the one installed.
+    Update,
     /// Nothing to do — the button is inert (a bridge this build cannot load).
     None,
 }
@@ -209,8 +272,9 @@ pub enum ExtensionAction {
 pub fn action_for(state: &ExtensionState) -> ExtensionAction {
     match state {
         ExtensionState::NotInstalled => ExtensionAction::Install,
-        ExtensionState::Installed | ExtensionState::UpdateAvailable { .. } => {
-            ExtensionAction::Remove
+        ExtensionState::Installed => ExtensionAction::Remove,
+        ExtensionState::UpdateAvailable { .. } | ExtensionState::OutOfDate { .. } => {
+            ExtensionAction::Update
         }
         ExtensionState::NeedsNewerFontelle => ExtensionAction::None,
     }
@@ -261,7 +325,14 @@ pub fn install(
     }
     let dir = bridges_dir().ok_or_else(|| "no data folder to install into".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
-    install_archive(&bytes, extension, &dir)
+    install_archive(&bytes, extension, &dir)?;
+    // Which release it is, beside it — what tells an out-of-date install
+    // from a current one later (`installed_version`).
+    if let Some(path) = version_path(extension) {
+        std::fs::write(&path, format!("{}\n", release.version))
+            .map_err(|e| format!("cannot record the version in {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Unpacks the archive in a staging folder beside the bridges folder and
@@ -336,6 +407,9 @@ pub fn remove(extension: &Extension) -> Result<(), String> {
     let Some(path) = installed_path(extension) else {
         return Ok(());
     };
+    if let Some(version) = version_path(extension) {
+        std::fs::remove_file(version).ok();
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

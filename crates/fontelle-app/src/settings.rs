@@ -746,20 +746,21 @@ impl SettingRow {
             // What the extension's state offers: install, remove, or a
             // sentence when this build cannot load it.
             Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
-                Some(extension) => {
-                    let state = crate::extensions::ExtensionState::of(
-                        extension,
-                        crate::extensions::is_installed(extension),
-                        None,
-                    );
-                    match crate::extensions::action_for(&state) {
-                        crate::extensions::ExtensionAction::Install => "Not installed".to_string(),
-                        crate::extensions::ExtensionAction::Remove => "Installed".to_string(),
-                        crate::extensions::ExtensionAction::None => {
-                            "Needs a newer Fontelle".to_string()
-                        }
+                Some(extension) => match crate::extensions::state_here(extension) {
+                    crate::extensions::ExtensionState::NotInstalled => "Not installed".to_string(),
+                    crate::extensions::ExtensionState::Installed => "Installed".to_string(),
+                    // Out of date is said in words, and the button updates:
+                    // *"make sure it lets users know that its out of date"*.
+                    crate::extensions::ExtensionState::OutOfDate { needs } => {
+                        format!("Out of date \u{2014} this Fontelle needs {needs}")
                     }
-                }
+                    crate::extensions::ExtensionState::UpdateAvailable { to } => {
+                        format!("Installed \u{2014} {to} is out")
+                    }
+                    crate::extensions::ExtensionState::NeedsNewerFontelle => {
+                        "Needs a newer Fontelle".to_string()
+                    }
+                },
                 None => String::new(),
             },
             Self::CheckForUpdates => if settings.check_for_updates {
@@ -819,14 +820,10 @@ impl SettingRow {
             Self::SaveTheme => "Save\u{2026}",
             Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
                 Some(extension) => {
-                    let state = crate::extensions::ExtensionState::of(
-                        extension,
-                        crate::extensions::is_installed(extension),
-                        None,
-                    );
-                    match crate::extensions::action_for(&state) {
+                    match crate::extensions::action_for(&crate::extensions::state_here(extension)) {
                         crate::extensions::ExtensionAction::Install => "Install",
                         crate::extensions::ExtensionAction::Remove => "Remove",
+                        crate::extensions::ExtensionAction::Update => "Update",
                         crate::extensions::ExtensionAction::None => "",
                     }
                 }

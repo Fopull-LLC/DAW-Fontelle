@@ -2471,12 +2471,14 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
     // accent, not the warning ink. Ty: *"dont make it red bc that makes it
     // look like somethings wrong even when its not."* Most of what lands
     // here is "Enter reopens …" or a picker that was cancelled.
+    // At the foot of its room, so a one-line note sits just above the
+    // buttons and a longer one grows upward.
     draw_text_clipped(
         scene,
         chrome.message,
         l.message,
         l.message.x,
-        l.message.y,
+        (l.message.bottom() - chrome.message.height).max(l.message.y),
         p.accent,
     );
 

@@ -520,3 +520,25 @@ fn on_first_launch_it_is_a_card_with_a_way_to_say_no() {
     );
     assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::DismissLearn));
 }
+
+/// Two sentences fit: how the last run ended **and** that an extension is
+/// out of date (Ty, 2026-10-02) were cut off at two rows. The message takes
+/// the room between the update line and the buttons, which is most of the
+/// column, and still keeps clear of both.
+#[test]
+fn a_message_of_two_sentences_has_room() {
+    for update in [false, true] {
+        let layout = welcome_layout(window(), &metrics(), 3, update);
+        let row = metrics().row_height;
+        assert!(
+            layout.message.height >= 4.0 * row,
+            "room for four rows: {:?}",
+            layout.message
+        );
+        assert!(layout.message.bottom() <= layout.new_button.y);
+        assert!(layout.message.y >= layout.update.bottom());
+        if let Some(button) = layout.update_button {
+            assert!(!overlaps(layout.message, button));
+        }
+    }
+}

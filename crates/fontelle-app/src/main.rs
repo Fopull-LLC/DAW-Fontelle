@@ -705,6 +705,8 @@ fn play_or_render(
             if let Some(said) = &crash_news {
                 session.announce(said.clone());
             }
+            // And an extension older than this Fontelle needs, after it.
+            session.announce_extension_notices();
             Box::new(session) as Box<dyn fontelle_ui::StudioHost>
         });
         // Live MIDI, on its own thread, for as long as the window is open.

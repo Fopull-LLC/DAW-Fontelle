@@ -38,7 +38,7 @@ fn an_asset_is_named_the_way_the_updater_names_fontelles_own() {
 fn a_loadable_extension_not_installed_offers_to_install() {
     let vst2 = extensions::find("vst2").unwrap();
     assert!(vst2.loadable(), "the catalogue's own ABI is this build's");
-    let state = ExtensionState::of(vst2, false, None);
+    let state = ExtensionState::of(vst2, false, None, None);
     assert_eq!(state, ExtensionState::NotInstalled);
     assert_eq!(extensions::action_for(&state), ExtensionAction::Install);
 }
@@ -46,7 +46,7 @@ fn a_loadable_extension_not_installed_offers_to_install() {
 #[test]
 fn an_installed_extension_offers_to_remove() {
     let vst2 = extensions::find("vst2").unwrap();
-    let state = ExtensionState::of(vst2, true, None);
+    let state = ExtensionState::of(vst2, true, Some(vst2.needs), None);
     assert_eq!(state, ExtensionState::Installed);
     assert_eq!(extensions::action_for(&state), ExtensionAction::Remove);
 }
@@ -60,9 +60,10 @@ fn a_bridge_from_a_later_fontelle_is_named_but_not_offered() {
         summary: "",
         repo: "Fopull-LLC/whatever",
         kind: ExtensionKind::Bridge { abi: u32::MAX },
+        needs: Version::new(0, 0, 0),
     };
     assert!(!future.loadable());
-    let state = ExtensionState::of(&future, false, None);
+    let state = ExtensionState::of(&future, false, None, None);
     assert_eq!(state, ExtensionState::NeedsNewerFontelle);
     assert_eq!(extensions::action_for(&state), ExtensionAction::None);
 }
@@ -167,10 +168,16 @@ fn installing_downloads_verifies_and_puts_the_library_in_place() {
         .expect("the extension installs");
     assert!(seen > 0, "progress was reported");
     assert!(extensions::is_installed(vst2), "it is on disk now");
+    assert_eq!(
+        extensions::installed_version(vst2),
+        Some(Version::new(0, 1, 0)),
+        "and it says which release it is"
+    );
 
-    // And removing it takes it away.
+    // And removing it takes it away, version and all.
     extensions::remove(vst2).expect("removes");
     assert!(!extensions::is_installed(vst2));
+    assert_eq!(extensions::installed_version(vst2), None);
 
     unsafe {
         std::env::remove_var("FONTELLE_BRIDGES");
@@ -213,4 +220,74 @@ fn a_download_whose_checksum_is_wrong_is_not_installed() {
         std::env::remove_var("FONTELLE_BRIDGES");
     }
     let _ = std::fs::remove_dir_all(&scratch);
+}
+
+// --- out of date (Ty, 2026-10-02: "make sure it lets users know that its
+// out of date if it is and they need to do that") ---
+
+/// The vst2 extension Fontelle 0.21 wants is 0.2.0, the first that takes
+/// raw MIDI (the slides' MPE). An install with no version beside it was made
+/// before installs recorded one, so it is older than that.
+#[test]
+fn an_install_older_than_this_fontelle_needs_is_out_of_date() {
+    let vst2 = extensions::find("vst2").unwrap();
+    assert_eq!(vst2.needs, Version::new(0, 2, 0));
+    for installed in [None, Some(Version::new(0, 1, 1))] {
+        let state = ExtensionState::of(vst2, true, installed, None);
+        assert_eq!(
+            state,
+            ExtensionState::OutOfDate {
+                needs: Version::new(0, 2, 0)
+            },
+            "{installed:?}"
+        );
+        assert_eq!(extensions::action_for(&state), ExtensionAction::Update);
+    }
+    let state = ExtensionState::of(vst2, true, Some(Version::new(0, 2, 0)), None);
+    assert_eq!(state, ExtensionState::Installed);
+}
+
+#[test]
+fn a_newer_release_than_the_one_installed_offers_an_update() {
+    let vst2 = extensions::find("vst2").unwrap();
+    let state = ExtensionState::of(
+        vst2,
+        true,
+        Some(Version::new(0, 2, 0)),
+        Some(Version::new(0, 3, 0)),
+    );
+    assert_eq!(
+        state,
+        ExtensionState::UpdateAvailable {
+            to: Version::new(0, 3, 0)
+        }
+    );
+    assert_eq!(extensions::action_for(&state), ExtensionAction::Update);
+    // Not when the newest is what is there.
+    let state = ExtensionState::of(
+        vst2,
+        true,
+        Some(Version::new(0, 3, 0)),
+        Some(Version::new(0, 3, 0)),
+    );
+    assert_eq!(state, ExtensionState::Installed);
+}
+
+/// What the studio says at launch when one is out of date: which, and where
+/// to go. Nothing when it is current or not installed.
+#[test]
+fn an_out_of_date_extension_is_said_at_launch() {
+    let vst2 = extensions::find("vst2").unwrap();
+    let notice = extensions::notice(
+        vst2,
+        &ExtensionState::OutOfDate {
+            needs: Version::new(0, 2, 0),
+        },
+    )
+    .expect("a notice");
+    assert!(notice.contains("VST 2"), "{notice}");
+    assert!(notice.contains("out of date"), "{notice}");
+    assert!(notice.contains("Settings"), "{notice}");
+    assert!(extensions::notice(vst2, &ExtensionState::Installed).is_none());
+    assert!(extensions::notice(vst2, &ExtensionState::NotInstalled).is_none());
 }
