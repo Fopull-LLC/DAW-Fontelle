@@ -55,6 +55,9 @@ fresh() {
 setup() {
   case $1 in
     roll) python3 "$HERE/drive.py" c,450,213 s,0.8 w,800,520,-6 s,0.5 ;;
+    # Keys chosen and scrolled the way `roll` is, then a blank clip on
+    # Lane 5 and the roll pulled tall: room to slide in, C4 at y=446.
+    slide|slide_edit) python3 "$HERE/drive.py" c,450,213 s,0.8 w,800,520,-6 s,0.5 m,900,281 s,0.4 c,920,281 s,0.08 c,920,281 s,1 m,768,353 s,0.3 dn,768,353 m,768,300 m,768,240 m,768,200 s,0.2 up,768,200 s,0.6 ;;
     # The rack and browser seam up, so the presets and the rack share a frame.
     browser) python3 "$HERE/drive.py" c,60,139 s,0.3 m,131,340 s,0.3 dn,131,328 m,131,300 m,131,250 m,131,215 s,0.2 up,131,215 s,0.5 ;;
   esac
@@ -73,7 +76,7 @@ case $1 in
   all)
     home
     # Settings last: it opens the guide, which shows the others.
-    for n in transport rack browser clips lanes roll mixer export; do record $n; done
+    for n in transport rack browser clips lanes roll slide slide_edit mixer export; do record $n; done
     build
     record settings ;;
   *) home; for n in "$@"; do record "$n"; done ;;

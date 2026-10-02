@@ -58,6 +58,10 @@ pub enum GuideMedia {
     Clips,
     Lanes,
     Roll,
+    /// Sliding notes: a melody from one note, a chord sliding apart.
+    Slide,
+    /// Shaping a slide: carrying on from the end, adding and dragging a point.
+    SlideEdit,
     Mixer,
     Export,
     Settings,
@@ -71,6 +75,8 @@ impl GuideMedia {
         GuideMedia::Clips,
         GuideMedia::Lanes,
         GuideMedia::Roll,
+        GuideMedia::Slide,
+        GuideMedia::SlideEdit,
         GuideMedia::Mixer,
         GuideMedia::Export,
         GuideMedia::Settings,
@@ -235,18 +241,41 @@ pub const GUIDE: &[GuideSection] = &[
     GuideSection {
         title: "Writing notes",
         kind: GuideKind::Tour,
-        pages: &[shows(
-            page(
-                "The piano roll",
-                &[
-                    "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
-                    "The chooser beside the tools sets the grid (G steps through it), and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
-                    "To make a note slide, keep the button down after drawing it and press S: the note holds to there, then follows the pointer, flat along a row or sliding up and down. Press S again for each new point, Backspace to take one back, and let go to end it. Drag a point to move it, and double-click a note to add one.",
-                ],
-                Some(Editor),
+        pages: &[
+            shows(
+                page(
+                    "The piano roll",
+                    &[
+                        "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
+                        "The chooser beside the tools sets the grid (G steps through it), and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
+                    ],
+                    Some(Editor),
+                ),
+                GuideMedia::Roll,
             ),
-            GuideMedia::Roll,
-        )],
+            shows(
+                page(
+                    "Sliding notes",
+                    &[
+                        "Any note can slide, as often as you like. Draw a note and keep the button down, then press S: the note holds to there and the pointer leads on. Move along a row and it holds; move up or down and it slides. Press S for each new point, Backspace to take the last one back, and let go to end the note.",
+                        "It stays one note, so a whole melody can come from one key, and each note of a chord can slide somewhere of its own. The points land on the grid, and G steps through it.",
+                    ],
+                    Some(Editor),
+                ),
+                GuideMedia::Slide,
+            ),
+            shows(
+                page(
+                    "Shaping a slide",
+                    &[
+                        "Every point is a handle. Drag one to change where a slide lands or when it gets there. Grab a note's end and press S to carry on sliding from it. Double-click a note to add a point, and double-click a point to take it out.",
+                        "Built-in instruments, CLAP and VST 3 plugins slide each note on its own. For an LV2 or VST 2 synth, right-click its channel in the rack and turn on Slides as MPE, with the synth in its own MPE mode. Exported MIDI carries slides as MPE too.",
+                    ],
+                    Some(Editor),
+                ),
+                GuideMedia::SlideEdit,
+            ),
+        ],
     },
     GuideSection {
         title: "Mixing",

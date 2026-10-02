@@ -31,6 +31,8 @@ pub fn bytes(media: GuideMedia) -> &'static [u8] {
         GuideMedia::Clips => include_bytes!("../../../assets/guide/clips.png"),
         GuideMedia::Lanes => include_bytes!("../../../assets/guide/lanes.png"),
         GuideMedia::Roll => include_bytes!("../../../assets/guide/roll.png"),
+        GuideMedia::Slide => include_bytes!("../../../assets/guide/slide.png"),
+        GuideMedia::SlideEdit => include_bytes!("../../../assets/guide/slide_edit.png"),
         GuideMedia::Mixer => include_bytes!("../../../assets/guide/mixer.png"),
         GuideMedia::Export => include_bytes!("../../../assets/guide/export.png"),
         GuideMedia::Settings => include_bytes!("../../../assets/guide/settings.png"),

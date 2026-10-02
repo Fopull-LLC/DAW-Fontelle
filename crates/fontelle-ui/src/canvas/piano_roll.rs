@@ -2055,6 +2055,19 @@ impl PianoRoll {
         }
     }
 
+    /// How long a newly drawn note is: the template's length — or, when
+    /// the template slides, its **first hold**. A sliding note's length is
+    /// the whole of its slides, and a note drawn after one that copied it
+    /// would hold for the last one's whole melody before its own slide
+    /// could begin.
+    fn template_length(&self) -> Tick {
+        self.template
+            .path
+            .first()
+            .map_or(self.template.length, |point| point.at)
+            .max(1)
+    }
+
     /// The note a press on empty grid asks for.
     fn drawn_note(&self, start: Tick, key: u8, length: Tick) -> Note {
         Note {
@@ -2549,7 +2562,7 @@ impl PianoRoll {
                 let snap = self.live_snap();
                 let start = snap_tick(tick, snap, beats_per_bar);
                 let key = self.scaled_key(key);
-                let note = self.drawn_note(start, key, self.template.length);
+                let note = self.drawn_note(start, key, self.template_length());
                 // Where the pointer *pressed*, not where the note landed: a
                 // move is a delta from the press, and measuring it from the
                 // snapped start would jump the note by up to half a step the
@@ -2705,7 +2718,7 @@ impl PianoRoll {
                 }
                 self.gesture = Gesture::Painting { last: (start, key) };
                 vec![RollEdit::Add {
-                    note: self.drawn_note(start, key, self.template.length),
+                    note: self.drawn_note(start, key, self.template_length()),
                 }]
             }
 

@@ -358,8 +358,12 @@ fn a_card_without_an_animation_is_as_it_was() {
 
 #[test]
 fn the_guide_page_shows_each_animation_after_its_title() {
+    // Tall enough that every page of a section is on screen at once: the
+    // page lays out only what can be seen, and *Writing notes* has three
+    // clips since the slide's two pages joined it.
+    let tall = Rect::new(0.0, 0.0, 1280.0, 4000.0);
     for (s, section) in GUIDE.iter().enumerate() {
-        let l = help_layout(window(), &metrics(), s, &heights(s), 0.0);
+        let l = help_layout(tall, &metrics(), s, &heights(s), 0.0);
         for (p, page) in section.pages.iter().enumerate() {
             let blocks: Vec<_> = l.blocks.iter().filter(|b| b.page == p).collect();
             let media: Vec<_> = blocks.iter().filter(|b| b.media).collect();
@@ -395,9 +399,46 @@ fn the_guide_teaches_sliding_a_note() {
             .paragraphs
             .join(" ")
     };
-    let roll = text("The piano roll");
+    let roll = text("Sliding notes");
     assert!(roll.contains("press S") && roll.contains("slide"), "{roll}");
     assert!(roll.contains("Backspace"), "{roll}");
     let fl = text("Channel rack, playlist and mixer");
     assert!(fl.contains("slide"), "{fl}");
+}
+
+/// Ty, 2026-10-01: *"you need to get some animations of examples of how to
+/// use the slide notes, and there should be a tutorial for how to do them."*
+/// Two pages under *Writing notes*, each showing it being done: drawing a
+/// slide (a melody from one note, a chord sliding apart), and shaping one.
+#[test]
+fn sliding_notes_have_a_tutorial_with_clips() {
+    let writing = GUIDE
+        .iter()
+        .find(|section| section.title == "Writing notes")
+        .expect("the roll's section");
+    let page = |title: &str| {
+        writing
+            .pages
+            .iter()
+            .find(|page| page.title == title)
+            .unwrap_or_else(|| panic!("a page called {title}"))
+    };
+    let slide = page("Sliding notes");
+    assert_eq!(slide.media, Some(GuideMedia::Slide));
+    let text = slide.paragraphs.join(" ");
+    assert!(
+        text.contains("S") && text.contains("Backspace") && text.contains("chord"),
+        "{text}"
+    );
+    let shape = page("Shaping a slide");
+    assert_eq!(shape.media, Some(GuideMedia::SlideEdit));
+    let text = shape.paragraphs.join(" ");
+    assert!(
+        text.contains("double-click") || text.contains("Double-click"),
+        "{text}"
+    );
+    assert!(
+        text.contains("MPE"),
+        "where an LV2 or VST 2 synth gets it: {text}"
+    );
 }

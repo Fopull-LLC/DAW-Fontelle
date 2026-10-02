@@ -543,3 +543,28 @@ fn s_while_dragging_a_point_in_the_middle_does_nothing() {
     host.press(PPQN, 60);
     assert!(!host.roll.takes_path_points());
 }
+
+/// The next note copies the last one's length (FL's rule), but a sliding
+/// note's length is the whole of its slides. What a note drawn after one
+/// copies is its **first hold** — the note part — so a second slide drawn
+/// straight after the first starts sliding as soon, rather than holding
+/// for the whole of the last one's melody first.
+#[test]
+fn a_note_drawn_after_a_slide_is_as_long_as_its_first_hold() {
+    let mut host = Host::new(DrawDrag::Move);
+    host.press(0, 60);
+    let first = host.only().length;
+    host.s();
+    host.drag(first + PPQN * 2, 67);
+    host.release(first + PPQN * 2, 67);
+
+    host.press(PPQN * 5, 55);
+    let second = host
+        .notes
+        .values()
+        .find(|n| n.start == PPQN * 5)
+        .unwrap_or_else(|| panic!("{:?}", host.notes.values().collect::<Vec<_>>()))
+        .clone();
+    assert_eq!(second.length, first, "the hold, not the whole slide");
+    assert!(second.path.is_empty());
+}
