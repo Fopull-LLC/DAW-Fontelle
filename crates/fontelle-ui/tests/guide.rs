@@ -442,3 +442,24 @@ fn sliding_notes_have_a_tutorial_with_clips() {
         "where an LV2 or VST 2 synth gets it: {text}"
     );
 }
+
+/// W, on card 0346: *"the browser page says 'Fontelle hosts CLAP, VST 3 and
+/// LV2 plugins as they are'. The product page says LV2 is not hosted on
+/// Windows or macOS."* LV2 is Linux's alone (`lv2_stub.rs`), so the guide
+/// says so wherever it names LV2 as hosted.
+#[test]
+fn the_guide_says_lv2_is_linux_only() {
+    let hosting: Vec<&str> = GUIDE
+        .iter()
+        .flat_map(|section| section.pages)
+        .flat_map(|page| page.paragraphs.iter().copied())
+        .filter(|text| text.contains("hosts") && text.contains("LV2"))
+        .collect();
+    assert!(
+        !hosting.is_empty(),
+        "the page that says what Fontelle hosts"
+    );
+    for text in hosting {
+        assert!(text.contains("Linux"), "{text}");
+    }
+}

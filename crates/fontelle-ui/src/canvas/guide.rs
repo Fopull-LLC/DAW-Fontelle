@@ -203,7 +203,7 @@ pub const GUIDE: &[GuideSection] = &[
             ask(
                 "VST 2 plugins",
                 &[
-                    "Fontelle hosts CLAP, VST 3 and LV2 plugins as they are. VST 2 plugins need a small extension, downloaded when you ask for it.",
+                    "Fontelle hosts CLAP and VST 3 plugins as they are, and LV2 plugins too on Linux. VST 2 plugins need a small extension, downloaded when you ask for it.",
                     "Turn it on here if you use VST 2 plugins. You can change your mind any time in Settings, under Extensions.",
                 ],
                 None,

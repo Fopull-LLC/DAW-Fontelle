@@ -13,6 +13,10 @@ tools/guide-clips/record.sh all            # or every one, settings last
 cargo test -p fontelle-ui --test guide_media
 ```
 
+The web manual (hub cards 0346, 0358) takes the clips as
+`guide-<name>.png` and the text as `guide.md`, which is generated, never
+edited: `cargo run -q --example guide_markdown -p fontelle-ui > guide.md`.
+
 Then look at the frames (`$CLIPS_WORK/<name>/NNNN.png`, default
 `/tmp/fontelle-clips`) before believing a clip, and delete that folder.
 
