@@ -19,6 +19,25 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-01 (latest, later) — Ty's first test of the slides, and
+their tutorial.** *"trying to do it again just changes the snapping grid
+instead of making a new slide note point ... make s the key for slide notes
+only ... the g key"*. Still not released.
+
+- Grabbing a drawn note's end is a drag of its last point, and S didn't
+  work there, so the key fell through to the snap. Now S on a path's last
+  point carries the drawing on. In the roll, S never touches the grid: the
+  roll's snap is `Action::RollSnap` on **G**, the ghost notes moved to **O**,
+  and S on the arrangement is `Action::Stretch`, keeping its old settings id
+  `snap-or-stretch`.
+- A note drawn after a sliding note copies its first hold, not its whole
+  length (`PianoRoll::template_length`).
+- The tutorial: guide pages **Sliding notes** and **Shaping a slide**
+  (`GuideMedia::Slide`, `SlideEdit`), each with a clip recorded through
+  `tools/guide-clips` (`record.sh slide slide_edit`; the setup makes a blank
+  clip on Lane 5 and pulls the roll tall). Hub card 0358 asks W to put the
+  feature on the product page; 0346's manual gains the two pages.
+
 **As of 2026-10-01 (latest, late night) — note paths: a note slides where
 you draw it.** Ty: *"when dragging out a note, you can press the s key to
 place a point there ... id want to be able to make a note slide as many
