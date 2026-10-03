@@ -502,6 +502,9 @@ pub struct RollChrome<'a> {
     pub ghosts: &'a [GhostNote],
     /// Which filter the chip is on, so it can say so and light up.
     pub ghost_filter: GhostFilter,
+    /// What the chip says — the filter with the instrument's name
+    /// (`GhostFilter::caption`). Empty draws the filter's short label.
+    pub ghost_caption: String,
     /// The notes of the take being recorded, so far, drawn over the clip's
     /// own in the record colour — see [`TimelineChrome::take_notes`] and
     /// `DocumentHost::recording_notes`.
@@ -593,6 +596,9 @@ pub struct MixerChrome<'a> {
     /// An insert being dragged up or down the chain: the slot it started in
     /// and the slot it is over.
     pub insert_drag: Option<(usize, usize)>,
+    /// A strip being carried along the row, `(from, to)`, once it has
+    /// travelled — the carried strip dimmed and an accent bar where it lands.
+    pub moving_strip: Option<(usize, usize)>,
     /// The output row's menu, while it is open, and the names its rows read.
     pub output_menu: Option<&'a crate::canvas::RouteMenu>,
     /// The send menu, likewise — a separate field because the two are over the
@@ -4492,6 +4498,9 @@ fn draw_effect(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Effec
     }
 }
 
+/// How wide the bar that says where a carried strip will land is.
+const GAP_MARK: f32 = 3.0;
+
 fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerChrome<'_>) {
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -4503,6 +4512,34 @@ fn draw_mixer(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &MixerC
         };
         let peaks = chrome.peaks.get(layout.index).copied().unwrap_or([0.0; 2]);
         draw_mixer_strip(scene, theme, labels, chrome, layout, strip, peaks);
+    }
+
+    // A strip being carried: the one in hand veiled, and a bar on the side
+    // of the strip it will land beside — left when it is going left.
+    if let Some((from, to)) = chrome.moving_strip {
+        if let Some(carried) = l.strips.iter().find(|s| s.index == from) {
+            fill_rect_rounded(
+                scene,
+                carried.frame,
+                m.corner_radius,
+                p.window.with_alpha(0x90),
+            );
+        }
+        if to != from
+            && let Some(target) = l.strips.iter().find(|s| s.index == to)
+        {
+            let x = if to < from {
+                target.frame.x - GAP_MARK / 2.0
+            } else {
+                target.frame.right() - GAP_MARK / 2.0
+            };
+            fill_rect_rounded(
+                scene,
+                Rect::new(x, target.frame.y, GAP_MARK, target.frame.height),
+                GAP_MARK / 2.0,
+                p.accent,
+            );
+        }
     }
 
     // The `+` past the last strip. *"then the plus button moves to the next
@@ -6553,7 +6590,11 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
     }
     fill_rect(scene, chrome.layout.toolbar, p.panel_header);
 
-    let ghost_caption = chrome.ghost_filter.label();
+    let ghost_caption = if chrome.ghost_caption.is_empty() {
+        chrome.ghost_filter.label()
+    } else {
+        chrome.ghost_caption.clone()
+    };
     let lane_caption = crate::canvas::lane_caption(chrome.lane_property);
     let snap_caption = crate::canvas::snap_caption(chrome.snap);
     let tools_caption = crate::canvas::tools_caption();

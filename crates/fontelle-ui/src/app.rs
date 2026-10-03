@@ -258,6 +258,9 @@ enum Drag {
     /// column. The slot it started in and the slot it is over live in
     /// `insert_drag`; this only says who a `CursorMoved` belongs to.
     InsertRow,
+    /// A mixer strip carried along the row by its name or its body, to be
+    /// let go where it should stand. Its state is `strip_drag`.
+    MoveStrip,
     /// A slider on a settings row, by its index in the settings list.
     /// **Absolute**, like the mixer's fader: the value goes where the press
     /// landed and then follows the pointer — a settings number is a position,
@@ -272,6 +275,28 @@ enum Drag {
 /// between the two shifts by one. The editor addresses an insert by its slot,
 /// and a reorder that left it pointing at the neighbour would silently swap
 /// which effect the panel of knobs is writing to.
+/// A mixer strip picked up by its name or body.
+///
+/// > *"easily reorder them"* — the strip is the handle: press, carry it
+/// > along, let go. A press that never travelled is the click it always
+/// > was, which is why a rename waits for the release.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StripDrag {
+    from: usize,
+    /// Where it would land now.
+    to: usize,
+    /// Where the press went down, and whether it has travelled past the
+    /// slop — before that it is a click.
+    x: f32,
+    moved: bool,
+    /// A press on the selected strip's name: a rename, if it comes up
+    /// where it went down.
+    rename: bool,
+}
+
+/// How far a strip has to be carried before it is a drag and not a click.
+const STRIP_DRAG_SLOP: f32 = 6.0;
+
 fn reslot(slot: usize, from: usize, to: usize) -> usize {
     if slot == from {
         return to;
@@ -624,6 +649,9 @@ enum MenuTarget {
     Snap {
         timeline: bool,
     },
+    /// The onion-skin chip: off, all, or one instrument by name — see
+    /// `canvas::ghost_menu`.
+    GhostMenu,
     /// The root chip on the roll's toolbar: the song key's root.
     KeyRoot,
     /// The scale chip: every scale, grouped, filtered as you type — see
@@ -830,7 +858,7 @@ impl MenuTarget {
             Self::DevicePresetName(_)
             | Self::DevicePresetCategory(_)
             | Self::DevicePresetNewCategory(_) => None,
-            Self::Snap { .. } | Self::KeyRoot | Self::KeyScale => None,
+            Self::Snap { .. } | Self::KeyRoot | Self::KeyScale | Self::GhostMenu => None,
             // The settings drop-down is a row of the browser panel, which is in
             // the main window.
             Self::SettingChoice(_) | Self::TourSection => None,
@@ -1780,6 +1808,8 @@ pub struct WindowApp {
     /// An insert being dragged up or down its chain: which slot it started in,
     /// and which it is over now.
     insert_drag: Option<(usize, usize)>,
+    /// A strip being carried along the mixer — see [`StripDrag`].
+    strip_drag: Option<StripDrag>,
 
     // --- the transport bar's two document boxes ---
     /// The tempo at the start of the piece, read with the studio's lists.
@@ -2401,6 +2431,7 @@ impl WindowApp {
             output_menu: None,
             send_menu: None,
             insert_drag: None,
+            strip_drag: None,
             tempo: 120.0,
             tempo_entry: None,
             tempo_marks: None,
@@ -2877,6 +2908,8 @@ impl WindowApp {
     }
 
     fn draw(&mut self) {
+        // Before the surface is borrowed for the frame.
+        let ghost_caption = self.ghost_caption();
         if self.live.is_none() {
             return;
         }
@@ -3046,6 +3079,7 @@ impl WindowApp {
                     lane_property: self.roll.lane_property,
                     ghosts: &self.ghosts,
                     ghost_filter: self.roll.ghosts,
+                    ghost_caption: ghost_caption.clone(),
                     recording: &self.takes,
                     key_style: self.key_style,
                     scale: self.roll.scale,
@@ -3200,6 +3234,10 @@ impl WindowApp {
                     output_label: output_label.clone(),
                     input_label: input_label.clone(),
                     insert_drag: self.insert_drag,
+                    moving_strip: self
+                        .strip_drag
+                        .filter(|carried| carried.moved && self.drag == Drag::MoveStrip)
+                        .map(|carried| (carried.from, carried.to)),
                     output_menu: self.output_menu.as_ref(),
                     send_menu: self.send_menu.as_ref().map(|(_, menu)| menu),
                     route_names: &self.route_names,
@@ -3855,6 +3893,10 @@ impl WindowApp {
             Drag::TimelineSelect | Drag::RollSelect => Some(Pointer::ResizeX),
             // A row being carried up or down its chain.
             Drag::InsertRow => Some(Pointer::Grabbing),
+            Drag::MoveStrip => self
+                .strip_drag
+                .filter(|carried| carried.moved)
+                .map(|_| Pointer::Grabbing),
             Drag::SendLevel(_) => Some(Pointer::ResizeX),
             Drag::SendKnob { .. } => Some(Pointer::ResizeY),
             Drag::Cable => Some(Pointer::Grabbing),
@@ -4667,6 +4709,9 @@ impl ApplicationHandler for WindowApp {
                 // one drag.
                 if matches!(self.drag, Drag::InsertRow) {
                     self.drop_insert_row();
+                }
+                if matches!(self.drag, Drag::MoveStrip) {
+                    self.drop_strip();
                 }
                 if matches!(self.drag, Drag::Cable) {
                     let (x, y) = self.cursor;
@@ -7798,7 +7843,7 @@ impl WindowApp {
 
         let heading = self.browser_title.clone();
         want(&mut self.labels, &mut self.text, &heading);
-        let ghost_caption = self.roll.ghosts.label();
+        let ghost_caption = self.ghost_caption();
         want(&mut self.labels, &mut self.text, &ghost_caption);
         let lane_caption = crate::canvas::lane_caption(self.roll.lane_property);
         want(&mut self.labels, &mut self.text, &lane_caption);
@@ -8684,6 +8729,7 @@ impl WindowApp {
             // Nothing while it is carried: the copy happens where it lands.
             Drag::DisgustingBeatScene(_) => {}
             Drag::Fader(strip) => self.drag_fader(strip, y),
+            Drag::MoveStrip => self.carry_strip(x),
             Drag::EqHandle(band) => self.drag_eq(band, x, y),
             Drag::TimelineSelect => self.drag_select_timeline(x),
             Drag::RollSelect => self.drag_select_roll(x),
@@ -8753,11 +8799,20 @@ impl WindowApp {
             return;
         }
         match mixer_hit(&self.mixer, x, y) {
+            // The track you are leveling is the track you are working on:
+            // a fader or pan press selects its strip too, so the options
+            // column never shows one track while you mix another.
             MixerHit::Fader(strip) => {
+                if strip != self.selected_track {
+                    self.select_track(strip);
+                }
                 self.drag = Drag::Fader(strip);
                 self.drag_fader(strip, y);
             }
             MixerHit::Pan(strip) => {
+                if strip != self.selected_track {
+                    self.select_track(strip);
+                }
                 self.drag = Drag::Pan(strip);
                 self.drag_pan(strip, x);
             }
@@ -8786,13 +8841,22 @@ impl WindowApp {
             // field."* The first click chooses the strip and a click on the
             // name of the one already chosen starts typing — see
             // `canvas::name_press`, which is where that rule lives.
-            MixerHit::Name(strip) => match crate::canvas::name_press(strip, self.selected_track) {
-                crate::canvas::NamePress::Rename => {
-                    self.start_rename(MenuTarget::MixerTrack(strip))
+            //
+            // Either is also where a strip is picked up to be moved, so the
+            // rename waits for the release: a press that travelled was a
+            // drag (`StripDrag`).
+            MixerHit::Name(strip) => {
+                let rename = crate::canvas::name_press(strip, self.selected_track)
+                    == crate::canvas::NamePress::Rename;
+                if !rename {
+                    self.select_track(strip);
                 }
-                crate::canvas::NamePress::Select => self.select_track(strip),
-            },
-            MixerHit::Strip(strip) => self.select_track(strip),
+                self.pick_up_strip(strip, x, rename);
+            }
+            MixerHit::Strip(strip) => {
+                self.select_track(strip);
+                self.pick_up_strip(strip, x, false);
+            }
             // *"a plus where you can add a new track there"* — and the new
             // track is selected, because it is the one you are about to put
             // something on.
@@ -8860,6 +8924,90 @@ impl WindowApp {
     }
 
     /// Points the mixer — and the track-options column with it — at `strip`.
+    /// Takes hold of a strip to carry it along the mixer. The master is not
+    /// carried — it is pinned — but a press on its name still renames it.
+    fn pick_up_strip(&mut self, strip: usize, x: f32, rename: bool) {
+        let master = self.mixer_strips.get(strip).is_some_and(|s| s.is_master);
+        if master {
+            if rename {
+                self.start_rename(MenuTarget::MixerTrack(strip));
+            }
+            return;
+        }
+        self.drag = Drag::MoveStrip;
+        self.strip_drag = Some(StripDrag {
+            from: strip,
+            to: strip,
+            x,
+            moved: false,
+            rename,
+        });
+    }
+
+    fn carry_strip(&mut self, x: f32) {
+        let Some(mut carried) = self.strip_drag else {
+            return;
+        };
+        if !carried.moved && (x - carried.x).abs() < STRIP_DRAG_SLOP {
+            return;
+        }
+        carried.moved = true;
+        if let Some(to) = crate::canvas::strip_drop_index(&self.mixer, x) {
+            carried.to = to;
+        }
+        if self.strip_drag != Some(carried) {
+            self.strip_drag = Some(carried);
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// Lets a carried strip go: where it is over, or — if it never
+    /// travelled — the click it was, which on the selected name is a rename.
+    fn drop_strip(&mut self) {
+        let Some(carried) = self.strip_drag.take() else {
+            return;
+        };
+        if carried.moved {
+            self.move_strip(carried.from, carried.to);
+        } else if carried.rename {
+            self.start_rename(MenuTarget::MixerTrack(carried.from));
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// What a strip's menu offers (`canvas::track_menu_rows`).
+    fn track_menu_rows(&self, strip: usize) -> Vec<(crate::canvas::TrackMenuRow, bool)> {
+        let is_master = self.mixer_strips.get(strip).is_some_and(|s| s.is_master);
+        let tracks = self.mixer_strips.iter().filter(|s| !s.is_master).count();
+        crate::canvas::track_menu_rows(is_master, strip, tracks)
+    }
+
+    /// Moves strip `from` to `to` — the menu's *Move left/right*, or a strip
+    /// dragged along the mixer and let go.
+    fn move_strip(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.move_mixer_track(from, to);
+        }
+        // An open effect window names its strip by place; the place moved.
+        if let Some((strip, slot)) = self.open_insert {
+            self.open_insert = Some((reslot(strip, from, to), slot));
+        }
+        self.after_strip_edit();
+    }
+
+    /// After the strips themselves changed: re-read them, and the selection
+    /// the document moved with them.
+    fn after_strip_edit(&mut self) {
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(RACK);
+        self.tree.invalidate(TIMELINE);
+    }
+
     fn select_track(&mut self, strip: usize) {
         if let Some(doc) = &mut self.options.document {
             doc.select_mixer_track(strip);
@@ -16952,13 +17100,16 @@ impl WindowApp {
                     .map(|track| track.name.clone())
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| "Track".to_string());
-                vec![
-                    MenuEntry::disabled(&named),
-                    MenuEntry::new("Track presets\u{2026}").after_rule(),
-                    MenuEntry::new("Save track preset\u{2026}"),
-                    MenuEntry::new("Rename").after_rule(),
-                    MenuEntry::new("Colour\u{2026}"),
-                ]
+                std::iter::once(MenuEntry::disabled(&named))
+                    .chain(self.track_menu_rows(*strip).into_iter().map(|(row, on)| {
+                        let mut entry = MenuEntry::new(row.label());
+                        entry.enabled = on;
+                        if row.rule_before() {
+                            entry = entry.after_rule();
+                        }
+                        entry
+                    }))
+                    .collect()
             }
             MenuTarget::TrackColor(strip) => {
                 let current = self.mixer_strips.get(*strip).map(|track| track.color);
@@ -17302,6 +17453,7 @@ impl WindowApp {
                 entries.push(MenuEntry::new("Delete point").after_rule());
                 entries
             }
+            MenuTarget::GhostMenu => self.ghost_menu().0,
             MenuTarget::KeyRoot => crate::canvas::root_menu(self.key_root),
             MenuTarget::KeyScale => {
                 crate::canvas::scale_menu(self.menu_filter.text(), self.song_key.as_ref()).0
@@ -18236,16 +18388,44 @@ impl WindowApp {
             (MenuTarget::TrackMenu(strip), index) => {
                 let strip = *strip;
                 let ((x, y), bounds) = self.menu_at;
-                match index {
-                    // 0 is the heading.
-                    1 => self.open_menu(MenuTarget::TrackPresetMenu(strip), x, y, bounds),
-                    2 => {
+                use crate::canvas::TrackMenuRow;
+                // 0 is the heading.
+                let row = index
+                    .checked_sub(1)
+                    .and_then(|at| self.track_menu_rows(strip).get(at).copied())
+                    .filter(|(_, on)| *on)
+                    .map(|(row, _)| row);
+                match row {
+                    Some(TrackMenuRow::Presets) => {
+                        self.open_menu(MenuTarget::TrackPresetMenu(strip), x, y, bounds)
+                    }
+                    Some(TrackMenuRow::SavePreset) => {
                         self.menu_filter.clear();
                         self.open_menu(MenuTarget::TrackPresetName(strip), x, y, bounds);
                     }
-                    3 => self.start_rename(MenuTarget::MixerTrack(strip)),
-                    4 => self.open_menu(MenuTarget::TrackColor(strip), x, y, bounds),
-                    _ => {}
+                    Some(TrackMenuRow::Rename) => self.start_rename(MenuTarget::MixerTrack(strip)),
+                    Some(TrackMenuRow::Colour) => {
+                        self.open_menu(MenuTarget::TrackColor(strip), x, y, bounds)
+                    }
+                    Some(TrackMenuRow::Duplicate) => {
+                        if let Some(doc) = self.options.document.as_mut() {
+                            doc.duplicate_mixer_track(strip);
+                        }
+                        self.after_strip_edit();
+                    }
+                    Some(TrackMenuRow::MoveLeft) => self.move_strip(strip, strip.saturating_sub(1)),
+                    Some(TrackMenuRow::MoveRight) => self.move_strip(strip, strip + 1),
+                    Some(TrackMenuRow::Delete) => {
+                        if let Some(doc) = self.options.document.as_mut() {
+                            doc.remove_mixer_track(strip);
+                        }
+                        // An effect window on that track, or on one that
+                        // slid left into its place, would show the wrong
+                        // chain.
+                        self.open_insert = None;
+                        self.after_strip_edit();
+                    }
+                    None => {}
                 }
             }
             (MenuTarget::TrackColor(strip), index) => {
@@ -18636,6 +18816,12 @@ impl WindowApp {
                     doc.end_gesture();
                 }
             }
+            (MenuTarget::GhostMenu, index) => {
+                if let Some(Some(filter)) = self.ghost_menu().1.get(index).copied() {
+                    self.roll.ghosts = filter;
+                    self.refresh_ghosts();
+                }
+            }
             (MenuTarget::KeyRoot, index) => {
                 let root = (index % 12) as u8;
                 self.key_root = root;
@@ -18987,7 +19173,8 @@ impl WindowApp {
             }
             RollControl::Lane => self.toggle_lane_menu(),
             RollControl::Tools => self.toggle_tools_panel(),
-            RollControl::Ghost => self.cycle_ghosts(),
+            // The chip drops its list; `O` still steps.
+            RollControl::Ghost => self.open_key_menu(MenuTarget::GhostMenu),
             RollControl::Slide => self.toggle_slide(),
             RollControl::Keys => self.cycle_key_style(),
             RollControl::Root => self.open_key_menu(MenuTarget::KeyRoot),
@@ -19452,7 +19639,21 @@ impl WindowApp {
             return;
         }
         let edits = match &self.options.document {
-            Some(doc) => self.tools.run(action, &selection, doc.notes()),
+            Some(doc) => {
+                // A looped clip's notes are one period, played again: the
+                // period is the end a last note reaches, or it would run on
+                // through every pass after it on the screen.
+                let period = self
+                    .clips
+                    .iter()
+                    .find(|clip| clip.open && clip.kind == crate::document::ClipKind::Notes)
+                    .and_then(|clip| clip.loop_length);
+                self.tools.clip_end = match (doc.clip_length(), period) {
+                    (Some(length), Some(period)) => Some(length.min(period)),
+                    (length, _) => length,
+                };
+                self.tools.run(action, &selection, doc.notes())
+            }
             None => Vec::new(),
         };
         if edits.is_empty() {
@@ -19539,6 +19740,23 @@ impl WindowApp {
 
     /// The chip that steps the onion skin: off, everything, then one
     /// instrument at a time.
+    /// The onion-skin chip's caption, naming the instrument it is on.
+    fn ghost_caption(&self) -> String {
+        let names: Vec<String> = self.channels.iter().map(|c| c.name.clone()).collect();
+        self.roll.ghosts.caption(&names)
+    }
+
+    /// The onion-skin chip's list, and what each row chooses.
+    fn ghost_menu(
+        &self,
+    ) -> (
+        Vec<crate::canvas::MenuEntry>,
+        Vec<Option<crate::document::GhostFilter>>,
+    ) {
+        let names: Vec<String> = self.channels.iter().map(|c| c.name.clone()).collect();
+        crate::canvas::ghost_menu(self.roll.ghosts, &names, self.selected_channel)
+    }
+
     fn cycle_ghosts(&mut self) {
         self.roll.ghosts = self.roll.ghosts.next(self.channels.len());
         self.refresh_ghosts();
@@ -21234,6 +21452,7 @@ impl WindowApp {
     /// Drops the root or the scale list under its chip.
     fn open_key_menu(&mut self, target: MenuTarget) {
         let control = match target {
+            MenuTarget::GhostMenu => RollControl::Ghost,
             MenuTarget::KeyRoot => RollControl::Root,
             _ => RollControl::Scale,
         };

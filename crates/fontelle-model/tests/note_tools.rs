@@ -679,3 +679,44 @@ fn notes_of(project: &Project, clip: ClipId) -> &Arena<NoteId, Note> {
     };
     &data.notes
 }
+
+// > *"when pressing ctrl l to make notes legato in piano roll it doesnt
+// > extend all the way out until the end of the clip so the last note doesnt
+// > get the legato effect"*
+
+#[test]
+fn with_an_end_the_last_note_reaches_it() {
+    let out = fontelle_model::legato_lengths_to(
+        &spans(&[(0, PPQN / 4), (PPQN, PPQN / 4), (PPQN * 2, PPQN / 4)]),
+        Some(PPQN * 4),
+    );
+    assert_eq!(out, vec![PPQN, PPQN, PPQN * 2]);
+}
+
+#[test]
+fn every_note_of_a_last_chord_reaches_the_end() {
+    let out = fontelle_model::legato_lengths_to(
+        &spans(&[(0, PPQN / 4), (PPQN, PPQN / 4), (PPQN, PPQN / 2)]),
+        Some(PPQN * 4),
+    );
+    assert_eq!(out, vec![PPQN, PPQN * 3, PPQN * 3]);
+}
+
+#[test]
+fn a_last_note_already_past_the_end_is_left_alone() {
+    // An end the note starts after, or that it already runs over, is not one
+    // to stretch to — shortening it would be a different tool.
+    let out = fontelle_model::legato_lengths_to(&spans(&[(PPQN * 5, PPQN)]), Some(PPQN * 4));
+    assert_eq!(out, vec![PPQN]);
+    let out = fontelle_model::legato_lengths_to(&spans(&[(0, PPQN * 8)]), Some(PPQN * 4));
+    assert_eq!(out, vec![PPQN * 8]);
+}
+
+#[test]
+fn without_an_end_it_is_the_old_legato() {
+    let pairs = spans(&[(0, PPQN / 4), (PPQN, PPQN / 4)]);
+    assert_eq!(
+        fontelle_model::legato_lengths_to(&pairs, None),
+        legato_lengths(&pairs)
+    );
+}

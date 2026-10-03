@@ -875,6 +875,7 @@ fn shoot_roll_everything(
                 } else {
                     fontelle_ui::document::GhostFilter::All
                 },
+                ghost_caption: String::new(),
                 marker_tick: None,
                 clip_length,
                 loop_range: None,
@@ -2147,6 +2148,7 @@ fn shoot_mixer_lit(
                 output_label: output_label.clone(),
                 input_label: "In: none".to_string(),
                 insert_drag: None,
+                moving_strip: None,
                 output_menu: None,
                 send_menu: None,
                 route_names: &route_names,

@@ -331,6 +331,18 @@ pub struct MixerTrack {
     /// A project written before this field held a name carries `null`, which
     /// reads as `None` — the same value it always had.
     pub input: Option<String>,
+    /// Where this strip stands in the mixer, low first — the same field, and
+    /// the same rules, as [`Lane::order`](crate::Lane::order).
+    ///
+    /// > *"please make it so you can right click and duplicate mixer tracks
+    /// > and easily reorder them."*
+    ///
+    /// The strips stood in the arena's order, which nobody can change and a
+    /// delete reshuffles (the arena reuses the place). **Defaulted, and the
+    /// sort is stable**, so a song written before this opens with its strips
+    /// where they always were. Read through [`Mixer::ordered_tracks`].
+    #[serde(default)]
+    pub order: u32,
 }
 
 /// The colours a new mixer track is given, in the order they are handed out.
@@ -384,6 +396,7 @@ impl MixerTrack {
             output: None,
             output_on: true,
             input: None,
+            order: 0,
         }
     }
 }
@@ -406,6 +419,44 @@ impl Mixer {
     /// colour freed by a deleted track is the next one used, and a palette
     /// used up starts again rather than running out. The master is not
     /// counted: it is grey, and grey is not in the palette.
+    /// Every track but the master, in the order the mixer shows them.
+    ///
+    /// The one list a strip's number means anything against: the panel, a
+    /// route chip and a send all count strips, and two lists that disagreed
+    /// would send the bass to the drums the moment somebody dragged a strip.
+    pub fn ordered_tracks(&self) -> Vec<MixerTrackId> {
+        let mut ids: Vec<(u32, MixerTrackId)> = self
+            .tracks
+            .iter()
+            .filter(|(id, _)| Some(*id) != self.master)
+            .map(|(id, track)| (track.order, id))
+            .collect();
+        // Stable: ties keep the arena's order, which is every old song's.
+        ids.sort_by_key(|(order, _)| *order);
+        ids.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Writes `ids`' places as their orders, densely — so a song whose
+    /// tracks all carry the default ends a move with a total order rather
+    /// than a pile of ties.
+    pub fn renumber(&mut self, ids: &[MixerTrackId]) {
+        for (position, id) in ids.iter().enumerate() {
+            if let Some(track) = self.tracks.get_mut(*id) {
+                track.order = position as u32;
+            }
+        }
+    }
+
+    /// The order a track made now takes: after every other.
+    pub fn next_order(&self) -> u32 {
+        self.tracks
+            .iter()
+            .filter(|(id, _)| Some(*id) != self.master)
+            .map(|(_, track)| track.order.saturating_add(1))
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn next_track_color(&self) -> [u8; 4] {
         let mut uses = [0usize; TRACK_PALETTE.len()];
         for (id, track) in self.tracks.iter() {

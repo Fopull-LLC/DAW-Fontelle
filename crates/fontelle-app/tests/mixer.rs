@@ -797,3 +797,88 @@ fn muting_a_track_silences_what_it_sends() {
         "a muted track was still feeding its reverb bus"
     );
 }
+
+// ------------------------------------------- duplicating and reordering ---
+//
+// > *"please make it so you can right click and duplicate mixer tracks and
+// > easily reorder them."*
+
+fn strip_names(session: &Session) -> Vec<String> {
+    session.mixer_strips().into_iter().map(|s| s.name).collect()
+}
+
+#[test]
+fn a_duplicated_track_appears_beside_its_original_and_is_selected() {
+    let mut session = session_with(3);
+    session.set_track_gain_db(1, -9.0);
+    session.end_gesture();
+
+    session.duplicate_mixer_track(1);
+    assert_eq!(
+        strip_names(&session),
+        ["Track 1", "Track 2", "Track 2 copy", "Track 3", "Master"]
+    );
+    assert_eq!(
+        session.mixer_strips()[2].gain_db,
+        -9.0,
+        "it sounds the same"
+    );
+    assert_eq!(
+        session.selected_mixer_track(),
+        2,
+        "the copy is the track you are about to change"
+    );
+
+    session.undo();
+    assert_eq!(
+        strip_names(&session),
+        ["Track 1", "Track 2", "Track 3", "Master"]
+    );
+}
+
+#[test]
+fn the_master_cannot_be_duplicated() {
+    let mut session = session_with(1);
+    session.duplicate_mixer_track(1);
+    assert_eq!(strip_names(&session), ["Track 1", "Master"]);
+}
+
+#[test]
+fn a_track_moved_along_the_mixer_takes_the_selection_with_it() {
+    let mut session = session_with(3);
+    session.select_mixer_track(0);
+    session.move_mixer_track(0, 2);
+    assert_eq!(
+        strip_names(&session),
+        ["Track 2", "Track 3", "Track 1", "Master"]
+    );
+    assert_eq!(session.selected_mixer_track(), 2);
+
+    session.undo();
+    assert_eq!(
+        strip_names(&session),
+        ["Track 1", "Track 2", "Track 3", "Master"]
+    );
+}
+
+#[test]
+fn nothing_moves_past_the_master_or_takes_its_place() {
+    let mut session = session_with(2);
+    // Strip 2 is the master's place: a move to it, or of it, is nothing.
+    session.move_mixer_track(0, 2);
+    assert_eq!(strip_names(&session), ["Track 1", "Track 2", "Master"]);
+    session.move_mixer_track(0, 1);
+    assert_eq!(strip_names(&session), ["Track 2", "Track 1", "Master"]);
+    session.move_mixer_track(2, 0);
+    assert_eq!(strip_names(&session), ["Track 2", "Track 1", "Master"]);
+}
+
+#[test]
+fn a_channel_keeps_its_track_through_a_reorder() {
+    // A route is an id in the document and a strip index on the panel; a
+    // reorder that left the index behind would send the bass to the drums.
+    let mut session = session_with(2);
+    session.set_channel_route(0, Some(1));
+    session.move_mixer_track(1, 0);
+    assert_eq!(session.channels()[0].route, Some(0));
+}

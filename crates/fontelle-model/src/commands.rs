@@ -1122,6 +1122,8 @@ impl Command for AddMixerTrack {
             .get_or_insert_with(|| doc.mixer.next_track_color());
         // Into the master, which is the only destination that is always there.
         track.output = doc.mixer.master;
+        // At the end of the row, whatever has been dragged where since.
+        track.order = doc.mixer.next_order();
         match self.created {
             Some(id) => {
                 if !doc.mixer.tracks.insert_at(id, track) {
@@ -1344,6 +1346,279 @@ impl Command for RestoreMixerTrack {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+/// Moves a mixer track along the row, from one place to another — the
+/// strip dragged by its body, or *Move left* / *Move right* on its menu.
+///
+/// > *"please make it so you can right click and duplicate mixer tracks and
+/// > easily reorder them."*
+///
+/// Places, not ids, like [`MoveLane`]: counted along
+/// [`Mixer::ordered_tracks`](crate::Mixer::ordered_tracks), which the master
+/// is not in, so nothing can take the master's place. A move off either end
+/// is a no-op rather than an error, for `MoveLane`'s reason.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MoveMixerTrack {
+    from: usize,
+    to: usize,
+    /// Every track's order before the move. A move renumbers the row densely,
+    /// and an old song's tracks all carry the default: undo puts back those
+    /// numbers, not a dense row that merely looks the same.
+    #[serde(default)]
+    previous: Option<Vec<(MixerTrackId, u32)>>,
+}
+
+impl MoveMixerTrack {
+    pub fn new(from: usize, to: usize) -> Self {
+        Self {
+            from,
+            to,
+            previous: None,
+        }
+    }
+}
+
+impl Command for MoveMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveMixerTrack(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let mut ids = doc.mixer.ordered_tracks();
+        self.previous = Some(mixer_orders(doc));
+        if self.from >= ids.len() || self.to >= ids.len() || self.from == self.to {
+            return Ok(());
+        }
+        let id = ids.remove(self.from);
+        ids.insert(self.to, id);
+        doc.mixer.renumber(&ids);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetMixerOrder::new(previous.clone())),
+            None => Box::new(NotApplied::new("moving a mixer track")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Move mixer track"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Every track's order but the master's, as `(track, order)`.
+fn mixer_orders(doc: &Project) -> Vec<(MixerTrackId, u32)> {
+    doc.mixer
+        .tracks
+        .iter()
+        .filter(|(id, _)| Some(*id) != doc.mixer.master)
+        .map(|(id, track)| (id, track.order))
+        .collect()
+}
+
+/// Writes tracks' orders back as they were: the inverse half of
+/// [`MoveMixerTrack`] and [`DuplicateMixerTrack`]. Not a user-facing command.
+/// A track named here that is gone is passed over.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetMixerOrder {
+    orders: Vec<(MixerTrackId, u32)>,
+    #[serde(default)]
+    previous: Option<Vec<(MixerTrackId, u32)>>,
+}
+
+impl SetMixerOrder {
+    pub fn new(orders: Vec<(MixerTrackId, u32)>) -> Self {
+        Self {
+            orders,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetMixerOrder {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetMixerOrder(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        self.previous = Some(mixer_orders(doc));
+        for (id, order) in &self.orders {
+            if let Some(track) = doc.mixer.tracks.get_mut(*id) {
+                track.order = *order;
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetMixerOrder::new(previous.clone())),
+            None => Box::new(NotApplied::new("reordering the mixer")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Move mixer track"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.orders.len() + self.previous.as_ref().map_or(0, Vec::len))
+                * std::mem::size_of::<(MixerTrackId, u32)>()
+    }
+}
+
+/// A second track that sounds like the first: its level, balance, inserts
+/// with their settings, sends and output, on a strip of its own right beside
+/// it, named `"… copy"`.
+///
+/// What it does **not** take is what feeds the original — the channels and
+/// tracks routed into it stay where they are. A copy of a bus that stole its
+/// sources would be a move, and an empty strip to route into is what a
+/// duplicate is for ("the same chain, for the other guitar").
+///
+/// Every insert and send gets an id of its own: an insert is addressed by its
+/// id (`EffectSlot::id`), and two answering to one would be a knob that turns
+/// both. The copy is kept whole once made, so a redo — and the far end of a
+/// shared song — inserts exactly that track rather than minting new ids.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DuplicateMixerTrack {
+    source: MixerTrackId,
+    made: Option<(MixerTrackId, Box<MixerTrack>)>,
+    /// The others' orders before the copy was squeezed in beside its
+    /// original — see [`MoveMixerTrack`]'s field of the same name.
+    #[serde(default)]
+    previous: Option<Vec<(MixerTrackId, u32)>>,
+}
+
+impl DuplicateMixerTrack {
+    pub fn new(source: MixerTrackId) -> Self {
+        Self {
+            source,
+            made: None,
+            previous: None,
+        }
+    }
+
+    /// The copy, once this has been applied.
+    pub fn track(&self) -> Option<MixerTrackId> {
+        self.made.as_ref().map(|(id, _)| *id)
+    }
+}
+
+impl Command for DuplicateMixerTrack {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::DuplicateMixerTrack(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if doc.mixer.master == Some(self.source) {
+            return Err(CommandError(
+                "the master is where everything arrives — there is only one".into(),
+            ));
+        }
+        let Some(original) = doc.mixer.tracks.get(self.source) else {
+            return Err(CommandError(format!("no mixer track {:?}", self.source)));
+        };
+        let copy = match &self.made {
+            Some((_, copy)) => (**copy).clone(),
+            None => {
+                let mut copy = original.clone();
+                copy.name = copy_name(&original.name);
+                for insert in &mut copy.inserts {
+                    insert.id = fontelle_types::PersistentId::new();
+                }
+                for send in &mut copy.sends {
+                    send.id = fontelle_types::PersistentId::new();
+                }
+                copy
+            }
+        };
+        self.previous = Some(mixer_orders(doc));
+        let id = match &self.made {
+            Some((id, _)) => {
+                if !doc.mixer.tracks.insert_at(*id, copy.clone()) {
+                    return Err(CommandError("that mixer track id is taken".into()));
+                }
+                *id
+            }
+            None => doc.mixer.tracks.insert(copy.clone()),
+        };
+        // Right after the original, whatever order the rest are in.
+        let mut ids: Vec<MixerTrackId> = doc
+            .mixer
+            .ordered_tracks()
+            .into_iter()
+            .filter(|other| *other != id)
+            .collect();
+        let at = ids
+            .iter()
+            .position(|other| *other == self.source)
+            .map_or(ids.len(), |at| at + 1);
+        ids.insert(at, id);
+        doc.mixer.renumber(&ids);
+        // Kept with its order written, so the copy this carries is the one
+        // in the document.
+        let placed = doc.mixer.tracks[id].clone();
+        self.made = Some((id, Box::new(placed)));
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match (&self.made, &self.previous) {
+            // Nothing points at a copy, so a delete takes back exactly what
+            // was added; then the others' numbers as they were.
+            (Some((id, _)), Some(previous)) => Box::new(Compound::new(
+                "Duplicate mixer track",
+                vec![
+                    Box::new(RemoveMixerTrack::new(*id)),
+                    Box::new(SetMixerOrder::new(previous.clone())),
+                ],
+            )),
+            _ => Box::new(NotApplied::new("duplicating a mixer track")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Duplicate mixer track"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.made.as_ref().map_or(0, |(_, track)| {
+                std::mem::size_of::<MixerTrack>() + track.name.len()
+            })
     }
 }
 
@@ -4581,6 +4856,7 @@ impl Command for ImportParts {
             let mut track = MixerTrack::new(part.name.clone());
             track.gain_db = part.volume_db;
             track.output = doc.mixer.master;
+            track.order = doc.mixer.next_order();
             let track_id = match previous {
                 Some(ids) => {
                     if !doc.mixer.tracks.insert_at(ids.track, track) {
@@ -5050,6 +5326,121 @@ impl Command for MoveClip {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+/// Moves several clips at once, the same distance along and each onto a
+/// row of its own choosing — a drag of a selection on the arrangement.
+///
+/// > *"when moving multiple clips at the same time it freezes for a bit and
+/// > when i try to undo its not one action its a tonnn of tiny actions."*
+///
+/// The drag was one [`MoveClip`] per clip per pointer step, and those
+/// alternate on the history: clip A's step met clip B's, not its own, so
+/// none of them ever folded, and every step of every clip was an undo entry
+/// and a recompile of the song. One command per step for the whole
+/// selection, folding into the step before it while the selection is the
+/// same, is one entry and one recompile per step.
+///
+/// All or nothing: a step that would put any clip before the start moves
+/// none, so the selection keeps its shape against the left edge.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MoveClips {
+    clips: Vec<ClipId>,
+    tick_delta: Tick,
+    /// The row each clip goes to, `None` for where it is.
+    lanes: Vec<Option<LaneId>>,
+    /// The row each was on before the first step that moved it to another.
+    #[serde(default)]
+    previous_lanes: Vec<Option<LaneId>>,
+}
+
+impl MoveClips {
+    pub fn new(clips: Vec<ClipId>, tick_delta: Tick, mut lanes: Vec<Option<LaneId>>) -> Self {
+        lanes.resize(clips.len(), None);
+        Self {
+            clips,
+            tick_delta,
+            lanes,
+            previous_lanes: Vec::new(),
+        }
+    }
+}
+
+impl Command for MoveClips {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveClips(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        for (clip, lane) in self.clips.iter().zip(&self.lanes) {
+            if let Some(lane) = lane
+                && !doc.lanes.contains_key(*lane)
+            {
+                return Err(CommandError(format!("no lane {lane:?} in this project")));
+            }
+            let Some(found) = doc.clips.get(*clip) else {
+                return Err(no_clip(*clip));
+            };
+            if found.start + self.tick_delta < 0 {
+                return Err(CommandError(
+                    "that would move a clip before the start".into(),
+                ));
+            }
+        }
+        let mut previous = Vec::with_capacity(self.clips.len());
+        for (clip, lane) in self.clips.iter().zip(&self.lanes) {
+            let clip = &mut doc.clips[*clip];
+            clip.start += self.tick_delta;
+            previous.push(lane.map(|lane| std::mem::replace(&mut clip.lane, lane)));
+        }
+        if self.previous_lanes.is_empty() {
+            self.previous_lanes = previous;
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(MoveClips::new(
+            self.clips.clone(),
+            -self.tick_delta,
+            self.previous_lanes.clone(),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        "Move clips"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<MoveClips>() else {
+            return false;
+        };
+        if next.clips != self.clips {
+            return false;
+        }
+        self.tick_delta += next.tick_delta;
+        // As `MoveClip`: the row the drag started from is the one to go back
+        // to, so a clip's first change of row keeps its first previous one.
+        for (index, lane) in next.lanes.iter().enumerate() {
+            if lane.is_some() {
+                if self.lanes[index].is_none() {
+                    self.previous_lanes[index] = next.previous_lanes[index];
+                }
+                self.lanes[index] = *lane;
+            }
+        }
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.clips.len()
+                * (std::mem::size_of::<ClipId>() + 2 * std::mem::size_of::<Option<LaneId>>())
     }
 }
 

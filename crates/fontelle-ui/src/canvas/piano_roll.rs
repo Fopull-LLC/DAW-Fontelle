@@ -1312,6 +1312,16 @@ pub enum RollEdit {
 /// One implementation with two ways in, so the keyboard and the menu can never
 /// come to mean different things.
 pub fn legato_edits(ids: &[NoteId], notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
+    legato_edits_to(ids, notes, None)
+}
+
+/// [`legato_edits`], with the last notes carried to `end` — the open clip's
+/// end, as Ctrl+L and the Tools menu ask (`fontelle_model::legato_lengths_to`).
+pub fn legato_edits_to(
+    ids: &[NoteId],
+    notes: &Arena<NoteId, Note>,
+    end: Option<Tick>,
+) -> Vec<RollEdit> {
     let named: Vec<NoteId> = ids
         .iter()
         .copied()
@@ -1321,7 +1331,7 @@ pub fn legato_edits(ids: &[NoteId], notes: &Arena<NoteId, Note>) -> Vec<RollEdit
         .iter()
         .filter_map(|id| notes.get(*id).map(|note| (note.start, note.length)))
         .collect();
-    let lengths = fontelle_model::legato_lengths(&spans);
+    let lengths = fontelle_model::legato_lengths_to(&spans, end);
     // A phrase already joined up is not an edit. The rule every tool here
     // keeps, and the reason a second press of Ctrl+L costs nothing.
     if lengths
@@ -1335,6 +1345,57 @@ pub fn legato_edits(ids: &[NoteId], notes: &Arena<NoteId, Note>) -> Vec<RollEdit
         ids: named,
         lengths,
     }]
+}
+
+/// The onion-skin chip's list: off, every other instrument, or one by name.
+///
+/// > *"piano roll onion skinning does not show looped notes ... please make
+/// > it show all notes or like make it have filters you can control"*
+///
+/// The chip used to step Off → all → ch1 → ch2…, so reaching the bass meant
+/// counting presses against a number the rack never shows. Now it drops this
+/// list (`O` still steps). `names` are the rack's, `editing` the one the roll
+/// is showing — never offered, since its notes are already drawn solid. The
+/// second list says what each row chooses; the heading chooses nothing.
+pub fn ghost_menu(
+    filter: crate::document::GhostFilter,
+    names: &[String],
+    editing: usize,
+) -> (
+    Vec<super::MenuEntry>,
+    Vec<Option<crate::document::GhostFilter>>,
+) {
+    use super::menu::CHOSEN_MARK;
+    use crate::document::GhostFilter;
+    let row = |label: &str, this: GhostFilter| {
+        if this == filter {
+            format!("{CHOSEN_MARK}{label}")
+        } else {
+            format!("   {label}")
+        }
+    };
+    let mut entries = vec![super::MenuEntry::disabled("Onion skin")];
+    let mut rows = vec![None];
+    entries.push(super::MenuEntry::new(row("Off", GhostFilter::Off)));
+    rows.push(Some(GhostFilter::Off));
+    entries.push(super::MenuEntry::new(row(
+        "Every other instrument",
+        GhostFilter::All,
+    )));
+    rows.push(Some(GhostFilter::All));
+    let mut first = true;
+    for (index, name) in names.iter().enumerate() {
+        if index == editing {
+            continue;
+        }
+        let entry =
+            super::MenuEntry::new(row(&format!("Only {name}"), GhostFilter::Channel(index)));
+        // A rule between "all" and the instruments, one by one.
+        entries.push(if first { entry.after_rule() } else { entry });
+        first = false;
+        rows.push(Some(GhostFilter::Channel(index)));
+    }
+    (entries, rows)
 }
 
 /// A key the roll wants sounded, and how long the thing it came from is.
@@ -1608,7 +1669,7 @@ const TOOLBAR: [(RollControl, f32); 17] = [
     (RollControl::ZoomInY, 26.0),
     (RollControl::Velocity, 26.0),
     (RollControl::Lane, 62.0),
-    (RollControl::Ghost, 40.0),
+    (RollControl::Ghost, 92.0),
     (RollControl::Keys, 40.0),
     (RollControl::Tools, 46.0),
     (RollControl::Root, 40.0),
@@ -3176,6 +3237,11 @@ impl PianoRoll {
     /// bare clicked on the note not if im just editing at all."*
     pub fn legato(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
         legato_edits(&self.selection, notes)
+    }
+
+    /// [`legato`](Self::legato) with the last notes carried to `end`.
+    pub fn legato_to(&mut self, notes: &Arena<NoteId, Note>, end: Option<Tick>) -> Vec<RollEdit> {
+        legato_edits_to(&self.selection, notes, end)
     }
 
     /// Bumps whichever property the lane is showing, on every selected note.

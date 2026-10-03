@@ -407,6 +407,7 @@ impl Command for LaneUpkeep {
                 .color
                 .get_or_insert_with(|| doc.mixer.next_track_color());
             track.output = doc.mixer.master;
+            track.order = doc.mixer.next_order();
             let id = match made.track {
                 Some(id) => {
                     if !doc.mixer.tracks.insert_at(id, track) {

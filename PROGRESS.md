@@ -19,7 +19,46 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-02 (latest) — Ty's first look at moving themes, and the
+**As of 2026-10-03 (latest) — the mixer's strips, clip colours, looped
+onion skins, multi-clip drags, legato to the end.** Not released.
+
+- *"right click and duplicate mixer tracks and easily reorder them"* —
+  `MixerTrack::order` (defaulted, stable sort, as `Lane::order`) and
+  `Mixer::ordered_tracks`, which `Session::mixer_track_ids` now reads.
+  Commands `MoveMixerTrack`, `DuplicateMixerTrack` (copies the mix, fresh
+  insert/send ids, lands beside its original, kept whole for redo and the
+  wire) and the inverse-only `SetMixerOrder`. A strip's menu
+  (`canvas::track_menu_rows`) has Duplicate, Move left/right and Delete (there
+  was no way to delete a track from the window before); the master gets none
+  of them. A strip is dragged by its name or body (`StripDrag`,
+  `canvas::strip_drop_index`), with a bar where it lands; a click on the
+  selected name still renames, on release.
+- *"make the faders thinner and the volume monitor thicker ... i keep
+  clicking the fader section"* — fader rail 16 px, meter 22 px (was 52/14),
+  the rest of the strip's width selects; a fader or pan press also selects
+  its strip.
+- *"clips made in old versions projects ... do not color the clips"* — every
+  lane is made the same blue and nothing recoloured one, so every block was
+  that blue. `Session::clip_color`: the clip's own colour, a lane somebody
+  coloured, a lane-style lane's track, then the instrument's
+  (`instrument_colours`: its track's, its own, else a palette colour by rack
+  place). Ghosts use it per note.
+- *"onion skinning does not show looped notes"* — `ghost_notes` walks every
+  pass of a loop with the sequencer's rules (period, clip end, cut at the
+  pass). The chip drops a list (`canvas::ghost_menu`: off, every other
+  instrument, or one by name) and names the instrument (`GhostFilter::caption`);
+  `O` still steps.
+- *"moving multiple clips ... freezes ... a tonnn of tiny actions"* — one
+  `MoveClip` per clip per step never coalesced (they alternate). `MoveClips`
+  moves the selection as one command that folds while the selection is the
+  same: one undo, one recompile per step.
+- *"ctrl l ... the last note doesnt get the legato effect"* —
+  `legato_lengths_to` carries the last start to the clip's end (the loop
+  period in a looped clip); `Tools::clip_end`, `legato_edits_to`.
+- This container needed CI's apt list (`libasound2-dev`, `liblilv-dev`, …)
+  to build `fontelle-app`, and `mesa-vulkan-drivers` for the headless dump.
+
+**As of 2026-10-02 — Ty's first look at moving themes, and the
 round that answered it.**
 
 - *"keep the backgrounds moving when the window isnt focused, but make it a

@@ -548,6 +548,26 @@ impl GhostFilter {
         }
     }
 
+    /// What the chip says, naming the instrument when there is one:
+    /// `"skin: Drums ▾"` rather than `"ch1"`, which nobody could map back to a
+    /// row of the rack. A long name is cut so the chip stays a chip.
+    pub fn caption(self, names: &[String]) -> String {
+        let what = match self {
+            Self::Off => "skin".to_string(),
+            Self::All => "skin: all".to_string(),
+            Self::Channel(index) => match names.get(index) {
+                Some(name) if name.chars().count() > 9 => {
+                    let cut: String = name.chars().take(8).collect();
+                    format!("skin: {cut}\u{2026}")
+                }
+                Some(name) => format!("skin: {name}"),
+                None => self.label(),
+            },
+        };
+        // A caret, because it drops a list — as the snap and lane chips do.
+        format!("{what} \u{25be}")
+    }
+
     /// What the chip says.
     pub fn label(self) -> String {
         match self {
@@ -1097,6 +1117,11 @@ pub trait StudioHost: DocumentHost {
     fn add_mixer_track(&mut self);
     fn remove_mixer_track(&mut self, strip: usize);
     fn rename_mixer_track(&mut self, strip: usize, name: &str);
+    /// A copy of strip `strip` beside it, selected. The master has no copy.
+    fn duplicate_mixer_track(&mut self, _strip: usize) {}
+    /// Moves strip `from` to stand at `to`, counted along the strips the
+    /// master is not one of; the selection goes with it.
+    fn move_mixer_track(&mut self, _from: usize, _to: usize) {}
 
     // --- the soundfont bank (TDD §17.5) ---
     /// The bank, already filtered and ordered by the live search.

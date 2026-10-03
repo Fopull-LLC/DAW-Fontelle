@@ -32,16 +32,17 @@ pub use commands::{
     AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMarker,
     AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,
     ApplyTrackChain, Compound, CopyChannelAb, DetachPrefab, DuplicateChannel, DuplicateClip,
-    EditLapse, EditNotepad, FlagTarget, ImportPart, ImportParts, MIN_CLIP_LENGTH, MadePart,
-    MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes,
-    NEW_SEND_DB, NudgeNoteProperty, NumberTarget, PlaceAutomationPoints, PluginTarget,
-    PresetTarget, RelocateAssets, RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert,
-    RemoveLane, RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend,
-    RenameChannel, RenameLane, RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip,
-    ResizeNotes, RestoreAutomationPoints, RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig,
-    RestorePluginParam, RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch,
-    SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed,
-    SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange,
+    DuplicateMixerTrack, EditLapse, EditNotepad, FlagTarget, ImportPart, ImportParts,
+    MIN_CLIP_LENGTH, MadePart, MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveClips,
+    MoveInsert, MoveLane, MoveMixerTrack, MoveNotes, NEW_SEND_DB, NudgeNoteProperty, NumberTarget,
+    PlaceAutomationPoints, PluginTarget, PresetTarget, RelocateAssets, RemoveAutomationPoints,
+    RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack,
+    RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane, RenameMixerTrack,
+    RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreAutomationPoints,
+    RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig, RestorePluginParam,
+    RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
+    SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
+    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetMixerOrder,
     SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
     SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
     SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
@@ -66,7 +67,7 @@ pub use storage::{
 pub use stretch::with_stretch;
 pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
-    RandomSpec, arpeggiated, legato_lengths, randomised,
+    RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
 };
 pub use wire::{Edit, WireError};
 

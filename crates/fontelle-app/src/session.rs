@@ -2884,15 +2884,71 @@ impl Session {
         }
     }
 
+    /// The colour each instrument's blocks wear when nothing more particular
+    /// says: its mixer track's, or — on the master, which is grey — its own
+    /// if somebody gave it one, else a palette colour by its place in the
+    /// rack. See [`Session::clip_color`].
+    fn instrument_colours(&self) -> HashMap<ChannelId, [u8; 4]> {
+        let master = self.project.mixer.master;
+        self.channel_ids()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, id)| {
+                let channel = self.project.channels.get(id)?;
+                let track = channel
+                    .mixer_track
+                    .filter(|track| Some(*track) != master)
+                    .and_then(|track| self.project.mixer.tracks.get(track))
+                    .map(|track| track.color);
+                let own = (channel.color != UNCOLOURED).then_some(channel.color);
+                let colour = track.or(own).unwrap_or(
+                    fontelle_model::TRACK_PALETTE[index % fontelle_model::TRACK_PALETTE.len()],
+                );
+                Some((id, colour))
+            })
+            .collect()
+    }
+
+    /// What colour a block is drawn — and its notes ghosted — in.
+    ///
+    /// > *"clips made in old versions projects now on newer versions do not
+    /// > color the clips"*
+    ///
+    /// A clip with no colour of its own was its lane's, and every lane is
+    /// made the same blue: nothing but the tour song and a MIDI import ever
+    /// gave one another. So an arrangement was a wall of one blue whatever
+    /// the rack's chips said. Now, first to answer wins: the clip's own
+    /// colour; a lane somebody did colour; in lane-style, the lane's track;
+    /// then the instrument the notes play (`instrument_colours`).
+    fn clip_color(
+        &self,
+        clip: &fontelle_model::Clip,
+        channel: Option<ChannelId>,
+        colours: &HashMap<ChannelId, [u8; 4]>,
+    ) -> [u8; 4] {
+        if let Some(colour) = clip.color {
+            return colour;
+        }
+        let lane = self.project.lanes.get(clip.lane).map(|lane| lane.color);
+        if let Some(colour) = lane.filter(|colour| *colour != UNCOLOURED) {
+            return colour;
+        }
+        if self.lane_style()
+            && let Some(track) = self.project.lane_track(clip.lane)
+            && let Some(track) = self.project.mixer.tracks.get(track)
+        {
+            return track.color;
+        }
+        channel
+            .and_then(|channel| colours.get(&channel).copied())
+            .or(lane)
+            .unwrap_or(UNCOLOURED)
+    }
+
     fn mixer_track_ids(&self) -> Vec<MixerTrackId> {
         let master = self.project.mixer.master;
-        let mut ids: Vec<MixerTrackId> = self
-            .project
-            .mixer
-            .tracks
-            .keys()
-            .filter(|id| Some(*id) != master)
-            .collect();
+        // In the order a person put them in (`MixerTrack::order`).
+        let mut ids: Vec<MixerTrackId> = self.project.mixer.ordered_tracks();
         ids.extend(master.filter(|id| self.project.mixer.tracks.contains_key(*id)));
         ids
     }
@@ -7469,6 +7525,54 @@ impl StudioHost for Session {
         self.rebuild_graph();
     }
 
+    fn duplicate_mixer_track(&mut self, strip: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        if Some(id) == self.project.mixer.master {
+            return;
+        }
+        let made = self
+            .apply_for::<fontelle_model::DuplicateMixerTrack>(Box::new(
+                fontelle_model::DuplicateMixerTrack::new(id),
+            ))
+            .map(|command| command.track());
+        self.let_go();
+        match made {
+            Ok(Some(copy)) => {
+                // The copy is the track you are about to change.
+                if let Some(at) = self.mixer_track_ids().iter().position(|t| *t == copy) {
+                    self.selected_track = at;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => self.message = Some(e),
+        }
+        self.republish();
+        // A new bus, so the graph's shape changes — as `add_mixer_track`.
+        self.rebuild_graph();
+    }
+
+    fn move_mixer_track(&mut self, from: usize, to: usize) {
+        let ids = self.mixer_track_ids();
+        // The master is last in that list and in no other's place.
+        let master = self.project.mixer.master;
+        let movable = ids.iter().filter(|id| Some(**id) != master).count();
+        if from >= movable || to >= movable || from == to {
+            return;
+        }
+        let selected = ids.get(self.selected_track).copied();
+        self.run(Box::new(fontelle_model::MoveMixerTrack::new(from, to)));
+        self.let_go();
+        // The selection is a track, not a place: it follows the one it was on.
+        if let Some(selected) = selected
+            && let Some(at) = self.mixer_track_ids().iter().position(|t| *t == selected)
+        {
+            self.selected_track = at;
+        }
+        self.touch();
+    }
+
     fn selected_mixer_track(&self) -> usize {
         self.selected_track
     }
@@ -11992,35 +12096,51 @@ impl StudioHost for Session {
         // notes are already drawn solid, and a ghost under every one of them
         // is a smear.
         let editing = self.selected_channel_id();
+        let colours = self.instrument_colours();
         let mut ghosts = Vec::new();
         for (_, clip) in self.project.clips.iter() {
             let ClipSource::Notes(data) = &clip.source else {
                 continue;
             };
-            let color = clip.color.unwrap_or_else(|| {
-                self.project
-                    .lanes
-                    .get(clip.lane)
-                    .map_or([0x4f, 0x8f, 0xd0, 0xff], |lane| lane.color)
-            });
             let offset = clip.start - open.start;
-            // **Per note**, and the open clip included: a clip holds several
-            // instruments now, and the drums you are writing the bass over
-            // are most often in the very clip you are writing into.
-            for note in data.notes.values() {
-                let channel = note.channel_or(data.channel);
-                if Some(channel) == editing {
-                    continue;
+            let period = clip.loop_length.filter(|p| *p > 0);
+            // **Every pass of a loop**, where it plays — and only what plays.
+            // Ty: *"piano roll onion skinning does not show looped notes it
+            // only shows the start of clips."* The ghosts were the clip's
+            // notes once, so a bass line looped under four bars of melody was
+            // a ghost in the first and nothing in the other three. The same
+            // rules as `fontelle_sequencer::compile`: a note past the period
+            // is not in the loop, one at or past the clip's end does not
+            // sound, and one running over its pass or the clip is cut there.
+            for pass in 0..clip.repeats() {
+                let at = clip.repeat_start(pass);
+                let pass_end = period.map_or(clip.length, |p| (at + p).min(clip.length));
+                // **Per note**, and the open clip included: a clip holds
+                // several instruments now, and the drums you are writing the
+                // bass over are most often in the very clip you are writing
+                // into.
+                for note in data.notes.values() {
+                    if period.is_some_and(|p| note.start >= p) {
+                        continue;
+                    }
+                    let start = at + note.start;
+                    if start >= clip.length {
+                        continue;
+                    }
+                    let channel = note.channel_or(data.channel);
+                    if Some(channel) == editing {
+                        continue;
+                    }
+                    if wanted.is_some_and(|wanted| channel != wanted) {
+                        continue;
+                    }
+                    ghosts.push(GhostNote {
+                        start: start + offset,
+                        length: note.length.min(pass_end - start),
+                        key: note.key,
+                        color: self.clip_color(clip, Some(channel), &colours),
+                    });
                 }
-                if wanted.is_some_and(|wanted| channel != wanted) {
-                    continue;
-                }
-                ghosts.push(GhostNote {
-                    start: note.start + offset,
-                    length: note.length,
-                    key: note.key,
-                    color,
-                });
             }
         }
         ghosts
@@ -12058,6 +12178,7 @@ impl StudioHost for Session {
 
     fn clips(&self) -> Vec<ClipInfo> {
         let lanes = self.lane_ids();
+        let colours = self.instrument_colours();
         // A deleted clip's picture goes with it; the cache is otherwise only
         // ever added to.
         self.previews
@@ -12068,6 +12189,7 @@ impl StudioHost for Session {
             .iter()
             .map(|(id, clip)| {
                 let mut audio = fontelle_ui::document::AudioPreview::default();
+                let mut home = None;
                 // **What this block holds**, which is not `clip.source` for a
                 // place that follows a prefab — see `Project::clip_source`.
                 // The arrangement draws the notes inside a block, so a place
@@ -12086,6 +12208,7 @@ impl StudioHost for Session {
                     // with a clip name — a clip has none, and "what instrument
                     // is this" is what somebody scanning an arrangement asks.
                     ClipSource::Notes(data) => {
+                        home = Some(data.channel);
                         // The clip's own notes, in time order and **not**
                         // expanded across a loop's passes — the canvas tiles
                         // them the way it tiles the seams. See
@@ -12196,12 +12319,7 @@ impl StudioHost for Session {
                     // editing.
                     open: id == self.clip || Some(id) == self.automation_clip,
                     loop_length: clip.loop_length,
-                    color: clip.color.unwrap_or_else(|| {
-                        self.project
-                            .lanes
-                            .get(clip.lane)
-                            .map_or([0x4f, 0x8f, 0xd0, 0xff], |lane| lane.color)
-                    }),
+                    color: self.clip_color(clip, home, &colours),
                     kind,
                     curve,
                     notes,
@@ -12224,21 +12342,34 @@ impl StudioHost for Session {
                 tick_delta,
                 lane_delta,
             } => {
-                // One command per clip, because `MoveClip` names one — and each
-                // coalesces with its own predecessor, so a drag of a four-clip
-                // selection is still one undo.
-                for id in ids {
-                    let lane = (lane_delta != 0)
-                        .then(|| {
-                            let now = self.project.clips.get(id)?.lane;
-                            let index = lanes.iter().position(|l| *l == now)?;
-                            let wanted = (index as i64 + i64::from(lane_delta)).max(0) as usize;
-                            lanes
-                                .get(wanted.min(lanes.len().saturating_sub(1)))
-                                .copied()
-                        })
-                        .flatten();
-                    self.run(Box::new(MoveClip::new(id, tick_delta, lane)));
+                let targets: Vec<Option<LaneId>> = ids
+                    .iter()
+                    .map(|id| {
+                        (lane_delta != 0)
+                            .then(|| {
+                                let now = self.project.clips.get(*id)?.lane;
+                                let index = lanes.iter().position(|l| *l == now)?;
+                                let wanted = (index as i64 + i64::from(lane_delta)).max(0) as usize;
+                                lanes
+                                    .get(wanted.min(lanes.len().saturating_sub(1)))
+                                    .copied()
+                            })
+                            .flatten()
+                    })
+                    .collect();
+                // **One command for the whole selection.** It was one
+                // `MoveClip` per clip, which was meant to coalesce each with
+                // its own predecessor — but they alternate on the history, so
+                // none ever did: Ty, *"when moving multiple clips at the same
+                // time it freezes for a bit and when i try to undo its not one
+                // action its a tonnn of tiny actions."* Every step of every
+                // clip was an undo entry and a recompile of the song.
+                if let [id] = ids[..] {
+                    self.run(Box::new(MoveClip::new(id, tick_delta, targets[0])));
+                } else if !ids.is_empty() {
+                    self.run(Box::new(fontelle_model::MoveClips::new(
+                        ids, tick_delta, targets,
+                    )));
                 }
             }
             ArrangeEdit::Resize { ids, tick_delta } => {
@@ -13000,6 +13131,10 @@ pub struct PendingImport {
 
 /// Enough distinct row colours that an imported file does not arrive as
 /// sixteen identical rows.
+/// The blue every lane and channel is made in — so the colour of nothing
+/// in particular, which [`Session::clip_color`] looks past.
+const UNCOLOURED: [u8; 4] = [0x4f, 0x8f, 0xd0, 0xff];
+
 const IMPORT_COLOURS: [[u8; 4]; 8] = [
     [0x4f, 0x8f, 0xd0, 0xff],
     [0xd0, 0x7f, 0x4f, 0xff],

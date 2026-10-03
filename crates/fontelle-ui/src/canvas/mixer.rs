@@ -139,8 +139,22 @@ const MIN_STRIP_FOR_FED: f32 = 150.0;
 /// How tall the pan control is.
 const PAN_HEIGHT: f32 = 12.0;
 
-/// How wide the meter beside the fader is, at most.
-const METER_WIDTH: f32 = 14.0;
+/// How wide the meter beside the fader is, at most — two bars, each wide
+/// enough to read from across the room.
+///
+/// > *"please also make the faders thinner and the volume monitor thicker,
+/// > its hard to select tracks right now because i keep clicking the fader
+/// > section instead of the other part which actually selects it."*
+///
+/// It was fourteen pixels beside a fader of fifty-two, so the strip was
+/// mostly fader: a press meant to choose the track moved its level instead.
+/// The meter is not a control, so every pixel given to it is a pixel that
+/// selects (see [`mixer_hit`]).
+const METER_WIDTH: f32 = 22.0;
+
+/// How wide the fader's rail is, and so its handle: enough to grab, and no
+/// more — see [`METER_WIDTH`].
+const FADER_WIDTH: f32 = 16.0;
 
 /// The quietest the fader goes. Not negative infinity: a fader that reaches
 /// silence has a whole region of travel where every position sounds the same,
@@ -367,10 +381,6 @@ pub struct MixerLayout {
     /// How wide each strip is here — [`MixerView::strip_width`].
     pub strip_width: f32,
 }
-
-/// The widest a fader gets, however far the strips are zoomed: what a
-/// default strip gives it.
-const MAX_FADER_WIDTH: f32 = 52.0;
 
 /// How tall the patch bay is until somebody drags its handle: a jack, a
 /// couple of sends under it, and room for a cable to hang.
@@ -1047,10 +1057,11 @@ fn strip_layout(
     )
     .clamped();
 
-    // The fader and its meter as one group, centred: a zoomed-in strip is
-    // wider, and a handle stretched across all of it reads as a slab.
-    let meter_width = METER_WIDTH.min((middle.width - GAP) / 2.0).max(0.0);
-    let fader_width = (middle.width - meter_width - GAP).clamp(0.0, MAX_FADER_WIDTH);
+    // The fader and its meter as one group, centred, with the strip's body
+    // either side of them — somewhere to press that selects the track and
+    // moves nothing. A slim rail rather than a slab, whatever the zoom.
+    let fader_width = FADER_WIDTH.min(((middle.width - GAP) / 2.0).max(0.0));
+    let meter_width = METER_WIDTH.min((middle.width - GAP - fader_width).max(0.0));
     let group = fader_width + GAP + meter_width;
     let left = middle.x + ((middle.width - group) / 2.0).max(0.0);
     let fader = Rect::new(left, middle.y, fader_width, middle.height).clamped();
@@ -1164,6 +1175,91 @@ pub enum MixerRightClick {
     /// Opens the track's own menu.
     TrackMenu(usize),
     Nothing,
+}
+
+/// A row of a strip's own right-click menu, under its heading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackMenuRow {
+    /// A copy beside it, with the same chain — [`fontelle_model`]'s
+    /// `DuplicateMixerTrack`.
+    Duplicate,
+    MoveLeft,
+    MoveRight,
+    Presets,
+    SavePreset,
+    Rename,
+    Colour,
+    Delete,
+}
+
+impl TrackMenuRow {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Duplicate => "Duplicate",
+            Self::MoveLeft => "Move left",
+            Self::MoveRight => "Move right",
+            Self::Presets => "Track presets\u{2026}",
+            Self::SavePreset => "Save track preset\u{2026}",
+            Self::Rename => "Rename",
+            Self::Colour => "Colour\u{2026}",
+            Self::Delete => "Delete",
+        }
+    }
+
+    /// Whether a rule is drawn above this row, between the menu's groups.
+    pub fn rule_before(self) -> bool {
+        matches!(self, Self::Presets | Self::Rename | Self::Delete)
+    }
+}
+
+/// What a strip's menu offers, each with whether it can be pressed.
+///
+/// > *"please make it so you can right click and duplicate mixer tracks and
+/// > easily reorder them."*
+///
+/// `strip` counted along the panel, `tracks` how many strips there are
+/// besides the master. The master is where everything arrives and there is
+/// one of it, pinned at the end: it is never copied, moved or deleted. A move
+/// that would go nowhere is greyed rather than left out, so the rows stay put
+/// under the pointer from strip to strip.
+pub fn track_menu_rows(is_master: bool, strip: usize, tracks: usize) -> Vec<(TrackMenuRow, bool)> {
+    let mut rows = Vec::new();
+    if !is_master {
+        rows.push((TrackMenuRow::Duplicate, true));
+        rows.push((TrackMenuRow::MoveLeft, strip > 0));
+        rows.push((TrackMenuRow::MoveRight, strip + 1 < tracks));
+    }
+    rows.push((TrackMenuRow::Presets, true));
+    rows.push((TrackMenuRow::SavePreset, true));
+    rows.push((TrackMenuRow::Rename, true));
+    rows.push((TrackMenuRow::Colour, !is_master));
+    if !is_master {
+        rows.push((TrackMenuRow::Delete, true));
+    }
+    rows
+}
+
+/// Where a strip carried along the mixer lands if let go at `x`: the place
+/// of the strip under it, the last when past the end, and `None` over the
+/// master — which nothing takes the place of.
+pub fn strip_drop_index(layout: &MixerLayout, x: f32) -> Option<usize> {
+    if layout
+        .master
+        .as_ref()
+        .is_some_and(|m| x >= m.frame.x && x < m.frame.right())
+    {
+        return None;
+    }
+    let first = layout.strips.first()?;
+    if x < first.frame.x {
+        return Some(first.index);
+    }
+    layout
+        .strips
+        .iter()
+        .find(|s| x < s.frame.right())
+        .or(layout.strips.last())
+        .map(|s| s.index)
 }
 
 /// What a right-click on `hit` means, with `selected` the track whose rack

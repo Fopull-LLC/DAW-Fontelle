@@ -453,3 +453,25 @@ fn legato_is_silent_because_it_is_editing() {
     roll.legato(&arena);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
 }
+
+#[test]
+fn legato_carries_the_last_note_to_the_end_of_the_clip() {
+    // Ty: *"the last note doesnt get the legato effect extending until the
+    // end, but the rest of the notes do."*
+    let (arena, ids) = notes(&[(0, PPQN / 4, 60), (PPQN, PPQN / 4, 62)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids.clone());
+    let edits = roll.legato_to(&arena, Some(PPQN * 4));
+    assert_eq!(lengths(&edits, &ids), vec![PPQN, PPQN * 3]);
+}
+
+#[test]
+fn the_tools_menus_legato_reaches_the_end_too() {
+    let (arena, ids) = notes(&[(0, PPQN / 4, 60), (PPQN, PPQN / 4, 62)]);
+    let mut tools = fontelle_ui::canvas::Tools {
+        clip_end: Some(PPQN * 4),
+        ..Default::default()
+    };
+    let edits = tools.run(fontelle_ui::canvas::ToolAction::Legato, &ids, &arena);
+    assert_eq!(lengths(&edits, &ids), vec![PPQN, PPQN * 3]);
+}

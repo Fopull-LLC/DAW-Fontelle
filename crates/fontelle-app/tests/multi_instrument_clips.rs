@@ -411,3 +411,217 @@ fn clicking_a_note_in_the_roll_sounds_the_selected_channel() {
     assert_ne!(first, second);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------------------ clip colours ---
+//
+// > *"clips made in old versions projects now on newer versions do not color
+// > the clips"* — every block on the arrangement the same blue.
+//
+// A clip with no colour of its own was its lane's, and every lane is made the
+// same blue; nothing ever gave a lane another. So the colour that says which
+// instrument a block plays comes from the instrument: its mixer track's when
+// it has one, else one of the palette's chosen by its place in the rack. A
+// lane somebody did colour (the tour song, a MIDI import) still wins.
+
+const DEFAULT_BLUE: [u8; 4] = [0x4f, 0x8f, 0xd0, 0xff];
+
+fn studio_from(project: fontelle_model::Project, dir: &std::path::Path) -> Session {
+    let clip = Session::first_clip(&project).expect("a clip");
+    let channel_nodes = fontelle_app::channel_nodes(&project);
+    let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
+    let library = SampleLibrary::new();
+    let options = RealiseOptions {
+        sample_rate: SR,
+        block_size: fontelle_engine::BLOCK_SIZE,
+        quality: fontelle_app::PLAYBACK_QUALITY,
+    };
+    let realised = fontelle_app::realise(&project, &library, options).expect("realises");
+    let (graphs, _source) = graph_channel(realised.graph);
+    Session::new(
+        project,
+        library,
+        channel_nodes,
+        publisher,
+        options,
+        clip,
+        None,
+    )
+    .with_graphs(graphs, realised.track_controls)
+    .with_param_nodes(realised.param_nodes)
+    .with_settings_path(dir.join("settings.json"))
+}
+
+#[test]
+fn a_clip_on_an_uncoloured_lane_wears_its_instruments_track_colour() {
+    let dir = scratch("colour-track");
+    let mut session = studio(&dir);
+    session.add_mixer_track();
+    session.set_channel_route(0, Some(0));
+    let track = session.mixer_strips()[0].color;
+
+    let clip = session.clips()[0].clone();
+    assert_eq!(
+        clip.color, track,
+        "the block is the colour of where it plays"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_clip_whose_instrument_goes_to_the_master_still_has_a_colour() {
+    let dir = scratch("colour-master");
+    let session = studio(&dir);
+    let clip = session.clips()[0].clone();
+    assert_ne!(clip.color, DEFAULT_BLUE, "not every block the one blue");
+    assert!(
+        fontelle_model::TRACK_PALETTE.contains(&clip.color),
+        "{:?} is one of the palette's",
+        clip.color
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn two_instruments_on_the_master_are_two_colours() {
+    let dir = scratch("colour-two");
+    let mut session = two_instruments(&dir);
+    let lane = session.clips()[0].lane;
+    let made = session.arrange(ArrangeEdit::Add {
+        lane,
+        start: PPQN * 40,
+    });
+    let clips = session.clips();
+    let first = clips.iter().find(|c| c.id != made.clips[0]).unwrap();
+    let second = clips.iter().find(|c| c.id == made.clips[0]).unwrap();
+    assert_ne!(first.color, second.color, "{first:?} / {second:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_lane_somebody_coloured_keeps_its_colour() {
+    let dir = scratch("colour-lane");
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    for lane in project.lanes.values_mut() {
+        lane.color = [0x12, 0x34, 0x56, 0xff];
+    }
+    let session = studio_from(project, &dir);
+    assert_eq!(session.clips()[0].color, [0x12, 0x34, 0x56, 0xff]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_ghost_is_the_colour_of_the_block_it_came_from() {
+    let dir = scratch("colour-ghost");
+    let mut session = two_instruments(&dir);
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(0, 36),
+    });
+    session.select_channel(1);
+    let ghosts = session.ghost_notes(GhostFilter::All);
+    assert_eq!(ghosts.len(), 1);
+    // The clip's colour is its home channel's; the ghost is the colour of
+    // the channel the note plays, which here is the same one.
+    assert_eq!(ghosts[0].color, session.clips()[0].color);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------------- onion skins and loops ---
+//
+// > *"piano roll onion skinning does not show looped notes it only shows the
+// > start of clips."*
+
+#[test]
+fn a_looped_clips_ghosts_repeat_with_every_pass() {
+    let dir = scratch("ghost-loop");
+    let mut session = two_instruments(&dir);
+    let clip = session.clips()[0].clone();
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN, 36),
+    });
+    session.arrange(ArrangeEdit::SetLoop {
+        ids: vec![clip.id],
+        loop_length: Some(PPQN * 4),
+    });
+    session.end_gesture();
+    session.select_channel(1);
+
+    let mut starts: Vec<i64> = session
+        .ghost_notes(GhostFilter::All)
+        .iter()
+        .map(|g| g.start)
+        .collect();
+    starts.sort();
+    let passes = (clip.length / (PPQN * 4)) as usize;
+    let expected: Vec<i64> = (0..passes as i64).map(|n| PPQN + n * PPQN * 4).collect();
+    assert_eq!(starts, expected, "one ghost per pass, where it plays");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_ghost_stops_where_its_clip_does() {
+    // What is heard: a note past the clip's end is not played, and one
+    // running over it is cut there (`fontelle_sequencer::compile`).
+    let dir = scratch("ghost-end");
+    let mut session = two_instruments(&dir);
+    let clip = session.clips()[0].clone();
+    session.select_channel(0);
+    let mut long = a_note(clip.length - PPQN, 36);
+    long.length = PPQN * 8;
+    session.edit(RollEdit::Add { note: long });
+    session.edit(RollEdit::Add {
+        note: a_note(clip.length + PPQN, 38),
+    });
+    session.select_channel(1);
+
+    let ghosts = session.ghost_notes(GhostFilter::All);
+    assert_eq!(ghosts.len(), 1, "{ghosts:?}");
+    assert_eq!(ghosts[0].start + ghosts[0].length, clip.length);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------------ moving several clips ---
+
+#[test]
+fn dragging_several_clips_is_one_undo() {
+    // Ty: *"when moving multiple clips at the same time ... when i try to
+    // undo its not one action its a tonnn of tiny actions."*
+    let dir = scratch("drag-many");
+    let mut session = studio(&dir);
+    let first = session.clips()[0].clone();
+    let made = session.arrange(ArrangeEdit::Add {
+        lane: first.lane,
+        start: PPQN * 40,
+    });
+    let second = made.clips[0];
+    session.end_gesture();
+    let ids = vec![first.id, second];
+    let starts = |s: &Session| -> Vec<i64> {
+        let clips = s.clips();
+        ids.iter()
+            .map(|id| clips.iter().find(|c| c.id == *id).unwrap().start)
+            .collect()
+    };
+    let before = starts(&session);
+    for _ in 0..20 {
+        session.arrange(ArrangeEdit::Move {
+            ids: ids.clone(),
+            tick_delta: PPQN / 4,
+            lane_delta: 0,
+        });
+    }
+    session.end_gesture();
+    assert_eq!(
+        starts(&session),
+        vec![before[0] + PPQN * 5, before[1] + PPQN * 5]
+    );
+
+    session.undo();
+    assert_eq!(
+        starts(&session),
+        before,
+        "one undo puts the whole drag back"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

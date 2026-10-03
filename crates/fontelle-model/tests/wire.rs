@@ -12,19 +12,20 @@ use fontelle_model::{
     AddAudioClip, AddAutomationPoint, AddChannel, AddClip, AddInsert, AddLane, AddMarker,
     AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,
     ApplyTrackChain, Arena, AutomationData, AutomationPoint, Clip, ClipSource, Command, Compound,
-    CopyChannelAb, CurveShape, DetachPrefab, DuplicateChannel, DuplicateClip, Edit, EditLapse,
-    EditNotepad, FlagTarget, History, ImportPart, ImportParts, MakePrefabFromClip,
-    MoveAutomationPoints, MoveClip, MoveInsert, MoveLane, MoveNotes, NoteData, NoteProperty,
-    NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project, RemoveAutomationPoints,
-    RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack,
-    RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane, RenameMixerTrack,
-    RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert, SetAudioClip,
-    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
-    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
-    SetLoopRange, SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
-    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
-    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
-    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
+    CopyChannelAb, CurveShape, DetachPrefab, DuplicateChannel, DuplicateClip, DuplicateMixerTrack,
+    Edit, EditLapse, EditNotepad, FlagTarget, History, ImportPart, ImportParts, MakePrefabFromClip,
+    MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane, MoveMixerTrack, MoveNotes,
+    NoteData, NoteProperty, NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project,
+    RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker,
+    RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane,
+    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert,
+    SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
+    SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
+    SetInsertParam, SetKey, SetLoopRange, SetMixerOrder, SetMixerTrackColor, SetNoteKeys,
+    SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
+    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
+    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
+    TrimClipStart, load_project, peek_meta, save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -396,6 +397,13 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("RemoveMixerTrack", |s| {
             Box::new(RemoveMixerTrack::new(s.bus))
         }),
+        ("MoveMixerTrack", |_| Box::new(MoveMixerTrack::new(0, 1))),
+        ("SetMixerOrder", |s| {
+            Box::new(SetMixerOrder::new(vec![(s.part, 5), (s.bus, 2)]))
+        }),
+        ("DuplicateMixerTrack", |s| {
+            Box::new(DuplicateMixerTrack::new(s.part))
+        }),
         ("RenameMixerTrack", |s| {
             Box::new(RenameMixerTrack::new(s.part, "Lead"))
         }),
@@ -653,6 +661,13 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("RemoveClip", |s| Box::new(RemoveClip::new(s.audio_clip))),
         ("MoveClip", |s| {
             Box::new(MoveClip::new(s.notes_clip, PPQN, Some(s.lanes[1])))
+        }),
+        ("MoveClips", |s| {
+            Box::new(MoveClips::new(
+                vec![s.notes_clip],
+                PPQN,
+                vec![Some(s.lanes[1])],
+            ))
         }),
         ("SetClipLoop", |s| {
             Box::new(SetClipLoop::new(s.notes_clip, Some(PPQN * 2)))

@@ -11,8 +11,8 @@
 
 use fontelle_ui::canvas::{
     FADER_DETENT_PX, MAX_FADER_DB, MIN_FADER_DB, MixerHit, MixerKey, NamePress, PAN_DETENT_PX,
-    STRIP_WIDTH, fader_db_at, fader_y_of_db, mixer_hit, mixer_key, mixer_layout, name_press,
-    pan_at, pan_x_of, unity_fraction,
+    STRIP_WIDTH, TrackMenuRow, fader_db_at, fader_y_of_db, mixer_hit, mixer_key, mixer_layout,
+    name_press, pan_at, pan_x_of, strip_drop_index, track_menu_rows, unity_fraction,
 };
 use fontelle_ui::document::MixerStrip;
 use fontelle_ui::layout::Rect;
@@ -570,4 +570,126 @@ fn no_other_letter_reaches_a_strip() {
     for key in ["s", "d", "p", "b", "e", "1", " ", "", "mn"] {
         assert_eq!(mixer_key(key), None, "{key:?} reached a mixer strip");
     }
+}
+
+// ------------------------------------------- a strip you can actually pick ---
+//
+// > *"please also make the faders thinner and the volume monitor thicker, its
+// > hard to select tracks right now because i keep clicking the fader section
+// > instead of the other part which actually selects it."*
+
+#[test]
+fn the_fader_is_a_slim_rail_and_the_meter_is_the_wider_of_the_two() {
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    for s in &l.strips {
+        assert!(
+            s.fader.width <= 20.0,
+            "a fader {} wide is most of a strip, and every miss of the body \
+             lands on it",
+            s.fader.width
+        );
+        assert!(
+            s.meter.width > s.fader.width,
+            "the meter ({}) is what you read; the fader ({}) is a rail",
+            s.meter.width,
+            s.fader.width
+        );
+        assert!(
+            s.meter.width >= 18.0,
+            "two bars that can be read: {}",
+            s.meter.width
+        );
+    }
+}
+
+#[test]
+fn most_of_a_strips_width_beside_the_fader_selects_it() {
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let s = l.strips[1].clone();
+    let y = s.fader.y + s.fader.height / 2.0;
+    let mut selecting = 0;
+    let mut across = 0;
+    let mut x = s.frame.x + 1.0;
+    while x < s.frame.right() - 1.0 {
+        across += 1;
+        if mixer_hit(&l, x, y) == MixerHit::Strip(1) {
+            selecting += 1;
+        }
+        x += 1.0;
+    }
+    assert!(
+        selecting * 2 >= across,
+        "only {selecting} of {across} pixels across the fader's row select the strip"
+    );
+}
+
+// --------------------------------------------------- dragging a strip along ---
+
+#[test]
+fn a_strip_dropped_over_another_takes_that_ones_place() {
+    let strips = strips(4);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let over = |i: usize| l.strips[i].frame.x + l.strips[i].frame.width / 2.0;
+    assert_eq!(strip_drop_index(&l, over(2)), Some(2));
+    assert_eq!(strip_drop_index(&l, over(0)), Some(0));
+}
+
+#[test]
+fn a_strip_dropped_past_the_last_goes_last_and_never_past_the_master() {
+    let strips = strips(3);
+    let l = mixer_layout(body(), &theme().metrics, &strips, 0);
+    let last = l.strips.last().unwrap();
+    assert_eq!(strip_drop_index(&l, last.frame.right() + 40.0), Some(2));
+    let master = l.master.as_ref().unwrap();
+    assert_eq!(
+        strip_drop_index(&l, master.frame.x + master.frame.width / 2.0),
+        None,
+        "the master is pinned; nothing takes its place"
+    );
+}
+
+// ------------------------------------------------------ the strip's menu ---
+
+#[test]
+fn a_tracks_menu_offers_duplicate_move_and_delete() {
+    let rows = track_menu_rows(false, 1, 3);
+    for row in [
+        TrackMenuRow::Duplicate,
+        TrackMenuRow::MoveLeft,
+        TrackMenuRow::MoveRight,
+        TrackMenuRow::Delete,
+    ] {
+        assert!(rows.iter().any(|(r, _)| *r == row), "{row:?} is offered");
+    }
+}
+
+#[test]
+fn the_ends_of_the_row_grey_the_move_that_would_go_nowhere() {
+    let enabled = |rows: &[(TrackMenuRow, bool)], row| {
+        rows.iter().find(|(r, _)| *r == row).map(|(_, on)| *on)
+    };
+    let first = track_menu_rows(false, 0, 3);
+    assert_eq!(enabled(&first, TrackMenuRow::MoveLeft), Some(false));
+    assert_eq!(enabled(&first, TrackMenuRow::MoveRight), Some(true));
+    let last = track_menu_rows(false, 2, 3);
+    assert_eq!(enabled(&last, TrackMenuRow::MoveRight), Some(false));
+}
+
+#[test]
+fn the_master_is_never_duplicated_moved_or_deleted() {
+    let rows = track_menu_rows(true, 3, 3);
+    for row in [
+        TrackMenuRow::Duplicate,
+        TrackMenuRow::MoveLeft,
+        TrackMenuRow::MoveRight,
+        TrackMenuRow::Delete,
+    ] {
+        assert!(
+            !rows.iter().any(|(r, _)| *r == row),
+            "{row:?} on the master"
+        );
+    }
+    assert!(rows.iter().any(|(r, _)| *r == TrackMenuRow::Rename));
 }

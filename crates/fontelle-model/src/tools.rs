@@ -38,9 +38,9 @@ use fontelle_types::Tick;
 /// - **It shortens as well as lengthens.** A note running under the one after
 ///   it is pulled back to it. "At least touch" would mean a phrase run through
 ///   the tool twice kept growing, and there would be no way back.
-/// - **The last event keeps the length it had.** There is nothing after it to
-///   touch, and picking a length for it — the previous gap, a beat, the end of
-///   the clip — would be the tool inventing something nobody asked for.
+/// - **The last event keeps the length it had** here, where there is nothing
+///   after it to touch. The roll's Ctrl+L goes through [`legato_lengths_to`]
+///   with the clip's end, which is the thing after it there.
 ///
 /// Never zero: distinct starts are at least one tick apart, so the length this
 /// hands back is at least one, which is what `SetNoteLengths` will accept.
@@ -60,6 +60,31 @@ pub fn legato_lengths(spans: &[(Tick, Tick)]) -> Vec<Tick> {
             },
         )
         .collect()
+}
+
+/// [`legato_lengths`], with `end` as the event after the last one: every note
+/// of the last start is carried to it.
+///
+/// > *"when pressing ctrl l to make notes legato in piano roll it doesnt
+/// > extend all the way out until the end of the clip so the last note doesnt
+/// > get the legato effect extending until the end, but the rest of the notes
+/// > do."*
+///
+/// FL's Quick Legato does the same. Only ever a stretch: a last note that
+/// starts at or past `end`, or already runs past it, keeps its length —
+/// cutting it back would be a different tool, and the clip's end already
+/// cuts what sounds.
+pub fn legato_lengths_to(spans: &[(Tick, Tick)], end: Option<Tick>) -> Vec<Tick> {
+    let mut lengths = legato_lengths(spans);
+    let (Some(end), Some(last)) = (end, spans.iter().map(|(start, _)| *start).max()) else {
+        return lengths;
+    };
+    for ((start, _), length) in spans.iter().zip(&mut lengths) {
+        if *start == last && end - start > *length {
+            *length = end - start;
+        }
+    }
+    lengths
 }
 
 /// How far a randomizer moves things, and in what sense.

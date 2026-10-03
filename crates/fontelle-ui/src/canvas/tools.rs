@@ -356,6 +356,9 @@ pub struct Tools {
     /// second copy of the same seven numbers is a second thing to keep in
     /// step.
     pub arp: ArpSpec,
+    /// Where the open clip ends, which legato carries the last notes to.
+    /// The window sets it before a run; `None` leaves them as they are.
+    pub clip_end: Option<Tick>,
 }
 
 impl Default for Tools {
@@ -371,6 +374,7 @@ impl Default for Tools {
             random_mode: RandomMode::Around,
             seed: 1,
             arp: ArpSpec::default(),
+            clip_end: None,
         }
     }
 }
@@ -617,7 +621,7 @@ impl Tools {
             }
             // The same function the keyboard's Ctrl+L reaches, so the menu
             // and the key cannot come to mean different things.
-            ToolAction::Legato => super::legato_edits(selection, notes),
+            ToolAction::Legato => super::legato_edits_to(selection, notes, self.clip_end),
             // The window's to carry out — this crate may not read or write a
             // file.
             ToolAction::ImportMidi | ToolAction::ImportScore | ToolAction::ExportMidi => Vec::new(),

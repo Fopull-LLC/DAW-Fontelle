@@ -557,3 +557,63 @@ fn the_lane_seam_is_thick_enough_to_actually_grab() {
         "the grip must stay out of the lane"
     );
 }
+
+// > *"piano roll onion skinning does not show looped notes ... please make it
+// > show all notes or like make it have filters you can control"*
+//
+// The chip drops a list now: off, every instrument, or one by name — the
+// same three choices `O` steps through, but chosen rather than counted to.
+
+#[test]
+fn the_onion_skin_menu_names_every_instrument_but_the_one_being_edited() {
+    use fontelle_ui::canvas::ghost_menu;
+    use fontelle_ui::document::GhostFilter;
+
+    let names = ["Drums".to_string(), "Bass".to_string(), "Keys".to_string()];
+    let (entries, rows) = ghost_menu(GhostFilter::Off, &names, 1);
+    assert_eq!(entries.len(), rows.len());
+    assert!(rows.contains(&Some(GhostFilter::Off)));
+    assert!(rows.contains(&Some(GhostFilter::All)));
+    assert!(rows.contains(&Some(GhostFilter::Channel(0))));
+    assert!(rows.contains(&Some(GhostFilter::Channel(2))));
+    assert!(
+        !rows.contains(&Some(GhostFilter::Channel(1))),
+        "the channel being edited is never its own ghost"
+    );
+    let drums = rows
+        .iter()
+        .position(|r| *r == Some(GhostFilter::Channel(0)))
+        .unwrap();
+    assert!(
+        entries[drums].label.contains("Drums"),
+        "named, not numbered"
+    );
+}
+
+#[test]
+fn the_onion_skin_menu_ticks_the_filter_that_is_on() {
+    use fontelle_ui::canvas::ghost_menu;
+    use fontelle_ui::document::GhostFilter;
+
+    let names = ["Drums".to_string(), "Bass".to_string()];
+    let (entries, rows) = ghost_menu(GhostFilter::Channel(0), &names, 1);
+    let ticked: Vec<_> = entries
+        .iter()
+        .zip(&rows)
+        .filter(|(e, _)| e.label.starts_with('\u{2713}'))
+        .map(|(_, r)| *r)
+        .collect();
+    assert_eq!(ticked, vec![Some(GhostFilter::Channel(0))]);
+}
+
+#[test]
+fn a_filter_on_one_instrument_says_its_name_on_the_chip() {
+    use fontelle_ui::document::GhostFilter;
+    let names = ["Drums".to_string(), "Bass".to_string()];
+    assert_eq!(
+        GhostFilter::Channel(0).caption(&names),
+        "skin: Drums \u{25be}"
+    );
+    assert_eq!(GhostFilter::All.caption(&names), "skin: all \u{25be}");
+    assert_eq!(GhostFilter::Off.caption(&names), "skin \u{25be}");
+}

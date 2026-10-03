@@ -931,3 +931,78 @@ fn an_old_project_keeps_the_order_its_rows_already_had() {
     }
     assert_eq!(lane_names(&project), ["L0", "L1", "L2", "L3"]);
 }
+
+// ------------------------------------------------ moving several clips ---
+//
+// > *"when moving multiple clips at the same time it freezes for a bit and
+// > when i try to undo its not one action its a tonnn of tiny actions."*
+//
+// One `MoveClip` per clip per pointer step: two clips' commands alternate on
+// the history, so neither ever met its own predecessor to fold into, and a
+// drag of four clips across a bar was hundreds of entries — and as many
+// recompiles of the song while the pointer moved.
+
+#[test]
+fn a_drag_of_several_clips_is_one_undo() {
+    let (mut project, channel, lane) = a_project();
+    let other = project.lanes.insert(Lane {
+        name: "Lane 2".into(),
+        height: 32.0,
+        color: [0; 4],
+        muted: false,
+        locked: false,
+        soloed: false,
+        order: 1,
+    });
+    let ids: Vec<ClipId> = (0..4)
+        .map(|n| {
+            a_clip(
+                &mut project,
+                lane,
+                channel,
+                n * PPQN * 4,
+                PPQN * 4,
+                None,
+                vec![],
+            )
+        })
+        .collect();
+    let mut history = History::new();
+    for _ in 0..30 {
+        history
+            .apply(
+                Box::new(fontelle_model::MoveClips::new(
+                    ids.clone(),
+                    PPQN / 4,
+                    vec![Some(other); 4],
+                )),
+                &mut project,
+            )
+            .unwrap();
+    }
+    assert_eq!(project.clips[ids[1]].start, PPQN * 4 + 30 * PPQN / 4);
+    assert_eq!(project.clips[ids[1]].lane, other);
+
+    history.undo(&mut project).unwrap().unwrap();
+    for (n, id) in ids.iter().enumerate() {
+        assert_eq!(project.clips[*id].start, n as Tick * PPQN * 4);
+        assert_eq!(project.clips[*id].lane, lane, "back on the row it left");
+    }
+    assert!(
+        history.undo(&mut project).is_none(),
+        "the whole drag was one entry"
+    );
+
+    history.redo(&mut project).unwrap().unwrap();
+    assert_eq!(project.clips[ids[3]].start, PPQN * 12 + 30 * PPQN / 4);
+}
+
+#[test]
+fn a_move_that_would_put_any_clip_before_the_start_moves_none() {
+    let (mut project, channel, lane) = a_project();
+    let a = a_clip(&mut project, lane, channel, 0, PPQN, None, vec![]);
+    let b = a_clip(&mut project, lane, channel, PPQN * 8, PPQN, None, vec![]);
+    let mut command = fontelle_model::MoveClips::new(vec![a, b], -PPQN, vec![None, None]);
+    assert!(command.apply(&mut project).is_err());
+    assert_eq!(project.clips[b].start, PPQN * 8, "all or nothing");
+}
