@@ -156,3 +156,107 @@ fn a_song_saved_with_grey_tracks_opens_with_them_coloured() {
         "the master keeps its own"
     );
 }
+
+// ------------------------------------------- a palette that suits the room ---
+//
+// > *"could you also make the pre made list of mixer track colors better match
+// > the default theming"*
+//
+// The first palette was twelve fully saturated hues on a theme whose own
+// colours are muted teals and slate blues (accent #40859c, notes #496fa4,
+// meter #40a488): every strip cap and block shouted over the window around it.
+
+/// `(hue degrees, saturation, lightness)`, HSL, each of 0..1 but hue.
+fn hsl(c: [u8; 4]) -> (f32, f32, f32) {
+    let [r, g, b] = [c[0], c[1], c[2]].map(|v| f32::from(v) / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d == 0.0 {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        60.0 * (((g - b) / d).rem_euclid(6.0))
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h, s, l)
+}
+
+fn luminance(c: [u8; 4]) -> f32 {
+    let lin = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+}
+
+#[test]
+fn the_palette_is_as_quiet_as_the_default_theme() {
+    for c in TRACK_PALETTE {
+        let (_, s, l) = hsl(c);
+        assert!(
+            s <= 0.55,
+            "{c:02x?} is saturation {s:.2}, louder than the theme"
+        );
+        assert!((0.42..=0.66).contains(&l), "{c:02x?} is lightness {l:.2}");
+    }
+}
+
+#[test]
+fn every_colour_still_reads_on_the_dark_panel() {
+    // The default theme's panel, #0e1f26. A cap or a block is a mark, so the
+    // non-text contrast floor (3:1) is the bar.
+    let panel = luminance([0x0e, 0x1f, 0x26, 0xff]);
+    for c in TRACK_PALETTE {
+        let ratio = (luminance(c) + 0.05) / (panel + 0.05);
+        assert!(ratio >= 3.0, "{c:02x?} is {ratio:.2}:1 on the panel");
+    }
+}
+
+#[test]
+fn the_twelve_are_still_twelve_hues() {
+    // Muted is not samey: neighbours on the wheel are far enough apart to be
+    // told apart at a glance.
+    let mut hues: Vec<f32> = TRACK_PALETTE.iter().map(|c| hsl(*c).0).collect();
+    hues.sort_by(f32::total_cmp);
+    for pair in hues.windows(2) {
+        assert!(pair[1] - pair[0] >= 12.0, "hues too close: {hues:?}");
+    }
+}
+
+#[test]
+fn a_song_coloured_with_the_old_palette_opens_in_the_new_one() {
+    let mut project = Project::new("old palette");
+    let a = add(&mut project, "A");
+    let b = add(&mut project, "B");
+    project.mixer.tracks.get_mut(a).unwrap().color = fontelle_model::OLD_TRACK_PALETTE[3];
+    let custom = [0x12, 0x34, 0x56, 0xff];
+    project.mixer.tracks.get_mut(b).unwrap().color = custom;
+    let bundle = std::env::temp_dir().join(format!(
+        "fontelle-old-palette-{}.fontelle",
+        std::process::id()
+    ));
+    std::fs::remove_dir_all(&bundle).ok();
+    save_project(&project, &bundle).unwrap();
+    let opened = load_project(&bundle).unwrap();
+    std::fs::remove_dir_all(&bundle).ok();
+    assert_eq!(
+        color(&opened, a),
+        TRACK_PALETTE[3],
+        "the same hue, in the new register"
+    );
+    assert_eq!(
+        color(&opened, b),
+        custom,
+        "a colour not from it is left alone"
+    );
+}

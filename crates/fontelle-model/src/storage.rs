@@ -147,6 +147,16 @@ pub fn load_project(bundle: &Path) -> Result<Project, StorageError> {
     // — but its tracks would all be one grey, and a colour-only route chip
     // would then say nothing. Written back on the next save.
     project.mixer.color_legacy_tracks();
+    // A row coloured from the first palette (the tour song colours its rows
+    // after its tracks) follows its tracks into the quieter one.
+    for lane in project.lanes.values_mut() {
+        if let Some(at) = crate::mixer::OLD_TRACK_PALETTE
+            .iter()
+            .position(|c| *c == lane.color)
+        {
+            lane.color = crate::mixer::TRACK_PALETTE[at];
+        }
+    }
     Ok(project)
 }
 

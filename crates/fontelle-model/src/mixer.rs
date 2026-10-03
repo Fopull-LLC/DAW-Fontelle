@@ -352,10 +352,38 @@ pub struct MixerTrack {
 ///
 /// A channel's route chip **is** its track's colour, and a strip's sources
 /// glow in it (`docs/ux-routing-and-learning-plan.md` §3–4), so the colours
-/// have to be told apart at a glance on the dark theme: twelve hues a
-/// twelfth of the wheel apart, all mid-light and saturated, neighbours in
-/// the order far apart so the first few tracks never look alike.
+/// have to be told apart at a glance on the dark theme: twelve hues around
+/// the wheel, neighbours in the order far apart so the first few tracks never
+/// look alike.
+///
+/// > *"could you also make the pre made list of mixer track colors better
+/// > match the default theming"*
+///
+/// **In the default theme's register**: saturation at most about a half and
+/// mid lightness, like its own accent (#40859c), notes (#496fa4) and meter
+/// (#40a488). The first palette ([`OLD_TRACK_PALETTE`]) was fully saturated,
+/// and every strip cap and block shouted over the window. Each still clears
+/// 3:1 on the panel, and the same hues stand in the same places, so the
+/// Colour menu's names still fit (`tests/track_colors.rs`).
 pub const TRACK_PALETTE: [[u8; 4]; 12] = [
+    [0xc8, 0x64, 0x5e, 0xff], // red
+    [0x4f, 0xa3, 0xc4, 0xff], // cyan
+    [0xc4, 0xa0, 0x52, 0xff], // amber
+    [0x94, 0x74, 0xc4, 0xff], // violet
+    [0x5a, 0xa8, 0x77, 0xff], // green
+    [0xc9, 0x85, 0x52, 0xff], // orange
+    [0x5c, 0x82, 0xc6, 0xff], // blue
+    [0xb6, 0x66, 0x9e, 0xff], // magenta
+    [0x95, 0xb0, 0x5c, 0xff], // lime
+    [0x45, 0xa5, 0x96, 0xff], // teal
+    [0x7a, 0x72, 0xc2, 0xff], // indigo
+    [0xc4, 0x78, 0x88, 0xff], // rose
+];
+
+/// The palette before it was muted to suit the theme, place for place with
+/// [`TRACK_PALETTE`]. A song saved with these opens in the new ones
+/// ([`Mixer::color_legacy_tracks`]); nothing hands them out any more.
+pub const OLD_TRACK_PALETTE: [[u8; 4]; 12] = [
     [0xe0, 0x56, 0x4f, 0xff], // red
     [0x49, 0xb3, 0xe0, 0xff], // cyan
     [0xe8, 0xc5, 0x47, 0xff], // amber
@@ -475,7 +503,8 @@ impl Mixer {
     /// Gives every track still the old grey a colour of its own, in the
     /// order they were made. For a song saved before tracks had colours: its
     /// route chips would otherwise all be one grey and say nothing. A colour
-    /// somebody chose is left alone, and so is the master.
+    /// somebody chose is left alone, and so is the master. And a colour of
+    /// [`OLD_TRACK_PALETTE`]'s becomes the same place in [`TRACK_PALETTE`].
     pub fn color_legacy_tracks(&mut self) {
         let ids: Vec<_> = self
             .tracks
@@ -483,6 +512,14 @@ impl Mixer {
             .filter(|(id, track)| Some(*id) != self.master && track.color == LEGACY_TRACK_GREY)
             .map(|(id, _)| id)
             .collect();
+        // The first palette's colours, to the same place in this one: they
+        // were only ever handed out or picked from the menu, so one is the
+        // same choice in a louder register, not a colour somebody mixed.
+        for track in self.tracks.values_mut() {
+            if let Some(at) = OLD_TRACK_PALETTE.iter().position(|c| *c == track.color) {
+                track.color = TRACK_PALETTE[at];
+            }
+        }
         for id in ids {
             let color = self.next_track_color();
             if let Some(track) = self.tracks.get_mut(id) {

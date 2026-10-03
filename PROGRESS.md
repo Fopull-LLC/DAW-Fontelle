@@ -55,6 +55,13 @@ onion skins, multi-clip drags, legato to the end.** Not released.
 - *"ctrl l ... the last note doesnt get the legato effect"* —
   `legato_lengths_to` carries the last start to the clip's end (the loop
   period in a looped clip); `Tools::clip_end`, `legato_edits_to`.
+- *"make the pre made list of mixer track colors better match the default
+  theming"* — `TRACK_PALETTE` re-pitched to the default theme's register
+  (saturation ≤ 0.55, mid lightness, each ≥ 3:1 on the panel, hues ≥ 12°
+  apart; `tests/track_colors.rs`), same hues in the same places so the menu's
+  names hold. A song saved with the first palette (`OLD_TRACK_PALETTE`)
+  opens in the new one, tracks and rows alike. Checked in the real binary on
+  the tour song (Xvfb, ALSA null device).
 - This container needed CI's apt list (`libasound2-dev`, `liblilv-dev`, …)
   to build `fontelle-app`, and `mesa-vulkan-drivers` for the headless dump.
 
