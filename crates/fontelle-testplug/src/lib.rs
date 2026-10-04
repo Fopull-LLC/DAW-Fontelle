@@ -93,6 +93,18 @@ pub struct GainShared {
     /// host that reads the parameters back straight after the call reads the
     /// patch that was there before.
     pending_gain: AtomicU32,
+    /// Whether the audio thread has run it since it was activated.
+    ///
+    /// **Surge XT loads a state the same way it loads a preset once this is
+    /// so**: handed to the audio thread, in on a later block. Before it has
+    /// ever processed there is no later block, and it loads where it stands.
+    /// So a host that restores a state into a running plugin — an undo, a
+    /// preset of its own — and reads it straight back reads the state from
+    /// before.
+    processing: std::sync::atomic::AtomicBool,
+    /// A whole state waiting for the next block: gain, invert, trim. The
+    /// first is NaN when there is none.
+    pending_state: [AtomicU32; 3],
     /// Whether it has been activated — see its latency.
     activated: std::sync::atomic::AtomicBool,
 }
@@ -174,6 +186,12 @@ impl DefaultPluginFactory for GainPlugin {
             invert: AtomicU32::new(0.0f32.to_bits()),
             trim: AtomicU32::new(1.0f32.to_bits()),
             pending_gain: AtomicU32::new(f32::NAN.to_bits()),
+            processing: std::sync::atomic::AtomicBool::new(false),
+            pending_state: [
+                AtomicU32::new(f32::NAN.to_bits()),
+                AtomicU32::new(0),
+                AtomicU32::new(0),
+            ],
             activated: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -220,6 +238,17 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        self.shared
+            .processing
+            .store(true, std::sync::atomic::Ordering::Release);
+        // A queued state, whole.
+        let queued = load(&self.shared.pending_state[0]);
+        if !queued.is_nan() {
+            store(&self.shared.gain, queued);
+            store(&self.shared.invert, load(&self.shared.pending_state[1]));
+            store(&self.shared.trim, load(&self.shared.pending_state[2]));
+            store(&self.shared.pending_state[0], f32::NAN);
+        }
         // A queued preset goes in first, then the block's events — Surge's
         // order, and the one that shows a host echoing stale values back.
         let pending = load(&self.shared.pending_gain);
@@ -448,14 +477,8 @@ impl PluginStateImpl for GainMain<'_> {
         use std::io::Read;
         let mut bytes = [0u8; 8];
         input.read_exact(&mut bytes)?;
-        store(
-            &self.shared.gain,
-            f32::from_le_bytes(bytes[..4].try_into().unwrap()),
-        );
-        store(
-            &self.shared.invert,
-            f32::from_le_bytes(bytes[4..].try_into().unwrap()),
-        );
+        let gain = f32::from_le_bytes(bytes[..4].try_into().unwrap());
+        let invert = f32::from_le_bytes(bytes[4..].try_into().unwrap());
         // Written after the first two, so a state saved before it existed
         // still loads — and leaves the trim at one.
         let mut trim = [0u8; 4];
@@ -463,6 +486,20 @@ impl PluginStateImpl for GainMain<'_> {
             Ok(()) => f32::from_le_bytes(trim),
             Err(_) => 1.0,
         };
+        // Once the audio thread has run it, a state waits for the next
+        // block — see `GainShared::processing`.
+        if self
+            .shared
+            .processing
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            store(&self.shared.pending_state[1], invert);
+            store(&self.shared.pending_state[2], trim);
+            store(&self.shared.pending_state[0], gain);
+            return Ok(());
+        }
+        store(&self.shared.gain, gain);
+        store(&self.shared.invert, invert);
         store(&self.shared.trim, trim);
         Ok(())
     }

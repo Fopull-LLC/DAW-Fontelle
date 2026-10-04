@@ -1484,6 +1484,8 @@ impl Session {
     /// Gives the session the transport the window is driving, so a time
     /// selection and the play mode can reach it — see [`Session::transport`].
     pub fn with_transport(mut self, transport: std::sync::Arc<fontelle_engine::Transport>) -> Self {
+        self.plugins
+            .set_transport(std::sync::Arc::clone(&transport));
         self.transport = Some(transport);
         self.publish_loop();
         self
@@ -4114,6 +4116,7 @@ impl Session {
         let Some(slot) = self.plugin_slot_of(device) else {
             return;
         };
+        self.free_retired_graphs();
         let Some(state) = self.plugins.snapshot(slot) else {
             return;
         };
@@ -4136,7 +4139,8 @@ impl Session {
         if let Some(held) = held
             && held.key == state.key
         {
-            *held = state;
+            *held = state.clone();
+            self.plugins.kept(slot, &state);
         }
     }
 
@@ -4161,12 +4165,29 @@ impl Session {
         self.register_plugin_libraries();
     }
 
+    /// Frees the graphs the audio thread has handed back, **before the rack
+    /// is asked for anything that needs a processor**.
+    ///
+    /// A retired graph's plugin nodes give their processors up when the graph
+    /// is dropped, and it is dropped here, on this thread. Until then a
+    /// processor that was still inside one is nowhere the rack can reach: it
+    /// waits out its timeout and falls back to loading a state into a plugin
+    /// it cannot run — which is how an undo straight after a preset left
+    /// Surge XT holding a state it had only queued.
+    fn free_retired_graphs(&mut self) {
+        if let Some(graphs) = &mut self.graphs {
+            graphs.pump();
+        }
+    }
+
     fn capture_plugin_states(&mut self) {
+        self.free_retired_graphs();
         let slots: Vec<crate::PluginSlot> = crate::plugin_slots(&self.project);
         for slot in slots {
             let Some(state) = self.plugins.snapshot(slot) else {
                 continue;
             };
+            self.plugins.kept(slot, &state);
             match slot {
                 crate::PluginSlot::Channel(channel) => {
                     if let Some(channel) = self.project.channels.get_mut(channel) {
@@ -4222,6 +4243,7 @@ impl Session {
         // The plugins first: opening what the document has started asking for
         // and closing what it has not, before the graph that will hold them is
         // built. See `PluginRack` for why they cannot belong to the graph.
+        self.free_retired_graphs();
         let plugins = self.plugins.realise(
             &self.project,
             f64::from(self.options.sample_rate),
@@ -14504,6 +14526,7 @@ impl Session {
                     entry.name
                 )
             })?;
+        self.free_retired_graphs();
         let state = self.plugins.load_own_preset(slot, &own)?;
         Ok(fontelle_types::Preset::new(
             fontelle_types::DeviceKind::Plugin(key),

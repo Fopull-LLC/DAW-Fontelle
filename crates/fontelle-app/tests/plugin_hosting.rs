@@ -1454,7 +1454,9 @@ fn a_rebuild_that_did_not_change_a_plugins_state_leaves_what_its_editor_did() {
     let mut rack = fresh_rack();
     rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
     // Saved: the document holds what the plugin said.
-    project.mixer.tracks[master].inserts[0].plugin = rack.snapshot(slot);
+    let saved = rack.snapshot(slot).unwrap();
+    rack.kept(slot, &saved);
+    project.mixer.tracks[master].inserts[0].plugin = Some(saved);
     rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
 
     // Changed in its own editor, which the document hears nothing of.
@@ -1556,4 +1558,237 @@ fn a_knob_turned_in_the_plugins_window_is_an_unsaved_change() {
         !rack.take_changes_heard(),
         "a snapshot has what was heard; nothing is left unsaved"
     );
+}
+
+// --------------------- a rebuild after the plugin's own window (2026-10-04)
+//
+// > *"sometimes they'll just revert back to the init preset when working on
+// > a saved project witch I find causes confusion leading me to have to re
+// > interrelate each track to its presset."*
+//
+// The document's list of a plugin's values is as old as the last save. A
+// knob turned in the plugin's own window, or a preset picked in its own
+// browser, is newer — and every rebuild (an undo of something else, a
+// channel added, a patch changed) wrote the document's list back over it.
+
+/// The level the sine holds after its own window moved it and the graph was
+/// then rebuilt for something that had nothing to do with it.
+fn level_after_a_rebuild(key: u8) -> Option<f64> {
+    let (project, channel) = sine_turning_its_own_knob(key);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    // The rebuild: the same document, which never heard of the change.
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    rack.snapshot(PluginSlot::Channel(channel))?.param(7)
+}
+
+#[test]
+fn a_rebuild_leaves_a_knob_the_plugin_turned_and_reported() {
+    assert_eq!(
+        level_after_a_rebuild(fontelle_testplug::TURNS_AND_SAYS),
+        Some(fontelle_testplug::OWN_LEVEL_SAID)
+    );
+}
+
+#[test]
+fn a_rebuild_leaves_a_knob_the_plugin_turned_without_a_word() {
+    assert_eq!(
+        level_after_a_rebuild(fontelle_testplug::TURNS_QUIETLY),
+        Some(fontelle_testplug::OWN_LEVEL_UNSAID)
+    );
+}
+
+/// Reading a plugin's state is not the document taking it. The rack kept the
+/// last blob it **read off** the plugin as "what the plugin holds", so a
+/// read the document did not keep — a preset bar asking what is playing, a
+/// save that was refused — made the document's older copy look new, and the
+/// next rebuild loaded it over what the plugin's own editor had done. A
+/// read the document does keep is said aloud: `PluginRack::kept`.
+#[test]
+fn a_state_read_and_not_kept_does_not_make_the_documents_copy_new() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let saved = rack.snapshot(slot).unwrap();
+    rack.kept(slot, &saved);
+    project.mixer.tracks[master].inserts[0].plugin = Some(saved);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+
+    let bytes = fontelle_types::decode_base64(&gain_blob(1.0, 0.0, 0.5)).unwrap();
+    rack.plugin_mut(slot).unwrap().load_state(&bytes);
+    // Read, and dropped on the floor.
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.5);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.5);
+}
+
+/// And the other way: a state read off the plugin that the document **did**
+/// keep is not loaded back into it — a save is not a reload of every
+/// sampler in the project — while an undo to the state before a preset
+/// still is.
+#[test]
+fn an_undo_reaches_a_plugin_whose_state_was_read_before_the_preset() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    // Captured before a preset goes over it, as `capture_device_plugin` does.
+    let before = rack.snapshot(slot).unwrap();
+    rack.kept(slot, &before);
+    project.mixer.tracks[master].inserts[0].plugin = Some(before.clone());
+    let mut preset = before.clone();
+    preset.blob = Some(gain_blob(1.0, 0.0, 0.25));
+    project.mixer.tracks[master].inserts[0].plugin = Some(preset);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.25);
+    // The undo.
+    project.mixer.tracks[master].inserts[0].plugin = Some(before);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 1.0);
+}
+
+// ------------------------- a preset the plugin queues, with the audio running
+//
+// > *"sometimes they'll just revert back to the init preset"*
+//
+// Surge XT queues a preset for its next block. With nothing processing it
+// there is no next block and it loads at once, which is every test above.
+// In the studio the callback is running: the state read straight after the
+// load was the patch **before** it, the document kept that, and the rebuild
+// that follows a preset wrote the old values back over the patch that had
+// landed in between. Which of the two won depended on the block boundary.
+
+/// The gain's preset that lands a block late — `fontelle_testplug`'s
+/// `QUEUED_PRESET`, which sets the gain parameter to a half.
+fn queued_preset() -> fontelle_host::OwnPreset {
+    fontelle_host::OwnPreset {
+        name: "Queued".into(),
+        category: String::new(),
+        source: fontelle_host::OwnPresetSource::Clap {
+            location: None,
+            load_key: Some("queued".into()),
+        },
+    }
+}
+
+/// Runs `project`'s graph on a thread of its own until the flag is set, the
+/// way the device's callback does.
+fn playing(
+    project: &Project,
+    rack: &mut PluginRack,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<()>,
+) {
+    let library = SampleLibrary::new();
+    let wiring = rack.realise(project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let mut realised = realise_hosting(
+        project,
+        &library,
+        options(),
+        &Default::default(),
+        None,
+        &Default::default(),
+        None,
+        None,
+        &wiring,
+    )
+    .expect("this project must realise");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = std::sync::Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let empty = fontelle_types::CompiledTimeline::empty();
+        let block = fontelle_engine::BLOCK_SIZE as i64;
+        let mut at = 0i64;
+        while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            let transport = fontelle_engine::TransportSnapshot {
+                state: fontelle_engine::TransportState::Playing,
+                position_sample: at,
+                bpm: 120.0,
+                ..Default::default()
+            };
+            let mut cursor = 0usize;
+            let events = empty.events_for_block(&mut cursor, at..at + block);
+            realised
+                .graph
+                .process_block(events, transport, at..at + block);
+            at += block;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+    (stop, thread)
+}
+
+#[test]
+fn a_preset_the_plugin_queues_is_read_back_after_it_has_landed() {
+    let (project, _master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    let (stop, thread) = playing(&project, &mut rack);
+    // Long enough for the node to have taken the processor out.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let gain_id = rack.params(slot)[0].id;
+
+    let state = rack
+        .load_own_preset(slot, &queued_preset())
+        .expect("the gain takes it");
+    assert_eq!(
+        state.param(gain_id),
+        Some(0.5),
+        "the document is handed the patch from before the preset"
+    );
+    // And the rebuild that follows a preset leaves it there.
+    let mut after = project.clone();
+    let master = after.mixer.master.unwrap();
+    after.mixer.tracks[master].inserts[0].plugin = Some(state);
+    rack.realise(&after, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(rack.snapshot(slot).unwrap().param(gain_id), Some(0.5));
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    thread.join().unwrap();
+}
+
+/// The same for a **state**: Surge XT hands one to its audio thread once it
+/// has processed, so a state put into a running plugin — an undo, a preset
+/// of Fontelle's own — is not in it when the call returns. Read straight
+/// back (a save, the preset bar) it was the state from before.
+#[test]
+fn a_new_state_for_a_running_plugin_has_landed_before_it_is_read() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    let (stop, thread) = playing(&project, &mut rack);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let mut preset = rack.snapshot(slot).unwrap();
+    preset.blob = Some(gain_blob(1.0, 0.0, 0.25));
+    project.mixer.tracks[master].inserts[0].plugin = Some(preset);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(trim_of(&rack.snapshot(slot).unwrap()), 0.25);
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    thread.join().unwrap();
+}
+
+/// A save is the document **keeping** what was read, and the rack has to be
+/// told: otherwise the first rebuild after the first save saw a document
+/// that suddenly listed every parameter, took the whole list for news, and
+/// wrote it over whatever the plugin's own window had done since the save.
+/// Found on the real Surge XT (`tests/real_plugin_sessions.rs`): a dozen
+/// knobs turned after a save went back to where the save had them.
+#[test]
+fn a_rebuild_after_a_save_leaves_what_the_plugins_window_did_since() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let gain_id = rack.params(slot)[0].id;
+    // The save: the plugin said its gain is one, and the document kept it.
+    let saved = rack.snapshot(slot).unwrap();
+    assert_eq!(saved.param(gain_id), Some(1.0));
+    rack.kept(slot, &saved);
+    project.mixer.tracks[master].inserts[0].plugin = Some(saved);
+
+    // Its own window turns the gain to two.
+    let bytes = fontelle_types::decode_base64(&gain_blob(2.0, 0.0, 1.0)).unwrap();
+    rack.plugin_mut(slot).unwrap().load_state(&bytes);
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(rack.snapshot(slot).unwrap().param(gain_id), Some(2.0));
 }

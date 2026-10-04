@@ -71,6 +71,9 @@ pub struct Transport {
     /// for [`crate::IdleGate::set_attended`]. On the transport because the
     /// transport is already the shared state the callback is driven by.
     attended: AtomicBool,
+    /// How many callers on the main thread are waiting on the graph to run —
+    /// see [`summon`](Self::summon).
+    summoned: std::sync::atomic::AtomicU32,
     /// Frames of count-in still to run before the song rolls. Written by the
     /// window before it starts the transport, counted down by the reader.
     count_in: AtomicI64,
@@ -89,6 +92,7 @@ impl Transport {
             loop_end_sample: AtomicI64::new(0),
             looping: AtomicU8::new(0),
             attended: AtomicBool::new(false),
+            summoned: std::sync::atomic::AtomicU32::new(0),
             count_in: AtomicI64::new(0),
         }
     }
@@ -111,9 +115,39 @@ impl Transport {
         self.count_in.load(Ordering::Acquire) > 0
     }
 
-    /// Whether a plugin's own editor is open. See the field.
+    /// Whether the graph has to run although the transport is stopped and
+    /// nothing sounds: a plugin's own editor is open, or the main thread has
+    /// [summoned](Self::summon) it.
     pub fn is_attended(&self) -> bool {
-        self.attended.load(Ordering::Relaxed)
+        self.attended.load(Ordering::Relaxed) || self.summoned.load(Ordering::Acquire) > 0
+    }
+
+    /// Asks the audio thread to run the graph until [`dismiss`](Self::dismiss),
+    /// whatever the transport is doing.
+    ///
+    /// > *"sometimes they'll just revert back to the init preset when working
+    /// > on a saved project"*
+    ///
+    /// A stopped transport with nothing sounding costs nothing because the
+    /// callback does not run the graph — and a plugin does some of its work
+    /// only when it is run. Surge XT takes a state or a preset on its **next
+    /// block**; a processor the main thread asks back is given up at the top
+    /// of one. With the graph asleep neither ever happened: a preset chosen
+    /// while stopped sat in the plugin's queue, and a save read the patch
+    /// from before it.
+    ///
+    /// Counted rather than a flag, so two callers do not cancel each other,
+    /// and apart from [`set_attended`](Self::set_attended), which the window
+    /// rewrites every frame.
+    pub fn summon(&self) {
+        self.summoned.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Takes one [`summon`](Self::summon) back.
+    pub fn dismiss(&self) {
+        let _ = self
+            .summoned
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
     }
 
     /// Says whether a plugin's own editor is open. See the field.

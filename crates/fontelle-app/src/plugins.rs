@@ -40,6 +40,25 @@ use fontelle_types::{ChannelId, MixerTrackId, PluginKey, PluginState};
 /// a block or two, which is milliseconds; this is for one that is not.
 const STATE_RECALL_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Asks a plugin's processor home, waking a graph that is asleep for as long
+/// as the wait lasts — see [`fontelle_engine::Transport::summon`].
+///
+/// `None` when nobody answers: no audio device at all, or one whose callback
+/// has stopped.
+fn recall_home(
+    bay: &ProcessorBay,
+    transport: Option<&Arc<fontelle_engine::Transport>>,
+) -> Option<fontelle_host::HostedProcessor> {
+    if let Some(transport) = transport {
+        transport.summon();
+    }
+    let processor = bay.recall(STATE_RECALL_TIMEOUT);
+    if let Some(transport) = transport {
+        transport.dismiss();
+    }
+    processor
+}
+
 /// Where in the document a plugin sits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginSlot {
@@ -93,18 +112,36 @@ struct Live {
     /// drawing into freed memory. `retire` closes it first, which makes that
     /// unexpressible.
     editor: Option<PluginWindow>,
-    /// The plugin's own state as it was last **put into** the plugin or
-    /// **read off** it — so a rebuild can tell a document whose state is new
+    /// The plugin's own state as the **document** held it the last time
+    /// this rack looked — so a rebuild can tell a document whose state is new
     /// (a preset was loaded, an undo put an old one back) from one whose copy
     /// is merely old. See [`PluginRack::ensure`].
     blob: Option<String>,
+    /// The parameter values the **document** held the last time this rack
+    /// looked — so a rebuild can tell a value the document changed (a knob
+    /// on the studio's panel, an undo) from one that is merely old. See
+    /// [`Live::apply_params`].
+    seen: HashMap<u32, f64>,
     /// Presses on the editor's strip since the session last asked.
     header_presses: Vec<(i32, i32)>,
     /// Where the pointer is over the strip.
     header_hover: Option<(i32, i32)>,
 }
 
+/// The document's parameter list for a plugin, by id.
+fn seen_params(state: &PluginState) -> HashMap<u32, f64> {
+    state.params.iter().map(|p| (p.id, p.value)).collect()
+}
+
 impl Live {
+    /// The document holds `state`, and the plugin already is it.
+    fn keep(&mut self, state: &PluginState) {
+        if state.blob.is_some() {
+            self.blob = state.blob.clone();
+        }
+        self.seen = seen_params(state);
+    }
+
     fn refresh_display(&mut self, id: u32) {
         let Some(value) = self.plugin.values().get(id) else {
             return;
@@ -114,15 +151,27 @@ impl Live {
         }
     }
 
-    /// Writes the document's opinion of every parameter onto the plugin.
+    /// Carries what the document **changed its mind about** onto the plugin.
     ///
     /// **This is INVARIANT 9 reaching a plugin.** An undo changes the
     /// document and nothing else — the plugin is still set the way the
     /// gesture left it — so something has to carry the document's answer back,
     /// and the rebuild that follows every history move is where.
     ///
-    /// A parameter the document does not mention goes to the plugin's own
-    /// **default**, which is what makes undoing the first touch of a knob put
+    /// > *"sometimes they'll just revert back to the init preset when working
+    /// > on a saved project"*
+    ///
+    /// **Only what the document changed** since this rack last looked
+    /// ([`Live::seen`]). This used to write the document's whole list every
+    /// time, and the document's list is as old as the last save: a knob
+    /// turned in the plugin's own window, or a preset picked in its own
+    /// browser, was put back by the next rebuild for anything at all — an
+    /// undo of a note, a channel added. The same rule as the blob
+    /// ([`PluginRack::ensure`]): a document that says what it said before has
+    /// nothing new to say, and what the plugin did since is newer.
+    ///
+    /// A parameter the document **stopped** mentioning goes to the plugin's
+    /// own default, which is what makes undoing the first touch of a knob put
     /// it back where it started rather than where it happened to be.
     ///
     /// Values that already agree are left alone: a plugin is entitled to treat
@@ -133,6 +182,7 @@ impl Live {
             .plugin
             .params()
             .iter()
+            .filter(|param| state.param(param.id) != self.seen.get(&param.id).copied())
             .map(|param| (param.id, state.param(param.id).unwrap_or(param.default)))
             .collect();
         for (id, value) in wanted {
@@ -142,6 +192,7 @@ impl Live {
             self.plugin.set_param(id, value);
             self.refresh_display(id);
         }
+        self.seen = seen_params(state);
     }
 
     fn refresh_displays(&mut self) {
@@ -289,6 +340,11 @@ pub struct PluginRack {
     retired: Vec<Live>,
     /// What went wrong with the last thing asked of it, for the status line.
     message: Option<String>,
+    /// The transport the device's callback is driven by, when there is one —
+    /// so a wait on the audio thread can [summon] a graph that is asleep.
+    ///
+    /// [summon]: fontelle_engine::Transport::summon
+    transport: Option<Arc<fontelle_engine::Transport>>,
 }
 
 impl Default for PluginRack {
@@ -311,6 +367,7 @@ impl Default for PluginRack {
             headless_editors: false,
             retired: Vec::new(),
             message: None,
+            transport: None,
         }
     }
 }
@@ -476,6 +533,11 @@ impl PluginRack {
         if !live.plugin.set_param(id, value) {
             return false;
         }
+        // The command beside this call wrote the same value to the
+        // document, and no rebuild follows to show it to `apply_params` —
+        // which then has to know, or the undo of this very turn would look
+        // like a document that never said anything.
+        live.seen.insert(id, value);
         live.refresh_display(id);
         true
     }
@@ -498,6 +560,28 @@ impl PluginRack {
         self.live.get(&slot)?.plugin.values().get(id)
     }
 
+    /// Hands the rack the transport the callback is driven by. See the field.
+    pub fn set_transport(&mut self, transport: Arc<fontelle_engine::Transport>) {
+        self.transport = Some(transport);
+    }
+
+    /// Says the document now holds `state` for `slot`, **read off the
+    /// plugin** — a save, a capture before a preset goes over it.
+    ///
+    /// Reading a plugin's state is not the document taking it, so
+    /// [`snapshot`](Self::snapshot) changes nothing about what a rebuild
+    /// compares against; whoever writes the snapshot into the document says
+    /// so here. Without it the next rebuild takes the document's fresh copy
+    /// for news and loads it back into the plugin, over whatever its own
+    /// window did since it was read.
+    pub fn kept(&mut self, slot: PluginSlot, state: &PluginState) {
+        if let Some(live) = self.live.get_mut(&slot)
+            && live.key == state.key
+        {
+            live.keep(state);
+        }
+    }
+
     /// What the document should store about `slot` right now — parameters and
     /// the plugin's own blob.
     ///
@@ -517,14 +601,12 @@ impl PluginRack {
         let live = self.live.get_mut(&slot)?;
         if !live.plugin.state_needs_processor() {
             let state = live.plugin.snapshot();
-            live.blob = state.blob.clone();
             return Some(state);
         }
-        match live.bay.recall(STATE_RECALL_TIMEOUT) {
+        match recall_home(&live.bay, self.transport.as_ref()) {
             Some(mut processor) => {
                 let state = live.plugin.snapshot_with(&mut processor);
                 live.bay.park(processor);
-                live.blob = state.blob.clone();
                 Some(state)
             }
             None => {
@@ -632,6 +714,7 @@ impl PluginRack {
                 displays: HashMap::new(),
                 editor: None,
                 blob: state.blob.clone(),
+                seen: seen_params(state),
                 header_presses: Vec::new(),
                 header_hover: None,
             };
@@ -665,14 +748,35 @@ impl PluginRack {
                 }
                 return self.ensure(slot, state, sample_rate, max_block);
             }
+            // **With its processor home, and run until it is in.** Surge XT
+            // hands a state to its audio thread once it has processed, so
+            // one put in where it stood was not in it when the call came
+            // back — and a save, or the preset bar, read the state from
+            // before. See `load_own_preset`, which is the same thing for a
+            // preset of the plugin's own.
+            let transport = self.transport.clone();
             if let Some(live) = self.live.get_mut(&slot) {
-                live.plugin.restore(state);
-                live.blob = state.blob.clone();
+                match recall_home(&live.bay, transport.as_ref()) {
+                    Some(mut processor) => {
+                        let before = live.plugin.settle_mark(&mut processor);
+                        live.plugin.restore(state);
+                        live.plugin.settle_with(&mut processor, &before);
+                        live.bay.park(processor);
+                    }
+                    None => {
+                        live.plugin.restore(state);
+                    }
+                }
                 live.refresh_displays();
             }
         }
         if let Some(live) = self.live.get_mut(&slot) {
-            // Whatever the document says, every time — see `apply_params`.
+            // What the document holds now, new or not, is what it is
+            // compared against next time.
+            if state.blob.is_some() {
+                live.blob = state.blob.clone();
+            }
+            // What the document changed its mind about — see `apply_params`.
             live.apply_params(state);
         }
         self.live.get(&slot)
@@ -784,33 +888,66 @@ impl PluginRack {
     /// Loads one of a plugin's own presets into the plugin at `slot`, and
     /// answers with the state it is in now — what the document is to hold.
     ///
-    /// An LV2 plugin that is running is handed it with its processor recalled
-    /// out of the graph, the way a snapshot reads one.
+    /// > *"sometimes they'll just revert back to the init preset"*
+    ///
+    /// **With its processor recalled out of the graph, whatever the format.**
+    /// LV2 has to be (its state goes into the instance). The others were
+    /// loaded where they stood and read straight back — and Surge XT queues
+    /// a preset for its next block, so with the audio running what was read
+    /// back was the patch *before* the preset. The document kept that, and
+    /// the rebuild that follows a preset then wrote the old patch's values
+    /// over the new one whenever the block had come round in between: the
+    /// preset stuck or did not by where the block boundary fell.
+    ///
+    /// So the processor comes home, the preset goes in with nothing else
+    /// running the plugin, and it is run here in silence until it has
+    /// stopped changing ([`HostedPlugin::settle_with`]) before the state is
+    /// read. A processor nobody
+    /// hands back (a graph nothing is processing) leaves the old way, which
+    /// is right for a plugin that is not running at all.
     pub fn load_own_preset(
         &mut self,
         slot: PluginSlot,
         preset: &OwnPreset,
     ) -> Result<PluginState, String> {
         let live = self.live.get_mut(&slot).ok_or("that plugin is not open")?;
-        if live.plugin.own_preset_needs_processor() {
-            let mut processor = live
-                .bay
-                .recall(STATE_RECALL_TIMEOUT)
-                .ok_or("the audio thread did not hand the plugin over")?;
-            let loaded = live.plugin.load_own_preset_with(&mut processor, preset);
-            live.bay.park(processor);
-            loaded?;
-        } else {
-            live.plugin.load_own_preset(preset)?;
+        match recall_home(&live.bay, self.transport.as_ref()) {
+            Some(mut processor) => {
+                let before = live.plugin.settle_mark(&mut processor);
+                let loaded = live.plugin.load_own_preset_with(&mut processor, preset);
+                if loaded.is_ok() {
+                    live.plugin.settle_with(&mut processor, &before);
+                }
+                let state = loaded
+                    .is_ok()
+                    .then(|| live.plugin.snapshot_with(&mut processor));
+                live.bay.park(processor);
+                loaded?;
+                // What is handed back is what the document is to hold.
+                if let Some(state) = &state {
+                    live.keep(state);
+                }
+                live.refresh_displays();
+                state.ok_or_else(|| "the plugin's state could not be read back".to_string())
+            }
+            None if live.plugin.own_preset_needs_processor() => {
+                Err("the audio thread did not hand the plugin over".to_string())
+            }
+            None => {
+                live.plugin.load_own_preset(preset)?;
+                live.refresh_displays();
+                let state = self
+                    .snapshot(slot)
+                    .ok_or_else(|| "the plugin's state could not be read back".to_string())?;
+                self.kept(slot, &state);
+                Ok(state)
+            }
         }
-        live.refresh_displays();
-        self.snapshot(slot)
-            .ok_or_else(|| "the plugin's state could not be read back".to_string())
     }
 
-    /// Whether `state` carries a blob this rack has not put into, or read
-    /// off, the plugin open at `slot`. A document with no blob never is: it
-    /// has nothing of the plugin's own to say.
+    /// Whether `state` carries a blob the document did not hold the last
+    /// time this rack looked (or was [told](Self::kept)). A document with no
+    /// blob never is: it has nothing of the plugin's own to say.
     fn state_is_new(&self, slot: PluginSlot, state: &PluginState) -> bool {
         match (&state.blob, self.live.get(&slot)) {
             (Some(blob), Some(live)) => live.blob.as_ref() != Some(blob),

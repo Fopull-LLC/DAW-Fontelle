@@ -610,6 +610,24 @@ pub(crate) enum Inner {
     Vst3(Vst3Plugin),
 }
 
+/// How long a plugin must hold still, once it has changed, before what was
+/// loaded into it is taken to be in — see [`HostedPlugin::settle_with`].
+const SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// And how long to wait for all of that before reading whatever is there.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// How often the plugin's whole state is asked for while waiting for it to
+/// change.
+const SETTLE_STATE_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A plugin before something is loaded into it — see
+/// [`HostedPlugin::settle_mark`].
+pub struct SettleMark {
+    values: Vec<u64>,
+    state: Option<Vec<u8>>,
+}
+
 impl HostedPlugin {
     pub(crate) fn clap(&mut self) -> Option<&mut PluginInstance<FontelleHost>> {
         match &mut self.inner {
@@ -1534,6 +1552,96 @@ impl HostedPlugin {
             {
                 values.hear(id, value);
             }
+        }
+    }
+
+    /// What [`settle_with`](Self::settle_with) compares against: the plugin
+    /// as it is **before** something is loaded into it.
+    pub fn settle_mark(&mut self, processor: &mut HostedProcessor) -> SettleMark {
+        self.reread_params();
+        SettleMark {
+            values: self.values.all().map(|(_, v)| v.to_bits()).collect(),
+            state: self.save_state_with(processor),
+        }
+    }
+
+    /// Runs the plugin on **this** thread, in silence, until what was just
+    /// loaded into it is in — for the moment after a preset of its own or a
+    /// state, before its state is read.
+    ///
+    /// > *"sometimes they'll just revert back to the init preset"*
+    ///
+    /// Surge XT does not load a patch in the call that asks for one once its
+    /// audio has run: it hands the work to a thread of its own and swaps
+    /// the patch in some blocks later — sometimes a tenth of a second
+    /// later. A state read before that is the patch from before, and a
+    /// document that keeps it puts it back. There is no call, in any of the
+    /// formats, that says "it is in" — so this runs blocks, answers the
+    /// plugin's main-thread requests between them, and waits until the
+    /// plugin **differs from `before`** (its values, or the state it saves)
+    /// and has then held still for [`SETTLE_QUIET`].
+    ///
+    /// One that never differs — the preset it was already on — and one that
+    /// never holds still (a meter published as a parameter) are given up on
+    /// after [`SETTLE_LIMIT`].
+    ///
+    /// **Only with the processor recalled** out of whatever was running it:
+    /// this thread is the plugin's audio thread for as long as the call
+    /// lasts.
+    pub fn settle_with(&mut self, processor: &mut HostedProcessor, before: &SettleMark) {
+        let frames = processor.max_block();
+        let mut bus = vec![vec![0.0f32; frames]; 2];
+        let instrument = self.info.is_instrument();
+        let read = |plugin: &mut Self| -> Vec<u64> {
+            plugin.reread_params();
+            plugin.values.all().map(|(_, v)| v.to_bits()).collect()
+        };
+        let started = std::time::Instant::now();
+        let mut landed: Option<std::time::Instant> = None;
+        let mut last = before.values.clone();
+        let mut state_checked = started;
+        let mut blocks = 0u32;
+        loop {
+            self.service_main_thread();
+            if instrument {
+                processor.process_instrument(&mut bus, frames);
+            } else {
+                for channel in &mut bus {
+                    channel.fill(0.0);
+                }
+                processor.process_insert(&mut bus, frames);
+            }
+            blocks += 1;
+            let now = read(self);
+            if now != last {
+                last = now;
+                landed = Some(std::time::Instant::now());
+            } else if landed.is_none()
+                && (blocks == 2 || state_checked.elapsed() >= SETTLE_STATE_EVERY)
+            {
+                // Most of a plugin is not its parameters: a preset that
+                // changes a wavetable and no knob shows only in its state.
+                // Asked for sparingly — a sampler's state is its samples.
+                state_checked = std::time::Instant::now();
+                if self.save_state_with(processor) != before.state {
+                    landed = Some(state_checked);
+                }
+            }
+            let quiet = landed.is_some_and(|at| at.elapsed() >= SETTLE_QUIET);
+            if quiet || started.elapsed() >= SETTLE_LIMIT {
+                break;
+            }
+            // The plugin's own thread needs the time, not just the blocks.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        self.service_main_thread();
+        if crate::atom::trace() {
+            eprintln!(
+                "[settle] {}: {blocks} blocks, {:?}, landed {}",
+                self.info.name,
+                started.elapsed(),
+                landed.is_some()
+            );
         }
     }
 
