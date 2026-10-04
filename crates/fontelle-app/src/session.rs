@@ -441,6 +441,11 @@ pub struct Session {
     /// The bounce running beside the window, if one is — see
     /// [`Session::poll_job`].
     job: Option<RunningJob>,
+    /// The plugins a render that is running was given — instances of its
+    /// own, see [`crate::PluginRack::for_render`]. Kept here because a
+    /// plugin is closed on the thread that opened it: the bounce's thread
+    /// has the graph, and this one closes the rack once that graph is gone.
+    render_plugins: Option<crate::PluginRack>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1418,6 +1423,7 @@ impl Session {
             told_end: false,
             session_notices: Vec::new(),
             job: None,
+            render_plugins: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -3205,8 +3211,9 @@ impl Session {
     ) -> Result<String, String> {
         let (bounce, then) = self.prepare_render_lane(index, span)?;
         let path = bounce.path.clone();
-        let clipped = bounce.run(&mut |_| {})?;
-        self.finish_bounce(then, &path, clipped)
+        let clipped = bounce.run(&mut |_| {});
+        self.end_render();
+        self.finish_bounce(then, &path, clipped?)
     }
 
     /// The half of [`render_lane`](Self::render_lane) that needs the session.
@@ -3266,7 +3273,7 @@ impl Session {
             quality: crate::RENDER_QUALITY,
             ..self.options
         };
-        let realised = realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
+        let realised = self.realise_for_render(options)?;
         let timeline = fontelle_sequencer::compile_with(
             &self.project,
             &fontelle_sequencer::NodeMaps {
@@ -3337,8 +3344,9 @@ impl Session {
     pub fn export_wav_with(&mut self, export: ExportOptions) -> Result<String, String> {
         let (bounce, then) = self.prepare_export(export)?;
         let path = bounce.path.clone();
-        let clipped = bounce.run(&mut |_| {})?;
-        self.finish_bounce(then, &path, clipped)
+        let clipped = bounce.run(&mut |_| {});
+        self.end_render();
+        self.finish_bounce(then, &path, clipped?)
     }
 
     /// Everything of an export that needs the session: the graph, the
@@ -3370,7 +3378,7 @@ impl Session {
             quality: crate::RENDER_QUALITY,
             ..self.options
         };
-        let realised = realise(&self.project, &self.library, options).map_err(|e| e.to_string())?;
+        let realised = self.realise_for_render(options)?;
         let timeline = fontelle_sequencer::compile_with(
             &self.project,
             &fontelle_sequencer::NodeMaps {
@@ -3471,6 +3479,57 @@ impl Session {
         }
     }
 
+    /// The graph a render plays: the document's, **with its plugins in it**.
+    ///
+    /// The studio's plugins are read first — a render is of what is playing,
+    /// and the document's copy of a plugin is as old as the last save — and
+    /// then the render is given instances of its own, opened from that
+    /// ([`crate::PluginRack::for_render`]). A plugin that will not open a
+    /// second time is said on the status line; its channel is silent in the
+    /// file, as a missing plugin's is.
+    fn realise_for_render(&mut self, options: RealiseOptions) -> Result<crate::Realised, String> {
+        self.end_render();
+        if crate::plugin_slots(&self.project).is_empty() {
+            return realise(&self.project, &self.library, options).map_err(|e| e.to_string());
+        }
+        self.capture_plugin_states();
+        let mut rack = self.plugins.for_render();
+        let wiring = rack.realise(
+            &self.project,
+            f64::from(options.sample_rate),
+            options.block_size as u32,
+        );
+        if let Some(message) = rack.take_message() {
+            self.message = Some(message);
+        }
+        let realised = crate::realise_hosting(
+            &self.project,
+            &self.library,
+            options,
+            &HashMap::new(),
+            None,
+            &Default::default(),
+            None,
+            None,
+            &wiring,
+        )
+        .map_err(|e| e.to_string());
+        // Kept even when the graph could not be built, so what was opened
+        // is closed by `end_render` rather than dropped where it stands.
+        self.render_plugins = Some(rack);
+        if realised.is_err() {
+            self.end_render();
+        }
+        realised
+    }
+
+    /// Closes the plugins a render was given, once its graph is gone.
+    fn end_render(&mut self) {
+        if let Some(mut rack) = self.render_plugins.take() {
+            rack.close_all();
+        }
+    }
+
     /// Sends a prepared bounce to a thread of its own, so the window keeps
     /// drawing while it renders — see [`StudioHost::poll_job`].
     ///
@@ -3531,7 +3590,11 @@ impl Session {
         let Some(job) = self.job.take() else {
             return JobPoll::Idle;
         };
-        let result = match job.worker.join() {
+        let joined = job.worker.join();
+        // The bounce's thread is over and its graph with it: every processor
+        // is back in its bay, and the render's plugins can be closed.
+        self.end_render();
+        let result = match joined {
             Ok(Ok(clipped)) => self.finish_bounce(job.then, &job.path, clipped),
             Ok(Err(e)) => Err(e),
             Err(_) => Err("the render stopped with an error".to_string()),
@@ -7554,6 +7617,9 @@ impl StudioHost for Session {
         if Some(id) == self.project.mixer.master {
             return;
         }
+        // What is copied is what is playing: the document's copy of a
+        // plugin is as old as the last save.
+        self.capture_plugin_states();
         let made = self
             .apply_for::<fontelle_model::DuplicateMixerTrack>(Box::new(
                 fontelle_model::DuplicateMixerTrack::new(id),
@@ -7715,6 +7781,10 @@ impl StudioHost for Session {
         if from >= len || to >= len || from == to {
             return;
         }
+        // A plugin is known to the rack by its place in the chain, so a move
+        // opens it again from the document — which has to hold what it is
+        // playing, not what the last save wrote down.
+        self.capture_plugin_states();
         self.run(Box::new(fontelle_model::MoveInsert::new(id, from, to)));
         self.let_go();
         // Order is what the chain *is*, so the schedule changes.
@@ -8095,6 +8165,11 @@ impl StudioHost for Session {
         // library listed on its thread since the last one.
         self.register_plugin_libraries();
         self.plugins.service_main_thread();
+        // And the ones a render is running, which ask for their main thread
+        // like any other and have no window of their own to be ticked from.
+        if let Some(rack) = &mut self.render_plugins {
+            rack.service_main_thread();
+        }
         let open = self.plugins.tick_editors();
         // *"Every time I log out the instrument resets, this is when I
         // save."* A knob turned in a plugin's own window is an edit the
@@ -8153,6 +8228,28 @@ impl StudioHost for Session {
         let Some(state) = self.instrument_state(which) else {
             return;
         };
+        // > *"sometimes they'll just revert back to the init preset"*
+        //
+        // **The plugin it already has, chosen again, is not a new one.** This
+        // wrote a fresh, empty state over the channel's, and the rack — which
+        // keeps a plugin open while its key is the same — carried the empty
+        // state's opinion onto it: every parameter to its default. Only while
+        // the plugin is really open; one that would not load can be chosen
+        // again to try it again.
+        let already = self
+            .project
+            .channels
+            .get(id)
+            .and_then(|c| c.plugin.as_ref())
+            .is_some_and(|held| held.key == state.key);
+        if already
+            && self
+                .plugins
+                .plugin_mut(crate::PluginSlot::Channel(id))
+                .is_some()
+        {
+            return;
+        }
         // **The rack has to say what is on it.** Choosing a plugin used to
         // name a channel only when it *made* one, so a Surge XT channel given
         // Calf Organ instead still read "Surge XT" — in the rack and in the
@@ -8286,6 +8383,8 @@ impl StudioHost for Session {
         let Some(id) = self.channel_ids().get(index).copied() else {
             return;
         };
+        // The copy is of what is playing — see `duplicate_mixer_track`.
+        self.capture_plugin_states();
         match self.apply_for::<fontelle_model::DuplicateChannel>(Box::new(
             fontelle_model::DuplicateChannel::new(id),
         )) {

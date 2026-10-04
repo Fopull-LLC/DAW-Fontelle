@@ -1792,3 +1792,92 @@ fn a_rebuild_after_a_save_leaves_what_the_plugins_window_did_since() {
     rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
     assert_eq!(rack.snapshot(slot).unwrap().param(gain_id), Some(2.0));
 }
+
+// ------------------------------------ a state, and then its own parameters
+//
+// > *"sometimes they'll just revert back to the init preset when working on
+// > a saved project"*
+//
+// Found by listening to the real Surge XT (`tests/real_plugin_sessions.rs`):
+// opened from the state it had just saved, it played at two thirds the level
+// as CLAP and at a hundredth as VST 3 — and from the **blob alone** it was
+// right. The host loaded the plugin's state and then told it every parameter
+// on the saved list, each one the value the plugin already had. To Surge an
+// event is a gesture: an oscillator told its type sets itself up again, and
+// its VST 3 lists every MIDI controller as a parameter, so being "told" all
+// of them is every controller on every channel sent at zero.
+
+#[test]
+fn a_plugin_opened_from_its_state_is_not_told_what_it_already_is() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let bytes = fontelle_types::decode_base64(&gain_blob(1.0, 0.0, 0.25)).unwrap();
+    rack.plugin_mut(slot).unwrap().load_state(&bytes);
+    let saved = rack.snapshot(slot).unwrap();
+    assert_eq!(trim_of(&saved), 0.25);
+    assert_eq!(saved.params.len(), 2, "its two parameters are on the list");
+    rack.close_all();
+
+    // Reopened, and played — the first block is when a host sends what it
+    // has to say.
+    project.mixer.tracks[master].inserts[0].plugin = Some(saved);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    assert_eq!(
+        trim_of(&rack.snapshot(slot).unwrap()),
+        0.25,
+        "the plugin was told its own parameters after its state"
+    );
+}
+
+/// What the document **did** change since the state was read still goes in:
+/// a knob turned on the studio's panel after the last save is on the list
+/// and not in the blob.
+#[test]
+fn a_parameter_the_document_changed_since_the_state_still_reaches_the_plugin() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let gain_id = rack.params(slot)[0].id;
+    let mut saved = rack.snapshot(slot).unwrap();
+    saved.set_param(gain_id, 2.0);
+    rack.close_all();
+
+    project.mixer.tracks[master].inserts[0].plugin = Some(saved);
+    let mut rack = fresh_rack();
+    render(&project, &mut rack);
+    assert_eq!(rack.snapshot(slot).unwrap().param(gain_id), Some(2.0));
+}
+
+/// A state the plugin will not take is said aloud. It used to be dropped in
+/// silence: the plugin opened at its defaults — "the init preset" — and
+/// nothing told anybody that what was saved had not gone in.
+#[test]
+fn a_saved_state_a_plugin_refuses_is_said() {
+    let (mut project, master, _slot) = project_with_a_gain_insert();
+    let mut state = PluginState::new(PluginKey::clap(GAIN), "Gain");
+    // Three bytes: the gain reads eight at least, and refuses.
+    state.blob = Some(fontelle_types::encode_base64(&[1, 2, 3]));
+    project.mixer.tracks[master].inserts[0].plugin = Some(state);
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let said = rack.take_message().unwrap_or_default();
+    assert!(
+        said.contains("Gain") && said.contains("saved"),
+        "nothing was said: {said:?}"
+    );
+}
+
+/// And one that is taken says nothing.
+#[test]
+fn a_saved_state_a_plugin_takes_is_not_remarked_on() {
+    let (mut project, master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    project.mixer.tracks[master].inserts[0].plugin = rack.snapshot(slot);
+    rack.close_all();
+    let mut rack = fresh_rack();
+    rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    assert_eq!(rack.take_message(), None);
+}

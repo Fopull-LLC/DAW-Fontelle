@@ -19,7 +19,85 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-03 (latest) — the mixer's strips, clip colours, looped
+**As of 2026-10-04 (latest) — a hosted plugin keeps its patch, and a render
+has the plugins in it.** Not released. From one user's report:
+
+> *"sometimes they'll just revert back to the init preset when working on a
+> saved project ... I have trouble rendering midi to audio. most times it
+> just renders with nothing"*
+
+Reproduced on the installed Surge XT, CLAP and VST 3
+(`fontelle-app/tests/real_plugin_sessions.rs`, all `--ignored`; five walks,
+`FONTELLE_REAL_ONLY` narrows them), and each cause then given a fixture test.
+Seven causes of the first, one of the second:
+
+- **A plugin opened from its saved state was then told every parameter on
+  the saved list** — each the value it already had. To a plugin an event is
+  a gesture: Surge XT sets an oscillator up again, and its VST 3 lists every
+  MIDI controller as a parameter (2,855 of them). Opened from the state it
+  had just saved it played at two thirds the level as CLAP and **a hundredth
+  as VST 3**; from the blob alone it was right. `HostedPlugin::restore` is
+  now `restore_blob` then `restore_params`, which asks the plugin what it
+  holds and tells it only what differs; a plugin its own state went into is
+  not sent the lot on its first block either (`from_state`). The test gain
+  now loses its trim when told its switch, the way Surge's oscillator does.
+- **Every rebuild wrote the document's whole parameter list onto the
+  plugin**, and the document's list is as old as the last save: a knob
+  turned in the plugin's window, or a patch picked in its browser, went back
+  at the next undo of anything, or channel added. `Live::seen`: only what
+  the document changed since the rack last looked. A studio knob records
+  itself there (`PluginRack::set_param`), so its undo still lands.
+- **Reading a plugin's state was taken for the document keeping it.**
+  `PluginRack::kept` says so, from `capture_plugin_states` (a save) and
+  `capture_device_plugin` (before a preset); `snapshot` alone changes
+  nothing a rebuild compares against.
+- **Surge XT hands a preset or a state to its audio thread once it has
+  processed**, and it is in some tens of milliseconds later. Read straight
+  back it was the patch from before; the document kept that, and the
+  rebuild after a preset put it back whenever the block had come round —
+  the "sometimes". A preset of the plugin's own, and a new state for an open
+  plugin, now go in with the processor recalled, and the plugin is run in
+  silence on the main thread until it differs from before and has held
+  still for 60 ms (`HostedPlugin::settle_mark` / `settle_with`; about 70 ms
+  for Surge, given up on at 1.5 s). The test gain queues a state once it
+  has processed.
+- **A graph that is asleep runs no plugin**, so with the transport stopped
+  none of that could happen and a recall timed out. `Transport::summon` /
+  `dismiss` (counted, beside `set_attended`) keep the callback running the
+  graph while the main thread waits; `Session::free_retired_graphs` drops
+  the graphs the callback handed back before the rack is asked for a
+  processor, which is where one was stranded straight after a rebuild. This
+  is also the LV2 save-while-stopped case (`snapshot` goes through it).
+- **Export and "render row to audio" built their graph with no plugins**,
+  so a channel playing one had no node and the file was the right length
+  and silent — `--render-wav`'s old mistake, fixed there and nowhere else.
+  A render now gets instances **of its own** (`PluginRack::for_render`,
+  `Session::realise_for_render`): the studio's plugins are captured first,
+  so what renders is what is playing, the new ones are opened from that,
+  run on the bounce's thread, and closed on this one when its graph is gone
+  (`end_render`). `tests/render_plugins.rs`.
+
+- **Three places used the document's copy of a plugin as though it were
+  the plugin**, and that copy is as old as the last save. Choosing the
+  plugin a channel already has wrote an empty state over it, and every
+  parameter went to its default (`set_channel_plugin` now does nothing when
+  that plugin is open there). Duplicating a channel or a strip, and moving
+  an insert — which the rack knows by its place, so a move opens it again
+  from the document — now `capture_plugin_states` first.
+- **A saved state the plugin refuses is said**, on the status line, where it
+  used to open as a new one without a word (`PluginRack::ensure`).
+
+Still open from the same investigation: Surge XT as VST 3 lists no library
+here, so its presets are only in its own window; a row render still honours
+another channel's solo; `prepare_export` cuts with `tempo_map` and compiles
+with `effective_tempo_map`; the settle after a preset costs its 60 ms even
+for a plugin that loads at once, and 1.5 s for the preset it is already on.
+Not run against: Vital, Serum (through a bridge), or anything on Windows or
+macOS — the real-plugin walks are there to be run where those are installed.
+Nothing was found that reverts the built-in instruments; that needs the
+reporter to say which one and what was done.
+
+**As of 2026-10-03 — the mixer's strips, clip colours, looped
 onion skins, multi-clip drags, legato to the end.** Not released.
 
 - *"right click and duplicate mixer tracks and easily reorder them"* —

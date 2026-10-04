@@ -454,3 +454,217 @@ fn what_was_done_in_a_real_plugins_window_survives_working_saving_and_reopening(
         settle();
     }
 }
+
+// ------------------------------------------------------------- a render
+//
+// > *"I find I have trouble rendering midi to audio. most times it just
+// > renders with nothing"*
+
+fn peak_of(path: &Path) -> f32 {
+    let asset = fontelle_assets::import_audio(path).expect("the render reads back");
+    asset.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+fn renders(session: &Session) -> Vec<PathBuf> {
+    let bundle = session.bundle_path().expect("it was saved");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(bundle.join("renders"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+#[ignore]
+fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
+    let dir = scratch("render");
+    let found = instruments(&a_session(&dir));
+    assert!(
+        !found.is_empty(),
+        "nothing installed matches {:?}",
+        wanted()
+    );
+    for (which, listing) in found {
+        eprintln!("== {listing}");
+        let dir = scratch("render");
+        let (mut session, stop) = a_running_session(&dir);
+        session.set_channel_plugin(0, which);
+        settle();
+        session.edit(fontelle_ui::canvas::RollEdit::Add {
+            note: fontelle_model::Note {
+                start: 0,
+                length: fontelle_types::PPQN * 4,
+                key: 60,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+                path: Vec::new(),
+                channel: None,
+            },
+        });
+        session.save_as("Render").expect("saves");
+
+        session.export_wav().expect("exports");
+        let exported = renders(&session);
+        let peak = peak_of(exported.last().unwrap());
+        eprintln!("   export peaks at {peak}");
+        assert!(peak > 0.01, "the export is silent: {peak}");
+
+        session.render_lane(0, None).expect("renders the row");
+        let row = renders(&session)
+            .into_iter()
+            .find(|path| !exported.contains(path))
+            .expect("a second file was written");
+        let peak = peak_of(&row);
+        eprintln!("   the row peaks at {peak}");
+        assert!(peak > 0.01, "the row rendered silent: {peak}");
+
+        // And the studio's own instance is still there, and still the one
+        // being played.
+        settle();
+        let _ = live(&mut session);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle();
+    }
+}
+
+// ------------------------------------------- the same sound from its state
+//
+// The walks above compare parameter lists. This one listens: a plugin opened
+// fresh, and a second opened from the state the first one saved, play the
+// same note and must be as loud as each other.
+
+fn offline_peak(project: &fontelle_model::Project, rack: &mut fontelle_app::PluginRack) -> f32 {
+    let library = fontelle_app::SampleLibrary::new();
+    let wiring = rack.realise(project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+    let mut realised = fontelle_app::realise_hosting(
+        project,
+        &library,
+        fontelle_app::RealiseOptions {
+            sample_rate: SR,
+            block_size: fontelle_engine::BLOCK_SIZE,
+            quality: fontelle_app::RENDER_QUALITY,
+        },
+        &Default::default(),
+        None,
+        &Default::default(),
+        None,
+        None,
+        &wiring,
+    )
+    .expect("realises");
+    let timeline =
+        fontelle_sequencer::compile(project, &realised.channel_nodes, &Default::default());
+    let pcm = fontelle_app::render_offline(&timeline, &mut realised.graph, SR as i64 * 2);
+    pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+#[test]
+#[ignore]
+fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
+    use fontelle_model::{ClipSource, Note};
+    let dir = scratch("same");
+    let session = a_session(&dir);
+    let wanted = wanted();
+    let keys: Vec<fontelle_types::PluginKey> = session
+        .plugin_instruments()
+        .iter()
+        .filter(|listing| listing.name.contains(&wanted))
+        .map(|listing| listing.key.clone())
+        .collect();
+    drop(session);
+    assert!(!keys.is_empty());
+    for key in keys {
+        eprintln!("== {key:?}");
+        let mut project = common::a_project_with_a_clip(2, 120.0, SR);
+        let channel = project.channels.keys().next().unwrap();
+        project.channels[channel].instrument = Some(fontelle_types::InstrumentKind::Plugin);
+        project.channels[channel].plugin =
+            Some(PluginState::new(key.clone(), "Under test".to_string()));
+        let clip = project.clips.keys().next().unwrap();
+        let ClipSource::Notes(data) = &mut project.clips[clip].source else {
+            unreachable!()
+        };
+        data.notes.insert(Note {
+            start: 0,
+            length: fontelle_types::PPQN * 2,
+            key: 60,
+            velocity: 100,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            path: Vec::new(),
+            channel: None,
+        });
+
+        let mut rack = fontelle_app::PluginRack::new();
+        let fresh = offline_peak(&project, &mut rack);
+        let slot = PluginSlot::Channel(channel);
+        let state = rack.snapshot(slot).expect("it is open");
+        eprintln!(
+            "   fresh {fresh}; state: {} params, blob {} bytes",
+            state.params.len(),
+            state.blob.as_ref().map_or(0, String::len)
+        );
+        rack.close_all();
+
+        project.channels[channel].plugin = Some(state.clone());
+        let mut rack = fontelle_app::PluginRack::new();
+        let reopened = offline_peak(&project, &mut rack);
+        eprintln!("   reopened from its state {reopened}");
+
+        // And which half of the state does it: the blob alone, and the
+        // parameters alone.
+        let mut only_blob = state.clone();
+        only_blob.params.clear();
+        project.channels[channel].plugin = Some(only_blob);
+        let mut rack = fontelle_app::PluginRack::new();
+        eprintln!(
+            "   from the blob alone {}",
+            offline_peak(&project, &mut rack)
+        );
+        // What the plugin says its parameters are, opened from the blob,
+        // against the list that was saved beside that blob.
+        let says = rack.snapshot(slot).expect("it is open");
+        let names: std::collections::HashMap<u32, String> = rack
+            .params(slot)
+            .iter()
+            .map(|param| {
+                (
+                    param.id,
+                    format!("{} [{}..{}]", param.name, param.min, param.max),
+                )
+            })
+            .collect();
+        let (count, _) = differences(&state, &says);
+        eprintln!("   the saved list differs from the blob in {count} parameters");
+        for param in &state.params {
+            let other = says.param(param.id);
+            if other.is_none_or(|v| (v - param.value).abs() > 1e-6) {
+                eprintln!(
+                    "     {:<50} saved {:<12} blob says {:?}",
+                    names.get(&param.id).map_or("?", String::as_str),
+                    param.value,
+                    other
+                );
+            }
+        }
+        rack.close_all();
+
+        assert!(fresh > 0.01, "it made no sound to begin with: {fresh}");
+        assert!(
+            (reopened / fresh) > 0.5 && (reopened / fresh) < 2.0,
+            "fresh {fresh}, reopened {reopened}"
+        );
+    }
+}

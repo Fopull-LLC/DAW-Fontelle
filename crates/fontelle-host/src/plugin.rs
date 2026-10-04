@@ -315,6 +315,7 @@ impl PluginHost {
             // assume, and it is the honest answer for this build.
             latency: 0,
             active: false,
+            from_state: false,
             editor_open: false,
             lv2_editor: None,
         })
@@ -348,6 +349,7 @@ impl PluginHost {
             keeps_state: true,
             latency: opened.latency,
             active: false,
+            from_state: false,
             editor_open: false,
             lv2_editor: None,
         })
@@ -392,6 +394,7 @@ impl PluginHost {
             // host that cannot ask has to assume — see `latency_samples`.
             latency: 0,
             active: false,
+            from_state: false,
             editor_open: false,
             lv2_editor: None,
         })
@@ -460,6 +463,7 @@ impl PluginHost {
             keeps_state,
             latency,
             active: false,
+            from_state: false,
             editor_open: false,
             lv2_editor: None,
         })
@@ -554,6 +558,10 @@ pub struct HostedPlugin {
     /// [`HostedPlugin::latency_samples`].
     latency: u32,
     pub(crate) active: bool,
+    /// Whether its own state has been loaded into it — it is then what the
+    /// document remembers, and is not told its parameters over again. See
+    /// [`restore_params`](Self::restore_params).
+    from_state: bool,
     /// Whether the plugin's own editor has been created. `destroy` is only
     /// legal after a `create`, and calling it twice is undefined.
     editor_open: bool,
@@ -832,26 +840,79 @@ impl HostedPlugin {
     /// swapped would otherwise have somebody else's numbers written into it,
     /// and parameter ids mean different things in different plugins.
     ///
-    /// The blob goes in first and the parameters after, and the order is the
-    /// point. The blob is the plugin's own account of itself and carries what
-    /// no parameter can — a loaded sample, a drawn curve. The parameters are
-    /// what *this* program knows and what its automation lanes address, so
-    /// they are the last word. A blob that will not decode is skipped rather
-    /// than refused: a plugin at its defaults with the right knob positions is
-    /// a great deal closer to the song than one that would not open.
+    /// The blob goes in first and the parameters after: [`restore_blob`]
+    /// then [`restore_params`], which a caller with a **running** plugin
+    /// makes separately, with the wait for the state to land in between.
+    /// A blob that will not decode is skipped rather than refused: a plugin
+    /// at its defaults with the right knob positions is a great deal closer
+    /// to the song than one that would not open.
+    ///
+    /// [`restore_blob`]: Self::restore_blob
+    /// [`restore_params`]: Self::restore_params
     pub fn restore(&mut self, state: &PluginState) -> bool {
         if state.key != self.info.key {
             return false;
         }
-        if let Some(blob) = &state.blob
-            && let Some(bytes) = decode_base64(blob)
-        {
-            self.load_state(&bytes);
-        }
-        for param in &state.params {
-            self.set_param(param.id, param.value);
-        }
+        self.restore_blob(state);
+        self.restore_params(state);
         true
+    }
+
+    /// The first half of [`restore`](Self::restore): the plugin's own state.
+    /// Whether one went in.
+    pub fn restore_blob(&mut self, state: &PluginState) -> bool {
+        if state.key != self.info.key {
+            return false;
+        }
+        let loaded = state
+            .blob
+            .as_ref()
+            .and_then(|blob| decode_base64(blob))
+            .is_some_and(|bytes| self.load_state(&bytes));
+        self.from_state = loaded && !matches!(self.inner, Inner::Lv2(_));
+        self.from_state
+    }
+
+    /// The second half: the document's parameters — **only the ones the
+    /// plugin does not already hold**, when its own state has just gone in.
+    ///
+    /// > *"sometimes they'll just revert back to the init preset when
+    /// > working on a saved project"*
+    ///
+    /// This used to tell the plugin every parameter on the list, as "the
+    /// last word". The list is read off the plugin at the same moment as the
+    /// blob, so nearly all of it is what the blob has just set — and to a
+    /// plugin an event is a gesture, not a fact. Surge XT sets an oscillator
+    /// up again when told its type; its VST 3 lists every MIDI controller on
+    /// every channel as a parameter, and "telling" it all 2,855 is a volume
+    /// of zero on each. Opened from the state it had just saved it played at
+    /// two thirds the level as CLAP and a hundredth as VST 3, and from the
+    /// blob alone it was right.
+    ///
+    /// So the plugin is asked what it holds now, and told only what differs:
+    /// a knob turned on the studio's panel since the state was read, which
+    /// is on the list and not in the blob. A plugin with no state of its own
+    /// — and an LV2 one, whose ports are not in its state — is told the lot,
+    /// as before.
+    pub fn restore_params(&mut self, state: &PluginState) {
+        if state.key != self.info.key {
+            return;
+        }
+        if !self.from_state {
+            for param in &state.params {
+                self.set_param(param.id, param.value);
+            }
+            return;
+        }
+        self.reread_params();
+        for param in &state.params {
+            let same = self.values.get(param.id).is_some_and(|holds| {
+                (holds - param.value).abs() <= 1e-9 + 1e-6 * holds.abs().max(param.value.abs())
+            });
+            if !same {
+                self.set_param(param.id, param.value);
+            }
+        }
     }
 
     /// The plugin's own state. `None` if it keeps none.
@@ -1026,7 +1087,11 @@ impl HostedPlugin {
         // A freshly activated plugin is at its own defaults and has never been
         // told what this project wants. A VST 3 component is the exception:
         // its arm marks only what changed since open, and says why.
-        if !matches!(self.inner, Inner::Vst3(_)) {
+        //
+        // Nor one its own state went into: it is already what the project
+        // wants, whatever was turned since is marked, and telling it the
+        // rest is telling it what it is — see `restore_params`.
+        if !matches!(self.inner, Inner::Vst3(_)) && !self.from_state {
             self.values.mark_all();
         }
         Ok(processor)

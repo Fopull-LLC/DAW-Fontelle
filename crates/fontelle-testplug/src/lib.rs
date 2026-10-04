@@ -456,10 +456,19 @@ impl PluginAudioProcessorParams for GainProcessor<'_> {
     }
 }
 
+/// **Being told the switch is a gesture, whatever it is told.** Surge XT's
+/// oscillator type is like this: an event for it sets up the oscillator
+/// again, and what hung off the old setting — which lives in the state, not
+/// in any parameter — goes back to where a fresh one starts. So a host that
+/// loads a state and then "sets" every parameter to the value it already has
+/// does not get the state back; here the trim returns to one.
 fn take_gain_param(shared: &GainShared, event: &ParamValueEvent) {
     match u32::from(event.param_id().unwrap_or(0u32.into())) {
         0 => store(&shared.gain, event.value() as f32),
-        1 => store(&shared.invert, event.value() as f32),
+        1 => {
+            store(&shared.invert, event.value() as f32);
+            store(&shared.trim, 1.0);
+        }
         _ => {}
     }
 }

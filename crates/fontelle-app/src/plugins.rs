@@ -560,6 +560,36 @@ impl PluginRack {
         self.live.get(&slot)?.plugin.values().get(id)
     }
 
+    /// A rack of its own for **one render**: the same plugins found, none
+    /// of them open.
+    ///
+    /// > *"I find I have trouble rendering midi to audio. most times it just
+    /// > renders with nothing"*
+    ///
+    /// A plugin is activated once and its processor is in the graph that is
+    /// playing, so a render cannot borrow the studio's instances — and for a
+    /// long time it simply went without, which is a channel with no node in
+    /// it and a file of the right length with nothing on it. A render opens
+    /// **its own** instead, from the document's state, runs them on its own
+    /// thread and closes them when the file is written
+    /// ([`close_all`](Self::close_all)). The studio's go on playing.
+    ///
+    /// No editors, no libraries listed, no transport to summon: nothing here
+    /// is anybody's to look at.
+    pub fn for_render(&self) -> PluginRack {
+        PluginRack {
+            bridges: Arc::clone(&self.bridges),
+            host: PluginHost::with_bridges(Arc::clone(&self.bridges)),
+            scan: self.scan.clone(),
+            extra: self.extra.clone(),
+            standard: self.standard,
+            scanned: self.scanned,
+            preset_roots: fontelle_host::PresetRoots::none(),
+            headless_editors: true,
+            ..PluginRack::default()
+        }
+    }
+
     /// Hands the rack the transport the callback is driven by. See the field.
     pub fn set_transport(&mut self, transport: Arc<fontelle_engine::Transport>) {
         self.transport = Some(transport);
@@ -697,7 +727,22 @@ impl PluginRack {
                     return None;
                 }
             };
-            plugin.restore(state);
+            // > *"sometimes they'll just revert back to the init preset"*
+            //
+            // A state the plugin will not take used to be dropped without a
+            // word: it opened as a new one, and nothing said that what was
+            // saved had not gone in. (LV2 is handed its state as it is
+            // instantiated, below, and answers there.)
+            if state.blob.is_some()
+                && !plugin.restore_blob(state)
+                && state.key.format != fontelle_types::PluginFormat::Lv2
+            {
+                self.message = Some(format!(
+                    "{} would not take its saved state \u{2014} it has opened as a new one",
+                    state.name
+                ));
+            }
+            plugin.restore_params(state);
             let bay = Arc::new(ProcessorBay::new());
             match plugin.activate(sample_rate, max_block) {
                 Ok(processor) => bay.park(processor),
@@ -755,19 +800,35 @@ impl PluginRack {
             // before. See `load_own_preset`, which is the same thing for a
             // preset of the plugin's own.
             let transport = self.transport.clone();
+            let mut refused = false;
             if let Some(live) = self.live.get_mut(&slot) {
                 match recall_home(&live.bay, transport.as_ref()) {
                     Some(mut processor) => {
                         let before = live.plugin.settle_mark(&mut processor);
-                        live.plugin.restore(state);
-                        live.plugin.settle_with(&mut processor, &before);
+                        // The state, the wait for it to be in, and only
+                        // then what the document says beyond it: asked
+                        // before it landed, the plugin would answer with
+                        // the patch it is leaving.
+                        if live.plugin.restore_blob(state) {
+                            live.plugin.settle_with(&mut processor, &before);
+                        } else {
+                            refused = true;
+                        }
+                        live.plugin.restore_params(state);
                         live.bay.park(processor);
                     }
                     None => {
-                        live.plugin.restore(state);
+                        refused = !live.plugin.restore_blob(state);
+                        live.plugin.restore_params(state);
                     }
                 }
                 live.refresh_displays();
+            }
+            if refused {
+                self.message = Some(format!(
+                    "{} would not take that state \u{2014} it is as it was",
+                    state.name
+                ));
             }
         }
         if let Some(live) = self.live.get_mut(&slot) {

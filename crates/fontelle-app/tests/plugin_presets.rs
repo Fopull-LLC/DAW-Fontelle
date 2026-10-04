@@ -540,3 +540,101 @@ fn the_browser_can_be_opened_on_a_devices_presets() {
     session.set_channel_instrument(quiet).unwrap();
     assert_eq!(live_trim(&mut session), 0.25);
 }
+
+// ------------------------------------------- what is playing, when it is copied
+//
+// > *"sometimes they'll just revert back to the init preset when working on
+// > a saved project"*
+//
+// The document's copy of a plugin is as old as the last save. Three things
+// used it as though it were the plugin: choosing the plugin a channel
+// already has, duplicating a strip, and moving an insert.
+
+#[test]
+fn choosing_the_plugin_a_channel_already_has_leaves_its_patch() {
+    let dir = scratch("again");
+    let mut session = a_session(&dir);
+    session.set_channel_plugin(0, 0);
+    let slot = PluginSlot::Channel(session.project().channels.keys().next().unwrap());
+    // Its own window turns its level; the document hears nothing.
+    session
+        .plugin_rack_mut()
+        .plugin_mut(slot)
+        .unwrap()
+        .set_param(7, 0.25);
+    let depth = session.undo_depth();
+
+    // The same plugin, chosen again from the menu.
+    session.set_channel_plugin(0, 0);
+    assert_eq!(
+        session.plugin_rack_mut().snapshot(slot).unwrap().param(7),
+        Some(0.25),
+        "choosing it again put it back to where a new one starts"
+    );
+    assert_eq!(session.undo_depth(), depth, "and it is not an edit");
+}
+
+#[test]
+fn a_duplicated_strip_copies_what_its_plugin_is_playing() {
+    let dir = scratch("copy-strip");
+    let mut session = a_session(&dir);
+    // A track beside the master (which cannot be duplicated), first in the
+    // row, with a gain of its own.
+    session.add_mixer_track();
+    let track = session.project().mixer.ordered_tracks()[0];
+    let at = session.project().mixer.tracks[track].inserts.len();
+    session.add_plugin_insert(0, 0);
+    let slot = PluginSlot::Insert { track, slot: at };
+    session
+        .plugin_rack_mut()
+        .plugin_mut(slot)
+        .expect("the gain went on the first strip")
+        .load_state(&gain_bytes(0.5));
+
+    let before = session.project().mixer.ordered_tracks();
+    session.duplicate_mixer_track(0);
+    let copy = session
+        .project()
+        .mixer
+        .ordered_tracks()
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("a copy was made");
+    let copied = session
+        .plugin_rack_mut()
+        .snapshot(PluginSlot::Insert {
+            track: copy,
+            slot: at,
+        })
+        .expect("the copy's plugin is open");
+    assert_eq!(trim_of(&copied), 0.5, "the copy is of the last save");
+}
+
+#[test]
+fn moving_an_insert_carries_what_its_plugin_is_playing() {
+    let dir = scratch("move");
+    let mut session = a_session(&dir);
+    // Two gains on the master: the first turned in its own window.
+    session.add_plugin_insert(0, 0);
+    let slots = fontelle_app::plugin_slots(session.project());
+    let PluginSlot::Insert { track, .. } = slots[0] else {
+        panic!("the gain is an insert");
+    };
+    session
+        .plugin_rack_mut()
+        .plugin_mut(PluginSlot::Insert { track, slot: 0 })
+        .unwrap()
+        .load_state(&gain_bytes(0.5));
+
+    session.move_insert(0, 0, 1);
+    let moved = session
+        .plugin_rack_mut()
+        .snapshot(PluginSlot::Insert { track, slot: 1 })
+        .unwrap();
+    assert_eq!(trim_of(&moved), 0.5, "what was moved is the last save");
+    let other = session
+        .plugin_rack_mut()
+        .snapshot(PluginSlot::Insert { track, slot: 0 })
+        .unwrap();
+    assert_eq!(trim_of(&other), 1.0);
+}
