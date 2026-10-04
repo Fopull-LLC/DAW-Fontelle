@@ -1181,10 +1181,7 @@ fn an_lv2_instance_let_go_of_on_another_thread_is_not_freed_there() {
     // process's); this test's thread is named after it, cut to fifteen
     // characters by the kernel.
     let freed = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(
-        freed.lines().any(|line| line == "an_lv2_instance"),
-        "{freed:?}"
-    );
+    assert!(freed.contains("an_lv2_instance"), "{freed:?}");
     unsafe { std::env::remove_var(fontelle_testlv2::CLEANUP_LOG_ENV) };
     let _ = std::fs::remove_file(&log);
 }

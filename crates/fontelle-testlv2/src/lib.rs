@@ -240,7 +240,10 @@ fn log_cleanup() {
             let name = std::fs::read_to_string("/proc/thread-self/comm")
                 .map(|name| name.trim().to_string())
                 .unwrap_or_else(|_| "unknown".to_string());
-            let _ = writeln!(out, "{name}");
+            // One write per line: tests running side by side append to
+            // the same file, and a name and its newline written apart
+            // interleave with somebody else's.
+            let _ = out.write_all(format!("{name}\n").as_bytes());
         }
     }
 }
