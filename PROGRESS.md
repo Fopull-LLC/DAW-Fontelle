@@ -148,6 +148,17 @@ found what the report could not have named:
   cut by `effective_tempo_map` now.
 - The settle after a load stops as soon as the plugin saves exactly the
   state it was handed, and gives up on one that never moves after 0.75 s.
+- **A processor stranded in a graph the audio thread had let go of.** A
+  rebuild swaps graphs on the audio thread; the old one goes back to the
+  main thread to be freed at its next frame, and until then it held the
+  plugin's processor — so a preset chosen in that moment (MDA DX10) was
+  refused: *"the audio thread did not hand the plugin over"*. A retiring
+  graph now hands its processors back to their bays as it is let go of
+  (`AudioNode::retire`, `GraphSource::take_update`).
+- The walks read a plugin's knobs after its main-thread tick: a JUCE plugin
+  reports the value it snapped a host's onto (Dexed's switches, amsynth's
+  waveform, JC303's steps) a tick later, which the studio's frame loop gives
+  it and a test has to.
 
 **Not fixed, and why.** Calf Wavetable (LV2) crashes inside its own `run`,
 intermittently, with every input in range, more often after unrelated

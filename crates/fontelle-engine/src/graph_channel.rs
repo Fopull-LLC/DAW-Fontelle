@@ -154,7 +154,12 @@ impl GraphSource {
         // put the old graph, taking a new one would mean freeing it here.
         while self.returning.slots() > 0 {
             let Ok(next) = self.incoming.pop() else { break };
-            let old = std::mem::replace(&mut self.current, next);
+            let mut old = std::mem::replace(&mut self.current, next);
+            // What the old graph was holding for the new one — a plugin's
+            // processor — goes back now, rather than when the main thread
+            // gets round to freeing it: a recall in between would ask a node
+            // that is never processed again.
+            old.retire();
             if let Err(rtrb::PushError::Full(old)) = self.returning.push(old) {
                 // Unreachable: this is the only producer and the slot was just
                 // counted. Leaking beats freeing on the audio thread, so if the

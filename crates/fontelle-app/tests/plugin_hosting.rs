@@ -1928,3 +1928,78 @@ fn the_studios_own_binary_reads_a_bundle_and_survives_one_that_crashes() {
     );
     std::fs::remove_dir_all(&folder).ok();
 }
+
+// ---------------------------------------------- a graph the audio thread let go
+//
+// Found sweeping MDA DX10: a preset chosen while the song played was refused
+// — "the audio thread did not hand the plugin over". A rebuild had just
+// swapped graphs; the plugin's processor was inside the graph the audio
+// thread had handed back, which nothing processes any more and only the main
+// thread frees, at its next frame. The recall asked a node that would never
+// run again. Now the audio thread parks a retiring graph's processors as it
+// lets the graph go.
+
+#[test]
+fn a_processor_in_a_graph_the_audio_thread_let_go_of_comes_home_when_asked() {
+    let (project, _master, slot) = project_with_a_gain_insert();
+    let mut rack = fresh_rack();
+    let library = SampleLibrary::new();
+    let build = |rack: &mut PluginRack| {
+        let wiring = rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
+        let realised = realise_hosting(
+            &project,
+            &library,
+            options(),
+            &Default::default(),
+            None,
+            &Default::default(),
+            None,
+            None,
+            &wiring,
+        )
+        .expect("realises");
+        (realised.graph, std::sync::Arc::clone(&wiring[&slot].bay))
+    };
+    let (first, bay) = build(&mut rack);
+    let (mut publisher, mut source) = fontelle_engine::graph_channel(first);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = std::sync::Arc::clone(&stop);
+    let audio = std::thread::spawn(move || {
+        let empty = fontelle_types::CompiledTimeline::empty();
+        let block = fontelle_engine::BLOCK_SIZE as i64;
+        let mut at = 0i64;
+        while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+            source.take_update();
+            let transport = fontelle_engine::TransportSnapshot {
+                state: fontelle_engine::TransportState::Playing,
+                position_sample: at,
+                bpm: 120.0,
+                ..Default::default()
+            };
+            let mut cursor = 0usize;
+            let events = empty.events_for_block(&mut cursor, at..at + block);
+            source
+                .current()
+                .process_block(events, transport, at..at + block);
+            at += block;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        source
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    // A rebuild: the second graph is published, and the main thread does
+    // not come back round to free the first before it asks.
+    let (second, _) = build(&mut rack);
+    publisher.publish(second);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let home = bay.recall(std::time::Duration::from_millis(250));
+    let came = home.is_some();
+    if let Some(processor) = home {
+        bay.park(processor);
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let source = audio.join().unwrap();
+    drop(source);
+    publisher.pump();
+    assert!(came, "the processor stayed in the graph that was let go of");
+}

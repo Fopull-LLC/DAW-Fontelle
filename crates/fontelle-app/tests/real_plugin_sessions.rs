@@ -101,10 +101,12 @@ fn slot(session: &Session) -> PluginSlot {
 
 fn live(session: &mut Session) -> PluginState {
     // What the window does every frame: frees the graphs the audio thread
-    // handed back, so a processor in one is free for the graph after it.
-    // Without it a plugin can sit in a retired graph, unprocessed, and a
-    // state it queued for its next block never lands.
+    // handed back, so a processor in one is free for the graph after it —
+    // without it a plugin can sit in a retired graph, unprocessed, and a
+    // state it queued for its next block never lands — and answers each
+    // plugin's request for its main thread.
     session.pump();
+    session.plugin_rack_mut().service_main_thread();
     let slot = slot(session);
     session
         .plugin_rack_mut()
@@ -161,6 +163,44 @@ fn two_presets(session: &mut Session) -> Option<(usize, usize)> {
         .collect();
     // Well apart in the list, so they are not two takes on one patch.
     (own.len() >= 8).then(|| (own[own.len() / 3], own[2 * own.len() / 3]))
+}
+
+/// Two of the plugin's own presets that differ from `init` and from each
+/// other, tried from a third of the way down its list: a library's first
+/// program is often the patch it opens on (MDA Piano's), and so may another
+/// be. Each one tried is loaded, read and undone.
+fn two_different_presets(
+    session: &mut Session,
+    init: &PluginState,
+) -> Option<(usize, usize, PluginState)> {
+    session.settle_plugin_presets();
+    let own: Vec<usize> = session
+        .preset_choices(CHANNEL)
+        .iter()
+        .enumerate()
+        .filter(|(_, choice)| choice.origin == fontelle_types::PresetOrigin::Plugin)
+        .map(|(at, _)| at)
+        .collect();
+    if own.len() < 3 {
+        return None;
+    }
+    let mut found: Vec<(usize, PluginState)> = Vec::new();
+    for at in own[own.len() / 3..].iter().chain(&own[..own.len() / 3]) {
+        session.apply_preset(CHANNEL, *at);
+        let state = live(session);
+        session.undo();
+        let differs_from_init = differences(&state, init).0 > 0;
+        let differs_from_found = found.iter().all(|(_, f)| differences(&state, f).0 > 0);
+        if differs_from_init && differs_from_found {
+            found.push((*at, state));
+            if found.len() == 2 {
+                let (second, second_state) = found.pop().unwrap();
+                let (first, _) = found.pop().unwrap();
+                return Some((first, second, second_state));
+            }
+        }
+    }
+    None
 }
 
 // ------------------------------------------------- with the audio running
@@ -324,20 +364,12 @@ fn a_real_instruments_patch_survives_working_saving_and_reopening() {
         session.set_channel_plugin(0, which);
         settle();
         let init = live(&mut session);
-        let Some((first, second)) = two_presets(&mut session) else {
-            eprintln!("   lists no library of its own here; skipped");
+        let Some((first, _second, second_state)) = two_different_presets(&mut session, &init)
+        else {
+            eprintln!("   lists no two presets of its own that differ here; skipped");
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             continue;
         };
-
-        // What the second preset is, read off the plugin and put back.
-        session.apply_preset(CHANNEL, second);
-        let second_state = live(&mut session);
-        assert!(
-            differences(&second_state, &init).0 > 0,
-            "the second preset is the init patch"
-        );
-        session.undo();
 
         // A preset from Fontelle's strip, and a save.
         session.apply_preset(CHANNEL, first);
@@ -490,6 +522,13 @@ fn what_was_done_in_a_real_plugins_window_survives_working_saving_and_reopening(
                 .unwrap()
                 .set_param(*id, *to);
         }
+        // What the plugin made of them is the reference, not what was sent:
+        // a plugin keeps a value on its own grid (Dexed's operator switch
+        // takes 0.33 as off, amsynth's waveform has steps), and a JUCE one
+        // reports it on a later main-thread tick — the studio's frame loop
+        // gives it one every frame.
+        settle();
+        let _ = live(&mut session);
         settle();
         let set = live(&mut session);
         let moved = differences(&set, &init).0;

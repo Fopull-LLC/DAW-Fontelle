@@ -115,6 +115,11 @@ pub trait AudioNode: Send {
     fn latency_samples(&self) -> u32 {
         0
     }
+    /// **RT.** The graph this node is in has just been replaced on the audio
+    /// thread: hand back now anything the next graph, or the main thread,
+    /// needs. The node is not processed again; it is freed later, on the
+    /// main thread. Nothing to do for most nodes — see `PluginNode`.
+    fn retire(&mut self) {}
     /// What this node is, for anything that has to read a schedule back.
     ///
     /// A schedule is a flat list of boxed trait objects and its **order** is a
@@ -263,6 +268,15 @@ impl CompiledGraph {
             scheduled.node.reset_sequenced();
         }
         self.clear_buses();
+    }
+
+    /// **RT.** This graph has just been replaced and is on its way back to
+    /// the main thread to be freed: every node hands back what another needs
+    /// — see [`AudioNode::retire`].
+    pub fn retire(&mut self) {
+        for scheduled in self.schedule.iter_mut() {
+            scheduled.node.retire();
+        }
     }
 
     /// A bus still holds the last block that had sound in it, and a node that

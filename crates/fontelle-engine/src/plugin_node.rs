@@ -596,6 +596,22 @@ fn param_id(address: &str) -> Option<u32> {
 }
 
 impl AudioNode for PluginNode {
+    /// > *"the audio thread did not hand the plugin over"* — a preset
+    /// > chosen for MDA DX10 while the song played, found sweeping every
+    /// > installed instrument.
+    ///
+    /// The processor goes back to the bay as the graph is let go of, so the
+    /// next graph's node, or a recall, finds it there rather than inside a
+    /// graph nothing processes any more. A lock that loses the try keeps it
+    /// here, and `Drop` parks it on the main thread as before.
+    fn retire(&mut self) {
+        if let Some(processor) = self.processor.take()
+            && let Err(processor) = self.bay.try_park(processor)
+        {
+            self.processor = Some(processor);
+        }
+    }
+
     fn prepare(&mut self, ctx: &PrepareContext) {
         // The plugin itself is prepared by `HostedPlugin::activate`, which is
         // where the sample rate and block size it was given come from, and
