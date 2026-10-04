@@ -952,6 +952,17 @@ pub enum PresetOrigin {
     /// `pset:Preset`s. Loaded by the plugin, and read-only like a factory
     /// preset. Appended: the names are permanent.
     Plugin,
+    /// A preset inside a soundfont, chosen in the Sounds browser: the name is
+    /// the preset's, the category the soundfont's file name. Read-only, and
+    /// never in the bank — the soundfont is the file.
+    ///
+    /// > *"sometimes they'll just revert back to the init preset when
+    /// > working on a saved project ... I have to re interrelate each track
+    /// > to its presset"*
+    ///
+    /// Which preset a soundfont channel was on used to live only in the
+    /// session, so a reopened project said nothing about any of them.
+    Soundfont,
 }
 
 /// What a device remembers about the preset it was loaded from.

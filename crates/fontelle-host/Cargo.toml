@@ -9,6 +9,14 @@ publish.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# The child a scan reads a bundle in (`probe.rs`). The studio is its own
+# child (`fontelle --fontelle-scan-bundle`); this is for the host's tests.
+[[bin]]
+name = "fontelle-scan-probe"
+path = "src/bin/scan_probe.rs"
+test = false
+doc = false
+
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }

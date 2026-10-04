@@ -1249,8 +1249,26 @@ pub struct TestEntry {
         clack_extensions::preset_discovery::prelude::PresetDiscoveryFactoryWrapper<TestPresets>,
 }
 
+/// A copy of this bundle whose file name contains this **crashes** as it is
+/// loaded — what a broken plugin somewhere on a user's disk does to a host
+/// that scans in its own process.
+pub const CRASHES_ON_LOAD: &str = "crashes-on-load";
+/// And one whose name contains this never comes back from being loaded.
+pub const HANGS_ON_LOAD: &str = "hangs-on-load";
+
 impl Entry for TestEntry {
-    fn new(_bundle_path: Option<&CStr>) -> Result<Self, EntryLoadError> {
+    fn new(bundle_path: Option<&CStr>) -> Result<Self, EntryLoadError> {
+        let named = bundle_path
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if named.contains(CRASHES_ON_LOAD) {
+            std::process::abort();
+        }
+        if named.contains(HANGS_ON_LOAD) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
         Ok(Self {
             factory: PluginFactoryWrapper::new(TestFactory::new()),
             presets:

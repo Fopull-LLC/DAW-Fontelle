@@ -327,3 +327,63 @@ fn saving_properly_clears_what_the_backup_was_protecting() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------- a tempo that moves
+
+/// A selection exported from a song whose tempo is drawn on its lane is the
+/// selection's length **at that tempo**. The notes were compiled against the
+/// lane and the file was cut against the box's tempo, so with a ramp the
+/// stretch came out at the wrong place and the wrong length.
+#[test]
+fn a_selection_is_cut_where_the_drawn_tempo_puts_it() {
+    use fontelle_ui::canvas::ArrangeEdit;
+    use fontelle_ui::document::{ClipKind, ExportOptions, ExportRange, ExportTail, StudioHost};
+    let dir = scratch("tempo-lane");
+    let mut session = saved_session(&dir);
+    a_note(&mut session);
+    let tempo = fontelle_types::ParamTarget::Tempo.address();
+    session.create_automation(&tempo, "Tempo", 0);
+    let clip = session
+        .clips()
+        .into_iter()
+        .find(|clip| clip.kind == ClipKind::Automation)
+        .expect("the tempo lane");
+    session.arrange(ArrangeEdit::MovePoints {
+        clip: clip.id,
+        ids: vec![clip.curve[1].id],
+        tick_delta: 0,
+        value_delta: 1.0,
+    });
+    session.end_gesture();
+
+    let bar = PPQN * 4;
+    session.set_loop_range(Some((bar, bar * 2)));
+    let said = Session::export_wav_with(
+        &mut session,
+        ExportOptions {
+            range: ExportRange::Selection,
+            tail: ExportTail::Cut,
+        },
+    )
+    .expect("exports");
+    // "exported <path>", perhaps followed by " — n clipped samples".
+    let path = said
+        .strip_prefix("exported ")
+        .map(|rest| rest.split(" \u{2014} ").next().unwrap_or(rest).trim())
+        .expect("the status line names the file");
+    let frames = fontelle_assets::import_audio(Path::new(path))
+        .expect("the render reads back")
+        .frames as i64;
+    let wanted = session.sample_of_song_tick(bar * 2) - session.sample_of_song_tick(bar);
+    let flat = fontelle_model::TempoMap::new(120.0, SR as f64);
+    let at_the_box = flat.tick_to_sample(bar * 2) - flat.tick_to_sample(bar);
+    assert_ne!(
+        wanted, at_the_box,
+        "the ramp moved nothing — the test is not testing"
+    );
+    assert!(
+        (frames - wanted).abs() <= 1,
+        "{frames} frames; the drawn tempo makes it {wanted}, the box's {at_the_box}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -345,6 +345,10 @@ pub struct PluginRack {
     ///
     /// [summon]: fontelle_engine::Transport::summon
     transport: Option<Arc<fontelle_engine::Transport>>,
+    /// What reads a bundle that has to be loaded to be read, in a child
+    /// process — see [`fontelle_host::BundleProber`]. `None` reads in this
+    /// process, which is a test's rack and nobody else's.
+    prober: Option<Arc<fontelle_host::BundleProber>>,
 }
 
 impl Default for PluginRack {
@@ -368,6 +372,7 @@ impl Default for PluginRack {
             retired: Vec::new(),
             message: None,
             transport: None,
+            prober: None,
         }
     }
 }
@@ -480,8 +485,32 @@ impl PluginRack {
     /// first project that names a plugin needs the list. Never on the way down
     /// of a menu. See [`scan_once`](Self::scan_once).
     pub fn rescan(&mut self) {
-        self.scan = PluginScan::of_with(&self.folders(), &self.bridges);
+        self.scan = match &self.prober {
+            Some(prober) => {
+                let scan = PluginScan::of_probed(&self.folders(), &self.bridges, prober);
+                prober.save();
+                scan
+            }
+            None => PluginScan::of_with(&self.folders(), &self.bridges),
+        };
         self.scanned = true;
+    }
+
+    /// [`rescan`](Self::rescan), trying again every bundle that could not be
+    /// read last time — what *Rescan plugins* is for. A bundle that was read
+    /// and has not changed is not read again.
+    pub fn rescan_fresh(&mut self) {
+        if let Some(prober) = &self.prober {
+            prober.forget_failures();
+        }
+        self.rescan();
+    }
+
+    /// Reads bundles that have to be loaded to be read in child processes —
+    /// see the field. The studio's rack and a bounce's are given one.
+    pub fn set_prober(&mut self, prober: Option<Arc<fontelle_host::BundleProber>>) {
+        self.prober = prober;
+        self.scanned = false;
     }
 
     /// Walks the folders if nothing has yet.
@@ -586,6 +615,7 @@ impl PluginRack {
             scanned: self.scanned,
             preset_roots: fontelle_host::PresetRoots::none(),
             headless_editors: true,
+            prober: self.prober.clone(),
             ..PluginRack::default()
         }
     }
@@ -804,7 +834,14 @@ impl PluginRack {
             if let Some(live) = self.live.get_mut(&slot) {
                 match recall_home(&live.bay, transport.as_ref()) {
                     Some(mut processor) => {
-                        let before = live.plugin.settle_mark(&mut processor);
+                        let target = state
+                            .blob
+                            .as_ref()
+                            .and_then(|blob| fontelle_types::decode_base64(blob));
+                        let before = match &target {
+                            Some(bytes) => live.plugin.settle_mark_for(&mut processor, bytes),
+                            None => live.plugin.settle_mark(&mut processor),
+                        };
                         // The state, the wait for it to be in, and only
                         // then what the document says beyond it: asked
                         // before it landed, the plugin would answer with

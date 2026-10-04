@@ -92,16 +92,75 @@ impl PluginScan {
     /// [`of`](Self::of), with the formats `bridges` serve included.
     pub fn of_with(folders: &[PathBuf], bridges: &crate::Bridges) -> Self {
         let mut scan = Self::default();
-        for folder in folders {
-            scan.walk(folder, 0, bridges);
+        for (path, format) in bundles_in(folders, bridges) {
+            let outcome = scan_bundle_as(&path, format, bridges);
+            scan.take(path, outcome);
         }
-        scan.plugins.sort_by(|a, b| {
+        scan.sort();
+        scan
+    }
+
+    /// [`of_with`](Self::of_with), with every bundle that has to be loaded
+    /// to be read read by `prober`'s child processes — see [`crate::probe`].
+    /// The same list in the same order; a bundle that crashed or hung is a
+    /// failure in it rather than the end of the studio.
+    pub fn of_probed(
+        folders: &[PathBuf],
+        bridges: &crate::Bridges,
+        prober: &crate::BundleProber,
+    ) -> Self {
+        let bundles = bundles_in(folders, bridges);
+        let away: Vec<PathBuf> = bundles
+            .iter()
+            .filter(|(_, format)| crate::probe::needs_loading_with(format, bridges))
+            .map(|(path, _)| path.clone())
+            .filter(|path| {
+                bundles
+                    .iter()
+                    .find(|(p, _)| p == path)
+                    .is_some_and(|(p, f)| crate::probe::needs_loading(p, *f))
+            })
+            .collect();
+        let mut read_away: std::collections::HashMap<PathBuf, Result<Vec<PluginInfo>, String>> =
+            away.iter()
+                .cloned()
+                .zip(prober.read_all(&away, bridges.folders()))
+                .collect();
+        let mut scan = Self::default();
+        for (path, format) in bundles {
+            let outcome = match read_away.remove(&path) {
+                Some(outcome) => outcome,
+                None => scan_bundle_as(&path, format, bridges),
+            };
+            scan.take(path, outcome);
+        }
+        scan.sort();
+        scan
+    }
+
+    fn take(&mut self, path: PathBuf, outcome: Result<Vec<PluginInfo>, String>) {
+        match outcome {
+            Ok(found) => {
+                for plugin in found {
+                    // The same plugin found twice — a folder symlinked into
+                    // another, a copy left beside the original — is one
+                    // plugin, and the first place it was found wins.
+                    if !self.plugins.iter().any(|seen| seen.key == plugin.key) {
+                        self.plugins.push(plugin);
+                    }
+                }
+            }
+            Err(why) => self.failures.push(ScanFailure { path, why }),
+        }
+    }
+
+    fn sort(&mut self) {
+        self.plugins.sort_by(|a, b| {
             a.name
                 .to_lowercase()
                 .cmp(&b.name.to_lowercase())
                 .then_with(|| a.key.cmp(&b.key))
         });
-        scan
     }
 
     /// Everything that can go on an instrument channel.
@@ -118,48 +177,84 @@ impl PluginScan {
     pub fn find(&self, key: &PluginKey) -> Option<&PluginInfo> {
         self.plugins.iter().find(|plugin| &plugin.key == key)
     }
+}
 
-    fn walk(&mut self, folder: &Path, depth: usize, bridges: &crate::Bridges) {
-        // Vendors nest one folder deep and a few nest two. Stopping somewhere
-        // matters: a plugin folder that somebody pointed at their home
-        // directory would otherwise walk the whole disk opening every file.
-        const MAX_DEPTH: usize = 4;
-        if depth > MAX_DEPTH {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(folder) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            // A file is a bundle when something here can read it: VST 2's
-            // "extension" is the platform's shared library, and a folder
-            // of `.so` files is not a folder of failures until a bridge is
-            // installed that says which of them are plugins.
-            let is_bundle = path.extension().is_some_and(|ext| {
-                PluginFormat::ALL
-                    .iter()
-                    .any(|f| ext == f.extension() && (f.hosted() || bridges.serves(*f)))
-            });
-            if is_bundle {
-                match scan_bundle_with(&path, bridges) {
-                    Ok(found) => {
-                        for plugin in found {
-                            // The same plugin found twice — a folder symlinked
-                            // into another, a copy left beside the original —
-                            // is one plugin, and the first place it was found
-                            // wins. Two identical rows is a menu that looks
-                            // broken.
-                            if !self.plugins.iter().any(|seen| seen.key == plugin.key) {
-                                self.plugins.push(plugin);
-                            }
-                        }
-                    }
-                    Err(why) => self.failures.push(ScanFailure { path, why }),
-                }
-            } else if path.is_dir() {
-                self.walk(&path, depth + 1, bridges);
+/// Every bundle under `folders`, in order, each once, with its format.
+///
+/// The rules a distribution's folders need, each found on a real machine:
+///
+/// - **An LV2 bundle is a folder with a `manifest.ttl`**, whatever it is
+///   called — `.lv2` on the end is a habit. setBfree's `b_synth` has none.
+/// - **A CLAP plugin is a file**, except on macOS: a folder called
+///   `Cardinal.clap` holding `Cardinal.clap`, `CardinalFX.clap` and
+///   `CardinalSynth.clap` is a folder of them.
+/// - **A folder reached twice is walked once**: `/usr/lib64` is a link to
+///   `/usr/lib` on Arch, and both are searched because on Fedora it is not.
+fn bundles_in(folders: &[PathBuf], bridges: &crate::Bridges) -> Vec<(PathBuf, PluginFormat)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for folder in folders {
+        collect(folder, 0, bridges, &mut seen, &mut out);
+    }
+    out
+}
+
+fn collect(
+    folder: &Path,
+    depth: usize,
+    bridges: &crate::Bridges,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out: &mut Vec<(PathBuf, PluginFormat)>,
+) {
+    // Vendors nest one folder deep and a few nest two. Stopping somewhere
+    // matters: a plugin folder that somebody pointed at their home directory
+    // would otherwise walk the whole disk opening every file.
+    const MAX_DEPTH: usize = 4;
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(canonical) = std::fs::canonicalize(folder) else {
+        return;
+    };
+    if !seen.insert(canonical) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
+        let is_dir = path.is_dir();
+        if is_dir && path.join("manifest.ttl").is_file() {
+            if let Ok(canonical) = std::fs::canonicalize(&path)
+                && seen.insert(canonical)
+            {
+                out.push((path, PluginFormat::Lv2));
             }
+            continue;
+        }
+        // A file is a bundle when something here can read it: VST 2's
+        // "extension" is the platform's shared library, and a folder of `.so`
+        // files is not a folder of failures until a bridge is installed that
+        // says which of them are plugins.
+        let format = path.extension().and_then(|ext| {
+            PluginFormat::ALL
+                .into_iter()
+                .find(|f| ext == f.extension() && (f.hosted() || bridges.serves(*f)))
+        });
+        let folder_of_claps =
+            format == Some(PluginFormat::Clap) && is_dir && !cfg!(target_os = "macos");
+        match format {
+            Some(format) if !folder_of_claps => {
+                if let Ok(canonical) = std::fs::canonicalize(&path)
+                    && seen.insert(canonical)
+                {
+                    out.push((path, format));
+                }
+            }
+            _ if is_dir => collect(&path, depth + 1, bridges, seen, out),
+            _ => {}
         }
     }
 }
@@ -182,6 +277,16 @@ pub fn scan_bundle_with(path: &Path, bridges: &crate::Bridges) -> Result<Vec<Plu
                 .find(|format| ext == format.extension())
         })
         .ok_or_else(|| "not a plugin bundle".to_string())?;
+    scan_bundle_as(path, format, bridges)
+}
+
+/// [`scan_bundle_with`], for a bundle whose format is already known — an
+/// LV2 bundle is known by its `manifest.ttl`, not by its name.
+pub(crate) fn scan_bundle_as(
+    path: &Path,
+    format: PluginFormat,
+    bridges: &crate::Bridges,
+) -> Result<Vec<PluginInfo>, String> {
     match format {
         PluginFormat::Clap => crate::plugin::read_clap_bundle(path),
         PluginFormat::Lv2 => crate::lv2::read_lv2_bundle(path),

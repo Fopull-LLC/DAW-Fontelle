@@ -741,3 +741,71 @@ fn every_vst3_plugin_on_this_machine_opens_and_runs() {
     eprintln!("{opened} opened, {sounded} instruments sounded");
     assert!(sounded > 0);
 }
+
+/// > *"sometimes they'll just revert back to the init preset"*
+///
+/// Surge XT's VST 3 (JUCE) takes a state on its next block once it has
+/// processed, and its controller's `setComponentState` copies the values
+/// from the processor as it is at that moment. Told straight after
+/// `setState`, it learnt the patch from before, the knobs a host read back
+/// were the old patch's, and a document saved them beside the new patch's
+/// blob — which a reopen then put back over it. Once the state has landed,
+/// the controller is told again.
+#[test]
+fn a_single_component_plugins_knobs_follow_a_state_that_lands_late() {
+    let mut host = PluginHost::new();
+    let key = PluginKey::new(PluginFormat::Vst3, common::VST3_COMBINED);
+    let mut plugin = host.open(&common::vst3_bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 16).unwrap();
+    let input = vec![vec![1.0f32; 16]];
+    let mut output = vec![vec![0.0f32; 16]];
+    processor.process_effect(&input, &mut output, 16);
+
+    let mut state = plugin.save_state().expect("it keeps state");
+    // The component half is the last eight bytes before the (empty)
+    // controller half's length: a gain of a quarter.
+    let at = state.len() - 4 - 8;
+    state[at..at + 8].copy_from_slice(&0.25f64.to_le_bytes());
+    let before = plugin.settle_mark(&mut processor);
+    assert!(plugin.load_state(&state));
+    plugin.settle_with(&mut processor, &before);
+
+    processor.process_effect(&input, &mut output, 16);
+    assert!(
+        (output[0][0] - 0.25).abs() < 1e-5,
+        "it plays {}",
+        output[0][0]
+    );
+    let gain = plugin.values().get(0);
+    assert_eq!(gain, Some(0.25), "the knob says the patch from before");
+}
+
+/// The VST 3 half of `lv2.rs`'s test of the same name: a component whose
+/// last hold goes on the audio thread — its plugin already closed — is not
+/// destroyed there. A JUCE plugin deletes its whole processor in that call.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_vst3_component_let_go_of_on_another_thread_is_not_destroyed_there() {
+    let log = std::env::temp_dir().join(format!("fontelle-vst3-release-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    // SAFETY: set before any component exists, read by the fixture only.
+    unsafe { std::env::set_var(fontelle_testvst3::RELEASE_LOG_ENV, &log) };
+    let mut host = PluginHost::new();
+    let mut plugin = gain(&mut host);
+    let processor = plugin.activate(48_000.0, 64).unwrap();
+    // The studio closes the plugin while a graph still holds its processor.
+    drop(plugin);
+    std::thread::Builder::new()
+        .name("audio".to_string())
+        .spawn(move || drop(processor))
+        .unwrap()
+        .join()
+        .unwrap();
+    let released = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !released.lines().any(|line| line == "audio"),
+        "{released:?}"
+    );
+    unsafe { std::env::remove_var(fontelle_testvst3::RELEASE_LOG_ENV) };
+    let _ = std::fs::remove_file(&log);
+}

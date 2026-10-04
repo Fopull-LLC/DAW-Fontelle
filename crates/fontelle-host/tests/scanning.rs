@@ -137,3 +137,83 @@ fn the_lib64_folders_fedora_installs_plugins_in_are_looked_in() {
         );
     }
 }
+
+// --------------------------------------------- folders the way distros lay them
+//
+// Found by scanning every plugin installed on a CachyOS machine
+// (`fontelle-app/tests/real_plugin_sessions.rs`, `the_studios_scan_of_this_machine`).
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let path =
+        std::env::temp_dir().join(format!("fontelle-scanning-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&path).ok();
+    std::fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[cfg(target_os = "linux")]
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
+/// An LV2 bundle is a folder with a `manifest.ttl` in it; `.lv2` on the end
+/// is a habit, not the rule. setBfree's `b_synth` has no suffix, and was not
+/// found — its libraries were offered to the VST 2 bridge instead.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_bundle_without_the_suffix_is_still_found() {
+    let folder = scratch("lv2-suffix");
+    copy_dir(&common::lv2_bundle(), &folder.join("fontelle_test"));
+    let scan = PluginScan::of(&[folder]);
+    assert!(
+        scan.plugins.iter().any(|p| p.key.id == common::LV2_GAIN),
+        "{:?} {:?}",
+        scan.plugins,
+        scan.failures
+    );
+    assert!(scan.failures.is_empty(), "{:?}", scan.failures);
+}
+
+/// On Linux and Windows a CLAP plugin is a **file**. A folder called
+/// `Cardinal.clap` (how Cardinal is packaged: `Cardinal.clap/Cardinal.clap`,
+/// `…/CardinalFX.clap`, `…/CardinalSynth.clap`) is a folder of them, and was
+/// reported as a bundle that would not open.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_folder_named_like_a_clap_bundle_is_a_folder_of_them() {
+    let folder = scratch("clap-folder");
+    let inner = folder.join("Suite.clap");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::copy(common::bundle(), inner.join("Suite.clap")).unwrap();
+    let scan = PluginScan::of(&[folder]);
+    assert!(
+        scan.plugins.iter().any(|p| p.key.id == common::GAIN),
+        "{:?} {:?}",
+        scan.plugins,
+        scan.failures
+    );
+    assert!(scan.failures.is_empty(), "{:?}", scan.failures);
+}
+
+/// `/usr/lib64` is a link to `/usr/lib` on Arch and the real folder on
+/// Fedora; both are searched, and a folder reached twice is walked once —
+/// a bundle that would not open was reported twice.
+#[cfg(unix)]
+#[test]
+fn a_folder_reached_twice_is_walked_once() {
+    let folder = scratch("twice");
+    let real = folder.join("lib").join("clap");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("broken.clap"), b"not a library").unwrap();
+    std::os::unix::fs::symlink(folder.join("lib"), folder.join("lib64")).unwrap();
+    let scan = PluginScan::of(&[real, folder.join("lib64").join("clap")]);
+    assert_eq!(scan.failures.len(), 1, "{:?}", scan.failures);
+}

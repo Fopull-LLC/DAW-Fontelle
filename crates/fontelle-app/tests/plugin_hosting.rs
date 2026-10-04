@@ -1881,3 +1881,50 @@ fn a_saved_state_a_plugin_takes_is_not_remarked_on() {
     rack.realise(&project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
     assert_eq!(rack.take_message(), None);
 }
+
+// ----------------------------------------- a scan a broken plugin cannot end
+//
+// The studio reads plugin bundles in child processes of **itself**
+// (`fontelle --fontelle-scan-bundle`), so one that crashes as it loads is a
+// failure in the list and the studio goes on. See
+// `fontelle-host/tests/scan_isolation.rs` for the prober on its own; this is
+// the studio's binary answering it.
+
+#[test]
+fn the_studios_own_binary_reads_a_bundle_and_survives_one_that_crashes() {
+    let folder = std::env::temp_dir().join(format!("fontelle-app-probe-{}", std::process::id()));
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::copy(
+        plugin_folder().join("fontelle-testplug.clap"),
+        folder.join("good.clap"),
+    )
+    .unwrap();
+    std::fs::copy(
+        plugin_folder().join("fontelle-testplug.clap"),
+        folder.join(format!("{}.clap", fontelle_testplug::CRASHES_ON_LOAD)),
+    )
+    .unwrap();
+    let mut rack = PluginRack::new();
+    rack.search_standard_folders(false);
+    rack.set_folders(vec![folder.clone()]);
+    rack.set_prober(Some(std::sync::Arc::new(
+        fontelle_host::BundleProber::new(PathBuf::from(env!("CARGO_BIN_EXE_fontelle")))
+            .with_timeout(std::time::Duration::from_secs(10)),
+    )));
+    rack.rescan();
+    assert!(
+        rack.scan().plugins.iter().any(|p| p.key.id == GAIN),
+        "{:?}",
+        rack.scan()
+    );
+    assert!(
+        rack.scan()
+            .failures
+            .iter()
+            .any(|f| f.why.contains("crashed")),
+        "{:?}",
+        rack.scan().failures
+    );
+    std::fs::remove_dir_all(&folder).ok();
+}

@@ -252,6 +252,13 @@ pub struct PluginHost {
     vst3_modules: HashMap<PathBuf, Arc<crate::vst3::Module>>,
 }
 
+/// Its libraries stay loaded — see [`crate::resident`].
+impl Drop for PluginHost {
+    fn drop(&mut self) {
+        crate::resident::park_worlds(std::mem::take(&mut self.worlds));
+    }
+}
+
 impl PluginHost {
     pub fn new() -> Self {
         Self::default()
@@ -259,10 +266,9 @@ impl PluginHost {
 
     /// A host that can also reach whatever `bridges` serve.
     pub fn with_bridges(bridges: Arc<Bridges>) -> Self {
-        Self {
-            bridges,
-            ..Self::default()
-        }
+        let mut host = Self::default();
+        host.bridges = bridges;
+        host
     }
 
     pub fn bridges(&self) -> &Arc<Bridges> {
@@ -327,6 +333,7 @@ impl PluginHost {
                 path: path.to_path_buf(),
                 why,
             })?;
+            crate::resident::keep_vst3(path, &module);
             self.vst3_modules.insert(path.to_path_buf(), module);
         }
         let module = Arc::clone(&self.vst3_modules[path]);
@@ -472,6 +479,7 @@ impl PluginHost {
     pub(crate) fn entry(&mut self, path: &Path) -> Result<&PluginEntry, HostError> {
         if !self.bundles.contains_key(path) {
             let entry = load_entry(path)?;
+            crate::resident::keep_clap(path, &entry);
             self.bundles.insert(path.to_path_buf(), entry);
         }
         Ok(&self.bundles[path])
@@ -495,6 +503,7 @@ fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
 /// Everything one CLAP bundle holds. Used by the scanner.
 pub(crate) fn read_clap_bundle(path: &Path) -> Result<Vec<PluginInfo>, String> {
     let entry = load_entry(path).map_err(|e| e.to_string())?;
+    crate::resident::keep_clap(path, &entry);
     let factory = entry
         .get_plugin_factory()
         .ok_or_else(|| "the bundle offers no plugins".to_string())?;
@@ -623,7 +632,11 @@ pub(crate) enum Inner {
 const SETTLE_QUIET: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// And how long to wait for all of that before reading whatever is there.
-const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_millis(1500);
+///
+/// What it costs to choose the preset a plugin is already on — nothing
+/// moves, so nothing says it is done. Surge XT lands a preset in about
+/// seventy milliseconds with the machine busy.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// How often the plugin's whole state is asked for while waiting for it to
 /// change.
@@ -634,6 +647,8 @@ const SETTLE_STATE_EVERY: std::time::Duration = std::time::Duration::from_millis
 pub struct SettleMark {
     values: Vec<u64>,
     state: Option<Vec<u8>>,
+    /// What the state is to become, when that is known.
+    target: Option<Vec<u8>>,
 }
 
 impl HostedPlugin {
@@ -1627,7 +1642,21 @@ impl HostedPlugin {
         SettleMark {
             values: self.values.all().map(|(_, v)| v.to_bits()).collect(),
             state: self.save_state_with(processor),
+            target: None,
         }
+    }
+
+    /// [`settle_mark`](Self::settle_mark), for loading `target` — a state
+    /// whose bytes are known. A plugin that saves exactly those is in, and
+    /// [`settle_with`](Self::settle_with) does not wait for it to move.
+    pub fn settle_mark_for(
+        &mut self,
+        processor: &mut HostedProcessor,
+        target: &[u8],
+    ) -> SettleMark {
+        let mut mark = self.settle_mark(processor);
+        mark.target = Some(target.to_vec());
+        mark
     }
 
     /// Runs the plugin on **this** thread, in silence, until what was just
@@ -1662,6 +1691,12 @@ impl HostedPlugin {
             plugin.values.all().map(|(_, v)| v.to_bits()).collect()
         };
         let started = std::time::Instant::now();
+        // A plugin that took the state in the call is done: nothing to run.
+        if let Some(target) = &before.target
+            && self.save_state_with(processor).as_deref() == Some(target.as_slice())
+        {
+            return;
+        }
         let mut landed: Option<std::time::Instant> = None;
         let mut last = before.values.clone();
         let mut state_checked = started;
@@ -1688,7 +1723,15 @@ impl HostedPlugin {
                 // changes a wavetable and no knob shows only in its state.
                 // Asked for sparingly — a sampler's state is its samples.
                 state_checked = std::time::Instant::now();
-                if self.save_state_with(processor) != before.state {
+                let now = self.save_state_with(processor);
+                if before
+                    .target
+                    .as_deref()
+                    .is_some_and(|t| now.as_deref() == Some(t))
+                {
+                    break;
+                }
+                if now != before.state {
                     landed = Some(state_checked);
                 }
             }
@@ -1700,6 +1743,12 @@ impl HostedPlugin {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         self.service_main_thread();
+        // A VST 3 controller that learnt its knobs before the state landed
+        // is told again — see `Vst3Plugin::resync_controller`.
+        if let Inner::Vst3(plugin) = &self.inner {
+            plugin.resync_controller();
+            self.reread_params();
+        }
         if crate::atom::trace() {
             eprintln!(
                 "[settle] {}: {blocks} blocks, {:?}, landed {}",

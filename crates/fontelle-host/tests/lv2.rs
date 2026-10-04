@@ -1139,3 +1139,52 @@ fn in_mpe_mode_a_slide_reaches_an_lv2_instrument_whole() {
         "the note let go on its own channel"
     );
 }
+
+/// > *"sometimes they'll just revert back to the init preset ... most times
+/// > it just renders with nothing"*
+///
+/// Found sweeping every installed instrument: when the last hold on an LV2
+/// processor went on the **audio thread** — a graph still queued when the
+/// studio let go, the stream torn down on a device change — the instance was
+/// freed there. drumkv1's `cleanup` tears down its Qt application, which
+/// must happen on the thread that made it, and the process died; Calf's
+/// corrupted its heap. A processor let go of anywhere but the thread that
+/// made it is leaked instead, as `clack` does for CLAP.
+#[test]
+fn an_lv2_instance_let_go_of_on_another_thread_is_not_freed_there() {
+    let log = std::env::temp_dir().join(format!("fontelle-lv2-cleanup-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    // SAFETY: set before any instance exists, read by the fixture only.
+    unsafe { std::env::set_var(fontelle_testlv2::CLEANUP_LOG_ENV, &log) };
+    let mut host = fontelle_host::PluginHost::new();
+    let key = fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Lv2, common::LV2_GAIN);
+
+    let mut plugin = host.open(&common::lv2_bundle(), &key).unwrap();
+    let processor = plugin.activate(48_000.0, 64).unwrap();
+    std::thread::Builder::new()
+        .name("audio".to_string())
+        .spawn(move || drop(processor))
+        .unwrap()
+        .join()
+        .unwrap();
+    let freed = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !freed.contains("audio"),
+        "cleanup ran on the audio thread: {freed:?}"
+    );
+
+    // On its own thread it is freed, as before.
+    let mut plugin = host.open(&common::lv2_bundle(), &key).unwrap();
+    let processor = plugin.activate(48_000.0, 64).unwrap();
+    drop(processor);
+    // Tests run beside this one write here too (the variable is the
+    // process's); this test's thread is named after it, cut to fifteen
+    // characters by the kernel.
+    let freed = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        freed.lines().any(|line| line == "an_lv2_instance"),
+        "{freed:?}"
+    );
+    unsafe { std::env::remove_var(fontelle_testlv2::CLEANUP_LOG_ENV) };
+    let _ = std::fs::remove_file(&log);
+}

@@ -270,6 +270,29 @@ struct GainProcessor {
     invert: AtomicBool,
 }
 
+/// When this names a file, the gain's component appends the operating
+/// system's name for the thread it is destroyed on — so a host test can see
+/// that it never is on an audio thread.
+pub const RELEASE_LOG_ENV: &str = "FONTELLE_TESTVST3_RELEASE_LOG";
+
+impl Drop for GainProcessor {
+    fn drop(&mut self) {
+        if let Some(file) = std::env::var_os(RELEASE_LOG_ENV) {
+            use std::io::Write;
+            if let Ok(mut out) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+            {
+                let name = std::fs::read_to_string("/proc/thread-self/comm")
+                    .map(|name| name.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let _ = writeln!(out, "{name}");
+            }
+        }
+    }
+}
+
 impl Class for GainProcessor {
     type Interfaces = (
         IComponent,
@@ -1154,6 +1177,15 @@ impl IEditControllerTrait for SineController {
 struct Combined {
     gain: AtomicU64,
     edit_gain: Cell<f64>,
+    /// Whether `process` has run since it was made. **JUCE's shape, as
+    /// Surge XT's VST 3 has it**: once the audio thread has run, a state is
+    /// handed to it and lands on its next block ([`pending`](Self::pending)),
+    /// and `setComponentState` copies the parameters from what the processor
+    /// is **now** rather than from the stream — so a host that asks straight
+    /// after `setState` is told the values from before.
+    processed: AtomicBool,
+    /// A gain a state asked for, waiting for the next block; NaN for none.
+    pending: AtomicU64,
 }
 
 // SAFETY: the `Cell` is the controller half, which is main-thread only.
@@ -1218,10 +1250,12 @@ impl IComponentTrait for Combined {
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
         let bytes = unsafe { read_all(state) };
         if bytes.len() == 8 {
-            self.gain.store(
-                f64::from_le_bytes(bytes.try_into().unwrap()).to_bits(),
-                Ordering::Relaxed,
-            );
+            let gain = f64::from_le_bytes(bytes.try_into().unwrap()).to_bits();
+            if self.processed.load(Ordering::Acquire) {
+                self.pending.store(gain, Ordering::Release);
+            } else {
+                self.gain.store(gain, Ordering::Relaxed);
+            }
         }
         kResultOk
     }
@@ -1272,6 +1306,11 @@ impl IAudioProcessorTrait for Combined {
     }
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
         let data = unsafe { &*data };
+        self.processed.store(true, Ordering::Release);
+        let pending = self.pending.swap(f64::NAN.to_bits(), Ordering::AcqRel);
+        if !f64::from_bits(pending).is_nan() {
+            self.gain.store(pending, Ordering::Relaxed);
+        }
         unsafe {
             each_change(data, |id, value| {
                 if id == 0 {
@@ -1303,7 +1342,10 @@ impl IProcessContextRequirementsTrait for Combined {
 }
 
 impl IEditControllerTrait for Combined {
+    /// From the processor as it is now, not from the stream — JUCE's way.
     unsafe fn setComponentState(&self, _state: *mut IBStream) -> tresult {
+        self.edit_gain
+            .set(f64::from_bits(self.gain.load(Ordering::Relaxed)));
         kResultOk
     }
     unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
@@ -1460,6 +1502,8 @@ impl IPluginFactoryTrait for Factory {
             COMBINED_CID => ComWrapper::new(Combined {
                 gain: AtomicU64::new(1.0f64.to_bits()),
                 edit_gain: Cell::new(1.0),
+                processed: AtomicBool::new(false),
+                pending: AtomicU64::new(f64::NAN.to_bits()),
             })
             .to_com_ptr(),
             _ => None,

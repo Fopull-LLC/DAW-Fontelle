@@ -959,4 +959,87 @@ mod presets {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // ------------------------------------------- after the project is reopened
+    //
+    // > *"sometimes they'll just revert back to the init preset when working
+    // > on a saved project witch I find causes confusion leading me to have to
+    // > re interrelate each track to its presset"*
+    //
+    // The sound came back; which preset it was did not. The browser's
+    // highlight lived only in the session (`channel_presets`), so a reopened
+    // project showed no channel on any preset, and the only way to see what a
+    // track was playing again was to choose it again.
+
+    fn trumpet_on_channel_zero(dir: &std::path::Path) -> Session {
+        let mut session = studio(dir);
+        session.set_projects_dir(Some(dir.join("projects")));
+        let brass = session
+            .library_files()
+            .iter()
+            .position(|entry| entry.name == "Brass Pack")
+            .expect("Brass Pack is in the folder");
+        session.open_file(brass).expect("it opens");
+        let trumpet = session
+            .library_presets()
+            .iter()
+            .position(|entry| entry.name == "Trumpet")
+            .expect("Trumpet is in Brass Pack");
+        session.select_channel(0);
+        session.set_channel_instrument(trumpet).expect("loads");
+        assert_eq!(session.selected_preset(), Some(trumpet));
+        session
+    }
+
+    #[test]
+    fn a_reopened_project_still_says_which_preset_each_channel_plays() {
+        let dir = a_library("preset-reopen");
+        let session = trumpet_on_channel_zero(&dir);
+        let mut session = session;
+        session.save_as("Brass").expect("saves");
+        let bundle = session.bundle_path().unwrap().to_path_buf();
+        drop(session);
+
+        let mut again = studio(&dir);
+        again.open_project_path(&bundle).expect("opens");
+        again.select_channel(0);
+        let brass = again
+            .library_files()
+            .iter()
+            .position(|entry| entry.name == "Brass Pack")
+            .expect("Brass Pack is in the folder");
+        again.open_file(brass).expect("it opens");
+        let trumpet = again
+            .library_presets()
+            .iter()
+            .position(|entry| entry.name == "Trumpet")
+            .unwrap();
+        assert_eq!(
+            again.selected_preset(),
+            Some(trumpet),
+            "the reopened channel is on no preset in the browser"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_soundfont_preset_names_itself_on_the_preset_bar() {
+        // And the bar above the instrument says it too, rather than reading as
+        // an edited Init patch — before a save and after it.
+        let dir = a_library("preset-bar-sf2");
+        let mut session = trumpet_on_channel_zero(&dir);
+        let bar = session.preset_bar(fontelle_ui::canvas::PresetDevice::Instrument);
+        assert_eq!(bar.name.as_deref(), Some("Trumpet"), "{bar:?}");
+        assert!(!bar.dirty, "{bar:?}");
+        session.save_as("Bar").expect("saves");
+        let bundle = session.bundle_path().unwrap().to_path_buf();
+        drop(session);
+        let mut again = studio(&dir);
+        again.open_project_path(&bundle).expect("opens");
+        again.select_channel(0);
+        let bar = again.preset_bar(fontelle_ui::canvas::PresetDevice::Instrument);
+        assert_eq!(bar.name.as_deref(), Some("Trumpet"), "{bar:?}");
+        assert!(!bar.dirty, "{bar:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

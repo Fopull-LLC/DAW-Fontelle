@@ -575,6 +575,22 @@ pub struct Bounced {
     pub message: Option<String>,
 }
 
+/// What the studio reads plugin bundles with: **itself**, in a child
+/// process per bundle (`fontelle --fontelle-scan-bundle`), remembering what
+/// it read in the settings folder. See [`fontelle_host::BundleProber`] for
+/// why a scan is not done in the studio's own process any more.
+///
+/// `None` when this binary cannot say where it is, which leaves the scan in
+/// this process as before.
+pub fn studio_prober() -> Option<std::sync::Arc<fontelle_host::BundleProber>> {
+    let helper = std::env::current_exe().ok()?;
+    let mut prober = fontelle_host::BundleProber::new(helper);
+    if let Some(dir) = crate::settings::Settings::config_dir() {
+        prober = prober.with_cache_file(dir.join("plugin-scan.json"));
+    }
+    Some(std::sync::Arc::new(prober))
+}
+
 /// An offline bounce of `project` **with its plugins in it**.
 ///
 /// `--render-wav` used to realise its graph with no rack at all, so a channel

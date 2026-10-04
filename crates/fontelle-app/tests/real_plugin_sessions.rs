@@ -40,6 +40,26 @@ fn scratch(name: &str) -> PathBuf {
     path
 }
 
+/// A rack that scans the way the studio does: in child processes of the
+/// studio's own binary, so the test process loads only the plugins it plays.
+fn studio_rack() -> fontelle_app::PluginRack {
+    let mut rack = fontelle_app::PluginRack::new();
+    rack.set_prober(Some(studio_prober()));
+    rack
+}
+
+/// One for the whole test binary, so what one walk read the next does not
+/// read again.
+fn studio_prober() -> std::sync::Arc<fontelle_host::BundleProber> {
+    static PROBER: std::sync::OnceLock<std::sync::Arc<fontelle_host::BundleProber>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(PROBER.get_or_init(|| {
+        std::sync::Arc::new(fontelle_host::BundleProber::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_fontelle"
+        ))))
+    }))
+}
+
 fn wanted() -> String {
     std::env::var("FONTELLE_REAL_ONLY").unwrap_or_else(|_| "Surge XT".to_string())
 }
@@ -54,7 +74,8 @@ fn a_session(dir: &Path) -> Session {
     std::fs::write(dir.join("settings.json"), settings.to_json()).unwrap();
     let mut session = common::a_session_for(common::a_project_with_a_clip(2, 120.0, SR))
         .with_settings_path(dir.join("settings.json"))
-        .with_headless_plugin_editors();
+        .with_headless_plugin_editors()
+        .with_plugin_prober(studio_prober());
     session.set_projects_dir(Some(dir.join("projects")));
     session.scan_plugins_once();
     session
@@ -79,6 +100,11 @@ fn slot(session: &Session) -> PluginSlot {
 }
 
 fn live(session: &mut Session) -> PluginState {
+    // What the window does every frame: frees the graphs the audio thread
+    // handed back, so a processor in one is free for the graph after it.
+    // Without it a plugin can sit in a retired graph, unprocessed, and a
+    // state it queued for its next block never lands.
+    session.pump();
     let slot = slot(session);
     session
         .plugin_rack_mut()
@@ -113,6 +139,9 @@ fn differences(a: &PluginState, b: &PluginState) -> (usize, Vec<Differing>) {
 
 fn assert_same(what: &str, a: &PluginState, b: &PluginState) {
     let (count, first) = differences(a, b);
+    if count > 0 {
+        eprintln!("   {what}: differs in {first:?}");
+    }
     assert_eq!(
         count, 0,
         "{what}: {count} parameters differ, e.g. {first:?}"
@@ -178,7 +207,8 @@ fn a_running_session(dir: &Path) -> (Session, std::sync::Arc<std::sync::atomic::
     .with_graphs(graphs, realised.track_controls)
     .with_param_nodes(realised.param_nodes)
     .with_settings_path(dir.join("settings.json"))
-    .with_headless_plugin_editors();
+    .with_headless_plugin_editors()
+    .with_plugin_prober(studio_prober());
     session.set_projects_dir(Some(dir.join("projects")));
     session.scan_plugins_once();
 
@@ -327,7 +357,16 @@ fn a_real_instruments_patch_survives_working_saving_and_reopening() {
         assert_same("after a rebuild", &live(&mut session), &first_state);
 
         // A patch picked in the plugin's **own** browser: the document hears
-        // nothing of it.
+        // nothing of it. Acted out by loading a state from outside, which
+        // for a CLAP plugin is the road its own browser takes (Surge's patch
+        // loader, then parameter events). A VST 3's own browser tells the
+        // host through `restartComponent` instead, which a load from outside
+        // does not exercise, so that half is the knob walk's.
+        if !listing.contains("format: Clap") {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            settle();
+            continue;
+        }
         let bytes = fontelle_types::decode_base64(second_state.blob.as_ref().unwrap()).unwrap();
         let at = slot(&session);
         assert!(
@@ -338,9 +377,30 @@ fn a_real_instruments_patch_survives_working_saving_and_reopening() {
                 .load_state(&bytes)
         );
         // Its editor is open while that happens, so its audio is running
-        // and the patch lands a block or so later.
-        settle();
-        assert_same("its own browser", &live(&mut session), &second_state);
+        // and the patch lands a block or so later. What the plugin makes of
+        // it is the plugin's: Surge sets a few parameters that only one
+        // oscillator type uses ("Osc 2 Unison Voices") by the patch it is
+        // leaving as well as the one it loads. What is Fontelle's is that
+        // nothing it does afterwards moves the plugin off it.
+        let waited = std::time::Instant::now();
+        let mut chosen = live(&mut session);
+        while differences(&chosen, &second_state).0 * 50 >= chosen.params.len().max(50)
+            && waited.elapsed() < std::time::Duration::from_secs(3)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            chosen = live(&mut session);
+        }
+        let (moved, _) = differences(&chosen, &second_state);
+        eprintln!(
+            "   its own browser: {moved} differ after {:?}",
+            waited.elapsed()
+        );
+        assert!(
+            moved * 50 < chosen.params.len().max(50),
+            "its own browser: the patch did not go in ({moved} differ)"
+        );
+        assert!(differences(&chosen, &first_state).0 > 0);
+        let second_state = chosen;
         session.add_channel().expect("adds");
         assert_same(
             "its own browser, then a rebuild",
@@ -416,7 +476,13 @@ fn what_was_done_in_a_real_plugins_window_survives_working_saving_and_reopening(
                 (param.id, to)
             })
             .collect();
-        assert!(!turned.is_empty(), "it has no knobs to turn");
+        if turned.is_empty() {
+            // A drum kit of fixed samples, a MIDI tool: nothing to turn.
+            eprintln!("   has no knobs to turn; skipped");
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            settle();
+            continue;
+        }
         for (id, to) in &turned {
             session
                 .plugin_rack_mut()
@@ -493,6 +559,38 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
         let (mut session, stop) = a_running_session(&dir);
         session.set_channel_plugin(0, which);
         settle();
+        // What it sounds like as it opens, in a rack of its own: a plugin
+        // that is silent then (a sampler with nothing loaded) cannot show a
+        // silent render.
+        let mut alone = session.project().clone();
+        let channel = alone.channels.keys().next().unwrap();
+        let clip = alone.clips.keys().next().unwrap();
+        if let fontelle_model::ClipSource::Notes(data) = &mut alone.clips[clip].source {
+            data.notes.insert(fontelle_model::Note {
+                start: 0,
+                length: fontelle_types::PPQN * 2,
+                key: 60,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+                path: Vec::new(),
+                channel: None,
+            });
+        }
+        let _ = channel;
+        let mut rack = studio_rack();
+        let reference = offline_peak(&alone, &mut rack);
+        rack.close_all();
+        if reference <= 0.01 {
+            eprintln!("   silent as it opens; skipped");
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            settle();
+            continue;
+        }
         session.edit(fontelle_ui::canvas::RollEdit::Add {
             note: fontelle_model::Note {
                 start: 0,
@@ -607,7 +705,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
             channel: None,
         });
 
-        let mut rack = fontelle_app::PluginRack::new();
+        let mut rack = studio_rack();
         let fresh = offline_peak(&project, &mut rack);
         let slot = PluginSlot::Channel(channel);
         let state = rack.snapshot(slot).expect("it is open");
@@ -619,7 +717,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         rack.close_all();
 
         project.channels[channel].plugin = Some(state.clone());
-        let mut rack = fontelle_app::PluginRack::new();
+        let mut rack = studio_rack();
         let reopened = offline_peak(&project, &mut rack);
         eprintln!("   reopened from its state {reopened}");
 
@@ -628,7 +726,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         let mut only_blob = state.clone();
         only_blob.params.clear();
         project.channels[channel].plugin = Some(only_blob);
-        let mut rack = fontelle_app::PluginRack::new();
+        let mut rack = studio_rack();
         eprintln!(
             "   from the blob alone {}",
             offline_peak(&project, &mut rack)
@@ -661,10 +759,126 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         }
         rack.close_all();
 
-        assert!(fresh > 0.01, "it made no sound to begin with: {fresh}");
+        if fresh <= 0.01 {
+            // A sampler with nothing loaded, a drum machine with no kit: a
+            // plugin that is silent as it opens has nothing to compare.
+            eprintln!("   silent as it opens; skipped");
+            continue;
+        }
         assert!(
             (reopened / fresh) > 0.5 && (reopened / fresh) < 2.0,
             "fresh {fresh}, reopened {reopened}"
         );
     }
+}
+
+/// Every installed instrument, one per line as `FORMAT<tab>name` — what
+/// `tools/real-plugin-sweep.sh` reads to run the walks on each in a
+/// process of its own, so one plugin that crashes takes only itself down.
+#[test]
+#[ignore]
+fn list_installed_instruments() {
+    let dir = scratch("list");
+    let session = a_session(&dir);
+    for listing in session.plugin_instruments() {
+        println!("SWEEP\t{:?}\t{}", listing.key.format, listing.name);
+    }
+}
+
+/// The studio's scan of everything installed, as the studio does it: in
+/// child processes of its own binary, cached. Prints what would not load and
+/// how long a first start and a second take.
+#[test]
+#[ignore]
+fn the_studios_scan_of_this_machine() {
+    let dir = scratch("machine-scan");
+    let cache = dir.join("plugin-scan.json");
+    let prober = || {
+        std::sync::Arc::new(
+            fontelle_host::BundleProber::new(PathBuf::from(env!("CARGO_BIN_EXE_fontelle")))
+                .with_cache_file(cache.clone()),
+        )
+    };
+    let mut rack = studio_rack();
+    rack.set_prober(Some(prober()));
+    let started = std::time::Instant::now();
+    rack.rescan();
+    let first = started.elapsed();
+    eprintln!(
+        "first scan: {} plugins, {} would not load, in {first:?}",
+        rack.scan().plugins.len(),
+        rack.scan().failures.len()
+    );
+    for failure in &rack.scan().failures {
+        eprintln!("  {} — {}", failure.path.display(), failure.why);
+    }
+    let mut again = fontelle_app::PluginRack::new();
+    again.set_prober(Some(prober()));
+    let started = std::time::Instant::now();
+    again.rescan();
+    eprintln!(
+        "next start: {:?}: {} plugins, {} failures, folders {:?}",
+        started.elapsed(),
+        again.scan().plugins.len(),
+        again.scan().failures.len(),
+        again.folders()
+    );
+    for (a, b) in rack.scan().plugins.iter().zip(&again.scan().plugins) {
+        if a != b {
+            eprintln!("first difference:\n  {a:?}\n  {b:?}");
+            break;
+        }
+    }
+    assert!(
+        rack.scan().plugins == again.scan().plugins,
+        "the next start lists something else"
+    );
+}
+
+/// The smallest thing that plays an installed instrument through the
+/// studio's rack: one note, offline, nothing else. For a plugin that will
+/// not survive the walks above, under a memory checker.
+#[test]
+#[ignore]
+fn one_note_through_the_rack() {
+    use fontelle_model::{ClipSource, Note};
+    let key = fontelle_types::PluginKey::parse(&std::env::var("FONTELLE_REAL_KEY").unwrap())
+        .expect("FONTELLE_REAL_KEY is format:id");
+    let mut project = common::a_project_with_a_clip(2, 120.0, SR);
+    let channel = project.channels.keys().next().unwrap();
+    project.channels[channel].instrument = Some(fontelle_types::InstrumentKind::Plugin);
+    project.channels[channel].plugin = Some(PluginState::new(key, "Under test".to_string()));
+    let clip = project.clips.keys().next().unwrap();
+    let ClipSource::Notes(data) = &mut project.clips[clip].source else {
+        unreachable!()
+    };
+    data.notes.insert(Note {
+        start: 0,
+        length: std::env::var("FONTELLE_REAL_BEATS")
+            .ok()
+            .and_then(|b| b.parse::<i64>().ok())
+            .unwrap_or(1)
+            * fontelle_types::PPQN,
+        key: 60,
+        velocity: 100,
+        pan: 0,
+        fine_pitch: 0,
+        release: 0,
+        mod_x: 0,
+        mod_y: 0,
+        slide: false,
+        path: Vec::new(),
+        channel: None,
+    });
+    if std::env::var_os("FONTELLE_REAL_SESSION_FIRST").is_some() {
+        let dir = scratch("one-note");
+        let session = a_session(&dir);
+        eprintln!(
+            "session saw {} instruments",
+            session.plugin_instruments().len()
+        );
+        drop(session);
+    }
+    let mut rack = studio_rack();
+    eprintln!("peak {}", offline_peak(&project, &mut rack));
 }

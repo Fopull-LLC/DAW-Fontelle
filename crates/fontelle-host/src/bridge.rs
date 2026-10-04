@@ -82,11 +82,19 @@ impl Loaded {
 /// out, so a bridge's library outlives anything still calling into it.
 #[derive(Default)]
 pub struct Bridges {
+    /// The folders these were loaded from — what a scan's child process
+    /// loads its own from (`BundleProber`).
+    folders: Vec<PathBuf>,
     loaded: Vec<Loaded>,
     pub failures: Vec<BridgeFailure>,
 }
 
 impl Bridges {
+    /// The folders these were loaded from.
+    pub fn folders(&self) -> &[PathBuf] {
+        &self.folders
+    }
+
     /// No bridges at all — what a build has until somebody installs one.
     pub fn none() -> Self {
         Self::default()
@@ -99,6 +107,7 @@ impl Bridges {
     /// bundle does, and for the same reason there is no safe version of it.
     pub fn load(folders: &[PathBuf]) -> Self {
         let mut bridges = Self::none();
+        bridges.folders = folders.to_vec();
         for folder in folders {
             let Ok(entries) = std::fs::read_dir(folder) else {
                 continue;

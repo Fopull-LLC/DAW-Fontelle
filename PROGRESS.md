@@ -29,7 +29,7 @@ has the plugins in it.** Not released. From one user's report:
 Reproduced on the installed Surge XT, CLAP and VST 3
 (`fontelle-app/tests/real_plugin_sessions.rs`, all `--ignored`; five walks,
 `FONTELLE_REAL_ONLY` narrows them), and each cause then given a fixture test.
-Seven causes of the first, one of the second:
+Seven causes of the first, one of the second, in the first round:
 
 - **A plugin opened from its saved state was then told every parameter on
   the saved list** — each the value it already had. To a plugin an event is
@@ -87,15 +87,74 @@ Seven causes of the first, one of the second:
 - **A saved state the plugin refuses is said**, on the status line, where it
   used to open as a new one without a word (`PluginRack::ensure`).
 
-Still open from the same investigation: Surge XT as VST 3 lists no library
-here, so its presets are only in its own window; a row render still honours
-another channel's solo; `prepare_export` cuts with `tempo_map` and compiles
-with `effective_tempo_map`; the settle after a preset costs its 60 ms even
-for a plugin that loads at once, and 1.5 s for the preset it is already on.
-Not run against: Vital, Serum (through a bridge), or anything on Windows or
-macOS — the real-plugin walks are there to be run where those are installed.
-Nothing was found that reverts the built-in instruments; that needs the
-reporter to say which one and what was done.
+**And a second round, sweeping every instrument installed on the devbox**
+(110 of them, CLAP, LV2, VST 3 and VST 2: `tools/real-plugin-sweep.sh`, one
+process per plugin, the walks of `tests/real_plugin_sessions.rs`), which
+found what the report could not have named:
+
+- **The scan could crash the studio.** It loaded every CLAP bundle on the
+  machine into its own process and unloaded each; ZamHeadX2's entry sets
+  up FFTW, FFTW kept a pointer into a library already unloaded, and the
+  process died inside a plugin nobody asked for — on one machine and not
+  another, by what is installed. Now (`fontelle-host/src/probe.rs`) a bundle
+  that has to be loaded to be read is read by **a child process of the
+  studio's own binary** (`fontelle --fontelle-scan-bundle`), six at a time,
+  remembered by size and time in `plugin-scan.json` in the settings folder;
+  one that crashes or does not answer in 20 s is a line in the list
+  (`tests/scan_isolation.rs`). LV2, and a VST 3 with a `moduleinfo.json`,
+  are still read here — nothing is loaded to read them. *Rescan plugins*
+  tries the failures again (`PluginRack::rescan_fresh`).
+- **Nothing unloads a plugin library any more** (`fontelle-host/src/resident.rs`):
+  one CLAP entry, VST 3 module, LV2 world and LV2 binary per path is kept
+  for the life of the process. lilv unloads an LV2 binary with its last
+  instance whatever happens to the world, so that one is held by a `dlopen`
+  of its own.
+- **An instance freed on the audio thread.** When the last hold on a
+  processor went there — a graph still queued when the studio let go, a
+  stream torn down on a device change — the instance was freed there;
+  drumkv1's `cleanup` tears down its Qt application, which must happen on
+  the thread that made it. `Lv2Processor` and `Vst3Processor` now leak an
+  instance let go of off the thread that made it, as `clack` does for CLAP.
+- **The walk missed plugins distributions ship.** An LV2 bundle is a folder
+  with a `manifest.ttl` whatever it is called (setBfree's `b_synth`); on
+  Linux and Windows a folder named `X.clap` is a folder of CLAP files
+  (Cardinal, ProM); a folder reached twice (`/usr/lib64` → `/usr/lib` on
+  Arch, its own folder on Fedora) is walked once. LV2 classes are sorted, so
+  two scans of one machine are the same list. This machine: 1,262 plugins
+  and 12 failures before, 1,269 and none after; 2.6 s cold, 1.7 s cached.
+- **Surge XT's VST 3 had no presets on the strip**: a library folder is
+  matched without regard to case, spaces, dashes and underscores
+  (`/usr/share/surge-xt`), and a `.fxp` the plugin already lists itself is
+  not listed twice (its CLAP).
+- **A VST 3 built with JUCE kept the knobs of the patch before.** Its
+  controller's `setComponentState` copies the processor's values *as they
+  are*, and Surge takes a state a few blocks later; the document then held
+  old knobs beside a new blob and a reopen put them back. Once the state has
+  landed the controller is told again (`Vst3Plugin::resync_controller`); the
+  fixture's combined component now behaves that way.
+- **A SoundFont channel forgot which preset it was on** when the project
+  was reopened — the browser's highlight lived only in the session, so every
+  channel showed none (*"I have to re interrelate each track to its
+  presset"*), and the bar never named one. Choosing one now records a
+  `PresetRef` with origin `Soundfont` (the file's name as its category) in
+  the same undo step; the bar names it, and the browser finds it again
+  (`tests/browsing.rs`). Every built-in instrument with a preset keeps it
+  through a working day, a reopen, another sample rate and a duplicate
+  (`tests/preset_survival.rs`).
+- **A row render honoured another channel's solo**: channel solo is the
+  song's, as the rows' already was (`fontelle-sequencer` `compile`).
+- **A selection exported from a song with a drawn tempo was cut by the
+  box's tempo** — 96,000 frames for a bar the lane made 75,406. Both renders
+  cut by `effective_tempo_map` now.
+- The settle after a load stops as soon as the plugin saves exactly the
+  state it was handed, and gives up on one that never moves after 0.75 s.
+
+**Not fixed, and why.** Calf Wavetable (LV2) crashes inside its own `run`,
+intermittently, with every input in range, more often after unrelated
+allocations — a fault in the plugin, which other hosts report from Calf
+too; only running plugins in a process of their own would contain it, and
+that is a feature, not a patch. Not run against: Vital, Serum (through a
+bridge), Windows or macOS.
 
 **As of 2026-10-03 — the mixer's strips, clip colours, looped
 onion skins, multi-clip drags, legato to the end.** Not released.

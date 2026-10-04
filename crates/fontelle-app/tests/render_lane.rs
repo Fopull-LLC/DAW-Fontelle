@@ -181,3 +181,73 @@ fn rendering_is_one_undo() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------------ a solo somewhere else
+//
+// > *"I find I have trouble rendering midi to audio. most times it just
+// > renders with nothing"*
+//
+// A row rendered to audio was asked for by name. The rows' own solo was
+// already left out of it; a soloed **channel**, or a soloed mixer track,
+// was not — so rendering a row while something else was soloed wrote a
+// silent take.
+
+fn the_take_peak(session: &Session, dir: &std::path::Path) -> f32 {
+    let _ = session;
+    let renders = dir.join("Song").join("renders");
+    let path = std::fs::read_dir(&renders)
+        .expect("a renders folder")
+        .flatten()
+        .map(|entry| entry.path())
+        .next()
+        .expect("a take was written");
+    let asset = fontelle_assets::import_audio(&path).expect("it reads back");
+    asset.samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+fn a_note_on_row_zero(session: &mut Session) {
+    session.edit(fontelle_ui::canvas::RollEdit::Add {
+        note: fontelle_model::Note {
+            start: 0,
+            length: fontelle_types::PPQN * 2,
+            key: 60,
+            velocity: 110,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            path: Vec::new(),
+            channel: None,
+        },
+    });
+}
+
+#[test]
+fn a_row_renders_its_sound_while_another_channel_is_soloed() {
+    let dir = scratch("solo-channel");
+    let mut session = a_saved_session(&dir);
+    a_note_on_row_zero(&mut session);
+    session.add_channel().expect("a second channel");
+    let other = session.project().channels.len() - 1;
+    session.toggle_solo(other);
+    session.render_lane(0, None).expect("renders");
+    let peak = the_take_peak(&session, &dir);
+    assert!(peak > 0.01, "the row rendered silent: {peak}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_row_renders_its_sound_while_another_mixer_track_is_soloed() {
+    let dir = scratch("solo-track");
+    let mut session = a_saved_session(&dir);
+    a_note_on_row_zero(&mut session);
+    session.add_mixer_track();
+    // The new strip is first in the row; the channel plays through master.
+    session.toggle_track_solo(0);
+    session.render_lane(0, None).expect("renders");
+    let peak = the_take_peak(&session, &dir);
+    assert!(peak > 0.01, "the row rendered silent: {peak}");
+    std::fs::remove_dir_all(&dir).ok();
+}

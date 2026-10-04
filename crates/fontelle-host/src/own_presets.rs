@@ -322,12 +322,19 @@ pub fn list_own_presets(
         PluginFormat::Vst3 => vst3_presets(info, roots),
         _ => return Vec::new(),
     };
+    // `.fxp` files beside a plugin that lists its own library are often that
+    // library again, as files: Surge XT's CLAP describes its three thousand
+    // patches through its provider, and the same patches are what is in
+    // `/usr/share/surge-xt`. A file whose name the plugin already listed is
+    // left out.
     if let Some(own) = own_state {
-        found.extend(fxp_presets(
-            info,
-            roots,
-            &component_of(info.key.format, own),
-        ));
+        let listed: std::collections::HashSet<String> =
+            found.iter().map(|preset| preset.name.clone()).collect();
+        found.extend(
+            fxp_presets(info, roots, &component_of(info.key.format, own))
+                .into_iter()
+                .filter(|preset| !listed.contains(&preset.name)),
+        );
     }
     sorted(found)
 }
@@ -680,23 +687,52 @@ fn component_of(format: PluginFormat, state: &[u8]) -> Vec<u8> {
 /// The folders under `roots` that are `info`'s own: named after it, directly
 /// or one folder down (its vendor, or whatever its maker called itself).
 fn library_folders(info: &PluginInfo, roots: &[PathBuf]) -> Vec<PathBuf> {
+    let wanted = folder_key(&info.name);
+    let named = |path: &Path| {
+        path.is_dir()
+            && path
+                .file_name()
+                .is_some_and(|name| folder_key(&name.to_string_lossy()) == wanted)
+    };
     let mut folders = Vec::new();
     for root in roots {
-        let direct = root.join(&info.name);
-        if direct.is_dir() {
-            folders.push(direct);
-        }
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let nested = entry.path().join(&info.name);
-            if nested.is_dir() && !folders.contains(&nested) {
-                folders.push(nested);
+        let mut children: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        children.sort();
+        for child in children {
+            if named(&child) && !folders.contains(&child) {
+                folders.push(child.clone());
+            }
+            // One level down, for a vendor's folder: `Surge Synth Team/OB-Xf`.
+            let Ok(nested) = std::fs::read_dir(&child) else {
+                continue;
+            };
+            let mut nested: Vec<PathBuf> = nested.flatten().map(|entry| entry.path()).collect();
+            nested.sort();
+            for path in nested {
+                if named(&path) && !folders.contains(&path) {
+                    folders.push(path);
+                }
             }
         }
     }
     folders
+}
+
+/// A plugin's name as a folder for it might be spelt: case, spaces, dashes
+/// and underscores aside.
+///
+/// Linux packages name a plugin's data folder in lower case with dashes —
+/// Surge XT's patches are in `/usr/share/surge-xt` — and looked for by the
+/// plugin's name exactly, Surge's VST 3 had no library at all. Only those
+/// differences: "Surge XT 2" is still another plugin's folder.
+fn folder_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Every file under `folder`, to [`MAX_DEPTH`], in name order.

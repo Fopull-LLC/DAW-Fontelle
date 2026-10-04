@@ -450,6 +450,22 @@ fn features_of(sub_categories: &str) -> Vec<String> {
 
 /// Everything one bundle holds: read off its `moduleinfo.json` when it
 /// ships one, and off the loaded factory otherwise.
+/// Whether a bundle says what it holds in a `moduleinfo.json` that reads —
+/// in which case nothing has to be loaded to scan it.
+pub(crate) fn has_moduleinfo(bundle: &Path) -> bool {
+    [
+        bundle.join("Contents/Resources/moduleinfo.json"),
+        bundle.join("Contents/moduleinfo.json"),
+    ]
+    .iter()
+    .any(|candidate| {
+        std::fs::read_to_string(candidate)
+            .ok()
+            .and_then(|text| read_moduleinfo(&text, bundle))
+            .is_some()
+    })
+}
+
 pub(crate) fn read_vst3_bundle(bundle: &Path) -> Result<Vec<PluginInfo>, String> {
     for candidate in [
         bundle.join("Contents/Resources/moduleinfo.json"),
@@ -462,6 +478,7 @@ pub(crate) fn read_vst3_bundle(bundle: &Path) -> Result<Vec<PluginInfo>, String>
         }
     }
     let module = load_module(bundle)?;
+    crate::resident::keep_vst3(bundle, &module);
     let found = module.plugin_infos(bundle);
     if found.is_empty() {
         return Err("the module lists no audio module class".to_string());
@@ -1686,6 +1703,25 @@ impl Vst3Plugin {
         Some(join_state(&component, &controller))
     }
 
+    /// Tells the controller the component's state **as it is now**.
+    ///
+    /// `load_state` tells it once, straight after `setState` — which is all
+    /// the specification asks. But a JUCE plugin (Surge XT's VST 3) hands a
+    /// state to its audio thread and takes it on the next block, and its
+    /// `setComponentState` copies the parameters from what the processor is
+    /// at that moment: the patch from before. Called again once the state
+    /// has landed ([`crate::HostedPlugin::settle_with`]), it learns the new
+    /// one. Harmless to a plugin that reads the stream: it is the same state.
+    pub(crate) fn resync_controller(&self) {
+        let stream = Stream::new(Vec::new());
+        let ptr = stream.to_com_ptr::<IBStream>().unwrap();
+        if unsafe { self.shared.component.getState(ptr.as_ptr()) } != kResultOk {
+            return;
+        }
+        stream.position.set(0);
+        unsafe { self.controller.setComponentState(ptr.as_ptr()) };
+    }
+
     pub(crate) fn load_state(&mut self, bytes: &[u8]) -> bool {
         let Some((component, controller)) = split_state(bytes) else {
             return false;
@@ -1993,6 +2029,8 @@ pub(crate) fn note_dialect(accepts_notes: bool) -> Option<NoteDialect> {
 /// changes of a block, all sized at activation.
 pub(crate) struct Vst3Processor {
     shared: Arc<Shared>,
+    /// The thread that made it — the studio's main thread. See `Drop`.
+    owner: std::thread::ThreadId,
     values: Arc<ParamValues>,
     scale: Arc<Vec<(u32, f64)>>,
     midi_map: MidiMap,
@@ -2020,6 +2058,22 @@ pub(crate) struct Vst3Processor {
 // from this thread only while `run` executes, which is the specification's
 // contract for `process`.
 unsafe impl Send for Vst3Processor {}
+
+/// > *"most times it just renders with nothing"* — and the sweep that went
+/// > looking for why.
+///
+/// The last hold on a component can go on the audio thread — its plugin
+/// closed while a graph still held the processor, a stream torn down on a
+/// device change — and a JUCE plugin deletes its whole processor in the
+/// `release` that follows. Off the thread that made it, the hold is leaked
+/// instead, as `clack` does for CLAP and `Lv2Processor` for LV2.
+impl Drop for Vst3Processor {
+    fn drop(&mut self) {
+        if std::thread::current().id() != self.owner {
+            std::mem::forget(Arc::clone(&self.shared));
+        }
+    }
+}
 
 impl Vst3Processor {
     /// Where the song is, into the context the plugin reads — see
@@ -2072,6 +2126,7 @@ impl Vst3Processor {
         context.sampleRate = sample_rate;
         context.state = ProcessContext_::StatesAndFlags_::kContTimeValid as u32;
         Self {
+            owner: std::thread::current().id(),
             in_ptrs: input
                 .iter()
                 .map(|bus| vec![std::ptr::null_mut(); bus.len()])

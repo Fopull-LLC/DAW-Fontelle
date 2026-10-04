@@ -372,3 +372,58 @@ fn an_lv2_preset_is_loaded_into_the_running_instance() {
     processor.process_effect(&input, &mut output, 8);
     assert!((output[0][0] - 0.5).abs() < 1e-5, "{}", output[0][0]);
 }
+
+/// Linux packages name a plugin's data folder in lower case with dashes:
+/// Surge XT's factory patches are in `/usr/share/surge-xt`, not
+/// `/usr/share/Surge XT`. Looked for by the plugin's name exactly, Surge's
+/// VST 3 offered no presets at all on the strip — its CLAP lists them itself.
+#[test]
+fn a_library_folder_named_the_linux_way_is_found() {
+    let (_, info) = clap_gain();
+    for spelling in [
+        "fontelle-test-gain",
+        "fontelle_test_gain",
+        "FontelleTestGain",
+    ] {
+        let root = scratch(&format!("spelt-{spelling}"));
+        let folder = root.join(spelling).join("patches_factory").join("Pads");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("Half.fxp"),
+            fxp(b"FTgn", "Half", &gain_bytes(1.0, 0.5)),
+        )
+        .unwrap();
+        let roots = PresetRoots {
+            data: vec![root],
+            vst3: Vec::new(),
+        };
+        let mut host = PluginHost::new();
+        let presets = host.own_presets(&info, &roots);
+        assert!(
+            presets.iter().any(|p| p.name == "Half"),
+            "{spelling}: {presets:?}"
+        );
+    }
+}
+
+/// But not a folder that merely starts the same: "Fontelle Test Gainer" is
+/// somebody else's.
+#[test]
+fn a_folder_for_another_plugin_is_not_taken_for_this_ones() {
+    let (_, info) = clap_gain();
+    let root = scratch("another");
+    let folder = root.join("fontelle-test-gainer").join("Pads");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("Half.fxp"),
+        fxp(b"FTgn", "Half", &gain_bytes(1.0, 0.5)),
+    )
+    .unwrap();
+    let roots = PresetRoots {
+        data: vec![root],
+        vst3: Vec::new(),
+    };
+    let mut host = PluginHost::new();
+    let presets = host.own_presets(&info, &roots);
+    assert!(!presets.iter().any(|p| p.name == "Half"), "{presets:?}");
+}

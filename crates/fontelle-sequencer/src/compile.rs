@@ -177,7 +177,14 @@ pub fn compile_with(
     // `None` means nothing is soloed and every channel plays, which is not the
     // same as "the set of all channels": that distinction is what stops a solo
     // being sticky after the soloed channel is deleted.
-    let soloed: Option<Vec<ChannelId>> = {
+    // The channels' solo applies to **the song only**, as the rows' does
+    // below: a row rendered to audio, or a clip played on its own, was asked
+    // for by name, and a channel soloed somewhere else used to make that
+    // render a silent file (*"most times it just renders with nothing"*).
+    // A mute is still a mute.
+    let soloed: Option<Vec<ChannelId>> = if scope != CompileScope::Song {
+        None
+    } else {
         let soloed: Vec<ChannelId> = project
             .channels
             .iter()

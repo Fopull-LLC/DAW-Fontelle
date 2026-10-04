@@ -1521,6 +1521,28 @@ impl Session {
         self
     }
 
+    /// [`with_plugin_prober`](Self::with_plugin_prober), when there is one.
+    pub fn with_plugin_prober_if(
+        self,
+        prober: Option<std::sync::Arc<fontelle_host::BundleProber>>,
+    ) -> Self {
+        match prober {
+            Some(prober) => self.with_plugin_prober(prober),
+            None => self,
+        }
+    }
+
+    /// Reads plugin bundles in child processes — see
+    /// [`crate::PluginRack::set_prober`]. The studio passes one made from its
+    /// own binary; a test that wants the studio's scan passes the same.
+    pub fn with_plugin_prober(
+        mut self,
+        prober: std::sync::Arc<fontelle_host::BundleProber>,
+    ) -> Self {
+        self.plugins.set_prober(Some(prober));
+        self
+    }
+
     pub fn with_plugin_folders(mut self, folders: Vec<PathBuf>) -> Self {
         self.plugins.search_standard_folders(false);
         // Nor a plugin's library in the machine's data folders: what a
@@ -3286,10 +3308,15 @@ impl Session {
         // Rendered from the song's zero and then cut to the range asked for:
         // a note that starts before the selection is still ringing inside it,
         // and starting the render at the selection would drop its front.
-        let from = self.project.tempo_map.tick_to_sample(from_tick).max(0);
-        let to = self.project.tempo_map.tick_to_sample(to_tick).max(from);
+        //
+        // Cut where the **drawn** tempo puts it: the notes were compiled
+        // against the tempo lane, and a cut by the box's tempo landed
+        // somewhere else whenever the lane moved.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let from = tempo.tick_to_sample(from_tick).max(0);
+        let to = tempo.tick_to_sample(to_tick).max(from);
         let tail = if keep_tail {
-            self.project.tempo_map.tick_to_sample(RELEASE_TAIL).max(0)
+            tempo.tick_to_sample(RELEASE_TAIL).max(0)
         } else {
             0
         };
@@ -3388,8 +3415,10 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Song,
         );
-        let from = self.project.tempo_map.tick_to_sample(from_tick).max(0);
-        let to = self.project.tempo_map.tick_to_sample(to_tick).max(from);
+        // Where the **drawn** tempo puts the stretch — see `prepare_render_lane`.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let from = tempo.tick_to_sample(from_tick).max(0);
+        let to = tempo.tick_to_sample(to_tick).max(from);
         let allowance = match export.tail {
             ExportTail::Keep => i64::from(self.options.sample_rate) * EXPORT_TAIL_MAX_S,
             ExportTail::Cut => 0,
@@ -4228,6 +4257,26 @@ impl Session {
         self.register_plugin_libraries();
     }
 
+    /// [`selected_preset`](Self::selected_preset) for a channel this session
+    /// did not load: what the **document** says it is on — a reopened
+    /// project — found in the open soundfont by the file's name and the
+    /// preset's.
+    fn remembered_soundfont_preset(&self, channel: ChannelId) -> Option<usize> {
+        let reference = self.project.channels.get(channel)?.preset.as_ref()?;
+        if reference.origin != fontelle_types::PresetOrigin::Soundfont {
+            return None;
+        }
+        let open = self.open_file_path()?;
+        let stem = open.file_stem()?.to_string_lossy();
+        if stem != reference.category {
+            return None;
+        }
+        self.preset_rows().into_iter().position(|row| {
+            matches!(row, PresetRow::Preset { file, name, .. }
+                if file == open && name == reference.name)
+        })
+    }
+
     /// Frees the graphs the audio thread has handed back, **before the rack
     /// is asked for anything that needs a processor**.
     ///
@@ -5040,6 +5089,20 @@ impl Session {
                 name.clone(),
             )));
         }
+        // And which preset it is, **in the document**: the browser's own
+        // memory of it (`channel_presets`) does not outlive the session, and
+        // a reopened project used to show every soundfont channel on nothing.
+        // After `SetChannelKind`, which lets go of a preset from another kind.
+        parts.push(Box::new(fontelle_model::SetPresetRef::new(
+            fontelle_model::PresetTarget::Channel(channel),
+            Some(fontelle_types::PresetRef::new(
+                name.clone(),
+                file.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                fontelle_types::PresetOrigin::Soundfont,
+            )),
+        )));
         self.history
             .apply(
                 Box::new(fontelle_model::Compound::new("Choose instrument", parts)),
@@ -8011,7 +8074,9 @@ impl StudioHost for Session {
 
     fn selected_preset(&self) -> Option<usize> {
         let channel = self.channel_ids().get(self.selected).copied()?;
-        let (file, index) = self.channel_presets.get(&channel)?;
+        let Some((file, index)) = self.channel_presets.get(&channel) else {
+            return self.remembered_soundfont_preset(channel);
+        };
         // Only when the browser is showing the file it came from: a preset
         // number means nothing across two different soundfonts, and a stale
         // highlight is worse than none.
@@ -8189,7 +8254,12 @@ impl StudioHost for Session {
     }
 
     fn rescan_plugins(&mut self) {
-        let (found, failed) = self.scan_plugins();
+        // Pressed: try again what would not load last time.
+        self.plugins.rescan_fresh();
+        let (found, failed) = (
+            self.plugins.scan().plugins.len(),
+            self.plugins.scan().failures.len(),
+        );
         self.message = Some(match (found, failed) {
             (0, 0) => "no plugins found".to_string(),
             (n, 0) => format!("{n} plugins"),
@@ -13514,7 +13584,10 @@ impl Session {
             // preset is a file only the plugin reads. Clean, then — the
             // alternative is a `*` that never goes out.
             (Some(reference), Some(_))
-                if reference.origin == fontelle_types::PresetOrigin::Plugin =>
+                if matches!(
+                    reference.origin,
+                    fontelle_types::PresetOrigin::Plugin | fontelle_types::PresetOrigin::Soundfont
+                ) =>
             {
                 false
             }
@@ -14487,7 +14560,8 @@ impl Session {
                 detail: match entry.origin {
                     fontelle_types::PresetOrigin::User => "mine".to_string(),
                     fontelle_types::PresetOrigin::Factory
-                    | fontelle_types::PresetOrigin::Plugin => String::new(),
+                    | fontelle_types::PresetOrigin::Plugin
+                    | fontelle_types::PresetOrigin::Soundfont => String::new(),
                 },
             });
         }
@@ -14695,9 +14769,9 @@ impl Session {
             match entry.origin {
                 // A plugin's own library counts with what shipped: it came
                 // with something, and is nothing the person made.
-                fontelle_types::PresetOrigin::Factory | fontelle_types::PresetOrigin::Plugin => {
-                    factory += 1
-                }
+                fontelle_types::PresetOrigin::Factory
+                | fontelle_types::PresetOrigin::Plugin
+                | fontelle_types::PresetOrigin::Soundfont => factory += 1,
                 fontelle_types::PresetOrigin::User => user += 1,
             }
         }

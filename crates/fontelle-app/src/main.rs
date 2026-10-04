@@ -334,6 +334,7 @@ fn play_or_render(
         }
         let mut plugins = fontelle_app::PluginRack::new();
         plugins.set_folders(settings.plugin_dirs.clone());
+        plugins.set_prober(fontelle_app::studio_prober());
         // The same transport the device would be driven by, so a bounce of a
         // looped section is the section as it plays rather than a second code
         // path that has to be kept in step with the first.
@@ -394,6 +395,7 @@ fn play_or_render(
         }
         let mut plugins = fontelle_app::PluginRack::new();
         plugins.set_folders(settings.plugin_dirs.clone());
+        plugins.set_prober(fontelle_app::studio_prober());
         plugins
     });
     let wiring = plugins
@@ -629,6 +631,9 @@ fn play_or_render(
             // channel, so choosing a soundfont from inside the window does not
             // restart the audio device.
             .with_graphs(graph_publisher, realised.track_controls.clone())
+            // Plugin bundles read in child processes: one that crashes is a
+            // line in the list, not a studio that will not start.
+            .with_plugin_prober_if(fontelle_app::studio_prober())
             // The meters the first graph was built with, so a project opened
             // on a synth says how many voices it is playing from the first
             // frame rather than after the next rebuild.
@@ -1320,6 +1325,12 @@ Where things live
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // A child of the studio's own plugin scan, asked to read one bundle and
+    // say what it holds: nothing else of the program runs. See
+    // `fontelle_host::BundleProber`.
+    if let Some(code) = fontelle_host::probe_main(&args[1..]) {
+        std::process::exit(code);
+    }
     // The previous binary an upgrade could not delete (`updates::install`)
     // goes now, on the launch after — quietly, because it is housekeeping.
     // Also the moment the binary's path is taken for the updater, before an

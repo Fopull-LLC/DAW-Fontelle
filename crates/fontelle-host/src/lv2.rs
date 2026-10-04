@@ -197,12 +197,17 @@ pub(crate) fn describe(path: &Path, world: &livi::World, plugin: &livi::Plugin) 
     } else {
         "audio-effect".to_string()
     }];
-    features.extend(
-        classes
-            .iter()
-            .filter(|c| c.as_str() != "Plugin")
-            .map(|c| format!("lv2:{c}")),
-    );
+    // Sorted: lilv hands a plugin's classes back in an order that changes
+    // from one run to the next, and a scan that differs every time it is
+    // made cannot be compared with the one before it.
+    let mut classes: Vec<String> = classes
+        .iter()
+        .filter(|c| c.as_str() != "Plugin")
+        .map(|c| format!("lv2:{c}"))
+        .collect();
+    classes.sort();
+    classes.dedup();
+    features.extend(classes);
     PluginInfo {
         key: PluginKey::new(PluginFormat::Lv2, plugin.uri()),
         path: path.to_path_buf(),
@@ -279,6 +284,12 @@ pub(crate) fn open(
             path: path.to_path_buf(),
         })?;
     let info = describe(path, world, &plugin);
+    // lilv unloads a plugin's library when its last instance is freed, the
+    // world notwithstanding — so the library is held here too, for good.
+    // See `crate::resident`.
+    if let Some((_, library)) = plugin.raw().library_uri().and_then(|uri| uri.path()) {
+        crate::resident::keep_library(Path::new(&library));
+    }
     let lilv = world.raw();
     let property = |name: &str| lilv.new_uri(&format!("{LV2_CORE}{name}"));
     let (toggled, integer, enumeration) = (
@@ -483,7 +494,8 @@ impl Lv2Plugin {
         self.instance
             .store(instance.raw().instance().handle(), Ordering::Release);
         let mut processor = Lv2Processor {
-            instance,
+            instance: std::mem::ManuallyDrop::new(instance),
+            owner: std::thread::current().id(),
             handed_out: Arc::clone(&self.instance),
             _world: self.plugin.clone(),
             features: Arc::clone(&self.features),
@@ -549,12 +561,33 @@ impl Drop for Lv2Processor {
             Ordering::AcqRel,
             Ordering::Acquire,
         );
+        // > *"most times it just renders with nothing"* — and the sweep
+        // > that went looking for why.
+        //
+        // The last hold on a processor can go on the audio thread: a graph
+        // still queued when the studio let go, a stream torn down on a
+        // device change. Freed there, drumkv1's `cleanup` destroyed its Qt
+        // application off the thread that made it and the process died;
+        // Calf's corrupted its heap. Off its own thread an instance is
+        // leaked instead — what `clack` does for a CLAP plugin in the same
+        // place. It is a few kilobytes at a moment that is rare (the studio
+        // keeps a processor's host alive and frees it at home otherwise).
+        if std::thread::current().id() == self.owner {
+            // SAFETY: dropped exactly once, here, and never used after.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.instance) };
+        }
     }
 }
 
 /// The audio half of an LV2 plugin — which, for LV2, is the whole plugin.
 pub(crate) struct Lv2Processor {
-    instance: livi::Instance,
+    /// Freed by hand in `drop`, and only on [`owner`](Self::owner).
+    instance: std::mem::ManuallyDrop<livi::Instance>,
+    /// The thread that made the instance — the studio's main thread. An LV2
+    /// plugin's `cleanup` may assume it runs there (drumkv1 tears down its
+    /// Qt application in it), so an instance let go of anywhere else is
+    /// leaked rather than freed: see `Drop`.
+    owner: std::thread::ThreadId,
     /// Where the instance's handle was published for editors — cleared on
     /// drop, so a later editor is not handed a freed instance.
     handed_out: Arc<AtomicPtr<c_void>>,

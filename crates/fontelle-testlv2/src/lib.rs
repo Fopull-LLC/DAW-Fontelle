@@ -221,7 +221,32 @@ extern "C" fn gain_run(handle: LV2Handle, samples: u32) {
     }
 }
 
+/// When this names a file, each `cleanup` of the gain appends the name of
+/// the thread it ran on — so a host test can see that an instance is never
+/// freed on its audio thread.
+pub const CLEANUP_LOG_ENV: &str = "FONTELLE_TESTLV2_CLEANUP_LOG";
+
+fn log_cleanup() {
+    if let Some(file) = std::env::var_os(CLEANUP_LOG_ENV) {
+        use std::io::Write;
+        if let Ok(mut out) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+        {
+            // The operating system's name for the thread: this library has a
+            // standard library of its own, which does not know the names the
+            // host's gave its threads.
+            let name = std::fs::read_to_string("/proc/thread-self/comm")
+                .map(|name| name.trim().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let _ = writeln!(out, "{name}");
+        }
+    }
+}
+
 extern "C" fn gain_cleanup(handle: LV2Handle) {
+    log_cleanup();
     // SAFETY: the host calls this exactly once, after which it never uses
     // the handle again.
     drop(unsafe { Box::from_raw(handle.cast::<Gain>()) });
