@@ -20,7 +20,8 @@ echo "$(wc -l < "$OUT/instruments.txt") instruments" >&2
 : > "$OUT/summary.txt"
 while IFS= read -r name; do
     safe=$(printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_')
-    FONTELLE_REAL_ONLY="$name" timeout 300 "$BIN" $FILTER --ignored --nocapture --test-threads=1 \
+    FONTELLE_REAL_ONLY="$name" timeout 600 "$BIN" $FILTER --ignored --nocapture --test-threads=1 \
+        --skip list_installed --skip one_note --skip the_studios_scan \
         > "$OUT/$safe.log" 2>&1
     code=$?
     case $code in

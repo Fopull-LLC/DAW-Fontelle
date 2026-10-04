@@ -145,9 +145,20 @@ impl Transport {
 
     /// Takes one [`summon`](Self::summon) back.
     pub fn dismiss(&self) {
-        let _ = self
-            .summoned
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        // A loop rather than `fetch_update`, which newer compilers have
+        // renamed and older ones do not know by its new name.
+        let mut seen = self.summoned.load(Ordering::Acquire);
+        while seen > 0 {
+            match self.summoned.compare_exchange_weak(
+                seen,
+                seen - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(now) => seen = now,
+            }
+        }
     }
 
     /// Says whether a plugin's own editor is open. See the field.
