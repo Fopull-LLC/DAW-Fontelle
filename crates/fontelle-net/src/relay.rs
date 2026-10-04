@@ -2277,8 +2277,22 @@ mod tests {
         /// A relay on a **named** port, so a test can stop one and start
         /// another at the same address — which is what a relay upgrade looks
         /// like from a host's point of view.
+        ///
+        /// Tried for a few seconds: the old relay's socket is closed by a
+        /// thread of its own, and macOS keeps the port for a moment after —
+        /// CI's runner failed this bind with `EADDRINUSE` once in a while.
         pub(super) fn restart_on(port: u16) -> Self {
-            let relay = RelayServer::bind(port).expect("the old relay's port is free again");
+            let started = std::time::Instant::now();
+            let relay = loop {
+                match RelayServer::bind(port) {
+                    Ok(relay) => break relay,
+                    Err(e) if started.elapsed() < Duration::from_secs(5) => {
+                        let _ = e;
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(e) => panic!("the old relay's port is free again: {e:?}"),
+                }
+            };
             Self::run(relay)
         }
 
