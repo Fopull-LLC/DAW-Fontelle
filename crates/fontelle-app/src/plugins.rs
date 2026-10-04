@@ -48,7 +48,12 @@ const STATE_RECALL_TIMEOUT: std::time::Duration = std::time::Duration::from_mill
 fn recall_home(
     bay: &ProcessorBay,
     transport: Option<&Arc<fontelle_engine::Transport>>,
+    rendering: bool,
 ) -> Option<fontelle_host::HostedProcessor> {
+    // A render has it, and taking it back would leave a hole in the file.
+    if rendering {
+        return None;
+    }
     if let Some(transport) = transport {
         transport.summon();
     }
@@ -349,6 +354,10 @@ pub struct PluginRack {
     /// process — see [`fontelle_host::BundleProber`]. `None` reads in this
     /// process, which is a test's rack and nobody else's.
     prober: Option<Arc<fontelle_host::BundleProber>>,
+    /// Whether a render is playing these plugins — see
+    /// [`lend_for_render`](Self::lend_for_render). Nothing asks for a
+    /// processor back while it is.
+    rendering: bool,
 }
 
 impl Default for PluginRack {
@@ -373,6 +382,7 @@ impl Default for PluginRack {
             message: None,
             transport: None,
             prober: None,
+            rendering: false,
         }
     }
 }
@@ -589,34 +599,49 @@ impl PluginRack {
         self.live.get(&slot)?.plugin.values().get(id)
     }
 
-    /// A rack of its own for **one render**: the same plugins found, none
-    /// of them open.
+    /// Lends the studio's own plugins to a render: the graph a render builds
+    /// with this wiring plays **these** instances.
     ///
-    /// > *"I find I have trouble rendering midi to audio. most times it just
-    /// > renders with nothing"*
+    /// > *"most times it just renders with nothing"* — and a sweep of every
+    /// > installed instrument, in which padthv1 died when a render made a
+    /// > second instance of it beside the one that was playing.
     ///
-    /// A plugin is activated once and its processor is in the graph that is
-    /// playing, so a render cannot borrow the studio's instances — and for a
-    /// long time it simply went without, which is a channel with no node in
-    /// it and a file of the right length with nothing on it. A render opens
-    /// **its own** instead, from the document's state, runs them on its own
-    /// thread and closes them when the file is written
-    /// ([`close_all`](Self::close_all)). The studio's go on playing.
-    ///
-    /// No editors, no libraries listed, no transport to summon: nothing here
-    /// is anybody's to look at.
-    pub fn for_render(&self) -> PluginRack {
-        PluginRack {
-            bridges: Arc::clone(&self.bridges),
-            host: PluginHost::with_bridges(Arc::clone(&self.bridges)),
-            scan: self.scan.clone(),
-            extra: self.extra.clone(),
-            standard: self.standard,
-            scanned: self.scanned,
-            preset_roots: fontelle_host::PresetRoots::none(),
-            headless_editors: true,
-            prober: self.prober.clone(),
-            ..PluginRack::default()
+    /// The live graph is held (`Transport::hold`) and its processors come
+    /// home to their bays, where the render's nodes take them; nothing asks
+    /// for one back until [`end_render`](Self::end_render). No plugin is
+    /// opened twice — some do not survive it, a sampler would load its
+    /// gigabytes twice, some are licensed per instance — and what renders is
+    /// exactly what was playing.
+    pub fn lend_for_render(
+        &mut self,
+        project: &Project,
+        sample_rate: f64,
+        max_block: u32,
+    ) -> HashMap<PluginSlot, PluginWiring> {
+        let wiring = self.realise(project, sample_rate, max_block);
+        if let Some(transport) = &self.transport {
+            transport.hold();
+        }
+        self.rendering = true;
+        // The callback parks the live graph's processors on its next block;
+        // with no callback running they are home already.
+        let deadline = std::time::Instant::now() + STATE_RECALL_TIMEOUT;
+        for live in self.live.values() {
+            while !live.bay.is_parked() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        wiring
+    }
+
+    /// The render is over and its graph gone: the live graph plays these
+    /// plugins again.
+    pub fn end_render(&mut self) {
+        if self.rendering {
+            self.rendering = false;
+            if let Some(transport) = &self.transport {
+                transport.release();
+            }
         }
     }
 
@@ -663,7 +688,7 @@ impl PluginRack {
             let state = live.plugin.snapshot();
             return Some(state);
         }
-        match recall_home(&live.bay, self.transport.as_ref()) {
+        match recall_home(&live.bay, self.transport.as_ref(), self.rendering) {
             Some(mut processor) => {
                 let state = live.plugin.snapshot_with(&mut processor);
                 live.bay.park(processor);
@@ -830,9 +855,10 @@ impl PluginRack {
             // before. See `load_own_preset`, which is the same thing for a
             // preset of the plugin's own.
             let transport = self.transport.clone();
+            let rendering = self.rendering;
             let mut refused = false;
             if let Some(live) = self.live.get_mut(&slot) {
-                match recall_home(&live.bay, transport.as_ref()) {
+                match recall_home(&live.bay, transport.as_ref(), rendering) {
                     Some(mut processor) => {
                         let target = state
                             .blob
@@ -1009,7 +1035,7 @@ impl PluginRack {
         preset: &OwnPreset,
     ) -> Result<PluginState, String> {
         let live = self.live.get_mut(&slot).ok_or("that plugin is not open")?;
-        match recall_home(&live.bay, self.transport.as_ref()) {
+        match recall_home(&live.bay, self.transport.as_ref(), self.rendering) {
             Some(mut processor) => {
                 let before = live.plugin.settle_mark(&mut processor);
                 let loaded = live.plugin.load_own_preset_with(&mut processor, preset);

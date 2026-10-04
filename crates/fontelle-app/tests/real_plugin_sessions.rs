@@ -235,7 +235,7 @@ fn a_running_session(dir: &Path) -> (Session, std::sync::Arc<std::sync::atomic::
     };
     let realised = fontelle_app::realise(&project, &library, options).expect("realises");
     let (graphs, mut source) = fontelle_engine::graph_channel(realised.graph);
-    let mut session = Session::new(
+    let session = Session::new(
         project,
         library,
         channel_nodes,
@@ -249,6 +249,10 @@ fn a_running_session(dir: &Path) -> (Session, std::sync::Arc<std::sync::atomic::
     .with_settings_path(dir.join("settings.json"))
     .with_headless_plugin_editors()
     .with_plugin_prober(studio_prober());
+    // The transport the device would be driven by, so a render can hold the
+    // live graph the way it holds the device's (`Transport::hold`).
+    let device = std::sync::Arc::new(fontelle_engine::Transport::new());
+    let mut session = session.with_transport(std::sync::Arc::clone(&device));
     session.set_projects_dir(Some(dir.join("projects")));
     session.scan_plugins_once();
 
@@ -257,8 +261,20 @@ fn a_running_session(dir: &Path) -> (Session, std::sync::Arc<std::sync::atomic::
     std::thread::spawn(move || {
         let empty = CompiledTimeline::empty();
         let mut at = 0i64;
+        let mut lent = false;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             source.take_update();
+            // What the device's callback does while a render plays the
+            // studio's plugins.
+            if device.is_held() {
+                if !lent {
+                    source.current().retire();
+                    lent = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            }
+            lent = false;
             let transport = TransportSnapshot {
                 state: if std::env::var_os("FONTELLE_REAL_PLAYING").is_some() {
                     TransportState::Playing
@@ -598,38 +614,6 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
         let (mut session, stop) = a_running_session(&dir);
         session.set_channel_plugin(0, which);
         settle();
-        // What it sounds like as it opens, in a rack of its own: a plugin
-        // that is silent then (a sampler with nothing loaded) cannot show a
-        // silent render.
-        let mut alone = session.project().clone();
-        let channel = alone.channels.keys().next().unwrap();
-        let clip = alone.clips.keys().next().unwrap();
-        if let fontelle_model::ClipSource::Notes(data) = &mut alone.clips[clip].source {
-            data.notes.insert(fontelle_model::Note {
-                start: 0,
-                length: fontelle_types::PPQN * 2,
-                key: 60,
-                velocity: 100,
-                pan: 0,
-                fine_pitch: 0,
-                release: 0,
-                mod_x: 0,
-                mod_y: 0,
-                slide: false,
-                path: Vec::new(),
-                channel: None,
-            });
-        }
-        let _ = channel;
-        let mut rack = studio_rack();
-        let reference = offline_peak(&alone, &mut rack);
-        rack.close_all();
-        if reference <= 0.01 {
-            eprintln!("   silent as it opens; skipped");
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            settle();
-            continue;
-        }
         session.edit(fontelle_ui::canvas::RollEdit::Add {
             note: fontelle_model::Note {
                 start: 0,
@@ -652,7 +636,26 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
         let exported = renders(&session);
         let peak = peak_of(exported.last().unwrap());
         eprintln!("   export peaks at {peak}");
-        assert!(peak > 0.01, "the export is silent: {peak}");
+        if peak <= 0.01 {
+            // Silent: the render's fault, or a plugin that is silent as it
+            // opens (a sampler with nothing loaded)? Asked of the plugin on
+            // its own, **after** the session and its instance are gone — a
+            // second instance beside the playing one is what some plugins do
+            // not survive (padthv1), and what the studio no longer makes.
+            let project = session.project().clone();
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            settle();
+            drop(session);
+            let mut rack = studio_rack();
+            let alone = offline_peak(&project, &mut rack);
+            rack.close_all();
+            assert!(
+                alone <= 0.01,
+                "the export is silent, and the plugin is not: {alone}"
+            );
+            eprintln!("   silent as it opens; skipped");
+            continue;
+        }
 
         session.render_lane(0, None).expect("renders the row");
         let row = renders(&session)

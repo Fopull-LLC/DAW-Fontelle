@@ -1582,8 +1582,12 @@ fn main() {
         if window && !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
             fontelle_app::desktop::show_alert("Fontelle could not start", &e);
         }
-        std::process::exit(1);
+        fontelle_host::exit_now(1);
     }
+    // Everything of the studio's own is written and dropped by now. What is
+    // left are the plugin libraries kept loaded to the end, whose static
+    // destructors are not ours to run — see `fontelle_host::exit_now`.
+    fontelle_host::exit_now(0);
 }
 
 /// One Flopsynth preset, on one channel, ready to play

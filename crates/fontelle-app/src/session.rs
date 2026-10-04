@@ -441,11 +441,6 @@ pub struct Session {
     /// The bounce running beside the window, if one is — see
     /// [`Session::poll_job`].
     job: Option<RunningJob>,
-    /// The plugins a render that is running was given — instances of its
-    /// own, see [`crate::PluginRack::for_render`]. Kept here because a
-    /// plugin is closed on the thread that opened it: the bounce's thread
-    /// has the graph, and this one closes the rack once that graph is gone.
-    render_plugins: Option<crate::PluginRack>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1423,7 +1418,6 @@ impl Session {
             told_end: false,
             session_notices: Vec::new(),
             job: None,
-            render_plugins: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -3508,27 +3502,24 @@ impl Session {
         }
     }
 
-    /// The graph a render plays: the document's, **with its plugins in it**.
+    /// The graph a render plays: the document's, **with the studio's own
+    /// plugins in it** — see [`crate::PluginRack::lend_for_render`].
     ///
-    /// The studio's plugins are read first — a render is of what is playing,
-    /// and the document's copy of a plugin is as old as the last save — and
-    /// then the render is given instances of its own, opened from that
-    /// ([`crate::PluginRack::for_render`]). A plugin that will not open a
-    /// second time is said on the status line; its channel is silent in the
-    /// file, as a missing plugin's is.
+    /// The plugins' state is read into the document first, so a file saved
+    /// while the render runs has what is playing.
     fn realise_for_render(&mut self, options: RealiseOptions) -> Result<crate::Realised, String> {
         self.end_render();
         if crate::plugin_slots(&self.project).is_empty() {
             return realise(&self.project, &self.library, options).map_err(|e| e.to_string());
         }
         self.capture_plugin_states();
-        let mut rack = self.plugins.for_render();
-        let wiring = rack.realise(
+        self.free_retired_graphs();
+        let wiring = self.plugins.lend_for_render(
             &self.project,
             f64::from(options.sample_rate),
             options.block_size as u32,
         );
-        if let Some(message) = rack.take_message() {
+        if let Some(message) = self.plugins.take_message() {
             self.message = Some(message);
         }
         let realised = crate::realise_hosting(
@@ -3543,20 +3534,16 @@ impl Session {
             &wiring,
         )
         .map_err(|e| e.to_string());
-        // Kept even when the graph could not be built, so what was opened
-        // is closed by `end_render` rather than dropped where it stands.
-        self.render_plugins = Some(rack);
         if realised.is_err() {
             self.end_render();
         }
         realised
     }
 
-    /// Closes the plugins a render was given, once its graph is gone.
+    /// The render's graph is gone: its processors are back in their bays,
+    /// and the live graph plays them again.
     fn end_render(&mut self) {
-        if let Some(mut rack) = self.render_plugins.take() {
-            rack.close_all();
-        }
+        self.plugins.end_render();
     }
 
     /// Sends a prepared bounce to a thread of its own, so the window keeps
@@ -8230,11 +8217,6 @@ impl StudioHost for Session {
         // library listed on its thread since the last one.
         self.register_plugin_libraries();
         self.plugins.service_main_thread();
-        // And the ones a render is running, which ask for their main thread
-        // like any other and have no window of their own to be ticked from.
-        if let Some(rack) = &mut self.render_plugins {
-            rack.service_main_thread();
-        }
         let open = self.plugins.tick_editors();
         // *"Every time I log out the instrument resets, this is when I
         // save."* A knob turned in a plugin's own window is an edit the

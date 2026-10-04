@@ -213,3 +213,53 @@ fn a_render_leaves_the_studios_plugin_open() {
     session.export_wav().expect("and a second time");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// > *"most times it just renders with nothing"* — and a sweep of every
+/// > installed instrument, in which padthv1 died making a second instance
+/// > beside the one that was playing.
+///
+/// A render plays **the studio's own instances**: no second copy of any
+/// plugin is made — some do not survive one (padthv1, Calf Wavetable), a
+/// sampler would load its gigabytes twice, and some are licensed per
+/// instance. The live graph stands still while it renders, and plays again
+/// after.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_render_makes_no_second_instance_of_a_plugin() {
+    let log =
+        std::env::temp_dir().join(format!("fontelle-render-instances-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    // SAFETY: read only by the fixture.
+    unsafe { std::env::set_var(fontelle_testplug::CREATE_LOG_ENV, &log) };
+    let dir = scratch("one-instance");
+    let mut session = a_song_played_by_a_plugin(&dir);
+    // Tests beside this one make sines too; this thread's name, cut to
+    // fifteen characters by the kernel, is this test's.
+    let made = |log: &Path| {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| *line == "a_render_makes_")
+            .count()
+    };
+    let before = made(&log);
+    assert_eq!(before, 1, "the studio's own");
+    session.export_wav().expect("exports");
+    session.render_lane(0, None).expect("renders the row");
+    let after = made(&log);
+    unsafe { std::env::remove_var(fontelle_testplug::CREATE_LOG_ENV) };
+    let _ = std::fs::remove_file(&log);
+    assert_eq!(after, before, "a render made {} more", after - before);
+    // And what was rendered had the plugin in it.
+    for file in std::fs::read_dir(dir.join("Song.fontelle").join("renders"))
+        .unwrap()
+        .flatten()
+    {
+        assert!(
+            peak_of(&file.path()) > 0.05,
+            "{} is silent",
+            file.path().display()
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

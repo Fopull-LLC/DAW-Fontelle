@@ -22,3 +22,20 @@ fn a_summoned_transport_keeps_the_graph_awake_until_everyone_is_done() {
     transport.dismiss();
     assert!(transport.is_attended());
 }
+
+/// A render plays the studio's own plugins, so the live graph stands still
+/// while it does: `hold` is that, counted like `summon`, and nothing to do
+/// with the transport's state — the song's position is where it was left.
+#[test]
+fn a_held_transport_is_held_until_everyone_lets_go() {
+    let transport = fontelle_engine::Transport::new();
+    assert!(!transport.is_held());
+    transport.hold();
+    transport.hold();
+    transport.release();
+    assert!(transport.is_held(), "one holder is still rendering");
+    transport.release();
+    assert!(!transport.is_held());
+    transport.release();
+    assert!(!transport.is_held(), "a release too many is not a hold");
+}

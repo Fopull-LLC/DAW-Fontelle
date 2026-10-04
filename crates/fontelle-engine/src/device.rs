@@ -438,6 +438,9 @@ impl AudioDevice {
         let mut demotions_seen = crate::rt_budget::demotions();
         #[cfg(target_os = "linux")]
         let mut demoted_at: Option<std::time::Instant> = None;
+        // Whether the current graph has handed its plugins to a render — see
+        // `Transport::hold`.
+        let mut lent = false;
         // The caller keeps its own clone for the stream's life, so dropping
         // this one on the audio thread at teardown is a refcount decrement and
         // never a free — but it is wrapped like everything else the closure
@@ -579,6 +582,20 @@ impl AudioDevice {
                             // here (INVARIANT 1).
                             graph.take_update();
                             let graph = graph.current();
+                            // A render is playing the studio's own plugins
+                            // (`Transport::hold`): their processors go back
+                            // to their bays, once, and the stream is silent
+                            // until it is done. A node takes its processor
+                            // again on the first block after.
+                            if transport.is_held() {
+                                if !lent {
+                                    graph.retire();
+                                    lent = true;
+                                }
+                                data.fill(0.0);
+                                return;
+                            }
+                            lent = false;
 
                             let republished = timeline.has_update();
                             let timeline: &CompiledTimeline = timeline.current();

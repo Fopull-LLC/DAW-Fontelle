@@ -90,6 +90,160 @@ pub const LV2_MAX_BLOCK: usize = 8192;
 /// grown on the audio thread.
 const ATOM_CAPACITY: usize = 4096;
 
+/// The most an atom port is given, whatever it asks for: a plugin that
+/// wants more than this is moving whole files through a port, and a port
+/// is allocated per instance whether or not anything is ever sent.
+const ATOM_CAPACITY_MAX: usize = 64 * 1024 * 1024;
+
+const MINIMUM_SIZE: &str = "http://lv2plug.in/ns/ext/resize-port#minimumSize";
+const TIME_POSITION: &str = "http://lv2plug.in/ns/ext/time#Position";
+
+/// A `time:Position`'s body: id and type, and seven properties of at most
+/// twenty-four bytes each.
+const TIME_BODY: usize = 8 + 7 * 24;
+
+/// The song's position, written as a `time:Position` object at the top of
+/// every block into the event input of a plugin that supports it.
+///
+/// > *"most times it just renders with nothing"* — and the sweep that went
+/// > looking: Vaporizer2's LV2 asserted on a host position that never came,
+/// > and 274 of the bundles on the devbox say they want one. Without it a
+/// > tempo-synced LFO or arpeggiator runs at whatever it assumed.
+///
+/// **Ahead of the block's notes.** They are queued before `run`, and a
+/// sequence is in time order; so the position is written into a scratch
+/// sequence and the notes copied after it, all into buffers sized when the
+/// plugin was activated — nothing allocates on the audio thread.
+struct TimeWriter {
+    transport: crate::PluginTransport,
+    rate: f64,
+    scratch: LV2AtomSequence,
+    urids: [u32; 12],
+}
+
+impl TimeWriter {
+    fn new(features: &Arc<Features>, capacity: usize, rate: f64) -> Self {
+        let urid = |uri: &str| {
+            let uri = std::ffi::CString::new(uri).expect("a URI has no NUL");
+            features.urid(&uri)
+        };
+        const TIME: &str = "http://lv2plug.in/ns/ext/time#";
+        const ATOM: &str = "http://lv2plug.in/ns/ext/atom#";
+        Self {
+            transport: crate::PluginTransport::default(),
+            rate,
+            scratch: LV2AtomSequence::new(features, capacity),
+            urids: [
+                urid(&format!("{ATOM}Object")),
+                urid(TIME_POSITION),
+                urid(&format!("{TIME}frame")),
+                urid(&format!("{TIME}speed")),
+                urid(&format!("{TIME}bar")),
+                urid(&format!("{TIME}barBeat")),
+                urid(&format!("{TIME}beatUnit")),
+                urid(&format!("{TIME}beatsPerBar")),
+                urid(&format!("{TIME}beatsPerMinute")),
+                urid(&format!("{ATOM}Long")),
+                urid(&format!("{ATOM}Float")),
+                urid(&format!("{ATOM}Int")),
+            ],
+        }
+    }
+
+    /// **RT.** Puts this block's position at frame zero of `sequence`, ahead
+    /// of whatever is already in it.
+    fn put_ahead_of(&mut self, sequence: &mut LV2AtomSequence) {
+        let [
+            object,
+            position,
+            frame,
+            speed,
+            bar,
+            bar_beat,
+            beat_unit,
+            beats_per_bar,
+            bpm,
+            long,
+            float,
+            int,
+        ] = self.urids;
+        let t = self.transport;
+        // An object's body: its id and type, then each property as a key, a
+        // context, and an atom whose body is padded to eight bytes.
+        let mut body = [0u8; TIME_BODY];
+        let mut at = 0;
+        let mut put = |bytes: &[u8]| {
+            body[at..at + bytes.len()].copy_from_slice(bytes);
+            at += bytes.len();
+        };
+        put(&0u32.to_ne_bytes());
+        put(&position.to_ne_bytes());
+        let mut property = |key: u32, kind: u32, value: &[u8]| {
+            put(&key.to_ne_bytes());
+            put(&0u32.to_ne_bytes());
+            put(&(value.len() as u32).to_ne_bytes());
+            put(&kind.to_ne_bytes());
+            put(value);
+            put(&[0u8; 8][..(8 - value.len() % 8) % 8]);
+        };
+        property(
+            frame,
+            long,
+            &((t.seconds * self.rate).round() as i64).to_ne_bytes(),
+        );
+        property(
+            speed,
+            float,
+            &(if t.playing { 1.0f32 } else { 0.0 }).to_ne_bytes(),
+        );
+        property(bar, long, &i64::from(t.bar_number).to_ne_bytes());
+        property(
+            bar_beat,
+            float,
+            &((t.beats - t.bar_start_beats) as f32).to_ne_bytes(),
+        );
+        property(
+            beat_unit,
+            int,
+            &i32::from(t.denominator.max(1)).to_ne_bytes(),
+        );
+        property(
+            beats_per_bar,
+            float,
+            &f32::from(t.numerator.max(1)).to_ne_bytes(),
+        );
+        property(bpm, float, &(t.tempo as f32).to_ne_bytes());
+        let used = at;
+        let Ok(event) =
+            livi::event::LV2AtomEventBuilder::<TIME_BODY>::new(0, object, &body[..used])
+        else {
+            return;
+        };
+        self.scratch.clear();
+        if self.scratch.push_event(&event).is_err() {
+            return;
+        }
+        // The notes after it, as they are: the bytes of the events, which
+        // already carry their frames and their padding.
+        // SAFETY: both buffers are livi sequences — a 16-byte header, then
+        // events — and the copy is bounded by the scratch's capacity.
+        unsafe {
+            let from = sequence.as_ptr();
+            let events = ((*from).atom.size as usize).saturating_sub(8);
+            let to = self.scratch.as_mut_ptr();
+            let used = (*to).atom.size as usize;
+            if 8 + used + events > self.scratch.capacity() + 8 {
+                return;
+            }
+            let source = (from as *const u8).add(16);
+            let target = (to as *mut u8).add(8 + used);
+            std::ptr::copy_nonoverlapping(source, target, events);
+            (*to).atom.size += events as u32;
+        }
+        std::mem::swap(sequence, &mut self.scratch);
+    }
+}
+
 const LV2_CORE: &str = "http://lv2plug.in/ns/lv2core#";
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const MIDI_EVENT: &str = "http://lv2plug.in/ns/ext/midi#MidiEvent";
@@ -242,6 +396,12 @@ pub(crate) struct Lv2Plugin {
     input_order: Vec<usize>,
     /// How many of them are the main input; the rest are the sidechain.
     main_inputs: usize,
+    /// Each atom input's and output's buffer size, in port order — see
+    /// `open`.
+    atom_in_sizes: Vec<usize>,
+    atom_out_sizes: Vec<usize>,
+    /// Whether its event input supports `time:Position`.
+    wants_time: bool,
     /// The running instance's own `LV2_Handle`, while there is one, or null.
     ///
     /// What an editor asking for **`instance-access`** is handed. Written by
@@ -284,12 +444,6 @@ pub(crate) fn open(
             path: path.to_path_buf(),
         })?;
     let info = describe(path, world, &plugin);
-    // lilv unloads a plugin's library when its last instance is freed, the
-    // world notwithstanding — so the library is held here too, for good.
-    // See `crate::resident`.
-    if let Some((_, library)) = plugin.raw().library_uri().and_then(|uri| uri.path()) {
-        crate::resident::keep_library(Path::new(&library));
-    }
     let lilv = world.raw();
     let property = |name: &str| lilv.new_uri(&format!("{LV2_CORE}{name}"));
     let (toggled, integer, enumeration) = (
@@ -359,6 +513,36 @@ pub(crate) fn open(
             index
         })
         .collect();
+    // **Each atom port as big as the plugin said it needs.** LV2's
+    // resize-port extension lets a port declare `rsz:minimumSize`, and a
+    // plugin that does may write that far without asking: Vaporizer2 says
+    // 62,552 bytes, LSP's file ports several megabytes. Every atom port used
+    // to be [`ATOM_CAPACITY`] bytes, and such a plugin overran the heap.
+    let minimum_size = lilv.new_uri(MINIMUM_SIZE);
+    let atom_sizes = |kind| -> Vec<usize> {
+        plugin
+            .ports_with_type(kind)
+            .map(|port| {
+                plugin
+                    .raw()
+                    .port_by_index(port.index.0)
+                    .and_then(|p| p.get(&minimum_size))
+                    .and_then(|node| node.as_int())
+                    .map_or(ATOM_CAPACITY, |bytes| {
+                        (bytes.max(0) as usize).clamp(ATOM_CAPACITY, ATOM_CAPACITY_MAX)
+                    })
+            })
+            .collect()
+    };
+    let atom_in_sizes = atom_sizes(PortType::AtomSequenceInput);
+    // Whether the event input takes the song's position — see `TimeWriter`.
+    let position = lilv.new_uri(TIME_POSITION);
+    let wants_time = plugin
+        .ports_with_type(PortType::AtomSequenceInput)
+        .next()
+        .and_then(|port| plugin.raw().port_by_index(port.index.0))
+        .is_some_and(|p| p.supports_event(&position));
+    let atom_out_sizes = atom_sizes(PortType::AtomSequenceOutput);
     let mut input_ports = crate::plugin::PortLayout::single(main_inputs as u32);
     if key_inputs > 0 {
         input_ports.channels.push(key_inputs as u32);
@@ -381,6 +565,9 @@ pub(crate) fn open(
             instance: Arc::new(AtomicPtr::new(std::ptr::null_mut())),
             input_order,
             main_inputs,
+            atom_in_sizes,
+            atom_out_sizes,
+            wants_time,
         },
     })
 }
@@ -502,10 +689,20 @@ impl Lv2Plugin {
             values,
             atoms,
             atom_in: (0..counts.atom_sequence_inputs)
-                .map(|_| LV2AtomSequence::new(&self.features, ATOM_CAPACITY))
+                .map(|at| {
+                    let size = self.atom_in_sizes.get(at).copied().unwrap_or(ATOM_CAPACITY);
+                    LV2AtomSequence::new(&self.features, size)
+                })
                 .collect(),
             atom_out: (0..counts.atom_sequence_outputs)
-                .map(|_| LV2AtomSequence::new(&self.features, ATOM_CAPACITY))
+                .map(|at| {
+                    let size = self
+                        .atom_out_sizes
+                        .get(at)
+                        .copied()
+                        .unwrap_or(ATOM_CAPACITY);
+                    LV2AtomSequence::new(&self.features, size)
+                })
                 .collect(),
             input: vec![vec![0.0; max_block]; counts.audio_inputs],
             input_order: self.input_order.clone(),
@@ -516,6 +713,13 @@ impl Lv2Plugin {
             midi_urid: self.midi_urid,
             takes_notes: self.accepts_notes,
             max_block,
+            time: self.wants_time.then(|| {
+                TimeWriter::new(
+                    &self.features,
+                    self.atom_in_sizes.first().copied().unwrap_or(ATOM_CAPACITY),
+                    sample_rate,
+                )
+            }),
         };
         // Every control port starts at the plugin's default; the wire
         // carries the document's answer and is applied on the first block.
@@ -625,6 +829,8 @@ pub(crate) struct Lv2Processor {
     midi_urid: u32,
     takes_notes: bool,
     max_block: usize,
+    /// The song's position, for a plugin that asked — see [`TimeWriter`].
+    time: Option<TimeWriter>,
 }
 
 impl Lv2Processor {
@@ -767,6 +973,13 @@ impl Lv2Processor {
         self.push(0, [0xB0, 123, 0]);
     }
 
+    /// **RT.** Where the song is, for the next block — see [`TimeWriter`].
+    pub(crate) fn set_transport(&mut self, transport: &crate::PluginTransport) {
+        if let Some(time) = &mut self.time {
+            time.transport = *transport;
+        }
+    }
+
     /// **RT.** One block. The bus copies happen around this in
     /// `HostedProcessor`, which is shared with the CLAP arm.
     pub(crate) fn run(&mut self, frames: usize) {
@@ -781,6 +994,9 @@ impl Lv2Processor {
         self.values.drain(|id, value| {
             instance.set_control_input(PortIndex(id as usize), value as f32);
         });
+        if let (Some(time), Some(first)) = (&mut self.time, self.atom_in.first_mut()) {
+            time.put_ahead_of(first);
+        }
 
         let Self {
             instance,

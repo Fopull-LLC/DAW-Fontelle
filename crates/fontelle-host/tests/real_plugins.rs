@@ -472,16 +472,16 @@ fn soak(which: &str) {
         // also runs its blocks — but outside a block — it went silent for
         // good. From the studio's window thread, with the audio on its own,
         // every preset loaded and played (2026-09-30).
-        let loaded = if plugin.own_preset_needs_processor() {
-            plugin.load_own_preset_with(&mut processor, preset)
-        } else {
-            plugin.deactivate(processor);
-            let loaded = plugin.load_own_preset(preset);
-            processor = plugin
-                .activate(rate, 512)
-                .expect("it activates after a preset");
-            loaded
-        };
+        // The studio's way (`PluginRack::load_own_preset`): with the
+        // processor in hand, then run until the preset is in. A JUCE VST 3
+        // (Surge's) takes it a few blocks later and its controller reports
+        // the patch before until it is told again; read straight away, the
+        // knobs saved beside the new patch were the old one's.
+        let before = plugin.settle_mark(&mut processor);
+        let loaded = plugin.load_own_preset_with(&mut processor, preset);
+        if loaded.is_ok() {
+            plugin.settle_with(&mut processor, &before);
+        }
         eprintln!(
             "SOAK {which}: preset {:?} ({}): {}",
             preset.name,
@@ -505,6 +505,17 @@ fn soak(which: &str) {
         }
     }
     let saved_sound = fingerprint(&mut plugin, &mut processor, outputs, rate);
+    // The same note again, nothing changed: a plugin whose second note is
+    // not its first (MDA JX10 — free-running LFOs and voice phases: 9 dB
+    // apart) cannot be held to "reopened, it sounds like what was saved".
+    let again = fingerprint(&mut plugin, &mut processor, outputs, rate);
+    let repeatable = (db(again.0) - db(saved_sound.0)).abs() < 3.0;
+    if !repeatable {
+        eprintln!(
+            "SOAK {which}: two notes in a row are {:.1} dB apart; not compared by ear",
+            (db(again.0) - db(saved_sound.0)).abs()
+        );
+    }
     let state = plugin.snapshot_with(&mut processor);
     eprintln!(
         "SOAK {which}: init {:.1} dB / {:.4}, edited {:.1} dB / {:.4}, state {} bytes",
@@ -575,7 +586,10 @@ fn soak(which: &str) {
     // one this single-threaded test left silent (see the preset step) says
     // nothing about whether the state came back.
     assert!(
-        saved_sound.0 < 1e-4
+        !repeatable
+            // Below -60 dB a note's zero crossings are mostly its noise
+            // (Surge's X-Fade Ensemble, with the soak's edits, plays at -70).
+            || saved_sound.0 < 1e-3
             // Wide on brightness: the same state rendered twice is up to
             // 28 % apart here (free-running oscillators and noise).
             || (level < 3.0 && bright < 0.5),

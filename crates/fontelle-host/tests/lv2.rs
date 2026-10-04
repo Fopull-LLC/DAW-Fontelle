@@ -1185,3 +1185,61 @@ fn an_lv2_instance_let_go_of_on_another_thread_is_not_freed_there() {
     unsafe { std::env::remove_var(fontelle_testlv2::CLEANUP_LOG_ENV) };
     let _ = std::fs::remove_file(&log);
 }
+
+/// > *"most times it just renders with nothing"* — and a sweep of every
+/// > installed instrument, which found Vaporizer2's LV2 asserting on a host
+/// > position that never came.
+///
+/// An LV2 plugin learns the song's tempo and place from `time:Position`
+/// objects on its event input — 274 of the bundles on the devbox say they
+/// want them — and Fontelle sent none, so a synced LFO or arpeggiator ran at
+/// whatever it assumed. One goes in at the top of every block, ahead of the
+/// block's notes, to a plugin that asked.
+#[test]
+fn an_lv2_plugin_that_asks_for_the_songs_position_is_told_it() {
+    let log = std::env::temp_dir().join(format!("fontelle-lv2-time-{}", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    // SAFETY: read only by the fixture.
+    unsafe { std::env::set_var(fontelle_testlv2::TIME_LOG_ENV, &log) };
+    let mut host = PluginHost::new();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let transport = fontelle_host::PluginTransport {
+        playing: true,
+        tempo: 133.0,
+        beats: 13.5,
+        seconds: 13.5 * 60.0 / 133.0,
+        bar_start_beats: 12.0,
+        bar_number: 3,
+        numerator: 4,
+        denominator: 4,
+    };
+    processor.set_transport(&transport);
+    // A note in the same block: the position goes ahead of it, and the
+    // sequence stays in time order.
+    processor.note_on(17, 69, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.process_instrument(&mut output, 256);
+    processor.process_instrument(&mut output, 256);
+    let heard = std::fs::read_to_string(&log).unwrap_or_default();
+    unsafe { std::env::remove_var(fontelle_testlv2::TIME_LOG_ENV) };
+    let _ = std::fs::remove_file(&log);
+    // Tests running beside this one write here too (the variable is the
+    // process's); theirs are at the default tempo, this one's at 133.
+    let fields: Vec<f64> = heard
+        .lines()
+        .map(|line| {
+            line.split(' ')
+                .map(|f| f.parse().unwrap())
+                .collect::<Vec<f64>>()
+        })
+        .find(|fields| fields[0] == 133.0)
+        .unwrap_or_else(|| panic!("no position at this test's tempo reached the plugin: {heard}"));
+    assert_eq!(fields[1], 1.0, "rolling: {heard}");
+    assert_eq!(fields[3], 3.0, "bar: {heard}");
+    assert!((fields[4] - 1.5).abs() < 1e-6, "beat in the bar: {heard}");
+    assert!(
+        output[0].iter().any(|s| s.abs() > 0.01),
+        "and the note still played"
+    );
+}

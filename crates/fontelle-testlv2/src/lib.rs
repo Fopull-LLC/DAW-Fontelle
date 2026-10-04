@@ -296,6 +296,79 @@ struct Sine {
     bend_range: f32,
     /// The RPN the next data entry is for, `(MSB, LSB)`.
     rpn: (u8, u8),
+    /// The URIDs of what a `time:Position` says — see [`TIME_LOG_ENV`].
+    time: TimeUrids,
+}
+
+/// When this names a file, the sine appends each `time:Position` it is
+/// sent, as `bpm speed frame bar beat` — so a host test can see the song's
+/// tempo and place reach an LV2 plugin that asked for them.
+pub const TIME_LOG_ENV: &str = "FONTELLE_TESTLV2_TIME_LOG";
+
+#[derive(Default, Clone, Copy)]
+struct TimeUrids {
+    object: u32,
+    position: u32,
+    bpm: u32,
+    speed: u32,
+    frame: u32,
+    bar: u32,
+    bar_beat: u32,
+    float: u32,
+    long: u32,
+}
+
+impl Sine {
+    /// Reads one `atom:Object` event's body, and logs it if it is a
+    /// `time:Position`.
+    ///
+    /// # Safety
+    /// `body` points at `size` bytes of an object's body.
+    unsafe fn hear_time(&self, body: *const u8, size: usize) {
+        let Some(file) = std::env::var_os(TIME_LOG_ENV) else {
+            return;
+        };
+        let t = self.time;
+        let word = |at: usize| unsafe { (body.add(at) as *const u32).read_unaligned() };
+        if size < 8 || word(4) != t.position {
+            return;
+        }
+        let (mut bpm, mut speed, mut frame, mut bar, mut beat) =
+            (0.0f32, 0.0f32, 0i64, 0i64, 0.0f32);
+        let mut at = 8;
+        while at + 16 <= size {
+            let key = word(at);
+            let value_size = word(at + 8) as usize;
+            let value_type = word(at + 12);
+            let value = unsafe { body.add(at + 16) };
+            if value_type == t.float && value_size >= 4 {
+                let v = unsafe { (value as *const f32).read_unaligned() };
+                if key == t.bpm {
+                    bpm = v;
+                } else if key == t.speed {
+                    speed = v;
+                } else if key == t.bar_beat {
+                    beat = v;
+                }
+            } else if value_type == t.long && value_size >= 8 {
+                let v = unsafe { (value as *const i64).read_unaligned() };
+                if key == t.frame {
+                    frame = v;
+                } else if key == t.bar {
+                    bar = v;
+                }
+            }
+            at += 16 + ((value_size + 7) & !7);
+        }
+        use std::io::Write;
+        if let Ok(mut out) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+        {
+            let _ = out.write_all(format!("{bpm} {speed} {frame} {bar} {beat}\n").as_bytes());
+        }
+    }
 }
 
 extern "C" fn sine_instantiate(
@@ -308,6 +381,7 @@ extern "C" fn sine_instantiate(
     // `lv2:requiredFeature` told the host to expect.
     let mut midi_urid = 0;
     let mut sequence_urid = 0;
+    let mut time = TimeUrids::default();
     let mut cursor = features;
     // SAFETY: `features` is a NULL-terminated array of pointers to valid
     // features, per the LV2 contract for `instantiate`.
@@ -318,6 +392,18 @@ extern "C" fn sine_instantiate(
                 let map = &*feature.data.cast::<LV2UridMap>();
                 midi_urid = (map.map)(map.handle, MIDI_EVENT_URI.as_ptr());
                 sequence_urid = (map.map)(map.handle, ATOM_SEQUENCE_URI.as_ptr());
+                let urid = |uri: &CStr| (map.map)(map.handle, uri.as_ptr());
+                time = TimeUrids {
+                    object: urid(c"http://lv2plug.in/ns/ext/atom#Object"),
+                    position: urid(c"http://lv2plug.in/ns/ext/time#Position"),
+                    bpm: urid(c"http://lv2plug.in/ns/ext/time#beatsPerMinute"),
+                    speed: urid(c"http://lv2plug.in/ns/ext/time#speed"),
+                    frame: urid(c"http://lv2plug.in/ns/ext/time#frame"),
+                    bar: urid(c"http://lv2plug.in/ns/ext/time#bar"),
+                    bar_beat: urid(c"http://lv2plug.in/ns/ext/time#barBeat"),
+                    float: urid(c"http://lv2plug.in/ns/ext/atom#Float"),
+                    long: urid(c"http://lv2plug.in/ns/ext/atom#Long"),
+                };
             }
             cursor = cursor.add(1);
         }
@@ -341,6 +427,7 @@ extern "C" fn sine_instantiate(
         bend: 0.0,
         bend_range: BEND_RANGE_SEMITONES,
         rpn: (127, 127),
+        time,
     }))
     .cast()
 }
@@ -356,6 +443,10 @@ extern "C" fn sine_connect_port(handle: LV2Handle, port: u32, data: *mut c_void)
         _ => {}
     }
 }
+
+/// What the sine's `midi_out` declares as its `rsz:minimumSize`, less the
+/// sequence header the size field does not count.
+pub const MIDI_OUT_MINIMUM: usize = 65536 - 8;
 
 extern "C" fn sine_run(handle: LV2Handle, samples: u32) {
     // SAFETY: see `gain_run`.
@@ -386,6 +477,9 @@ extern "C" fn sine_run(handle: LV2Handle, samples: u32) {
                     .cast::<LV2AtomEvent>();
                 let data = (event as *const LV2AtomEvent as *const u8)
                     .add(std::mem::size_of::<LV2AtomEvent>());
+                if event.body.type_ == sine.time.object {
+                    sine.hear_time(data, event.body.size as usize);
+                }
                 if event.body.type_ == sine.midi_urid && event.body.size >= 3 {
                     let bytes = [*data, *data.add(1), *data.add(2)];
                     events.push((event.time_in_frames.max(0) as usize, bytes));
@@ -393,6 +487,21 @@ extern "C" fn sine_run(handle: LV2Handle, samples: u32) {
                 let total = std::mem::size_of::<LV2AtomEvent>() + event.body.size as usize;
                 offset += (total + 7) & !7;
             }
+        }
+    }
+
+    // **Its output buffer is as big as it said it needed** (`rsz:minimumSize`
+    // in the Turtle), or it plays nothing — what a plugin that trusts the
+    // number does is write that far, and a host that gave it less has a
+    // heap overrun on its hands (Vaporizer2 asks for 62,552 bytes; Fontelle
+    // gave every atom port 4,096).
+    if !sine.midi_out.is_null() {
+        // SAFETY: the host sets an output atom's size to its capacity
+        // before every run.
+        let capacity = unsafe { (*sine.midi_out).atom.size } as usize;
+        if capacity < MIDI_OUT_MINIMUM {
+            output.fill(0.0);
+            return;
         }
     }
 

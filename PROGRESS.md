@@ -71,11 +71,14 @@ Seven causes of the first, one of the second, in the first round:
 - **Export and "render row to audio" built their graph with no plugins**,
   so a channel playing one had no node and the file was the right length
   and silent — `--render-wav`'s old mistake, fixed there and nowhere else.
-  A render now gets instances **of its own** (`PluginRack::for_render`,
-  `Session::realise_for_render`): the studio's plugins are captured first,
-  so what renders is what is playing, the new ones are opened from that,
-  run on the bounce's thread, and closed on this one when its graph is gone
-  (`end_render`). `tests/render_plugins.rs`.
+  A render now plays **the studio's own instances**
+  (`PluginRack::lend_for_render`, `Session::realise_for_render`): the live
+  graph is held (`Transport::hold`, which the device callback answers by
+  parking its processors and playing silence), the render's nodes take the
+  processors from their bays, and `end_render` lets the live graph have them
+  back. A first version opened a second instance per render; the sweep below
+  found plugins that do not survive one (padthv1), and a sampler would load
+  its gigabytes twice. `tests/render_plugins.rs`.
 
 - **Three places used the document's copy of a plugin as though it were
   the plugin**, and that copy is as old as the last save. Choosing the
@@ -160,12 +163,39 @@ found what the report could not have named:
   waveform, JC303's steps) a tick later, which the studio's frame loop gives
   it and a test has to.
 
-**Not fixed, and why.** Calf Wavetable (LV2) crashes inside its own `run`,
-intermittently, with every input in range, more often after unrelated
-allocations — a fault in the plugin, which other hosts report from Calf
-too; only running plugins in a process of their own would contain it, and
-that is a feature, not a patch. Not run against: Vital, Serum (through a
-bridge), Windows or macOS.
+- **Freeing a lilv world crashed** (DrumSynth, in `sord_free`): parked
+  worlds are now handed to the next host that needs one and never freed
+  (`resident::take_world`). An LV2 *binary* is no longer held to the end of
+  the process — Mephisto's Faust ran its static destructors after LLVM's at
+  exit — and the studio ends with `fontelle_host::exit_now` once its own
+  work is written, which skips plugin libraries' static destructors (sfizz
+  crashed in its own at exit).
+- **An LV2 atom port as big as the plugin asked** (`rsz:minimumSize`):
+  every one was 4,096 bytes, and Vaporizer2 asks for 62,552 — a plugin that
+  trusts its number overruns the heap. 62 bundles on the devbox declare one.
+- **The song's position reaches LV2 plugins** — a `time:Position` at the
+  top of every block, ahead of the block's notes, for a plugin whose event
+  input supports it (274 bundles here). Vaporizer2's LV2 asserted without
+  one, and a synced LFO or arpeggiator ran at whatever it assumed.
+
+**The sweep's last word** (`tools/real-plugin-sweep.sh`, 89 instruments,
+every walk): everything passes but four plugins whose faults are their own,
+each checked against a bare host (`fontelle-host/tests/real_plugins.rs`) or
+under AddressSanitizer:
+
+- **Calf Wavetable (LV2)** crashes inside its own `run` with every input in
+  range — in the bare host too, under ASan (Calf's crashes are reported from
+  other hosts as well).
+- **JuceOPL (LV2)** writes through an uninitialised pointer in its first
+  `run` — ASan, bare host — and corrupts the heap, now and then.
+- **Odin2 (CLAP 2.4)** dereferences null in its own `process`; the host
+  tests already skip it by name.
+- **sfizz (LV2)** crashes in its own static destructors at the exit of a
+  *test* process; the studio does not run them (`exit_now`).
+
+Only running plugins in a process of their own would contain the first
+three — a feature to plan, not a patch. Not run against: Vital, Serum
+(through a bridge), Windows or macOS.
 
 **As of 2026-10-03 — the mixer's strips, clip colours, looped
 onion skins, multi-clip drags, legato to the end.** Not released.

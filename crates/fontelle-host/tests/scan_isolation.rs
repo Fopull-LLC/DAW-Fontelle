@@ -220,22 +220,8 @@ fn a_plugin_library_stays_loaded_after_its_host_is_gone() {
         "the VST 3 library was unloaded with its host"
     );
 
-    let lv2 = common::lv2_bundle();
-    {
-        let mut host = fontelle_host::PluginHost::new();
-        let key =
-            fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Lv2, common::LV2_GAIN);
-        let plugin = host.open(&lv2, &key).expect("opens");
-        drop(plugin);
-    }
-    let library = std::fs::read_dir(&lv2)
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "so"))
-        .unwrap();
-    assert!(
-        mapped(&library),
-        "the LV2 library was unloaded with its host"
-    );
+    // Not an LV2 binary: lilv unloads it with its last instance, which is
+    // when its plugin is finished with — and one kept to the end of the
+    // process ran its static destructors after the libraries they used had
+    // run theirs (Mephisto's Faust, after LLVM's).
 }

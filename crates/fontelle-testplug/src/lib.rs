@@ -703,6 +703,22 @@ impl<const MIDI: bool> DefaultPluginFactory for SinePlugin<MIDI> {
     }
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<SineShared, PluginError> {
+        // One line per instance made — see `CREATE_LOG_ENV`.
+        if let Some(file) = std::env::var_os(CREATE_LOG_ENV) {
+            use std::io::Write;
+            if let Ok(mut out) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+            {
+                // The operating system's name for the thread: tests running
+                // side by side share the file, and each counts its own.
+                let name = std::fs::read_to_string("/proc/thread-self/comm")
+                    .map(|name| name.trim().to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                let _ = out.write_all(format!("{name}\n").as_bytes());
+            }
+        }
         Ok(SineShared {
             level: AtomicU32::new(0.5f32.to_bits()),
             output: AtomicU32::new(1.0f32.to_bits()),
@@ -998,6 +1014,11 @@ impl PluginAudioProcessorParams for SineProcessor<'_> {
 /// the way CLAP says a plugin reports a change it made itself — an output
 /// event. A host that throws a plugin's output events away never hears it,
 /// and saves the level it last set instead.
+/// When this names a file, every instance of the sine made appends a line —
+/// so a test can count them (a render that opened a second one of the
+/// studio's plugins, which some plugins do not survive).
+pub const CREATE_LOG_ENV: &str = "FONTELLE_TESTPLUG_CREATE_LOG";
+
 pub const TURNS_AND_SAYS: u8 = 1;
 pub const OWN_LEVEL_SAID: f64 = 0.125;
 

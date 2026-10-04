@@ -4,7 +4,9 @@
 @prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
 @prefix midi: <http://lv2plug.in/ns/ext/midi#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix rsz:  <http://lv2plug.in/ns/ext/resize-port#> .
 @prefix state: <http://lv2plug.in/ns/ext/state#> .
+@prefix time: <http://lv2plug.in/ns/ext/time#> .
 @prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
 @prefix urid: <http://lv2plug.in/ns/ext/urid#> .
 
@@ -126,7 +128,7 @@
     lv2:port [
         a lv2:InputPort, atom:AtomPort ;
         atom:bufferType atom:Sequence ;
-        atom:supports midi:MidiEvent ;
+        atom:supports midi:MidiEvent, time:Position ;
         lv2:index 0 ;
         lv2:symbol "midi_in" ;
         lv2:name "MIDI In" ;
@@ -147,6 +149,7 @@
         a lv2:OutputPort, atom:AtomPort ;
         atom:bufferType atom:Sequence ;
         atom:supports midi:MidiEvent ;
+        rsz:minimumSize 65536 ;
         lv2:index 3 ;
         lv2:symbol "midi_out" ;
         lv2:name "MIDI Out" ;

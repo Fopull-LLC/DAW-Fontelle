@@ -85,7 +85,7 @@ pub use mpe::MpeZone;
 pub use own_presets::{OwnPreset, OwnPresetSource, PresetRoots, list_own_presets};
 pub use param::{HostedParam, ParamValues};
 pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHost};
-pub use probe::{BundleProber, DEFAULT_PROBE_TIMEOUT, PROBE_FLAG, probe_main};
+pub use probe::{BundleProber, DEFAULT_PROBE_TIMEOUT, PROBE_FLAG, exit_now, probe_main};
 pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
 pub use scan::{
     PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with, search_paths,

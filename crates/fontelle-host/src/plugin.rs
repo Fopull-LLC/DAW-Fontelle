@@ -364,10 +364,15 @@ impl PluginHost {
 
     fn open_lv2(&mut self, path: &Path, key: &PluginKey) -> Result<HostedPlugin, HostError> {
         if !self.worlds.contains_key(path) {
-            let world = crate::lv2::load_world(path).map_err(|why| HostError::Bundle {
-                path: path.to_path_buf(),
-                why,
-            })?;
+            // One a host that went before left behind, if there is one —
+            // see `crate::resident`.
+            let world = match crate::resident::take_world(path) {
+                Some(world) => world,
+                None => crate::lv2::load_world(path).map_err(|why| HostError::Bundle {
+                    path: path.to_path_buf(),
+                    why,
+                })?,
+            };
             self.worlds.insert(path.to_path_buf(), world);
         }
         let world = &self.worlds[path];

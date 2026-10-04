@@ -337,6 +337,10 @@ impl HostedProcessor {
     /// [`PluginTransport`]. Copied, so it costs nothing to call every block.
     pub fn set_transport(&mut self, transport: &PluginTransport) {
         self.transport = *transport;
+        // An LV2 plugin is told in an event, at the top of its next block.
+        if let Inner::Lv2(p) = &mut self.inner {
+            p.set_transport(transport);
+        }
     }
 
     /// What the next block will be told about the song.

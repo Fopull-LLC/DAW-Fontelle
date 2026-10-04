@@ -74,6 +74,9 @@ pub struct Transport {
     /// How many callers on the main thread are waiting on the graph to run —
     /// see [`summon`](Self::summon).
     summoned: std::sync::atomic::AtomicU32,
+    /// How many renders are playing the studio's plugins — see
+    /// [`hold`](Self::hold).
+    held: std::sync::atomic::AtomicU32,
     /// Frames of count-in still to run before the song rolls. Written by the
     /// window before it starts the transport, counted down by the reader.
     count_in: AtomicI64,
@@ -93,6 +96,7 @@ impl Transport {
             looping: AtomicU8::new(0),
             attended: AtomicBool::new(false),
             summoned: std::sync::atomic::AtomicU32::new(0),
+            held: std::sync::atomic::AtomicU32::new(0),
             count_in: AtomicI64::new(0),
         }
     }
@@ -141,6 +145,42 @@ impl Transport {
     /// rewrites every frame.
     pub fn summon(&self) {
         self.summoned.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Stops the live graph while a render plays the studio's own plugins.
+    ///
+    /// > *"most times it just renders with nothing"* — and a sweep of every
+    /// > installed instrument, in which padthv1 died when a render made a
+    /// > second instance of it beside the one that was playing.
+    ///
+    /// A render plays the instances the studio has, so the device's callback
+    /// hands its graph's plugin processors back to their bays and plays
+    /// silence until every holder has [`release`](Self::release)d — what an
+    /// export does in every DAW that renders with the same plugins. The
+    /// song's position and state are left alone.
+    pub fn hold(&self) {
+        self.held.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Takes one [`hold`](Self::hold) back.
+    pub fn release(&self) {
+        let mut seen = self.held.load(Ordering::Acquire);
+        while seen > 0 {
+            match self.held.compare_exchange_weak(
+                seen,
+                seen - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(now) => seen = now,
+            }
+        }
+    }
+
+    /// **RT.** Whether a render is playing the studio's plugins.
+    pub fn is_held(&self) -> bool {
+        self.held.load(Ordering::Acquire) > 0
     }
 
     /// Takes one [`summon`](Self::summon) back.

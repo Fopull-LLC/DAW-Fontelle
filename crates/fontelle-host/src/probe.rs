@@ -428,16 +428,31 @@ pub fn probe_main(args: &[String]) -> Option<i32> {
 }
 
 fn unsafe_quick_exit() -> ! {
-    // `_exit`: no atexit handlers, no static destructors — the plugin's.
+    exit_now(0)
+}
+
+/// Ends the process **without running plugin libraries' static
+/// destructors** — what the studio does once the window has closed and
+/// everything of its own is written.
+///
+/// A plugin library is kept loaded to the end (`crate::resident`), and at a
+/// normal exit its C++ statics are torn down in an order nobody chose:
+/// Mephisto's Faust factory after LLVM's, which crashed — a studio that
+/// says it crashed every time it is closed. Rust has nothing at exit that
+/// this skips but the flush of standard output, which is done here.
+pub fn exit_now(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
     #[cfg(unix)]
     unsafe {
         unsafe extern "C" {
             fn _exit(code: i32) -> !;
         }
-        _exit(0)
+        _exit(code)
     }
     #[cfg(not(unix))]
-    std::process::exit(0)
+    std::process::exit(code)
 }
 
 /// Whether a bundle of `format` is read at all by this host or a bridge.
