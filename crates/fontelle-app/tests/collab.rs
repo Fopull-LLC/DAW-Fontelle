@@ -2137,7 +2137,9 @@ fn a_joiner_without_the_hosts_plugin_still_gets_every_edit() {
         host.plugin_instruments()
     );
     host.save().unwrap();
-    let mut joiner = a_session();
+    // Bob's studio looks for plugins only in an empty folder: what this
+    // machine has installed is not his, and a walk of it is slow.
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
     std::fs::create_dir_all(dir.join("bob")).unwrap();
     joiner.set_projects_dir(Some(dir.join("bob")));
     let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
@@ -2232,7 +2234,9 @@ fn the_hosts_edits_reach_a_joiner_fetching_a_soundfont_without_the_plugin() {
     host.add_channel_with(0).expect("an instrument");
     host.set_channel_plugin(0, 0);
     host.save().unwrap();
-    let mut joiner = a_session();
+    // Bob's studio looks for plugins only in an empty folder: what this
+    // machine has installed is not his, and a walk of it is slow.
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
     std::fs::create_dir_all(dir.join("bob")).unwrap();
     joiner.set_projects_dir(Some(dir.join("bob")));
     std::fs::create_dir_all(dir.join("bob-bank")).unwrap();
@@ -2301,6 +2305,69 @@ fn the_hosts_edits_reach_a_joiner_fetching_a_soundfont_without_the_plugin() {
         plugin(pair.host.project()),
         "the plugin's state, as it came"
     );
+}
+
+/// The name of the channel a studio has selected.
+fn selected_name(session: &Session) -> String {
+    let channels = StudioHost::channels(session);
+    channels[StudioHost::selected_channel(session)].name.clone()
+}
+
+/// Ty: *adding a new instrument does not select and open the one you just
+/// made; it selects and opens the last one in the list.* The list is in id
+/// order, and an instrument is not always last: a removed one's place is
+/// taken again by the next one made.
+#[test]
+fn a_new_instrument_is_the_one_selected_even_when_it_is_not_last() {
+    let mut studio = a_session();
+    StudioHost::add_channel(&mut studio).unwrap();
+    StudioHost::add_channel(&mut studio).unwrap();
+    let before = StudioHost::channels(&studio).len();
+    StudioHost::remove_channel(&mut studio, 0);
+    StudioHost::add_channel(&mut studio).unwrap();
+    let channels = StudioHost::channels(&studio);
+    assert_eq!(channels.len(), before);
+    let made = channels
+        .iter()
+        .position(|c| c.name == format!("Channel {before}"))
+        .expect("the new one is in the list");
+    assert_ne!(made, channels.len() - 1, "the test needs it not to be last");
+    assert_eq!(
+        StudioHost::selected_channel(&studio),
+        made,
+        "the one just made is selected"
+    );
+}
+
+/// The same in a shared song, and somebody else's instrument never moves
+/// yours: Bob adding one leaves Alice on hers, and Alice adding one selects
+/// hers — not whichever sorts last, which a joiner's always does — and
+/// leaves Bob on his.
+#[test]
+fn an_instrument_somebody_else_adds_never_moves_your_selection() {
+    let mut pair = Pair::joined("selection", 2);
+    StudioHost::select_channel(&mut pair.host, 0);
+    StudioHost::select_channel(&mut pair.joiner, 0);
+    let alices = selected_name(&pair.host);
+
+    StudioHost::add_channel(&mut pair.joiner).unwrap();
+    let bobs = selected_name(&pair.joiner);
+    assert_ne!(bobs, alices, "Bob is on the one he made");
+    pair.settle();
+    pair.same();
+    assert_eq!(selected_name(&pair.host), alices, "Alice is still on hers");
+
+    let count = StudioHost::channels(&pair.host).len();
+    StudioHost::add_channel(&mut pair.host).unwrap();
+    let made = format!("Channel {}", count + 1);
+    assert_eq!(
+        selected_name(&pair.host),
+        made,
+        "Alice is on the one she made"
+    );
+    pair.settle();
+    pair.same();
+    assert_eq!(selected_name(&pair.joiner), bobs, "Bob is still on his");
 }
 
 /// What the relay's side of the link has to say — the host lost it and is

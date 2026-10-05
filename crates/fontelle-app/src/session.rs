@@ -2431,8 +2431,21 @@ impl Session {
             bundle: self.bundle.clone(),
             banks: self.library_dirs(),
         };
+        // Somebody else's edits never move this studio's selection: it
+        // follows the channel, not its place in a list they can add to or
+        // take from.
+        let selected = self.selected_channel_id();
         let collab = self.collab.as_mut().expect("just checked");
         let effects = collab.pump(&mut self.project, &mut self.history, &place);
+        if let Some(at) =
+            selected.and_then(|id| self.channel_ids().iter().position(|other| *other == id))
+        {
+            self.selected = at;
+        } else {
+            self.selected = self
+                .selected
+                .min(self.project.channels.len().saturating_sub(1));
+        }
         // Imports mint where the history does, so a sound this studio brings
         // in and one somebody else does at the same moment are two sounds
         // (F56).
@@ -2578,9 +2591,8 @@ impl Session {
     /// message overwrites: a song that sounds different here and nobody said
     /// why reads as the session being broken.
     fn say_missing_plugins(&mut self) {
-        self.plugins.scan_once();
         let mut missing: Vec<String> = Vec::new();
-        let states = self
+        let states: Vec<fontelle_types::PluginState> = self
             .project
             .channels
             .values()
@@ -2593,8 +2605,16 @@ impl Session {
                     .values()
                     .flat_map(|track| track.inserts.iter())
                     .filter_map(|insert| insert.plugin.as_ref()),
-            );
-        for state in states {
+            )
+            .cloned()
+            .collect();
+        // A song with no plugins asks nothing of the rack — a scan is a walk
+        // of every plugin on the machine.
+        if states.is_empty() {
+            return;
+        }
+        self.plugins.scan_once();
+        for state in &states {
             if self.plugins.scan().find(&state.key).is_none() && !missing.contains(&state.name) {
                 missing.push(state.name.clone());
             }
@@ -5419,7 +5439,17 @@ impl Session {
         // stays on the clip that is open and writes this instrument into
         // it — which is what *"base our interactions on what your currently
         // selected instrument in the channel rack is"* means.
-        self.selected = self.project.channels.len().saturating_sub(1);
+        //
+        // **By its id, never "the last one".** The list is in id order, and
+        // a new channel is not always at its end: a removed one's place is
+        // taken by the next made, and in a shared song a joiner's channels
+        // sort after the host's — so the host's new instrument selected the
+        // joiner's (Ty: *"it selects and opens the last one in the list"*).
+        self.selected = self
+            .channel_ids()
+            .iter()
+            .position(|id| *id == channel)
+            .unwrap_or(self.selected);
         Ok(channel)
     }
 
