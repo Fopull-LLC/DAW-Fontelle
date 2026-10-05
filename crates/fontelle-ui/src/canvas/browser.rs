@@ -12,6 +12,7 @@
 //! **Virtualised** (§16.4's rule, applied to a list): a collection of a hundred
 //! thousand soundfonts costs a screenful of rectangles.
 
+use super::scrollbar::RowScrollbar;
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
@@ -53,6 +54,9 @@ pub struct BrowserLayout {
     pub search: Rect,
     pub files: Rect,
     pub file_rows: Vec<(usize, Rect)>,
+    /// The files list's scroll bar, when it is longer than its room. The rows
+    /// stop short of its strip.
+    pub file_bar: Option<RowScrollbar>,
     /// The presets inside the selected file.
     /// The grab strip between the two lists — see [`browser_file_share_at`].
     ///
@@ -62,6 +66,8 @@ pub struct BrowserLayout {
     pub seam: Rect,
     pub presets: Rect,
     pub preset_rows: Vec<(usize, Rect)>,
+    /// The presets list's scroll bar, like [`file_bar`](Self::file_bar).
+    pub preset_bar: Option<RowScrollbar>,
     /// One line saying where the bank is, or what just went wrong.
     pub status: Rect,
     /// Shows the bank folder in the desktop's file manager. Pinned to the
@@ -472,8 +478,10 @@ pub fn browser_layout_split(
         kinds,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
+        file_bar: RowScrollbar::of(files, metrics.row_height, file_count, file_scroll),
         files,
         preset_rows: rows(presets, metrics, preset_count, preset_scroll),
+        preset_bar: RowScrollbar::of(presets, metrics.row_height, preset_count, preset_scroll),
         seam,
         presets,
         status,
@@ -517,6 +525,13 @@ pub(crate) fn rows(
         return Vec::new();
     }
     let scroll = scroll.min(count.saturating_sub(1));
+    // A list longer than its room gives its bar a strip down the right edge
+    // (see `RowScrollbar`), so no name runs under the thumb.
+    let width = if count > visible {
+        (area.width - super::scrollbar::STRIP).max(0.0)
+    } else {
+        area.width
+    };
     (scroll..count)
         .take(visible)
         .enumerate()
@@ -526,7 +541,7 @@ pub(crate) fn rows(
                 Rect::new(
                     area.x,
                     area.y + slot as f32 * metrics.row_height,
-                    area.width,
+                    width,
                     metrics.row_height,
                 ),
             )
@@ -534,8 +549,18 @@ pub(crate) fn rows(
         .collect()
 }
 
+/// Which of the browser's two lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserList {
+    Files,
+    Presets,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrowserHit {
+    /// A list's scroll bar, which drags to scroll it. Where on the thumb it
+    /// was taken is the bar's to say (`RowScrollbar::grab`).
+    Scrollbar(BrowserList),
     /// The strip between the bank and its presets, which drags to divide them.
     Seam,
     /// Switch the panel to this mode.
@@ -611,7 +636,7 @@ impl BrowserHit {
             Self::NewProject => "Start a new project",
             Self::Export => "Bounce this project to a WAV",
             Self::Seam => "Drag to divide the bank and its presets",
-            Self::File(_) | Self::Preset(_) | Self::Nothing => return None,
+            Self::File(_) | Self::Preset(_) | Self::Scrollbar(_) | Self::Nothing => return None,
         })
     }
 
@@ -627,6 +652,14 @@ impl BrowserHit {
 }
 
 impl BrowserLayout {
+    /// One list's scroll bar, if it has one.
+    pub fn bar(&self, list: BrowserList) -> Option<RowScrollbar> {
+        match list {
+            BrowserList::Files => self.file_bar,
+            BrowserList::Presets => self.preset_bar,
+        }
+    }
+
     /// Where one mode's tab is, or [`Rect::ZERO`] if it did not fit.
     ///
     /// Named rather than indexed, so a caller says which tab it means and
@@ -676,6 +709,16 @@ pub fn browser_hit(layout: &BrowserLayout, x: f32, y: f32) -> BrowserHit {
     // **Which list first, then which row.** A row belongs to its own list and
     // to nothing else, so a pointer in the presets can never be answered with a
     // soundfont however the rows happen to have been laid out.
+    // The bars before their rows: the rows stop short of the strip, but a
+    // bar is what is on top of its list.
+    for (list, bar) in [
+        (BrowserList::Files, &layout.file_bar),
+        (BrowserList::Presets, &layout.preset_bar),
+    ] {
+        if bar.is_some_and(|bar| bar.strip.contains(x, y)) {
+            return BrowserHit::Scrollbar(list);
+        }
+    }
     if layout.files.contains(x, y) {
         return row_at(&layout.file_rows, x, y).map_or(BrowserHit::Nothing, BrowserHit::File);
     }

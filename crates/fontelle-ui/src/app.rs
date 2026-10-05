@@ -105,6 +105,9 @@ enum Drag {
     /// is in `menu_grab` — a `Drag` is compared and a float is not a thing to
     /// compare, the same arrangement `flop_knob` has.
     MenuScroll,
+    /// A browser list's scroll bar; where on the thumb is in `list_grab`, for
+    /// `MenuScroll`'s reason.
+    ListScroll(crate::canvas::BrowserList),
     /// Notes: drawing, moving, resizing, or a selection box.
     Roll,
     /// Values in the property lane.
@@ -2051,6 +2054,9 @@ pub struct WindowApp {
     /// it — see [`Drag::MenuScroll`]. Meaningless while that drag is not
     /// running.
     menu_grab: f32,
+    /// How far down a browser list's thumb a [`Drag::ListScroll`] took hold
+    /// of it.
+    list_grab: f32,
     /// How much of the soundfont panel the bank gets, against its presets.
     /// `None` until the seam between them is dragged.
     browser_file_share: Option<f32>,
@@ -2525,6 +2531,7 @@ impl WindowApp {
             browser_title: "Soundfonts".to_string(),
             drag: Drag::None,
             menu_grab: 0.0,
+            list_grab: 0.0,
             browser_file_share: None,
             edge_scroll: EdgeScroll::default(),
             edge_scroll_at: None,
@@ -3872,6 +3879,7 @@ impl WindowApp {
             Drag::DisgustingBeatCurve | Drag::DisgustingBeatScene(_) => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
             Drag::MenuScroll
+            | Drag::ListScroll(_)
             | Drag::LaneGrip
             | Drag::Divider
             | Drag::Knob
@@ -8725,6 +8733,7 @@ impl WindowApp {
         match self.drag {
             Drag::None => {}
             Drag::MenuScroll => self.drag_menu_scroll(y),
+            Drag::ListScroll(list) => self.drag_list_scroll(list, y),
             Drag::Roll => self.drag_roll(),
             Drag::Lane => self.drag_lane(),
             Drag::LaneGrip => self.drag_lane_grip(y),
@@ -16629,6 +16638,16 @@ impl WindowApp {
             BrowserHit::Seam => {
                 self.drag = Drag::BrowserSplit;
             }
+            // *"add scroll bar to the import windows"*: the lists scrolled
+            // with the wheel and had nothing to drag. The press itself moves
+            // the thumb to the pointer when it lands beside it.
+            BrowserHit::Scrollbar(list) => {
+                if let Some(grab) = self.browser.bar(list).and_then(|bar| bar.grab(x, y)) {
+                    self.list_grab = grab;
+                    self.drag = Drag::ListScroll(list);
+                    self.drag_list_scroll(list, y);
+                }
+            }
             BrowserHit::Search(_) => {
                 self.searching = true;
                 self.search_entry = crate::canvas::TextEntry::new(self.query.clone());
@@ -20318,6 +20337,25 @@ impl WindowApp {
         }
         menu.scroll_by(-steps * step);
         true
+    }
+
+    /// One pointer move of a browser list's scroll bar drag — see
+    /// [`Drag::ListScroll`]. Whole rows, like the wheel.
+    fn drag_list_scroll(&mut self, list: crate::canvas::BrowserList, y: f32) {
+        let Some(bar) = self.browser.bar(list) else {
+            return;
+        };
+        let wanted = bar.scroll_at(y, self.list_grab);
+        let scroll = match list {
+            crate::canvas::BrowserList::Files => &mut self.file_scroll,
+            crate::canvas::BrowserList::Presets => &mut self.preset_scroll,
+        };
+        if *scroll == wanted {
+            return;
+        }
+        *scroll = wanted;
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
     }
 
     /// One pointer move of a scrollbar drag — see [`Drag::MenuScroll`].

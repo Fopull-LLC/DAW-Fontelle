@@ -9496,6 +9496,17 @@ fn draw_browser(
         hover_preset,
         chrome.focus_preset,
     );
+    // A list longer than its room wears the menus' thumb, so a folder of four
+    // hundred files does not look like a folder of fifteen and there is
+    // something to drag to reach the end of it.
+    for bar in [l.file_bar, l.preset_bar].into_iter().flatten() {
+        fill_rect_rounded(
+            scene,
+            bar.thumb,
+            bar.thumb.width / 2.0,
+            p.text_muted.with_alpha(0xa0),
+        );
+    }
 
     // The status line: where the bank is, or what just went wrong. Its own row
     // rather than a strip drawn over the bottom of the preset list, because a

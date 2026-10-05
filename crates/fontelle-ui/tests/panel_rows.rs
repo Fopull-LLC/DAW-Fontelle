@@ -51,7 +51,10 @@ fn every_browser_row_is_a_whole_row_and_none_overlaps_another() {
                 list.bottom()
             );
             assert_eq!(rect.x, list.x);
-            assert_eq!(rect.width, list.width);
+            // Two hundred rows do not fit, so each list wears a scroll bar
+            // and its rows stop where the bar's strip starts
+            // (`tests/browser_scrollbar.rs`).
+            assert!(rect.width < list.width && rect.right() > list.right() - 16.0);
         }
         // Consecutive rows sit exactly one row height apart, so none of them
         // can print over the one above it.
