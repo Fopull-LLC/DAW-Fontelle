@@ -19,7 +19,56 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05, latest — working on a song together, made to work
+**As of 2026-10-05, latest — Lore's logs: a knob in a plugin's own window,
+and the shared song that drifted.** Still v0.25.1 (not bumped). Lore, through
+Ty: *"in serum moving knobs that should affect the graph often just aren't
+affecting the graph"* (Windows, Fontelle 0.25.0, VST 3 most likely; Serum
+itself is not on this machine). Her logs had no line about Serum; one
+session (a shared song, Ty hosting) had 67 drifts and a refused note edit
+thirteen times. `docs/collab-plan.md` §18 rows F82–F85.
+
+- **A knob turned in a VST 3 editor reaches the processor.** The edit went
+  on the wire, but a plugin that then calls `restartComponent
+  (kParamValuesChanged)` — JUCE's `updateHostDisplay`, which many plugins
+  call after any change — had every value reread off the controller and
+  *adopted*, which called off the sending: whenever the frame came round
+  before the next audio block the processor never heard the knob. The
+  reread now answers (`ParamValues::answer`), leaving a waiting value to
+  go. Fixture: the test gain's view edits as a JUCE knob does. Not proven
+  to be Serum's cause — the most likely one this host had.
+- **What a VST 3 processor reports reaches its controller.** Output
+  parameter changes were dropped; the specification asks the host to pass
+  them on. Every DPF build (the Dragonfly reverbs) tells its separate
+  controller the block size and sample rate that way, and Surge XT Effects'
+  first block reports values its controller still had at nought. On the
+  wire, answered, and the controller told between frames
+  (`service_main_thread`, every loaded VST 3, not only with an editor open).
+- **`FONTELLE_PARAM_TRACE=1`** writes each edit, gesture and restart a VST 3
+  editor makes, each value its processor reports and how many changes went
+  to the processor, into the log: what to ask a Windows user for.
+- **The 67 drifts were the hash, not the song.** An edit goes out when the
+  next lands on top of it; the host hashed the song that already held the
+  next one, so every quick pair of edits (two key presses inside the idle
+  break) was a drift and a fresh copy, the joiner one edit behind each time
+  — the signature in the log. The hash now goes only with an edit that
+  leaves the hand empty.
+- **A plugin's state is out of the hash, and a joiner's own is kept.** A
+  plugin's blob and parameters are written into the song outside any edit
+  (save, backup; §5.2 declares them local) and are machine-specific bytes:
+  hashed, a backup after a knob in the plugin's window was a drift. And a
+  joiner's copy made again from the host's song (an edit of somebody else's
+  under one of his own, or a fresh copy) put the song's older state back
+  into his plugin — the knob he had just turned. `Collab::plugin_kept_here`
+  keeps what he wrote until the song itself changes that slot.
+- **"does not hold notes"**: the roll over an open take (or automation
+  block) shows nothing and took what was drawn there as notes for it — each
+  a refused command with an id on the console. Said once, in words.
+- **Open**: `wants_restart` (a VST 3 plugin's latency, I/O or reload) is
+  recorded and never acted on by the studio; `can't open : 22` in the
+  15-15-24 log is not Fontelle's (no such string here or in a dependency;
+  a plugin's own stderr, an empty file name and `EINVAL`).
+
+**As of 2026-10-05, the v0.25.1 work — working on a song together, made to work
 well.** The v0.25.1 patch (version not bumped here). Ty: *"i really do want
 it to work well so users can work on songs together"*. `docs/collab-plan.md`
 §18's v0.25.1 rows (F65–F79) and §19 have the detail.

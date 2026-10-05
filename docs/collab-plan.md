@@ -1307,6 +1307,10 @@ failing.
 | F77 ✓ `55ea052` | A lobby the relay ended under a joiner reached it as the relay's bare words | Said as the session with the host ending, the copy still open | `a_session_the_relay_ended_says_the_copy_is_still_open` |
 | F80 ✓ `1e05467` | *Reported from Ty's session with a friend:* only the joiner's edits replicated; the host's never reached the joiner. The song had a soundfont the joiner fetched and a plugin it did not have | F72 was the cause: the soundfont went into the host's paced link whole and every host edit queued behind it. The plugin was not the trigger. A joined copy that uses plugins this machine has not got now names them as it opens | `the_hosts_edits_reach_a_joiner_fetching_a_soundfont_without_the_plugin` (red with F72's throttle taken out), `a_joiner_without_the_hosts_plugin_still_gets_every_edit` |
 | F81 ✓ `36a8af5` | *Reported from the same session:* adding an instrument selected the last one in the list, not the new one — in a shared song the joiner's channels sort last; and the selection was an index somebody else's add could move | Selected by the id the add made; a session turn keeps the selection on its channel | `a_new_instrument_is_the_one_selected_even_when_it_is_not_last`, `an_instrument_somebody_else_adds_never_moves_your_selection` |
+| F82 ✓ `48f2aa0` | *From Lore's log of the session with Ty:* "shared song drifted at edit N (this copy X, host Y)" 67 times, X each time the host's Y one edit before. `History::apply` sends an entry when the next lands on top of it; the host hashed the song as it was when sending, which already held the next edit nobody else had — every pair of edits inside the idle break (key presses, a nudge then a duplicate) was a drift and a fresh copy | The hash goes only with an edit that leaves the hand empty | `an_edit_made_before_the_last_went_out_is_not_a_drift` |
+| F83 ✓ `48f2aa0` | §5.2 declares `capture_plugin_states` local, and §5.6's hash still covered every plugin's blob and parameters: a knob turned in a plugin's own window and then a save or the minute's backup was a song nobody could reach by an edit — a drift, and a fresh copy over the joiner's | `sync_hash` leaves out each plugin slot's `blob` and `params` (which plugin, its name and its MPE switch stay in): they are read off the running plugin, outside the stream, in bytes another build or machine writes differently for the same sound | `a_plugins_state_kept_at_a_backup_is_not_a_drift` |
+| F84 ✓ `48f2aa0` | A joiner's copy made again from the host's song (`rebuild`: an edit of somebody else's under one of his own, a refusal, a fresh copy) put the song's state of each plugin back over what he had kept of his own, and the rack loaded it into his plugin: the knob he had turned in its window, undone | `Collab::plugin_kept_here`: the session says what it wrote and what was there; a rebuild puts his back wherever the song's state of that slot is still what it was, and stops once the song changes it (a preset somebody chose is newer) | `a_knob_kept_on_the_joiner_survives_his_copy_being_made_again` |
+| F85 ✓ `b94fe81` | *Same log:* "Clip(ClipId(16777216v1)) does not hold notes" thirteen times — a clip of Lore's own (her mint space). The roll over an open take shows nothing and took what was drawn or pasted there as notes for it | Said once, in words, for a take or an automation block; nothing is sent | `the_roll_says_a_take_holds_no_notes_rather_than_refusing_each_one` |
 | F78 | *Open.* While the host's link is being got back the panel's code is hidden (the relay will not take joins to it) and only a toast says why; the joiner's panel says nothing while it rejoins | A *Reconnecting…* status on both panels | — |
 | F79 | *Open.* *Remove* asks the transport to drop the person, and the relay client has no way to: the removed studio leaves on its own (it is told), a modified one stays connected with every edit refused | With L6 (locking a code), or a per-peer kick in the relay protocol — the engine's to add | — |
 
@@ -1573,3 +1577,23 @@ with the reason. The text above is left as it was planned.
 - **Out of this patch, next**: L5 (verified names with a fopull account join
   token — needs the account module in the studio) and L7 (end-to-end
   encryption under the relay). F78 and F79 are open.
+
+**After Ty and Lore's session** (§18's F82–F85).
+
+- **§5.6's hash leaves out what a plugin holds**, a fourth thing beside the
+  view, the meta and where a file is: each plugin slot's `blob` and
+  `params`. §5.2 already declared them local; the hash had not followed.
+  The cost, said plainly: an edit that changes only a plugin's parameters
+  (a studio knob, a preset) is no longer proven by the hash; which plugin a
+  slot holds still is. Hashing the parameter values instead of the blob was
+  considered and refused: they are as local as the blob, read off the
+  plugin at a save.
+- **The host's hash rides only an edit that leaves the hand empty** (§5.4
+  said every `Applied` carries the hash after applying it). The song the
+  host holds while an edit is in the hand is ahead of the stream by that
+  edit, and is checked when it goes.
+- **A joiner keeps the plugin states it wrote** across a rebuild
+  (`KeptHere`), while the song's state of that slot is what it was when he
+  wrote them. Not yet across a save and reopen of a shared copy that the
+  host has since changed (the next join's copy is the host's): a plugin's
+  state is each machine's, and §14 has no row for sharing it yet.

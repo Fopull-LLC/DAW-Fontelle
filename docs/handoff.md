@@ -48,6 +48,15 @@ Fontelle-only changes are listed in `fontelle-net/src/lib.rs`. Hub card
 `fontelle-net/tests/relay.rs`: `cargo test -p fontelle-net --test relay --
 --ignored --nocapture`. Run by hand after any change to the relay path.
 
+(f) **After Lore's logs** (`PROGRESS.md`'s top entry, collab-plan F82–F85):
+the host's hash rides only an edit that leaves the hand empty, and
+`sync_hash` leaves out each plugin slot's blob and parameters; a joiner's
+own plugin states survive a rebuild (`KeptHere`). On the VST 3 side, a
+`kParamValuesChanged` reread *answers* rather than adopts, and a
+processor's output parameter changes reach its controller.
+`FONTELLE_PARAM_TRACE=1` logs a VST 3 editor's edits and restarts and what
+went to the processor — ask a Windows user for a log with it.
+
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their
 init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has
