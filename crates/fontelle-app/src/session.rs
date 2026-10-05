@@ -516,6 +516,17 @@ pub struct Session {
     /// A note the last settings press left for the window to show as a transient
     /// banner, and whether it can be undone. Taken by `take_settings_toast`.
     settings_toast: Option<(String, bool)>,
+    /// The output stream the studio plays through, shared with `main`, which
+    /// stops it at exit. `None` in every offline session. Settings changes
+    /// it while it plays — see [`Session::apply_audio_output`].
+    output: Option<std::sync::Arc<std::sync::Mutex<fontelle_engine::AudioOutput>>>,
+    /// The backends there are and the chosen one's devices, listed the first
+    /// time the settings page asks and again when the backend changes: a
+    /// device list asks every device, which is not something to do a frame.
+    output_lists: std::cell::RefCell<Option<OutputLists>>,
+    /// Whether the dropouts have been pointed out this run — once, and not
+    /// again until the count is reset.
+    dropouts_said: bool,
     /// The folder the Import tab is browsing, and what is in it.
     ///
     /// One bank rather than two, rebuilt when the kind changes: only one of
@@ -781,6 +792,19 @@ impl Session {
         ) {
             let row = *row;
             self.press_theme_row(row);
+            return;
+        }
+        // The output's two buttons: open it again, and count afresh.
+        if *row == crate::settings::SettingRow::OutputNow {
+            self.apply_audio_output();
+            return;
+        }
+        if *row == crate::settings::SettingRow::Dropouts {
+            if let Some(Ok(output)) = self.output.as_ref().map(|o| o.lock()) {
+                output.stats().clear_xruns();
+            }
+            self.dropouts_said = false;
+            self.touch();
             return;
         }
         // An extension row is a button too: install it, or remove it.
@@ -1456,6 +1480,9 @@ impl Session {
             previews_started: std::cell::Cell::new(false),
             settings_undo: None,
             settings_toast: None,
+            output: None,
+            output_lists: std::cell::RefCell::new(None),
+            dropouts_said: false,
             import_bank: FileBank::default(),
             // Sounds, and the Import tab, are where a session starts: *"make
             // it start out opened on the audio import tab by default instead
@@ -3451,6 +3478,93 @@ impl Session {
     pub fn with_monitor(mut self, monitor: std::sync::Arc<fontelle_engine::InputMonitor>) -> Self {
         self.monitor = Some(monitor);
         self
+    }
+
+    /// The output stream the studio plays through, for Settings to change
+    /// and to report on. If it opened somewhere other than what the settings
+    /// ask for, that is said.
+    pub fn with_output(
+        mut self,
+        output: std::sync::Arc<std::sync::Mutex<fontelle_engine::AudioOutput>>,
+    ) -> Self {
+        let fell_back = output
+            .lock()
+            .ok()
+            .and_then(|o| o.status().cloned())
+            .filter(|status| status.fell_back.is_some());
+        if let Some(status) = fell_back {
+            self.message = Some(fell_back_words(&self.settings, &status));
+        }
+        self.output = Some(output);
+        self
+    }
+
+    /// The backends and the chosen backend's devices, listed once and kept.
+    fn output_lists(&self) -> std::cell::Ref<'_, OutputLists> {
+        let host = self.settings.audio_output.host.clone();
+        {
+            let mut lists = self.output_lists.borrow_mut();
+            if lists.as_ref().is_none_or(|l| l.for_host != host) {
+                *lists = Some(OutputLists {
+                    default_host: fontelle_engine::default_output_host_name(),
+                    hosts: fontelle_engine::output_host_names(),
+                    devices: fontelle_engine::output_device_names(host.as_deref()),
+                    for_host: host,
+                });
+            }
+        }
+        std::cell::Ref::map(self.output_lists.borrow(), |l| {
+            l.as_ref().expect("filled above")
+        })
+    }
+
+    /// Opens the output the settings ask for in place of the one playing,
+    /// and says what opened — or why it is the default instead, or why
+    /// nothing is. The song carries on through it.
+    fn apply_audio_output(&mut self) {
+        let Some(output) = self.output.clone() else {
+            return;
+        };
+        let Ok(mut output) = output.lock() else {
+            return;
+        };
+        let said = match output.reopen(&self.settings.audio_output.choice()) {
+            Ok(status) if status.fell_back.is_some() => fell_back_words(&self.settings, &status),
+            Ok(status) => format!("Playing through {status}"),
+            Err(e) => format!("No sound: {e}. Choose another output in Settings."),
+        };
+        drop(output);
+        self.dropouts_said = false;
+        self.settings_toast = Some((said, false));
+        self.touch();
+    }
+
+    /// The output's dropouts, and a device that went away: the first is
+    /// pointed out once, the second is answered by opening the default.
+    fn watch_output(&mut self) {
+        let Some(output) = self.output.clone() else {
+            return;
+        };
+        let Ok(mut output) = output.lock() else {
+            return;
+        };
+        let stats = output.stats();
+        if stats.lost() {
+            let said = match output.reopen(&self.settings.audio_output.choice()) {
+                Ok(status) => format!("The audio output went away; playing through {status}"),
+                Err(e) => format!("The audio output went away and nothing else opened: {e}"),
+            };
+            self.message = Some(said);
+            return;
+        }
+        if !self.dropouts_said && stats.xruns() >= DROPOUTS_WORTH_SAYING {
+            self.dropouts_said = true;
+            self.message = Some(format!(
+                "The sound card ran dry {} times \u{2014} a larger buffer in Settings \
+                 \u{2192} Audio output stops the crackles",
+                stats.xruns()
+            ));
+        }
     }
 
     /// How long an input that would not open waits before it is tried
@@ -8517,6 +8631,10 @@ impl StudioHost for Session {
         }
     }
 
+    fn take_plugin_play_pause(&mut self) -> u32 {
+        self.plugins.take_play_pause()
+    }
+
     fn take_plugin_header_presses(&mut self) -> Vec<(PresetDevice, f32, f32)> {
         self.plugins
             .take_header_presses()
@@ -9392,6 +9510,22 @@ impl StudioHost for Session {
                         crate::settings::routing_label(Some(self.project.lane_routing.mode))
                             .to_string()
                     }
+                    // The output's, which the session holds.
+                    crate::settings::SettingRow::OutputNow => self
+                        .output
+                        .as_ref()
+                        .and_then(|o| o.lock().ok()?.status().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "Not open".to_string()),
+                    crate::settings::SettingRow::Dropouts => {
+                        match self
+                            .output
+                            .as_ref()
+                            .and_then(|o| Some(o.lock().ok()?.stats().xruns()))
+                        {
+                            None | Some(0) => "None".to_string(),
+                            Some(n) => n.to_string(),
+                        }
+                    }
                     // The theme's, which the session holds.
                     crate::settings::SettingRow::Theme => self.theme.name.clone(),
                     crate::settings::SettingRow::CornerRounding => {
@@ -9567,6 +9701,25 @@ impl StudioHost for Session {
                         _ => row.fraction(midi).unwrap_or(0.0),
                     },
                 },
+                K::Choice
+                    if matches!(
+                        row,
+                        crate::settings::SettingRow::AudioBackend
+                            | crate::settings::SettingRow::AudioDevice
+                            | crate::settings::SettingRow::AudioBuffer
+                    ) =>
+                {
+                    let lists = self.output_lists();
+                    let (options, chosen) = row
+                        .audio_choices(
+                            &self.settings,
+                            &lists.default_host,
+                            &lists.hosts,
+                            &lists.devices,
+                        )
+                        .unwrap_or_default();
+                    SettingControl::Choice { options, chosen }
+                }
                 K::Choice if *row == crate::settings::SettingRow::Theme => {
                     let options: Vec<String> = self
                         .theme_library()
@@ -9725,6 +9878,23 @@ impl StudioHost for Session {
                 return;
             }
             _ => {}
+        }
+        if matches!(
+            row,
+            SettingRow::AudioBackend | SettingRow::AudioDevice | SettingRow::AudioBuffer
+        ) {
+            let (hosts, devices) = {
+                let lists = self.output_lists();
+                (lists.hosts.clone(), lists.devices.clone())
+            };
+            if row.choose_audio(&mut self.settings, option, &hosts, &devices) {
+                if let Err(e) = self.save_settings() {
+                    self.message = Some(format!("could not write settings: {e}"));
+                }
+                self.apply_audio_output();
+                self.touch();
+            }
+            return;
         }
         if row.choose_backdrop(&mut self.settings, option) {
             if let Err(e) = self.save_settings() {
@@ -13430,6 +13600,7 @@ impl StudioHost for Session {
 
     fn pump(&mut self) {
         self.pump_previews();
+        self.watch_output();
         // Lane-style's upkeep for an edit nobody let go of — a key press has
         // no mouse-up — once the history has stood still a moment.
         if let Some((generation, since)) = self.lanes_unsettled {
@@ -15335,4 +15506,34 @@ fn picture_place(anchor: [f32; 2]) -> (&'static str, usize) {
         })
         .map(|(i, (name, _))| (*name, i))
         .unwrap_or(("Centre", 4))
+}
+
+/// The backends this build can play through, and one backend's devices —
+/// see `Session::output_lists`.
+struct OutputLists {
+    default_host: String,
+    hosts: Vec<String>,
+    for_host: Option<String>,
+    devices: Vec<String>,
+}
+
+/// How many dropouts are worth a word: a handful happen opening a device or
+/// when the machine wakes up, and are not crackle.
+const DROPOUTS_WORTH_SAYING: u64 = 8;
+
+/// What to say when the output chosen would not open and the default did.
+fn fell_back_words(
+    settings: &crate::settings::Settings,
+    status: &fontelle_engine::OutputStatus,
+) -> String {
+    let asked = match (&settings.audio_output.host, &settings.audio_output.device) {
+        (_, Some(device)) => device.clone(),
+        (Some(host), None) => host.clone(),
+        (None, None) => "the output".to_string(),
+    };
+    format!(
+        "{asked} would not open ({}); playing through {} instead",
+        status.fell_back.as_deref().unwrap_or("no reason given"),
+        status.host
+    )
 }

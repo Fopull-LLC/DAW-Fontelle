@@ -1840,11 +1840,21 @@ enum Gesture {
         /// shrinks as the drag shortens the note, and the clamp chases it.
         shortest: Tick,
     },
-    /// Dragging a selection box. Corners in pixels, because that is what the
-    /// box is drawn in and what makes direction irrelevant.
+    /// Dragging a selection box.
+    ///
+    /// The first corner is **on the music**, in ticks and keys, not on the
+    /// screen. Reported: *"selection box moves with the auto scroll when
+    /// cursor goes off screen instead of the box staying where it started and
+    /// going offscreen so you can actually just be expanding your selection
+    /// offscreen"*. As a pixel, the corner rode along with every edge scroll
+    /// and a box could never hold more than a screenful. The other corner is
+    /// the pointer, a pixel held inside the grid, and `grid` is the one both
+    /// were last measured against, so the box can be drawn without being
+    /// handed it.
     Marquee {
-        from: (f32, f32),
+        anchor: (f64, f32),
         to: (f32, f32),
+        grid: Rect,
     },
     /// Painting notes across cells as the pointer crosses them.
     Painting {
@@ -2155,7 +2165,9 @@ impl PianoRoll {
     /// one.
     pub fn marquee(&self) -> Option<Rect> {
         match self.gesture {
-            Gesture::Marquee { from, to } => Some(box_between(from, to)),
+            Gesture::Marquee { anchor, to, grid } => {
+                Some(box_between(roll_pixel(&self.view, grid, anchor), to))
+            }
             _ => None,
         }
     }
@@ -2611,8 +2623,9 @@ impl PianoRoll {
                 // the FL habit; the Select tool does it without one.
                 if self.tool == Tool::Select || self.modifiers.ctrl {
                     self.gesture = Gesture::Marquee {
-                        from: (x, y),
+                        anchor: roll_point(&self.view, grid, x, y),
                         to: (x, y),
+                        grid,
                     };
                     return Vec::new();
                 }
@@ -2747,8 +2760,14 @@ impl PianoRoll {
 
             Gesture::Erasing => self.erase_at(hit_test(&self.view, grid, notes, raw_x, raw_y)),
 
-            Gesture::Marquee { from, .. } => {
-                self.gesture = Gesture::Marquee { from, to: (x, y) };
+            // The clamped pointer: held off the edge, the box ends at the
+            // edge while the view scrolls the music in under it.
+            Gesture::Marquee { anchor, .. } => {
+                self.gesture = Gesture::Marquee {
+                    anchor,
+                    to: (x, y),
+                    grid,
+                };
                 Vec::new()
             }
 
@@ -2890,8 +2909,12 @@ impl PianoRoll {
     ) -> Vec<RollEdit> {
         let mut edits = Vec::new();
         match self.gesture {
-            Gesture::Marquee { from, .. } => {
-                let box_ = box_between(from, (x, y));
+            Gesture::Marquee { anchor, .. } => {
+                // What was drawn is what is caught: the corner where the music
+                // has scrolled it to, which may be far off the screen, and the
+                // pointer clamped to the grid as every drag of it was.
+                let from = roll_pixel(&self.view, grid, anchor);
+                let box_ = box_between(from, clamp_to_grid(grid, x, y));
                 self.selection = notes_in(&self.view, grid, notes, box_);
             }
             Gesture::Slicing { from, to } => {
@@ -3431,6 +3454,32 @@ const BLANK_TEMPLATE: Note = Note {
     path: Vec::new(),
     channel: None,
 };
+
+/// A pixel as a place in the music: a fractional tick and a fractional key,
+/// so turning it back with [`roll_pixel`] lands on the same pixel at the same
+/// view, and on the same music at any other.
+fn roll_point(view: &RollView, grid: Rect, x: f32, y: f32) -> (f64, f32) {
+    let tick = if view.pixels_per_tick > 0.0 {
+        view.scroll_tick as f64 + f64::from(x - grid.x) / f64::from(view.pixels_per_tick)
+    } else {
+        view.scroll_tick as f64
+    };
+    let key = if view.key_height > 0.0 {
+        f32::from(view.top_key) + view.key_offset - (y - grid.y) / view.key_height
+    } else {
+        f32::from(view.top_key)
+    };
+    (tick, key)
+}
+
+/// Where [`roll_point`]'s place in the music is on screen at `view`, off the
+/// grid or not. The inverse of [`tick_to_x`] and [`key_to_y`], fractionally.
+fn roll_pixel(view: &RollView, grid: Rect, (tick, key): (f64, f32)) -> (f32, f32) {
+    (
+        grid.x + ((tick - view.scroll_tick as f64) * f64::from(view.pixels_per_tick)) as f32,
+        grid.y + (f32::from(view.top_key) + view.key_offset - key) * view.key_height,
+    )
+}
 
 /// The rectangle two corners describe, whichever way round they came.
 fn box_between(a: (f32, f32), b: (f32, f32)) -> Rect {

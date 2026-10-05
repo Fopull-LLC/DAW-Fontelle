@@ -435,9 +435,9 @@ pub const MENU_TEXT_INSET: f32 = 8.0;
 /// Between two columns of a menu laid out in several — room for the rule.
 const COLUMN_GAP: f32 = 8.0;
 
-/// The scrollbar's thumb, and the least it shrinks to.
-const SCROLLBAR_WIDTH: f32 = 4.0;
-const THUMB_MIN: f32 = 18.0;
+// The scrollbar's thumb, and the least it shrinks to: the list bar's, so the
+// two are one bar.
+use super::scrollbar::{SCROLLBAR_WIDTH, THUMB_MIN};
 
 /// How much of a row's right end is its star, when it has one.
 ///

@@ -108,6 +108,76 @@ it to work well so users can work on songs together"*. `docs/collab-plan.md`
   token (L5, needs the account module in the studio), then end-to-end
   encryption under the relay (L7).
 
+**As of 2026-10-05, latest, beside it — three reports from using the
+studio, also for v0.25.1** (branch `fix/v0.25.1-ui-audio`).
+
+- **The audio output is configurable** (*"audio drivers not configurable
+  enough so pretty sure its defaulting to default audio drivers for a lot
+  of users causing things to sound like failing audio drivers
+  sometimes"*). **What the default was, and why it crackled:** `cpal`'s
+  default host and its default device, asking for `Fixed(BLOCK_SIZE)` — 128
+  frames, 2.7 ms at 48 kHz — whenever the device's range had room for it,
+  which is nearly always. On Linux that host was ALSA (no other backend was
+  built in) and that device `default`, which on a PipeWire or PulseAudio
+  desktop is the sound server's ALSA plugin: a 2.7 ms period through that
+  bridge is one most desktops cannot keep filled once a plugin or a busy
+  moment takes a share, and every miss is a click. Nothing said so — the
+  backend's underrun went to `eprintln!` on the audio thread. Now:
+  `DEFAULT_OUTPUT_BUFFER` is 512 frames (10.7 ms); Settings → Audio output
+  chooses the backend (Linux: ALSA, PulseAudio — PipeWire answers it —
+  and JACK, loaded at run time; cpal's own PipeWire host needs libpipewire
+  headers to build and is left out), the device (probed, deduplicated), and
+  the buffer (64 to 2048 frames, each with its latency); remembered in
+  `settings.json` (`audio_output`, format 9). A choice is applied live:
+  `AudioOutput` keeps what the callback owns in a `CallbackSlot` the stream
+  borrows, parks it, drops the stream, and opens the new one on the same
+  graph, timeline and transport — the song plays on. A choice that will not
+  open falls back to the default and says why; a device that goes away is
+  reopened on the default from `pump`. Dropouts the backend reports
+  (`cpal::ErrorKind::Xrun`) are counted in an atomic (`OutputStats`), shown
+  on the page with a Reset, and pointed out once past eight. **cpal's
+  default host is PulseAudio now** whenever a Pulse server (pipewire-pulse)
+  answers, ALSA otherwise. The sample rate stays 48 kHz (said, not set): the
+  tempo map, Flopsynth and the plugin rack are built at it throughout, and a
+  device at another rate is converted by the system. Through ALSA's
+  PipeWire plugin a dropout is absorbed by the plugin and not reported, so
+  the count stays at zero there. Tests: `fontelle-engine`'s
+  `output_choice.rs`, `output_buffer_size.rs`, `output_reopen.rs` (the real
+  device under the RT allocator guard; skips with no device),
+  `fontelle-app`'s `audio_output_settings.rs`. Not run for real: WASAPI
+  device choice (compiled for Windows only), CoreAudio (macOS clippy only),
+  ASIO (not built: `cpal`'s `asio` feature needs the ASIO SDK at build time).
+- **A selection box keeps its first corner on the music** (*"selection box
+  moves with the auto scroll when cursor goes off screen instead of the box
+  staying where it started"*): the roll's and the arrangement's marquee
+  anchor is a fractional tick and key (lane) now, turned into a pixel
+  against the current view to draw and to select; the pointer end is held
+  inside the grid. A box held still past an edge keeps scrolling
+  (`marquee_held_off_edge`, a 16 ms wake). Tests:
+  `fontelle-ui/tests/marquee_autoscroll.rs`.
+- **Space plays and stops from a plugin's window** (*"space should
+  play/pause while a plugin window has focus"*). `PluginWindow::poll`
+  reports `GuiPoll::play_pause`: a space the plugin did not take — on the
+  strip, or passed up by a plugin window that does not listen for keys —
+  and the window runs the studio's own Play for it (`take_plugin_play_pause`,
+  the path its space takes). Not a repeat, not with a modifier, and no
+  hotkey: only a window the keyboard is in hears a key. X11: the frame and
+  the window under the strip select key presses; seen for real on `:99`
+  with Dexed (CLAP): over the strip a space plays and the next one stops;
+  over Dexed's own area the space is Dexed's, because JUCE's windows
+  listen for keys and X hands a key to the window under the pointer
+  inside the focus — so on Linux this is the strip, and plugins that do not
+  take keys. Windows: `WM_KEYDOWN` on the frame and on the window under the
+  strip (JUCE passes unused keys up to its parent) — compiled, not run.
+  macOS: the plugin's area is a `FontellePluginArea` view that takes the
+  keyboard first and hears `keyDown:` passed up the responder chain —
+  compiled, not run. Tests: `fontelle-host/tests/gui_keys.rs`.
+- **The browser's lists have a scroll bar** (*"add scroll bar to the import
+  windows"*): `RowScrollbar`, the menus' thumb for a whole-row list, on the
+  Import tab and every other browser list; rows stop short of its strip, a
+  press anywhere on the strip takes hold, the wheel is unchanged. Tests:
+  `fontelle-ui/tests/browser_scrollbar.rs`.
+
 **As of 2026-10-05, later — the rest of the list: items 10 to 13,
 and the plan for 14.** v0.25.0.
 

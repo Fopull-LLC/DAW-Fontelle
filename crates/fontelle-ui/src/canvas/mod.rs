@@ -20,6 +20,7 @@ mod prefabs;
 mod preset_bar;
 mod rack;
 mod roll_scale;
+mod scrollbar;
 mod settings_page;
 mod share;
 mod text_entry;
@@ -41,9 +42,9 @@ pub use automation::{
     block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
 pub use browser::{
-    BrowserHit, BrowserLayout, BrowserMode, SettingControl, SettingPress, TAB_WORD_MIN_WIDTH,
-    browser_file_share_at, browser_focus_step, browser_hit, browser_layout, browser_layout_for,
-    browser_layout_split, browser_row_carries, kind_icon, row_under, scrolled,
+    BrowserHit, BrowserLayout, BrowserList, BrowserMode, SettingControl, SettingPress,
+    TAB_WORD_MIN_WIDTH, browser_file_share_at, browser_focus_step, browser_hit, browser_layout,
+    browser_layout_for, browser_layout_split, browser_row_carries, kind_icon, row_under, scrolled,
     setting_control_rect, setting_press, setting_slider_at, setting_slider_groove,
     setting_slider_x_of, tab_shows_word,
 };
@@ -64,6 +65,7 @@ pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
     instrument_menu_rows, plugin_picker_rows,
 };
+pub use scrollbar::RowScrollbar;
 pub mod gestures;
 pub use flopsynth::{
     ADD_EFFECT, ADD_ROUTE, BADGE_H, BADGE_W, BadgeAnatomy, CANOPY_HEIGHT, CAPTION_ROOM, CARD_GAP,

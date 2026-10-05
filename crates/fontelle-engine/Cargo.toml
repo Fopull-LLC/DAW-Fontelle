@@ -33,6 +33,11 @@ rubato = "5.0.0"
 alsa = "0.11.0"
 # `rt_budget`: the real-time CPU budget and the SIGXCPU watchdog.
 libc = "0.2.189"
+# Output backends to choose from in Settings besides ALSA: JACK (loaded at run
+# time, so a machine without it builds and runs the same) and PulseAudio
+# (a client in Rust; PipeWire answers it as pipewire-pulse). cpal's own
+# PipeWire host needs libpipewire's headers to build and is left out.
+cpal = { version = "0.18.2", features = ["jack", "pulseaudio"] }
 
 [dev-dependencies]
 fontelle-assets = { path = "../fontelle-assets" }

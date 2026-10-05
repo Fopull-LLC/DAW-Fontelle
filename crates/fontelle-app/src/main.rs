@@ -547,8 +547,14 @@ fn play_or_render(
     } else {
         transport.play();
     }
-    device
-        .start_output_stream(
+    // The backend, device and buffer Settings chose — or the default, which
+    // the status says when it had to stand in.
+    let output_choice = fontelle_app::settings::Settings::load()
+        .0
+        .audio_output
+        .choice();
+    let output_status = device
+        .start_output(
             graph_source,
             timeline_source,
             SAMPLE_RATE,
@@ -558,8 +564,24 @@ fn play_or_render(
             // arrives through (TDD §14.1), and it is what makes what you draw
             // audible while the transport is stopped.
             (midi_in || window).then_some(live_source),
+            &output_choice,
         )
-        .map_err(|e| format!("failed to open the default output device: {e}"))?;
+        .map_err(|e| format!("failed to open the audio output: {e}"))?;
+    println!("  output: {output_status}");
+    if let Some(why) = &output_status.fell_back {
+        println!("  ! the chosen output would not open ({why}); playing through the default");
+    }
+    // Shared with the window's session, which changes it from Settings
+    // while it plays; this side stops it at exit.
+    let output = device
+        .take_output()
+        .map(|output| std::sync::Arc::new(std::sync::Mutex::new(output)));
+    let stop_output =
+        |output: &Option<std::sync::Arc<std::sync::Mutex<fontelle_engine::AudioOutput>>>| {
+            if let Some(Ok(mut output)) = output.as_ref().map(|o| o.lock()) {
+                output.close();
+            }
+        };
 
     if window {
         // **Why the last run went away**, before anything can go wrong in this
@@ -686,6 +708,11 @@ fn play_or_render(
             // And the ring the output stream is already reading, so choosing
             // an input on a mixer strip is heard through that strip.
             .with_monitor(std::sync::Arc::clone(&monitor));
+            // And the stream itself, which Settings moves to another backend,
+            // device or buffer while the song plays.
+            if let Some(output) = &output {
+                session = session.with_output(std::sync::Arc::clone(output));
+            }
             if let Some(path) = untitled_backup.clone() {
                 session = session.with_untitled_backup(path);
             }
@@ -806,6 +833,7 @@ fn play_or_render(
         // buffer that stops mid-note.
         transport.stop();
         std::thread::sleep(std::time::Duration::from_millis(50));
+        stop_output(&output);
         device.stop();
         // The window has closed under its own steam, so the next launch has
         // no news. A panic never reaches this line, which is exactly what
@@ -877,6 +905,7 @@ fn play_or_render(
     // the speakers before the stream goes away.
     transport.stop();
     std::thread::sleep(std::time::Duration::from_millis(50));
+    stop_output(&output);
     device.stop();
     println!(
         "  stopped at {:.2}s",

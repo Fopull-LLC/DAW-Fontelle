@@ -14,6 +14,7 @@ mod input_monitor;
 mod key_tap;
 mod live;
 mod nodes;
+mod output;
 mod pipewire;
 mod plugin_node;
 #[cfg(target_os = "linux")]
@@ -25,7 +26,7 @@ mod transport;
 mod tune_tap;
 
 pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
-pub use device::{AudioDevice, BLOCK_SIZE, DeviceError, output_buffer_sizes};
+pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,
 };
@@ -47,6 +48,11 @@ pub use nodes::{
     GAIN_MAX_DB, GAIN_MIN_DB, HeldKeys, MAX_HELD_KEYS, MasterMeter, MasterNode, Metronome,
     MetronomeNode, MixerTrackNode, SEND_MIN_DB, SamplerNode, SendControls, SendNode, TrackControls,
     VoiceMeter, insert_latency_samples, max_insert_latency_samples,
+};
+pub use output::{
+    AudioOutput, CallbackSlot, DEFAULT_OUTPUT_BUFFER, OutputChoice, OutputStats, OutputStatus,
+    default_output_host_name, latency_label, output_buffer_sizes, output_device_names,
+    output_host_names,
 };
 #[cfg(target_os = "linux")]
 pub use pipewire::PipeWireInput;

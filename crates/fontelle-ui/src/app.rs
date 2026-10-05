@@ -105,6 +105,9 @@ enum Drag {
     /// is in `menu_grab` — a `Drag` is compared and a float is not a thing to
     /// compare, the same arrangement `flop_knob` has.
     MenuScroll,
+    /// A browser list's scroll bar; where on the thumb is in `list_grab`, for
+    /// `MenuScroll`'s reason.
+    ListScroll(crate::canvas::BrowserList),
     /// Notes: drawing, moving, resizing, or a selection box.
     Roll,
     /// Values in the property lane.
@@ -429,6 +432,11 @@ fn file_name(path: &std::path::Path) -> String {
 /// its frame rate. Slower and a knob drags in steps; faster and an idle studio
 /// is spinning for a window somebody else is drawing.
 const PLUGIN_EDITOR_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How often a selection box held off the edge of its view moves the view on
+/// with no mouse movement to do it (`marquee_held_off_edge`). The distance is
+/// charged against the clock, so this is smoothness, not speed.
+const MARQUEE_SCROLL_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// What an oscillator's sound menu says with no audio folder to list.
 const NO_SOUNDS_TO_OFFER: &str = "no audio folder \u{2014} set one on the Import tab";
@@ -2046,6 +2054,9 @@ pub struct WindowApp {
     /// it — see [`Drag::MenuScroll`]. Meaningless while that drag is not
     /// running.
     menu_grab: f32,
+    /// How far down a browser list's thumb a [`Drag::ListScroll`] took hold
+    /// of it.
+    list_grab: f32,
     /// How much of the soundfont panel the bank gets, against its presets.
     /// `None` until the seam between them is dragged.
     browser_file_share: Option<f32>,
@@ -2520,6 +2531,7 @@ impl WindowApp {
             browser_title: "Soundfonts".to_string(),
             drag: Drag::None,
             menu_grab: 0.0,
+            list_grab: 0.0,
             browser_file_share: None,
             edge_scroll: EdgeScroll::default(),
             edge_scroll_at: None,
@@ -3867,6 +3879,7 @@ impl WindowApp {
             Drag::DisgustingBeatCurve | Drag::DisgustingBeatScene(_) => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
             Drag::MenuScroll
+            | Drag::ListScroll(_)
             | Drag::LaneGrip
             | Drag::Divider
             | Drag::Knob
@@ -4985,8 +4998,20 @@ impl ApplicationHandler for WindowApp {
             // A plugin's own editor has no thread: it repaints on a timer this
             // call fires. See `fontelle_host::gui`.
             self.plugin_editor_open = doc.tick_plugin_editors();
+            // *"space should play/pause while a plugin window has focus"*:
+            // a space the plugin's window heard and the plugin did not take
+            // is the studio's Play, the one its own window's space is.
+            let spaces = doc.take_plugin_play_pause();
+            for _ in 0..spaces {
+                self.transport(TransportHit::Play);
+            }
         }
         self.tick_plugin_headers();
+        // A box held off the edge goes on growing; `arm_deadline` keeps the
+        // loop coming back for it.
+        if self.marquee_held_off_edge() {
+            self.drag_pointer();
+        }
         let started = std::time::Instant::now();
         self.refresh_studio();
         let refreshed = ms_since(started);
@@ -8669,6 +8694,40 @@ impl WindowApp {
         self.edge_scroll.step(rate, dt)
     }
 
+    /// The arrangement's view in the terms [`edge_scroll_rate`] reads: lanes
+    /// for rows.
+    fn timeline_edge_view(&self) -> crate::canvas::RollView {
+        crate::canvas::RollView {
+            scroll_tick: self.timeline.view.scroll_tick,
+            top_key: 0,
+            key_offset: 0.0,
+            pixels_per_tick: self.timeline.view.pixels_per_tick,
+            key_height: self.timeline.view.lane_height,
+            snap: self.timeline.view.snap,
+        }
+    }
+
+    /// Whether a selection box is being held past the edge of its view, so
+    /// the view has to keep scrolling with nothing moving the mouse.
+    ///
+    /// The edge scroll used to be driven by pointer moves alone: a box held
+    /// still off the edge stopped growing, and *"expanding your selection
+    /// offscreen"* meant wiggling the mouse to get there. Only the box: a held
+    /// note or clip still waits for the hand, as it always did.
+    fn marquee_held_off_edge(&self) -> bool {
+        let (x, y) = self.cursor;
+        let rate = match self.drag {
+            Drag::Roll if self.roll.marquee().is_some() => {
+                edge_scroll_rate(&self.roll.view, self.roll_layout.grid, x, y)
+            }
+            Drag::Timeline if self.timeline.marquee().is_some() => {
+                edge_scroll_rate(&self.timeline_edge_view(), self.timeline_layout.grid, x, y)
+            }
+            _ => return false,
+        };
+        rate != (0.0, 0.0)
+    }
+
     /// Ends an edge scroll: the clock and the part-tick both go.
     fn end_edge_scroll(&mut self) {
         self.edge_scroll.reset();
@@ -8681,6 +8740,7 @@ impl WindowApp {
         match self.drag {
             Drag::None => {}
             Drag::MenuScroll => self.drag_menu_scroll(y),
+            Drag::ListScroll(list) => self.drag_list_scroll(list, y),
             Drag::Roll => self.drag_roll(),
             Drag::Lane => self.drag_lane(),
             Drag::LaneGrip => self.drag_lane_grip(y),
@@ -14491,17 +14551,7 @@ impl WindowApp {
         let grid = self.timeline_layout.grid;
         // The same edge-scroll the roll has, for the same reason: a clip has to
         // be draggable to bar 1 from a screen away.
-        let (ticks, rows) = self.edge_scroll_step(
-            &crate::canvas::RollView {
-                scroll_tick: self.timeline.view.scroll_tick,
-                top_key: 0,
-                key_offset: 0.0,
-                pixels_per_tick: self.timeline.view.pixels_per_tick,
-                key_height: self.timeline.view.lane_height,
-                snap: self.timeline.view.snap,
-            },
-            grid,
-        );
+        let (ticks, rows) = self.edge_scroll_step(&self.timeline_edge_view(), grid);
         if ticks != 0 || rows != 0 {
             let v = &mut self.timeline.view;
             v.scroll_tick = (v.scroll_tick + ticks).max(0);
@@ -16594,6 +16644,16 @@ impl WindowApp {
         match browser_hit(&self.browser, x, y) {
             BrowserHit::Seam => {
                 self.drag = Drag::BrowserSplit;
+            }
+            // *"add scroll bar to the import windows"*: the lists scrolled
+            // with the wheel and had nothing to drag. The press itself moves
+            // the thumb to the pointer when it lands beside it.
+            BrowserHit::Scrollbar(list) => {
+                if let Some(grab) = self.browser.bar(list).and_then(|bar| bar.grab(x, y)) {
+                    self.list_grab = grab;
+                    self.drag = Drag::ListScroll(list);
+                    self.drag_list_scroll(list, y);
+                }
             }
             BrowserHit::Search(_) => {
                 self.searching = true;
@@ -18948,8 +19008,14 @@ impl WindowApp {
             // A settings drop-down: the entry chosen, in one press.
             (MenuTarget::SettingChoice(setting), index) => {
                 let setting = *setting;
-                if let Some(doc) = &mut self.options.document {
+                // And what the choice had to say, as a press's is: an output
+                // that would not open, a song switched to lane-style.
+                let toast = self.options.document.as_mut().and_then(|doc| {
                     doc.choose_setting(setting, index);
+                    doc.take_settings_toast()
+                });
+                if let Some((text, undoable)) = toast {
+                    self.show_toast(text, undoable);
                 }
                 self.settings_focus = Some(setting);
                 self.refresh_studio();
@@ -20284,6 +20350,25 @@ impl WindowApp {
         }
         menu.scroll_by(-steps * step);
         true
+    }
+
+    /// One pointer move of a browser list's scroll bar drag — see
+    /// [`Drag::ListScroll`]. Whole rows, like the wheel.
+    fn drag_list_scroll(&mut self, list: crate::canvas::BrowserList, y: f32) {
+        let Some(bar) = self.browser.bar(list) else {
+            return;
+        };
+        let wanted = bar.scroll_at(y, self.list_grab);
+        let scroll = match list {
+            crate::canvas::BrowserList::Files => &mut self.file_scroll,
+            crate::canvas::BrowserList::Presets => &mut self.preset_scroll,
+        };
+        if *scroll == wanted {
+            return;
+        }
+        *scroll = wanted;
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
     }
 
     /// One pointer move of a scrollbar drag — see [`Drag::MenuScroll`].
@@ -22081,6 +22166,12 @@ impl WindowApp {
             wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
                 w.min(now + PLUGIN_EDITOR_FRAME)
             }));
+        }
+
+        // A selection box held past an edge scrolls at a frame's pace.
+        if self.marquee_held_off_edge() {
+            let due = now + MARQUEE_SCROLL_FRAME;
+            wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 
         // **The sky keeps the loop awake while it moves.** Nothing else asks

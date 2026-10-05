@@ -131,6 +131,9 @@ struct Live {
     header_presses: Vec<(i32, i32)>,
     /// Where the pointer is over the strip.
     header_hover: Option<(i32, i32)>,
+    /// Spaces the editor's window heard that the plugin did not take — the
+    /// studio's play and stop (`fontelle_host::GuiPoll::play_pause`).
+    play_pause: u32,
 }
 
 /// The document's parameter list for a plugin, by id.
@@ -241,6 +244,7 @@ impl Live {
         }
         self.header_presses
             .extend(polled.header_presses.iter().copied());
+        self.play_pause += polled.play_pause;
         if let Some(hover) = polled.header_hover {
             self.header_hover = hover;
         }
@@ -885,6 +889,7 @@ impl PluginRack {
                 seen: seen_params(state),
                 header_presses: Vec::new(),
                 header_hover: None,
+                play_pause: 0,
             };
             live.refresh_displays();
             self.list_library(&found_info, &mut live);
@@ -1327,6 +1332,15 @@ impl PluginRack {
             .collect();
         headers.sort_by_key(|header| format!("{:?}", header.slot));
         headers
+    }
+
+    /// Spaces any editor's window heard that its plugin did not take, since
+    /// this was last asked.
+    pub fn take_play_pause(&mut self) -> u32 {
+        self.live
+            .values_mut()
+            .map(|live| std::mem::take(&mut live.play_pause))
+            .sum()
     }
 
     /// The presses on editors' strips since this was last asked, in each

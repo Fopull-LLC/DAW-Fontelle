@@ -43,11 +43,12 @@ pub use fontelle_types::FolderKind;
 /// the two import folders, four since it grew the favourites, six since it
 /// grew the recent projects and the update switch, seven since it grew the
 /// three a shared song needs (`docs/collab-plan.md` §10.4), eight since it
-/// grew how much a theme's backdrops may move (hub card 0366). Every added field carries
+/// grew how much a theme's backdrops may move (hub card 0366), nine since it
+/// grew the audio output's backend, device and buffer. Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 8;
+pub const SETTINGS_FORMAT_VERSION: u32 = 9;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.
@@ -219,6 +220,10 @@ pub struct Settings {
     /// learning-plan.md` §5: offered, *never starting by itself*).
     #[serde(default)]
     pub tour_offered: bool,
+    /// Which backend, device and buffer the studio plays through
+    /// ([`AudioOutputSettings`]). All automatic until chosen.
+    #[serde(default, skip_serializing_if = "AudioOutputSettings::is_automatic")]
+    pub audio_output: AudioOutputSettings,
     /// How much a theme's backdrops move: Moving, Still or Off. `None` until
     /// chosen, which follows the desktop's reduce-motion switch where one can
     /// be read ([`Settings::backdrop_motion`]).
@@ -298,6 +303,7 @@ impl Default for Settings {
             install: None,
             new_song_routing: None,
             tour_offered: false,
+            audio_output: AudioOutputSettings::default(),
             backdrop_effects: None,
             backdrop_fps: thirty(),
             backdrop_scale_percent: fifty(),
@@ -431,6 +437,66 @@ impl Default for MidiInputSettings {
     }
 }
 
+/// The audio output as the person chose it on the settings page. `None` is
+/// "automatic" in each: the system's default backend and device, and
+/// [`fontelle_engine::DEFAULT_OUTPUT_BUFFER`] frames.
+///
+/// Reported: *"audio drivers not configurable enough so pretty sure its
+/// defaulting to default audio drivers for a lot of users causing things to
+/// sound like failing audio drivers sometimes"*. Names rather than indices,
+/// like an input: a device list is not in the same order twice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AudioOutputSettings {
+    /// A backend by its name: "ALSA", "JACK", "PulseAudio", "WASAPI",
+    /// "CoreAudio".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// A device of that backend, by name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Frames per buffer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer_frames: Option<u32>,
+}
+
+impl AudioOutputSettings {
+    pub fn is_automatic(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// What the engine is asked to open.
+    pub fn choice(&self) -> fontelle_engine::OutputChoice {
+        fontelle_engine::OutputChoice {
+            host: self.host.clone(),
+            device: self.device.clone(),
+            buffer_frames: self.buffer_frames,
+        }
+    }
+}
+
+/// The buffer sizes the settings page offers besides Automatic.
+pub const OUTPUT_BUFFER_SIZES: [u32; 6] = [64, 128, 256, 512, 1024, 2048];
+
+/// A buffer size as the settings page says it: "256 frames (5.3 ms)", or
+/// "Automatic (512 frames, 10.7 ms)".
+pub fn buffer_label(frames: Option<u32>) -> String {
+    let rate = crate::SAMPLE_RATE;
+    match frames {
+        Some(frames) => format!(
+            "{frames} frames ({})",
+            fontelle_engine::latency_label(frames, rate)
+        ),
+        None => {
+            let frames = fontelle_engine::DEFAULT_OUTPUT_BUFFER;
+            format!(
+                "Automatic ({frames} frames, {})",
+                fontelle_engine::latency_label(frames, rate)
+            )
+        }
+    }
+}
+
 /// Which shape a velocity is read through — the file's spelling of
 /// [`fontelle_midi::VelocityCurve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -499,6 +565,21 @@ pub enum SettingRow {
     /// The relay to share through: blank for Floptle Cloud, or a
     /// `host:port` of your own (§9.3). Typed.
     Relay,
+    /// Which audio system the studio plays through: Automatic, or one of
+    /// the backends this build has. A choice; the session answers its list.
+    AudioBackend,
+    /// Which output device of that backend. A choice; the session lists
+    /// them.
+    AudioDevice,
+    /// Frames per buffer, each with its latency. A choice.
+    AudioBuffer,
+    /// The studio's sample rate. Nothing to press; the value says it.
+    SampleRate,
+    /// What is open now, as the engine says it. A button: open it again.
+    OutputNow,
+    /// Dropouts the backend reported since the output opened. A button:
+    /// start the count again.
+    Dropouts,
     /// A section title. Nothing to set, and a click does nothing — it is what
     /// says which of these settings belong together. It is deliberately *not*
     /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
@@ -584,7 +665,15 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 45] = [
+pub const SETTING_ROWS: [SettingRow; 52] = [
+    // First: if the studio does not sound right, nothing under it matters.
+    SettingRow::Heading("Audio output"),
+    SettingRow::AudioBackend,
+    SettingRow::AudioDevice,
+    SettingRow::AudioBuffer,
+    SettingRow::SampleRate,
+    SettingRow::OutputNow,
+    SettingRow::Dropouts,
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -753,6 +842,12 @@ impl SettingRow {
             Self::Heading(title) => title,
             Self::PluginDir(_) => "",
             Self::Extension(_) => "",
+            Self::AudioBackend => "Backend",
+            Self::AudioDevice => "Output device",
+            Self::AudioBuffer => "Buffer size",
+            Self::SampleRate => "Sample rate",
+            Self::OutputNow => "Playing through",
+            Self::Dropouts => "Dropouts",
             Self::VelocityCurve => "Velocity curve",
             Self::FixedVelocity => "Fixed velocity",
             Self::VelocityMin => "Velocity min",
@@ -836,6 +931,21 @@ impl SettingRow {
         let midi = &settings.midi_input;
         match self {
             Self::Heading(_) => String::new(),
+            Self::AudioBackend => settings
+                .audio_output
+                .host
+                .clone()
+                .unwrap_or_else(|| "Automatic".to_string()),
+            Self::AudioDevice => settings
+                .audio_output
+                .device
+                .clone()
+                .unwrap_or_else(|| "System default".to_string()),
+            Self::AudioBuffer => buffer_label(settings.audio_output.buffer_frames),
+            Self::SampleRate => format!("{} kHz", crate::SAMPLE_RATE / 1000),
+            // The session's, which holds the output.
+            Self::OutputNow => "Not open".to_string(),
+            Self::Dropouts => "None".to_string(),
             Self::VelocityCurve => midi.velocity_curve.label().to_string(),
             Self::FixedVelocity => midi.fixed_velocity.to_string(),
             Self::VelocityMin => midi.velocity_min.to_string(),
@@ -961,6 +1071,8 @@ impl SettingRow {
             Self::ImportFlFolders => "Import",
             Self::RescanPlugins => "Rescan",
             Self::ImportTheme => "Import\u{2026}",
+            Self::OutputNow => "Restart",
+            Self::Dropouts => "Reset",
             // "Remove" when one is set; the session knows, and says so.
             Self::Backdrop(_) => "Choose\u{2026}",
             Self::SaveTheme => "Save\u{2026}",
@@ -986,6 +1098,20 @@ impl SettingRow {
     pub fn help(self) -> &'static str {
         match self {
             Self::Heading(_) => "",
+            Self::AudioBackend => "The audio system the studio plays through",
+            Self::AudioDevice => {
+                "Which output plays the studio; System default follows your desktop"
+            }
+            Self::AudioBuffer => {
+                "Larger stops crackles and dropouts; smaller answers your keys sooner"
+            }
+            Self::SampleRate => {
+                "The studio runs at this rate; a device at another is converted by the system"
+            }
+            Self::OutputNow => "What is open now; Restart opens it again",
+            Self::Dropouts => {
+                "Times the sound card ran dry since the output opened; a larger buffer helps"
+            }
             Self::VelocityCurve => "How hard you play maps to how loud a note is",
             Self::FixedVelocity => "Every note at this velocity, with the Fixed curve",
             Self::VelocityMin => "What your softest touch plays",
@@ -1046,6 +1172,12 @@ impl SettingRow {
             // module may not open a dialog or `dlopen` anything. What matters
             // here is that they do not quietly step the row above instead.
             Self::Heading(_)
+            | Self::AudioBackend
+            | Self::AudioDevice
+            | Self::AudioBuffer
+            | Self::SampleRate
+            | Self::OutputNow
+            | Self::Dropouts
             | Self::Folder(_)
             | Self::PresetFolder
             | Self::PluginFolder
@@ -1145,6 +1277,10 @@ impl SettingRow {
     pub fn control_kind(self) -> SettingControlKind {
         match self {
             Self::Heading(_) => SettingControlKind::Heading,
+            Self::AudioBackend | Self::AudioDevice | Self::AudioBuffer => {
+                SettingControlKind::Choice
+            }
+            Self::SampleRate | Self::OutputNow | Self::Dropouts => SettingControlKind::Button,
             Self::VelocityCurve
             | Self::ChannelFilter
             | Self::SongRouting
@@ -1349,6 +1485,115 @@ impl SettingRow {
             )),
             _ => None,
         }
+    }
+
+    /// The audio output's drop-downs: Automatic, then each of `hosts`; the
+    /// system default, then each of `devices`; Automatic, then each of
+    /// [`OUTPUT_BUFFER_SIZES`]. A choice that is not in the list any more —
+    /// a backend not running, a device unplugged — is listed as it was
+    /// chosen and marked, rather than shown as something else.
+    pub fn audio_choices(
+        self,
+        settings: &Settings,
+        default_host: &str,
+        hosts: &[String],
+        devices: &[String],
+    ) -> Option<(Vec<String>, usize)> {
+        let listed = |first: String, names: &[String], chosen: &Option<String>, gone: &str| {
+            let mut options = vec![first];
+            options.extend(names.iter().cloned());
+            let at = match chosen {
+                None => 0,
+                Some(name) => match names.iter().position(|n| n == name) {
+                    Some(at) => at + 1,
+                    None => {
+                        options.push(format!("{name} ({gone})"));
+                        options.len() - 1
+                    }
+                },
+            };
+            (options, at)
+        };
+        let output = &settings.audio_output;
+        match self {
+            Self::AudioBackend => Some(listed(
+                format!("Automatic ({default_host})"),
+                hosts,
+                &output.host,
+                "not available",
+            )),
+            Self::AudioDevice => Some(listed(
+                "System default".to_string(),
+                devices,
+                &output.device,
+                "not found",
+            )),
+            Self::AudioBuffer => {
+                let mut options = vec![buffer_label(None)];
+                options.extend(OUTPUT_BUFFER_SIZES.iter().map(|f| buffer_label(Some(*f))));
+                let at = match output.buffer_frames {
+                    None => 0,
+                    Some(frames) => match OUTPUT_BUFFER_SIZES.iter().position(|f| *f == frames) {
+                        Some(at) => at + 1,
+                        None => {
+                            options.push(buffer_label(Some(frames)));
+                            options.len() - 1
+                        }
+                    },
+                };
+                Some((options, at))
+            }
+            _ => None,
+        }
+    }
+
+    /// Sets an audio output drop-down to its `option`th entry, in the lists
+    /// [`audio_choices`](Self::audio_choices) made from the same `hosts` and
+    /// `devices`. Whether anything changed; a backend chosen forgets the
+    /// device, which was the last backend's.
+    pub fn choose_audio(
+        self,
+        settings: &mut Settings,
+        option: usize,
+        hosts: &[String],
+        devices: &[String],
+    ) -> bool {
+        let output = &mut settings.audio_output;
+        let before = output.clone();
+        let pick = |names: &[String], current: &Option<String>| match option {
+            0 => Some(None),
+            n => match names.get(n - 1) {
+                Some(name) => Some(Some(name.clone())),
+                // The marked entry past the list: what is already chosen.
+                None if n == names.len() + 1 => Some(current.clone()),
+                None => None,
+            },
+        };
+        match self {
+            Self::AudioBackend => {
+                if let Some(host) = pick(hosts, &output.host)
+                    && host != output.host
+                {
+                    output.host = host;
+                    output.device = None;
+                }
+            }
+            Self::AudioDevice => {
+                if let Some(device) = pick(devices, &output.device) {
+                    output.device = device;
+                }
+            }
+            Self::AudioBuffer => match option {
+                0 => output.buffer_frames = None,
+                n => {
+                    if let Some(frames) = OUTPUT_BUFFER_SIZES.get(n - 1) {
+                        output.buffer_frames = Some(*frames);
+                    }
+                }
+            },
+            _ => return false,
+        }
+        *output != before
     }
 
     /// Sets a drop-down row to its `option`th entry. A no-op on a row that is
