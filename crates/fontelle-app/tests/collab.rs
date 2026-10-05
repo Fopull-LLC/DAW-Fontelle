@@ -831,6 +831,41 @@ fn a_version_mismatch_is_refused_naming_both() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The version sentence says who has to update. Telling the person with the
+/// newer Fontelle to "update from the start menu" sent them looking for an
+/// update there is none of; it is the host's to update, and the host is told
+/// so too.
+#[test]
+fn a_version_mismatch_says_who_has_to_update() {
+    let dir = scratch("versions-newer");
+    let _cleanup = Cleanup(dir.clone());
+    let mut host = a_session();
+    host.set_projects_dir(Some(dir.join("alice")));
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.save_as("Song").unwrap();
+    let mut joiner = a_session();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+
+    let hub = MemoryHub::new();
+    let mut theirs = options("Alice", PersistentId::new());
+    theirs.fontelle = "0.9.0".into();
+    let mut mine = options("Bob", PersistentId::new());
+    mine.fontelle = "0.10.0".into();
+    host.share(Box::new(hub.server_endpoint()), theirs).unwrap();
+    joiner.join(Box::new(hub.connect()), mine).unwrap();
+    for tick in 1..20 {
+        hub.set_now(tick);
+        host.pump_collab();
+        joiner.pump_collab();
+    }
+    let why = joiner.collab_ended().expect("the join ended").to_string();
+    assert!(why.contains("0.9.0") && why.contains("0.10.0"), "{why}");
+    assert!(why.contains("Alice needs to update"), "{why}");
+    let told = host.take_collab_notices().join(" ");
+    assert!(told.contains("Bob") && told.contains("update"), "{told}");
+}
+
 /// F21's edge: an edit made a moment before leaving — still in the hand,
 /// even — goes out before the goodbye, so the two copies part agreeing.
 #[test]
@@ -1994,6 +2029,68 @@ fn an_edit_is_not_held_up_behind_a_file_on_its_way() {
 
     pair.tick(2_000);
     assert!(pair.joiner.missing_files().is_empty(), "the take arrived");
+    pair.same();
+}
+
+/// Leaving on a link that is still pacing out what was sent: the last edit
+/// and the goodbye were queued behind the pace, and a session that had ended
+/// never looked at its link again — so they never went, and the host kept
+/// somebody in its session who had left, and never had their last edit.
+#[test]
+fn a_goodbye_waiting_for_the_pace_still_goes() {
+    let dir = scratch("goodbye-paced");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let clock = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let ticking = clock.clone();
+    let mut pair = Pair::through(
+        host,
+        joiner,
+        dir.clone(),
+        2,
+        Cleanup(dir.clone()),
+        |link| Box::new(link),
+        move |hub| {
+            Box::new(fontelle_net::Paced::with_clock(
+                hub.connect(),
+                4_000, // a slow link: a few edits a second
+                Box::new(move || *ticking.lock().unwrap()),
+            ))
+        },
+    );
+    pair.clock = Some(clock);
+    pair.answer(JoinAnswer::Copy);
+    pair.tick(200);
+    assert!(pair.joiner.collab_live());
+    let clip = open_clip(&pair.host);
+
+    for i in 0..10 {
+        draw(&mut pair.joiner, i * PPQN, 72);
+    }
+    pair.joiner.leave_session();
+    assert!(
+        !pair.joiner.collab_live(),
+        "Bob has left, whatever his link is still sending"
+    );
+    assert!(
+        pair.joiner.pump_session(),
+        "and the window keeps looking while it sends"
+    );
+    pair.tick(600);
+
+    assert!(
+        pair.host.session_peers().is_empty(),
+        "Alice was told he left"
+    );
+    assert!(
+        notes_of(&pair.host, clip).iter().any(|n| n.2 == 72),
+        "and has his last note"
+    );
     pair.same();
 }
 

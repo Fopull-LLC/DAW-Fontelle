@@ -269,6 +269,11 @@ impl Collab {
         self.ended.as_deref()
     }
 
+    /// Over, and still sending what was said last (see [`Collab::pump`]).
+    pub fn flushing(&self) -> bool {
+        self.ended.is_some() && self.transport.backlog() > 0
+    }
+
     pub fn question(&self) -> Option<&JoinQuestion> {
         match &self.role {
             Role::Joiner(joiner) if self.ended.is_none() && joiner.answer.is_none() => {
@@ -371,6 +376,12 @@ impl Collab {
     /// One turn: what this studio did goes out, and what arrived comes in.
     pub fn pump(&mut self, doc: &mut Project, history: &mut History, place: &Place) -> Vec<Effect> {
         if self.ended.is_some() {
+            // What was sent last — the goodbye, the edits before it — may
+            // still be waiting for the relay's pace, and goes out only as
+            // the link is looked at. Nothing that arrives matters now.
+            if self.flushing() {
+                let _ = self.transport.poll();
+            }
             return Vec::new();
         }
         self.let_go_of_idle_edits(history);
@@ -741,8 +752,14 @@ impl Host {
                     send(turn.transport, peer, &Msg::Refuse { reason });
                     turn.transport.disconnect(peer);
                     self.peers.remove(&peer);
+                    let what = if newer(&fontelle, &options.fontelle) {
+                        "update from the start menu, then share again"
+                    } else {
+                        "they need to update"
+                    };
                     turn.notices.push(format!(
-                        "{name} tried to join with Fontelle {fontelle}, and this is {}.",
+                        "{name} tried to join with Fontelle {fontelle}, and this is {} \u{2014} \
+                         {what}.",
                         options.fontelle
                     ));
                     return;
@@ -982,12 +999,26 @@ fn taken_back(label: &str, host: &str) -> String {
     format!("\u{201c}{label}\u{201d} was taken back \u{2014} {host} had changed it first.")
 }
 
-/// What a refused joiner is told (§8.3): who has which, and what to do.
+/// What a refused joiner is told (§8.3): who has which, and who updates —
+/// whoever has the older one.
 fn version_sentence(host: &str, hosts: &str, yours: &str) -> String {
-    format!(
-        "{host} has Fontelle {hosts} and you have {yours} \u{2014} the newer one should host, \
-         or update from the start menu."
-    )
+    let what = if newer(yours, hosts) {
+        format!("{host} needs to update from the start menu before you can join")
+    } else {
+        "update from the start menu, then join again".to_string()
+    };
+    format!("{host} has Fontelle {hosts} and you have {yours} \u{2014} {what}.")
+}
+
+/// Whether version `a` is newer than `b`, number by number (`0.10.0` is
+/// newer than `0.9.0`).
+fn newer(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.split(['.', '-'])
+            .map_while(|part| part.parse().ok())
+            .collect()
+    };
+    parts(a) > parts(b)
 }
 
 fn head_of(doc: &Project) -> ProjectHead {

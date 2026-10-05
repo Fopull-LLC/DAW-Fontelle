@@ -8894,7 +8894,11 @@ impl StudioHost for Session {
 
     fn pump_session(&mut self) -> bool {
         self.pump_collab();
-        self.sharing.is_some() || self.collab.as_ref().is_some_and(|c| c.ended().is_none())
+        self.sharing.is_some()
+            || self
+                .collab
+                .as_ref()
+                .is_some_and(|c| c.ended().is_none() || c.flushing())
     }
 
     fn session(&self) -> fontelle_ui::document::SessionView {
