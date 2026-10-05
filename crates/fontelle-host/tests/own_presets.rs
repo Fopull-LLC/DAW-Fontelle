@@ -175,6 +175,64 @@ fn a_plugin_that_asks_to_be_called_back_on_the_main_thread_is() {
     plugin.deactivate(processor);
 }
 
+/// > *"sometimes they'll just revert back to the init preset"*
+///
+/// OB-Xf, one time in four: a preset chosen after an undo did not stay. Its
+/// state goes in on its own message thread, and it saves back what it was
+/// handed straight away, so the host read "it is in", stopped waiting, and
+/// moved on; the undo's state landed afterwards, over the preset chosen next,
+/// and the document kept the init patch. A state the plugin saves back is
+/// now waited on like any other, until the plugin has held still.
+#[test]
+fn a_state_a_plugin_applies_later_does_not_land_over_the_next_preset() {
+    let (key, _) = clap_gain();
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    let input = vec![vec![1.0f32; 64]; 2];
+    let mut output = vec![vec![0.0f32; 64]; 2];
+    processor.process_effect(&input, &mut output, 64);
+    let by_key = |key: &str| fontelle_host::OwnPreset {
+        name: key.into(),
+        category: String::new(),
+        source: OwnPresetSource::Clap {
+            location: None,
+            load_key: Some(key.into()),
+        },
+    };
+    plugin
+        .load_own_preset_with(&mut processor, &by_key(fontelle_testplug::DEFERS_STATES))
+        .unwrap();
+    let init = plugin.save_state().expect("it keeps state");
+
+    // A preset, then an undo back to the state from before it.
+    let before = plugin.settle_mark(&mut processor);
+    plugin
+        .load_own_preset_with(&mut processor, &by_key("loud"))
+        .unwrap();
+    plugin.settle_with(&mut processor, &before);
+    let before = plugin.settle_mark_for(&mut processor, &init);
+    assert!(plugin.load_state(&init));
+    plugin.settle_with(&mut processor, &before);
+
+    // And the next preset.
+    let before = plugin.settle_mark(&mut processor);
+    plugin
+        .load_own_preset_with(&mut processor, &by_key("quiet"))
+        .unwrap();
+    plugin.settle_with(&mut processor, &before);
+    for _ in 0..4 {
+        plugin.service_main_thread();
+        processor.process_effect(&input, &mut output, 64);
+    }
+    assert!(
+        (output[0][63] - 0.25).abs() < 1e-4,
+        "the preset chosen last is what plays: {}",
+        output[0][63]
+    );
+    plugin.deactivate(processor);
+}
+
 // -------------------------------------------------------------------- .fxp
 
 /// A VST 2 patch file holding `chunk` as its opaque program chunk.

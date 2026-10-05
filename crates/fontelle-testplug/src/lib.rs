@@ -117,12 +117,24 @@ pub struct GainMain<'a> {
     /// A preset asked for that the plugin finishes only in `on_main_thread`
     /// — see `DEFERRED_PRESET`.
     deferred: Option<f32>,
+    /// Whether a state handed to it is applied only in `on_main_thread`, as
+    /// a JUCE plugin's message thread does — see `DEFERS_STATES`.
+    defers_states: bool,
+    /// Such a state, waiting: gain, invert, trim. Saved back as it is while
+    /// it waits, so a host that compares what it handed over with what the
+    /// plugin saves believes it is in.
+    deferred_state: Option<[f32; 3]>,
 }
 
 impl<'a> PluginMainThread<'a, GainShared> for GainMain<'a> {
     fn on_main_thread(&mut self) {
         if let Some(gain) = self.deferred.take() {
             store(&self.shared.pending_gain, gain);
+        }
+        if let Some([gain, invert, trim]) = self.deferred_state.take() {
+            store(&self.shared.gain, gain);
+            store(&self.shared.invert, invert);
+            store(&self.shared.trim, trim);
         }
     }
 }
@@ -204,6 +216,8 @@ impl DefaultPluginFactory for GainPlugin {
             shared,
             host,
             deferred: None,
+            defers_states: false,
+            deferred_state: None,
         })
     }
 }
@@ -214,7 +228,14 @@ pub struct GainProcessor<'a> {
     /// is processed. Sized at activation from the block the host promised,
     /// never grown.
     key: Vec<f32>,
+    /// [`ABORTS_IN_PROCESS_ENV`], read once as it is activated.
+    aborts: bool,
 }
+
+/// Set, the gain **aborts in its own `process`** — what padthv1 does when
+/// `libstdc++` catches its pure virtual call: a crash whose faulting address
+/// is in `libc`, so only the host's own record says which plugin it was.
+pub const ABORTS_IN_PROCESS_ENV: &str = "FONTELLE_TESTPLUG_ABORTS_IN_PROCESS";
 
 impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a> {
     fn activate(
@@ -229,6 +250,7 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
         Ok(Self {
             shared,
             key: vec![0.0; config.max_frames_count as usize],
+            aborts: std::env::var_os(ABORTS_IN_PROCESS_ENV).is_some(),
         })
     }
 
@@ -238,6 +260,9 @@ impl<'a> PluginAudioProcessor<'a, GainShared, GainMain<'a>> for GainProcessor<'a
         mut audio: Audio,
         events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        if self.aborts {
+            std::process::abort();
+        }
         self.shared
             .processing
             .store(true, std::sync::atomic::Ordering::Release);
@@ -476,9 +501,16 @@ fn take_gain_param(shared: &GainShared, event: &ParamValueEvent) {
 impl PluginStateImpl for GainMain<'_> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
         use std::io::Write;
-        output.write_all(&load(&self.shared.gain).to_le_bytes())?;
-        output.write_all(&load(&self.shared.invert).to_le_bytes())?;
-        output.write_all(&load(&self.shared.trim).to_le_bytes())?;
+        let [gain, invert, trim] = self.deferred_state.unwrap_or_else(|| {
+            [
+                load(&self.shared.gain),
+                load(&self.shared.invert),
+                load(&self.shared.trim),
+            ]
+        });
+        output.write_all(&gain.to_le_bytes())?;
+        output.write_all(&invert.to_le_bytes())?;
+        output.write_all(&trim.to_le_bytes())?;
         Ok(())
     }
 
@@ -495,6 +527,11 @@ impl PluginStateImpl for GainMain<'_> {
             Ok(()) => f32::from_le_bytes(trim),
             Err(_) => 1.0,
         };
+        if self.defers_states {
+            self.deferred_state = Some([gain, invert, trim]);
+            self.host.request_callback();
+            return Ok(());
+        }
         // Once the audio thread has run it, a state waits for the next
         // block — see `GainShared::processing`.
         if self
@@ -533,6 +570,13 @@ const QUEUED_PRESET: (&CStr, f32) = (c"queued", 0.5);
 /// preset that never lands.
 const DEFERRED_PRESET: (&CStr, f32) = (c"deferred", 0.25);
 
+/// Loaded by this key, the gain from then on applies a **state** it is handed
+/// only in `on_main_thread`, and saves that state back meanwhile — OB-Xf's
+/// way (JUCE's message thread). A host that took "it saves what I gave it"
+/// for "it is in" moved on, and the state landed later, over whatever was
+/// loaded next: an undo's patch over the preset chosen after it.
+pub const DEFERS_STATES: &str = "defer-states";
+
 impl clack_extensions::preset_discovery::PluginPresetLoadImpl for GainMain<'_> {
     fn load_from_location(
         &mut self,
@@ -542,6 +586,10 @@ impl clack_extensions::preset_discovery::PluginPresetLoadImpl for GainMain<'_> {
         use clack_extensions::preset_discovery::prelude::Location;
         if location != Location::Plugin {
             return Err(PluginError::Message("not one of the gain's presets"));
+        }
+        if load_key.is_some_and(|key| key.to_bytes() == DEFERS_STATES.as_bytes()) {
+            self.defers_states = true;
+            return Ok(());
         }
         if load_key == Some(DEFERRED_PRESET.0) {
             self.deferred = Some(DEFERRED_PRESET.1);

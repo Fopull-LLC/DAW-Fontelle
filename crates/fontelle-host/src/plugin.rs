@@ -1652,8 +1652,10 @@ impl HostedPlugin {
     }
 
     /// [`settle_mark`](Self::settle_mark), for loading `target` — a state
-    /// whose bytes are known. A plugin that saves exactly those is in, and
-    /// [`settle_with`](Self::settle_with) does not wait for it to move.
+    /// whose bytes are known. A plugin that saves exactly those has taken
+    /// them, and [`settle_with`](Self::settle_with) does not wait for it to
+    /// move — only for it to hold still, since it may still be applying
+    /// them (OB-Xf).
     pub fn settle_mark_for(
         &mut self,
         processor: &mut HostedProcessor,
@@ -1699,13 +1701,17 @@ impl HostedPlugin {
         // What it handed its worker thread, done first: setBfree takes a
         // state in the call and builds the organ it describes there after.
         processor.finish_work();
-        // A plugin that took the state in the call is done: nothing to run.
-        if let Some(target) = &before.target
-            && self.save_state_with(processor).as_deref() == Some(target.as_slice())
-        {
-            return;
-        }
-        let mut landed: Option<std::time::Instant> = None;
+        // **A plugin that saves back the state it was handed may not have
+        // applied it.** OB-Xf takes one on its own message thread and saves
+        // the new bytes meanwhile; this used to return here, the next preset
+        // was loaded, and the state landed over it — an undo's patch over the
+        // preset chosen after it, one time in four. So it counts as landed,
+        // and the plugin is run and called back until it has held still for
+        // `SETTLE_QUIET` like any other.
+        let took_it = before.target.as_ref().is_some_and(|target| {
+            self.save_state_with(processor).as_deref() == Some(target.as_slice())
+        });
+        let mut landed: Option<std::time::Instant> = took_it.then(std::time::Instant::now);
         let mut last = before.values.clone();
         let mut state_checked = started;
         let mut blocks = 0u32;
