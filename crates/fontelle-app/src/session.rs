@@ -2458,8 +2458,21 @@ impl Session {
             bundle: self.bundle.clone(),
             banks: self.library_dirs(),
         };
+        // Somebody else's edits never move this studio's selection: it
+        // follows the channel, not its place in a list they can add to or
+        // take from.
+        let selected = self.selected_channel_id();
         let collab = self.collab.as_mut().expect("just checked");
         let effects = collab.pump(&mut self.project, &mut self.history, &place);
+        if let Some(at) =
+            selected.and_then(|id| self.channel_ids().iter().position(|other| *other == id))
+        {
+            self.selected = at;
+        } else {
+            self.selected = self
+                .selected
+                .min(self.project.channels.len().saturating_sub(1));
+        }
         // Imports mint where the history does, so a sound this studio brings
         // in and one somebody else does at the same moment are two sounds
         // (F56).
@@ -2592,10 +2605,60 @@ impl Session {
                         .unwrap_or_default();
                     self.library.set_mint_space(self.history.mint_space());
                     self.collab = collab;
+                    self.say_missing_plugins();
                     self.collab_effects(more);
                 }
             }
         }
+    }
+
+    /// Says which plugins a joined song uses that this machine has not got
+    /// — the slot is silent, and its settings are kept as they came. Said
+    /// once, as the copy opens, rather than left to a status line the next
+    /// message overwrites: a song that sounds different here and nobody said
+    /// why reads as the session being broken.
+    fn say_missing_plugins(&mut self) {
+        let mut missing: Vec<String> = Vec::new();
+        let states: Vec<fontelle_types::PluginState> = self
+            .project
+            .channels
+            .values()
+            .filter(|channel| channel.instrument == Some(fontelle_types::InstrumentKind::Plugin))
+            .filter_map(|channel| channel.plugin.as_ref())
+            .chain(
+                self.project
+                    .mixer
+                    .tracks
+                    .values()
+                    .flat_map(|track| track.inserts.iter())
+                    .filter_map(|insert| insert.plugin.as_ref()),
+            )
+            .cloned()
+            .collect();
+        // A song with no plugins asks nothing of the rack — a scan is a walk
+        // of every plugin on the machine.
+        if states.is_empty() {
+            return;
+        }
+        self.plugins.scan_once();
+        for state in &states {
+            if self.plugins.scan().find(&state.key).is_none() && !missing.contains(&state.name) {
+                missing.push(state.name.clone());
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let (names, verb) = match missing.as_slice() {
+            [one] => (one.clone(), "is"),
+            [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "are"),
+            [] => unreachable!(),
+        };
+        self.session_notices.push(format!(
+            "{names} {verb} not installed here \u{2014} what plays through {} is silent on this \
+             machine, and its settings are kept for the others.",
+            if missing.len() == 1 { "it" } else { "them" }
+        ));
     }
 
     /// The join's question, while it is waiting for an answer.
@@ -5490,7 +5553,17 @@ impl Session {
         // stays on the clip that is open and writes this instrument into
         // it — which is what *"base our interactions on what your currently
         // selected instrument in the channel rack is"* means.
-        self.selected = self.project.channels.len().saturating_sub(1);
+        //
+        // **By its id, never "the last one".** The list is in id order, and
+        // a new channel is not always at its end: a removed one's place is
+        // taken by the next made, and in a shared song a joiner's channels
+        // sort after the host's — so the host's new instrument selected the
+        // joiner's (Ty: *"it selects and opens the last one in the list"*).
+        self.selected = self
+            .channel_ids()
+            .iter()
+            .position(|id| *id == channel)
+            .unwrap_or(self.selected);
         Ok(channel)
     }
 

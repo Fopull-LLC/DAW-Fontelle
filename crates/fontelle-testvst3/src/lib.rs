@@ -31,8 +31,8 @@
 
 use std::cell::Cell;
 use std::ffi::{CStr, c_void};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vst3::Steinberg::Linux::*;
 use vst3::Steinberg::Vst::*;
@@ -217,6 +217,23 @@ unsafe fn each_change(data: &ProcessData, mut apply: impl FnMut(ParamID, f64)) {
             apply(id, value);
         }
     }
+}
+
+/// The most the gain's processor takes, normalised: a gain of three.
+pub const GAIN_CEILING: f64 = 0.75;
+
+/// One point, at the top of the block, in the output changes.
+unsafe fn report_change(data: &ProcessData, id: ParamID, value: f64) {
+    let Some(changes) = (unsafe { ComRef::from_raw(data.outputParameterChanges) }) else {
+        return;
+    };
+    let mut index = 0;
+    let Some(queue) = (unsafe { ComRef::from_raw(changes.addParameterData(&id, &mut index)) })
+    else {
+        return;
+    };
+    let mut point = 0;
+    unsafe { queue.addPoint(0, value, &mut point) };
 }
 
 unsafe fn channel<'a>(
@@ -450,13 +467,25 @@ impl IAudioProcessorTrait for GainProcessor {
     }
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
         let data = unsafe { &*data };
+        let mut corrected = false;
         unsafe {
             each_change(data, |id, value| match id {
+                // The top of the range is refused and held at three
+                // quarters, and the processor says so in its output
+                // changes — the way a processor that limits, or learns a
+                // controller, tells its host a value it chose itself.
+                0 if value >= 1.0 => {
+                    self.gain.store(GAIN_CEILING.to_bits(), Ordering::Relaxed);
+                    corrected = true;
+                }
                 0 => self.gain.store(value.to_bits(), Ordering::Relaxed),
                 1 => self.invert.store(value >= 0.5, Ordering::Relaxed),
                 _ => {}
             })
         };
+        if corrected {
+            unsafe { report_change(data, 0, GAIN_CEILING) };
+        }
         // Handed fewer buses than declared, the fixture does nothing — the
         // rule several real plugins apply, and what the host is tested for.
         if data.numInputs < 2 || data.numOutputs < 2 {
@@ -494,7 +523,9 @@ impl IProcessContextRequirementsTrait for GainProcessor {
 
 /// The gain's controller: four parameters, two state halves, a view.
 struct GainController {
-    values: Mutex<[f64; 4]>,
+    /// Shared with the view, which sets a value here before it tells the
+    /// host — the order the SDK's `EditController` keeps.
+    values: Arc<Mutex<[f64; 4]>>,
     handler: Mutex<Option<ComPtr<IComponentHandler>>>,
 }
 
@@ -505,7 +536,7 @@ impl Class for GainController {
 impl GainController {
     fn new() -> Self {
         Self {
-            values: Mutex::new([0.25, 0.0, 0.0, 0.0]),
+            values: Arc::new(Mutex::new([0.25, 0.0, 0.0, 0.0])),
             handler: Mutex::new(None),
         }
     }
@@ -664,6 +695,7 @@ impl IEditControllerTrait for GainController {
         }
         let view = ComWrapper::new(GainView {
             handler: self.handler.lock().unwrap().clone(),
+            values: Arc::clone(&self.values),
             frame: Mutex::new(None),
             run_loop: Mutex::new(None),
             fires: AtomicU32::new(0),
@@ -676,8 +708,14 @@ impl IEditControllerTrait for GainController {
 /// The gain's editor: it draws nothing, and it is the host's run loop that
 /// is under test — a timer registered on attach, a resize asked of the
 /// frame on the first fire, an edit performed on the third.
+///
+/// The edit is made the way a JUCE plugin's knob makes one: the
+/// controller's own value first, then `performEdit` inside a gesture, then
+/// `restartComponent(kParamValuesChanged)` — JUCE's `updateHostDisplay`,
+/// which a great many plugins call after any change at all.
 struct GainView {
     handler: Option<ComPtr<IComponentHandler>>,
+    values: Arc<Mutex<[f64; 4]>>,
     frame: Mutex<Option<ComPtr<IPlugFrame>>>,
     run_loop: Mutex<Option<ComPtr<IRunLoop>>>,
     fires: AtomicU32,
@@ -776,10 +814,12 @@ impl ITimerHandlerTrait for GainView {
         if fires == 3
             && let Some(handler) = &self.handler
         {
+            self.values.lock().unwrap()[0] = 0.5;
             unsafe {
                 handler.beginEdit(0);
                 handler.performEdit(0, 0.5);
                 handler.endEdit(0);
+                handler.restartComponent(RestartFlags_::kParamValuesChanged as i32);
             }
         }
     }

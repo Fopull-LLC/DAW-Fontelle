@@ -2080,6 +2080,296 @@ fn a_session_the_relay_ended_says_the_copy_is_still_open() {
     assert!(why.contains("your copy is still open"), "{why}");
 }
 
+/// The test plugin's folder (see `tests/plugin_ui.rs`): a studio given it
+/// has the plugin; one that is not, does not.
+fn test_plugin_folder() -> PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop();
+    path.pop();
+    let built = path.join(if cfg!(target_os = "windows") {
+        "fontelle_testplug.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    });
+    assert!(
+        built.exists(),
+        "{} is missing — run `cargo build -p fontelle-testplug`",
+        built.display()
+    );
+    static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FOLDER
+        .get_or_init(|| {
+            let folder = std::env::temp_dir().join("fontelle-app-collab-plugin-tests");
+            let _ = std::fs::create_dir_all(&folder);
+            let staging = folder.join(format!("staging.{}.tmp", std::process::id()));
+            if std::fs::copy(&built, &staging).is_ok() {
+                let _ = std::fs::rename(&staging, folder.join("fontelle-testplug.clap"));
+            }
+            let _ = std::fs::remove_file(&staging);
+            folder
+        })
+        .clone()
+}
+
+/// Ty and Lore, through the relay: *only the joiner's edits replicated; the
+/// host's never reached the joiner.* The song had a plugin the joiner does
+/// not have installed (and a soundfont, which did arrive); in a blank song
+/// the host's note did arrive. Every edit of the host's must reach a joiner
+/// that cannot open one of its plugins, the plugin's state kept as it came,
+/// and the joiner told which plugin is missing.
+#[test]
+fn a_joiner_without_the_hosts_plugin_still_gets_every_edit() {
+    let dir = scratch("missing-live-plugin");
+    let mut host = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    // The first channel plays the test sine, live on Alice's machine.
+    host.set_channel_plugin(0, 0);
+    assert!(
+        host.project()
+            .channels
+            .values()
+            .any(|channel| channel.plugin.is_some()),
+        "Alice's channel plays the plugin: {:?}",
+        host.plugin_instruments()
+    );
+    host.save().unwrap();
+    // Bob's studio looks for plugins only in an empty folder: what this
+    // machine has installed is not his, and a walk of it is slow.
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+    assert!(pair.joiner.collab_live());
+    let clip = open_clip(&pair.host);
+    let state = |project: &fontelle_model::Project| {
+        project
+            .channels
+            .values()
+            .find_map(|channel| channel.plugin.clone())
+    };
+    let theirs = state(pair.host.project());
+
+    // Alice works: a note, a knob on the plugin, a save, another note.
+    draw(&mut pair.host, 0, 60);
+    pair.settle();
+    assert!(
+        notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 60),
+        "Alice's note reached Bob"
+    );
+    pair.host.select_channel(0);
+    pair.host
+        .set_instrument_param(&ParamAddress::new("patch/plugin/param/7"), 1.0);
+    pair.host.end_gesture();
+    pair.settle();
+    pair.host.save().unwrap();
+    pair.settle();
+    draw(&mut pair.host, PPQN, 64);
+    pair.settle();
+    assert!(
+        notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 64),
+        "and so did the one after the knob and the save"
+    );
+    draw(&mut pair.joiner, 2 * PPQN, 67);
+    pair.settle();
+    pair.same();
+    let _ = theirs;
+    assert!(
+        state(pair.joiner.project()).is_some(),
+        "Bob's copy keeps the plugin"
+    );
+}
+
+/// Ty and Lore's song as it was: a soundfont Bob had to fetch, and a plugin
+/// he does not have, over a paced link. The host's edits waited behind the
+/// whole soundfont on its way — Bob's own went at once — so to Bob nothing
+/// Alice did arrived. Bob must see Alice's note while the soundfont is still
+/// coming, and the plugin's state must reach him as it was.
+#[test]
+fn the_hosts_edits_reach_a_joiner_fetching_a_soundfont_without_the_plugin() {
+    use fontelle_assets::fixtures::{
+        GEN_KEY_RANGE, GEN_OVERRIDING_ROOT_KEY, Sf2Fixture, ZoneSpec, build_sf2, gen_range, gen_val,
+    };
+    let dir = scratch("lore");
+    let mut host = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    // A soundfont of a few megabytes: seconds at the pace.
+    let n = 2_000_000u32;
+    let bank = dir.join("alice-bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    std::fs::write(
+        bank.join("Big.sf2"),
+        build_sf2(&Sf2Fixture {
+            samples: (0..n).map(|i| ((i % 600) as i16 - 300) * 20).collect(),
+            sample_rate: 44_100,
+            header_start: 0,
+            header_end: n,
+            header_loop_start: 4,
+            header_loop_end: n - 4,
+            origpitch: 60,
+            pitchadj: 0,
+            zone: ZoneSpec {
+                generators: vec![
+                    gen_range(GEN_KEY_RANGE, 0, 127),
+                    gen_val(GEN_OVERRIDING_ROOT_KEY, 60),
+                ],
+            },
+            extra_zones: Vec::new(),
+        }),
+    )
+    .unwrap();
+    host.set_library_dirs(vec![bank], false);
+    let row = host
+        .library_files()
+        .iter()
+        .position(|entry| entry.name == "Big")
+        .expect("the bank lists it");
+    host.open_file(row).expect("it opens");
+    host.add_channel_with(0).expect("an instrument");
+    host.set_channel_plugin(0, 0);
+    host.save().unwrap();
+    // Bob's studio looks for plugins only in an empty folder: what this
+    // machine has installed is not his, and a walk of it is slow.
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    std::fs::create_dir_all(dir.join("bob-bank")).unwrap();
+    joiner.set_library_dirs(vec![dir.join("bob-bank")], false);
+
+    let clock = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let ticking = clock.clone();
+    let mut pair = Pair::through(
+        host,
+        joiner,
+        dir.clone(),
+        2,
+        Cleanup(dir.clone()),
+        move |link| {
+            Box::new(fontelle_net::Paced::with_clock(
+                link,
+                fontelle_net::CLOUD_PACE,
+                Box::new(move || *ticking.lock().unwrap()),
+            ))
+        },
+        |hub| Box::new(hub.connect()),
+    );
+    pair.clock = Some(clock);
+    pair.answer(JoinAnswer::Copy);
+    let said = StudioHost::take_session_notices(&mut pair.joiner).join(" ");
+    assert!(
+        said.contains("Fontelle Test Sine") && said.contains("not installed"),
+        "Bob is told plainly which plugin he is missing: {said:?}"
+    );
+    assert!(
+        pair.joiner.fetch_question().is_some(),
+        "asked about the soundfont"
+    );
+    pair.joiner.answer_fetch(true).unwrap();
+    pair.tick(20);
+    assert!(
+        !pair.joiner.missing_files().is_empty(),
+        "the soundfont is coming"
+    );
+
+    let clip = open_clip(&pair.host);
+    draw(&mut pair.host, 0, 60);
+    pair.tick(40);
+    assert!(
+        notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 60),
+        "Alice's note waited behind the soundfont"
+    );
+    draw(&mut pair.joiner, PPQN, 72);
+    pair.tick(40);
+    assert!(notes_of(&pair.host, clip).iter().any(|n| n.2 == 72));
+
+    pair.tick(1_000);
+    assert!(
+        pair.joiner.missing_files().is_empty(),
+        "the soundfont arrived"
+    );
+    pair.same();
+    let plugin = |project: &fontelle_model::Project| {
+        project
+            .channels
+            .values()
+            .find_map(|channel| channel.plugin.clone())
+    };
+    assert_eq!(
+        plugin(pair.joiner.project()),
+        plugin(pair.host.project()),
+        "the plugin's state, as it came"
+    );
+}
+
+/// The name of the channel a studio has selected.
+fn selected_name(session: &Session) -> String {
+    let channels = StudioHost::channels(session);
+    channels[StudioHost::selected_channel(session)].name.clone()
+}
+
+/// Ty: *adding a new instrument does not select and open the one you just
+/// made; it selects and opens the last one in the list.* The list is in id
+/// order, and an instrument is not always last: a removed one's place is
+/// taken again by the next one made.
+#[test]
+fn a_new_instrument_is_the_one_selected_even_when_it_is_not_last() {
+    let mut studio = a_session();
+    StudioHost::add_channel(&mut studio).unwrap();
+    StudioHost::add_channel(&mut studio).unwrap();
+    let before = StudioHost::channels(&studio).len();
+    StudioHost::remove_channel(&mut studio, 0);
+    StudioHost::add_channel(&mut studio).unwrap();
+    let channels = StudioHost::channels(&studio);
+    assert_eq!(channels.len(), before);
+    let made = channels
+        .iter()
+        .position(|c| c.name == format!("Channel {before}"))
+        .expect("the new one is in the list");
+    assert_ne!(made, channels.len() - 1, "the test needs it not to be last");
+    assert_eq!(
+        StudioHost::selected_channel(&studio),
+        made,
+        "the one just made is selected"
+    );
+}
+
+/// The same in a shared song, and somebody else's instrument never moves
+/// yours: Bob adding one leaves Alice on hers, and Alice adding one selects
+/// hers — not whichever sorts last, which a joiner's always does — and
+/// leaves Bob on his.
+#[test]
+fn an_instrument_somebody_else_adds_never_moves_your_selection() {
+    let mut pair = Pair::joined("selection", 2);
+    StudioHost::select_channel(&mut pair.host, 0);
+    StudioHost::select_channel(&mut pair.joiner, 0);
+    let alices = selected_name(&pair.host);
+
+    StudioHost::add_channel(&mut pair.joiner).unwrap();
+    let bobs = selected_name(&pair.joiner);
+    assert_ne!(bobs, alices, "Bob is on the one he made");
+    pair.settle();
+    pair.same();
+    assert_eq!(selected_name(&pair.host), alices, "Alice is still on hers");
+
+    let count = StudioHost::channels(&pair.host).len();
+    StudioHost::add_channel(&mut pair.host).unwrap();
+    let made = format!("Channel {}", count + 1);
+    assert_eq!(
+        selected_name(&pair.host),
+        made,
+        "Alice is on the one she made"
+    );
+    pair.settle();
+    pair.same();
+    assert_eq!(selected_name(&pair.joiner), bobs, "Bob is still on his");
+}
+
 /// What the relay's side of the link has to say — the host lost it and is
 /// getting it back, under which code — reaches the person, not just a log.
 #[test]

@@ -845,7 +845,10 @@ impl Class for Handler {
 }
 
 impl IComponentHandlerTrait for Handler {
-    unsafe fn beginEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn beginEdit(&self, id: ParamID) -> tresult {
+        if crate::param::trace() {
+            eprintln!("[param] vst3 editor: begin {id}");
+        }
         kResultOk
     }
     unsafe fn performEdit(&self, id: ParamID, value: ParamValue) -> tresult {
@@ -859,7 +862,18 @@ impl IComponentHandlerTrait for Handler {
         } else {
             value
         };
-        if self.values.set(id, plain) {
+        let known = self.values.set(id, plain);
+        if crate::param::trace() {
+            eprintln!(
+                "[param] vst3 editor: perform {id} = {value:.4}{}",
+                if known {
+                    ""
+                } else {
+                    " (not a parameter it declared: dropped)"
+                }
+            );
+        }
+        if known {
             // Only an edit in the plugin's own editor comes this way.
             self.values.note_heard();
             kResultOk
@@ -867,11 +881,17 @@ impl IComponentHandlerTrait for Handler {
             kInvalidArgument
         }
     }
-    unsafe fn endEdit(&self, _id: ParamID) -> tresult {
+    unsafe fn endEdit(&self, id: ParamID) -> tresult {
+        if crate::param::trace() {
+            eprintln!("[param] vst3 editor: end {id}");
+        }
         kResultOk
     }
     unsafe fn restartComponent(&self, flags: int32) -> tresult {
         let flags = flags as u32;
+        if crate::param::trace() {
+            eprintln!("[param] vst3 restartComponent({flags:#x})");
+        }
         if flags & (RestartFlags_::kParamValuesChanged as u32) != 0 {
             self.wants_reread.store(true, Ordering::Release);
         }
@@ -1300,6 +1320,12 @@ impl IParameterChangesTrait for ParameterChanges {
 pub(crate) struct Shared {
     component: ComPtr<IComponent>,
     processor: ComPtr<IAudioProcessor>,
+    /// The processor reported a value of its own since the controller was
+    /// last told — see [`Vst3Plugin::service`].
+    reported: AtomicBool,
+    /// How many parameter changes went to the processor, for
+    /// `FONTELLE_PARAM_TRACE`.
+    sent: AtomicU64,
     /// Last, so it is dropped last: the two above point into it. Never
     /// read — it is here to be held.
     _module: Arc<Module>,
@@ -1563,6 +1589,8 @@ pub(crate) fn open(
     let shared = Arc::new(Shared {
         component,
         processor,
+        reported: AtomicBool::new(false),
+        sent: AtomicU64::new(0),
         _module: Arc::clone(module),
     });
     Ok(Opened {
@@ -1763,9 +1791,56 @@ impl Vst3Plugin {
     }
 
     /// The between-frames service: a parameter reload the plugin announced.
+    ///
+    /// **Answered, not adopted.** > *"in serum moving knobs that should
+    /// affect the graph often just aren't affecting the graph"* — JUCE's
+    /// `updateHostDisplay`, which many plugins call after any change at
+    /// all, arrives as `kParamValuesChanged` straight after the knob's own
+    /// `performEdit`. Adopting called off the sending of every value read,
+    /// so the edit the processor had not been sent yet never was, whenever
+    /// this frame came round before the audio thread's next block. A value
+    /// waiting to be sent is newer than anything the controller says (an
+    /// automation point never reaches the controller at all), so it is left
+    /// to go; the rest are kept as the plugin's word, unsent, as before.
+    ///
+    /// And the other way: what the processor reported in its output
+    /// changes is on the wire already ([`Vst3Processor::run`]), and the
+    /// controller — whose editor draws from its own values — is told here,
+    /// where it may be called. Whatever on the wire differs from it is
+    /// told, which takes in an automation lane's values too: the editor
+    /// follows the lane, as it does in other hosts.
     pub(crate) fn service(&self, values: &ParamValues) {
+        let trace = crate::param::trace();
+        if trace {
+            let sent = self.shared.sent.swap(0, Ordering::Relaxed);
+            if sent > 0 {
+                eprintln!("[param] vst3: {sent} changes went to the processor");
+            }
+        }
+        if self.shared.reported.swap(false, Ordering::AcqRel) {
+            for id in &self.ids {
+                let Some(value) = values.get(*id) else {
+                    continue;
+                };
+                let told = self.get_param(*id);
+                if value != told {
+                    if trace {
+                        eprintln!(
+                            "[param] vst3 processor reported {id} = {value:.6} (controller {told:.6})"
+                        );
+                    }
+                    let normalised = (value / self.scale_of(*id)).clamp(0.0, 1.0);
+                    unsafe { self.controller.setParamNormalized(*id, normalised) };
+                }
+            }
+        }
         if self.handler.wants_reread.swap(false, Ordering::AcqRel) {
-            self.reread_params(values);
+            if trace {
+                eprintln!("[param] vst3: reread every value off the controller");
+            }
+            for id in &self.ids {
+                values.answer(*id, self.get_param(*id));
+            }
         }
     }
 
@@ -2349,7 +2424,9 @@ impl Vst3Processor {
         // step count, a continuous one as it is.
         let scale = &self.scale;
         let changes = &self.changes_in;
+        let sent = &self.shared.sent;
         self.values.drain(|id, value| {
+            sent.fetch_add(1, Ordering::Relaxed);
             let divisor = scale
                 .iter()
                 .find(|(i, _)| *i == id)
@@ -2422,6 +2499,46 @@ impl Vst3Processor {
         self.context.continousTimeSamples += frames as i64;
         self.events.events.borrow_mut().clear();
         self.changes_in.clear();
+        self.take_reported();
+    }
+
+    /// **RT.** What the processor said in its output changes: the last
+    /// point of each queue onto the wire — unmarked, a value the plugin
+    /// chose is not sent back to it — and the controller told between
+    /// frames. The specification asks the host to pass these on; dropped,
+    /// a plugin's editor and the studio's knob showed one value while the
+    /// processor played another. Seen on the installed plugins: every
+    /// DPF build (the Dragonfly reverbs) tells its separate controller the
+    /// block size and sample rate this way, and Surge XT Effects' first
+    /// block reports values its JUCE controller still had at nought.
+    ///
+    /// **Answered, not heard**: the plugin saying what it holds, as an LV2
+    /// plugin's reply to `patch:Get` is — not an edit, or a song would open
+    /// already changed. A save reads the controller, which is told.
+    fn take_reported(&self) {
+        let changes = &self.changes_out;
+        let mut any = false;
+        for queue in &changes.pool[..changes.used.get()] {
+            let Some(&(_, normalised)) = queue.points.borrow().last() else {
+                continue;
+            };
+            let id = queue.id.get();
+            let divisor = self
+                .scale
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map_or(1.0, |(_, s)| *s);
+            let normalised = normalised.clamp(0.0, 1.0);
+            let plain = if divisor > 1.0 {
+                (normalised * divisor).round()
+            } else {
+                normalised
+            };
+            any |= self.values.answer(id, plain);
+        }
+        if any {
+            self.shared.reported.store(true, Ordering::Release);
+        }
     }
 }
 

@@ -607,6 +607,89 @@ fn a_vst3_editor_is_given_a_window_and_driven() {
     assert!(!plugin.editor_is_open());
 }
 
+/// > *"in serum moving knobs that should affect the graph often just
+/// > aren't affecting the graph"*
+///
+/// A VST 3 plugin is two objects: the knob moves the controller, and the
+/// processor — whose sound, and often whose drawing, is what changed —
+/// hears it only from the host, in the next `process`. The fixture's view
+/// edits the way a JUCE knob does: the controller's value, `performEdit`,
+/// then `restartComponent(kParamValuesChanged)`. The reread that answered
+/// the restart took the edit for the plugin's own news and called off its
+/// sending, so the processor never heard the knob whenever the frame's
+/// reread came before the audio thread's next block — "often". With the
+/// song stopped, too: a plugin hears its parameters only through `process`.
+#[test]
+fn an_edit_in_a_vst3_editor_reaches_its_processor_even_when_it_asks_for_a_reread() {
+    let mut host = PluginHost::new();
+    let mut plugin = gain(&mut host);
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    processor.set_transport(&fontelle_host::PluginTransport::default());
+    let input = vec![vec![0.5f32; 8], vec![0.5f32; 8]];
+    let mut output = vec![vec![0.0f32; 8], vec![0.0f32; 8]];
+    processor.process_effect(&input, &mut output, 8);
+    assert!((output[0][0] - 0.5).abs() < 1e-5, "{:?}", output[0][0]);
+
+    let window = fontelle_host::PluginWindow::headless(100, 100);
+    plugin.open_editor(&window, 1.0).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while plugin.values().get(0) != Some(0.5) && std::time::Instant::now() < deadline {
+        plugin.tick_editor();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        plugin.values().get(0),
+        Some(0.5),
+        "the editor's edit arrived"
+    );
+    // Another frame before the audio thread comes round, as on a busy
+    // machine: whatever the plugin asked for between frames is done here.
+    plugin.tick_editor();
+
+    processor.process_effect(&input, &mut output, 8);
+    assert!(
+        (output[0][0] - 1.0).abs() < 1e-5,
+        "the processor plays the knob: {:?}",
+        output[0][0]
+    );
+    plugin.close_editor();
+}
+
+/// The other way across: a value the **processor** chose — a limit it
+/// holds a knob to, a controller it learnt — comes out of `process` in its
+/// output changes, and the specification asks the host to hand them to the
+/// controller, whose editor draws from its own values. Dropped, the editor
+/// showed what was asked for while the plugin played something else, and
+/// the song saved the controller's word for it. Between frames, whether or
+/// not an editor is open.
+#[test]
+fn a_value_a_vst3_processor_reports_reaches_its_controller_and_the_studio() {
+    let mut host = PluginHost::new();
+    let mut plugin = gain(&mut host);
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    let input = vec![vec![0.5f32; 8], vec![0.5f32; 8]];
+    let mut output = vec![vec![0.0f32; 8], vec![0.0f32; 8]];
+    // The fixture's processor refuses the top of its gain and holds it at
+    // three quarters.
+    plugin.set_param(0, 1.0);
+    processor.process_effect(&input, &mut output, 8);
+    assert!((output[0][0] - 1.5).abs() < 1e-5, "{:?}", output[0][0]);
+    plugin.service_main_thread();
+    assert_eq!(
+        plugin.values().get(0),
+        Some(fontelle_testvst3::GAIN_CEILING),
+        "the studio's knob shows what the plugin plays"
+    );
+    // The plugin saying what it holds, not an edit: Surge XT Effects
+    // reports values at its first block, and a song would open changed.
+    assert!(!plugin.take_changes_heard(), "not an unsaved change");
+    assert_eq!(
+        plugin.snapshot().param(0),
+        Some(fontelle_testvst3::GAIN_CEILING),
+        "the controller was told, and the song keeps it"
+    );
+}
+
 #[test]
 fn a_vst3_editor_that_asks_to_be_resized_is_heard() {
     let mut host = PluginHost::new();
@@ -733,6 +816,15 @@ fn every_vst3_plugin_on_this_machine_opens_and_runs() {
                 plugin.has_editor()
             );
         }
+        // Whether its processor said anything in its output changes while
+        // it played — a meter, a learnt controller — which the controller
+        // is now told of between frames.
+        plugin.service_main_thread();
+        eprintln!(
+            "{:<40} reported values of its own: {}",
+            info.name,
+            plugin.take_changes_heard()
+        );
         let state = plugin.snapshot();
         assert!(state.blob.is_some(), "{} keeps no state", info.name);
         plugin.deactivate(processor);
