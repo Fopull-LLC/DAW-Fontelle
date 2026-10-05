@@ -841,3 +841,101 @@ fn fontelle_hosts_on_floptle_cloud() {
     assert_eq!(message(&back).unwrap().1, b"from the host");
     println!("joined {code} through Floptle Cloud; bytes crossed both ways");
 }
+
+/// Hub cards 0264 and 0266, by hand: on Floptle Cloud a host that drops gets
+/// its own code back with the relay's token, with its joiner still in it.
+/// `cargo test -p fontelle-net --test relay -- --ignored`.
+#[test]
+#[ignore = "talks to relay.fopull.com"]
+fn a_dropped_host_gets_its_code_back_on_floptle_cloud() {
+    use fontelle_net::RelayHost;
+    let addr = Relay::Cloud.host_address();
+    let version = env!("CARGO_PKG_VERSION");
+    let (mut host, code) =
+        RelayHost::host_keyed(&addr, FONTELLE_CLOUD_KEY, Some(version)).expect("hosts");
+    let start = Instant::now();
+    let token = loop {
+        host.poll();
+        if let Some(token) = host.reclaim_token() {
+            break token;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "Floptle Cloud's relay sent no reclaim token: is it older than 0.102?"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let mut joiner = fontelle_net::join(&Relay::Cloud, &code).expect("joins");
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let heard = poll_until(&mut host, |i| message(i).is_some()).expect("the joiner is in");
+    let peer = message(&heard).unwrap().0;
+
+    drop(host);
+    std::thread::sleep(Duration::from_millis(500));
+    let (again, back) =
+        RelayHost::host_reclaiming(&addr, Some(FONTELLE_CLOUD_KEY), Some(version), &code, token)
+            .expect("re-hosts");
+    assert_eq!(back, code, "Floptle Cloud gave the host its own code back");
+    // Framed, as a studio's link is: the joiner's reads frames.
+    let mut again = Framed::new(again);
+    again.send(peer, Channel::Reliable, b"back");
+    let reply = poll_until(joiner.as_mut(), |i| message(i).is_some()).expect("still in");
+    assert_eq!(message(&reply).unwrap().1, b"back");
+    println!("{code}: dropped, reclaimed with its token, joiner kept");
+}
+
+/// Hub card 0264, by hand: a song's worth of bytes crosses Floptle Cloud at
+/// Fontelle's pace, whole and in order, without the relay dropping any or
+/// closing the connection — which it would if the key's 2 MiB grant were not
+/// in force and the relay's own 512 KiB applied.
+#[test]
+#[ignore = "talks to relay.fopull.com"]
+fn a_song_crosses_floptle_cloud_at_fontelles_pace() {
+    let (mut host, code) =
+        fontelle_net::host(&Relay::Cloud, env!("CARGO_PKG_VERSION")).expect("hosts");
+    let mut joiner = fontelle_net::join(&Relay::Cloud, &code).expect("joins");
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let heard = poll_until(host.as_mut(), |i| message(i).is_some()).expect("the joiner is in");
+    let peer = message(&heard).unwrap().0;
+
+    let pieces: Vec<Vec<u8>> = (0..40u32)
+        .map(|n| (0..200_000u32).map(|i| ((i ^ n) % 251) as u8).collect())
+        .collect();
+    let total: usize = pieces.iter().map(Vec::len).sum();
+    let start = Instant::now();
+    for piece in &pieces {
+        host.send(peer, Channel::Reliable, piece);
+    }
+    let mut got = 0;
+    while got < pieces.len() {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "{got} of {} arrived",
+            pieces.len()
+        );
+        for event in host.poll() {
+            assert!(
+                !matches!(event, Incoming::Disconnected(SERVER, _)),
+                "the relay closed the host: {event:?}"
+            );
+        }
+        for event in joiner.poll() {
+            match event {
+                Incoming::Message(_, _, bytes) => {
+                    assert_eq!(bytes, pieces[got], "piece {got} whole and in order");
+                    got += 1;
+                }
+                Incoming::Disconnected(..) => panic!("the joiner was cut off: {event:?}"),
+                Incoming::Connected(_) => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let seconds = start.elapsed().as_secs_f64();
+    println!(
+        "{code}: {:.1} MB in {seconds:.1} s, {:.0} KiB/s (pace {} KiB/s)",
+        total as f64 / 1e6,
+        total as f64 / 1024.0 / seconds,
+        Relay::Cloud.pace() / 1024
+    );
+}
