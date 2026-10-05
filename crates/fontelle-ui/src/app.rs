@@ -19001,8 +19001,14 @@ impl WindowApp {
             // A settings drop-down: the entry chosen, in one press.
             (MenuTarget::SettingChoice(setting), index) => {
                 let setting = *setting;
-                if let Some(doc) = &mut self.options.document {
+                // And what the choice had to say, as a press's is: an output
+                // that would not open, a song switched to lane-style.
+                let toast = self.options.document.as_mut().and_then(|doc| {
                     doc.choose_setting(setting, index);
+                    doc.take_settings_toast()
+                });
+                if let Some((text, undoable)) = toast {
+                    self.show_toast(text, undoable);
                 }
                 self.settings_focus = Some(setting);
                 self.refresh_studio();

@@ -491,6 +491,12 @@ fn every_button_row_says_on_its_button_what_a_press_does() {
             {
                 continue;
             }
+            // Nor has the sample rate, which is said and not set: the studio
+            // runs at one rate (`audio_output_settings.rs`).
+            if row == SettingRow::SampleRate {
+                assert!(caption.is_empty());
+                continue;
+            }
             assert!(!caption.is_empty(), "{row:?} has a button with no caption");
             assert!(
                 caption.chars().count() <= 16,

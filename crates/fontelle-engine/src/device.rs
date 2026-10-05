@@ -2,14 +2,11 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use fontelle_types::{CompiledTimeline, TimedEvent};
 
 use crate::graph_channel::GraphSource;
-use crate::live::{IdleGate, LiveEventSource};
-use crate::rt_guard::with_rt_thread;
+use crate::live::LiveEventSource;
 use crate::timeline_channel::TimelineSource;
-use crate::transport::TransportState;
-use crate::transport::{Transport, TransportReader};
+use crate::transport::Transport;
 
 /// The fixed block size the M0 vertical slice targets (TDD §22: "128 frames /
 /// 48 kHz"). `CompiledGraph`'s `BufferPool` is sized to this; a backend that
@@ -17,12 +14,6 @@ use crate::transport::{Transport, TransportReader};
 /// below processes in chunks of at most this size regardless of what the
 /// device actually delivers per call.
 pub const BLOCK_SIZE: usize = 128;
-/// How long a callback the watchdog demoted stays on ordinary scheduling
-/// before it asks rtkit for real-time again — long enough for the overload
-/// that spent the budget to have passed.
-#[cfg(target_os = "linux")]
-const RT_REPROMOTE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
-
 #[derive(Debug)]
 pub struct DeviceError(pub String);
 
@@ -39,7 +30,9 @@ impl std::error::Error for DeviceError {}
 /// CoreAudio on macOS).
 pub struct AudioDevice {
     host: cpal::Host,
-    stream: Option<cpal::Stream>,
+    /// The output stream, when this device opened one — see
+    /// [`crate::AudioOutput`].
+    output: Option<crate::AudioOutput>,
     /// The capture stream, when one is open — see
     /// [`start_input_stream`](AudioDevice::start_input_stream). Separate from
     /// `stream` because they are opened and closed at different moments: the
@@ -64,7 +57,7 @@ impl AudioDevice {
     pub fn default_host() -> Self {
         Self {
             host: cpal::default_host(),
-            stream: None,
+            output: None,
             input: None,
             monitor: None,
             #[cfg(target_os = "linux")]
@@ -360,20 +353,13 @@ impl AudioDevice {
     /// stream's life — is standard practice for audio callbacks generally,
     /// not a debug-only aid.
     ///
-    /// The returned stream is stopped and dropped when `self` is dropped or
-    /// `stop` is called — cpal has no separate "close" step, and (confirmed on
-    /// real hardware) it tears down the callback closure *on the audio thread
-    /// itself*, which is still tagged RT at that point. Dropping `graph`
-    /// there — freeing its `Patch`es, sample buffers, everything — would
-    /// violate INVARIANT 1 just as surely as allocating would. `graph`,
-    /// `timeline`, and the RT-priority handle are therefore wrapped in
-    /// `ManuallyDrop` so that implicit teardown drop does nothing. This is a
-    /// real, deliberate leak — acceptable for now because every current
-    /// caller (`fontelle-app --play-sf2`, the manual test) exits the whole
-    /// process shortly after `stop()`, so the OS reclaims the memory anyway.
-    /// A long-running DAW process needs a proper deferred-drop ("trash bin":
-    /// hand the old graph to a channel a non-RT thread actually frees)
-    /// instead — not built yet, see `PROGRESS.md`.
+    /// The stream is stopped and dropped when `self` is dropped or `stop` is
+    /// called. cpal tears the callback closure down *on the audio thread
+    /// itself*, still tagged RT, so nothing the closure drops may free: what
+    /// it plays lives in [`crate::AudioOutput`]'s `CallbackSlot`, never
+    /// dropped, and the closure holds only counts on it. That is also what
+    /// lets the stream be opened again on another device without the song
+    /// going with it (`AudioOutput::reopen`).
     ///
     /// `transport` is the shared state the callback is driven *by*: play,
     /// stop, seek and loop all reach the audio thread through it, and the
@@ -402,394 +388,56 @@ impl AudioDevice {
         transport: Arc<Transport>,
         live: Option<LiveEventSource>,
     ) -> Result<(), DeviceError> {
-        // Off-RT, before the stream exists: nodes size their internal buffers
-        // here so the callback never has to. Everything published later is
-        // prepared by `GraphPublisher`'s caller, on its own thread, for the
-        // same reason.
-        let mut graph = graph;
-        graph
-            .current()
-            .prepare(sample_rate as f32, BLOCK_SIZE as u32);
-        let mut graph = ManuallyDrop::new(graph);
-        let mut timeline = ManuallyDrop::new(timeline);
-        let device = self
-            .host
-            .default_output_device()
-            .ok_or_else(|| DeviceError("no default output device".into()))?;
+        self.start_output(
+            graph,
+            timeline,
+            sample_rate,
+            transport,
+            live,
+            &crate::OutputChoice::default(),
+        )
+        .map(|_| ())
+    }
 
-        let supported = device
-            .default_output_config()
-            .map_err(|e| DeviceError(e.to_string()))?;
-        let mut config = supported.config();
-        config.sample_rate = sample_rate;
-        config.buffer_size = first_buffer_size_that_opens(
-            &device,
-            config,
-            &output_buffer_sizes(supported.buffer_size()),
-        );
-        let channels = config.channels as usize;
+    /// [`start_output_stream`](Self::start_output_stream) on the backend,
+    /// device and buffer `choice` names — or the default, if that will not
+    /// open; the status says which opened and why.
+    pub fn start_output(
+        &mut self,
+        graph: GraphSource,
+        timeline: TimelineSource,
+        sample_rate: u32,
+        transport: Arc<Transport>,
+        live: Option<LiveEventSource>,
+        choice: &crate::OutputChoice,
+    ) -> Result<crate::OutputStatus, DeviceError> {
+        let output = crate::AudioOutput::start(
+            graph,
+            timeline,
+            sample_rate,
+            transport,
+            live,
+            self.monitor.clone(),
+            choice,
+        )?;
+        let status = output
+            .status()
+            .cloned()
+            .ok_or_else(|| DeviceError("the output did not open".into()))?;
+        self.output = Some(output);
+        Ok(status)
+    }
 
-        let mut first_callback = true;
-        let mut rt_handle = RtHandleSlot(ManuallyDrop::new(None));
-        // The watchdog's count as this thread last saw it, and when it was
-        // demoted — see `rt_budget`. A demoted callback waits out a few
-        // seconds on ordinary scheduling and then asks rtkit again.
-        #[cfg(target_os = "linux")]
-        let mut demotions_seen = crate::rt_budget::demotions();
-        #[cfg(target_os = "linux")]
-        let mut demoted_at: Option<std::time::Instant> = None;
-        // Whether the current graph has handed its plugins to a render — see
-        // `Transport::hold`.
-        let mut lent = false;
-        // The caller keeps its own clone for the stream's life, so dropping
-        // this one on the audio thread at teardown is a refcount decrement and
-        // never a free — but it is wrapped like everything else the closure
-        // owns so that stays true no matter what the caller does with theirs.
-        let transport = ManuallyDrop::new(transport);
-        let mut live = ManuallyDrop::new(live);
-        let mut reader = TransportReader::new();
-        let mut gate = IdleGate::new();
-        // The graph has to keep running while a microphone is open, whatever
-        // the transport is doing — see `IdleGate::set_monitoring`.
-        //
-        // `ManuallyDrop` for the reason `transport` above is: cpal tears the
-        // callback closure down **on the audio thread**, still tagged RT, and
-        // a refcount that happened to reach zero there would be a free on the
-        // RT thread (INVARIANT 1). The caller keeps its own clone for the
-        // program's life, so this can only ever be a decrement — wrapped so
-        // that stays true whatever the caller does with theirs.
-        let monitor = ManuallyDrop::new(self.monitor.clone());
-        let mut poisoned = false;
-
-        let stream = device
-            .build_output_stream(
-                config,
-                move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    if poisoned {
-                        data.fill(0.0);
-                        return;
-                    }
-
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if first_callback {
-                            // Treat the very first callback as warm-up, not
-                            // steady-state RT processing: promoting priority
-                            // goes through rtkit over D-Bus on Linux, which
-                            // legitimately allocates for the one-time
-                            // handshake, and some backends do their own
-                            // first-use lazy setup (format conversion buffers
-                            // etc.) on this call too. None of that is what
-                            // INVARIANT 1 is meant to catch. Do the promotion,
-                            // output one silent block, and only start
-                            // tagging/enforcing RT from the second callback
-                            // on — ~2.7ms of silence at 128 samples/48kHz,
-                            // not audible.
-                            *rt_handle.0 =
-                                audio_thread_priority::promote_current_thread_to_real_time(
-                                    BLOCK_SIZE as u32,
-                                    sample_rate,
-                                )
-                                .ok();
-                            // The promotion leaves a budget of one block's
-                            // CPU time before SIGXCPU — a core dump by
-                            // default. Widened, and watched: an overrun is
-                            // a demotion, not an exit (`rt_budget`).
-                            #[cfg(target_os = "linux")]
-                            {
-                                crate::rt_budget::widen_budget();
-                                crate::rt_budget::arm_current_thread();
-                            }
-                            first_callback = false;
-                            data.fill(0.0);
-                            return;
-                        }
-                        // Demoted by the watchdog: run on ordinary scheduling
-                        // for a few seconds — the overload that spent the
-                        // budget is likely still there — then ask again. The
-                        // D-Bus round trip allocates, which is why this sits
-                        // outside `with_rt_thread`, like the first promotion.
-                        #[cfg(target_os = "linux")]
-                        {
-                            let demotions = crate::rt_budget::demotions();
-                            if demotions != demotions_seen {
-                                demotions_seen = demotions;
-                                demoted_at = Some(std::time::Instant::now());
-                            }
-                            if let Some(since) = demoted_at
-                                && since.elapsed() >= RT_REPROMOTE_AFTER
-                            {
-                                demoted_at = None;
-                                *rt_handle.0 =
-                                    audio_thread_priority::promote_current_thread_to_real_time(
-                                        BLOCK_SIZE as u32,
-                                        sample_rate,
-                                    )
-                                    .ok();
-                                crate::rt_budget::widen_budget();
-                            }
-                        }
-                        // The tag covers exactly our own processing and no
-                        // more. The backend owns this thread between
-                        // callbacks and legitimately allocates on it —
-                        // notably, cpal's ALSA worker drops its
-                        // `StreamWorkerContext` (a `Box<[pollfd]>`) here as it
-                        // exits. Leaving the tag set turned that teardown into
-                        // a phantom INVARIANT 1 violation that looked for a
-                        // long time like a per-block allocation; see
-                        // `rt_guard::with_rt_thread` and `PROGRESS.md`.
-                        with_rt_thread(|| {
-                            let frames_total = data.len() / channels.max(1);
-
-                            // Drained once for the whole callback, not once
-                            // per step: these events arrived while the audio
-                            // thread was away, they belong to this callback,
-                            // and a loop seam splitting the callback in two
-                            // must not deliver them a second time — which
-                            // would retrigger every key currently going down.
-                            let live_events: &[TimedEvent] = match live.as_mut() {
-                                Some(source) => source.drain(
-                                    reader.position(),
-                                    transport.state() == TransportState::Recording,
-                                ),
-                                None => &[],
-                            };
-                            // Before any decision is taken: what a player is
-                            // holding down is what keeps the graph running
-                            // through the silent start of an attack. See
-                            // `IdleGate::held`.
-                            gate.take_live(live_events);
-                            // Asked once a callback rather than assumed: the
-                            // window opens and closes the input while this
-                            // stream runs, and a gate holding a stale answer
-                            // is either an idle window burning a core or a
-                            // microphone nobody can hear.
-                            gate.set_monitoring(monitor.as_ref().is_some_and(|m| m.is_live()));
-                            // And whether somebody is at a plugin's own
-                            // controls — see `IdleGate::set_attended`.
-                            gate.set_attended(transport.is_attended());
-                            let mut live_pending = !live_events.is_empty();
-
-                            // Once per callback, not once per step: taking a
-                            // newly published timeline is a swap, but the
-                            // binary search that repositions the cursor into
-                            // it is not free, and nothing is republished
-                            // mid-callback.
-                            // The instruments, not the notes: a channel added
-                            // or an instrument chosen in the window rebuilds
-                            // the graph, and this is where the running stream
-                            // picks the new one up. The graph it stops using
-                            // goes back to the publisher to be freed — never
-                            // here (INVARIANT 1).
-                            graph.take_update();
-                            let graph = graph.current();
-                            // A render is playing the studio's own plugins
-                            // (`Transport::hold`): their processors go back
-                            // to their bays, once, and the stream is silent
-                            // until it is done. A node takes its processor
-                            // again on the first block after.
-                            if transport.is_held() {
-                                if !lent {
-                                    graph.retire();
-                                    lent = true;
-                                }
-                                data.fill(0.0);
-                                return;
-                            }
-                            lent = false;
-
-                            let republished = timeline.has_update();
-                            let timeline: &CompiledTimeline = timeline.current();
-                            if republished {
-                                // The cursor indexed into the events we just
-                                // stopped using. Without this the next block
-                                // either replays notes or skips them.
-                                reader.retarget(timeline);
-                            }
-
-                            let mut written = 0;
-                            while written < frames_total {
-                                // A stopped transport still has to make sound
-                                // when someone is playing the keyboard, and
-                                // still has to cost nothing when nobody is.
-                                let awake = gate.is_awake(usize::from(live_pending));
-                                let step = reader.next_step(
-                                    &transport,
-                                    timeline,
-                                    frames_total - written,
-                                    BLOCK_SIZE,
-                                    awake,
-                                );
-                                let frames = step.frames;
-
-                                // Before processing, not after: a stop or a
-                                // seek means the audio that was in flight
-                                // belongs to a different moment in the song,
-                                // and letting its release tail ring over the
-                                // new position is the audible form of the bug.
-                                if step.reset {
-                                    // Scoped: a stop, a seek or a loop seam
-                                    // cuts the notes the *song* was playing
-                                    // and leaves the ones a player is holding.
-                                    // The gate is deliberately not cleared
-                                    // here — a live voice may well still be
-                                    // sounding through this, and the next
-                                    // block's own measurement is what decides
-                                    // whether anything still is.
-                                    graph.reset_sequenced();
-                                }
-
-                                if step.process {
-                                    let this_step = if live_pending { live_events } else { &[] };
-                                    live_pending = false;
-                                    graph.process_block_with_audio(
-                                        step.events,
-                                        this_step,
-                                        step.audio,
-                                        step.snapshot,
-                                        step.range.clone(),
-                                    );
-
-                                    // Interleave the graph's planar buses into
-                                    // the device's frame layout — the one and
-                                    // only place format conversion happens
-                                    // (TDD §5.2). Device channel `c` reads bus
-                                    // `c`, clamped to whatever the pool
-                                    // actually holds: a stereo graph into a
-                                    // mono device drops the right bus, and a
-                                    // mono graph into a multi-channel device
-                                    // duplicates across all of them.
-                                    let buses = graph.buffer_pool.len();
-                                    let mut peak = 0.0f32;
-                                    for c in 0..channels {
-                                        let bus = c.min(buses.saturating_sub(1));
-                                        let block = graph.buffer_pool.buffer_mut(bus);
-                                        for i in 0..frames {
-                                            let sample = block[i];
-                                            peak = peak.max(sample.abs());
-                                            data[(written + i) * channels + c] = sample;
-                                        }
-                                    }
-                                    // Measured off the samples already being
-                                    // copied, so knowing whether the graph is
-                                    // still making sound costs nothing beyond
-                                    // the compare. It is what lets a stopped
-                                    // transport go back to idle on its own
-                                    // once a live note has died away.
-                                    gate.observe(peak);
-                                } else {
-                                    // Stopped: no nodes run at all. This is
-                                    // the near-zero idle CPU target (TDD §6.3,
-                                    // §19) and the whole reason the check is
-                                    // here rather than inside the graph.
-                                    let from = written * channels;
-                                    data[from..from + frames * channels].fill(0.0);
-                                }
-
-                                written += frames;
-                            }
-                        });
-
-                        let _ = &rt_handle; // held for the stream's life; never dropped (see doc comment above)
-                    }));
-
-                    if let Err(payload) = result {
-                        let message = payload
-                            .downcast_ref::<&str>()
-                            .map(|s| s.to_string())
-                            .or_else(|| payload.downcast_ref::<String>().cloned())
-                            .unwrap_or_else(|| "non-string panic payload".to_string());
-                        eprintln!(
-                            "Fontelle: audio callback panicked, silencing this stream for the \
-                             rest of its life rather than crash the process: {message}"
-                        );
-                        poisoned = true;
-                        data.fill(0.0);
-                    }
-                },
-                |err| eprintln!("Fontelle: audio stream error: {err}"),
-                None,
-            )
-            .map_err(|e| DeviceError(e.to_string()))?;
-
-        stream.play().map_err(|e| DeviceError(e.to_string()))?;
-        self.stream = Some(stream);
-        Ok(())
+    /// The running output, for a caller that will change it while it plays
+    /// (Settings) — taken out of the device, which then has none to stop.
+    pub fn take_output(&mut self) -> Option<crate::AudioOutput> {
+        self.output.take()
     }
 
     pub fn stop(&mut self) {
-        self.stream = None;
+        self.output = None;
     }
 }
-
-/// The buffer sizes to ask the output device for, best first: one block, when
-/// the device's range has room for it or it does not say, then whatever the
-/// device picks itself.
-///
-/// It was one block and nothing else, so a card that would not take 128
-/// frames was a studio that would not start. The callback already walks
-/// whatever length it is handed a block at a time, so the default costs
-/// latency, not correctness.
-pub fn output_buffer_sizes(supported: &cpal::SupportedBufferSize) -> Vec<cpal::BufferSize> {
-    let block = BLOCK_SIZE as u32;
-    let fits = match supported {
-        cpal::SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&block),
-        cpal::SupportedBufferSize::Unknown => true,
-    };
-    let mut sizes = Vec::with_capacity(2);
-    if fits {
-        sizes.push(cpal::BufferSize::Fixed(block));
-    }
-    sizes.push(cpal::BufferSize::Default);
-    sizes
-}
-
-/// The first of `sizes` a stream opens with, the last taken on trust.
-///
-/// Tried with a silent stream that is never started, because the real
-/// callback is moved into `build_output_stream` and gone if the build fails:
-/// what it owns is `ManuallyDrop`, so it could not be built a second time.
-fn first_buffer_size_that_opens(
-    device: &cpal::Device,
-    config: cpal::StreamConfig,
-    sizes: &[cpal::BufferSize],
-) -> cpal::BufferSize {
-    let (last, rest) = sizes
-        .split_last()
-        .expect("output_buffer_sizes always ends with the default");
-    for size in rest {
-        let trial = cpal::StreamConfig {
-            buffer_size: *size,
-            ..config
-        };
-        let opened = device.build_output_stream(
-            trial,
-            |data: &mut [f32], _: &cpal::OutputCallbackInfo| data.fill(0.0),
-            |_| {},
-            None,
-        );
-        match opened {
-            Ok(_) => return *size,
-            Err(e) => eprintln!(
-                "fontelle: the output would not open with {size:?} ({e}); trying the next size"
-            ),
-        }
-    }
-    *last
-}
-
-/// The real-time promotion handle, in the slot the output callback keeps it in.
-///
-/// Made **inside** the callback, on the audio thread, and never touched by
-/// any other: the slot is moved into the closure empty and filled on the
-/// first call. That is what makes it sound to declare it `Send` where the
-/// platform's handle is not — on Windows it holds the raw AvRt task handle,
-/// which the crate rightly refuses to mark. Never dropped either, for the
-/// reason the field comment at the callback gives.
-struct RtHandleSlot(ManuallyDrop<Option<audio_thread_priority::RtPriorityHandle>>);
-
-// SAFETY: see the type's own note — the handle is created and used on one
-// thread, the audio thread, and the slot crosses to it while still `None`.
-unsafe impl Send for RtHandleSlot {}
 
 impl Drop for AudioDevice {
     /// A device that goes takes its input stream with it, and **says so**
