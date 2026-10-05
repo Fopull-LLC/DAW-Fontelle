@@ -1572,10 +1572,18 @@ impl HostedPlugin {
     ///
     /// The spec's half of the bargain: a plugin asks, the host calls its
     /// `on_main_thread` soon after. This host recorded the request and never
-    /// answered, so whatever a plugin put off until then never happened. The
-    /// other formats have no such call, and nothing is done for them.
+    /// answered, so whatever a plugin put off until then never happened. A
+    /// VST 3 plugin's controller is told here what its processor reported
+    /// (see `Vst3Plugin::service`); LV2 and bridged plugins have no such
+    /// call, and nothing is done for them.
     pub fn service_main_thread(&mut self) {
         let _inside = self.inside();
+        // A VST 3 plugin's between-frames work — what its processor
+        // reported, a reread it asked for — is not only for an open editor.
+        if let Inner::Vst3(plugin) = &self.inner {
+            plugin.service(&self.values);
+            return;
+        }
         let Inner::Clap(instance) = &mut self.inner else {
             return;
         };

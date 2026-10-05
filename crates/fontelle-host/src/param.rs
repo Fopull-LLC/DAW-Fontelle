@@ -2,6 +2,16 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+/// Whether `FONTELLE_PARAM_TRACE` is set: a line on stderr for every edit a
+/// plugin's own editor makes, every restart it asks for and every value its
+/// processor reports, with how many changes went the other way to the
+/// processor between frames. The one way to tell, from a log somebody sends,
+/// *"the knob moved"* from *"the plugin heard it"*.
+pub fn trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("FONTELLE_PARAM_TRACE").is_some())
+}
+
 /// One parameter, as the plugin describes it.
 ///
 /// Owned `String`s rather than `&'static str`, which is the one place a hosted

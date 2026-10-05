@@ -84,7 +84,7 @@ pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
 pub use lv2_state::{Lv2Property, Lv2State};
 pub use mpe::MpeZone;
 pub use own_presets::{OwnPreset, OwnPresetSource, PresetRoots, list_own_presets};
-pub use param::{HostedParam, ParamValues};
+pub use param::{HostedParam, ParamValues, trace as param_trace};
 pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHost};
 pub use probe::{BundleProber, DEFAULT_PROBE_TIMEOUT, PROBE_FLAG, exit_now, probe_main};
 pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
