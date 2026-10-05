@@ -184,15 +184,12 @@ fn a_vst3_editor_is_attached_to_the_window() {
     let mut plugin = host
         .open(
             &common::vst3_bundle(),
-            &fontelle_types::PluginKey::new(
-                fontelle_types::PluginFormat::Vst3,
-                common::VST3_COMBINED,
-            ),
+            &fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Vst3, common::VST3_GAIN),
         )
         .expect("the test VST 3 opens");
     assert!(plugin.has_editor(), "an NSView editor, on macOS");
     let window = PluginWindow::open(
-        "Combined",
+        "Gain",
         GuiSize {
             width: 300,
             height: 200,

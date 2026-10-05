@@ -9,6 +9,12 @@ frustration each item causes, then by cost.
 
 Sizes: **S** is under a day, **M** a few days, **L** a week or more.
 
+**Status, 2026-10-05, later: items 10 to 13 are done too (v0.25.0)** — real
+plugins in CI on all three systems, LV2 `patch:` parameters, plugin files
+travelling with the song, plugin windows on macOS. Item 14 has its design
+(`docs/plugin-sandbox-plan.md`) and is the next large piece of work; item 15
+is drafted for Ty to post.
+
 **Status, 2026-10-05: items 1 to 9 of the order below are done (v0.24.0)**
 — see `PROGRESS.md`. Item 7 (Wayland scaling) has the fix but has not been
 looked at on a scaled screen. Left: Windows and macOS real-plugin CI (10),

@@ -19,7 +19,42 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05 (latest) — what still made plugins frustrating, items 1
+**As of 2026-10-05, later (latest) — the rest of the list: items 10 to 13,
+and the plan for 14.** v0.25.0.
+
+- **Real plugins in CI on Linux, Windows and macOS** (`real-plugins.yml`):
+  Surge XT with its content, Dexed and OB-Xf, installed where their own
+  installers put them; the session walks and the bare-host sweeps against
+  them, under Xvfb on Linux. On every push that touches the host, the app or
+  the engine, weekly, and on demand. Renders and reopened states match to
+  the third decimal across the three systems.
+- **LV2 `patch:` parameters are knobs** (`lv2::patch_parameters`,
+  `PatchIo`): read off the Turtle, set with `patch:Set`, followed from the
+  plugin's own `patch:Set`, asked with `patch:Get` as it starts, after a
+  state or preset and on every settle block — the answer taken quietly
+  (`ParamValues::answer`), a change it makes unasked heard as an edit. Ids
+  come from the URI (`lv2::patch_param_id`): numbered by place, KR-106
+  reopened with its voice count in its saw switch. A load forgets what the
+  studio had not sent yet (`ParamValues::forget_unsent`): the undo's values
+  went out after the next preset, one walk in two. KR-106's 56 parameters
+  now follow its presets and reopen exactly.
+- **Plugin files travel with the song** (`plugin_files`): an LV2 state's
+  `atom:Path`s saved relative to the song when inside it, absolute again
+  against wherever it opens, collected into `assets/plugin-files/` with the
+  song's files, and named when missing.
+- **Plugin windows on macOS** (`gui`'s `cocoa`): an `NSWindow` with the
+  plugin's `NSView` (CLAP `cocoa`, VST 3 `NSView`) and the studio's strip
+  above it. The tests (`gui_macos.rs`) have their own `main`: AppKit is
+  main-thread only.
+- **Plugins in their own process**: designed, not built —
+  `docs/plugin-sandbox-plan.md`. A sandbox is an in-tree bridge whose table
+  forwards to a child process; audio in shared memory with a deadline, the
+  rest over a socket; a crash costs a channel for a moment and the plugin is
+  started again.
+- **Upstream reports** for the five plugins that crash in their own code are
+  drafted for Ty to post.
+
+**As of 2026-10-05 — what still made plugins frustrating, items 1
 to 9 of `docs/plugin-experience-backlog.md`.** v0.24.0.
 
 - **Crash recovery.** A song never saved is backed up beside the logs
