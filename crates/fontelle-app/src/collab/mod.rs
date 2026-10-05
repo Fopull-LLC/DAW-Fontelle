@@ -89,6 +89,9 @@ pub struct CollabOptions {
     /// holds the lobby, and lets the join in — went nowhere, and nothing else
     /// would ever ask again.
     pub hello_again: Duration,
+    /// How fast the relay lets this studio send, in bytes a second — what a
+    /// fetch's minutes are worked out at (`fontelle_net::Relay::pace`).
+    pub pace: u64,
 }
 
 impl CollabOptions {
@@ -101,6 +104,7 @@ impl CollabOptions {
             idle_break: Duration::from_millis(400),
             ask_above: 64 * 1024 * 1024,
             hello_again: Duration::from_secs(5),
+            pace: fontelle_net::CLOUD_PACE,
         }
     }
 }
@@ -352,7 +356,7 @@ impl Collab {
 
     /// The files waiting on the person before they are fetched.
     pub fn fetch_question(&self) -> Option<FetchQuestion> {
-        self.files.question()
+        self.files.question(self.options.pace)
     }
 
     pub fn answer_fetch(&mut self, fetch: bool) {

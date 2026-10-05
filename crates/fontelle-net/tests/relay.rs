@@ -275,7 +275,17 @@ fn a_frame_over_48kb_is_chunked_and_reassembled() {
     let (mut host, code) = fontelle_net::host(&relay.relay(), "test").unwrap();
     let mut joiner = fontelle_net::join(&relay.relay(), &code).unwrap();
     joiner.send(SERVER, Channel::Reliable, &big);
-    let arrived = poll_until(host.as_mut(), |i| message(i).is_some()).expect("across the relay");
+    // What is paced goes out as the joiner is polled, as a session does
+    // every tick.
+    let until = Instant::now() + Duration::from_secs(10);
+    let arrived = loop {
+        assert!(Instant::now() < until, "never arrived across the relay");
+        joiner.poll();
+        if let Some(arrived) = host.poll().into_iter().find(|i| message(i).is_some()) {
+            break arrived;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
     assert_eq!(message(&arrived).unwrap().1, big.as_slice());
 }
 
@@ -391,6 +401,93 @@ fn the_sender_never_exceeds_the_budget() {
     assert!(
         last >= Duration::from_secs(20),
         "10 MB at 480 KiB/s takes about 21 s, not {last:?}"
+    );
+}
+
+/// Hub card 0264: Floptle Cloud grants Fontelle's key 2 MiB a second per
+/// connection (relay 0.107 and later; us-east runs 0.109.1), four times the
+/// 512 KiB any other relay allows. A song loads at the pace of its relay —
+/// about three and a half times faster on Floptle Cloud than it did — and
+/// never at the edge of what the relay allows: over it, the relay drops what
+/// was sent (on the reliable channel, a message lost) and, three seconds
+/// running, closes the connection.
+#[test]
+fn each_relay_is_paced_under_what_it_allows() {
+    const FONTELLE_GRANT: u64 = 2 * 1024 * 1024;
+    let default = RelayLimits::default().bytes_per_window;
+    assert_eq!(default, 512 * 1024, "the relay's own budget moved");
+    for (relay, budget) in [
+        (Relay::Cloud, FONTELLE_GRANT),
+        (Relay::Open("10.0.0.2:7788".into()), default),
+    ] {
+        let pace = relay.pace();
+        // What arrives in one of the relay's seconds is at most a second's
+        // pace, one helping and the frame that may finish it, and whatever a
+        // delay on the way bunched up: room for 80 ms of that.
+        let delay = pace * 8 / 100;
+        let worst = pace + fontelle_net::pace_burst(pace) + FRAME as u64 + delay;
+        assert!(worst <= budget, "{relay:?}: {worst} over {budget}");
+    }
+    assert!(
+        Relay::Cloud.pace() * 10 >= 480 * 1024 * 34,
+        "a song loads more than three times faster on Floptle Cloud than at the old pace"
+    );
+}
+
+/// What leaves goes in small helpings, not a whole second's budget at once:
+/// a second's worth handed over in one go arrived at the relay inside one of
+/// its seconds with the start of the next one, and went over.
+#[test]
+fn the_sender_spreads_a_second_over_the_second() {
+    const RATE: u64 = 1664 * 1024;
+    let hub = MemoryHub::new();
+    let _host = hub.server_endpoint();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let clock = Arc::new(Mutex::new(Duration::ZERO));
+    let ticking = clock.clone();
+    let mut paced = Paced::with_clock(
+        Recorder {
+            inner: hub.connect(),
+            sent: sent.clone(),
+            clock: clock.clone(),
+        },
+        RATE,
+        Box::new(move || *ticking.lock().unwrap()),
+    );
+    let piece = vec![0u8; 48 * 1024];
+    let pieces = 214;
+    let total = pieces * piece.len();
+    for _ in 0..pieces {
+        paced.send(SERVER, Channel::Reliable, &piece);
+    }
+    // The window looks every tenth of a second while a session is open.
+    for _ in 0..4_000 {
+        *clock.lock().unwrap() += Duration::from_millis(100);
+        paced.poll();
+        if sent.lock().unwrap().iter().map(|(_, n)| n).sum::<usize>() >= total {
+            break;
+        }
+    }
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(sent.iter().map(|(_, n)| n).sum::<usize>(), total);
+    let eighth = Duration::from_millis(125);
+    for (start, _) in &sent {
+        let in_eighth: u64 = sent
+            .iter()
+            .filter(|(at, _)| *at >= *start && *at < *start + eighth)
+            .map(|(_, n)| *n as u64)
+            .sum();
+        assert!(
+            in_eighth <= RATE / 4,
+            "{in_eighth} bytes in the eighth of a second from {start:?}"
+        );
+    }
+    // And spreading it costs nothing: it still goes at the pace.
+    let last = sent.last().unwrap().0.as_secs_f64();
+    let ideal = total as f64 / RATE as f64;
+    assert!(
+        last <= ideal * 1.1,
+        "{last} s for what the pace sends in {ideal} s"
     );
 }
 

@@ -45,7 +45,7 @@ mod ws;
 
 pub use connect::{FONTELLE_CLOUD_KEY, REGIONS, Relay, host, join, reclaim};
 pub use framed::{FRAME, Framed};
-pub use paced::{Clock, PACE, Paced};
+pub use paced::{CLOUD_PACE, Clock, PACE, Paced, pace_burst};
 
 pub use quic::{QuicClient, QuicServer, ServerCertificate, SocketBuffers};
 pub use relay::{

@@ -74,7 +74,8 @@ impl Files {
         &self.received
     }
 
-    pub fn question(&self) -> Option<FetchQuestion> {
+    /// What to ask, with how long the fetch takes at `pace` bytes a second.
+    pub fn question(&self, pace: u64) -> Option<FetchQuestion> {
         if self.held.is_empty() {
             return None;
         }
@@ -91,7 +92,7 @@ impl Files {
                     "This song uses {what} ({}), which you don\u{2019}t have.",
                     megabytes(size)
                 ),
-                format!("Fetch it? {}.", how_long(size)),
+                format!("Fetch it? {}.", how_long(size, pace)),
             ],
             entries,
         })
@@ -546,12 +547,35 @@ fn megabytes(bytes: u64) -> String {
     }
 }
 
-/// Roughly how long `bytes` takes at the relay's pace (§8.4: 480 KiB/s).
-fn how_long(bytes: u64) -> String {
-    let seconds = bytes / (480 * 1024);
+/// Roughly how long `bytes` takes at `pace` bytes a second — the pace of the
+/// relay the song is shared through (§8.4, `fontelle_net::Relay::pace`).
+fn how_long(bytes: u64, pace: u64) -> String {
+    let seconds = bytes / pace.max(1);
     match seconds {
         0..60 => "It takes less than a minute".to_string(),
         60..120 => "It takes about a minute".to_string(),
         _ => format!("It takes about {} minutes", seconds.div_ceil(60)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::how_long;
+
+    /// The fetch question says how long a file takes at the pace of the relay
+    /// the song is shared through: a 100 MB soundfont is about a minute on
+    /// Floptle Cloud, which grants Fontelle four times what any other relay
+    /// allows, and several on a relay somebody runs themselves.
+    #[test]
+    fn how_long_a_fetch_takes_is_at_the_relays_pace() {
+        let soundfont = 100 * 1024 * 1024;
+        assert_eq!(
+            how_long(soundfont, fontelle_net::CLOUD_PACE),
+            "It takes about a minute"
+        );
+        assert_eq!(
+            how_long(soundfont, fontelle_net::PACE),
+            "It takes about 5 minutes"
+        );
     }
 }

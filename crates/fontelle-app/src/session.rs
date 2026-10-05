@@ -2648,7 +2648,9 @@ impl Session {
         if !had && let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write the settings: {e}"));
         }
-        crate::collab::CollabOptions::new(self.settings.your_name(), install)
+        let mut options = crate::collab::CollabOptions::new(self.settings.your_name(), install);
+        options.pace = fontelle_net::Relay::from_setting(self.settings.relay.as_deref()).pace();
+        options
     }
 
     /// Shares the open song through the relay the settings name, the relay

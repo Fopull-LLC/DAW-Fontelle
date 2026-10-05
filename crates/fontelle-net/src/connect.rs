@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::framed::Framed;
-use crate::paced::{PACE, Paced};
+use crate::paced::{CLOUD_PACE, PACE, Paced};
 use crate::relay::{RelayClient, RelayHost};
 use crate::transport::{Channel, Incoming, LinkStats, PeerId, SERVER, Transport};
 
@@ -47,6 +47,17 @@ impl Relay {
         match setting.map(str::trim).filter(|s| !s.is_empty()) {
             Some(addr) => Self::Open(addr.to_string()),
             None => Self::Cloud,
+        }
+    }
+
+    /// How fast a studio sends through this relay: well under what it allows
+    /// one connection (`docs/collab-plan.md` §8.4, F36). Floptle Cloud grants
+    /// Fontelle's key 2 MiB a second (hub card 0264); a relay somebody runs
+    /// themselves has the relay's own 512 KiB.
+    pub fn pace(&self) -> u64 {
+        match self {
+            Self::Cloud => CLOUD_PACE,
+            Self::Open(_) => PACE,
         }
     }
 
@@ -142,7 +153,7 @@ impl Hosting {
     fn new(inner: RelayHost, relay: &Relay, build: &str, code: &str) -> Self {
         let token = inner.reclaim_token();
         Self {
-            inner: Some(Framed::new(Paced::new(inner, PACE))),
+            inner: Some(Framed::new(Paced::new(inner, relay.pace()))),
             relay: relay.clone(),
             build: build.to_string(),
             code: code.to_string(),
@@ -249,7 +260,7 @@ impl Hosting {
         if let Some(token) = host.reclaim_token() {
             self.token = Some(token);
         }
-        let mut inner = Framed::new(Paced::new(host, PACE));
+        let mut inner = Framed::new(Paced::new(host, self.relay.pace()));
         if let Some(wake) = &self.wake {
             inner.set_wake(wake.clone());
         }
@@ -412,9 +423,10 @@ pub fn join(relay: &Relay, code: &str) -> Result<Box<dyn Transport>, String> {
     let code = code.trim().to_uppercase();
     let inner = RelayClient::join(&addr, &code)?;
     Ok(Box::new(Joining {
-        inner: Some(Framed::new(Paced::new(inner, PACE))),
+        inner: Some(Framed::new(Paced::new(inner, relay.pace()))),
         addr,
         code,
+        pace: relay.pace(),
         joined: false,
         lost_at: None,
         next_try: Instant::now(),
@@ -438,6 +450,7 @@ struct Joining {
     inner: Option<Framed<Paced<RelayClient>>>,
     addr: String,
     code: String,
+    pace: u64,
     /// The relay has let this join in at least once.
     joined: bool,
     /// When the connection went, while it is being got back.
@@ -483,7 +496,7 @@ impl Transport for Joining {
             if self.inner.is_none() && Instant::now() >= self.next_try {
                 self.next_try = Instant::now() + REJOIN_EVERY;
                 if let Ok(leg) = RelayClient::join(&self.addr, &self.code) {
-                    let mut leg = Framed::new(Paced::new(leg, PACE));
+                    let mut leg = Framed::new(Paced::new(leg, self.pace));
                     if let Some(wake) = &self.wake {
                         leg.set_wake(wake.clone());
                     }
