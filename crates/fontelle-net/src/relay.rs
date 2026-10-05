@@ -21,182 +21,11 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant, SystemTime};
 
-use serde::{Deserialize, Serialize};
-
 use crate::quic::{QuicClient, QuicServer, ServerCertificate};
+pub use crate::relay_client::RelayClient;
+pub use crate::relay_wire::JOIN_RETRY_EVERY;
+use crate::relay_wire::{RelayMsg, SeqState, channel_tag, tag_channel};
 use crate::transport::{Channel, Incoming, LinkStats, PeerId, SERVER, Transport};
-
-/// Wire channel tags inside relay messages.
-const CH_RELIABLE: u8 = 0;
-const CH_UNRELIABLE: u8 = 1;
-const CH_SEQUENCED: u8 = 2;
-
-fn channel_tag(c: Channel) -> u8 {
-    match c {
-        Channel::Reliable => CH_RELIABLE,
-        Channel::Unreliable => CH_UNRELIABLE,
-        Channel::UnreliableSequenced => CH_SEQUENCED,
-    }
-}
-
-fn tag_channel(t: u8) -> Channel {
-    match t {
-        CH_RELIABLE => Channel::Reliable,
-        CH_SEQUENCED => Channel::UnreliableSequenced,
-        _ => Channel::Unreliable,
-    }
-}
-
-/// Everything that crosses a relay leg.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-enum RelayMsg {
-    /// Endpoint → relay: host a new lobby, presenting nothing.
-    ///
-    /// **Kept as a unit variant on purpose.** A managed relay refuses this with
-    /// a sentence telling the developer to connect their project, and that
-    /// message is far more use than the silence a re-shaped variant would
-    /// produce: postcard indexes variants by declaration order, so widening
-    /// `Host` would make every game already in the wild fail to decode here and
-    /// hang with nothing said. [`RelayMsg::HostKeyed`] is appended at the end
-    /// instead, which old builds never send and new ones only send when the
-    /// project actually carries a key.
-    Host,
-    /// Endpoint → relay: join a lobby by code.
-    Join {
-        code: String,
-    },
-    /// Relay → host: your lobby is live.
-    Hosted {
-        code: String,
-    },
-    /// Relay → client: you're in.
-    JoinOk,
-    /// Relay → endpoint: no.
-    Refused {
-        reason: String,
-    },
-    /// Relay → host: a client attached / detached (its game peer id).
-    PeerJoined {
-        peer: u64,
-    },
-    PeerLeft {
-        peer: u64,
-    },
-    /// Host → relay: deliver to one client. `seq` is the end-to-end
-    /// sequenced-drop stamp (0 on non-sequenced channels).
-    ToPeer {
-        peer: u64,
-        channel: u8,
-        seq: u64,
-        bytes: Vec<u8>,
-    },
-    /// Relay → host: a client's traffic.
-    FromPeer {
-        peer: u64,
-        channel: u8,
-        seq: u64,
-        bytes: Vec<u8>,
-    },
-    /// Client → relay: deliver to the host.
-    ToHost {
-        channel: u8,
-        seq: u64,
-        bytes: Vec<u8>,
-    },
-    /// Relay → client: the host's traffic.
-    FromHost {
-        channel: u8,
-        seq: u64,
-        bytes: Vec<u8>,
-    },
-    /// Endpoint → relay: host a lobby **as a registered game**, presenting the
-    /// game key from `project.ron` and the build hash if there is one.
-    ///
-    /// **Appended last, and that placement is the compatibility story.**
-    /// Postcard numbers enum variants by declaration order, so a new relay
-    /// decodes every message an old build sends exactly as before, and this one
-    /// is simply a variant old relays have never heard of. The other direction
-    /// — a new build meeting an old relay — is what
-    /// [`RelayHost::host_keyed`]'s fallback is for.
-    HostKeyed {
-        key: String,
-        build: Option<String>,
-    },
-    /// Relay → host: something the developer should hear, once per episode.
-    ///
-    /// **Not a refusal and not an error** — the session is fine and nobody was
-    /// disconnected. It exists because a managed relay runs on somebody else's
-    /// machine, so the only way a developer learns that their game filled up is
-    /// if the relay tells their process.
-    ///
-    /// Appended after `HostKeyed` for the same compatibility reason that one
-    /// was: postcard numbers variants by declaration order, so an older host
-    /// simply fails to decode this and skips it, exactly as it would any
-    /// message it has never heard of.
-    Notice {
-        text: String,
-    },
-    /// Endpoint → relay: **this host is a dedicated server, not a player.**
-    ///
-    /// Sent immediately after the host request, on the same connection. The
-    /// relay counts a lobby's occupancy as its clients plus its host, which is
-    /// right for a listen host — that person is playing — and wrong for a box
-    /// nobody is sitting at: an idle dedicated server reported one concurrent
-    /// player, showed "1 in this game right now" on its developer's page, and
-    /// consumed one of the account's ceiling forever.
-    ///
-    /// A separate marker rather than a field on [`RelayMsg::HostKeyed`],
-    /// because widening a shipped variant changes its encoding and every host
-    /// already in the wild would fail to decode — and rather than a new host
-    /// variant, because a dedicated server may host keyless on a self-hosted
-    /// relay too. Appended last, for the reason every variant above it says.
-    HostIsDedicated,
-    /// Relay → client: the lobby exists, and its server is waking up.
-    ///
-    /// Not a refusal. [`RelayMsg::Refused`] means this will never succeed; a
-    /// dedicated server slept to free its machine is "not yet", and a player
-    /// holding a good code must not be told their friend's game does not
-    /// exist.
-    ///
-    /// `detail` is words for a human, not a status noun: "about 20 seconds"
-    /// renders as a sentence, where "starting" makes every developer invent
-    /// one.
-    ///
-    /// Appended last. A build already in players' hands decodes this variant
-    /// to nothing and stays in `connecting`, showing the spinner it already
-    /// draws; a new build reads the state and says something better. No
-    /// version negotiation, no flag.
-    Starting {
-        detail: String,
-    },
-    /// Endpoint → relay: reclaim this lobby code rather than minting one.
-    ///
-    /// Sent immediately after the host request, on the same connection, the
-    /// same shape as [`RelayMsg::HostIsDedicated`]: widening a shipped variant
-    /// changes its encoding, and every host in the wild would fail to decode.
-    ///
-    /// A request, never an instruction. The relay hands the code over only
-    /// when its policy says this key owns it, so a host that asks for somebody
-    /// else's code is minted a fresh one. The game key is the proof of
-    /// ownership and is already validated at registration; the worst a liar
-    /// achieves is the code they would have got anyway.
-    ///
-    /// This is what makes six characters survive a restart, a sleep and a
-    /// relay upgrade: a managed server brings its code with it.
-    WantCode {
-        code: String,
-    },
-}
-
-impl RelayMsg {
-    fn encode(&self) -> Vec<u8> {
-        postcard::to_allocvec(self).expect("relay messages always encode")
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        postcard::from_bytes(bytes).ok()
-    }
-}
 
 /// What a relay decides about a request to host.
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +68,15 @@ pub enum HostAdmission {
 /// room full of people indefinitely.
 pub const HOST_GRACE: Duration = Duration::from_secs(20);
 
+/// How long a code stays out of the draw after its lobby closes.
+///
+/// A join token names the lobby it was minted for (`cloud://UBDQBY`) and lives
+/// five minutes. If the code went straight back into the draw, a token minted
+/// for a lobby that just closed would be valid at whichever new lobby drew the
+/// same six characters. The identity contract asks for at least 600 seconds,
+/// twice the token's life, so no token outlives the hold.
+pub const RETIRED_CODE_HOLD: Duration = Duration::from_secs(600);
+
 /// Why a lobby ended, for the operator's journal.
 ///
 /// A bare count — "lobbies: 1" — cannot say which lobby died or what killed
@@ -265,15 +103,6 @@ impl LobbyEnd {
         }
     }
 }
-
-/// **How often a joiner asks again while a server wakes**.
-///
-/// A waking server hosts a lobby; it has no idea anybody is queued for it, so
-/// nothing pushes the good news and the joiner has to ask. Two seconds is
-/// frequent enough that the wait feels like a wait rather than a hang, and
-/// sparse enough that a lobby's worth of friends retrying costs the relay
-/// nothing next to the traffic it forwards.
-pub const JOIN_RETRY_EVERY: Duration = Duration::from_secs(2);
 
 /// **What a host is told by a relay that has just restarted** and has not yet
 /// learned which codes are spoken for.
@@ -470,6 +299,15 @@ pub trait RelayPolicy: Send {
     fn peer_joined(&mut self, _code: &str) {}
     fn peer_left(&mut self, _code: &str) {}
 
+    /// **This lobby's byte budget per connection, when its key has its own.**
+    ///
+    /// `None` keeps [`RelayLimits::bytes_per_window`]. A managed relay answers
+    /// from the key that opened the lobby, so one game can be granted the room
+    /// its traffic needs without raising every game's.
+    fn bytes_per_window(&self, _code: &str) -> Option<u64> {
+        None
+    }
+
     /// Messages the relay should push to a lobby's **host**, drained each step.
     ///
     /// **The developer never reads the relay's journal.** A managed relay runs
@@ -571,12 +409,27 @@ struct Lobby {
     /// restored it. A fresh window from the reclaim gives the marker its
     /// moment, and gives a player's reclaimed lobby what a new one gets.
     empty_since: Instant,
+    /// The game key it was opened with, and the managed deployment behind it:
+    /// together, what makes a new connection the same server.
+    key: Option<String>,
+    deployment: Option<String>,
+    /// The secret its host was given ([`RelayMsg::ReclaimToken`]).
+    token: [u8; 16],
+}
+
+/// Sixteen bytes nobody else can predict. Not the lobby-code generator: that
+/// one is fast and repeatable, and a token has to be neither.
+fn reclaim_token() -> [u8; 16] {
+    use ring::rand::SecureRandom;
+    let mut t = [0u8; 16];
+    let _ = ring::rand::SystemRandom::new().fill(&mut t);
+    t
 }
 
 /// The relay: step it forever (the `floptle-relay` binary) or from a test
 /// thread. One instance serves many lobbies.
 pub struct RelayServer {
-    transport: QuicServer,
+    transport: Legs,
     conns: HashMap<PeerId, Role>,
     lobbies: HashMap<String, Lobby>,
     rng: u64,
@@ -597,6 +450,13 @@ pub struct RelayServer {
     /// Keyed by connection, like `dedicated`, because the
     /// marker can arrive while a keyed host is parked on a policy decision.
     wanted: HashMap<PeerId, String>,
+    /// The reclaim token each host connection presented with its `WantCode`.
+    tokens: HashMap<PeerId, [u8; 16]>,
+    /// The managed deployment each host connection says it is.
+    deployments: HashMap<PeerId, String>,
+    /// Codes whose lobby closed, with when. Not drawn again until
+    /// [`RETIRED_CODE_HOLD`] has passed.
+    retired: HashMap<String, Instant>,
     /// How long a lobby outlives its host's connection. [`HOST_GRACE`] in
     /// production; shortened by tests that would otherwise sleep for it.
     grace: Duration,
@@ -662,18 +522,47 @@ impl RelayServer {
     /// The socket buffers the kernel granted against [`RELAY_SOCKET_BUFFER`].
     /// Always `Some` for a relay that came up through [`Self::bind`].
     pub fn socket_buffers(&self) -> Option<crate::quic::SocketBuffers> {
-        self.transport.socket_buffers()
+        self.transport.quic.socket_buffers()
     }
 
     /// Present a renewed certificate from now on. Every lobby stays up: only
     /// handshakes from here take the new chain (see
     /// [`QuicServer::set_certificate`]).
+    /// The WebSocket leg, when it serves `wss://`, takes it too.
     pub fn set_certificate(&self, cert: &ServerCertificate) -> Result<(), String> {
-        self.transport.set_certificate(cert)
+        self.transport.quic.set_certificate(cert)?;
+        if let Some(ws) = self.transport.ws.as_ref().filter(|_| self.transport.ws_tls) {
+            ws.set_tls(Some(cert.tls_config()?));
+        }
+        Ok(())
     }
 
-    fn with_transport(transport: QuicServer) -> Result<Self, String> {
-        let port = transport.local_port();
+    /// Also accept WebSocket connections on `port` (0 = ephemeral) — the leg
+    /// a browser joins over, since a page cannot speak QUIC. With `cert` the
+    /// port serves `wss://`, which is what a page served over `https:` must
+    /// use; without, plain `ws://`, for a relay behind a proxy that ends TLS
+    /// for it. A peer on either leg is the same to every lobby. Returns the
+    /// bound port.
+    pub fn listen_websocket(
+        &mut self,
+        port: u16,
+        cert: Option<&ServerCertificate>,
+    ) -> Result<u16, String> {
+        let tls = cert.map(ServerCertificate::tls_config).transpose()?;
+        self.transport.ws_tls = tls.is_some();
+        let ws = crate::ws::WsServer::bind(&format!("0.0.0.0:{port}"), tls)?;
+        let bound = ws.local_addr().port();
+        self.transport.ws = Some(ws);
+        Ok(bound)
+    }
+
+    fn with_transport(quic: QuicServer) -> Result<Self, String> {
+        let port = quic.local_port();
+        let transport = Legs {
+            quic,
+            ws: None,
+            ws_tls: false,
+        };
         let seed = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -689,6 +578,9 @@ impl RelayServer {
             parked: Vec::new(),
             dedicated: HashSet::new(),
             wanted: HashMap::new(),
+            tokens: HashMap::new(),
+            deployments: HashMap::new(),
+            retired: HashMap::new(),
             grace: HOST_GRACE,
             limits: RelayLimits::default(),
             ingress: HashMap::new(),
@@ -751,6 +643,8 @@ impl RelayServer {
         }
         self.sweep_lost_hosts();
         self.sweep_idle_lobbies();
+        self.retired
+            .retain(|_, at| at.elapsed() < RETIRED_CODE_HOLD);
         // **The policy has words for a developer and no way to reach one.** It
         // knows lobby codes; only the relay knows which connection a code
         // belongs to, so the routing is here.
@@ -815,6 +709,16 @@ impl RelayServer {
             RelayMsg::WantCode { code } => {
                 if matches!(self.conns.get(&from), Some(Role::Fresh) | None) {
                     self.wanted.insert(from, code.to_uppercase());
+                }
+            }
+            RelayMsg::Deployment { id } => {
+                if matches!(self.conns.get(&from), Some(Role::Fresh) | None) && !id.is_empty() {
+                    self.deployments.insert(from, id);
+                }
+            }
+            RelayMsg::Reclaim { token } => {
+                if matches!(self.conns.get(&from), Some(Role::Fresh) | None) {
+                    self.tokens.insert(from, token);
                 }
             }
             RelayMsg::Host => self.open_lobby(from, None, None),
@@ -1088,17 +992,39 @@ impl RelayServer {
         // A code somebody is actively hosting is never handed over, however good
         // the claim — that would move live players into a different lobby.
         let wanted = self.wanted.remove(&from);
+        let token = self.tokens.remove(&from);
+        let deployment = self.deployments.remove(&from);
         // ⚠ **A held lobby is rejoined, not replaced**. This is
         // the case that saves a match: the host blipped, its lobby is inside
         // the grace window with everybody still attached, and it has come back
         // asking for its own code. Re-point the lobby at the new connection and
         // the fight carries on — a new lobby here would strand the very players
         // the grace window was holding.
+        //
+        // ⚠ **So is one whose host is the same server, restarted.** The same
+        // key and the same managed deployment on a new connection is the old
+        // process's successor, and the old connection is a corpse the relay has
+        // not noticed yet — it went without a goodbye, and a quick restart
+        // beats the timeout. Waiting for that timeout minted a second code.
+        //
+        // ⚠ **And so is a listen host's, by its token.** A player's game has
+        // no reservation, so the policy never agrees it owns a code; the
+        // token it was handed when the lobby opened is the proof instead
+        // (see [`RelayMsg::ReclaimToken`]), on a managed relay and an open one
+        // alike. Only a held lobby: a live host is never displaced by one.
+        let by_token = |l: &Lobby| l.host_lost_at.is_some() && token.is_some_and(|t| t == l.token);
         if let Some(c) = wanted.clone()
-            && self.policy.as_mut().is_some_and(|p| p.claim_code(key, &c))
+            && self.lobbies.get(&c).is_some_and(|l| {
+                by_token(l)
+                    || (self.policy.as_mut().is_some_and(|p| p.claim_code(key, &c))
+                        && (l.host_lost_at.is_some()
+                            || (deployment.is_some()
+                                && l.deployment == deployment
+                                && l.key.as_deref() == key)))
+            })
             && let Some(l) = self.lobbies.get_mut(&c)
-            && l.host_lost_at.is_some()
         {
+            let stale = (l.host_lost_at.is_none() && l.host != from).then_some(l.host);
             l.host = from;
             l.host_lost_at = None;
             // ⚠ **The idle clock restarts at the reclaim**.
@@ -1116,10 +1042,27 @@ impl RelayServer {
             }
             // The host is new to these players even though they never left, so
             // it needs the roster it is now responsible for.
+            let token = l.token;
             for peer in clients {
                 self.send(from, Channel::Reliable, &RelayMsg::PeerJoined { peer });
             }
-            self.send(from, Channel::Reliable, &RelayMsg::Hosted { code: c });
+            self.send(
+                from,
+                Channel::Reliable,
+                &RelayMsg::Hosted { code: c.clone() },
+            );
+            self.send(
+                from,
+                Channel::Reliable,
+                &RelayMsg::ReclaimToken { code: c, token },
+            );
+            // The old connection hosts nothing now. Forget its role first, so
+            // closing it does not mark the lobby host-less all over again.
+            if let Some(old) = stale {
+                self.conns.remove(&old);
+                self.transport.disconnect(old);
+                self.drop_conn(old);
+            }
             return;
         }
         let claimed = match wanted {
@@ -1148,13 +1091,7 @@ impl RelayServer {
                     );
                     return;
                 }
-                loop {
-                    let c = lobby_code(&mut self.rng, prefix);
-                    let reserved = self.policy.as_ref().is_some_and(|p| p.code_is_reserved(&c));
-                    if !reserved && !self.lobbies.contains_key(&c) {
-                        break c;
-                    }
-                }
+                self.fresh_code(prefix)
             }
         };
         self.lobbies.insert(
@@ -1165,6 +1102,9 @@ impl RelayServer {
                 next_peer: 1,
                 host_lost_at: None,
                 empty_since: Instant::now(),
+                key: key.map(str::to_string),
+                deployment,
+                token: reclaim_token(),
             },
         );
         self.conns.insert(from, Role::Host { code: code.clone() });
@@ -1176,7 +1116,19 @@ impl RelayServer {
                 p.host_is_dedicated(&code);
             }
         }
-        self.send(from, Channel::Reliable, &RelayMsg::Hosted { code });
+        let token = self.lobbies.get(&code).map(|l| l.token);
+        self.send(
+            from,
+            Channel::Reliable,
+            &RelayMsg::Hosted { code: code.clone() },
+        );
+        if let Some(token) = token {
+            self.send(
+                from,
+                Channel::Reliable,
+                &RelayMsg::ReclaimToken { code, token },
+            );
+        }
     }
 
     /// When this connection first asked to host, if it is already parked.
@@ -1200,11 +1152,28 @@ impl RelayServer {
         }
     }
 
+    /// A code for a new lobby: not live, not promised to a sleeping
+    /// deployment, and not closed within [`RETIRED_CODE_HOLD`].
+    fn fresh_code(&mut self, prefix: Option<char>) -> String {
+        loop {
+            let c = lobby_code(&mut self.rng, prefix);
+            let reserved = self.policy.as_ref().is_some_and(|p| p.code_is_reserved(&c));
+            let held = self
+                .retired
+                .get(&c)
+                .is_some_and(|at| at.elapsed() < RETIRED_CODE_HOLD);
+            if !reserved && !held && !self.lobbies.contains_key(&c) {
+                break c;
+            }
+        }
+    }
+
     /// Destroy a lobby and tell everybody still in it why.
     fn end_lobby(&mut self, code: &str, why: LobbyEnd) {
         let Some(lobby) = self.lobbies.remove(code) else {
             return;
         };
+        self.retired.insert(code.to_string(), Instant::now());
         if let Some(p) = self.policy.as_mut() {
             p.lobby_ended(code, why);
             p.lobby_closed(code);
@@ -1229,6 +1198,9 @@ impl RelayServer {
         // server arrives as a new one — so this set must shrink with the
         // connections, or a long-lived relay accumulates one entry per restart.
         self.dedicated.remove(&c);
+        self.wanted.remove(&c);
+        self.tokens.remove(&c);
+        self.deployments.remove(&c);
         match self.conns.remove(&c) {
             Some(Role::Host { code }) => {
                 // The lobby is held, not destroyed. A host whose connection
@@ -1269,7 +1241,18 @@ impl RelayServer {
     /// Account one message against its connection's window; `false` means it
     /// is dropped. The strikes are consecutive: a window under budget resets.
     fn charge_ingress(&mut self, c: PeerId, bytes: u64) -> bool {
-        let limits = self.limits;
+        let mut limits = self.limits;
+        // The lobby's own budget, when its key has one.
+        let code = match self.conns.get(&c) {
+            Some(Role::Host { code }) | Some(Role::Client { code, .. }) => Some(code.as_str()),
+            _ => None,
+        };
+        if let Some(b) = code
+            .zip(self.policy.as_ref())
+            .and_then(|(code, p)| p.bytes_per_window(code))
+        {
+            limits.bytes_per_window = b;
+        }
         let now = Instant::now();
         let e = self.ingress.entry(c).or_insert(Ingress {
             window_start: now,
@@ -1400,24 +1383,60 @@ impl RelayServer {
 // Endpoint transports
 // ---------------------------------------------------------------------------
 
-/// End-to-end sequenced-drop state: last seq delivered per (peer, channel).
-#[derive(Default)]
-struct SeqState {
-    last: HashMap<(u64, u8), u64>,
+/// Every leg a relay listens on: QUIC always, and a WebSocket port when one
+/// was asked for. WebSocket peers are numbered from
+/// [`crate::ws::WS_PEER_BASE`], so a peer id says which leg it is on.
+struct Legs {
+    quic: QuicServer,
+    ws: Option<crate::ws::WsServer>,
+    /// Whether the WebSocket leg serves `wss://`, and so takes a renewal.
+    ws_tls: bool,
 }
 
-impl SeqState {
-    /// True when the message should be dropped (stale sequenced).
-    fn stale(&mut self, peer: u64, channel: u8, seq: u64) -> bool {
-        if channel != CH_SEQUENCED {
-            return false;
+impl Legs {
+    fn is_ws(peer: PeerId) -> bool {
+        peer > crate::ws::WS_PEER_BASE
+    }
+
+    fn remote_addr(&self, peer: PeerId) -> Option<std::net::SocketAddr> {
+        if Self::is_ws(peer) {
+            self.ws.as_ref()?.remote_addr(peer)
+        } else {
+            self.quic.remote_addr(peer)
         }
-        let last = self.last.entry((peer, channel)).or_insert(0);
-        if seq <= *last {
-            return true;
+    }
+}
+
+impl Transport for Legs {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        match (&mut self.ws, Self::is_ws(peer)) {
+            (Some(ws), true) => ws.send(peer, channel, bytes),
+            (_, true) => {}
+            (_, false) => self.quic.send(peer, channel, bytes),
         }
-        *last = seq;
-        false
+    }
+
+    fn poll(&mut self) -> Vec<Incoming> {
+        let mut out = self.quic.poll();
+        if let Some(ws) = &mut self.ws {
+            out.extend(ws.poll());
+        }
+        out
+    }
+
+    fn stats(&self, peer: PeerId) -> LinkStats {
+        match (&self.ws, Self::is_ws(peer)) {
+            (Some(ws), true) => ws.stats(peer),
+            _ => self.quic.stats(peer),
+        }
+    }
+
+    fn disconnect(&mut self, peer: PeerId) {
+        match (&mut self.ws, Self::is_ws(peer)) {
+            (Some(ws), true) => ws.disconnect(peer),
+            (_, true) => {}
+            (_, false) => self.quic.disconnect(peer),
+        }
     }
 }
 
@@ -1446,6 +1465,19 @@ pub struct RelayHost {
     /// The code this host asks to reclaim, remembered so it goes again with
     /// every re-host.
     wanted: Option<String>,
+    /// The managed deployment this host is, sent with every host request.
+    deployment: Option<String>,
+    /// The secret the relay gave this host for its lobby
+    /// ([`RelayMsg::ReclaimToken`]).
+    token: Option<[u8; 16]>,
+    /// The lobby this host had when the relay leg dropped, and its token: what
+    /// the re-host asks to be given back.
+    lost: Option<(String, [u8; 16])>,
+    /// What arrived while waiting for the lobby code, handed over by the first
+    /// [`poll`](Transport::poll) after it. A host that reclaims a held lobby is
+    /// told about the players already in it in the same breath as its code;
+    /// dropped here, a restarted server never learned it had anybody to serve.
+    early: Vec<Incoming>,
     /// Everything needed to host again after the relay goes away:
     /// where it is, and what to ask it for.
     relay_addr: String,
@@ -1525,6 +1557,24 @@ impl RelayHost {
         build: Option<&str>,
         code: &str,
     ) -> Result<(Self, String), String> {
+        Self::host_keyed_as(relay_addr, key, build, Some(code), None)
+    }
+
+    /// Host with a key as the managed deployment `deployment`, asking to
+    /// reclaim `code` when there is one.
+    ///
+    /// The deployment goes with every host request, the first included: the
+    /// lobby a first start opens is the one a restart must be recognised as
+    /// owning. A restarted server whose old connection the relay still holds
+    /// then gets its lobby back rather than a second code — see
+    /// [`RelayMsg::Deployment`].
+    pub fn host_keyed_as(
+        relay_addr: &str,
+        key: &str,
+        build: Option<&str>,
+        code: Option<&str>,
+        deployment: Option<&str>,
+    ) -> Result<(Self, String), String> {
         Self::connect_and_host_wanting(
             relay_addr,
             RelayMsg::HostKeyed {
@@ -1532,8 +1582,44 @@ impl RelayHost {
                 build: build.map(str::to_string),
             },
             Some(RelayMsg::Host),
-            Some(code.to_uppercase()),
+            code.map(str::to_uppercase),
+            deployment.filter(|d| !d.is_empty()).map(str::to_string),
+            None,
         )
+    }
+
+    /// Host again, **asking for lobby `code` back with the token the relay
+    /// gave for it** ([`Self::reclaim_token`]). For an app that reconnects on
+    /// its own after losing the relay: inside [`HOST_GRACE`] the relay hands
+    /// the lobby back with its players still in it; after that, or from a
+    /// relay that has never heard of tokens, a fresh code as before. `key` as
+    /// [`Self::host_keyed`], or `None` for a keyless host.
+    pub fn host_reclaiming(
+        relay_addr: &str,
+        key: Option<&str>,
+        build: Option<&str>,
+        code: &str,
+        token: [u8; 16],
+    ) -> Result<(Self, String), String> {
+        let (ask, fallback) = match key {
+            Some(k) => (
+                RelayMsg::HostKeyed {
+                    key: k.to_string(),
+                    build: build.map(str::to_string),
+                },
+                Some(RelayMsg::Host),
+            ),
+            None => (RelayMsg::Host, None),
+        };
+        let lost = Some((code.to_uppercase(), token));
+        Self::connect_and_host_wanting(relay_addr, ask, fallback, None, None, lost)
+    }
+
+    /// The secret that gets this host's lobby back if the relay leg drops, once
+    /// the relay has sent it. An app that reconnects on its own passes it to
+    /// [`Self::host_reclaiming`]; this host's own retries use it already.
+    pub fn reclaim_token(&self) -> Option<[u8; 16]> {
+        self.token
     }
 
     fn connect_and_host(
@@ -1541,7 +1627,43 @@ impl RelayHost {
         ask: RelayMsg,
         fallback: Option<RelayMsg>,
     ) -> Result<(Self, String), String> {
-        Self::connect_and_host_wanting(relay_addr, ask, fallback, None)
+        Self::connect_and_host_wanting(relay_addr, ask, fallback, None, None, None)
+    }
+
+    /// Send what precedes a host request on a fresh relay leg: the deployment,
+    /// the code wanted back, and its token when this is our own lobby.
+    fn send_claims(
+        inner: &mut QuicClient,
+        deployment: &Option<String>,
+        wanted: &Option<String>,
+        lost: &Option<(String, [u8; 16])>,
+    ) {
+        if let Some(d) = deployment {
+            inner.send(
+                SERVER,
+                Channel::Reliable,
+                &RelayMsg::Deployment { id: d.clone() }.encode(),
+            );
+        }
+        let want = wanted
+            .clone()
+            .or_else(|| lost.as_ref().map(|(c, _)| c.clone()));
+        if let Some(c) = &want {
+            inner.send(
+                SERVER,
+                Channel::Reliable,
+                &RelayMsg::WantCode { code: c.clone() }.encode(),
+            );
+            if let Some((lc, t)) = lost
+                && lc == c
+            {
+                inner.send(
+                    SERVER,
+                    Channel::Reliable,
+                    &RelayMsg::Reclaim { token: *t }.encode(),
+                );
+            }
+        }
     }
 
     fn connect_and_host_wanting(
@@ -1549,6 +1671,8 @@ impl RelayHost {
         ask: RelayMsg,
         fallback: Option<RelayMsg>,
         wanted: Option<String>,
+        deployment: Option<String>,
+        lost: Option<(String, [u8; 16])>,
     ) -> Result<(Self, String), String> {
         let mut inner = QuicClient::connect(relay_addr)?;
         // ⚠ **The claim goes first, ahead of the host request.** Both ride the
@@ -1558,13 +1682,7 @@ impl RelayHost {
         // marker is dropped as a late arrival. That is not a race that
         // sometimes bites; it is the guaranteed order, and it cost a green
         // policy test with a red end-to-end one to see.
-        if let Some(c) = &wanted {
-            inner.send(
-                SERVER,
-                Channel::Reliable,
-                &RelayMsg::WantCode { code: c.clone() }.encode(),
-            );
-        }
+        Self::send_claims(&mut inner, &deployment, &wanted, &lost);
         inner.send(SERVER, Channel::Reliable, &ask.encode());
         let mut me = Self {
             inner,
@@ -1575,6 +1693,10 @@ impl RelayHost {
             notices: Vec::new(),
             dedicated: false,
             wanted,
+            deployment: deployment.clone(),
+            token: None,
+            lost,
+            early: Vec::new(),
             relay_addr: relay_addr.to_string(),
             ask: ask.clone(),
             retry_at: None,
@@ -1582,12 +1704,15 @@ impl RelayHost {
             wake: None,
         };
         let mut fallback = fallback;
-        // Past the relay's own deadline for deciding, with a second to spare:
-        // three seconds gave up on a relay that would have answered at five,
-        // a cold key lookup after a restart.
+        // Fontelle's own: past the relay's own deadline for deciding, with a
+        // second to spare. Three seconds gave up on a relay that would have
+        // answered at five, a cold key lookup after a restart.
         let polls = (HOST_DECISION_DEADLINE + Duration::from_secs(1)).as_millis() as usize / 5;
         for i in 0..polls {
-            let _ = me.poll(); // stashes Hosted{code} / Refused{reason} when it lands
+            // Stashes Hosted{code} / Refused{reason} when it lands, and keeps
+            // everything else for the caller's first poll.
+            let got = me.poll();
+            me.early.extend(got);
             if let Some(c) = me.code.clone() {
                 return Ok((me, c));
             }
@@ -1603,6 +1728,7 @@ impl RelayHost {
             std::thread::sleep(Duration::from_millis(5));
         }
         Err(format!(
+            // Fontelle's own words: a person reads this, not a developer.
             "nothing answered at the relay ({relay_addr}) \u{2014} this network may block \
              its UDP port, or it is down for a moment; try again shortly"
         ))
@@ -1643,7 +1769,11 @@ impl RelayHost {
 
     /// The relay went away. Forget the lobby and start trying to get it back.
     fn lost_the_relay(&mut self) {
-        if self.code.take().is_some() {
+        let had = self.code.take();
+        if let (Some(c), Some(t)) = (&had, self.token.take()) {
+            self.lost = Some((c.clone(), t));
+        }
+        if had.is_some() {
             self.notices.push(format!(
                 "lost the connection to the relay at {} — the lobby code is not valid until \
                  it is back, and nobody can join. Reconnecting.",
@@ -1675,13 +1805,7 @@ impl RelayHost {
         };
         // Same ordering as the first host: the claim must be read before the
         // request that acts on it.
-        if let Some(c) = &self.wanted {
-            fresh.send(
-                SERVER,
-                Channel::Reliable,
-                &RelayMsg::WantCode { code: c.clone() }.encode(),
-            );
-        }
+        Self::send_claims(&mut fresh, &self.deployment, &self.wanted, &self.lost);
         fresh.send(SERVER, Channel::Reliable, &self.ask.encode());
         // **The marker goes with the re-host, not after it.** This arrives
         // before the relay has opened the lobby, which is the case the server
@@ -1744,76 +1868,89 @@ impl Transport for RelayHost {
         // is attempted. Every host drains its transport every tick, so the
         // retry needs no thread and no timer of its own.
         self.retry_if_due();
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.early);
         for inc in self.inner.poll() {
             match inc {
-                Incoming::Message(_, _, bytes) => match RelayMsg::decode(&bytes) {
-                    Some(RelayMsg::Hosted { code }) => {
-                        // ⚠ **A reclaim that failed says so here, on the side that
-                        // asked**.
-                        //
-                        // The control plane detects a mismatch one report later and
-                        // keeps its reservation rather than adopting
-                        // the new code — adopting it looks helpful and produces a
-                        // restart loop, which is how a live server was stopped for
-                        // two minutes. So the only other evidence is a silence, and
-                        // the process that actually knows is this one.
-                        //
-                        // Every reason is on the relay's side and none is
-                        // actionable from here: the code may have been reserved for
-                        // a different key, already be in use, or the relay may be
-                        // too old to have heard of the request at all. So this
-                        // reports rather than retries.
-                        if let Some(wanted) = &self.wanted
-                            && *wanted != code
-                        {
-                            self.notices.push(format!(
-                                "asked the relay at {} to reclaim lobby code {wanted} and was \
+                Incoming::Message(_, _, bytes) => {
+                    match RelayMsg::decode(&bytes) {
+                        Some(RelayMsg::Hosted { code }) => {
+                            // ⚠ **A reclaim that failed says so here, on the side that
+                            // asked**.
+                            //
+                            // The control plane detects a mismatch one report later and
+                            // keeps its reservation rather than adopting
+                            // the new code — adopting it looks helpful and produces a
+                            // restart loop, which is how a live server was stopped for
+                            // two minutes. So the only other evidence is a silence, and
+                            // the process that actually knows is this one.
+                            //
+                            // Every reason is on the relay's side and none is
+                            // actionable from here: the code may have been reserved for
+                            // a different key, already be in use, or the relay may be
+                            // too old to have heard of the request at all. So this
+                            // reports rather than retries.
+                            if let Some(wanted) = &self.wanted
+                                && *wanted != code
+                            {
+                                self.notices.push(format!(
+                                    "asked the relay at {} to reclaim lobby code {wanted} and was \
                              given {code} instead — players holding {wanted} cannot join. \
                              The relay did not agree that this game owns it.",
+                                    self.relay_addr
+                                ));
+                            }
+                            // A re-host after an outage: the relay lost every lobby, so
+                            // this is a new code and the old one is gone for good. Said
+                            // out loud because a developer who read the old one to a
+                            // friend needs to know it changed under them.
+                            let kept = self.lost.take().is_some_and(|(c, _)| c == code);
+                            if self.retry_at.is_some() {
+                                self.notices.push(if kept {
+                            format!(
+                                "back on the relay at {} — lobby {code} is still yours, and \
+                                 everybody who was in it still is",
                                 self.relay_addr
-                            ));
+                            )
+                        } else {
+                            format!("back on the relay at {} — the lobby code is now {code}", self.relay_addr)
+                        });
+                                self.retry_at = None;
+                                self.backoff = RELAY_RETRY_MIN;
+                            }
+                            self.code = Some(code);
                         }
-                        // A re-host after an outage: the relay lost every lobby, so
-                        // this is a new code and the old one is gone for good. Said
-                        // out loud because a developer who read the old one to a
-                        // friend needs to know it changed under them.
-                        if self.retry_at.is_some() {
-                            self.notices.push(format!(
-                                "back on the relay at {} — the lobby code is now {code}",
-                                self.relay_addr
-                            ));
-                            self.retry_at = None;
-                            self.backoff = RELAY_RETRY_MIN;
+                        Some(RelayMsg::ReclaimToken { code, token }) => {
+                            if self.code.as_deref() == Some(code.as_str()) {
+                                self.token = Some(token);
+                            }
                         }
-                        self.code = Some(code);
-                    }
-                    // Carried, not swallowed. A managed relay refuses a host
-                    // for reasons the player has to be able to act on, and
-                    // every one of them is a sentence somebody wrote for them.
-                    Some(RelayMsg::Refused { reason }) => {
-                        if self.code.is_none() {
-                            self.refused = Some(reason.clone());
+                        // Carried, not swallowed. A managed relay refuses a host
+                        // for reasons the player has to be able to act on, and
+                        // every one of them is a sentence somebody wrote for them.
+                        Some(RelayMsg::Refused { reason }) => {
+                            if self.code.is_none() {
+                                self.refused = Some(reason.clone());
+                            }
+                            out.push(Incoming::refused(SERVER, reason));
                         }
-                        out.push(Incoming::refused(SERVER, reason));
+                        // Kept for the host process rather than turned into an
+                        // `Incoming`: it is not a peer event and not an error, and
+                        // a session that treated it as either would be wrong about
+                        // both.
+                        Some(RelayMsg::Notice { text }) => self.notices.push(text),
+                        Some(RelayMsg::PeerJoined { peer }) => out.push(Incoming::Connected(peer)),
+                        Some(RelayMsg::PeerLeft { peer }) => out.push(Incoming::dropped(peer)),
+                        Some(RelayMsg::FromPeer {
+                            peer,
+                            channel,
+                            seq,
+                            bytes,
+                        }) if !self.dedup.stale(peer, channel, seq) => {
+                            out.push(Incoming::Message(peer, tag_channel(channel), bytes));
+                        }
+                        _ => {}
                     }
-                    // Kept for the host process rather than turned into an
-                    // `Incoming`: it is not a peer event and not an error, and
-                    // a session that treated it as either would be wrong about
-                    // both.
-                    Some(RelayMsg::Notice { text }) => self.notices.push(text),
-                    Some(RelayMsg::PeerJoined { peer }) => out.push(Incoming::Connected(peer)),
-                    Some(RelayMsg::PeerLeft { peer }) => out.push(Incoming::dropped(peer)),
-                    Some(RelayMsg::FromPeer {
-                        peer,
-                        channel,
-                        seq,
-                        bytes,
-                    }) if !self.dedup.stale(peer, channel, seq) => {
-                        out.push(Incoming::Message(peer, tag_channel(channel), bytes));
-                    }
-                    _ => {}
-                },
+                }
                 Incoming::Disconnected(_, _) => {
                     // The relay leg died: every player is unreachable now, and
                     // the cause is the relay rather than any one of them —
@@ -1838,147 +1975,6 @@ impl Transport for RelayHost {
         // level up by `NetSession::peer_rtt_ms`, which probes end to end and so
         // works the same over every transport. This stays as the transport's
         // honest answer about the only link it owns.
-        self.inner.stats(SERVER)
-    }
-}
-
-/// A client's end of a relayed session: joins by lobby code; the host appears
-/// as [`SERVER`], exactly like a direct connection.
-pub struct RelayClient {
-    inner: QuicClient,
-    seq: u64,
-    dedup: SeqState,
-    /// The relay's last word on a join that has not landed yet — see
-    /// [`RelayMsg::Starting`]. Drained by [`Transport::take_join_progress`].
-    starting: Option<String>,
-    /// The code this client is joining, kept so the join can be asked again
-    /// while a server wakes.
-    code: String,
-    /// When to ask again, set only once the relay has said the server is
-    /// starting. `None` for an ordinary join, which is answered immediately and
-    /// must never be re-sent.
-    retry_at: Option<Instant>,
-}
-
-impl RelayClient {
-    /// Connect to a relay and join lobby `code`. Non-blocking: the session's
-    /// `Hello` rides the same ordered stream right behind the `Join`, so the
-    /// handshake completes as soon as the relay lets us in ([`Incoming`]
-    /// carries a `Disconnected` if it refuses).
-    pub fn join(relay_addr: &str, code: &str) -> Result<Self, String> {
-        let mut inner = QuicClient::connect(relay_addr)?;
-        inner.send(
-            SERVER,
-            Channel::Reliable,
-            &RelayMsg::Join {
-                code: code.to_uppercase(),
-            }
-            .encode(),
-        );
-        Ok(Self {
-            inner,
-            seq: 0,
-            dedup: SeqState::default(),
-            starting: None,
-            code: code.to_uppercase(),
-            retry_at: None,
-        })
-    }
-}
-
-impl Transport for RelayClient {
-    fn set_wake(&mut self, wake: crate::transport::Wake) {
-        self.inner.set_wake(wake);
-    }
-    fn take_notices(&mut self) -> Vec<String> {
-        self.inner.take_warnings()
-    }
-
-    fn take_join_progress(&mut self) -> Option<String> {
-        self.starting.take()
-    }
-
-    fn send(&mut self, _peer: PeerId, channel: Channel, bytes: &[u8]) {
-        let seq = if channel == Channel::UnreliableSequenced {
-            self.seq += 1;
-            self.seq
-        } else {
-            0
-        };
-        let msg = RelayMsg::ToHost {
-            channel: channel_tag(channel),
-            seq,
-            bytes: bytes.to_vec(),
-        };
-        let leg = if channel == Channel::Reliable {
-            Channel::Reliable
-        } else {
-            Channel::Unreliable
-        };
-        self.inner.send(SERVER, leg, &msg.encode());
-    }
-
-    fn poll(&mut self) -> Vec<Incoming> {
-        if let Some(at) = self.retry_at
-            && Instant::now() >= at
-        {
-            self.retry_at = Some(Instant::now() + JOIN_RETRY_EVERY);
-            let code = self.code.clone();
-            self.inner
-                .send(SERVER, Channel::Reliable, &RelayMsg::Join { code }.encode());
-        }
-        let mut out = Vec::new();
-        for inc in self.inner.poll() {
-            match inc {
-                Incoming::Message(_, _, bytes) => match RelayMsg::decode(&bytes) {
-                    Some(RelayMsg::JoinOk) => {
-                        // In. Stop asking.
-                        self.retry_at = None;
-                        out.push(Incoming::Connected(SERVER));
-                    }
-                    // The relay told us exactly what was wrong — usually that
-                    // the code doesn't match a lobby. Carry it: mistyping the
-                    // code is the most common thing that will ever go wrong in
-                    // an online session, and it must not arrive at the game
-                    // indistinguishable from the host closing their laptop.
-                    Some(RelayMsg::Refused { reason }) => {
-                        // Never, rather than not yet. Stop asking.
-                        self.retry_at = None;
-                        out.push(Incoming::refused(SERVER, reason));
-                    }
-                    // ⚠ Deliberately not an `Incoming` — the link is fine and
-                    // nobody is disconnected. A refusal ends the attempt; this
-                    // says to keep waiting, so it rides the same side channel
-                    // `Notice` uses rather than widening a transport enum whose
-                    // every variant means something happened to the connection.
-                    Some(RelayMsg::Starting { detail }) => {
-                        self.starting = Some(detail);
-                        // **Ask again shortly.** The relay answered "not yet",
-                        // and nothing will tell us when it becomes "yes" — the
-                        // waking server hosts a lobby, it does not know anybody
-                        // is waiting. So the joiner polls, and the retry only
-                        // ever starts after the relay has said the server is
-                        // coming, so an ordinary join is never re-sent.
-                        self.retry_at = Some(Instant::now() + JOIN_RETRY_EVERY);
-                    }
-                    Some(RelayMsg::FromHost {
-                        channel,
-                        seq,
-                        bytes,
-                    }) if !self.dedup.stale(SERVER, channel, seq) => {
-                        out.push(Incoming::Message(SERVER, tag_channel(channel), bytes));
-                    }
-                    _ => {}
-                },
-                // Whatever the leg below knew, if anything.
-                Incoming::Disconnected(_, why) => out.push(Incoming::Disconnected(SERVER, why)),
-                Incoming::Connected(_) => {}
-            }
-        }
-        out
-    }
-
-    fn stats(&self, _peer: PeerId) -> LinkStats {
         self.inner.stats(SERVER)
     }
 }
@@ -2087,6 +2083,64 @@ mod tests {
             }),
             15
         );
+        assert_eq!(index(&RelayMsg::Deployment { id: String::new() }), 16);
+        assert_eq!(
+            index(&RelayMsg::ReclaimToken {
+                code: String::new(),
+                token: [0; 16]
+            }),
+            17
+        );
+        assert_eq!(index(&RelayMsg::Reclaim { token: [0; 16] }), 18);
+    }
+
+    /// **A closed lobby's code is not handed out again for ten minutes.**
+    ///
+    /// A join token is minted for one lobby code and lives five minutes. Drawn
+    /// again any sooner, a code would let a token for the closed lobby verify
+    /// at a stranger's new one. The test closes a lobby through the same path
+    /// every close takes, rewinds the code generator so its next draw IS that
+    /// code, and asserts the relay draws something else. It then ages the hold
+    /// past its end and asserts the code comes back, so the test can tell the
+    /// hold apart from a generator that simply never repeats.
+    #[test]
+    fn a_closed_lobbys_code_is_held_back_from_the_draw() {
+        let mut relay = RelayServer::bind(0).expect("relay bind");
+        let seed = relay.rng;
+        let first = relay.fresh_code(Some('U'));
+        relay.lobbies.insert(
+            first.clone(),
+            Lobby {
+                host: 7,
+                clients: HashMap::new(),
+                next_peer: 1,
+                host_lost_at: None,
+                empty_since: Instant::now(),
+                key: None,
+                deployment: None,
+                token: [0; 16],
+            },
+        );
+        relay.end_lobby(&first, LobbyEnd::Idle);
+
+        relay.rng = seed;
+        let next = relay.fresh_code(Some('U'));
+        assert_ne!(
+            next, first,
+            "a token for the closed lobby would verify at this new one"
+        );
+
+        let Some(long_ago) = Instant::now().checked_sub(RETIRED_CODE_HOLD + Duration::from_secs(1))
+        else {
+            return; // a machine up for less than ten minutes cannot express the past
+        };
+        relay.retired.insert(first.clone(), long_ago);
+        relay.rng = seed;
+        assert_eq!(
+            relay.fresh_code(Some('U')),
+            first,
+            "the hold ends, and the code is drawable again"
+        );
     }
 
     /// A relay that has never heard of a message skips it rather than dying,
@@ -2134,6 +2188,8 @@ mod tests {
         /// Has this policy pulled a snapshot? A relay that has not must not
         /// invent codes it cannot vet.
         primed: bool,
+        /// The byte budget every lobby's key is granted, if any.
+        budget: Option<u64>,
     }
 
     impl TablePolicy {
@@ -2147,7 +2203,14 @@ mod tests {
                 dedicated: Arc::new(Mutex::new(Vec::new())),
                 reserved: HashMap::new(),
                 primed: true,
+                budget: None,
             }
+        }
+
+        /// Grant every lobby this byte budget per connection.
+        pub(super) fn granting(mut self, bytes_per_window: u64) -> Self {
+            self.budget = Some(bytes_per_window);
+            self
         }
 
         /// A handle on what the policy was told, for a test that hands the
@@ -2176,6 +2239,9 @@ mod tests {
     }
 
     impl RelayPolicy for TablePolicy {
+        fn bytes_per_window(&self, code: &str) -> Option<u64> {
+            self.budget.filter(|_| self.of_lobby.contains_key(code))
+        }
         fn claim_code(&mut self, key: Option<&str>, code: &str) -> bool {
             key.is_some_and(|k| self.reserved.get(code).is_some_and(|owner| owner == k))
         }
@@ -2278,9 +2344,10 @@ mod tests {
         /// another at the same address — which is what a relay upgrade looks
         /// like from a host's point of view.
         ///
-        /// Tried for a few seconds: the old relay's socket is closed by a
-        /// thread of its own, and macOS keeps the port for a moment after —
-        /// CI's runner failed this bind with `EADDRINUSE` once in a while.
+        /// Fontelle's own: tried for a few seconds. The old relay's socket is
+        /// closed by a thread of its own, and macOS keeps the port for a
+        /// moment after — CI's runner failed this bind with `EADDRINUSE` once
+        /// in a while.
         pub(super) fn restart_on(port: u16) -> Self {
             let started = std::time::Instant::now();
             let relay = loop {
@@ -2337,7 +2404,10 @@ mod tests {
             Self::start_with_grace(policy, Duration::from_millis(150))
         }
 
-        fn start_with_grace(policy: Option<Box<dyn RelayPolicy>>, grace: Duration) -> Self {
+        pub(super) fn start_with_grace(
+            policy: Option<Box<dyn RelayPolicy>>,
+            grace: Duration,
+        ) -> Self {
             let mut relay = RelayServer::bind(0).expect("relay bind");
             if let Some(p) = policy {
                 relay.set_policy(p);
@@ -2429,13 +2499,91 @@ mod tests {
         );
     }
 
+    /// **One big reliable message does not leave a host deaf.** A reliable leg
+    /// is a single framed stream, and a reader that met a frame it would not
+    /// take gave up on the stream in silence, which stopped the writer at the
+    /// other end too, while keepalives and datagrams kept the connection
+    /// looking healthy. A dedicated server that had once sent a large world
+    /// snapshot answered nobody after it: joins reached it and every reply was
+    /// lost. Here the host sends one 2 MiB message, then a second player joins
+    /// and must be answered.
+    #[test]
+    fn a_host_that_sent_one_huge_message_still_answers_the_next_player() {
+        // A byte budget the message fits in: this is about the stream, not
+        // the relay's rate limit.
+        let relay = TestRelay::limited(RelayLimits {
+            bytes_per_window: 64 << 20,
+            ..RelayLimits::default()
+        });
+        let addr = relay.addr();
+        let (mut host, code) = RelayHost::host(&addr).expect("host");
+        let connected = |host: &mut RelayHost, want: usize| -> Vec<PeerId> {
+            let mut peers = Vec::new();
+            for _ in 0..600 {
+                for i in host.poll() {
+                    if let Incoming::Connected(p) = i {
+                        peers.push(p);
+                    }
+                }
+                if peers.len() >= want {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            peers
+        };
+        let mut a = RelayClient::join(&addr, &code).expect("a joins");
+        let pa = connected(&mut host, 1);
+        assert_eq!(pa.len(), 1, "the first player never reached the host");
+        // Over the relay's per-message ceiling for a host, so the relay drops
+        // it by policy; what matters is that the leg it arrived on survives.
+        let big = vec![7u8; 2 << 20];
+        host.send(pa[0], Channel::Reliable, &big);
+        for _ in 0..100 {
+            let _ = a.poll();
+            let _ = host.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // The next player: the host must hear them and they must hear back.
+        let mut b = RelayClient::join(&addr, &code).expect("b joins");
+        let pb = connected(&mut host, 1);
+        assert_eq!(pb.len(), 1, "the second player never reached the host");
+        host.send(pb[0], Channel::Reliable, b"welcome");
+        let mut answered = false;
+        for _ in 0..600 {
+            answered |= b
+                .poll()
+                .iter()
+                .any(|i| matches!(i, Incoming::Message(_, _, m) if m == b"welcome"));
+            let _ = host.poll();
+            let _ = a.poll();
+            if answered {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            answered,
+            "the host's reply to the second player never arrived: the host is deaf"
+        );
+    }
+
     // `a_full_session_replicates_through_the_relay` stays in the engine: it drives the engine's own game session
-    // (`NetSession`, `floptle_core::World`), which does not come over.
-    // Fontelle's end-to-end test of this path is `tests/relay.rs`.
+    // (`NetSession`, `floptle_core::World`) or its WebSocket leg, which do not
+    // come over. Fontelle's end-to-end test of this path is `tests/relay.rs`.
+
+    // `a_browser_and_a_desktop_player_share_one_lobby` stays in the engine: it drives the engine's own game session
+    // (`NetSession`, `floptle_core::World`) or its WebSocket leg, which do not
+    // come over. Fontelle's end-to-end test of this path is `tests/relay.rs`.
+
+    // `the_websocket_leg_takes_the_relays_certificate` stays in the engine: it drives the engine's own game session
+    // (`NetSession`, `floptle_core::World`) or its WebSocket leg, which do not
+    // come over. Fontelle's end-to-end test of this path is `tests/relay.rs`.
 
     // `rollback_inputs_cross_a_relay_in_both_directions` stays in the engine: it drives the engine's own game session
-    // (`NetSession`, `floptle_core::World`), which does not come over.
-    // Fontelle's end-to-end test of this path is `tests/relay.rs`.
+    // (`NetSession`, `floptle_core::World`) or its WebSocket leg, which do not
+    // come over. Fontelle's end-to-end test of this path is `tests/relay.rs`.
 
     #[test]
     fn bad_codes_refuse_and_lobbies_die_with_their_host() {
@@ -2517,6 +2665,51 @@ mod managed_tests {
     use std::sync::atomic::Ordering;
 
     const KEY: &str = "fk_live_ATESTKEYTHATISNOTREAL0000000";
+
+    /// **A key's own budget replaces the relay's for its lobbies.** Fontelle
+    /// moves songs: a relay-wide raise would spend every game's share of the
+    /// receive buffer, so the grant rides the key instead. The same traffic
+    /// that the relay's budget drops gets through on a lobby whose key is
+    /// granted more.
+    #[test]
+    fn a_keys_own_byte_budget_replaces_the_relays_for_its_lobbies() {
+        let limits = RelayLimits {
+            bytes_per_window: 4096,
+            window: Duration::from_millis(200),
+            strikes: 100,
+            ..RelayLimits::default()
+        };
+        let forwarded = |policy: TablePolicy| {
+            let relay = TestRelay::managed_limited(policy, Duration::from_secs(5), limits);
+            let (mut host, code) = RelayHost::host_keyed(&relay.addr(), KEY, None).expect("hosts");
+            let mut c = RelayClient::join(&relay.addr(), &code).expect("joins");
+            for _ in 0..40 {
+                let _ = host.poll();
+                let _ = c.poll();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = drain(&mut host);
+            // Twelve kilobytes inside one window: three times the relay's budget.
+            for _ in 0..4 {
+                c.send(SERVER, Channel::Reliable, &[7u8; 3000]);
+            }
+            std::thread::sleep(Duration::from_millis(40));
+            drain(&mut host)
+                .iter()
+                .filter(|i| matches!(i, Incoming::Message(..)))
+                .count()
+        };
+        assert_eq!(
+            forwarded(TablePolicy::with(KEY, 64)),
+            1,
+            "the fixture must be over the relay's own budget"
+        );
+        assert_eq!(
+            forwarded(TablePolicy::with(KEY, 64).granting(64 * 1024)),
+            4,
+            "the key's grant was not used"
+        );
+    }
 
     /// Poll a host for a moment and return everything it was told.
     fn drain(host: &mut RelayHost) -> Vec<Incoming> {
@@ -2741,13 +2934,10 @@ mod managed_tests {
     /// remainder of the old one: the clock restarts at the reclaim.
     #[test]
     fn a_reclaimed_lobbys_idle_clock_restarts_at_the_reclaim() {
-        // Fontelle's own, not in the engine's copy (hub card 0265): 200 ms
-        // in the engine. The check below lands a quarter window before the
-        // new deadline, and 50 ms of slack was less than a busy macOS
-        // runner's `sleep` overshoots by — Fontelle's CI: *"the old clock
-        // was carried over the reclaim, left: 0, right: 1"*. A second gives
-        // it 250 ms; nothing the test says changed.
-        let idle = Duration::from_millis(1000);
+        // A whole second: the checks below land a fraction of the window
+        // after a sleep, and a busy CI machine oversleeps by tens of
+        // milliseconds.
+        let idle = Duration::from_secs(1);
         let relay = TestRelay::managed_limited(
             TablePolicy::with(KEY, 20).reserving("U5FEFJ", KEY),
             Duration::from_secs(30),
@@ -2764,8 +2954,7 @@ mod managed_tests {
         let (mut again, back) =
             RelayHost::host_keyed_reclaiming(&relay.addr(), KEY, None, "U5FEFJ").expect("re-hosts");
         assert_eq!(back, "U5FEFJ", "not a reclaim");
-        // Past the old deadline, inside the new one: still open. (No `drain`
-        // here — it polls for 200 ms, which is the whole window.)
+        // Past the old deadline, inside the new one: still open.
         std::thread::sleep(idle * 3 / 4);
         let _ = again.poll();
         assert_eq!(
@@ -2817,11 +3006,19 @@ mod managed_tests {
         );
 
         // The host comes back and reclaims. Same code, same lobby, same player.
-        let (_again, back) =
+        let (mut again, back) =
             RelayHost::host_keyed_reclaiming(&relay.addr(), KEY, None, "U5FEFJ").expect("re-hosts");
         assert_eq!(
             back, "U5FEFJ",
             "the returning host was given a different lobby"
+        );
+        // ⚠ And it is told about them. The relay announces the kept players in
+        // the same breath as the code; a host that dropped those while waiting
+        // for the code kept its players in the relay and never served them.
+        let events = drain(&mut again);
+        assert!(
+            events.iter().any(|e| matches!(e, Incoming::Connected(_))),
+            "the returning host was not told about the player it kept: {events:?}"
         );
         // ⚠ And the player is still in it. A reclaim that opened a fresh lobby
         // under the same code would leave this client attached to the old one —
@@ -2830,6 +3027,95 @@ mod managed_tests {
         assert!(
             !evicted(&mut client),
             "the player was dropped when the host came back"
+        );
+    }
+
+    /// Poll a host until the relay's reclaim token has arrived.
+    fn token_of(host: &mut RelayHost) -> [u8; 16] {
+        for _ in 0..400 {
+            let _ = host.poll();
+            if let Some(t) = host.reclaim_token() {
+                return t;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the relay never sent this host its reclaim token");
+    }
+
+    /// **A listen host that drops gets its own lobby back, by its token.**
+    /// A player's game has no reservation, so on a managed relay the policy
+    /// never agrees it owns its code, and a Wi-Fi blip minted a new one and
+    /// stranded everybody held in the old lobby. The token the relay gave the
+    /// host when it opened the lobby is the proof instead.
+    #[test]
+    fn a_listen_host_gets_its_held_lobby_back_with_its_token() {
+        let relay =
+            TestRelay::managed_with_grace(TablePolicy::with(KEY, 20), Duration::from_secs(30));
+        let (mut host, code) = RelayHost::host_keyed(&relay.addr(), KEY, None).expect("hosts");
+        let token = token_of(&mut host);
+        let mut client = RelayClient::join(&relay.addr(), &code).expect("join");
+        assert!(settle_for(&mut client, |i| matches!(
+            i,
+            Incoming::Connected(SERVER)
+        )));
+        drop(host);
+        std::thread::sleep(Duration::from_millis(300));
+
+        // Same key, the code, but no token: a stranger (every copy of the game
+        // has the key, and every player who joined knows the code).
+        let (_s, theirs) =
+            RelayHost::host_keyed_reclaiming(&relay.addr(), KEY, None, &code).expect("hosts");
+        assert_ne!(
+            theirs, code,
+            "a host without the token took somebody's held lobby"
+        );
+        let mut wrong = token;
+        wrong[0] ^= 1;
+        let (_w, guessed) =
+            RelayHost::host_reclaiming(&relay.addr(), Some(KEY), None, &code, wrong)
+                .expect("hosts");
+        assert_ne!(guessed, code, "a wrong token took the held lobby");
+
+        let (mut again, back) =
+            RelayHost::host_reclaiming(&relay.addr(), Some(KEY), None, &code, token)
+                .expect("re-hosts");
+        assert_eq!(back, code, "the returning host was minted a new code");
+        let events = drain(&mut again);
+        assert!(
+            events.iter().any(|e| matches!(e, Incoming::Connected(_))),
+            "and told about its player: {events:?}"
+        );
+        assert!(
+            !evicted(&mut client),
+            "the player held in the lobby was dropped"
+        );
+        assert_eq!(
+            token_of(&mut again),
+            token,
+            "the lobby keeps its token for the next blip"
+        );
+    }
+
+    /// …and the same on an open relay, which has no policy at all and so never
+    /// let any host reclaim.
+    #[test]
+    fn a_host_on_an_open_relay_gets_its_held_lobby_back_with_its_token() {
+        let relay = TestRelay::start_with_grace(None, Duration::from_secs(30));
+        let (mut host, code) = RelayHost::host(&relay.addr()).expect("hosts");
+        let token = token_of(&mut host);
+        let mut client = RelayClient::join(&relay.addr(), &code).expect("join");
+        assert!(settle_for(&mut client, |i| matches!(
+            i,
+            Incoming::Connected(SERVER)
+        )));
+        drop(host);
+        std::thread::sleep(Duration::from_millis(300));
+        let (_again, back) =
+            RelayHost::host_reclaiming(&relay.addr(), None, None, &code, token).expect("re-hosts");
+        assert_eq!(back, code);
+        assert!(
+            !evicted(&mut client),
+            "the player held in the lobby was dropped"
         );
     }
 
@@ -2868,6 +3154,68 @@ mod managed_tests {
             why.contains("host"),
             "the reason should name what happened: {why:?}"
         );
+    }
+
+    /// ⚠ **A restarted server gets its own lobby back while the relay still
+    /// holds the old process's connection.**
+    ///
+    /// freeflier's first dedicated deploy: the fleet agent rewrote the unit to
+    /// carry the reserved code and systemd restarted the server. The new
+    /// process asked for `UCJZKU` 0.02 s after the old one went, the relay still
+    /// held the old connection (it left without a goodbye), and minted
+    /// `U6VAD5`. The deployment stayed on a code that was not its reservation.
+    ///
+    /// Same key and same deployment is the same server: it gets the lobby, and
+    /// the player in it stays. Anybody else asking for a live lobby's code does
+    /// not.
+    #[test]
+    fn a_restarted_server_takes_its_lobby_back_before_the_old_connection_times_out() {
+        let relay = TestRelay::managed_with_grace(
+            TablePolicy::with(KEY, 20).reserving("UCJZKU", KEY),
+            Duration::from_secs(30),
+        );
+        let (old, code) =
+            RelayHost::host_keyed_as(&relay.addr(), KEY, None, Some("UCJZKU"), Some("d_3"))
+                .expect("hosts");
+        assert_eq!(code, "UCJZKU");
+        let mut client = RelayClient::join(&relay.addr(), &code).expect("join");
+        assert!(settle_for(&mut client, |i| matches!(
+            i,
+            Incoming::Connected(SERVER)
+        )));
+
+        // A stranger with the same key but no deployment, or another
+        // deployment, does not take a live lobby.
+        let (_other, theirs) =
+            RelayHost::host_keyed_as(&relay.addr(), KEY, None, Some("UCJZKU"), Some("d_4"))
+                .expect("hosts");
+        assert_ne!(theirs, "UCJZKU", "another deployment took a live lobby");
+        let (_plain, plain) =
+            RelayHost::host_keyed_reclaiming(&relay.addr(), KEY, None, "UCJZKU").expect("hosts");
+        assert_ne!(
+            plain, "UCJZKU",
+            "a host that named no deployment took a live lobby"
+        );
+
+        // The restart: the old process's connection is still open (`old` is
+        // alive and silent), and the new one asks.
+        let (mut new, back) =
+            RelayHost::host_keyed_as(&relay.addr(), KEY, None, Some("UCJZKU"), Some("d_3"))
+                .expect("re-hosts");
+        assert_eq!(
+            back, "UCJZKU",
+            "the same server, restarted, was given a different code"
+        );
+        assert!(
+            !evicted(&mut client),
+            "the player was dropped when the server restarted"
+        );
+        let events = drain(&mut new);
+        assert!(
+            events.iter().any(|e| matches!(e, Incoming::Connected(_))),
+            "the new process was not told about the player it now hosts: {events:?}"
+        );
+        drop(old);
     }
 
     /// ⚠ **A managed server gets the code it asks for, end to end**.

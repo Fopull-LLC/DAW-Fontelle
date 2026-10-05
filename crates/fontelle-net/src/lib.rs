@@ -7,18 +7,27 @@
 //!
 //! # Lifted, not written
 //!
-//! `transport.rs`, `quic.rs` and `relay.rs` are the Floptle engine's own
-//! (`Fopull-LLC/Floptle`, `crates/floptle-net/src/` at `16481c30`, v0.97.1
-//! "Square On"), copied rather than depended on because they live inside a
-//! crate that brings the game engine with it (§9.1; hub card
-//! `tasks/fontelle/0265`). They are kept as they were — formatting aside —
-//! so a diff against the engine's shows only what the engine changed; a
-//! change here that is not in the engine is a change to argue for there.
-//! Three of their tests stay behind, because they drive the engine's game
-//! session: each is marked where it was, and `tests/relay.rs` is Fontelle's
-//! end-to-end test of the same path. The pinned `RelayMsg` variant-order test
-//! came over with the rest: a variant the engine adds is a message this copy
-//! cannot read, and that test is what notices.
+//! `transport.rs`, `quic.rs`, `relay.rs`, `relay_wire.rs` and
+//! `relay_client.rs` are the Floptle engine's own (`Fopull-LLC/Floptle`,
+//! `crates/floptle-net/src/` at `6732788e`, v0.109.1 "Solid Ground" — the
+//! version Floptle Cloud's relay runs), copied rather than depended on
+//! because they live inside a crate that brings the game engine with it
+//! (§9.1; hub card `tasks/fontelle/0265`, where the engine blessed the copy).
+//! They are kept as they were — formatting aside — so a diff against the
+//! engine's shows only what the engine changed; a change here that is not in
+//! the engine is marked *Fontelle's own* where it is, and is a change to
+//! argue for there. Those are: the wake (`Transport::set_wake` and its
+//! plumbing, F48), a handshake that timed out said as nobody answering rather
+//! than as a certificate, a host's wait for its code running past the
+//! relay's own deadline and failing in a person's words, the restart test's
+//! patient bind, and a clock that never runs in a browser. `ws.rs` is
+//! Fontelle's own too: the names of the engine's WebSocket leg with nothing
+//! behind them, since a studio is never a browser. The tests that drive the
+//! engine's game session or its WebSocket leg stay behind, each marked where
+//! it was; `tests/relay.rs` is Fontelle's end-to-end test of the same path.
+//! The pinned `RelayMsg` variant-order test came over with the rest: a
+//! variant the engine adds is a message this copy cannot read, and that test
+//! is what notices.
 //!
 //! Depends on nothing in the workspace but `fontelle-types` (INVARIANT 4's
 //! spirit): the messages a session sends are `fontelle_model::wire`'s, and the
@@ -29,7 +38,10 @@ mod framed;
 mod paced;
 mod quic;
 mod relay;
+mod relay_client;
+mod relay_wire;
 mod transport;
+mod ws;
 
 pub use connect::{FONTELLE_CLOUD_KEY, REGIONS, Relay, host, join, reclaim};
 pub use framed::{FRAME, Framed};
@@ -37,7 +49,7 @@ pub use paced::{Clock, PACE, Paced};
 
 pub use quic::{QuicClient, QuicServer, ServerCertificate, SocketBuffers};
 pub use relay::{
-    HOST_DECISION_DEADLINE, HOST_GRACE, HostAdmission, JoinAdmission, LobbyEnd,
+    HOST_DECISION_DEADLINE, HOST_GRACE, HostAdmission, JOIN_RETRY_EVERY, JoinAdmission, LobbyEnd,
     MAX_CLIENT_RELIABLE, MAX_HOST_RELIABLE, RelayClient, RelayHost, RelayLimits, RelayPolicy,
     RelayServer,
 };
