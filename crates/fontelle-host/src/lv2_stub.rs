@@ -132,6 +132,8 @@ impl Lv2Plugin {
 impl Lv2Processor {
     pub(crate) fn set_transport(&mut self, _transport: &crate::PluginTransport) {}
 
+    pub(crate) fn finish_work(&mut self) {}
+
     pub(crate) fn restore_preset(&mut self, _preset: &Lv2Preset) {}
 
     pub(crate) fn max_block(&self) -> usize {

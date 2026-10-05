@@ -9,6 +9,7 @@
 @prefix time: <http://lv2plug.in/ns/ext/time#> .
 @prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
 @prefix urid: <http://lv2plug.in/ns/ext/urid#> .
+@prefix work: <http://lv2plug.in/ns/ext/worker#> .
 
 # The gain's own editor. An `ui:X11UI` because that is the one shape a host
 # can embed on this platform without a toolkit wrapper — see
@@ -207,4 +208,38 @@
     lv2:port [
         lv2:symbol "gain" ;
         <http://lv2plug.in/ns/ext/presets#value> 0.5
+    ] .
+
+# An instrument that loads on the worker thread before it sounds, and reads
+# the host's free-wheeling port — see `fontelle_testlv2::LOADER_URI`.
+<http://fopull.com/fontelle/testlv2/loader>
+    a lv2:Plugin, lv2:InstrumentPlugin ;
+    doap:name "Fontelle Test Loader LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:requiredFeature urid:map, work:schedule ;
+    lv2:extensionData work:interface ;
+    lv2:port [
+        a lv2:InputPort, atom:AtomPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports midi:MidiEvent ;
+        lv2:index 0 ;
+        lv2:symbol "midi_in" ;
+        lv2:name "MIDI In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:designation lv2:freeWheeling ;
+        lv2:index 2 ;
+        lv2:symbol "freeWheeling" ;
+        lv2:name "Free Wheeling" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+        lv2:portProperty lv2:toggled ;
     ] .

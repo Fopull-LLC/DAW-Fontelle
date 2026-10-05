@@ -16,6 +16,43 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
+Fedora (Vital, Serum, Surge) reported instruments slipping back to their
+init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has
+every cause found; things to know before touching plugin hosting:
+
+(a) **A state is not in when the call returns.** Surge applies one on its
+next audio block; JUCE VST3 controllers keep showing old values;
+setBfree builds what an LV2 state describes on its worker. The rack recalls
+the processor, restores, then `settle_with` (and `finish_work` for LV2)
+before it reads anything back. Never read a plugin's state straight after
+handing it one.
+
+(b) **A render borrows the live instances** (`PluginRack::lend_for_render`,
+`Transport::hold`): no second instance is made, and the audio thread
+outputs silence until `end_render`. A render is `TransportState::Rendering`,
+which reaches plugins as `PluginTransport::offline`.
+
+(c) **Scanning is a child process** (`fontelle --fontelle-scan-bundle`,
+`fontelle_host::probe`), cached by size and mtime in
+`config_dir/plugin-scan.json`; plugin libraries stay loaded for the life of
+the process (`fontelle_host::resident`), and the studio leaves with
+`exit_now`, skipping plugins' static destructors.
+
+(d) **The real-plugin walks** are `fontelle-app/tests/real_plugin_sessions.rs`
+(all `--ignored`) and `tools/real-plugin-sweep.sh` (one process per
+installed instrument, logs in `target-dev/`). `FONTELLE_REAL_ONLY` narrows,
+`FONTELLE_PEAKS=1` prints a render's level by the eighth of a second and
+counts non-finite samples, `FONTELLE_ATOM_TRACE=1` prints recall and settle
+timings. Cardinal writes a `patch.json` into the working directory: delete
+it, never commit it. The known plugin-side faults are listed in `PROGRESS.md`.
+
+(e) **Open**: LV2 parameters declared as `patch:writable` properties rather
+than control ports (Ultramaster KR-106's) are not shown as knobs; CLAP's
+`render` extension and VST 3's offline process mode are not set during a
+render; plugins still run in the studio's process, so a plugin that crashes
+takes the studio with it.
+
 **Updated 2026-09-29 (hosted plugins: notes, presets, the strip).**
 `PROGRESS.md`'s top entry. Things to know:
 

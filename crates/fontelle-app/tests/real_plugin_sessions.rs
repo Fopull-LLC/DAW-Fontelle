@@ -337,10 +337,21 @@ fn a_preset_loaded_while_the_audio_runs_is_what_the_document_holds() {
             "   settled: live vs init {}",
             differences(&playing, &init).0
         );
-        assert!(
-            differences(&playing, &init).0 > 0,
-            "the preset never reached the plugin"
-        );
+        // A plugin whose parameters are not ports (Ultramaster KR-106's LV2
+        // keeps them as `patch:` properties, and its presets are a program
+        // number in its state) shows a preset in its state alone; then the
+        // document has to hold that state.
+        if differences(&playing, &init).0 == 0 {
+            assert!(
+                playing.blob.is_some() && playing.blob != init.blob,
+                "the preset never reached the plugin"
+            );
+            assert_eq!(
+                held.blob, playing.blob,
+                "the document's state, against what is playing"
+            );
+            eprintln!("   heard in its state alone");
+        }
         assert_same("the document, against what is playing", &held, &playing);
 
         // And through a save and a reopen, with something done in between.
@@ -682,6 +693,22 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
 // same note and must be as loud as each other.
 
 fn offline_peak(project: &fontelle_model::Project, rack: &mut fontelle_app::PluginRack) -> f32 {
+    offline_render(project, rack)
+        .iter()
+        .fold(0.0f32, |m, s| m.max(s.abs()))
+}
+
+/// How loud the render is, as its RMS. What the walk below compares: an
+/// organ's key click (setBfree's) is random, and a peak is mostly the click.
+fn offline_level(project: &fontelle_model::Project, rack: &mut fontelle_app::PluginRack) -> f32 {
+    let pcm = offline_render(project, rack);
+    (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32).sqrt()
+}
+
+fn offline_render(
+    project: &fontelle_model::Project,
+    rack: &mut fontelle_app::PluginRack,
+) -> Vec<f32> {
     let library = fontelle_app::SampleLibrary::new();
     let wiring = rack.realise(project, SR as f64, fontelle_engine::BLOCK_SIZE as u32);
     let mut realised = fontelle_app::realise_hosting(
@@ -703,7 +730,20 @@ fn offline_peak(project: &fontelle_model::Project, rack: &mut fontelle_app::Plug
     let timeline =
         fontelle_sequencer::compile(project, &realised.channel_nodes, &Default::default());
     let pcm = fontelle_app::render_offline(&timeline, &mut realised.graph, SR as i64 * 2);
-    pcm.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    if std::env::var_os("FONTELLE_PEAKS").is_some() {
+        let windows: Vec<String> = pcm
+            .chunks(SR as usize / 4)
+            .map(|w| format!("{:.3}", w.iter().fold(0.0f32, |m, s| m.max(s.abs()))))
+            .collect();
+        eprintln!("   by eighth of a second: {}", windows.join(" "));
+        let first_nan = pcm.iter().position(|s| !s.is_finite());
+        let nans = pcm.iter().filter(|s| !s.is_finite()).count();
+        eprintln!(
+            "   not finite: {nans} of {}, first at {first_nan:?}",
+            pcm.len()
+        );
+    }
+    pcm
 }
 
 #[test]
@@ -748,7 +788,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         });
 
         let mut rack = studio_rack();
-        let fresh = offline_peak(&project, &mut rack);
+        let fresh = offline_level(&project, &mut rack);
         let slot = PluginSlot::Channel(channel);
         let state = rack.snapshot(slot).expect("it is open");
         eprintln!(
@@ -760,7 +800,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
 
         project.channels[channel].plugin = Some(state.clone());
         let mut rack = studio_rack();
-        let reopened = offline_peak(&project, &mut rack);
+        let reopened = offline_level(&project, &mut rack);
         eprintln!("   reopened from its state {reopened}");
 
         // And which half of the state does it: the blob alone, and the
@@ -771,7 +811,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         let mut rack = studio_rack();
         eprintln!(
             "   from the blob alone {}",
-            offline_peak(&project, &mut rack)
+            offline_level(&project, &mut rack)
         );
         // What the plugin says its parameters are, opened from the blob,
         // against the list that was saved beside that blob.
@@ -801,7 +841,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
         }
         rack.close_all();
 
-        if fresh <= 0.01 {
+        if fresh <= 0.001 {
             // A sampler with nothing loaded, a drum machine with no kit: a
             // plugin that is silent as it opens has nothing to compare.
             eprintln!("   silent as it opens; skipped");

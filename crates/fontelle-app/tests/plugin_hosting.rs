@@ -705,8 +705,9 @@ mod linux_only {
         assert!(keys.contains(&format!("lv2:{LV2_GAIN}")), "{keys:?}");
         assert!(keys.contains(&format!("lv2:{LV2_SINE}")), "{keys:?}");
         assert!(keys.contains(&format!("clap:{SINE}")), "{keys:?}");
-        // The LV2 sine and the CLAP sine twice, once per note dialect.
-        assert_eq!(rack.scan().instruments().count(), 3);
+        // The LV2 sine and loader, and the CLAP sine twice, once per note
+        // dialect.
+        assert_eq!(rack.scan().instruments().count(), 4);
         // Four effects: both gains, and the LV2 gain twice more — under the name
         // that ships no editor (`fontelle_testlv2::PLAIN_URI`) and the one whose
         // editor listens to nothing (`fontelle_testlv2::DEAF_URI`).

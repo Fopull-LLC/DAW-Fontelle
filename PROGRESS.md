@@ -178,10 +178,40 @@ found what the report could not have named:
   input supports it (274 bundles here). Vaporizer2's LV2 asserted without
   one, and a synced LFO or arpeggiator ran at whatever it assumed.
 
+**Three more, from the sweep's last failures.**
+
+- **A NaN stops at the plugin that played it.** padthv1, rendered the moment
+  it opened, played NaN (its own thread had not built its tables yet), and
+  one NaN on a bus is NaN through every filter and the master limiter after
+  it, for good: the export was silent from the second block, every channel.
+  The peak the walks measured hid it (`f32::max` passes over NaN).
+  `PluginNode` now turns whatever is not a number, from an instrument or an
+  insert, into silence before it reaches the bus.
+- **LV2 offline: the worker keeps step, and `lv2:freeWheeling` is said.**
+  livi's worker thread looks for work a tenth of a second apart; a render
+  runs seconds of audio in that time. `PluginTransport::offline` (from
+  `TransportState::Rendering`) makes the LV2 processor do the worker's jobs
+  itself before and after each block, and set the port designated
+  `lv2:freeWheeling`, which is no longer a parameter.
+- **An LV2 plugin restored from a saved state finishes its work before it
+  plays.** setBfree builds the organ its state describes on the worker,
+  and the organ it swaps in has let go of every key: a project rendered the
+  moment it opened played its first notes for an eighth of a second.
+  `HostedProcessor::finish_work` (four silent offline blocks) runs after
+  activating with a state and at the top of `settle_with`.
+
+The fixture has a fifth plugin for these, **Fontelle Test Loader LV2**
+(loads on the worker, louder while free-wheeling, NaN on key 0). The walks
+now compare loudness (RMS) between a fresh and a reopened instrument, since
+setBfree's key click is random and a peak is mostly the click, and the
+running-preset walk accepts a preset heard only in the plugin's state
+(Ultramaster KR-106's LV2 keeps its parameters as `patch:` properties,
+which this host does not show as knobs yet — a gap, not a revert).
+
 **The sweep's last word** (`tools/real-plugin-sweep.sh`, 89 instruments,
-every walk): everything passes but four plugins whose faults are their own,
-each checked against a bare host (`fontelle-host/tests/real_plugins.rs`) or
-under AddressSanitizer:
+every walk): everything passes but the plugins whose faults are their own,
+each checked against a bare host (`fontelle-host/tests/real_plugins.rs`), under
+AddressSanitizer or under gdb:
 
 - **Calf Wavetable (LV2)** crashes inside its own `run` with every input in
   range — in the bare host too, under ASan (Calf's crashes are reported from
@@ -192,10 +222,15 @@ under AddressSanitizer:
   tests already skip it by name.
 - **sfizz (LV2)** crashes in its own static destructors at the exit of a
   *test* process; the studio does not run them (`exit_now`).
+- **padthv1 (LV2)** calls a pure virtual function on its own scheduler
+  thread when an instance is freed while that thread is still building its
+  tables (gdb: the main thread waits in its destructor, the `QThread` aborts).
+  The walk that opens it three times in a row trips it; its NaN is above.
 
-Only running plugins in a process of their own would contain the first
-three — a feature to plan, not a patch. Not run against: Vital, Serum
-(through a bridge), Windows or macOS.
+Only running plugins in a process of their own would contain these — a
+feature to plan, not a patch. Vitalium (Vital's engine, LV2) passes every
+walk; not run against: Vital itself, Serum (through a bridge), Windows or
+macOS.
 
 **As of 2026-10-03 — the mixer's strips, clip colours, looped
 onion skins, multi-clip drags, legato to the end.** Not released.

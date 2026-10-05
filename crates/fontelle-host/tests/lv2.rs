@@ -66,15 +66,17 @@ fn the_folders_lv2_nominates_are_searched() {
 #[test]
 fn an_lv2_bundle_is_a_folder_and_reports_every_plugin_in_it() {
     let found = scan_bundle(&common::lv2_bundle()).expect("the LV2 test bundle loads");
-    // Four: the gain, the sine, the gain again under a name that ships no
+    // Five: the gain, the sine, the gain again under a name that ships no
     // editor (`fontelle_testlv2::PLAIN_URI`), and again under one whose
-    // editor listens to nothing (`fontelle_testlv2::DEAF_URI`).
-    assert_eq!(found.len(), 4, "{found:#?}");
+    // editor listens to nothing (`fontelle_testlv2::DEAF_URI`), and the
+    // instrument that loads on the worker (`fontelle_testlv2::LOADER_URI`).
+    assert_eq!(found.len(), 5, "{found:#?}");
     let ids: Vec<_> = found.iter().map(|p| p.key.id.as_str()).collect();
     assert!(ids.contains(&common::LV2_GAIN), "{ids:?}");
     assert!(ids.contains(&common::LV2_SINE), "{ids:?}");
     assert!(ids.contains(&fontelle_testlv2::PLAIN_URI), "{ids:?}");
     assert!(ids.contains(&fontelle_testlv2::DEAF_URI), "{ids:?}");
+    assert!(ids.contains(&common::LV2_LOADER), "{ids:?}");
     for plugin in &found {
         assert_eq!(plugin.key.format, PluginFormat::Lv2);
         assert_eq!(plugin.path, common::lv2_bundle());
@@ -119,13 +121,13 @@ fn a_scan_of_a_folder_finds_lv2_bundles_beside_clap_ones() {
     std::fs::create_dir_all(dir.join("atom.lv2")).unwrap();
 
     let scan = PluginScan::of(std::slice::from_ref(&dir));
-    // Four CLAP and four LV2 — see the bundle test above for the third and
-    // fourth LV2; `fontelle_testplug::FacePlugin` for the third CLAP, which
-    // is a note effect and so on neither list below; and
+    // Four CLAP and five LV2 — see the bundle test above for the last three
+    // LV2; `fontelle_testplug::FacePlugin` for the third CLAP, which is a
+    // note effect and so on neither list below; and
     // `fontelle_testplug::SINE_CLAP_ONLY` for the fourth.
-    assert_eq!(scan.plugins.len(), 8, "{:#?}", scan.plugins);
+    assert_eq!(scan.plugins.len(), 9, "{:#?}", scan.plugins);
     assert!(scan.failures.is_empty(), "{:#?}", scan.failures);
-    assert_eq!(scan.instruments().count(), 3);
+    assert_eq!(scan.instruments().count(), 4);
     assert_eq!(scan.effects().count(), 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1213,6 +1215,7 @@ fn an_lv2_plugin_that_asks_for_the_songs_position_is_told_it() {
         bar_number: 3,
         numerator: 4,
         denominator: 4,
+        offline: false,
     };
     processor.set_transport(&transport);
     // A note in the same block: the position goes ahead of it, and the
@@ -1242,4 +1245,121 @@ fn an_lv2_plugin_that_asks_for_the_songs_position_is_told_it() {
         output[0].iter().any(|s| s.abs() > 0.01),
         "and the note still played"
     );
+}
+
+fn loader(host: &mut PluginHost) -> fontelle_host::HostedPlugin {
+    host.open(
+        &common::lv2_bundle(),
+        &PluginKey::new(PluginFormat::Lv2, common::LV2_LOADER),
+    )
+    .expect("the LV2 test loader opens")
+}
+
+fn offline() -> fontelle_host::PluginTransport {
+    fontelle_host::PluginTransport {
+        playing: true,
+        offline: true,
+        ..Default::default()
+    }
+}
+
+/// > *"most times it just renders with nothing"* — and setBfree, found by
+/// > the sweep, rendered at a different level every time it was asked.
+///
+/// A render runs far faster than real time, and an LV2 plugin that loads on
+/// the worker thread (an organ built on a state restore, a sampler reading
+/// its files) had its work picked up whenever the worker thread next looked
+/// — a tenth of a second of wall clock, which is seconds of render. So the
+/// render heard silence for as long as that took. Offline, the work is done
+/// in step with the blocks, which is what every host that renders does.
+#[test]
+fn an_lv2_plugins_work_is_done_in_step_with_an_offline_render() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.set_transport(&offline());
+    processor.note_on(0, 60, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    let mut heard = Vec::new();
+    for _ in 0..8 {
+        processor.process_instrument(&mut output, 256);
+        heard.push(peak(&output));
+    }
+    assert!(
+        heard[2..].iter().all(|p| *p > 0.0),
+        "the render played without the work it asked for: {heard:?}"
+    );
+}
+
+/// The port designated `lv2:freeWheeling` is the host's to set — one while
+/// it renders faster than real time, zero when it plays — and so it is not a
+/// parameter a person could move or a document keep.
+#[test]
+fn an_lv2_plugin_is_told_when_it_is_free_wheeling_and_when_it_is_not() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    assert!(
+        plugin
+            .param(fontelle_testlv2::LOADER_FREE_WHEELING_PORT)
+            .is_none(),
+        "the free-wheeling port is not a parameter"
+    );
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.set_transport(&offline());
+    processor.note_on(0, 60, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    for _ in 0..4 {
+        processor.process_instrument(&mut output, 256);
+    }
+    assert_eq!(
+        peak(&output),
+        fontelle_testlv2::LOADER_LEVEL * 2.0,
+        "rendering"
+    );
+
+    processor.set_transport(&fontelle_host::PluginTransport {
+        playing: true,
+        ..Default::default()
+    });
+    processor.process_instrument(&mut output, 256);
+    assert_eq!(peak(&output), fontelle_testlv2::LOADER_LEVEL, "playing");
+}
+
+/// And live, the worker thread does the work as it always did: the block
+/// that asked is not held up for it.
+#[test]
+fn live_an_lv2_plugins_work_is_left_to_the_worker_thread() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.note_on(0, 60, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    let started = std::time::Instant::now();
+    processor.process_instrument(&mut output, 256);
+    assert!(
+        started.elapsed() < fontelle_testlv2::LOADER_WORK,
+        "a live block waited for the work"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while peak(&output) == 0.0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        processor.process_instrument(&mut output, 256);
+    }
+    assert_eq!(peak(&output), fontelle_testlv2::LOADER_LEVEL);
+}
+
+/// setBfree builds its organ on the worker thread after a state restore, and
+/// the organ it swaps in has let go of every key. A project rendered the
+/// moment it opened lost its first notes to that. So what a plugin left for
+/// its worker can be finished on the spot, before anything is played.
+#[test]
+fn what_an_lv2_plugin_left_for_its_worker_can_be_finished_before_it_plays() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.finish_work();
+    processor.note_on(0, 60, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.process_instrument(&mut output, 256);
+    assert_eq!(peak(&output), fontelle_testlv2::LOADER_LEVEL);
 }

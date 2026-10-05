@@ -38,6 +38,11 @@
     ui:binary <fontelle_testlv2.so> ;
     rdfs:seeAlso <testlv2.ttl> .
 
+<http://fopull.com/fontelle/testlv2/loader>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
 # The gain's one preset, the way an LV2 plugin ships a library: a
 # `pset:Preset` that applies to it, described in the plugin's own Turtle.
 <http://fopull.com/fontelle/testlv2/gain#half>

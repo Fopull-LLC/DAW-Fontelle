@@ -96,6 +96,7 @@ fn assert_bundle_is_fresh(built: &std::path::Path) {
 
 pub const LV2_GAIN: &str = fontelle_testlv2::GAIN_URI;
 pub const LV2_SINE: &str = fontelle_testlv2::SINE_URI;
+pub const LV2_LOADER: &str = fontelle_testlv2::LOADER_URI;
 
 /// The `fontelle-testlv2` bundle, assembled beside the test binary.
 ///

@@ -29,6 +29,9 @@
 //!   bend bends it two semitones either way, and channel pressure *ducks*
 //!   it — the opposite of the wheel, so a host that sent one as the other
 //!   is told apart from one that got it right.
+//! - **Fontelle Test Loader LV2** — an instrument that loads on the host's
+//!   worker thread before it sounds, and plays louder while the host says
+//!   it is free-wheeling. See [`LOADER_URI`].
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -843,6 +846,200 @@ extern "C" fn no_extension_data(_uri: *const c_char) -> *const c_void {
     std::ptr::null()
 }
 
+// ---------------------------------------------------------------- loader
+
+/// **Fontelle Test Loader LV2** — an instrument that has to load before it
+/// sounds, the way setBfree builds its organ or a sampler reads its files:
+/// its first `run` asks the host's `work:schedule` for the work, the work
+/// takes [`LOADER_WORK`], and only once the answer is back does a held key
+/// play. And it reads the port designated `lv2:freeWheeling`: what it plays
+/// is [`LOADER_LEVEL`], doubled while that port says the host is rendering
+/// faster than real time — so a test can hear whether it was told. Key
+/// [`LOADER_NAN_KEY`] plays NaN, loaded or not: a plugin gone wrong.
+pub const LOADER_URI: &str = "http://fopull.com/fontelle/testlv2/loader";
+const LOADER_URI_C: &CStr = c"http://fopull.com/fontelle/testlv2/loader";
+const WORKER_SCHEDULE_URI: &CStr = c"http://lv2plug.in/ns/ext/worker#schedule";
+const WORKER_INTERFACE_URI: &CStr = c"http://lv2plug.in/ns/ext/worker#interface";
+/// How long the loader's work takes.
+pub const LOADER_WORK: std::time::Duration = std::time::Duration::from_millis(200);
+/// What a held key plays once the loader has loaded, outside a render.
+pub const LOADER_LEVEL: f32 = 0.25;
+/// The key the loader answers with NaN — what padthv1 plays before its
+/// own thread has built the tables it reads.
+pub const LOADER_NAN_KEY: u8 = 0;
+/// The index of the loader's `lv2:freeWheeling` port.
+pub const LOADER_FREE_WHEELING_PORT: u32 = 2;
+
+struct Loader {
+    midi_in: *const LV2AtomSequence,
+    output: *mut f32,
+    free_wheeling: *const f32,
+    schedule: *const lv2_raw::sys::LV2_Worker_Schedule,
+    midi_urid: u32,
+    asked: bool,
+    loaded: bool,
+    held: Option<u8>,
+}
+
+extern "C" fn loader_instantiate(
+    _descriptor: *const LV2Descriptor,
+    _rate: f64,
+    _bundle_path: *const c_char,
+    features: *const *const LV2Feature,
+) -> LV2Handle {
+    let mut midi_urid = 0;
+    let mut schedule: *const lv2_raw::sys::LV2_Worker_Schedule = std::ptr::null();
+    let mut cursor = features;
+    // SAFETY: a NULL-terminated array of valid features — LV2's contract.
+    unsafe {
+        while !cursor.is_null() && !(*cursor).is_null() {
+            let feature = &**cursor;
+            if !feature.uri.is_null() {
+                let uri = CStr::from_ptr(feature.uri);
+                if uri == URID_MAP_URI {
+                    let map = &*feature.data.cast::<LV2UridMap>();
+                    midi_urid = (map.map)(map.handle, MIDI_EVENT_URI.as_ptr());
+                } else if uri == WORKER_SCHEDULE_URI {
+                    schedule = feature.data.cast();
+                }
+            }
+            cursor = cursor.add(1);
+        }
+    }
+    // Both are `lv2:requiredFeature`s in its Turtle.
+    if midi_urid == 0 || schedule.is_null() {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(Box::new(Loader {
+        midi_in: std::ptr::null(),
+        output: std::ptr::null_mut(),
+        free_wheeling: std::ptr::null(),
+        schedule,
+        midi_urid,
+        asked: false,
+        loaded: false,
+        held: None,
+    }))
+    .cast()
+}
+
+extern "C" fn loader_connect_port(handle: LV2Handle, port: u32, data: *mut c_void) {
+    // SAFETY: see `gain_connect_port`.
+    let loader = unsafe { &mut *handle.cast::<Loader>() };
+    match port {
+        0 => loader.midi_in = data.cast(),
+        1 => loader.output = data.cast(),
+        LOADER_FREE_WHEELING_PORT => loader.free_wheeling = data.cast(),
+        _ => {}
+    }
+}
+
+extern "C" fn loader_run(handle: LV2Handle, samples: u32) {
+    // SAFETY: see `gain_run`.
+    let loader = unsafe { &mut *handle.cast::<Loader>() };
+    if loader.output.is_null() {
+        return;
+    }
+    if !loader.asked {
+        loader.asked = true;
+        // SAFETY: the feature's data is an `LV2_Worker_Schedule`, valid for
+        // the life of the instance, and `run` is where it may be called.
+        unsafe {
+            let schedule = &*loader.schedule;
+            if let Some(schedule_work) = schedule.schedule_work {
+                let ask = 1u32;
+                schedule_work(schedule.handle, 4, (&ask as *const u32).cast());
+            }
+        }
+    }
+    if !loader.midi_in.is_null() {
+        // SAFETY: see `sine_run`.
+        unsafe {
+            let sequence = &*loader.midi_in;
+            let body_size = sequence.atom.size as usize;
+            let body_start =
+                (loader.midi_in as *const u8).add(std::mem::size_of::<LV2AtomSequence>());
+            let mut offset = std::mem::size_of::<lv2_raw::LV2AtomSequenceBody>();
+            while offset + std::mem::size_of::<LV2AtomEvent>() <= body_size {
+                let event = &*body_start
+                    .add(offset - std::mem::size_of::<lv2_raw::LV2AtomSequenceBody>())
+                    .cast::<LV2AtomEvent>();
+                let data = (event as *const LV2AtomEvent as *const u8)
+                    .add(std::mem::size_of::<LV2AtomEvent>());
+                if event.body.type_ == loader.midi_urid && event.body.size >= 3 {
+                    match *data & 0xF0 {
+                        0x90 if *data.add(2) > 0 => loader.held = Some(*data.add(1)),
+                        0x80 | 0x90 => loader.held = None,
+                        0xB0 if *data.add(1) == 123 => loader.held = None,
+                        _ => {}
+                    }
+                }
+                let total = std::mem::size_of::<LV2AtomEvent>() + event.body.size as usize;
+                offset += (total + 7) & !7;
+            }
+        }
+    }
+    let free_wheeling = unsafe { loader.free_wheeling.as_ref().copied().unwrap_or(0.0) } > 0.5;
+    let level = match (loader.held, loader.loaded, free_wheeling) {
+        (Some(LOADER_NAN_KEY), _, _) => f32::NAN,
+        (None, _, _) | (_, false, _) => 0.0,
+        (Some(_), true, false) => LOADER_LEVEL,
+        (Some(_), true, true) => LOADER_LEVEL * 2.0,
+    };
+    // SAFETY: the host connected `samples` floats.
+    unsafe { std::slice::from_raw_parts_mut(loader.output, samples as usize) }.fill(level);
+}
+
+extern "C" fn loader_cleanup(handle: LV2Handle) {
+    // SAFETY: see `gain_cleanup`.
+    drop(unsafe { Box::from_raw(handle.cast::<Loader>()) });
+}
+
+/// The work: off the audio thread, slow, then an answer.
+unsafe extern "C" fn loader_work(
+    _instance: LV2Handle,
+    respond: lv2_raw::sys::LV2_Worker_Respond_Function,
+    handle: lv2_raw::sys::LV2_Worker_Respond_Handle,
+    size: u32,
+    data: *const c_void,
+) -> lv2_raw::sys::LV2_Worker_Status {
+    std::thread::sleep(LOADER_WORK);
+    if let Some(respond) = respond {
+        // SAFETY: the host's respond function, with the handle it gave.
+        unsafe { respond(handle, size, data) };
+    }
+    lv2_raw::sys::LV2_Worker_Status_LV2_WORKER_SUCCESS
+}
+
+/// The answer, back on the audio thread.
+unsafe extern "C" fn loader_work_response(
+    instance: LV2Handle,
+    _size: u32,
+    _body: *const c_void,
+) -> lv2_raw::sys::LV2_Worker_Status {
+    // SAFETY: the instance this interface belongs to.
+    unsafe { &mut *instance.cast::<Loader>() }.loaded = true;
+    lv2_raw::sys::LV2_Worker_Status_LV2_WORKER_SUCCESS
+}
+
+struct SyncWorker(lv2_raw::sys::LV2_Worker_Interface);
+// SAFETY: function pointers only.
+unsafe impl Sync for SyncWorker {}
+
+static LOADER_WORKER: SyncWorker = SyncWorker(lv2_raw::sys::LV2_Worker_Interface {
+    work: Some(loader_work),
+    work_response: Some(loader_work_response),
+    end_run: None,
+});
+
+extern "C" fn loader_extension_data(uri: *const c_char) -> *const c_void {
+    // SAFETY: the host passes a valid C string.
+    if !uri.is_null() && unsafe { CStr::from_ptr(uri) } == WORKER_INTERFACE_URI {
+        return (&LOADER_WORKER.0 as *const lv2_raw::sys::LV2_Worker_Interface).cast();
+    }
+    std::ptr::null()
+}
+
 // ------------------------------------------------------------------ entry
 
 /// A descriptor a `static` can hold.
@@ -900,11 +1097,23 @@ static DEAF_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
     extension_data: Some(no_extension_data),
 });
 
-static DESCRIPTORS: [&SyncDescriptor; 4] = [
+static LOADER_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
+    uri: LOADER_URI_C.as_ptr(),
+    instantiate: loader_instantiate,
+    connect_port: loader_connect_port,
+    activate: None,
+    run: loader_run,
+    deactivate: None,
+    cleanup: loader_cleanup,
+    extension_data: Some(loader_extension_data),
+});
+
+static DESCRIPTORS: [&SyncDescriptor; 5] = [
     &GAIN_DESCRIPTOR,
     &SINE_DESCRIPTOR,
     &PLAIN_DESCRIPTOR,
     &DEAF_DESCRIPTOR,
+    &LOADER_DESCRIPTOR,
 ];
 
 /// The one symbol an LV2 host looks for.

@@ -1696,6 +1696,9 @@ impl HostedPlugin {
             plugin.values.all().map(|(_, v)| v.to_bits()).collect()
         };
         let started = std::time::Instant::now();
+        // What it handed its worker thread, done first: setBfree takes a
+        // state in the call and builds the organ it describes there after.
+        processor.finish_work();
         // A plugin that took the state in the call is done: nothing to run.
         if let Some(target) = &before.target
             && self.save_state_with(processor).as_deref() == Some(target.as_slice())

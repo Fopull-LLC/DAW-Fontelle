@@ -785,6 +785,7 @@ fn the_songs_transport_reaches_the_plugin() {
         bar_number: 2,
         numerator: 4,
         denominator: 4,
+        offline: false,
     };
     processor.set_transport(&transport);
     assert_eq!(processor.transport(), transport);

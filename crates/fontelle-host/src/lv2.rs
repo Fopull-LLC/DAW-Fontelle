@@ -402,6 +402,8 @@ pub(crate) struct Lv2Plugin {
     atom_out_sizes: Vec<usize>,
     /// Whether its event input supports `time:Position`.
     wants_time: bool,
+    /// The port designated `lv2:freeWheeling`, if it has one — see `open`.
+    free_wheeling: Option<u32>,
     /// The running instance's own `LV2_Handle`, while there is one, or null.
     ///
     /// What an editor asking for **`instance-access`** is handed. Written by
@@ -452,8 +454,17 @@ pub(crate) fn open(
         property("enumeration"),
     );
     let hidden = lilv.new_uri(NOT_ON_GUI);
+    // **The host's own port.** One designated `lv2:freeWheeling` says
+    // whether the host is rendering faster than real time; the host sets it
+    // every block (see `Lv2Processor::run`), so it is no parameter for a
+    // person to move or a document to keep.
+    let free_wheeling = plugin
+        .raw()
+        .port_by_designation(Some(&property("InputPort")), &property("freeWheeling"))
+        .map(|port| port.index() as u32);
     let params = plugin
         .ports_with_type(PortType::ControlInput)
+        .filter(|port| Some(port.index.0 as u32) != free_wheeling)
         .map(|port| {
             let raw_port = plugin.raw().port_by_index(port.index.0);
             let has = |node: &livi::lilv::node::Node| {
@@ -568,6 +579,7 @@ pub(crate) fn open(
             atom_in_sizes,
             atom_out_sizes,
             wants_time,
+            free_wheeling,
         },
     })
 }
@@ -720,6 +732,8 @@ impl Lv2Plugin {
                     sample_rate,
                 )
             }),
+            free_wheeling: self.free_wheeling.map(|port| PortIndex(port as usize)),
+            offline: false,
         };
         // Every control port starts at the plugin's default; the wire
         // carries the document's answer and is applied on the first block.
@@ -831,6 +845,10 @@ pub(crate) struct Lv2Processor {
     max_block: usize,
     /// The song's position, for a plugin that asked — see [`TimeWriter`].
     time: Option<TimeWriter>,
+    /// Where the plugin is told it is free-wheeling, if it asked to be.
+    free_wheeling: Option<PortIndex>,
+    /// Whether the blocks are a render rather than playback — see `run`.
+    offline: bool,
 }
 
 impl Lv2Processor {
@@ -975,8 +993,28 @@ impl Lv2Processor {
 
     /// **RT.** Where the song is, for the next block — see [`TimeWriter`].
     pub(crate) fn set_transport(&mut self, transport: &crate::PluginTransport) {
+        self.offline = transport.offline;
         if let Some(time) = &mut self.time {
             time.transport = *transport;
+        }
+    }
+
+    /// See [`crate::HostedProcessor::finish_work`]. Each block is one
+    /// round of the conversation — the work the last one asked for done
+    /// before it, its answer handed over after it — and a plugin may ask
+    /// again on hearing the answer, so there are a few.
+    pub(crate) fn finish_work(&mut self) {
+        const ROUNDS: usize = 4;
+        let offline = std::mem::replace(&mut self.offline, true);
+        for _ in 0..ROUNDS {
+            for buffer in &mut self.input {
+                buffer.fill(0.0);
+            }
+            self.run(self.max_block);
+        }
+        self.offline = offline;
+        for buffer in &mut self.output {
+            buffer.fill(0.0);
         }
     }
 
@@ -996,6 +1034,22 @@ impl Lv2Processor {
         });
         if let (Some(time), Some(first)) = (&mut self.time, self.atom_in.first_mut()) {
             time.put_ahead_of(first);
+        }
+        if let Some(port) = self.free_wheeling {
+            instance.set_control_input(port, if self.offline { 1.0 } else { 0.0 });
+        }
+        // **Offline, the worker keeps step.** livi's worker thread looks for
+        // work a tenth of a second apart, which is fine for playback and
+        // seconds of audio in a render: setBfree, building its organ after a
+        // state restore, rendered at a different level every time it was
+        // asked, and a sampler would render the silence before its files
+        // were read. So a render does the work itself, before the block (what
+        // was asked since the last one, a restore's included) and after it
+        // (what this block asked), and the answer is handed over at the end
+        // of the next — what every host that renders does. Not real-time
+        // safe, and it need not be: nobody is listening.
+        if self.offline {
+            self.features.worker_manager().run_workers();
         }
 
         let Self {
@@ -1023,6 +1077,9 @@ impl Lv2Processor {
         // (a port count that does not match) leaves the output as it was,
         // which for a block that was just filled with input is pass-through.
         let _ = unsafe { instance.run(frames, ports) };
+        if self.offline {
+            self.features.worker_manager().run_workers();
+        }
 
         // **What the plugin said**, on its way to the editor. Read before the
         // input sequences are cleared, because both are this block's.

@@ -53,6 +53,11 @@ pub struct PluginTransport {
     pub bar_number: i32,
     pub numerator: u16,
     pub denominator: u16,
+    /// Rendering to a file, faster than real time, rather than playing to
+    /// the speakers. An LV2 plugin is told through its `lv2:freeWheeling`
+    /// port, and the work it hands its worker thread is done in step with
+    /// the blocks — see `Lv2Processor::run`.
+    pub offline: bool,
 }
 
 impl Default for PluginTransport {
@@ -66,6 +71,7 @@ impl Default for PluginTransport {
             bar_number: 0,
             numerator: 4,
             denominator: 4,
+            offline: false,
         }
     }
 }
@@ -340,6 +346,21 @@ impl HostedProcessor {
         // An LV2 plugin is told in an event, at the top of its next block.
         if let Inner::Lv2(p) = &mut self.inner {
             p.set_transport(transport);
+        }
+    }
+
+    /// Finishes, here and now, whatever the plugin left for its worker
+    /// thread — LV2's `work:schedule`, which a plugin hands what it will not
+    /// do on the audio thread. Runs a few silent blocks to do it, so it is
+    /// for a processor nothing else is running: just activated, or just
+    /// restored and recalled. Nothing for a CLAP or VST 3 plugin.
+    ///
+    /// setBfree builds its organ there after a state restore, and the organ
+    /// it swaps in has let go of every key: a project rendered the moment it
+    /// opened lost its first notes to it.
+    pub fn finish_work(&mut self) {
+        if let Inner::Lv2(p) = &mut self.inner {
+            p.finish_work();
         }
     }
 

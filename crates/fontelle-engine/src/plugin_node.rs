@@ -587,6 +587,25 @@ pub fn plugin_transport(
         bar_number: bar as i32,
         numerator: snapshot.beats_per_bar.clamp(1, u32::from(u16::MAX)) as u16,
         denominator: 4,
+        offline: snapshot.state == TransportState::Rendering,
+    }
+}
+
+/// **RT.** Whatever is not a number, silence.
+///
+/// > *"most times it just renders with nothing"*
+///
+/// One NaN on a bus is NaN through every filter and limiter after it, for
+/// good — the whole mix, every channel, silent to the end of the export.
+/// padthv1 plays NaN when it is rendered the moment it opens (its own thread
+/// has not built the tables it reads yet), and no plugin's mistake should
+/// cost more than that plugin's own sound; so what a plugin hands back is
+/// checked here, before it reaches anything else.
+fn only_numbers(samples: &mut [f32]) {
+    for sample in samples {
+        if !sample.is_finite() {
+            *sample = 0.0;
+        }
     }
 }
 
@@ -652,14 +671,23 @@ impl AudioNode for PluginNode {
         processor.set_transport(&plugin_transport(&ctx.transport, self.sample_rate));
         let (gain_db, pan) = (self.gain_db, self.pan);
         match self.role {
-            PluginRole::Effect => match &self.key {
-                Some(tap) if !self.key_buffer.is_empty() => {
-                    let frames = frames.min(self.key_buffer.len());
-                    tap.read_into(&mut self.key_buffer[..frames]);
-                    processor.process_insert_keyed(ctx.outputs, &self.key_buffer[..frames], frames);
+            PluginRole::Effect => {
+                match &self.key {
+                    Some(tap) if !self.key_buffer.is_empty() => {
+                        let frames = frames.min(self.key_buffer.len());
+                        tap.read_into(&mut self.key_buffer[..frames]);
+                        processor.process_insert_keyed(
+                            ctx.outputs,
+                            &self.key_buffer[..frames],
+                            frames,
+                        );
+                    }
+                    _ => processor.process_insert(ctx.outputs, frames),
                 }
-                _ => processor.process_insert(ctx.outputs, frames),
-            },
+                for channel in ctx.outputs.iter_mut() {
+                    only_numbers(channel);
+                }
+            }
             PluginRole::Instrument => {
                 // Into scratch, placed there, and **added** to the bus — see
                 // the type's note on why not straight onto it.
@@ -669,6 +697,9 @@ impl AudioNode for PluginNode {
                 let mut rendered: [&mut [f32]; SCRATCH_CHANNELS] =
                     [&mut first[..frames], &mut second[..frames]];
                 processor.process_instrument(&mut rendered[..channels], frames);
+                for channel in rendered[..channels].iter_mut() {
+                    only_numbers(channel);
+                }
                 place(&mut rendered[..channels], frames, gain_db, pan);
                 for (index, channel) in ctx.outputs.iter_mut().enumerate() {
                     let source = &rendered[index.min(channels - 1)];

@@ -800,7 +800,16 @@ impl PluginRack {
             plugin.restore_params(state);
             let bay = Arc::new(ProcessorBay::new());
             match plugin.activate(sample_rate, max_block) {
-                Ok(processor) => bay.park(processor),
+                Ok(mut processor) => {
+                    // What the restore left for the plugin's worker thread,
+                    // done before anything plays: setBfree builds the organ
+                    // its state describes there, and a project rendered the
+                    // moment it opened lost its notes to the swap.
+                    if state.blob.is_some() {
+                        processor.finish_work();
+                    }
+                    bay.park(processor)
+                }
                 Err(e) => {
                     self.message = Some(e.to_string());
                     return None;

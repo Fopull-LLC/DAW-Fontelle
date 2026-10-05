@@ -929,6 +929,16 @@ fn the_transport_is_said_in_a_plugins_terms() {
         ..snapshot
     };
     assert!(!fontelle_engine::plugin_transport(&stopped, 48_000.0).playing);
+    assert!(!transport.offline, "playing is not a render");
+
+    // A bounce plays, and is offline: what an LV2 plugin's free-wheeling
+    // port and worker are run by.
+    let rendering = TransportSnapshot {
+        state: TransportState::Rendering,
+        ..snapshot
+    };
+    let rendering = fontelle_engine::plugin_transport(&rendering, 48_000.0);
+    assert!(rendering.playing && rendering.offline);
 }
 
 /// A plugin channel with its **MPE switch** on (`PluginNode::with_mpe`): a
@@ -954,4 +964,46 @@ fn with_mpe_on_a_glide_reaches_an_lv2_synth_whole() {
         octave > unbent * 2 - 6 && octave < unbent * 2 + 6,
         "unbent {unbent}, an octave up {octave}"
     );
+}
+
+/// > *"most times it just renders with nothing"*
+///
+/// padthv1, rendered the moment it opened, played NaN — its own thread had
+/// not built the tables it reads — and one NaN on a bus is NaN through every
+/// filter and limiter after it, for good: the whole export, every channel,
+/// silent. Whatever a plugin plays that is not a number stops at its node,
+/// as silence, and the rest of the bus is left as it was.
+#[cfg(target_os = "linux")]
+#[test]
+fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
+    let key = PluginKey::new(
+        fontelle_types::PluginFormat::Lv2,
+        fontelle_testlv2::LOADER_URI,
+    );
+    let (_host, _plugin, _bay, mut node) =
+        wire_key(&key, &lv2_bundle(), PluginRole::Instrument, BLOCK);
+    // Another instrument on the same bus, already there.
+    let mut left = vec![0.25f32; BLOCK];
+    let mut right = vec![0.25f32; BLOCK];
+    run(
+        &mut node,
+        &mut [&mut left, &mut right],
+        &[note_on(fontelle_testlv2::LOADER_NAN_KEY)],
+    );
+    assert!(
+        left.iter().chain(&right).all(|s| *s == 0.25),
+        "the bus carries what the plugin played: {:?}",
+        &left[..4]
+    );
+}
+
+/// And an insert: what it hands back is the bus, so a number or silence.
+#[test]
+fn what_an_insert_hands_back_that_is_not_a_number_is_silence() {
+    let (_host, _plugin, _bay, mut node) = wire(GAIN, PluginRole::Effect);
+    let mut left = vec![f32::INFINITY; BLOCK];
+    let mut right = vec![0.5f32; BLOCK];
+    run(&mut node, &mut [&mut left, &mut right], &[]);
+    assert!(left.iter().all(|s| *s == 0.0), "{:?}", &left[..4]);
+    assert!((right[0] - 0.5).abs() < 1e-5, "{}", right[0]);
 }
