@@ -1282,6 +1282,32 @@ commit.
 | F63 ✓ `c22f928` | *Found on `:99`.* Both copies said *"saved by fopull"*: a save was signed with the login, not the name the others know | A save is signed with *Your name* (`Settings::your_name`) | `a_save_is_signed_with_the_name_the_others_see` |
 | F64 ✓ `c22f928` | *Found on `:99`.* The Share button's tip was drawn over the panel it had just opened, and the view-only toast was clipped at *"…for yo"* | No tip under the panel or a session's question; the toast says *"— it is view only."* | seen on `:99`; `a_view_only_peers_proposal_is_refused` |
 
+### v0.25.1 — working well across drops
+
+Ty: *"i really do want it to work well so users can work on songs
+together"*. A survey of the whole flow — a guest dropping and coming back,
+the host dropping, large files, edits at the same time, different versions —
+found these. Each is closed by the test named, written first and seen
+failing.
+
+| # | Finding | Answer | Proof |
+|---|---|---|---|
+| F65 ✓ `e9e6ff9` | The lifted relay client was the engine's at v0.97.1; the relay has since handed a host a **reclaim token** with its code (hub card 0266, engine v0.102.0-rc1), and Floptle Cloud runs 0.109.1 | Copied again at `6732788e` (v0.109.1, the version Floptle Cloud runs): `relay_wire.rs` and `relay_client.rs` came with it; `ws.rs` is Fontelle's own, the WebSocket leg's names with nothing behind them. Fontelle's own changes are carried and marked (lib.rs lists them) | the lifted tests; `a_host_whose_connection_drops_comes_back_under_its_own_code` |
+| F66 ✓ `0c6a36c` | F58 again: a host that dropped re-hosted asking for its code by name, which neither Floptle Cloud nor an open relay honours for a listen host — a new code, everybody stranded | The re-host carries the token, every second or so for a minute (the lifted client's own 1–30 s backoff misses most of the 20 s grace); back under the same code the held joiners are passed on, any the relay lost are let go of; under a new code every old joiner is let go of and the code is said | `a_host_whose_connection_drops_comes_back_under_its_own_code`, `a_host_back_under_a_new_code_lets_the_old_lobbys_joiners_go`; by hand on Floptle Cloud, `a_dropped_host_gets_its_code_back_on_floptle_cloud` |
+| F67 ✓ `3ce617b` | A host back on the relay took each joiner the relay announced again for somebody new: no more edits sent to them, theirs ignored — cut off in silence. And whatever crossed while the host was away was lost both ways | A joiner announced again is welcomed again and sent the song as it is; `Msg::Resumed { handled }` says the last of its proposals the host had, so the joiner drops those (they are in the copy) and proposes again the rest; a proposal sent twice is taken once | `a_host_back_on_the_relay_brings_its_joiner_up_to_date`, `an_edit_whose_answer_was_lost_is_not_made_twice` |
+| F68 ✓ `3ce617b` | A join made while the host was away from the relay goes in (the relay holds the lobby) and its hello goes nowhere: it waited for ever | A join with no welcome yet says hello again every `CollabOptions::hello_again` (5 s); the host ignores a second hello from somebody it has welcomed | `a_join_made_while_the_host_was_away_still_gets_the_song` |
+| F69 ✓ `52b7216` | F39 asked the joiner to join again by hand after its own link dropped; a Wi-Fi blip ended its session | `fontelle-net`'s join rejoins the same code by itself (every 3 s for a minute, after the relay has let it in once; a refusal is still the end) and says `Connected` again; the session says hello again. `Msg::Session { id }` ahead of every hello lets the host know the join: it takes the old connection's place (mint space, colour, view only) unannounced, or gets its old place back | `a_joiner_whose_connection_drops_joins_again_on_its_own`, `a_joiner_whose_link_drops_is_back_in_its_place`, `a_joiner_back_after_the_host_saw_him_go_gets_his_place_again` |
+| F70 ✓ `0c6a36c` | A message cut off half way by a dropped leg poisoned the next one carrying its number — a host back on the relay frames afresh from nought | A first frame always starts its message afresh | `a_message_cut_off_half_way_does_not_cost_the_next_one` |
+| F71 ✓ `d9fe234` | Hub card 0264: Floptle Cloud grants Fontelle's key 2 MiB/s per connection (relay 0.107+); the studio still paced 480 KiB/s. And the pace let a whole second's budget go at once, which the relay could see inside one of its seconds with the start of the next, and drop | `Relay::pace`: 1664 KiB/s on Floptle Cloud (13/16 of the grant, 3.5× before), 384 KiB/s elsewhere (3/4 of 512 KiB); sent a tenth of a second's worth at a time. The margin holds a helping, a frame and 80 ms of delay | `each_relay_is_paced_under_what_it_allows`, `the_sender_spreads_a_second_over_the_second`; by hand, `a_song_crosses_floptle_cloud_at_fontelles_pace`: 8 MB at 1647 KiB/s, nothing dropped |
+| F72 ✓ `74d4d58` | A file being sent went into the paced queue sixteen pieces a turn whatever was waiting: a whole take queued in a moment, every edit made meanwhile waited behind all of it, and the queue held the file in memory | Pieces are topped up only while less than a quarter second at the pace is waiting (`Transport::backlog`, Fontelle's own) | `an_edit_is_not_held_up_behind_a_file_on_its_way` |
+| F73 ✓ `c0743c0` | A goodbye (and the last edits) still waiting for the pace never went: an ended session never looked at its link again | An ended session flushes, and keeps the window looking until it has | `a_goodbye_waiting_for_the_pace_still_goes` |
+| F74 ✓ `55777b0` | A file half way across when a link dropped arrived with a hole (thrown away as damaged, clips silent for good) or was waited for for ever, with every file after it | `Files::relink`: what was in flight is asked for again from the start of whoever has it now; uploads to a link that went stop; a sender that left for good is said | `a_file_cut_off_by_the_hosts_drop_is_fetched_again`, `a_file_cut_off_by_the_joiners_drop_is_fetched_again` |
+| F75 ✓ `3ce617b` | What the link said — the relay lost, back under which code — went nowhere: nothing drained the transport's notices | The session drains them into its toasts | `what_the_link_says_reaches_the_person` |
+| F76 ✓ `c0743c0` | The version refusal told the person with the newer Fontelle to update from the start menu | It says who has the older one; the host is told too | `a_version_mismatch_says_who_has_to_update` |
+| F77 ✓ `55ea052` | A lobby the relay ended under a joiner reached it as the relay's bare words | Said as the session with the host ending, the copy still open | `a_session_the_relay_ended_says_the_copy_is_still_open` |
+| F78 | *Open.* While the host's link is being got back the panel's code is hidden (the relay will not take joins to it) and only a toast says why; the joiner's panel says nothing while it rejoins | A *Reconnecting…* status on both panels | — |
+| F79 | *Open.* *Remove* asks the transport to drop the person, and the relay client has no way to: the removed studio leaves on its own (it is told), a modified one stays connected with every edit refused | With L6 (locking a code), or a per-peer kick in the relay protocol — the engine's to add | — |
+
 ### Later — §14
 
 | # | Item | Design |
@@ -1290,12 +1316,12 @@ commit.
 | L2 | Play together | §14.2, decision 5 |
 | L3 | Merging two copies that both changed | §14.3 |
 | L4 | A song reachable while its host is asleep (cloud storage; Cloud saves are 256 KB JSON slots and build storage takes only server bundles, so this is a new W service) | §14.4 |
-| L5 | Verified names via join tokens (0184) | §14.5 |
+| L5 | Verified names via join tokens (0184) — **next**: a fopull account join token, once the account module is in the studio | §14.5 |
 | L6 | Locking a code after a removal; regenerate | §14.6 |
-| L7 | End-to-end encryption under the relay | §14.7 |
+| L7 | End-to-end encryption under the relay — **next**, after L5 | §14.7 |
 | L8 | Tidying unused files from a bundle | §14.8 |
 | L9 | Tolerating version skew | §14.9 |
-| L10 | The relay client as a crate dependency | §14.10, card to E |
+| L10 | The relay client as a crate dependency — E blessed the copy (0265, 2026-09-29); re-copied at v0.109.1 for v0.25.1 | §14.10, card to E |
 
 ---
 
@@ -1508,3 +1534,40 @@ with the reason. The text above is left as it was planned.
   both are tests (`a_recording_on_the_joiner_reaches_the_host_and_plays`,
   `a_version_mismatch_is_refused_naming_both`), neither was looked at.
 
+**v0.25.1 — working well across drops** (§18's v0.25.1 rows).
+
+- **The copy is the engine's at v0.109.1** (`6732788e`), the version Floptle
+  Cloud runs, not v0.97.1: the engine split `relay.rs` into `relay_wire.rs`
+  and `relay_client.rs` and added a WebSocket leg for browsers, which
+  Fontelle names (`ws.rs`, its own) and never builds. Fontelle's own changes
+  to the lifted files are now five, all marked and listed in `lib.rs`: the
+  wake, a timed-out handshake said as nobody answering, the host's wait past
+  the relay's deadline in a person's words, the restart test's patient bind,
+  and `Transport::backlog` (F72). Hub card `0265` should hear of the last.
+- **A host back on the relay is Fontelle's loop, not the lifted client's**
+  (§9.2): its 1–30 s backoff misses most of the 20 s grace, so `Hosting`
+  drops the dead leg and re-hosts with the token on a thread, every second
+  or so for a minute.
+- **A joiner that drops joins again by itself** (§9.2 said a joiner rejoins
+  and takes a fresh snapshot; it did, by hand). The session is told by a
+  second `Connected`, says hello again, and the host knows it by
+  `Msg::Session`. Two messages appended: `Resumed` (tag 18) and `Session`
+  (tag 19).
+- **No log is kept for catch-up**, as §9.2 planned: a drop on either side is
+  answered with a fresh copy of the song, and `Resumed` says which of the
+  joiner's edits are in it.
+- **The pace is the relay's** (§8.4): 1664 KiB/s on Floptle Cloud, which
+  grants Fontelle's key 2 MiB/s (0264), 384 KiB/s on any other relay — down
+  from 480, because a pace sent in helpings needs room for one helping and
+  one frame above it. A song of 38 MB reaches one friend in about 23 s, not
+  75. A client against a Floptle Cloud relay older than 0.107 would be over
+  that relay's budget: Floptle Cloud is on 0.109.1, and a region added later
+  must be too.
+- **Seen against Floptle Cloud on 2026-10-05** (all `#[ignore]`, run by hand):
+  `fontelle_hosts_on_floptle_cloud` (`U7CVEL`, `UFDE7F`),
+  `a_dropped_host_gets_its_code_back_on_floptle_cloud` (`UK69PM`: token,
+  same code, joiner kept), `a_song_crosses_floptle_cloud_at_fontelles_pace`
+  (`UX8CYJ`: 8 MB at 1647 KiB/s).
+- **Out of this patch, next**: L5 (verified names with a fopull account join
+  token — needs the account module in the studio) and L7 (end-to-end
+  encryption under the relay). F78 and F79 are open.

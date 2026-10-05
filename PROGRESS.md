@@ -19,7 +19,42 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05, later (latest) — the rest of the list: items 10 to 13,
+**As of 2026-10-05, latest — working on a song together, made to work
+well.** The v0.25.1 patch (version not bumped here). Ty: *"i really do want
+it to work well so users can work on songs together"*. `docs/collab-plan.md`
+§18's v0.25.1 rows (F65–F79) and §19 have the detail.
+
+- **The relay client is the engine's at v0.109.1** (`6732788e`, what Floptle
+  Cloud runs), not v0.97.1: the lobby reclaim token (hub card 0266) came with
+  it. `ws.rs` is Fontelle's own (the engine's WebSocket leg, named, empty).
+  Fontelle's own changes to the lifted files are listed in `fontelle-net`'s
+  `lib.rs` and marked where they are.
+- **A host whose connection drops comes back under its own code**, with its
+  joiners: `Hosting` re-hosts with the token every second or so for a minute.
+  The session welcomes the joiners the relay announces again, sends each the
+  song as it is, and `Msg::Resumed` says which of their edits it has; they
+  propose again the rest. Under a new code (relay restarted, host away past
+  the grace) the old lobby's joiners are let go of and the code is said.
+- **A joiner whose connection drops joins again by itself** (`Joining`,
+  every 3 s for a minute) and is back in its place: `Msg::Session` lets the
+  host know the join, unannounced to anybody else.
+- **Floptle Cloud's 2 MiB/s grant is used** (hub card 0264): 1664 KiB/s
+  there, 384 KiB/s on any other relay, sent a tenth of a second at a time.
+  A song loads about 3.5 times faster. Seen on Floptle Cloud: 8 MB at
+  1647 KiB/s, nothing dropped.
+- **Found reviewing the flow, each with a test first**: a message cut off
+  half way cost the next one; an edit waited behind a whole file on its way;
+  a goodbye held by the pace never went; a file half way across a drop was
+  lost or waited for for ever; the link's own words never reached the
+  person; the version refusal told the newer side to update; the relay
+  ending a lobby reached a joiner as bare words.
+- **Open**: F78 (no *Reconnecting…* status on the panels, only toasts), F79
+  (remove cannot close the removed studio's relay connection).
+- **Next, not in this patch**: verified names with a fopull account join
+  token (L5, needs the account module in the studio), then end-to-end
+  encryption under the relay (L7).
+
+**As of 2026-10-05, later — the rest of the list: items 10 to 13,
 and the plan for 14.** v0.25.0.
 
 - **Real plugins in CI on Linux, Windows and macOS** (`real-plugins.yml`):

@@ -16,6 +16,38 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-05 (v0.25.1: collaboration that survives drops).**
+`PROGRESS.md`'s top entry; `docs/collab-plan.md` §18 rows F65–F79 and §19's
+last section. Things to know before touching a shared session:
+
+(a) **Both ends of a link can come back.** `fontelle-net`'s `Hosting`
+re-hosts a dropped host with the relay's reclaim token; `Joining` rejoins a
+dropped joiner. Above them the session sees a peer announced again
+(`Connected` for somebody it has) or a second `Connected(SERVER)`, and
+answers with a welcome, a fresh copy of the song and `Msg::Resumed`. Nothing
+sent while a link was down is assumed to have arrived — anything new that
+crosses the wire has to be fine with being lost and re-sent at a reconnect
+(`Files::relink` is the pattern).
+
+(b) **Two `Msg`s appended**: `Resumed` (18) and `Session` (19). A joiner
+sends `Session` ahead of every `Hello`; the host keys what it has had of a
+join's proposals (`handled`) and its mint space by it.
+
+(c) **The pace is the relay's** (`Relay::pace`): Floptle Cloud grants
+Fontelle's key 2 MiB/s (hub card 0264) and Fontelle sends 1664 KiB/s; any
+other relay 384 KiB/s. A Floptle Cloud relay older than 0.107 would close a
+studio at that pace; us-east is 0.109.1. Files are fed to the link only while
+`Transport::backlog` is under a quarter second, so edits never queue behind a
+file.
+
+(d) **The lifted files are the engine's at v0.109.1** (`6732788e`); their
+Fontelle-only changes are listed in `fontelle-net/src/lib.rs`. Hub card
+`0265` has not yet been told of `Transport::backlog` or the `ws.rs` stand-in.
+
+(e) **Three checks against the real relay**, all `#[ignore]` in
+`fontelle-net/tests/relay.rs`: `cargo test -p fontelle-net --test relay --
+--ignored --nocapture`. Run by hand after any change to the relay path.
+
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their
 init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has
@@ -143,9 +175,10 @@ unless the settings' `relay` names another. Kill them by pid.
 `Edit`'s names. Phase 4 appended `ViewOnly` and `Removed`.
 
 (d) **`fontelle-net`'s `transport.rs`, `quic.rs` and `relay.rs` are the
-engine's, copied** at `16481c30`; the one Fontelle addition is the wake
-(`Transport::set_wake`, the `Events` sender in `quic.rs`), marked where it is.
-Keep any other change out of them, or tell hub card `0265`.
+engine's, copied** at `16481c30` (since v0.25.1: at `6732788e`, with
+`relay_wire.rs` and `relay_client.rs` — see the 2026-10-05 entry above); the
+Fontelle additions are marked where they are. Keep any other change out of
+them, or tell hub card `0265`.
 
 (e) **A session test that needs a socket** runs its own relay in-process
 (`LocalRelay` in `tests/collab.rs`, `InProcessRelay` in `tests/relay.rs`), and
