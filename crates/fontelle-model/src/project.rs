@@ -436,14 +436,23 @@ impl Project {
     /// — which is the whole bug report, since the drift has no other symptom
     /// until somebody hears it.
     ///
-    /// Three things are left out, because each is each machine's own:
+    /// Four things are left out, because each is each machine's own:
     ///
     /// - **the view** — zoom and scroll live in the document and are yours;
     /// - **the meta** — the bundle's label, its id, its save stamps. The
     ///   joiner's copy may be "Song (2)" in its own *Shared* folder and counts
     ///   its own saves;
     /// - **where a file is** — every asset's `path` differs per machine by
-    ///   design, and its `content_hash` is what names the bytes.
+    ///   design, and its `content_hash` is what names the bytes;
+    /// - **what a plugin holds** — a plugin slot's `blob` and `params`. They
+    ///   are read off the running plugin and written in outside any edit, at
+    ///   a save or the minute's backup (§5.2 declares them local), and the
+    ///   bytes are the plugin's own, which another build or another machine
+    ///   writes differently for the same sound. Hashed, a knob turned in a
+    ///   plugin's own window followed by a backup was a song nobody else
+    ///   could reach by any edit, and every edit after it a drift — and the
+    ///   fresh copy that answers a drift took the knob back. Which plugin a
+    ///   slot holds, its name and its MPE switch are edits, and stay in.
     ///
     /// xxhash64 over the JSON the document saves as, keys sorted (a
     /// `serde_json::Value` map is ordered), so field order and machine cannot
@@ -458,6 +467,7 @@ impl Project {
             song.remove("view_state");
         }
         forget_paths(&mut json);
+        forget_plugin_states(&mut json);
         let bytes = serde_json::to_vec(&json).expect("a JSON value always writes");
         twox_hash::XxHash64::oneshot(0, &bytes)
     }
@@ -626,6 +636,27 @@ fn forget_paths(value: &mut serde_json::Value) {
             map.values_mut().for_each(forget_paths);
         }
         serde_json::Value::Array(items) => items.iter_mut().for_each(forget_paths),
+        _ => {}
+    }
+}
+
+/// Takes what a plugin holds out of every plugin slot — a channel's
+/// `plugin`, an insert's `plugin` — for [`Project::sync_hash`].
+fn forget_plugin_states(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (field, inner) in map.iter_mut() {
+                if field == "plugin"
+                    && let serde_json::Value::Object(state) = inner
+                    && state.contains_key("key")
+                {
+                    state.remove("blob");
+                    state.remove("params");
+                }
+                forget_plugin_states(inner);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(forget_plugin_states),
         _ => {}
     }
 }

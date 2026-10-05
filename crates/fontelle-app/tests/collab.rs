@@ -2826,3 +2826,123 @@ fn a_join_that_never_reached_the_host_says_so() {
     assert!(!why.contains("your copy"), "{why}");
     assert!(why.contains("reach"), "{why}");
 }
+
+/// From Ty and Lore's session: *"shared song drifted at edit 393 (this copy
+/// 56e4…, host 1abb…)"* — 67 times, the joiner's copy each time equal to the
+/// host's song one edit before. An edit is sent when the next one lands on
+/// top of it (or when it has been idle a moment); a host that made a second
+/// edit before the first went out sent the first with the hash of the song
+/// that already held the second — two key presses inside the idle break, a
+/// nudge then a duplicate. Every such edit was a drift, and a fresh copy.
+#[test]
+fn an_edit_made_before_the_last_went_out_is_not_a_drift() {
+    let mut pair = Pair::joined("in-hand-hash", 2);
+    let clip = open_clip(&pair.host);
+    let a = draw(&mut pair.host, 0, 60);
+    pair.settle();
+    // Two edits of different kinds with no mouse-up between them, as key
+    // presses make: the second lands on top of the first while it is still
+    // in the hand.
+    pair.host.edit(RollEdit::Move {
+        ids: vec![a],
+        tick_delta: 0,
+        key_delta: 1,
+    });
+    pair.host.edit(RollEdit::Add {
+        note: a_note(PPQN, 64),
+    });
+    pair.tick(1);
+    pair.settle();
+    pair.same();
+    assert_eq!(notes_of(&pair.joiner, clip).len(), 2);
+}
+
+/// Alice and Bob both have the test sine on the song's first channel.
+fn a_pair_on_a_plugin(name: &str) -> Pair {
+    let dir = scratch(name);
+    let mut host = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.set_channel_plugin(0, 0);
+    host.save().unwrap();
+    let mut joiner = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir));
+    pair.answer(JoinAnswer::Copy);
+    assert!(pair.joiner.collab_live());
+    pair.same();
+    pair
+}
+
+/// The first channel's plugin slot, and what the song says of its knob.
+fn plugin_knob(session: &Session) -> (fontelle_app::PluginSlot, Option<f64>) {
+    let (id, channel) = session
+        .project()
+        .channels
+        .iter()
+        .find(|(_, channel)| channel.plugin.is_some())
+        .expect("a channel plays the plugin");
+    (
+        fontelle_app::PluginSlot::Channel(id),
+        channel.plugin.as_ref().and_then(|state| state.param(7)),
+    )
+}
+
+/// A plugin's state is read off the plugin and written into the song outside
+/// any edit — at a save, at the minute's backup — and is the plugin's, per
+/// machine (§5.2, *declared local*). In the hash, a host that turned a knob
+/// in its plugin's own window and then had its backup taken had a song the
+/// joiner could not reach by any edit: the next edit was a drift, and a
+/// fresh copy.
+#[test]
+fn a_plugins_state_kept_at_a_backup_is_not_a_drift() {
+    let mut pair = a_pair_on_a_plugin("plugin-backup");
+    let (slot, _) = plugin_knob(&pair.host);
+    // A knob in the plugin's own window: the plugin moves, the song does not.
+    assert!(pair.host.plugin_rack_mut().set_param(slot, 7, 0.25));
+    draw(&mut pair.host, 0, 60);
+    assert!(pair.host.autosave(), "there is something to back up");
+    assert_eq!(plugin_knob(&pair.host).1, Some(0.25), "the backup kept it");
+    draw(&mut pair.host, PPQN, 62);
+    pair.settle();
+    pair.same();
+}
+
+/// > *"the drift must never revert the user's latest knob value"*
+///
+/// Bob turns a knob in his plugin's own window and his studio keeps it (a
+/// save). Then his copy is made again from the host's song and his own edits
+/// on top — which happens whenever an edit of Alice's arrives while one of
+/// his is on its way — and the song's older state of the plugin went back
+/// into it: the knob he had just turned, undone.
+#[test]
+fn a_knob_kept_on_the_joiner_survives_his_copy_being_made_again() {
+    let mut pair = a_pair_on_a_plugin("plugin-rebuild");
+    let (slot, before) = plugin_knob(&pair.joiner);
+    assert_ne!(before, Some(0.25));
+    assert!(pair.joiner.plugin_rack_mut().set_param(slot, 7, 0.25));
+    pair.joiner.save().unwrap();
+    assert_eq!(
+        plugin_knob(&pair.joiner).1,
+        Some(0.25),
+        "Bob's save kept it"
+    );
+    // Bob's note is on its way when Alice's arrives: his copy is rebuilt.
+    draw(&mut pair.joiner, 0, 60);
+    draw(&mut pair.host, PPQN, 62);
+    pair.tick(1);
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        plugin_knob(&pair.joiner).1,
+        Some(0.25),
+        "Bob's knob is where he left it"
+    );
+    assert_eq!(
+        pair.joiner.plugin_rack_mut().value(slot, 7),
+        Some(0.25),
+        "and so is his plugin"
+    );
+}

@@ -4560,23 +4560,40 @@ impl Session {
                 continue;
             };
             self.plugins.kept(slot, &state);
-            match slot {
-                crate::PluginSlot::Channel(channel) => {
-                    if let Some(channel) = self.project.channels.get_mut(channel) {
-                        channel.plugin = Some(state);
-                    }
-                }
+            let (place, written) = match slot {
+                crate::PluginSlot::Channel(id) => (
+                    crate::collab::PluginPlace::Channel(id),
+                    self.project
+                        .channels
+                        .get_mut(id)
+                        .map(|channel| &mut channel.plugin),
+                ),
                 crate::PluginSlot::Insert { track, slot } => {
-                    if let Some(insert) = self
+                    let insert = self
                         .project
                         .mixer
                         .tracks
                         .get_mut(track)
-                        .and_then(|track| track.inserts.get_mut(slot))
-                    {
-                        insert.plugin = Some(state);
+                        .and_then(|track| track.inserts.get_mut(slot));
+                    match insert {
+                        Some(insert) => (
+                            crate::collab::PluginPlace::Insert(insert.id),
+                            Some(&mut insert.plugin),
+                        ),
+                        None => continue,
                     }
                 }
+            };
+            let Some(written) = written else {
+                continue;
+            };
+            let before = written.replace(state.clone());
+            // Written outside any edit: a shared copy keeps it from being
+            // taken back when the copy is made again (§5.2).
+            if before.as_ref() != Some(&state)
+                && let Some(collab) = &mut self.collab
+            {
+                collab.plugin_kept_here(place, before.as_ref(), &state);
             }
         }
     }

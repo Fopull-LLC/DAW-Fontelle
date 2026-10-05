@@ -28,9 +28,43 @@ use std::time::{Duration, Instant};
 use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead};
 use fontelle_model::{Command, History, Project};
 use fontelle_net::{Channel, Incoming, PeerId, SERVER, Transport};
-use fontelle_types::PersistentId;
+use fontelle_types::{ChannelId, PersistentId, PluginState};
 
 use files::{Files, Place};
+
+/// Where a plugin's state sits in the song, by ids every copy shares: a
+/// channel's instrument, or an insert by the slot's own id (§5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PluginPlace {
+    Channel(ChannelId),
+    Insert(PersistentId),
+}
+
+impl PluginPlace {
+    fn slot_mut(self, song: &mut Project) -> Option<&mut Option<PluginState>> {
+        match self {
+            PluginPlace::Channel(id) => {
+                song.channels.get_mut(id).map(|channel| &mut channel.plugin)
+            }
+            PluginPlace::Insert(id) => song
+                .mixer
+                .tracks
+                .values_mut()
+                .flat_map(|track| track.inserts.iter_mut())
+                .find(|insert| insert.id == id)
+                .map(|insert| &mut insert.plugin),
+        }
+    }
+}
+
+/// A plugin's state this studio read off its own plugin and wrote into its
+/// copy outside any edit (a save, a backup), and the state the host's song
+/// had there when it did.
+struct KeptHere {
+    place: PluginPlace,
+    stream: Option<PluginState>,
+    kept: PluginState,
+}
 
 /// Every file the song names — see `fontelle_model::Project::files`.
 pub fn song_files(song: &Project) -> Vec<fontelle_types::AssetRef> {
@@ -440,6 +474,39 @@ impl Collab {
         }
     }
 
+    /// Says this studio wrote a plugin's state into its copy, read off its
+    /// own plugin and outside any edit — `before` is what was there.
+    ///
+    /// > *"the drift must never revert the user's latest knob value"*
+    ///
+    /// A joiner's copy is made again from the host's song whenever an edit
+    /// of somebody else's arrives under one of its own, and on a fresh copy;
+    /// the song's state of the plugin then went back into it and into the
+    /// plugin, and the knob turned in its window here was undone. Kept here,
+    /// it is put back for as long as the song has not changed the slot. A
+    /// host's copy is the song, and needs nothing.
+    pub fn plugin_kept_here(
+        &mut self,
+        place: PluginPlace,
+        before: Option<&PluginState>,
+        now: &PluginState,
+    ) {
+        let Role::Joiner(joiner) = &mut self.role else {
+            return;
+        };
+        if joiner.stage != Stage::Live {
+            return;
+        }
+        match joiner.kept_here.iter_mut().find(|kept| kept.place == place) {
+            Some(kept) => kept.kept = now.clone(),
+            None => joiner.kept_here.push(KeptHere {
+                place,
+                stream: before.cloned(),
+                kept: now.clone(),
+            }),
+        }
+    }
+
     /// The answer to the join's question. What it writes happens once the
     /// whole song has arrived.
     pub fn answer(
@@ -712,12 +779,20 @@ impl Host {
     /// The host's own edits, in the order they landed. The hash goes on the
     /// last: the edits before it are not on their own in the document any
     /// more to be hashed.
+    ///
+    /// Nor on that one while the next edit is still in the hand. An edit is
+    /// sent when another lands on top of it, so the song already holds the
+    /// one after it, which nobody else has: hashed then, every such edit
+    /// was a drift and a fresh copy — 67 of them in Ty and Lore's session,
+    /// the joiner each time one edit behind. The hash goes with the edit
+    /// that leaves the hand empty.
     fn send_mine(&mut self, transport: &mut dyn Transport, doc: &Project, history: &mut History) {
         let mine = history.take_outgoing();
         let count = mine.len();
+        let whole = !history.gesture_in_hand();
         for (i, outgoing) in mine.into_iter().enumerate() {
             self.seq += 1;
-            let hash = (i + 1 == count).then(|| doc.sync_hash());
+            let hash = (i + 1 == count && whole).then(|| doc.sync_hash());
             self.broadcast(
                 transport,
                 &Msg::Applied {
@@ -1097,6 +1172,10 @@ struct Joiner {
     peers: BTreeMap<u16, Peer>,
     /// The host refuses this studio's edits (F49).
     view_only: bool,
+    /// Plugin states this studio kept of its own plugins, which a copy made
+    /// again from the host's song must not take back — see
+    /// [`Collab::plugin_kept_here`].
+    kept_here: Vec<KeptHere>,
 }
 
 impl Joiner {
@@ -1122,6 +1201,7 @@ impl Joiner {
             next_local: 0,
             peers: BTreeMap::new(),
             view_only: false,
+            kept_here: Vec::new(),
         }
     }
 
@@ -1510,6 +1590,20 @@ impl Joiner {
                     notices.push(taken_back(pending.command.label(), &host));
                     false
                 }
+            });
+        // What this studio kept of its own plugins, where the host's song
+        // has not changed them since: a plugin's state is each machine's
+        // own (§5.2), and putting the song's older one back undid a knob
+        // turned in the plugin's window here. Where the song did change
+        // (a preset somebody chose), the song's is newer, and the keeping
+        // is over.
+        self.kept_here
+            .retain(|kept| match kept.place.slot_mut(&mut rebuilt) {
+                Some(slot) if *slot == kept.stream => {
+                    *slot = Some(kept.kept.clone());
+                    true
+                }
+                _ => false,
             });
         // The view is this studio's own, whatever the song did.
         rebuilt.view_state = doc.view_state.clone();
