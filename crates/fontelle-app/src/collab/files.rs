@@ -173,7 +173,12 @@ impl Files {
 
     /// One turn: the next request goes out if none is in flight, and every
     /// upload in hand sends its next pieces.
-    pub fn pump(&mut self, transport: &mut dyn Transport, here: &Here) {
+    /// One turn: the next fetch asked for, and pieces of what is being sent
+    /// while no more than `ahead` bytes wait to go — what the relay's pace
+    /// lets out in a quarter of a second. The pace is the real limit, and
+    /// everything queued ahead of an edit delays it: a take handed over
+    /// whole put every edit made while it loaded a take's load behind.
+    pub fn pump(&mut self, transport: &mut dyn Transport, here: &Here, ahead: usize) {
         if self.fetching.is_none()
             && let Some((entry, from)) = self.wanted.pop_front()
         {
@@ -195,6 +200,7 @@ impl Files {
         for (peer, queue) in &mut self.uploads {
             let mut budget = PIECES_PER_TURN;
             while budget > 0
+                && transport.backlog() < ahead
                 && let Some(upload) = queue.front_mut()
             {
                 if upload.next >= upload.of {

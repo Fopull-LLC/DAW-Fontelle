@@ -128,11 +128,6 @@ impl<T: Transport> Paced<T> {
             spent += size;
         }
     }
-
-    /// How much is waiting to go.
-    pub fn backlog(&self) -> usize {
-        self.waiting.iter().map(|(_, _, b)| b.len()).sum()
-    }
 }
 
 impl<T: Transport> Transport for Paced<T> {
@@ -173,6 +168,12 @@ impl<T: Transport> Transport for Paced<T> {
 
     fn set_wake(&mut self, wake: crate::transport::Wake) {
         self.inner.set_wake(wake);
+    }
+
+    /// What is waiting for the pace, and whatever the transport under it
+    /// has not sent.
+    fn backlog(&self) -> usize {
+        self.waiting.iter().map(|(_, _, b)| b.len()).sum::<usize>() + self.inner.backlog()
     }
 
     fn lobby_code(&self) -> Option<String> {

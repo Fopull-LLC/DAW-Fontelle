@@ -225,6 +225,9 @@ struct Pair {
     bob: PersistentId,
     dir: PathBuf,
     _cleanup: Cleanup,
+    /// A paced link's clock, moved on ten milliseconds a tick when there is
+    /// one.
+    clock: Option<std::sync::Arc<std::sync::Mutex<std::time::Duration>>>,
 }
 
 impl Pair {
@@ -290,6 +293,7 @@ impl Pair {
             bob,
             dir,
             _cleanup: cleanup,
+            clock: None,
         };
         pair.settle();
         pair
@@ -315,6 +319,9 @@ impl Pair {
         for _ in 0..ticks {
             self.now += 1;
             self.hub.set_now(self.now);
+            if let Some(clock) = &self.clock {
+                *clock.lock().unwrap() += std::time::Duration::from_millis(10);
+            }
             self.host.pump_collab();
             self.joiner.pump_collab();
         }
@@ -1928,6 +1935,66 @@ fn what_the_link_says_reaches_the_person() {
     host.pump_collab();
     let said = host.take_collab_notices().join(" ");
     assert!(said.contains("UABCDE"), "{said:?}");
+}
+
+/// Large files and edits at once: a long take on its way to the joiner does
+/// not hold up the edits made meanwhile. The relay's pace is the real limit,
+/// and a file handed to it all at once queued every edit behind every byte
+/// of it — a note drawn while a take loaded arrived a take's load later.
+#[test]
+fn an_edit_is_not_held_up_behind_a_file_on_its_way() {
+    let dir = scratch("edit-behind-file");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.drop_file_at(&a_tone(&dir.join("desktop"), "take.wav", 20.0, 440.0), 0)
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+
+    let clock = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let ticking = clock.clone();
+    let mut pair = Pair::through(
+        host,
+        joiner,
+        dir.clone(),
+        2,
+        Cleanup(dir.clone()),
+        move |link| {
+            Box::new(fontelle_net::Paced::with_clock(
+                link,
+                fontelle_net::CLOUD_PACE,
+                Box::new(move || *ticking.lock().unwrap()),
+            ))
+        },
+        |hub| Box::new(hub.connect()),
+    );
+    pair.clock = Some(clock);
+    pair.answer(JoinAnswer::Copy);
+    pair.tick(20);
+    assert!(
+        !pair.joiner.missing_files().is_empty(),
+        "the take is still on its way"
+    );
+
+    let clip = open_clip(&pair.host);
+    draw(&mut pair.host, 0, 60);
+    pair.tick(40); // four tenths of a second
+    assert!(
+        notes_of(&pair.joiner, clip).iter().any(|n| n.2 == 60),
+        "the note waited for the take"
+    );
+    assert!(
+        !pair.joiner.missing_files().is_empty(),
+        "and the take is still coming"
+    );
+
+    pair.tick(2_000);
+    assert!(pair.joiner.missing_files().is_empty(), "the take arrived");
+    pair.same();
 }
 
 /// F42. While a song is shared the window has something to look at that

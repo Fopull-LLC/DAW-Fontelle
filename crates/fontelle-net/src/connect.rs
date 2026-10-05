@@ -364,6 +364,10 @@ impl Transport for Hosting {
             .unwrap_or_default()
     }
 
+    fn backlog(&self) -> usize {
+        self.inner.as_ref().map_or(0, |inner| inner.backlog())
+    }
+
     fn disconnect(&mut self, peer: PeerId) {
         if let Some(inner) = &mut self.inner {
             inner.disconnect(peer);
@@ -540,6 +544,10 @@ impl Transport for Joining {
             .as_ref()
             .map(|inner| inner.stats(peer))
             .unwrap_or_default()
+    }
+
+    fn backlog(&self) -> usize {
+        self.inner.as_ref().map_or(0, |inner| inner.backlog())
     }
 
     fn disconnect(&mut self, peer: PeerId) {

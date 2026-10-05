@@ -102,6 +102,10 @@ impl<T: Transport> Transport for Framed<T> {
         self.inner.set_wake(wake);
     }
 
+    fn backlog(&self) -> usize {
+        self.inner.backlog()
+    }
+
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
         if channel != Channel::Reliable || bytes.len() < FRAME {
             let mut frame = Vec::with_capacity(bytes.len() + 1);

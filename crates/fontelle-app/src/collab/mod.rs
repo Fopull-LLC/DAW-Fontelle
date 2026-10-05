@@ -400,7 +400,9 @@ impl Collab {
                 }
             }
         }
-        self.files.pump(self.transport.as_mut(), &place.with(doc));
+        let ahead = (self.options.pace / 4) as usize;
+        self.files
+            .pump(self.transport.as_mut(), &place.with(doc), ahead);
         effects
     }
 

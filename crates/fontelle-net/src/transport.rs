@@ -131,6 +131,17 @@ pub trait Transport: Send {
     /// `tasks/fontelle/0265`). Defaulted to nothing: a transport that cannot
     /// say leaves its owner polling, which is what it did before.
     fn set_wake(&mut self, _wake: Wake) {}
+
+    /// How many bytes this side has been handed and not sent yet.
+    ///
+    /// **Fontelle's own, not in the engine's copy** (hub card
+    /// `tasks/fontelle/0265`). A shared song's files go no faster than the
+    /// relay's pace, and whatever is queued ahead of an edit delays it: the
+    /// sender of a file tops the queue up only while this is short. Defaulted
+    /// to nothing queued, which is true of every transport that sends at once.
+    fn backlog(&self) -> usize {
+        0
+    }
 }
 
 /// What [`Transport::set_wake`] calls. Cheap and non-blocking, since it runs
@@ -163,6 +174,9 @@ impl Transport for Box<dyn Transport> {
     }
     fn set_wake(&mut self, wake: Wake) {
         (**self).set_wake(wake);
+    }
+    fn backlog(&self) -> usize {
+        (**self).backlog()
     }
 }
 
