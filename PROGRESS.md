@@ -101,6 +101,23 @@ studio, also for v0.25.1** (branch `fix/v0.25.1-ui-audio`).
   inside the grid. A box held still past an edge keeps scrolling
   (`marquee_held_off_edge`, a 16 ms wake). Tests:
   `fontelle-ui/tests/marquee_autoscroll.rs`.
+- **Space plays and stops from a plugin's window** (*"space should
+  play/pause while a plugin window has focus"*). `PluginWindow::poll`
+  reports `GuiPoll::play_pause`: a space the plugin did not take — on the
+  strip, or passed up by a plugin window that does not listen for keys —
+  and the window runs the studio's own Play for it (`take_plugin_play_pause`,
+  the path its space takes). Not a repeat, not with a modifier, and no
+  hotkey: only a window the keyboard is in hears a key. X11: the frame and
+  the window under the strip select key presses; seen for real on `:99`
+  with Dexed (CLAP): over the strip a space plays and the next one stops;
+  over Dexed's own area the space is Dexed's, because JUCE's windows
+  listen for keys and X hands a key to the window under the pointer
+  inside the focus — so on Linux this is the strip, and plugins that do not
+  take keys. Windows: `WM_KEYDOWN` on the frame and on the window under the
+  strip (JUCE passes unused keys up to its parent) — compiled, not run.
+  macOS: the plugin's area is a `FontellePluginArea` view that takes the
+  keyboard first and hears `keyDown:` passed up the responder chain —
+  compiled, not run. Tests: `fontelle-host/tests/gui_keys.rs`.
 - **The browser's lists have a scroll bar** (*"add scroll bar to the import
   windows"*): `RowScrollbar`, the menus' thumb for a whole-row list, on the
   Import tab and every other browser list; rows stop short of its strip, a

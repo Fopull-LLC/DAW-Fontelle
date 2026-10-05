@@ -2600,6 +2600,13 @@ pub trait StudioHost: DocumentHost {
     ) {
     }
 
+    /// Spaces pressed in plugins' own windows, and not taken by the plugin,
+    /// since last asked: the studio plays or stops for each, as for its own
+    /// window's space.
+    fn take_plugin_play_pause(&mut self) -> u32 {
+        0
+    }
+
     /// Presses on editors' strips since last asked: whose, and where, in the
     /// window's own pixels.
     fn take_plugin_header_presses(&mut self) -> Vec<(crate::canvas::PresetDevice, f32, f32)> {

@@ -55,7 +55,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::Event as X11Event;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xproto::{
-    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, WindowClass,
+    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, KeyButMask, PropMode, WindowClass,
 };
 #[cfg(target_os = "linux")]
 use x11rb::rust_connection::RustConnection;
@@ -99,6 +99,16 @@ pub struct GuiPoll {
     /// Where the pointer is over the strip, when that changed: `Some(None)`
     /// when it left.
     pub header_hover: Option<Option<(i32, i32)>>,
+    /// Presses of the space bar the plugin did not take: on the strip, or
+    /// passed up from a plugin window that does not listen for keys. The
+    /// studio's play and stop, as its own window's space is. A held space is
+    /// one press, and one with Shift, Ctrl, Alt or the logo key is none.
+    ///
+    /// Reported: space only played while the studio's window had the
+    /// keyboard. A plugin that listens for keys keeps them, so a space typed
+    /// into its preset name is still a space; and only a window the keyboard
+    /// is in hears a key, so this is no hotkey.
+    pub play_pause: u32,
 }
 
 /// The scale a desktop asks X11 programs to draw at, from the X server's
@@ -186,6 +196,9 @@ pub struct PluginWindow {
     /// where there is a strip on a screen — X11 and Win32; macOS has none yet.
     #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
     hover: Option<(i32, i32)>,
+    /// Spaces a headless window was told of — see
+    /// [`press_space`](Self::press_space).
+    spaces: u32,
 }
 
 impl PluginWindow {
@@ -196,6 +209,15 @@ impl PluginWindow {
             header,
             pressed: Vec::new(),
             hover: None,
+            spaces: 0,
+        }
+    }
+
+    /// **A headless window only**: what a space on it would report on a
+    /// screen — the next [`poll`](Self::poll) says so.
+    pub fn press_space(&mut self) {
+        if self.server.is_none() {
+            self.spaces += 1;
         }
     }
 
@@ -251,6 +273,13 @@ struct OnScreen {
     /// The desktop's scale, as the X server's resources say it — see
     /// [`scale_from_resources`].
     scale: f64,
+    /// The space bar's keycode on this keyboard; zero when it has none.
+    space: u8,
+    /// Whether the space is down, and when it last came up: a held key
+    /// repeats as a release and a press at the same moment, which is not a
+    /// second press.
+    space_down: bool,
+    space_released_at: Option<u32>,
 }
 
 /// The same on Windows: the window's handle and what its window procedure
@@ -268,7 +297,7 @@ struct OnScreen {
 #[cfg(target_os = "macos")]
 struct OnScreen {
     window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
-    embed: objc2::rc::Retained<objc2_app_kit::NSView>,
+    embed: objc2::rc::Retained<cocoa::AreaView>,
     strip: Option<objc2::rc::Retained<cocoa::StripView>>,
     /// The close button has been reported.
     closed: bool,
@@ -306,7 +335,12 @@ impl PluginWindow {
         // embedding works. The strip's presses, pointer and exposes are the
         // frame's — a press on the plugin never reaches here unless the plugin
         // did not want it, and one below the strip is dropped in `poll`.
-        let mut mask = EventMask::STRUCTURE_NOTIFY;
+        // Keys too: the frame hears one when the keyboard is in it — the
+        // strip, or a window the desktop focused before the plugin took it —
+        // and the window under the strip hears one a plugin window passed up
+        // because it does not listen for keys. See `GuiPoll::play_pause`.
+        let keys = EventMask::KEY_PRESS | EventMask::KEY_RELEASE;
+        let mut mask = EventMask::STRUCTURE_NOTIFY | keys;
         if header > 0 {
             mask = mask
                 | EventMask::EXPOSURE
@@ -349,7 +383,9 @@ impl PluginWindow {
                     0,
                     WindowClass::INPUT_OUTPUT,
                     visual,
-                    &CreateWindowAux::new().background_pixel(black),
+                    &CreateWindowAux::new()
+                        .background_pixel(black)
+                        .event_mask(keys),
                 )
                 .map_err(|e| fail(&e))?;
             let _ = connection.map_window(embed);
@@ -397,6 +433,7 @@ impl PluginWindow {
         .map_or(1.0, |reply| {
             scale_from_resources(&String::from_utf8_lossy(&reply.value))
         });
+        let space = space_keycode(&connection);
         let mut screen_window = Self::offscreen(size, header);
         screen_window.server = Some(OnScreen {
             connection,
@@ -407,6 +444,9 @@ impl PluginWindow {
             depth,
             strip: None,
             scale,
+            space,
+            space_down: false,
+            space_released_at: None,
         });
         screen_window.set_title(title);
         if let Some(server) = &screen_window.server {
@@ -571,6 +611,7 @@ impl PluginWindow {
         let header = self.header;
         let Some(server) = &mut self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
+            result.play_pause = std::mem::take(&mut self.spaces);
             return result;
         };
         let delete_window = server.delete_window;
@@ -616,6 +657,25 @@ impl PluginWindow {
                 }
                 X11Event::LeaveNotify(leave) if leave.event == server.window => {
                     pointer = Some(None);
+                }
+                // Any window it came to is ours: only the frame and the
+                // window under the strip listen for keys on this connection.
+                X11Event::KeyPress(press) if server.space != 0 && press.detail == server.space => {
+                    let repeat = server.space_down || server.space_released_at == Some(press.time);
+                    server.space_down = true;
+                    let held = KeyButMask::SHIFT
+                        | KeyButMask::CONTROL
+                        | KeyButMask::MOD1
+                        | KeyButMask::MOD4;
+                    if !repeat && u16::from(press.state) & u16::from(held) == 0 {
+                        result.play_pause += 1;
+                    }
+                }
+                X11Event::KeyRelease(release)
+                    if server.space != 0 && release.detail == server.space =>
+                {
+                    server.space_down = false;
+                    server.space_released_at = Some(release.time);
                 }
                 _ => {}
             }
@@ -683,6 +743,28 @@ impl PluginWindow {
 }
 
 /// Puts the strip's pixels on the frame, in bands a request can hold.
+/// The keycode the space bar sends on the X server's keyboard, or zero.
+#[cfg(target_os = "linux")]
+fn space_keycode(connection: &RustConnection) -> u8 {
+    const SPACE: u32 = 0x20;
+    let setup = connection.setup();
+    let (min, max) = (setup.min_keycode, setup.max_keycode);
+    let Some(map) = x11rb::protocol::xproto::ConnectionExt::get_keyboard_mapping(
+        connection,
+        min,
+        max.saturating_sub(min).saturating_add(1),
+    )
+    .ok()
+    .and_then(|cookie| cookie.reply().ok()) else {
+        return 0;
+    };
+    let per = usize::from(map.keysyms_per_keycode).max(1);
+    map.keysyms
+        .chunks(per)
+        .position(|syms| syms.first() == Some(&SPACE))
+        .map_or(0, |at| min.saturating_add(at as u8))
+}
+
 #[cfg(target_os = "linux")]
 fn paint_strip(server: &OnScreen) {
     let Some((pixels, width, height)) = &server.strip else {
@@ -779,6 +861,7 @@ impl PluginWindow {
     pub fn poll(&mut self) -> GuiPoll {
         GuiPoll {
             header_presses: std::mem::take(&mut self.pressed),
+            play_pause: std::mem::take(&mut self.spaces),
             ..GuiPoll::default()
         }
     }
@@ -826,16 +909,17 @@ mod win32 {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+        GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_LWIN, VK_MENU,
+        VK_RWIN, VK_SHIFT, VK_SPACE,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-        GetClientRect, GetWindowLongPtrW, IDC_ARROW, IsIconic, LoadCursorW, MSG, PM_REMOVE,
-        PeekMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
+        GetClientRect, GetParent, GetWindowLongPtrW, IDC_ARROW, IsIconic, LoadCursorW, MSG,
+        PM_REMOVE, PeekMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
         SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-        ShowWindow, TranslateMessage, WM_CLOSE, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_SIZE,
-        WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
+        WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     /// `WM_MOUSELEAVE`, which `windows-sys` files under the common controls.
@@ -860,6 +944,8 @@ mod win32 {
         /// `Some(None)`: the pointer left.
         pub(super) pointer: Cell<Option<Option<(i32, i32)>>>,
         pub(super) tracking: Cell<bool>,
+        /// Spaces the plugin did not take — see `GuiPoll::play_pause`.
+        pub(super) play_pause: Cell<u32>,
     }
 
     const STYLE: u32 = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
@@ -913,11 +999,14 @@ mod win32 {
         static CLASS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
         CLASS.get_or_init(|| {
             let name = wide("FontellePluginEmbed");
-            // SAFETY: as `class`, with the default procedure.
+            // SAFETY: as `class`, with the frame's procedure: it has no
+            // user data of its own, so all it does with anything but a key
+            // is the default — and a key a plugin passes up to it (JUCE's
+            // editors pass up what they do not use) goes to the frame's.
             unsafe {
                 let class = WNDCLASSEXW {
                     cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-                    lpfnWndProc: Some(DefWindowProcW),
+                    lpfnWndProc: Some(procedure),
                     hInstance: GetModuleHandleW(std::ptr::null()),
                     hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
                     hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
@@ -1107,6 +1196,25 @@ mod win32 {
         // SAFETY: the user data is a `Seen` set by `open` and cleared by
         // `close` before it is dropped, or zero.
         let seen = unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Seen).as_ref() };
+        // A space, on the frame or passed up to the window under the strip,
+        // that the plugin did not take: play and stop. Not a repeat (bit 30,
+        // the key was already down), and not with a modifier held.
+        if message == WM_KEYDOWN && wparam == WPARAM::from(VK_SPACE) && (lparam >> 30) & 1 == 0 {
+            // SAFETY: plain reads of the keyboard state and of this window's
+            // parent, whose user data is a `Seen` or zero as above.
+            let target = seen.or_else(|| unsafe {
+                (GetWindowLongPtrW(GetParent(hwnd), GWLP_USERDATA) as *const Seen).as_ref()
+            });
+            let held = [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+                .into_iter()
+                .any(|key| unsafe { GetKeyState(i32::from(key)) } < 0);
+            if let Some(target) = target
+                && !held
+            {
+                target.play_pause.set(target.play_pause.get() + 1);
+                return 0;
+            }
+        }
         match (message, seen) {
             // The close button closes the *editor*: the host is told and
             // decides, and the window stays until it is let go of.
@@ -1321,9 +1429,11 @@ impl PluginWindow {
         let mut result = GuiPoll::default();
         let Some(server) = &self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
+            result.play_pause = std::mem::take(&mut self.spaces);
             return result;
         };
         result.closed = server.seen.closed.replace(false);
+        result.play_pause = server.seen.play_pause.replace(0);
         result.header_presses = std::mem::take(&mut *server.seen.presses.borrow_mut());
         let pointer = server.seen.pointer.take();
         if let Some(size) = server.seen.client.take()
@@ -1512,7 +1622,8 @@ mod cocoa {
     };
     use objc2_app_kit::{
         NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageRep,
-        NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSImage, NSView, NSWindow, NSWindowStyleMask,
+        NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSImage, NSView,
+        NSWindow, NSWindowStyleMask,
     };
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 
@@ -1563,6 +1674,60 @@ mod cocoa {
             }
         }
     );
+
+    /// What the plugin's area keeps: spaces the plugin passed up.
+    #[derive(Default)]
+    pub(super) struct AreaIvars {
+        spaces: std::cell::Cell<u32>,
+    }
+
+    define_class!(
+        /// The view a plugin's own view is put in. It takes the keyboard
+        /// while the plugin has not, and hears what the plugin's views pass
+        /// up the responder chain because they did not use it — a space
+        /// among them is the studio's play and stop (`GuiPoll::play_pause`).
+        #[unsafe(super(NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "FontellePluginArea"]
+        #[ivars = AreaIvars]
+        pub(super) struct AreaView;
+
+        impl AreaView {
+            #[unsafe(method(acceptsFirstResponder))]
+            fn accepts_first_responder(&self) -> bool {
+                true
+            }
+
+            #[unsafe(method(keyDown:))]
+            fn key_down(&self, event: &NSEvent) {
+                let held = NSEventModifierFlags::Shift
+                    | NSEventModifierFlags::Control
+                    | NSEventModifierFlags::Option
+                    | NSEventModifierFlags::Command;
+                let space = event
+                    .charactersIgnoringModifiers()
+                    .is_some_and(|keys| keys.to_string() == " ");
+                if space && !event.isARepeat() && !event.modifierFlags().intersects(held) {
+                    let spaces = &self.ivars().spaces;
+                    spaces.set(spaces.get() + 1);
+                    return;
+                }
+                // Anything else goes on up the chain, as it would have.
+                unsafe { msg_send![super(self), keyDown: event] }
+            }
+        }
+    );
+
+    impl AreaView {
+        fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(AreaIvars::default());
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        pub(super) fn take_spaces(&self) -> u32 {
+            self.ivars().spaces.replace(0)
+        }
+    }
 
     impl StripView {
         fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
@@ -1649,8 +1814,8 @@ mod cocoa {
             .ok_or_else(|| GuiError::NoDisplay("the window has no content view".into()))?;
         // The plugin's view at the bottom, the strip above it — AppKit's
         // origin is the bottom left.
-        let embed = NSView::initWithFrame(
-            NSView::alloc(mtm),
+        let embed = AreaView::new(
+            mtm,
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height)),
         );
         embed.setAutoresizingMask(
@@ -1674,6 +1839,9 @@ mod cocoa {
             strip
         });
         window.makeKeyAndOrderFront(None);
+        // The keyboard starts in the plugin's area, so a space before the
+        // plugin takes it is the studio's rather than the window's beep.
+        window.makeFirstResponder(Some(&embed));
         Ok(super::OnScreen {
             window,
             embed,
@@ -1833,8 +2001,10 @@ impl PluginWindow {
         let mut result = GuiPoll::default();
         let Some(server) = &mut self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
+            result.play_pause = std::mem::take(&mut self.spaces);
             return result;
         };
+        result.play_pause = server.embed.take_spaces();
         // The close button hides the window (`setReleasedWhenClosed(false)`).
         if !server.closed && !server.window.isVisible() {
             server.closed = true;

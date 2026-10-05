@@ -8511,6 +8511,10 @@ impl StudioHost for Session {
         }
     }
 
+    fn take_plugin_play_pause(&mut self) -> u32 {
+        self.plugins.take_play_pause()
+    }
+
     fn take_plugin_header_presses(&mut self) -> Vec<(PresetDevice, f32, f32)> {
         self.plugins
             .take_header_presses()

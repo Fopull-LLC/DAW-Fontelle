@@ -4998,6 +4998,13 @@ impl ApplicationHandler for WindowApp {
             // A plugin's own editor has no thread: it repaints on a timer this
             // call fires. See `fontelle_host::gui`.
             self.plugin_editor_open = doc.tick_plugin_editors();
+            // *"space should play/pause while a plugin window has focus"*:
+            // a space the plugin's window heard and the plugin did not take
+            // is the studio's Play, the one its own window's space is.
+            let spaces = doc.take_plugin_play_pause();
+            for _ in 0..spaces {
+                self.transport(TransportHit::Play);
+            }
         }
         self.tick_plugin_headers();
         // A box held off the edge goes on growing; `arm_deadline` keeps the
