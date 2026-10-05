@@ -1583,6 +1583,8 @@ struct Cut {
     mute: std::sync::Arc<std::sync::atomic::AtomicBool>,
     deaf: std::sync::Arc<std::sync::atomic::AtomicBool>,
     back: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The relay's last word, for a link that passes one on.
+    refuse: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl Cut {
@@ -1814,6 +1816,12 @@ impl fontelle_net::Transport for Rejoins {
     }
     fn poll(&mut self) -> Vec<fontelle_net::Incoming> {
         use std::sync::atomic::Ordering;
+        if let Some(why) = self.cut.refuse.lock().unwrap().take() {
+            return vec![fontelle_net::Incoming::Disconnected(
+                fontelle_net::SERVER,
+                Some(why),
+            )];
+        }
         if self.cut.back.swap(false, Ordering::SeqCst) {
             self.inner = self.hub.connect();
             let mut got = vec![fontelle_net::Incoming::Connected(fontelle_net::SERVER)];
@@ -2054,6 +2062,22 @@ fn a_file_cut_off_by_the_joiners_drop_is_fetched_again() {
         "the take arrived whole"
     );
     pair.same();
+}
+
+/// The relay ending the session under a joiner — the host never came back
+/// inside the grace — reached the joiner as the relay's bare words, *"the
+/// host's connection dropped and did not return"*, with nothing about the
+/// copy they were holding.
+#[test]
+fn a_session_the_relay_ended_says_the_copy_is_still_open() {
+    let (mut pair, cut) = Pair::rejoining("relay-ended", 2);
+    // What `fontelle-net` passes on when the relay ends the lobby.
+    *cut.refuse.lock().unwrap() =
+        Some("the host's connection dropped and did not return".to_string());
+    pair.tick(2);
+    let why = pair.joiner.collab_ended().expect("it ended").to_string();
+    assert!(why.contains("did not return"), "{why}");
+    assert!(why.contains("your copy is still open"), "{why}");
 }
 
 /// What the relay's side of the link has to say — the host lost it and is

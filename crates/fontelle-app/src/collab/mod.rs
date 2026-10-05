@@ -1180,6 +1180,17 @@ impl Joiner {
                     {
                         doc.meta.shared_revision = Some((self.host_install, confirmed.sync_hash()));
                     }
+                    // The relay's own words — it ended the lobby, or turned
+                    // a join again away — said as the end of the session,
+                    // with the copy a live joiner is holding.
+                    if let Some(why) = &why
+                        && self.stage == Stage::Live
+                    {
+                        return Some(format!(
+                            "The session with {} ended \u{2014} {why}; your copy is still open.",
+                            self.host_or_them()
+                        ));
+                    }
                     // Said by how far the join had got. Only a live session
                     // has a copy to keep; before that, "lost — your copy is
                     // still open" was untrue twice over.
