@@ -2565,10 +2565,53 @@ impl Session {
                         .unwrap_or_default();
                     self.library.set_mint_space(self.history.mint_space());
                     self.collab = collab;
+                    self.say_missing_plugins();
                     self.collab_effects(more);
                 }
             }
         }
+    }
+
+    /// Says which plugins a joined song uses that this machine has not got
+    /// — the slot is silent, and its settings are kept as they came. Said
+    /// once, as the copy opens, rather than left to a status line the next
+    /// message overwrites: a song that sounds different here and nobody said
+    /// why reads as the session being broken.
+    fn say_missing_plugins(&mut self) {
+        self.plugins.scan_once();
+        let mut missing: Vec<String> = Vec::new();
+        let states = self
+            .project
+            .channels
+            .values()
+            .filter(|channel| channel.instrument == Some(fontelle_types::InstrumentKind::Plugin))
+            .filter_map(|channel| channel.plugin.as_ref())
+            .chain(
+                self.project
+                    .mixer
+                    .tracks
+                    .values()
+                    .flat_map(|track| track.inserts.iter())
+                    .filter_map(|insert| insert.plugin.as_ref()),
+            );
+        for state in states {
+            if self.plugins.scan().find(&state.key).is_none() && !missing.contains(&state.name) {
+                missing.push(state.name.clone());
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+        let (names, verb) = match missing.as_slice() {
+            [one] => (one.clone(), "is"),
+            [rest @ .., last] => (format!("{} and {last}", rest.join(", ")), "are"),
+            [] => unreachable!(),
+        };
+        self.session_notices.push(format!(
+            "{names} {verb} not installed here \u{2014} what plays through {} is silent on this \
+             machine, and its settings are kept for the others.",
+            if missing.len() == 1 { "it" } else { "them" }
+        ));
     }
 
     /// The join's question, while it is waiting for an answer.
