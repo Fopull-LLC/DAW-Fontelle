@@ -625,6 +625,14 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
         let (mut session, stop) = a_running_session(&dir);
         session.set_channel_plugin(0, which);
         settle();
+        // Time for a plugin that loads in the background (a sampler) to have
+        // loaded, as it would have by the time anybody exports.
+        if let Some(ms) = std::env::var("FONTELLE_REAL_WAIT_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         session.edit(fontelle_ui::canvas::RollEdit::Add {
             note: fontelle_model::Note {
                 start: 0,

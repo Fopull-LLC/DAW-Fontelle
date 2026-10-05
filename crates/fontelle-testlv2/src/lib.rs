@@ -869,11 +869,16 @@ pub const LOADER_LEVEL: f32 = 0.25;
 pub const LOADER_NAN_KEY: u8 = 0;
 /// The index of the loader's `lv2:freeWheeling` port.
 pub const LOADER_FREE_WHEELING_PORT: u32 = 2;
+/// What the loader says it delays by, in frames, on its `lv2:latency`
+/// output port — written in every `run`, which is where LV2 says a plugin
+/// reports it.
+pub const LOADER_LATENCY: u32 = 64;
 
 struct Loader {
     midi_in: *const LV2AtomSequence,
     output: *mut f32,
     free_wheeling: *const f32,
+    latency: *mut f32,
     schedule: *const lv2_raw::sys::LV2_Worker_Schedule,
     midi_urid: u32,
     asked: bool,
@@ -914,6 +919,7 @@ extern "C" fn loader_instantiate(
         midi_in: std::ptr::null(),
         output: std::ptr::null_mut(),
         free_wheeling: std::ptr::null(),
+        latency: std::ptr::null_mut(),
         schedule,
         midi_urid,
         asked: false,
@@ -930,6 +936,7 @@ extern "C" fn loader_connect_port(handle: LV2Handle, port: u32, data: *mut c_voi
         0 => loader.midi_in = data.cast(),
         1 => loader.output = data.cast(),
         LOADER_FREE_WHEELING_PORT => loader.free_wheeling = data.cast(),
+        3 => loader.latency = data.cast(),
         _ => {}
     }
 }
@@ -939,6 +946,10 @@ extern "C" fn loader_run(handle: LV2Handle, samples: u32) {
     let loader = unsafe { &mut *handle.cast::<Loader>() };
     if loader.output.is_null() {
         return;
+    }
+    // SAFETY: a connected control port is one float.
+    if let Some(latency) = unsafe { loader.latency.as_mut() } {
+        *latency = LOADER_LATENCY as f32;
     }
     if !loader.asked {
         loader.asked = true;

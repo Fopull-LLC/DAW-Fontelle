@@ -225,3 +225,29 @@ fn a_plugin_library_stays_loaded_after_its_host_is_gone() {
     // process ran its static destructors after the libraries they used had
     // run theirs (Mephisto's Faust, after LLVM's).
 }
+
+/// > A user on Fedora plays Serum, which is Windows-only: through yabridge,
+/// > a Linux plugin that starts the Windows one under Wine.
+///
+/// yabridge 5.1.1 under Wine 11 starts its Windows host and the host never
+/// answers — on this machine, every bridged plugin. "Did not answer" alone
+/// sends somebody looking at the plugin; what they need to look at is
+/// yabridge and the Wine it runs on, so a bundle yabridge made says so.
+#[test]
+fn a_bridged_windows_plugin_that_never_answers_says_where_to_look() {
+    let folder = scratch("yabridge-hang");
+    let bridged = folder.join("yabridge");
+    std::fs::create_dir_all(&bridged).unwrap();
+    std::fs::copy(
+        common::bundle(),
+        bridged.join(format!("{}.clap", fontelle_testplug::HANGS_ON_LOAD)),
+    )
+    .unwrap();
+    let scan = PluginScan::of_probed(&[folder], &Bridges::none(), &prober());
+    let failure = scan.failures.first().expect("listed as a failure");
+    assert!(
+        failure.why.contains("yabridge") && failure.why.contains("Wine"),
+        "{}",
+        failure.why
+    );
+}

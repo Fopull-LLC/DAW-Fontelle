@@ -404,6 +404,8 @@ pub(crate) struct Lv2Plugin {
     wants_time: bool,
     /// The port designated `lv2:freeWheeling`, if it has one — see `open`.
     free_wheeling: Option<u32>,
+    /// The output port it says its latency on, if it has one — see `open`.
+    latency_port: Option<u32>,
     /// The running instance's own `LV2_Handle`, while there is one, or null.
     ///
     /// What an editor asking for **`instance-access`** is handed. Written by
@@ -462,6 +464,25 @@ pub(crate) fn open(
         .raw()
         .port_by_designation(Some(&property("InputPort")), &property("freeWheeling"))
         .map(|port| port.index() as u32);
+    // **What it delays by**: an output control port designated
+    // `lv2:latency` — or, from before designations, one with the
+    // `lv2:reportsLatency` property — which the plugin writes in `run`.
+    let reports_latency = property("reportsLatency");
+    let latency_port = plugin
+        .raw()
+        .port_by_designation(Some(&property("OutputPort")), &property("latency"))
+        .map(|port| port.index() as u32)
+        .or_else(|| {
+            plugin
+                .ports_with_type(PortType::ControlOutput)
+                .find(|port| {
+                    plugin
+                        .raw()
+                        .port_by_index(port.index.0)
+                        .is_some_and(|p| p.has_property(&reports_latency))
+                })
+                .map(|port| port.index.0 as u32)
+        });
     let params = plugin
         .ports_with_type(PortType::ControlInput)
         .filter(|port| Some(port.index.0 as u32) != free_wheeling)
@@ -580,6 +601,7 @@ pub(crate) fn open(
             atom_out_sizes,
             wants_time,
             free_wheeling,
+            latency_port,
         },
     })
 }
@@ -734,6 +756,7 @@ impl Lv2Plugin {
             }),
             free_wheeling: self.free_wheeling.map(|port| PortIndex(port as usize)),
             offline: false,
+            latency_port: self.latency_port.map(|port| PortIndex(port as usize)),
         };
         // Every control port starts at the plugin's default; the wire
         // carries the document's answer and is applied on the first block.
@@ -849,6 +872,8 @@ pub(crate) struct Lv2Processor {
     free_wheeling: Option<PortIndex>,
     /// Whether the blocks are a render rather than playback — see `run`.
     offline: bool,
+    /// Where it says what it delays by — see [`latency`](Self::latency).
+    latency_port: Option<PortIndex>,
 }
 
 impl Lv2Processor {
@@ -996,6 +1021,30 @@ impl Lv2Processor {
         self.offline = transport.offline;
         if let Some(time) = &mut self.time {
             time.transport = *transport;
+        }
+    }
+
+    /// What the plugin says it delays by, in frames — off its latency port,
+    /// as it was left by the last `run`. Zero for a plugin with none.
+    pub(crate) fn latency(&self) -> u32 {
+        self.latency_port
+            .and_then(|port| self.instance.control_output(port))
+            .filter(|frames| frames.is_finite() && *frames > 0.0)
+            .map_or(0, |frames| frames.round().min(u32::MAX as f32) as u32)
+    }
+
+    /// Runs one silent block so a plugin with a latency port has written
+    /// it — LV2 has a plugin say its latency in `run` and nowhere else.
+    pub(crate) fn learn_latency(&mut self) {
+        if self.latency_port.is_none() {
+            return;
+        }
+        for buffer in &mut self.input {
+            buffer.fill(0.0);
+        }
+        self.run(self.max_block);
+        for buffer in &mut self.output {
+            buffer.fill(0.0);
         }
     }
 

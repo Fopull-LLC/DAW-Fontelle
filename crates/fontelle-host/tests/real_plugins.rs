@@ -632,3 +632,55 @@ fn soak(which: &str) {
     );
     plugin.deactivate(processor);
 }
+
+/// One note through the bundle at `FONTELLE_REAL_PATH`, whatever else is
+/// installed under the same key — a Windows plugin through yabridge shares
+/// its id with the Linux build beside it, and a scan keeps one. Prints the
+/// level by quarter second, live and then as a render (offline transport).
+#[test]
+#[ignore]
+fn one_note_through_the_bundle_at_a_path() {
+    let path = std::path::PathBuf::from(
+        std::env::var("FONTELLE_REAL_PATH").expect("FONTELLE_REAL_PATH names a bundle"),
+    );
+    let found = fontelle_host::scan_bundle(&path).expect("the bundle scans");
+    let info = found
+        .iter()
+        .find(|p| p.is_instrument())
+        .expect("an instrument in it");
+    eprintln!("{} ({})", info.name, info.key);
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&path, &info.key).expect("it opens");
+    let mut processor = plugin.activate(48_000.0, 256).expect("it activates");
+    let mut output = vec![vec![0.0f32; 256]; plugin.audio_outputs().max(2) as usize];
+    for offline in [false, true] {
+        processor.set_transport(&fontelle_host::PluginTransport {
+            playing: true,
+            offline,
+            ..Default::default()
+        });
+        processor.note_on(0, 60, 0.8);
+        let mut levels = Vec::new();
+        for quarter in 0..8 {
+            let mut loudest = 0.0f32;
+            for _ in 0..47 {
+                plugin.service_main_thread();
+                processor.process_instrument(&mut output, 256);
+                loudest = loudest.max(peak(&output));
+                if !offline {
+                    std::thread::sleep(std::time::Duration::from_micros(5300));
+                }
+            }
+            levels.push(format!("{loudest:.3}"));
+            if quarter == 4 {
+                processor.note_off(0, 60);
+            }
+        }
+        eprintln!(
+            "{}: {}",
+            if offline { "render" } else { "live" },
+            levels.join(" ")
+        );
+    }
+    plugin.deactivate(processor);
+}

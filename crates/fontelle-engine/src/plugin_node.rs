@@ -744,9 +744,7 @@ impl AudioNode for PluginNode {
     fn latency_samples(&self) -> u32 {
         // What the plugin declared, handed over when this node was built —
         // the graph builder holds the rest of the mix back by it (TDD §5.5).
-        // Zero for a plugin that declares none, for every LV2 plugin (whose
-        // answer is a control port this build does not read) and for every
-        // bridged one.
+        // Zero for a plugin that declares none and for every bridged one.
         self.latency
     }
 

@@ -1055,6 +1055,8 @@ impl IBStreamTrait for Stream {
         let bytes = self.bytes.borrow();
         let at = self.position.get();
         let n = (num_bytes.max(0) as usize).min(bytes.len().saturating_sub(at));
+        // Nowhere to put it is nothing read — see `write`.
+        let n = if buffer.is_null() { 0 } else { n };
         if n > 0 {
             unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().add(at), buffer as *mut u8, n) };
         }
@@ -1070,8 +1072,15 @@ impl IBStreamTrait for Stream {
         num_bytes: int32,
         num_written: *mut int32,
     ) -> tresult {
-        let source =
-            unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes.max(0) as usize) };
+        // **Nothing from nowhere.** A Windows plugin through yabridge hands
+        // over a null buffer for an empty chunk, and a slice made of a null
+        // pointer is undefined behaviour whatever its length — a debug build
+        // stopped on Dub Stage Piano's first save.
+        let source: &[u8] = if buffer.is_null() || num_bytes <= 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(buffer as *const u8, num_bytes as usize) }
+        };
         let mut bytes = self.bytes.borrow_mut();
         let at = self.position.get();
         if at + source.len() > bytes.len() {

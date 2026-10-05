@@ -247,8 +247,26 @@ impl BundleProber {
         };
         let text = reader.join().unwrap_or_default();
         let Some(status) = status else {
+            // A Windows plugin through yabridge that never answers is nearly
+            // always Wine, not the plugin: on the devbox, the first start
+            // after a Wine update sat behind Wine's own "install Mono?"
+            // dialog until somebody answered it, and a yabridge older than
+            // the Wine under it is known not to start at all.
+            let bridged = bundle.components().any(|part| {
+                part.as_os_str()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("yabridge")
+            });
+            let hint = if bridged {
+                " (a Windows plugin through yabridge: check for a Wine window \
+                 waiting for an answer, and that your yabridge supports the Wine \
+                 version installed)"
+            } else {
+                ""
+            };
             return Err(format!(
-                "did not answer within {} seconds while being loaded — left out",
+                "did not answer within {} seconds while being loaded — left out{hint}",
                 self.timeout.as_secs()
             ));
         };

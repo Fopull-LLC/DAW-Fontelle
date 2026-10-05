@@ -424,8 +424,7 @@ impl PluginHost {
             note_dialect: opened.accepts_notes.then_some(NoteDialect::Midi),
             keeps_state: opened.keeps_state,
             // LV2 reports latency through an output control port designated
-            // `lv2:latency`, which this build does not read. Zero is what a
-            // host that cannot ask has to assume — see `latency_samples`.
+            // `lv2:latency`, written in `run`: read as it is activated.
             latency: 0,
             active: false,
             from_state: false,
@@ -797,10 +796,10 @@ impl HostedPlugin {
     /// ahead — a mastering limiter, a linear-phase EQ — hands back audio
     /// later than it was given, and everything else has to be held back to
     /// meet it. Read from CLAP's `latency` extension when the plugin
-    /// declares one, and **zero** otherwise: for a plugin with no extension,
-    /// for every LV2 plugin (whose answer is an output control port this
-    /// build does not read) and for every bridged one (whose table has no
-    /// entry for it).
+    /// declares one, from VST 3's `getLatencySamples`, and from an LV2
+    /// plugin's `lv2:latency` port after its first block; **zero** otherwise:
+    /// for a plugin that declares none, and for every bridged one (whose table
+    /// has no entry for it).
     ///
     /// Read once, when the plugin is opened. CLAP allows a plugin to change
     /// its latency and tell the host; following that means rebuilding the
@@ -1121,13 +1120,19 @@ impl HostedPlugin {
                     max_block,
                 )
             }
-            Inner::Lv2(plugin) => HostedProcessor::lv2(plugin.activate(
-                &self.info.key,
-                Arc::clone(&self.values),
-                Arc::clone(&self.atoms),
-                sample_rate,
-                max_block,
-            )?),
+            Inner::Lv2(plugin) => {
+                let mut processor = plugin.activate(
+                    &self.info.key,
+                    Arc::clone(&self.values),
+                    Arc::clone(&self.atoms),
+                    sample_rate,
+                    max_block,
+                )?;
+                // Said in `run`, so asked after one — see `learn_latency`.
+                processor.learn_latency();
+                self.latency = processor.latency();
+                HostedProcessor::lv2(processor)
+            }
             Inner::Bridged(plugin) => HostedProcessor::bridged(plugin.activate(
                 &self.info.key,
                 Arc::clone(&self.values),

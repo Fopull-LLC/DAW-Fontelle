@@ -231,7 +231,7 @@ extern "C" fn write_port(
         // What arrives is a whole `LV2_Atom`: a size and a type, then that
         // many bytes. The pipe carries the type beside the body, so the two
         // words of header are read here and not copied.
-        if (buffer_size as usize) < size_of::<AtomHeader>() {
+        if buffer.is_null() || (buffer_size as usize) < size_of::<AtomHeader>() {
             return;
         }
         let header = unsafe { *buffer.cast::<AtomHeader>() };

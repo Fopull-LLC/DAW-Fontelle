@@ -1363,3 +1363,34 @@ fn what_an_lv2_plugin_left_for_its_worker_can_be_finished_before_it_plays() {
     processor.process_instrument(&mut output, 256);
     assert_eq!(peak(&output), fontelle_testlv2::LOADER_LEVEL);
 }
+
+/// > A lookahead limiter on one track puts that track late against the
+/// > others — `docs/plugin-experience-backlog.md` §8.
+///
+/// An LV2 plugin says what it delays by on an output control port designated
+/// `lv2:latency`, written in its `run`. This host read it for CLAP and VST 3
+/// and took every LV2 plugin to delay by nothing; 41 of the bundles on the
+/// devbox say otherwise. It is read once the plugin has run a block, as it
+/// is activated — the graph lines the rest of the mix up with it.
+#[test]
+fn an_lv2_plugins_latency_is_read_off_its_latency_port_as_it_is_activated() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    assert!(
+        plugin.param(3).is_none(),
+        "an output port is not a parameter"
+    );
+    let processor = plugin.activate(48_000.0, 256).unwrap();
+    assert_eq!(plugin.latency_samples(), fontelle_testlv2::LOADER_LATENCY);
+    plugin.deactivate(processor);
+}
+
+/// And one that reports none delays by nothing.
+#[test]
+fn an_lv2_plugin_with_no_latency_port_delays_by_nothing() {
+    let mut host = PluginHost::new();
+    let mut plugin = sine(&mut host);
+    let processor = plugin.activate(48_000.0, 256).unwrap();
+    assert_eq!(plugin.latency_samples(), 0);
+    plugin.deactivate(processor);
+}

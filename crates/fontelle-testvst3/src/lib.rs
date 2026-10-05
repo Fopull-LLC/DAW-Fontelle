@@ -231,11 +231,17 @@ unsafe fn channel<'a>(
 }
 
 /// An `IBStream` written to or read from in whole.
+///
+/// Opened with a write of **nothing from nowhere** — a null buffer, zero
+/// bytes — which is what a Windows plugin through yabridge hands the host
+/// for an empty chunk (`std::vector::data()` of an empty vector). A host that
+/// made a slice of it had undefined behaviour, and a debug build said so.
 unsafe fn write_all(stream: *mut IBStream, bytes: &[u8]) -> tresult {
     let Some(stream) = (unsafe { ComRef::from_raw(stream) }) else {
         return kInvalidArgument;
     };
     let mut written = 0;
+    unsafe { stream.write(std::ptr::null_mut(), 0, &mut written) };
     unsafe {
         stream.write(
             bytes.as_ptr() as *mut c_void,
