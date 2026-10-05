@@ -202,6 +202,7 @@ fn options(name: &str, install: PersistentId) -> CollabOptions {
     let mut options = CollabOptions::new(name, install);
     options.strict = true;
     options.idle_break = std::time::Duration::ZERO;
+    options.hello_again = std::time::Duration::ZERO;
     options
 }
 
@@ -243,16 +244,28 @@ impl Pair {
     }
 
     fn between(
+        host: Session,
+        joiner: Session,
+        dir: PathBuf,
+        latency: u64,
+        cleanup: Cleanup,
+    ) -> Pair {
+        Pair::through(host, joiner, dir, latency, cleanup, |link| Box::new(link))
+    }
+
+    /// [`Pair::between`], with the host's end of the link made by `host_link`.
+    fn through(
         mut host: Session,
         mut joiner: Session,
         dir: PathBuf,
         latency: u64,
         cleanup: Cleanup,
+        host_link: impl FnOnce(fontelle_net::MemoryTransport) -> Box<dyn fontelle_net::Transport>,
     ) -> Pair {
         let hub = MemoryHub::new();
         hub.set_conditions(latency, 0.0);
         let (alice, bob) = (PersistentId::derived("alice"), PersistentId::derived("bob"));
-        host.share(Box::new(hub.server_endpoint()), options("Alice", alice))
+        host.share(host_link(hub.server_endpoint()), options("Alice", alice))
             .expect("a saved song can be shared");
         joiner
             .join(Box::new(hub.connect()), options("Bob", bob))
@@ -1505,6 +1518,257 @@ fn a_dropped_joiner_rejoins_with_a_snapshot() {
     tick(&mut host, &mut joiner, 30);
     assert!(joiner.collab_live());
     assert_eq!(host.project().sync_hash(), joiner.project().sync_hash());
+}
+
+/// The host's leg to the relay, cut and given back the way the relay does it.
+/// While it is cut, what the host sends is lost (`mute`) and so is what it
+/// is sent (`deaf`) — the relay forwards nothing to a host it has lost, and
+/// nothing the old connection had in flight arrives. When it is back the
+/// relay announces again everybody it held in the lobby (`back`), joiners
+/// who came while the host was away included.
+#[derive(Clone, Default)]
+struct Cut {
+    mute: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    deaf: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    back: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Cut {
+    fn down(&self) {
+        use std::sync::atomic::Ordering;
+        self.mute.store(true, Ordering::SeqCst);
+        self.deaf.store(true, Ordering::SeqCst);
+    }
+
+    fn restore(&self) {
+        use std::sync::atomic::Ordering;
+        self.mute.store(false, Ordering::SeqCst);
+        self.deaf.store(false, Ordering::SeqCst);
+        self.back.store(true, Ordering::SeqCst);
+    }
+}
+
+struct Outage {
+    inner: fontelle_net::MemoryTransport,
+    cut: Cut,
+    held: Vec<fontelle_net::PeerId>,
+}
+
+impl fontelle_net::Transport for Outage {
+    fn send(&mut self, peer: fontelle_net::PeerId, channel: fontelle_net::Channel, bytes: &[u8]) {
+        if !self.cut.mute.load(std::sync::atomic::Ordering::SeqCst) {
+            self.inner.send(peer, channel, bytes);
+        }
+    }
+    fn poll(&mut self) -> Vec<fontelle_net::Incoming> {
+        use fontelle_net::Incoming;
+        use std::sync::atomic::Ordering;
+        let mut got = self.inner.poll();
+        for event in &got {
+            match event {
+                Incoming::Connected(peer) => self.held.push(*peer),
+                Incoming::Disconnected(peer, _) => self.held.retain(|p| p != peer),
+                Incoming::Message(..) => {}
+            }
+        }
+        if self.cut.deaf.load(Ordering::SeqCst) {
+            got.clear();
+        }
+        if self.cut.back.swap(false, Ordering::SeqCst) {
+            let mut again: Vec<Incoming> = self
+                .held
+                .iter()
+                .map(|peer| Incoming::Connected(*peer))
+                .collect();
+            again.append(&mut got);
+            return again;
+        }
+        got
+    }
+    fn stats(&self, peer: fontelle_net::PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+impl Pair {
+    /// [`Pair::new`] with the host's link to the relay able to drop.
+    fn cuttable(name: &str, latency: u64) -> (Pair, Cut) {
+        let dir = scratch(name);
+        let mut host = a_session();
+        host.set_projects_dir(Some(dir.join("alice")));
+        std::fs::create_dir_all(dir.join("alice")).unwrap();
+        host.save_as("Song").unwrap();
+        let mut joiner = a_session();
+        std::fs::create_dir_all(dir.join("bob")).unwrap();
+        joiner.set_projects_dir(Some(dir.join("bob")));
+        let cleanup = Cleanup(dir.clone());
+        let cut = Cut::default();
+        let theirs = cut.clone();
+        let pair = Pair::through(host, joiner, dir, latency, cleanup, move |link| {
+            Box::new(Outage {
+                inner: link,
+                cut: theirs,
+                held: Vec::new(),
+            })
+        });
+        (pair, cut)
+    }
+}
+
+/// Ty: *"i really do want it to work well so users can work on songs
+/// together"*. The host's connection drops and comes back under the same code
+/// (`fontelle-net`'s reclaim): everything either of them did while it was
+/// gone — the host's note that never went out, the joiner's that never
+/// arrived — ends up on both, and they are still in one session. The host
+/// sends the joiner a fresh copy of the song, and the joiner sends again what
+/// the host never had.
+#[test]
+fn a_host_back_on_the_relay_brings_its_joiner_up_to_date() {
+    let (mut pair, cut) = Pair::cuttable("host-back", 2);
+    pair.answer(JoinAnswer::Copy);
+    pair.same();
+    let clip = open_clip(&pair.host);
+    let before = notes_of(&pair.host, clip).len();
+
+    cut.down();
+    draw(&mut pair.host, 0, 60);
+    draw(&mut pair.joiner, PPQN, 72);
+    pair.settle();
+    cut.restore();
+    pair.settle();
+
+    pair.same();
+    let keys: Vec<u8> = notes_of(&pair.host, clip).iter().map(|n| n.2).collect();
+    assert_eq!(keys.len(), before + 2, "{keys:?}");
+    assert!(keys.contains(&60) && keys.contains(&72), "{keys:?}");
+    assert!(pair.joiner.collab_live(), "Bob is still in the session");
+    assert_eq!(
+        pair.host.session_peers().len(),
+        1,
+        "and Alice still has him"
+    );
+
+    // And they carry on as before.
+    draw(&mut pair.joiner, 2 * PPQN, 74);
+    pair.settle();
+    pair.same();
+}
+
+/// The same drop, where the joiner's edit did reach the host and only the
+/// host's answer was lost: the joiner must not make it a second time, nor be
+/// told it was taken back.
+#[test]
+fn an_edit_whose_answer_was_lost_is_not_made_twice() {
+    let (mut pair, cut) = Pair::cuttable("answer-lost", 2);
+    pair.answer(JoinAnswer::Copy);
+    let clip = open_clip(&pair.host);
+    let before = notes_of(&pair.host, clip).len();
+
+    cut.mute.store(true, std::sync::atomic::Ordering::SeqCst);
+    draw(&mut pair.joiner, PPQN, 72);
+    pair.settle();
+    assert_eq!(
+        notes_of(&pair.host, clip).len(),
+        before + 1,
+        "the host took it"
+    );
+    cut.restore();
+    pair.settle();
+
+    pair.same();
+    assert_eq!(notes_of(&pair.joiner, clip).len(), before + 1);
+    let said = pair.joiner.take_collab_notices().join(" ");
+    assert!(!said.contains("taken back"), "{said}");
+
+    // Still one session, both ways.
+    draw(&mut pair.host, 0, 60);
+    draw(&mut pair.joiner, 2 * PPQN, 74);
+    pair.settle();
+    pair.same();
+    assert_eq!(notes_of(&pair.joiner, clip).len(), before + 3);
+}
+
+/// Somebody who joins while the host is away — the relay holds the lobby,
+/// so the join goes in, and the hello is lost — still gets the song once the
+/// host is back, without joining again.
+#[test]
+fn a_join_made_while_the_host_was_away_still_gets_the_song() {
+    let (mut pair, cut) = {
+        let dir = scratch("joined-while-away");
+        let mut host = a_session();
+        host.set_projects_dir(Some(dir.join("alice")));
+        std::fs::create_dir_all(dir.join("alice")).unwrap();
+        host.save_as("Song").unwrap();
+        let mut joiner = a_session();
+        std::fs::create_dir_all(dir.join("bob")).unwrap();
+        joiner.set_projects_dir(Some(dir.join("bob")));
+        let cleanup = Cleanup(dir.clone());
+        let cut = Cut::default();
+        cut.down();
+        let theirs = cut.clone();
+        let pair = Pair::through(host, joiner, dir, 2, cleanup, move |link| {
+            Box::new(Outage {
+                inner: link,
+                cut: theirs,
+                held: Vec::new(),
+            })
+        });
+        (pair, cut)
+    };
+    assert!(
+        pair.joiner.join_question().is_none(),
+        "nothing came back yet"
+    );
+    cut.restore();
+    pair.settle();
+    assert!(pair.joiner.join_question().is_some(), "the song came");
+    pair.answer(JoinAnswer::Copy);
+    assert!(pair.joiner.collab_live());
+    pair.same();
+}
+
+/// What the relay's side of the link has to say — the host lost it and is
+/// getting it back, under which code — reaches the person, not just a log.
+#[test]
+fn what_the_link_says_reaches_the_person() {
+    struct Talking(fontelle_net::MemoryTransport, Vec<String>);
+    impl fontelle_net::Transport for Talking {
+        fn send(
+            &mut self,
+            peer: fontelle_net::PeerId,
+            channel: fontelle_net::Channel,
+            bytes: &[u8],
+        ) {
+            self.0.send(peer, channel, bytes);
+        }
+        fn poll(&mut self) -> Vec<fontelle_net::Incoming> {
+            self.0.poll()
+        }
+        fn stats(&self, peer: fontelle_net::PeerId) -> fontelle_net::LinkStats {
+            self.0.stats(peer)
+        }
+        fn take_notices(&mut self) -> Vec<String> {
+            std::mem::take(&mut self.1)
+        }
+    }
+    let dir = scratch("link-says");
+    let _cleanup = Cleanup(dir.clone());
+    let mut host = a_session();
+    host.set_projects_dir(Some(dir.join("alice")));
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.save_as("Song").unwrap();
+    let hub = MemoryHub::new();
+    host.share(
+        Box::new(Talking(
+            hub.server_endpoint(),
+            vec!["Back on the relay \u{2014} UABCDE is still yours".to_string()],
+        )),
+        options("Alice", PersistentId::derived("alice")),
+    )
+    .unwrap();
+    host.pump_collab();
+    let said = host.take_collab_notices().join(" ");
+    assert!(said.contains("UABCDE"), "{said:?}");
 }
 
 /// F42. While a song is shared the window has something to look at that

@@ -84,6 +84,11 @@ pub struct CollabOptions {
     /// soundfont is always asked about: it goes into the bank, outside the
     /// song's own folder.
     pub ask_above: u64,
+    /// How long a join waits for the host's welcome before saying hello
+    /// again. A hello sent while the host was away from the relay — the relay
+    /// holds the lobby, and lets the join in — went nowhere, and nothing else
+    /// would ever ask again.
+    pub hello_again: Duration,
 }
 
 impl CollabOptions {
@@ -95,6 +100,7 @@ impl CollabOptions {
             strict: false,
             idle_break: Duration::from_millis(400),
             ask_above: 64 * 1024 * 1024,
+            hello_again: Duration::from_secs(5),
         }
     }
 }
@@ -207,20 +213,12 @@ impl Collab {
         options: CollabOptions,
         projects_dir: PathBuf,
     ) -> Self {
-        send(
-            transport.as_mut(),
-            SERVER,
-            &Msg::Hello {
-                protocol: PROTOCOL,
-                fontelle: options.fontelle.clone(),
-                name: options.name.clone(),
-                install: options.install,
-            },
-        );
+        let mut joiner = Joiner::new(projects_dir);
+        joiner.say_hello(transport.as_mut(), &options);
         Self {
             transport,
             options,
-            role: Role::Joiner(Box::new(Joiner::new(projects_dir))),
+            role: Role::Joiner(Box::new(joiner)),
             notices: Vec::new(),
             ended: None,
             held: None,
@@ -372,6 +370,9 @@ impl Collab {
             return Vec::new();
         }
         self.let_go_of_idle_edits(history);
+        // What the link has to say for itself — the relay lost, and got
+        // back under which code — is the person's to read (F38).
+        self.notices.extend(self.transport.take_notices());
         let mut effects = Vec::new();
         let mut turn = Turn {
             transport: self.transport.as_mut(),
@@ -594,6 +595,12 @@ struct Host {
     peers: BTreeMap<PeerId, HostPeer>,
     /// The number of the last edit in the one order there is.
     seq: u64,
+    /// The last of each join's proposals this host has applied or refused,
+    /// by the join's session: what a joiner back after a drop is told
+    /// (`Msg::Resumed`), and what a proposal sent twice is checked against.
+    handled: BTreeMap<PersistentId, u64>,
+    /// The space each join was given, so one back after a drop gets its own.
+    spaces: BTreeMap<PersistentId, u16>,
 }
 
 struct HostPeer {
@@ -602,9 +609,22 @@ struct HostPeer {
     install: PersistentId,
     welcomed: bool,
     view_only: bool,
+    /// Which join this is (`Msg::Session`), once it has said.
+    session: Option<PersistentId>,
 }
 
 impl HostPeer {
+    fn arriving() -> Self {
+        HostPeer {
+            space: 0,
+            name: String::new(),
+            install: PersistentId::default(),
+            welcomed: false,
+            view_only: false,
+            session: None,
+        }
+    }
+
     fn public(&self) -> Peer {
         Peer {
             peer: self.space,
@@ -633,17 +653,17 @@ impl Host {
         }
         for incoming in turn.transport.poll() {
             match incoming {
+                // Somebody this host already has, announced again: the
+                // host's leg to the relay dropped and is back, and whatever
+                // either side sent meanwhile is lost. They are welcomed
+                // again and sent the song as it is now (F38).
+                Incoming::Connected(peer) if self.peers.contains_key(&peer) => {
+                    if self.peers[&peer].welcomed {
+                        self.welcome(turn, peer, doc);
+                    }
+                }
                 Incoming::Connected(peer) => {
-                    self.peers.insert(
-                        peer,
-                        HostPeer {
-                            space: 0,
-                            name: String::new(),
-                            install: PersistentId::default(),
-                            welcomed: false,
-                            view_only: false,
-                        },
-                    );
+                    self.peers.insert(peer, HostPeer::arriving());
                 }
                 // The relay itself: it ended the lobby — nobody joined it for
                 // half an hour, or it refused the host — and the code means
@@ -692,12 +712,23 @@ impl Host {
 
     fn receive(&mut self, turn: &mut Turn, peer: PeerId, msg: Msg, doc: &mut Project) {
         match msg {
+            Msg::Session { id } => {
+                self.peers
+                    .entry(peer)
+                    .or_insert_with(HostPeer::arriving)
+                    .session = Some(id);
+            }
             Msg::Hello {
                 protocol,
                 fontelle,
                 name,
                 install,
             } => {
+                // Said again by a join still waiting for its welcome, which
+                // has had it by now.
+                if self.peers.get(&peer).is_some_and(|p| p.welcomed) {
+                    return;
+                }
                 let options = turn.options;
                 if protocol != PROTOCOL || fontelle != options.fontelle {
                     let reason = version_sentence(&options.name, &options.fontelle, &fontelle);
@@ -710,52 +741,46 @@ impl Host {
                     ));
                     return;
                 }
-                let space = (1..=u16::from(u8::MAX))
-                    .find(|space| {
-                        self.peers
-                            .values()
-                            .all(|p| !p.welcomed || p.space != *space)
-                    })
-                    .unwrap_or(u16::from(u8::MAX));
-                send(
-                    turn.transport,
-                    peer,
-                    &Msg::Welcome {
-                        peer: space,
-                        protocol: PROTOCOL,
-                        fontelle: options.fontelle.clone(),
-                        host: options.name.clone(),
-                        host_install: options.install,
-                        project: head_of(doc),
-                        manifest: manifest(doc),
-                    },
-                );
-                self.send_snapshot(turn.transport, peer, doc);
-                // Who is here already, then everybody else hears of them.
-                for other in self.peers.values().filter(|p| p.welcomed) {
-                    let public = other.public();
-                    send(
-                        turn.transport,
-                        peer,
-                        &Msg::Joined {
-                            peer: public.peer,
-                            name: public.name,
-                            colour: public.colour,
-                        },
-                    );
-                }
-                let entry = self.peers.entry(peer).or_insert(HostPeer {
-                    space,
-                    name: name.clone(),
-                    install,
-                    welcomed: false,
-                    view_only: false,
+                let session = self.peers.get(&peer).and_then(|p| p.session);
+                // The same join on a new connection — its own link dropped
+                // and it joined again before the old one was noticed gone —
+                // takes the old one's place rather than being two people.
+                let replaced = session.and_then(|session| {
+                    let old = self
+                        .peers
+                        .iter()
+                        .find(|(id, p)| **id != peer && p.welcomed && p.session == Some(session))
+                        .map(|(&id, _)| id)?;
+                    turn.transport.disconnect(old);
+                    self.peers.remove(&old)
                 });
+                let free = |space: u16, peers: &BTreeMap<PeerId, HostPeer>| {
+                    peers.values().all(|p| !p.welcomed || p.space != space)
+                };
+                let space = replaced
+                    .as_ref()
+                    .map(|old| old.space)
+                    .or_else(|| {
+                        session
+                            .and_then(|session| self.spaces.get(&session).copied())
+                            .filter(|&space| free(space, &self.peers))
+                    })
+                    .or_else(|| (1..=u16::from(u8::MAX)).find(|&space| free(space, &self.peers)))
+                    .unwrap_or(u16::from(u8::MAX));
+                let entry = self.peers.entry(peer).or_insert_with(HostPeer::arriving);
                 entry.space = space;
                 entry.name = name.clone();
                 entry.install = install;
                 entry.welcomed = true;
-                let public = entry.public();
+                entry.view_only = replaced.as_ref().is_some_and(|old| old.view_only);
+                if let Some(session) = session {
+                    self.spaces.insert(session, space);
+                }
+                self.welcome(turn, peer, doc);
+                if replaced.is_some() {
+                    return;
+                }
+                let public = self.peers[&peer].public();
                 self.broadcast_except(
                     turn.transport,
                     peer,
@@ -772,6 +797,15 @@ impl Host {
                 let Some(author) = self.peers.get(&peer).filter(|p| p.welcomed) else {
                     return;
                 };
+                // Sent again after a drop, and had the first time: once is
+                // the edit, twice would be a second one.
+                if let Some(session) = author.session {
+                    let handled = self.handled.entry(session).or_default();
+                    if local_seq <= *handled {
+                        return;
+                    }
+                    *handled = local_seq;
+                }
                 // Refused whatever it is: the joiner has already been told,
                 // and takes it back the way any refusal is (§10.1).
                 if author.view_only {
@@ -839,6 +873,55 @@ impl Host {
         self.broadcast(turn.transport, &Msg::Left { peer: who.space });
         turn.notices.push(format!("{} left", who.name));
         turn.effects.push(Effect::Say(format!("{} left", who.name)));
+    }
+
+    /// Everything a joiner needs to be in the session as it is now: who it
+    /// is, the song, which of its edits are in it, who else is here and
+    /// whether it may edit. The first time, or again after a drop on either
+    /// side, when anything sent meanwhile is lost.
+    fn welcome(&self, turn: &mut Turn, peer: PeerId, doc: &Project) {
+        let Some(who) = self.peers.get(&peer) else {
+            return;
+        };
+        let options = turn.options;
+        send(
+            turn.transport,
+            peer,
+            &Msg::Welcome {
+                peer: who.space,
+                protocol: PROTOCOL,
+                fontelle: options.fontelle.clone(),
+                host: options.name.clone(),
+                host_install: options.install,
+                project: head_of(doc),
+                manifest: manifest(doc),
+            },
+        );
+        let handled = who
+            .session
+            .and_then(|session| self.handled.get(&session).copied())
+            .unwrap_or(0);
+        send(turn.transport, peer, &Msg::Resumed { handled });
+        self.send_snapshot(turn.transport, peer, doc);
+        for other in self
+            .peers
+            .iter()
+            .filter(|(id, p)| **id != peer && p.welcomed)
+            .map(|(_, p)| p.public())
+        {
+            send(
+                turn.transport,
+                peer,
+                &Msg::Joined {
+                    peer: other.peer,
+                    name: other.name,
+                    colour: other.colour,
+                },
+            );
+        }
+        if who.view_only {
+            send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
+        }
     }
 
     fn send_snapshot(&self, transport: &mut dyn Transport, peer: PeerId, doc: &Project) {
@@ -939,6 +1022,10 @@ struct Pending {
 struct Joiner {
     stage: Stage,
     projects_dir: PathBuf,
+    /// Which join this is, for as long as the song is open (`Msg::Session`).
+    session: PersistentId,
+    /// When this join last said hello.
+    hello_at: Instant,
     /// Where this studio mints, and who it is in the host's messages.
     space: u16,
     host_name: String,
@@ -972,6 +1059,8 @@ impl Joiner {
         Self {
             stage: Stage::Waiting,
             projects_dir,
+            session: PersistentId::new(),
+            hello_at: Instant::now(),
             space: 0,
             host_name: String::new(),
             host_install: PersistentId::default(),
@@ -991,6 +1080,22 @@ impl Joiner {
         }
     }
 
+    /// Says which join this is, and hello.
+    fn say_hello(&mut self, transport: &mut dyn Transport, options: &CollabOptions) {
+        send(transport, SERVER, &Msg::Session { id: self.session });
+        send(
+            transport,
+            SERVER,
+            &Msg::Hello {
+                protocol: PROTOCOL,
+                fontelle: options.fontelle.clone(),
+                name: options.name.clone(),
+                install: options.install,
+            },
+        );
+        self.hello_at = Instant::now();
+    }
+
     /// One turn. `Some` is why the session ended.
     fn pump(
         &mut self,
@@ -998,6 +1103,11 @@ impl Joiner {
         doc: &mut Project,
         history: &mut History,
     ) -> Option<String> {
+        // No welcome yet: the hello may have gone to a host that was away
+        // from the relay, where nothing would ever answer it.
+        if self.stage == Stage::Waiting && self.hello_at.elapsed() >= turn.options.hello_again {
+            self.say_hello(turn.transport, turn.options);
+        }
         if self.stage == Stage::Live {
             self.send_mine(turn.transport, history);
             // Nothing is rebased under a drag in the hand (F17): it waits in
@@ -1100,6 +1210,42 @@ impl Joiner {
         history: &mut History,
     ) -> Option<String> {
         match msg {
+            // Welcomed again, after a drop on either side: who this studio
+            // is may have changed, and nothing else — the song follows.
+            Msg::Welcome {
+                peer,
+                host,
+                host_install,
+                ..
+            } if self.stage == Stage::Opening
+                || self.stage == Stage::Live
+                || self.answer.is_some() =>
+            {
+                self.space = peer;
+                self.host_name = host;
+                self.host_install = host_install;
+                if self.stage == Stage::Live {
+                    history.set_mint_space(Some(peer));
+                }
+            }
+            Msg::Resumed { handled } => {
+                if self.stage == Stage::Live {
+                    // Those the host has had are in the copy that follows
+                    // (or were refused, and the copy is without them); the
+                    // rest never reached it, and go again.
+                    self.pending.retain(|pending| pending.local_seq > handled);
+                    for pending in &self.pending {
+                        send(
+                            turn.transport,
+                            SERVER,
+                            &Msg::Propose {
+                                local_seq: pending.local_seq,
+                                edit: pending.command.to_edit(),
+                            },
+                        );
+                    }
+                }
+            }
             Msg::Welcome {
                 peer,
                 host,

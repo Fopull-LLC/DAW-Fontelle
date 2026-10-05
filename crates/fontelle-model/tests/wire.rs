@@ -1410,6 +1410,16 @@ fn msg_variant_order_is_pinned() {
     // Phase 4 (F49): the host's two controls on a person's row.
     assert_eq!(tag(&Msg::ViewOnly { view_only: true }), 16);
     assert_eq!(tag(&Msg::Removed { by: "Alice".into() }), 17);
+    // v0.25.1: a link that dropped and came back. The host says which of a
+    // joiner's edits it has had, and a joiner says which session it is, so
+    // a rejoin is known for one.
+    assert_eq!(tag(&Msg::Resumed { handled: 4 }), 18);
+    assert_eq!(
+        tag(&Msg::Session {
+            id: PersistentId::new()
+        }),
+        19
+    );
 }
 
 /// §8.2 and F52: an edit rides inside a postcard message as the JSON the

@@ -374,6 +374,21 @@ pub enum Msg {
     Removed {
         by: String,
     },
+    // A link that dropped and came back (v0.25.1).
+    /// Host to a joiner it has back — its own connection to the relay
+    /// returned, or the joiner's did — just before a fresh copy of the song:
+    /// the last of the joiner's proposals (`Propose::local_seq`) it has
+    /// applied or refused. The copy has every one of those that was applied;
+    /// the joiner proposes again whatever came after, which never arrived.
+    Resumed {
+        handled: u64,
+    },
+    /// Joiner to host, ahead of every `Hello`: which join this is, the same
+    /// for as long as the joiner holds the song open. A hello again under the
+    /// same session is the same person back, not a new one.
+    Session {
+        id: fontelle_types::PersistentId,
+    },
 }
 
 impl Msg {
