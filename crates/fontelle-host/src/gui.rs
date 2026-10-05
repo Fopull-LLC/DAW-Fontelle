@@ -263,10 +263,20 @@ struct OnScreen {
     seen: Box<win32::Seen>,
 }
 
-/// The same on macOS, where a plugin's editor is not yet shown — the
-/// embedding is an `NSView` and nothing here makes one. Uninhabited, so every
-/// branch on `server` below is a branch the compiler knows is not taken.
-#[cfg(not(any(target_os = "linux", windows)))]
+/// The same on macOS: the window, the view the plugin is handed, and the
+/// strip's view. See [`cocoa`].
+#[cfg(target_os = "macos")]
+struct OnScreen {
+    window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    embed: objc2::rc::Retained<objc2_app_kit::NSView>,
+    strip: Option<objc2::rc::Retained<cocoa::StripView>>,
+    /// The close button has been reported.
+    closed: bool,
+}
+
+/// Anywhere else, no plugin window at all. Uninhabited, so every branch on
+/// `server` below is a branch the compiler knows is not taken.
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 enum OnScreen {}
 
 #[cfg(target_os = "linux")]
@@ -722,7 +732,7 @@ impl Drop for PluginWindow {
 /// says so, and the headless form — every size question, every request the
 /// plugin makes of it — behaves exactly as on Linux, so the code either side
 /// of the drawing is one code. See [`OnScreen`].
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 impl PluginWindow {
     pub fn open(_title: &str, _size: GuiSize) -> Result<Self, GuiError> {
         Err(GuiError::NotOnThisPlatform)
@@ -788,6 +798,8 @@ impl PluginWindow {
 pub fn pump_gui_messages() {
     #[cfg(windows)]
     win32::pump();
+    #[cfg(target_os = "macos")]
+    cocoa::pump();
 }
 
 /// A plugin editor's window on Windows.
@@ -1471,4 +1483,385 @@ const POLLIN: i16 = 0x001;
 #[cfg(unix)]
 unsafe extern "C" {
     fn poll(fds: *mut libc_pollfd, nfds: u64, timeout: i32) -> i32;
+}
+
+/// A plugin editor's window on macOS.
+///
+/// > `docs/plugin-experience-backlog.md` §3: plugin editors did not open on a
+/// > Mac at all, so every preset browser, wavetable editor and patch built
+/// > inside a plugin was out of reach.
+///
+/// The CLAP `cocoa` API and VST 3's `"NSView"` both hand the plugin an
+/// `NSView` it adds its own view to. So the window is an `NSWindow` whose
+/// content holds that view, and — when there is one — the studio's strip
+/// above it: a view of Fontelle's own that draws the image it is handed and
+/// notes presses for [`PluginWindow::poll`]. The studio's winit loop runs
+/// the application, which drives the plugin's views with everything else;
+/// a test with no loop of its own calls [`pump_gui_messages`].
+///
+/// **Main thread only**, as everything in AppKit is: opening one anywhere
+/// else is refused rather than attempted.
+#[cfg(target_os = "macos")]
+mod cocoa {
+    use std::cell::RefCell;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{
+        AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
+    };
+    use objc2_app_kit::{
+        NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageRep,
+        NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSImage, NSView, NSWindow, NSWindowStyleMask,
+    };
+    use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
+
+    use super::{GuiError, GuiSize};
+
+    /// What the strip view keeps: the image it draws and the presses on it.
+    #[derive(Default)]
+    pub(super) struct StripIvars {
+        image: RefCell<Option<Retained<NSImage>>>,
+        presses: RefCell<Vec<(i32, i32)>>,
+    }
+
+    define_class!(
+        /// The studio's strip across the top of a plugin's window.
+        #[unsafe(super(NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "FontellePluginStrip"]
+        #[ivars = StripIvars]
+        pub(super) struct StripView;
+
+        impl StripView {
+            /// Top-down, as the strip's pixels and its presses are.
+            #[unsafe(method(isFlipped))]
+            fn is_flipped(&self) -> bool {
+                true
+            }
+
+            /// A press on a window that was not in front is still a press.
+            #[unsafe(method(acceptsFirstMouse:))]
+            fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+                true
+            }
+
+            #[unsafe(method(mouseDown:))]
+            fn mouse_down(&self, event: &NSEvent) {
+                let at = self.convertPoint_fromView(event.locationInWindow(), None);
+                self.ivars()
+                    .presses
+                    .borrow_mut()
+                    .push((at.x.round() as i32, at.y.round() as i32));
+            }
+
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _dirty: NSRect) {
+                if let Some(image) = self.ivars().image.borrow().as_ref() {
+                    image.drawInRect(self.bounds());
+                }
+            }
+        }
+    );
+
+    impl StripView {
+        fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(StripIvars::default());
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        pub(super) fn take_presses(&self) -> Vec<(i32, i32)> {
+            std::mem::take(&mut *self.ivars().presses.borrow_mut())
+        }
+
+        /// Shows `rgba` (`width` × `height`, top row first) as the strip.
+        pub(super) fn show(&self, rgba: &[u8], width: u32, height: u32) {
+            let Some(rep) = (unsafe {
+                NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                    NSBitmapImageRep::alloc(),
+                    std::ptr::null_mut(),
+                    width as isize,
+                    height as isize,
+                    8,
+                    4,
+                    true,
+                    false,
+                    NSDeviceRGBColorSpace,
+                    (width * 4) as isize,
+                    32,
+                )
+            }) else {
+                return;
+            };
+            let data = rep.bitmapData();
+            if data.is_null() {
+                return;
+            }
+            let len = (width * height * 4) as usize;
+            // SAFETY: the rep allocated `bytesPerRow × height` bytes, which
+            // is `len`; `rgba` was checked to hold at least that many.
+            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len) };
+            let image = NSImage::initWithSize(
+                NSImage::alloc(),
+                NSSize::new(f64::from(width), f64::from(height)),
+            );
+            image.addRepresentation(&rep);
+            *self.ivars().image.borrow_mut() = Some(image);
+            self.setNeedsDisplay(true);
+        }
+    }
+
+    fn main_thread() -> Result<MainThreadMarker, GuiError> {
+        MainThreadMarker::new().ok_or_else(|| {
+            GuiError::NoDisplay("a plugin window on macOS has to be made on the main thread".into())
+        })
+    }
+
+    pub(super) fn open(
+        title: &str,
+        size: GuiSize,
+        header: u32,
+    ) -> Result<super::OnScreen, GuiError> {
+        let mtm = main_thread()?;
+        // So a window can be made and shown with no studio loop around it —
+        // the tests. The studio's own loop has made it already.
+        let _ = NSApplication::sharedApplication(mtm);
+        let (width, height) = (f64::from(size.width), f64::from(size.height));
+        let total = height + f64::from(header);
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable;
+        let window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(width, total)),
+                style,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        // Closing it hides it; the host lets it go (`Drop`), not AppKit.
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setTitle(&NSString::from_str(title));
+        let content = window
+            .contentView()
+            .ok_or_else(|| GuiError::NoDisplay("the window has no content view".into()))?;
+        // The plugin's view at the bottom, the strip above it — AppKit's
+        // origin is the bottom left.
+        let embed = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height)),
+        );
+        embed.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        content.addSubview(&embed);
+        let strip = (header > 0).then(|| {
+            let strip = StripView::new(
+                mtm,
+                NSRect::new(
+                    NSPoint::new(0.0, height),
+                    NSSize::new(width, f64::from(header)),
+                ),
+            );
+            strip.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewMinYMargin,
+            );
+            content.addSubview(&strip);
+            strip
+        });
+        window.makeKeyAndOrderFront(None);
+        Ok(super::OnScreen {
+            window,
+            embed,
+            strip,
+            closed: false,
+        })
+    }
+
+    /// The plugin's area, as the window has it now.
+    pub(super) fn embed_size(server: &super::OnScreen) -> GuiSize {
+        let frame = server.embed.frame();
+        GuiSize {
+            width: frame.size.width.round().max(0.0) as u32,
+            height: frame.size.height.round().max(0.0) as u32,
+        }
+    }
+
+    pub(super) fn resize(server: &super::OnScreen, size: GuiSize, header: u32) {
+        server.window.setContentSize(NSSize::new(
+            f64::from(size.width),
+            f64::from(size.height + header),
+        ));
+    }
+
+    /// Every event waiting, handed to the application — for a loop with no
+    /// event loop of its own.
+    pub(super) fn pump() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        loop {
+            let event = unsafe {
+                app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                    NSEventMask::Any,
+                    Some(&NSDate::distantPast()),
+                    NSDefaultRunLoopMode,
+                    true,
+                )
+            };
+            let Some(event) = event else { break };
+            app.sendEvent(&event);
+        }
+    }
+
+    pub(super) fn view_ptr(view: &NSView) -> u64 {
+        view as *const NSView as *const AnyObject as usize as u64
+    }
+
+    pub(super) fn window_ptr(window: &NSWindow) -> u64 {
+        window as *const NSWindow as usize as u64
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl PluginWindow {
+    /// Opens a window whose plugin area is `size`, titled `title`.
+    pub fn open(title: &str, size: GuiSize) -> Result<Self, GuiError> {
+        Self::open_with_header(title, size, 0)
+    }
+
+    /// Opens a window whose plugin area is `size`, with a strip `header`
+    /// points high across its top — see the type's note.
+    pub fn open_with_header(title: &str, size: GuiSize, header: u32) -> Result<Self, GuiError> {
+        let size = size.sane();
+        let server = cocoa::open(title, size, header)?;
+        let mut window = Self::offscreen(cocoa::embed_size(&server), header);
+        window.server = Some(server);
+        Ok(window)
+    }
+
+    /// See the Linux one: for tests, a window on no screen.
+    pub fn headless(width: u32, height: u32) -> Self {
+        Self::offscreen(GuiSize { width, height }, 0)
+    }
+
+    /// The `NSWindow` itself.
+    pub fn frame_id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| cocoa::window_ptr(&server.window))
+    }
+
+    /// Shows `rgba` as the strip — see the Linux one.
+    pub fn set_header(&mut self, rgba: &[u8], width: u32, height: u32) {
+        let height = height.min(self.header);
+        if self.header == 0
+            || width == 0
+            || height == 0
+            || rgba.len() < (width * height * 4) as usize
+        {
+            return;
+        }
+        if let Some(strip) = self
+            .server
+            .as_ref()
+            .and_then(|server| server.strip.as_ref())
+        {
+            strip.show(rgba, width, height);
+        }
+    }
+
+    pub fn is_on_screen(&self) -> bool {
+        self.server.is_some()
+    }
+
+    /// The `NSView` a plugin is given to add its own to. Zero for a headless
+    /// window.
+    pub fn id(&self) -> u64 {
+        self.server
+            .as_ref()
+            .map_or(0, |server| cocoa::view_ptr(&server.embed))
+    }
+
+    pub fn size(&self) -> GuiSize {
+        self.size
+    }
+
+    /// The display's backing scale — 2 on a Retina screen.
+    pub fn scale(&self) -> f64 {
+        self.server
+            .as_ref()
+            .map_or(1.0, |server| server.window.backingScaleFactor().max(1.0))
+    }
+
+    pub fn set_title(&mut self, title: &str) {
+        if let Some(server) = &self.server {
+            server
+                .window
+                .setTitle(&objc2_foundation::NSString::from_str(title));
+        }
+    }
+
+    /// Makes the plugin's area `size`. What a plugin's own resize request
+    /// ends up calling.
+    pub fn resize(&mut self, size: GuiSize) {
+        let size = size.sane();
+        if size == self.size {
+            return;
+        }
+        let Some(server) = &self.server else {
+            self.size = size;
+            return;
+        };
+        cocoa::resize(server, size, self.header);
+        self.size = cocoa::embed_size(server);
+    }
+
+    pub fn raise(&mut self) {
+        if let Some(server) = &self.server {
+            server.window.makeKeyAndOrderFront(None);
+        }
+    }
+
+    /// Everything the desktop did to the window since last time.
+    pub fn poll(&mut self) -> GuiPoll {
+        let mut result = GuiPoll::default();
+        let Some(server) = &mut self.server else {
+            result.header_presses = std::mem::take(&mut self.pressed);
+            return result;
+        };
+        // The close button hides the window (`setReleasedWhenClosed(false)`).
+        if !server.closed && !server.window.isVisible() {
+            server.closed = true;
+            result.closed = true;
+        }
+        if let Some(strip) = &server.strip {
+            result.header_presses = strip.take_presses();
+        }
+        let size = cocoa::embed_size(server);
+        if size != self.size {
+            self.size = size;
+            result.resized = Some(size);
+        }
+        result
+    }
+
+    /// Not on macOS: the plugin draws its own view.
+    pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for PluginWindow {
+    fn drop(&mut self) {
+        if let Some(server) = &self.server {
+            server.window.close();
+        }
+    }
 }

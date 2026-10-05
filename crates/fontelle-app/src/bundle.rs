@@ -24,6 +24,9 @@ pub struct OpenedProject {
     /// not lose the references on the next save. Every layer whose file is
     /// listed here renders silence; the list is what a relink dialog works on.
     pub missing: Vec<MissingAsset>,
+    /// Files a plugin's saved state names that are not there — see
+    /// `plugin_files`. The plugin opens without them, as it would anywhere.
+    pub missing_plugin_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +84,12 @@ impl From<StorageError> for OpenError {
 /// project folder. The `assets/` directory is created regardless, because it
 /// is part of the bundle's shape and the copy path lands in it.
 pub fn save_project(project: &Project, path: &Path) -> Result<(), StorageError> {
-    fontelle_model::save_project(project, path)
+    // A file a plugin loaded from inside the song, saved relative to it —
+    // see `plugin_files`.
+    match crate::plugin_files::for_saving(project, path) {
+        Some(relative) => fontelle_model::save_project(&relative, path),
+        None => fontelle_model::save_project(project, path),
+    }
 }
 
 /// Where the bytes `file` names are on this machine, if they are anywhere
@@ -161,7 +169,9 @@ fn open_document_at(
     path: &Path,
     banks: &[PathBuf],
 ) -> Result<OpenedProject, OpenError> {
-    let project = fontelle_model::load_project(document)?;
+    let mut project = fontelle_model::load_project(document)?;
+    // The files plugins loaded, found against where the song is now.
+    let missing_plugin_files = crate::plugin_files::for_opening(&mut project, path);
 
     // Grouped by file: one read of a soundfont serves every sample any patch
     // takes from it, which on a 325 MB library is the difference between one
@@ -271,5 +281,6 @@ fn open_document_at(
         project,
         library,
         missing,
+        missing_plugin_files,
     })
 }

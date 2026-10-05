@@ -2346,6 +2346,16 @@ impl Session {
                 moves.push((file.path.clone(), to, hash.low, hash.size));
             }
         }
+        // And the files plugins loaded (`plugin_files`), written straight into
+        // their states as a capture is: what the plugin holds is unchanged,
+        // only where the song keeps the file.
+        self.capture_plugin_states();
+        let plugin_files = crate::plugin_files::collect(&mut self.project, &bundle)?;
+        if plugin_files && moves.is_empty() {
+            self.dirty = true;
+            self.touch();
+            return Ok(true);
+        }
         if moves.is_empty() {
             return Ok(false);
         }
@@ -2962,8 +2972,29 @@ impl Session {
                 missing.file.path.display()
             ));
         }
+        // And what a plugin loaded — see `plugin_files`. Said after the
+        // rebuild below, beside whatever the rack has to say about the
+        // plugins themselves.
+        let plugin_files = opened.missing_plugin_files.first().map(|first| {
+            let name = first.file_name().map_or_else(
+                || first.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            match opened.missing_plugin_files.len() - 1 {
+                0 => format!("{name}, which a plugin in this song uses, could not be found"),
+                n => {
+                    format!("{name} and {n} more files plugins in this song use could not be found")
+                }
+            }
+        });
         // Rebuilds the graph, recompiles the timeline and bumps the revision.
         self.rebuild_graph();
+        if let Some(files) = plugin_files {
+            self.message = Some(match self.message.take() {
+                Some(before) => format!("{before}; {files}"),
+                None => files,
+            });
+        }
     }
 
     /// Adds a folder to the bank and remembers it (INVARIANT 10: it is only

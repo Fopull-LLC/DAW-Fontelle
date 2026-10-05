@@ -1274,6 +1274,8 @@ pub const FACE_HEIGHT: u32 = 200;
 fn face_api() -> GuiApiType<'static> {
     if cfg!(windows) {
         GuiApiType::WIN32
+    } else if cfg!(target_os = "macos") {
+        GuiApiType::COCOA
     } else {
         GuiApiType::X11
     }

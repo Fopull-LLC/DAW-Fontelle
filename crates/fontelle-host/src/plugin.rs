@@ -1421,7 +1421,12 @@ impl HostedPlugin {
         let parent = clack_extensions::gui::Window::from_win32_hwnd(
             window.id() as usize as *mut std::ffi::c_void
         );
-        #[cfg(not(windows))]
+        // On macOS the `NSView` the plugin adds its own view to.
+        #[cfg(target_os = "macos")]
+        let parent = clack_extensions::gui::Window::from_cocoa_nsview(
+            window.id() as usize as *mut std::ffi::c_void
+        );
+        #[cfg(not(any(windows, target_os = "macos")))]
         let parent = clack_extensions::gui::Window::from_x11_handle(window.id() as _);
         // SAFETY: `parent` names a live X11 window this process made and owns,
         // and it outlives the editor — `close_editor` destroys the plugin's
@@ -2100,6 +2105,8 @@ fn read_note_ports(instance: &mut PluginInstance<FontelleHost>) -> Option<NoteDi
 fn embedded_api() -> GuiApiType<'static> {
     if cfg!(windows) {
         GuiApiType::WIN32
+    } else if cfg!(target_os = "macos") {
+        GuiApiType::COCOA
     } else {
         GuiApiType::X11
     }

@@ -51,6 +51,13 @@ lv2_raw = "=0.2.0"
 
 # The editor window on Windows: a plain Win32 top-level window the plugin
 # makes its child window in — see `gui`. Already in the tree under winit.
+[target.'cfg(target_os = "macos")'.dependencies]
+# A plugin editor's window on macOS — see `gui`'s `cocoa` module. The same
+# crates winit already builds the studio's own window with.
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
@@ -70,3 +77,9 @@ png = "0.18.1"
 fontelle-testlv2 = { path = "../fontelle-testlv2" }
 fontelle-testvst3 = { path = "../fontelle-testvst3" }
 fontelle-testbridge = { path = "../fontelle-testbridge" }
+
+# AppKit windows are made on the main thread, and libtest runs each test on
+# a thread of its own: the macOS editor tests have a `main` of their own.
+[[test]]
+name = "gui_macos"
+harness = false

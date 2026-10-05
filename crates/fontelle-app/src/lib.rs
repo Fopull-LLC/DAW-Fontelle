@@ -15,6 +15,7 @@ pub mod instrument;
 mod keymap;
 mod library;
 pub mod logs;
+mod plugin_files;
 mod plugins;
 pub mod preset_bank;
 pub mod preview_index;
