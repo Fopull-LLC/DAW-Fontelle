@@ -247,3 +247,47 @@ AddressSanitizer or gdb: Calf Wavetable, JuceOPL, Odin2, padthv1 and sfizz
 Items 1 to 9 are about two weeks of work together and would make a good
 v0.24.0 before or alongside FocalLoid's Stage 3 vocal track. Items 13 and
 14 are the two large ones and each deserves its own plan document first.
+
+---
+
+## Phase two: closing the rest (planned 2026-10-05)
+
+Ty: *"let's work on closing what's left in the list ... thoroughly test with
+CI to ensure maximum compatibility, then release."* The order, and why:
+
+1. **Real plugins in CI on all three systems (item 10) — first.** Everything
+   after it is checked by it. A workflow (`real-plugins.yml`: on demand,
+   weekly, and before a release) installs free instruments that exist on
+   Linux, Windows and macOS (Surge XT, CLAP and VST 3) on each runner and
+   runs the session walks (`real_plugin_sessions.rs`) and the bare-host soak
+   (`real_plugins.rs`). No new walks; what is new is where they run.
+2. **LV2 `patch:` parameters (item 11).** Read `patch:writable` /
+   `patch:readable` with a numeric range off the Turtle; offer them as
+   parameters with ids past the port indices; set them with `patch:Set` on
+   the event input; follow the plugin's `patch:Set` output; read them all on
+   activation with a `patch:Get`. Fixture: the loader gains a `patch:`
+   parameter. Real check: Ultramaster KR-106.
+3. **Plugin-loaded samples travel with the song (item 12).** LV2's
+   `state:mapPath` is the hook: a file outside the bundle that a plugin's
+   state names is copied into `assets/plugin-files/` on save, the way
+   Fontelle's own samples can be, and the state refers to it inside the
+   bundle. For CLAP and VST 3, which give the host no such hook, a song
+   says on opening which files a plugin's state names that are missing,
+   where Fontelle can see the paths in an LV2 state.
+4. **Plugin windows on macOS (item 13).** An `NSWindow` with a content
+   `NSView`, handed to CLAP (`cocoa` API) and VST 3 (`kPlatformTypeNSView`);
+   the Fontelle strip above it drawn as on X11 and Win32. Developed against
+   CI's macOS runners, which have a window server: the editor tests that run
+   against X11 here run against Cocoa there, with the test plugin's own
+   editor taught Cocoa.
+5. **Plugins in their own process (item 14).** The answer to crashes rather
+   than recovery from them. Its own plan document first
+   (`docs/plugin-sandbox-plan.md`), because it touches the audio path: one
+   helper process per plugin (the scan's probe already is the shape),
+   audio and events over shared memory with a futex/semaphore handshake per
+   block, the main-thread calls over a socket, editors embedded by window id
+   across processes (X11 and Win32 allow it; Cocoa does not, which is the
+   hard part). Built behind a per-plugin switch, on by default only for a
+   plugin that has crashed before, until it has earned more.
+6. **Upstream reports (item 15).** Drafted with their reproductions for Ty
+   to post: they go out under his name.

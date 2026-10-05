@@ -1,0 +1,218 @@
+name: Real plugins
+
+# The walks in `fontelle-app/tests/real_plugin_sessions.rs` and the bare-host
+# sweeps in `fontelle-host/tests/real_plugins.rs`, against real instruments
+# installed the way their makers install them, on all three systems.
+#
+# > *"thoroughly test with ci to ensure maximum compatibility"*
+#
+# Everything these found on the devbox — a patch slipping back to init, a
+# silent render, a crash on save — was found only by running real plugins;
+# fixtures are kind in ways real plugins are not. Until this, they had only
+# ever run on one Linux machine (`docs/plugin-experience-backlog.md` item 4).
+#
+# The instruments are free, and exist for Linux, Windows and macOS: Surge XT
+# (CLAP and VST 3, with its factory patches), Dexed and OB-Xf (with its
+# patches — the plugin that found the settle bug in v0.24.0).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "crates/fontelle-host/**"
+      - "crates/fontelle-app/**"
+      - "crates/fontelle-engine/**"
+      - ".github/workflows/real-plugins.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_INCREMENTAL: "0"
+  SURGE: "1.3.4"
+  DEXED: "1.0.1"
+  OBXF: "1.0.3"
+
+jobs:
+  walks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room on the runner
+        if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            liblilv-dev libdbus-1-dev xvfb libfreetype6 libfontconfig1 libgl1 \
+            libxcursor1 libxrandr2 libxinerama1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-xkb1 libxcb-keysyms1 libxcb-util1 libcurl4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: real-plugins
+
+      - name: Where plugins go on this system
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              echo "CLAP_DIR=$HOME/.clap" >> "$GITHUB_ENV"
+              echo "VST3_DIR=$HOME/.vst3" >> "$GITHUB_ENV"
+              echo "LV2_DIR=$HOME/.lv2" >> "$GITHUB_ENV"
+              echo "SURGE_DATA=/usr/share/surge-xt" >> "$GITHUB_ENV"
+              echo "OBXF_DATA=/usr/share/Surge Synth Team/OB-Xf" >> "$GITHUB_ENV"
+              ;;
+            Windows)
+              echo "CLAP_DIR=C:/Program Files/Common Files/CLAP" >> "$GITHUB_ENV"
+              echo "VST3_DIR=C:/Program Files/Common Files/VST3" >> "$GITHUB_ENV"
+              echo "SURGE_DATA=C:/ProgramData/Surge XT" >> "$GITHUB_ENV"
+              echo "OBXF_DATA=C:/ProgramData/Surge Synth Team/OB-Xf" >> "$GITHUB_ENV"
+              ;;
+            macOS)
+              echo "CLAP_DIR=$HOME/Library/Audio/Plug-Ins/CLAP" >> "$GITHUB_ENV"
+              echo "VST3_DIR=$HOME/Library/Audio/Plug-Ins/VST3" >> "$GITHUB_ENV"
+              echo "SURGE_DATA=/Library/Application Support/Surge XT" >> "$GITHUB_ENV"
+              echo "OBXF_DATA=/Library/Application Support/Surge Synth Team/OB-Xf" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      - name: Install Surge XT
+        run: |
+          mkdir -p dl "$CLAP_DIR" "$VST3_DIR"
+          cd dl
+          case "$RUNNER_OS" in
+            Linux)
+              gh release download "$SURGE" --repo surge-synthesizer/releases-xt --pattern "surge-xt-linux-$SURGE-pluginsonly.tar.gz"
+              mkdir surge && tar xzf "surge-xt-linux-$SURGE-pluginsonly.tar.gz" -C surge
+              ;;
+            Windows)
+              gh release download "$SURGE" --repo surge-synthesizer/releases-xt --pattern "surge-xt-win64-$SURGE-pluginsonly.zip"
+              mkdir surge && unzip -q "surge-xt-win64-$SURGE-pluginsonly.zip" -d surge
+              ;;
+            macOS)
+              gh release download "$SURGE" --repo surge-synthesizer/releases-xt --pattern "surge-xt-macos-$SURGE-pluginsonly.zip"
+              mkdir surge && unzip -q "surge-xt-macos-$SURGE-pluginsonly.zip" -d surge
+              ;;
+          esac
+          cp -R "surge/Surge XT.clap" "$CLAP_DIR/"
+          cp -R "surge/Surge XT.vst3" "$VST3_DIR/"
+          gh release download "$SURGE" --repo surge-synthesizer/releases-xt --pattern "surge-xt-portable-content-$SURGE.tar.gz"
+          mkdir content && tar xzf "surge-xt-portable-content-$SURGE.tar.gz" -C content
+          sudo mkdir -p "$SURGE_DATA" 2>/dev/null || mkdir -p "$SURGE_DATA"
+          sudo cp -R content/"Surge Synth Team"/SurgeXTData/. "$SURGE_DATA/" 2>/dev/null \
+            || cp -R content/"Surge Synth Team"/SurgeXTData/. "$SURGE_DATA/"
+          ls "$CLAP_DIR" "$VST3_DIR"
+
+      - name: Install Dexed
+        run: |
+          cd dl
+          case "$RUNNER_OS" in
+            Linux) zip="Dexed-$DEXED-lnx.zip" ;;
+            Windows) zip="Dexed-$DEXED-win.zip" ;;
+            macOS) zip="Dexed-$DEXED-macOS.zip" ;;
+          esac
+          gh release download "v$DEXED" --repo asb2m10/dexed --pattern "$zip"
+          mkdir dexed && unzip -q "$zip" -d dexed
+          cp -R dexed/Dexed.clap "$CLAP_DIR/"
+          cp -R dexed/Dexed.vst3 "$VST3_DIR/"
+
+      - name: Install OB-Xf
+        run: |
+          cd dl
+          gh release download "v$OBXF" --repo surge-synthesizer/OB-Xf --pattern "ob-xf-assets-v$OBXF.zip"
+          mkdir obxf-assets && unzip -q "ob-xf-assets-v$OBXF.zip" -d obxf-assets
+          sudo mkdir -p "$OBXF_DATA" 2>/dev/null || mkdir -p "$OBXF_DATA"
+          sudo cp -R obxf-assets/"Surge Synth Team"/OB-Xf/. "$OBXF_DATA/" 2>/dev/null \
+            || cp -R obxf-assets/"Surge Synth Team"/OB-Xf/. "$OBXF_DATA/"
+          case "$RUNNER_OS" in
+            Linux|Windows)
+              os=$([ "$RUNNER_OS" = Linux ] && echo Linux || echo Windows)
+              gh release download "v$OBXF" --repo surge-synthesizer/OB-Xf --pattern "ob-xf-$os-v$OBXF.zip"
+              mkdir obxf && unzip -q "ob-xf-$os-v$OBXF.zip" -d obxf
+              cp -R obxf/obxf_products/OB-Xf.clap "$CLAP_DIR/"
+              cp -R obxf/obxf_products/OB-Xf.vst3 "$VST3_DIR/"
+              ;;
+            macOS)
+              gh release download "v$OBXF" --repo surge-synthesizer/OB-Xf --pattern "ob-xf-macOS-v$OBXF.dmg"
+              hdiutil attach -nobrowse -mountpoint /tmp/obxf "ob-xf-macOS-v$OBXF.dmg"
+              ls -R /tmp/obxf | head -40
+              found_clap=$(find /tmp/obxf -maxdepth 3 -name 'OB-Xf.clap' | head -1)
+              found_vst3=$(find /tmp/obxf -maxdepth 3 -name 'OB-Xf.vst3' | head -1)
+              if [ -n "$found_clap" ]; then
+                cp -R "$found_clap" "$CLAP_DIR/"
+                cp -R "$found_vst3" "$VST3_DIR/"
+              else
+                # An installer package instead: expand it and take the bundles.
+                pkg=$(find /tmp/obxf -maxdepth 2 -name '*.pkg' | head -1)
+                pkgutil --expand-full "$pkg" obxf-pkg
+                cp -R "$(find obxf-pkg -name 'OB-Xf.clap' -type d | head -1)" "$CLAP_DIR/"
+                cp -R "$(find obxf-pkg -name 'OB-Xf.vst3' -type d | head -1)" "$VST3_DIR/"
+              fi
+              hdiutil detach /tmp/obxf
+              ;;
+          esac
+          ls "$CLAP_DIR" "$VST3_DIR"
+
+      - name: Build the fixtures and the walks
+        run: |
+          cargo build -p fontelle-testplug -p fontelle-testlv2 -p fontelle-testvst3
+          cargo build -p fontelle-app --bin fontelle
+          cargo test -p fontelle-app --test real_plugin_sessions --no-run
+          cargo test -p fontelle-host --test real_plugins --no-run
+
+      - name: What this machine has
+        run: |
+          run() { if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$@"; else "$@"; fi; }
+          run cargo test -p fontelle-app --test real_plugin_sessions the_studios_scan -- \
+            --ignored --nocapture --test-threads=1
+
+      - name: The session walks
+        run: |
+          run() { if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$@"; else "$@"; fi; }
+          failed=""
+          for name in "Surge XT" "Dexed" "OB-Xf"; do
+            echo "::group::$name"
+            if ! FONTELLE_REAL_ONLY="$name" run cargo test -p fontelle-app \
+                --test real_plugin_sessions -- --ignored --nocapture --test-threads=1 \
+                --skip one_note --skip the_studios_scan --skip list_installed; then
+              failed="$failed $name"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::session walks failed for:$failed"
+            exit 1
+          fi
+
+      - name: The bare-host sweeps
+        run: |
+          run() { if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$@"; else "$@"; fi; }
+          failed=""
+          for name in "Surge XT" "Dexed" "OB-Xf"; do
+            echo "::group::$name"
+            if ! FONTELLE_REAL_ONLY="$name" run cargo test -p fontelle-host \
+                --test real_plugins -- --ignored --nocapture --test-threads=1 \
+                --skip at_a_path; then
+              failed="$failed $name"
+            fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::bare-host sweeps failed for:$failed"
+            exit 1
+          fi
