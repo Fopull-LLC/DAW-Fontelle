@@ -12,6 +12,11 @@
 //! a shared song's messages come in every size, and the relay closes a
 //! connection that sends too fast.
 
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
 use crate::framed::Framed;
 use crate::paced::{PACE, Paced};
 use crate::relay::{RelayClient, RelayHost};
@@ -83,28 +88,51 @@ impl Relay {
 /// A lobby this studio hosts: the relay leg, framed and paced, and what to do
 /// when the relay goes away.
 ///
-/// **A drop is answered by asking for the same code back** (§9.2, F38). The
-/// lifted client would, left to itself, re-host with backoff under a *new*
-/// code — which strands everybody holding the old one — so on a lost leg
-/// this drops it and re-hosts asking for its own code, on a thread, since
-/// that call waits for the relay. A relay that agrees hands back the lobby
-/// with whoever was in it; one that does not (Floptle Cloud today: hub card
-/// `tasks/fontelle/0266`, F58) gives a new code, and a notice says so.
-/// Meanwhile the "lost the connection to the relay" the client raises for
-/// each joiner is kept from the session, which would otherwise forget them.
+/// **A drop is answered by asking for the same lobby back, with its token**
+/// (§9.2, F38, F58). The relay hands a host a secret with its code
+/// ([`RelayHost::reclaim_token`], hub card `tasks/fontelle/0266`) and holds
+/// the lobby, joiners and all, for [`crate::HOST_GRACE`] after the host's
+/// connection goes; a host that comes back inside that with the token gets
+/// the same lobby. So on a lost leg this drops it — its own recovery backs
+/// off 1, 2, 4, 8, 16 s and would miss most of the window — and re-hosts on a
+/// thread every second or so until the relay answers, since each attempt
+/// waits for it. Back under the same code, the joiners the relay still holds
+/// are announced again and passed on (the session brings them up to date);
+/// any it no longer holds are let go of. Back under a new code — the relay
+/// restarted, or the host was away too long — every joiner of the old lobby
+/// is let go of, and a notice says the new code. Meanwhile the "lost the
+/// connection to the relay" the client raises for each joiner is kept from
+/// the session, which would otherwise forget them.
 struct Hosting {
     inner: Option<Framed<Paced<RelayHost>>>,
     relay: Relay,
     build: String,
     code: String,
+    /// What proves the lobby is this studio's, once the relay has sent it.
+    token: Option<[u8; 16]>,
+    /// The joiners the relay has said are in the lobby.
+    peers: BTreeSet<PeerId>,
+    /// Back under the same code: the next poll is the relay's roll call.
+    roll_call: bool,
     /// Why the lobby ended, once it has — a code that has lapsed is never
     /// offered as live (F40).
     lapsed: Option<String>,
-    reclaiming: Option<std::sync::mpsc::Receiver<Result<(RelayHost, String), String>>>,
+    reclaiming: Option<Reclaiming>,
     notices: Vec<String>,
     /// Handed to the leg, and to the one got back after a drop (F48).
     wake: Option<crate::transport::Wake>,
 }
+
+/// A re-host under way on its own thread.
+struct Reclaiming {
+    answer: std::sync::mpsc::Receiver<Result<(RelayHost, String), String>>,
+    stop: Arc<AtomicBool>,
+}
+
+/// How long a host that lost the relay keeps trying to get back: well past
+/// the relay's grace, after which coming back still keeps the song shared,
+/// under a new code.
+const RECLAIM_FOR: Duration = Duration::from_secs(60);
 
 /// What the lifted client says, for each joiner, when the host's own leg to
 /// the relay goes.
@@ -112,11 +140,15 @@ const LOST_THE_RELAY: &str = "lost the connection to the relay";
 
 impl Hosting {
     fn new(inner: RelayHost, relay: &Relay, build: &str, code: &str) -> Self {
+        let token = inner.reclaim_token();
         Self {
             inner: Some(Framed::new(Paced::new(inner, PACE))),
             relay: relay.clone(),
             build: build.to_string(),
             code: code.to_string(),
+            token,
+            peers: BTreeSet::new(),
+            roll_call: false,
             lapsed: None,
             reclaiming: None,
             notices: Vec::new(),
@@ -125,25 +157,112 @@ impl Hosting {
     }
 
     fn start_reclaiming(&mut self) {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (addr, build, code) = (
+        let (tx, answer) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let (addr, build, code, token) = (
             self.relay.host_address(),
             self.build.clone(),
             self.code.clone(),
+            self.token,
         );
         std::thread::spawn(move || {
-            let _ = tx.send(RelayHost::host_keyed_reclaiming(
-                &addr,
-                FONTELLE_CLOUD_KEY,
-                Some(&build),
-                &code,
-            ));
+            let until = Instant::now() + RECLAIM_FOR;
+            loop {
+                if stopped.load(Ordering::Relaxed) {
+                    return;
+                }
+                let attempt = match token {
+                    Some(token) => RelayHost::host_reclaiming(
+                        &addr,
+                        Some(FONTELLE_CLOUD_KEY),
+                        Some(&build),
+                        &code,
+                        token,
+                    ),
+                    // A relay too old to hand out tokens: asking for the code
+                    // is all there is.
+                    None => RelayHost::host_keyed_reclaiming(
+                        &addr,
+                        FONTELLE_CLOUD_KEY,
+                        Some(&build),
+                        &code,
+                    ),
+                };
+                match attempt {
+                    Ok(back) => {
+                        // Nobody is waiting for it any more: let it go, so the
+                        // relay does not hold a lobby for nobody.
+                        if !stopped.load(Ordering::Relaxed) {
+                            let _ = tx.send(Ok(back));
+                        }
+                        return;
+                    }
+                    Err(why) if Instant::now() >= until => {
+                        let _ = tx.send(Err(why));
+                        return;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_secs(1)),
+                }
+            }
         });
-        self.reclaiming = Some(rx);
+        self.reclaiming = Some(Reclaiming { answer, stop });
         self.notices.push(format!(
-            "lost the connection to the relay \u{2014} reconnecting and asking for {} back",
+            "Lost the connection to the relay \u{2014} reconnecting; {} stays yours for a \
+             little while",
             self.code
         ));
+    }
+
+    /// The relay's answer to a re-host, when it has come. `Err` is the end.
+    fn land_reclaim(&mut self, out: &mut Vec<Incoming>) -> Result<(), String> {
+        let Some(answer) = self
+            .reclaiming
+            .as_ref()
+            .and_then(|r| r.answer.try_recv().ok())
+        else {
+            return Ok(());
+        };
+        self.reclaiming = None;
+        let (host, code) =
+            answer.map_err(|why| format!("could not get back onto the relay: {why}"))?;
+        if code == self.code {
+            self.notices.push(format!(
+                "Back on the relay \u{2014} {code} is still yours, and everybody in it still is"
+            ));
+            self.roll_call = true;
+        } else {
+            self.notices.push(format!(
+                "Back on the relay under a new code, {code} \u{2014} anybody holding {} has to \
+                 be told it",
+                self.code
+            ));
+            // Gone with the old lobby: nobody can reach them now.
+            for peer in std::mem::take(&mut self.peers) {
+                out.push(Incoming::refused(
+                    peer,
+                    "the relay lost the lobby they were in",
+                ));
+            }
+            self.code = code;
+        }
+        if let Some(token) = host.reclaim_token() {
+            self.token = Some(token);
+        }
+        let mut inner = Framed::new(Paced::new(host, PACE));
+        if let Some(wake) = &self.wake {
+            inner.set_wake(wake.clone());
+        }
+        self.inner = Some(inner);
+        Ok(())
+    }
+}
+
+impl Drop for Hosting {
+    fn drop(&mut self) {
+        if let Some(reclaiming) = &self.reclaiming {
+            reclaiming.stop.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -156,44 +275,36 @@ impl Transport for Hosting {
     }
 
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
-        // Nothing to send it on while the leg is being got back: the song's
-        // hash says so on the next edit, and a joiner that drifted asks for
-        // a fresh copy.
+        // Nothing to send it on while the leg is being got back: the session
+        // sends each joiner a fresh copy of the song once it is.
         if let Some(inner) = &mut self.inner {
             inner.send(peer, channel, bytes);
         }
     }
 
     fn poll(&mut self) -> Vec<Incoming> {
-        if let Some(answer) = self.reclaiming.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.reclaiming = None;
-            match answer {
-                Ok((host, code)) => {
-                    if code != self.code {
-                        self.notices.push(format!(
-                            "back on the relay, under a new code: {code} \u{2014} anybody \
-                             holding {} has to be told",
-                            self.code
-                        ));
-                        self.code = code;
-                    }
-                    let mut inner = Framed::new(Paced::new(host, PACE));
-                    if let Some(wake) = &self.wake {
-                        inner.set_wake(wake.clone());
-                    }
-                    self.inner = Some(inner);
-                }
-                Err(why) => {
-                    let why = format!("could not get back onto the relay: {why}");
-                    self.lapsed = Some(why.clone());
-                    return vec![Incoming::Disconnected(SERVER, Some(why))];
-                }
-            }
+        let mut out = Vec::new();
+        if let Err(why) = self.land_reclaim(&mut out) {
+            self.lapsed = Some(why.clone());
+            out.push(Incoming::Disconnected(SERVER, Some(why)));
+            return out;
         }
         let Some(inner) = &mut self.inner else {
-            return Vec::new();
+            return out;
         };
         let mut incoming = inner.poll();
+        if let Some(token) = inner.get_ref().get_ref().reclaim_token() {
+            self.token = Some(token);
+        }
+        // The relay itself ended the lobby — nobody joined it for half an
+        // hour, or it refused the host — and that is the end, not a blip.
+        for event in &incoming {
+            if let Incoming::Disconnected(peer, Some(why)) = event
+                && *peer == SERVER
+            {
+                self.lapsed = Some(why.clone());
+            }
+        }
         if inner.lobby_code().is_none() && self.lapsed.is_none() {
             incoming.retain(|event| {
                 !matches!(event, Incoming::Disconnected(peer, Some(why))
@@ -202,16 +313,37 @@ impl Transport for Hosting {
             // Dropped, so its own recovery never mints a code nobody has.
             self.inner = None;
             self.start_reclaiming();
-            return incoming;
+            out.extend(incoming);
+            return out;
+        }
+        if std::mem::take(&mut self.roll_call) {
+            // The relay announces everybody it still holds in the lobby
+            // before it hands the code back, so they are all here.
+            let here: BTreeSet<PeerId> = incoming
+                .iter()
+                .filter_map(|event| match event {
+                    Incoming::Connected(peer) => Some(*peer),
+                    _ => None,
+                })
+                .collect();
+            for peer in self.peers.difference(&here) {
+                out.push(Incoming::dropped(*peer));
+            }
+            self.peers = here;
         }
         for event in &incoming {
-            if let Incoming::Disconnected(peer, Some(why)) = event
-                && *peer == SERVER
-            {
-                self.lapsed = Some(why.clone());
+            match event {
+                Incoming::Connected(peer) if *peer != SERVER => {
+                    self.peers.insert(*peer);
+                }
+                Incoming::Disconnected(peer, _) if *peer != SERVER => {
+                    self.peers.remove(peer);
+                }
+                _ => {}
             }
         }
-        incoming
+        out.extend(incoming);
+        out
     }
 
     fn stats(&self, peer: PeerId) -> LinkStats {

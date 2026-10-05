@@ -51,6 +51,11 @@ impl<T: Transport> Framed<T> {
         }
     }
 
+    /// The transport under the frames.
+    pub fn get_ref(&self) -> &T {
+        &self.inner
+    }
+
     fn take(&mut self, peer: PeerId, frame: &[u8]) -> Option<Vec<u8>> {
         match frame.split_first()? {
             (&WHOLE, rest) => Some(rest.to_vec()),
@@ -58,6 +63,14 @@ impl<T: Transport> Framed<T> {
                 let word = |at: usize| u32::from_le_bytes(rest[at..at + 4].try_into().unwrap());
                 let (id, index, of) = (word(0), word(4), word(8));
                 let body = &rest[12..];
+                // A first frame always starts the message afresh. What was
+                // kept under its number is a message whose sender went away
+                // before its last frame — a host's leg that dropped, and a
+                // host back on the relay numbers from nought again — and
+                // would otherwise cost this one too.
+                if index == 0 {
+                    self.assembling.remove(&(peer, id));
+                }
                 let assembly = self.assembling.entry((peer, id)).or_insert(Assembly {
                     of,
                     next: 0,

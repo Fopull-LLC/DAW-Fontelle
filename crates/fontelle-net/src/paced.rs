@@ -74,6 +74,11 @@ impl<T: Transport> Paced<T> {
         }
     }
 
+    /// The transport under the pace.
+    pub fn get_ref(&self) -> &T {
+        &self.inner
+    }
+
     /// How much is waiting to go.
     pub fn backlog(&self) -> usize {
         self.waiting.iter().map(|(_, _, b)| b.len()).sum()

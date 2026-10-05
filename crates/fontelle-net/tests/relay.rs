@@ -24,7 +24,28 @@ struct InProcessRelay {
 
 impl InProcessRelay {
     fn start(policy: Option<Box<dyn RelayPolicy>>, limits: Option<RelayLimits>) -> Self {
-        let mut server = RelayServer::bind(0).expect("a relay binds to a free port");
+        Self::start_on(0, policy, limits)
+    }
+
+    /// On a named port — `port` again is a relay restarted, an upgrade as a
+    /// host sees one. Tried for a few seconds: the old socket is closed by a
+    /// thread of its own, and some systems hold the port a moment after.
+    fn start_on(
+        port: u16,
+        policy: Option<Box<dyn RelayPolicy>>,
+        limits: Option<RelayLimits>,
+    ) -> Self {
+        let started = Instant::now();
+        let mut server = loop {
+            match RelayServer::bind(port) {
+                Ok(server) => break server,
+                Err(e) if started.elapsed() < Duration::from_secs(5) && port != 0 => {
+                    let _ = e;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("a relay binds to port {port}: {e}"),
+            }
+        };
         if let Some(policy) = policy {
             server.set_policy(policy);
         }
@@ -54,6 +75,10 @@ impl InProcessRelay {
 
     fn relay(&self) -> Relay {
         Relay::Open(self.addr.clone())
+    }
+
+    fn port(&self) -> u16 {
+        self.addr.rsplit(':').next().unwrap().parse().unwrap()
     }
 }
 
@@ -254,6 +279,64 @@ fn a_frame_over_48kb_is_chunked_and_reassembled() {
     assert_eq!(message(&arrived).unwrap().1, big.as_slice());
 }
 
+/// Passes on only as many frames as it is let, into a link it shares.
+struct Gate {
+    inner: Arc<Mutex<fontelle_net::MemoryTransport>>,
+    pass: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Transport for Gate {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        let left = self.pass.load(Ordering::SeqCst);
+        if left > 0 {
+            self.pass.store(left - 1, Ordering::SeqCst);
+            self.inner.lock().unwrap().send(peer, channel, bytes);
+        }
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        self.inner.lock().unwrap().poll()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.lock().unwrap().stats(peer)
+    }
+}
+
+/// A message cut off half way — its sender's connection dropped between two
+/// of its frames — does not cost the next message that happens to carry its
+/// number. A host back on the relay frames afresh and numbers from nought
+/// again, and the joiner, still holding the first frame of a message that
+/// will never be finished, threw away the first big message after the
+/// reconnect: usually the fresh copy of the song that was meant to mend it.
+#[test]
+fn a_message_cut_off_half_way_does_not_cost_the_next_one() {
+    use std::sync::atomic::AtomicUsize;
+    let hub = MemoryHub::new();
+    let mut host = Framed::new(hub.server_endpoint());
+    let link = Arc::new(Mutex::new(hub.connect()));
+    let pass = Arc::new(AtomicUsize::new(1));
+    let big: Vec<u8> = (0..200_000u32).map(|i| (i % 253) as u8).collect();
+
+    let mut cut = Framed::new(Gate {
+        inner: link.clone(),
+        pass: pass.clone(),
+    });
+    cut.send(SERVER, Channel::Reliable, &big);
+    assert!(
+        gather_until(&mut host, Duration::from_millis(100), |_| false)
+            .iter()
+            .all(|i| message(i).is_none()),
+        "half a message is not a message"
+    );
+
+    // Back again, framing afresh.
+    pass.store(usize::MAX, Ordering::SeqCst);
+    let mut again = Framed::new(Gate { inner: link, pass });
+    let next: Vec<u8> = big.iter().rev().copied().collect();
+    again.send(SERVER, Channel::Reliable, &next);
+    let arrived = poll_until(&mut host, |i| message(i).is_some()).expect("the next one arrives");
+    assert_eq!(message(&arrived).unwrap().1, next.as_slice());
+}
+
 /// F36. However much is handed over at once, what leaves never goes over
 /// the pace in any second — the relay closes a connection three seconds over
 /// its budget, and the sender, not the relay, is the one that must hold back.
@@ -347,6 +430,157 @@ fn a_lost_host_reconnects_inside_the_grace() {
     joiner.send(SERVER, Channel::Reliable, b"still here");
     let still = poll_until(again.as_mut(), |i| message(i).is_some()).expect("and back");
     assert_eq!(message(&still).unwrap(), (peer, &b"still here"[..]));
+}
+
+/// Polls until `found` has said yes to something, keeping everything seen.
+fn gather_until(
+    transport: &mut dyn Transport,
+    within: Duration,
+    mut found: impl FnMut(&[Incoming]) -> bool,
+) -> Vec<Incoming> {
+    let until = Instant::now() + within;
+    let mut seen = Vec::new();
+    while Instant::now() < until {
+        seen.extend(transport.poll());
+        if found(&seen) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    seen
+}
+
+/// Ty: *"i really do want it to work well so users can work on songs
+/// together"*. A host's connection that drops — a Wi-Fi blip, a laptop
+/// changing networks — comes back **under the same code, on its own**, and
+/// the joiner held in the lobby meanwhile is still there: nobody is told a
+/// new code, nobody joins again.
+///
+/// On an open relay, which has no policy to vouch for a code: what proves
+/// the lobby is this host's is the token the relay handed it with the code
+/// (hub card 0266). The relay here closes the host for going over a budget
+/// set low on purpose — the one way to cut a live leg from outside it.
+#[test]
+fn a_host_whose_connection_drops_comes_back_under_its_own_code() {
+    let relay = InProcessRelay::start(
+        None,
+        Some(RelayLimits {
+            bytes_per_window: 32 * 1024,
+            strikes: 1,
+            ..RelayLimits::default()
+        }),
+    );
+    let (mut host, code) = fontelle_net::host(&relay.relay(), "test").expect("hosts");
+    let mut joiner = fontelle_net::join(&relay.relay(), &code).expect("joins");
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let first = poll_until(host.as_mut(), |i| message(i).is_some()).expect("the joiner is in");
+    let peer = message(&first).unwrap().0;
+
+    // Over the budget: the relay closes the host's connection.
+    host.send(peer, Channel::Reliable, &vec![0u8; 100_000]);
+    let start = Instant::now();
+    let mut gone = false;
+    let mut seen = Vec::new();
+    while start.elapsed() < Duration::from_secs(15) {
+        seen.extend(host.poll());
+        match host.lobby_code() {
+            None => gone = true,
+            Some(back) if gone => {
+                assert_eq!(
+                    back, code,
+                    "the same code, so nobody has to be told a new one"
+                );
+                break;
+            }
+            Some(_) => {}
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(gone, "the host's connection was never cut");
+    assert_eq!(
+        host.lobby_code().as_deref(),
+        Some(code.as_str()),
+        "the host is back on the relay"
+    );
+    // The joiner is still in the lobby, under the id it had: the relay says
+    // so, and it is passed on, so the session can bring it up to date.
+    seen.extend(gather_until(
+        host.as_mut(),
+        Duration::from_secs(2),
+        |seen| {
+            seen.iter()
+                .any(|i| matches!(i, Incoming::Connected(p) if *p == peer))
+        },
+    ));
+    assert!(
+        seen.iter()
+            .any(|i| matches!(i, Incoming::Connected(p) if *p == peer)),
+        "the host was not told who is still here: {seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|i| matches!(i, Incoming::Disconnected(p, _) if *p == peer)),
+        "the joiner was let go of: {seen:?}"
+    );
+    let said = host.take_notices().join(" ");
+    assert!(
+        said.contains(&code),
+        "the host is told what happened: {said}"
+    );
+
+    host.send(peer, Channel::Reliable, b"back");
+    let back = poll_until(joiner.as_mut(), |i| {
+        message(i).is_some() || matches!(i, Incoming::Disconnected(..))
+    })
+    .expect("it reaches");
+    assert_eq!(message(&back).map(|m| m.1), Some(&b"back"[..]), "{back:?}");
+    joiner.send(SERVER, Channel::Reliable, b"still here");
+    let still = poll_until(host.as_mut(), |i| message(i).is_some()).expect("and back");
+    assert_eq!(message(&still).unwrap(), (peer, &b"still here"[..]));
+}
+
+/// The other end of the same story: a relay that has forgotten the lobby — it
+/// restarted, or the host was away past the grace — gives the host a new
+/// code. The host keeps sharing under it and is told it, and the joiners of
+/// the old lobby, who are gone with it, are let go of rather than kept as
+/// people nobody can reach.
+#[test]
+fn a_host_back_under_a_new_code_lets_the_old_lobbys_joiners_go() {
+    let relay = InProcessRelay::open();
+    let port = relay.port();
+    let (mut host, code) = fontelle_net::host(&relay.relay(), "test").expect("hosts");
+    let mut joiner = fontelle_net::join(&relay.relay(), &code).expect("joins");
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let first = poll_until(host.as_mut(), |i| message(i).is_some()).expect("the joiner is in");
+    let peer = message(&first).unwrap().0;
+
+    drop(relay);
+    let again = InProcessRelay::start_on(port, None, None);
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    while start.elapsed() < Duration::from_secs(20) {
+        seen.extend(host.poll());
+        if host.lobby_code().is_some_and(|c| c != code) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let new = host.lobby_code().expect("back on the relay");
+    assert_ne!(new, code, "a restarted relay knows no lobby to give back");
+    seen.extend(gather_until(
+        host.as_mut(),
+        Duration::from_millis(200),
+        |_| false,
+    ));
+    assert!(
+        seen.iter()
+            .any(|i| matches!(i, Incoming::Disconnected(p, _) if *p == peer)),
+        "the old lobby's joiner is let go of: {seen:?}"
+    );
+    let said = host.take_notices().join(" ");
+    assert!(said.contains(&new), "the new code is said: {said}");
+    drop(again);
 }
 
 /// F40. A lobby nobody joins ends on the relay after its idle window; the
