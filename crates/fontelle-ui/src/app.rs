@@ -430,6 +430,11 @@ fn file_name(path: &std::path::Path) -> String {
 /// is spinning for a window somebody else is drawing.
 const PLUGIN_EDITOR_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
+/// How often a selection box held off the edge of its view moves the view on
+/// with no mouse movement to do it (`marquee_held_off_edge`). The distance is
+/// charged against the clock, so this is smoothness, not speed.
+const MARQUEE_SCROLL_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// What an oscillator's sound menu says with no audio folder to list.
 const NO_SOUNDS_TO_OFFER: &str = "no audio folder \u{2014} set one on the Import tab";
 
@@ -4987,6 +4992,11 @@ impl ApplicationHandler for WindowApp {
             self.plugin_editor_open = doc.tick_plugin_editors();
         }
         self.tick_plugin_headers();
+        // A box held off the edge goes on growing; `arm_deadline` keeps the
+        // loop coming back for it.
+        if self.marquee_held_off_edge() {
+            self.drag_pointer();
+        }
         let started = std::time::Instant::now();
         self.refresh_studio();
         let refreshed = ms_since(started);
@@ -8667,6 +8677,40 @@ impl WindowApp {
         let (x, y) = self.cursor;
         let rate = edge_scroll_rate(view, grid, x, y);
         self.edge_scroll.step(rate, dt)
+    }
+
+    /// The arrangement's view in the terms [`edge_scroll_rate`] reads: lanes
+    /// for rows.
+    fn timeline_edge_view(&self) -> crate::canvas::RollView {
+        crate::canvas::RollView {
+            scroll_tick: self.timeline.view.scroll_tick,
+            top_key: 0,
+            key_offset: 0.0,
+            pixels_per_tick: self.timeline.view.pixels_per_tick,
+            key_height: self.timeline.view.lane_height,
+            snap: self.timeline.view.snap,
+        }
+    }
+
+    /// Whether a selection box is being held past the edge of its view, so
+    /// the view has to keep scrolling with nothing moving the mouse.
+    ///
+    /// The edge scroll used to be driven by pointer moves alone: a box held
+    /// still off the edge stopped growing, and *"expanding your selection
+    /// offscreen"* meant wiggling the mouse to get there. Only the box: a held
+    /// note or clip still waits for the hand, as it always did.
+    fn marquee_held_off_edge(&self) -> bool {
+        let (x, y) = self.cursor;
+        let rate = match self.drag {
+            Drag::Roll if self.roll.marquee().is_some() => {
+                edge_scroll_rate(&self.roll.view, self.roll_layout.grid, x, y)
+            }
+            Drag::Timeline if self.timeline.marquee().is_some() => {
+                edge_scroll_rate(&self.timeline_edge_view(), self.timeline_layout.grid, x, y)
+            }
+            _ => return false,
+        };
+        rate != (0.0, 0.0)
     }
 
     /// Ends an edge scroll: the clock and the part-tick both go.
@@ -14491,17 +14535,7 @@ impl WindowApp {
         let grid = self.timeline_layout.grid;
         // The same edge-scroll the roll has, for the same reason: a clip has to
         // be draggable to bar 1 from a screen away.
-        let (ticks, rows) = self.edge_scroll_step(
-            &crate::canvas::RollView {
-                scroll_tick: self.timeline.view.scroll_tick,
-                top_key: 0,
-                key_offset: 0.0,
-                pixels_per_tick: self.timeline.view.pixels_per_tick,
-                key_height: self.timeline.view.lane_height,
-                snap: self.timeline.view.snap,
-            },
-            grid,
-        );
+        let (ticks, rows) = self.edge_scroll_step(&self.timeline_edge_view(), grid);
         if ticks != 0 || rows != 0 {
             let v = &mut self.timeline.view;
             v.scroll_tick = (v.scroll_tick + ticks).max(0);
@@ -22081,6 +22115,12 @@ impl WindowApp {
             wake = Some(wake.map_or(now + PLUGIN_EDITOR_FRAME, |w| {
                 w.min(now + PLUGIN_EDITOR_FRAME)
             }));
+        }
+
+        // A selection box held past an edge scrolls at a frame's pace.
+        if self.marquee_held_off_edge() {
+            let due = now + MARQUEE_SCROLL_FRAME;
+            wake = Some(wake.map_or(due, |w| w.min(due)));
         }
 
         // **The sky keeps the loop awake while it moves.** Nothing else asks

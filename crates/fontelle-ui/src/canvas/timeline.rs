@@ -2021,9 +2021,14 @@ enum Gesture {
         /// the fronts may go before a block is less than a snap long.
         shortest: Tick,
     },
+    /// A selection box. The first corner is **on the song**, in ticks and
+    /// lanes, so an edge scroll carries the music past it rather than
+    /// carrying it along — the roll's reason (its `Gesture::Marquee`). The
+    /// other is the pointer held inside `grid`.
     Marquee {
-        from: (f32, f32),
+        anchor: (f64, f32),
         to: (f32, f32),
+        grid: Rect,
     },
     /// A fade handle, carried along the block. What has been asked for so
     /// far, so a stationary pointer asks for nothing new.
@@ -2266,7 +2271,9 @@ impl Timeline {
     /// The selection box being dragged, for drawing.
     pub fn marquee(&self) -> Option<Rect> {
         match self.gesture {
-            Gesture::Marquee { from, to } => Some(box_between(from, to)),
+            Gesture::Marquee { anchor, to, grid } => {
+                Some(box_between(song_pixel(&self.view, grid, anchor), to))
+            }
             _ => None,
         }
     }
@@ -2556,8 +2563,9 @@ impl Timeline {
                 // few clips does not cost two trips to the toolbar.
                 if self.tool == TimelineTool::Select || self.modifiers.ctrl {
                     self.gesture = Gesture::Marquee {
-                        from: (x, y),
+                        anchor: song_point(&self.view, layout.grid, x, y),
                         to: (x, y),
+                        grid: layout.grid,
                     };
                     return Vec::new();
                 }
@@ -2716,8 +2724,14 @@ impl Timeline {
             // the edge it slid past. Same rule as the roll's.
             Gesture::Erasing => self.erase_at(timeline_hit(&self.view, layout, clips, x, y)),
 
-            Gesture::Marquee { from, .. } => {
-                self.gesture = Gesture::Marquee { from, to: (x, y) };
+            // Clamped, like the roll's: held off the edge the box ends there
+            // while the view scrolls the song in under it.
+            Gesture::Marquee { anchor, .. } => {
+                self.gesture = Gesture::Marquee {
+                    anchor,
+                    to: (cx, cy),
+                    grid,
+                };
                 Vec::new()
             }
 
@@ -3099,8 +3113,10 @@ impl Timeline {
     ) -> Vec<ArrangeEdit> {
         let mut edits = Vec::new();
         match self.gesture {
-            Gesture::Marquee { from, .. } => {
-                let box_ = box_between(from, (x, y));
+            Gesture::Marquee { anchor, .. } => {
+                let grid = layout.grid;
+                let from = song_pixel(&self.view, grid, anchor);
+                let box_ = box_between(from, clamp_to_grid(grid, x, y));
                 self.selection = clips
                     .iter()
                     .filter(|clip| clip_rect(&self.view, layout.grid, clip).intersects(&taut(box_)))
@@ -3429,6 +3445,29 @@ impl Timeline {
     fn selected<'a>(&'a self, clips: &'a [ClipInfo]) -> impl Iterator<Item = &'a ClipInfo> + 'a {
         clips.iter().filter(|c| self.selection.contains(&c.id))
     }
+}
+
+/// A pixel as a place in the song: a fractional tick and a fractional lane.
+fn song_point(view: &TimelineView, grid: Rect, x: f32, y: f32) -> (f64, f32) {
+    let tick = if view.pixels_per_tick > 0.0 {
+        view.scroll_tick as f64 + f64::from(x - grid.x) / f64::from(view.pixels_per_tick)
+    } else {
+        view.scroll_tick as f64
+    };
+    let lane = if view.lane_height > 0.0 {
+        view.top_lane as f32 + view.lane_offset + (y - grid.y) / view.lane_height
+    } else {
+        view.top_lane as f32
+    };
+    (tick, lane)
+}
+
+/// Where [`song_point`]'s place is on screen at `view`, off the grid or not.
+fn song_pixel(view: &TimelineView, grid: Rect, (tick, lane): (f64, f32)) -> (f32, f32) {
+    (
+        grid.x + ((tick - view.scroll_tick as f64) * f64::from(view.pixels_per_tick)) as f32,
+        grid.y + (lane - view.top_lane as f32 - view.lane_offset) * view.lane_height,
+    )
 }
 
 /// The rectangle two corners describe, whichever way round they came.
