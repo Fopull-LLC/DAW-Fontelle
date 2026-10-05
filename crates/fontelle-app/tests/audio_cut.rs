@@ -686,3 +686,42 @@ fn the_right_half_of_a_looping_cut_unlooped_still_plays_what_it_did() {
     assert_eq!(wrong, 0, "{wrong} frames of the unlooped half changed");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// From Lore's log: *"Clip(ClipId(16777216v1)) does not hold notes"*,
+/// thirteen times. A take opened from the arrangement is the open clip, and
+/// the roll — showing nothing, since a take has no notes — still took what
+/// was drawn or pasted there as notes for it: each a command refused with an
+/// id on the console and a status line in the same words, the notes gone.
+/// Said once, in words, as an empty arrangement is.
+#[test]
+fn the_roll_says_a_take_holds_no_notes_rather_than_refusing_each_one() {
+    use fontelle_ui::canvas::RollEdit;
+    use fontelle_ui::document::DocumentHost;
+    let dir = scratch("roll-on-a-take");
+    let (mut session, take) = a_session_with_the_take(&dir);
+    session.open_clip(take);
+    let before = session.project().clone();
+    let note = fontelle_model::Note {
+        start: 0,
+        length: fontelle_types::PPQN,
+        key: 60,
+        velocity: 100,
+        pan: 0,
+        fine_pitch: 0,
+        release: 0,
+        mod_x: 0,
+        mod_y: 0,
+        slide: false,
+        path: Vec::new(),
+        channel: None,
+    };
+    assert!(session.edit(RollEdit::Add { note }).is_empty());
+    let said = session.take_message().expect("it says why");
+    assert!(!said.contains("ClipId"), "{said}");
+    assert!(said.contains("audio"), "{said}");
+    assert_eq!(
+        session.project().sync_hash(),
+        before.sync_hash(),
+        "nothing changed"
+    );
+}

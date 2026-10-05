@@ -4951,6 +4951,30 @@ impl Session {
             .unwrap_or(NoteHome::Clip(self.clip))
     }
 
+    /// Whether `home` is a clip that cannot take notes — a take opened from
+    /// the arrangement, an automation block — said once, in words, when it
+    /// is.
+    ///
+    /// From Lore's log: *"Clip(ClipId(16777216v1)) does not hold notes"*,
+    /// thirteen times. The roll over an open take shows nothing, and what
+    /// was drawn or pasted there went to the take as notes: each a refused
+    /// command, an id on the console, and the notes gone.
+    fn holds_no_notes(&mut self, home: fontelle_model::NoteHome) -> bool {
+        let fontelle_model::NoteHome::Clip(id) = home else {
+            return false;
+        };
+        let kind = match self.project.clips.get(id).map(|clip| &clip.source) {
+            Some(ClipSource::Audio(_)) => "audio",
+            Some(ClipSource::Automation(_)) => "automation",
+            Some(ClipSource::Notes(_)) | None => return false,
+        };
+        self.message = Some(format!(
+            "The open clip is {kind} \u{2014} open or draw a note clip to write notes"
+        ));
+        self.touch();
+        true
+    }
+
     /// The content [`note_target`](Self::note_target) names.
     fn note_target_source(&self) -> Option<std::borrow::Cow<'_, ClipSource>> {
         use fontelle_model::NoteHome;
@@ -6696,6 +6720,9 @@ impl DocumentHost for Session {
             self.message = Some(NOTHING_OPEN.to_string());
             return Vec::new();
         }
+        if self.holds_no_notes(clip) {
+            return Vec::new();
+        }
         // `AddNotes` is the one command whose ids the caller needs back, so it
         // is applied through the history by hand rather than through `run`.
         // Everything else goes the ordinary way.
@@ -7092,6 +7119,9 @@ impl Session {
             && !self.project.clips.contains_key(id)
         {
             self.message = Some(NOTHING_OPEN.to_string());
+            return Vec::new();
+        }
+        if self.holds_no_notes(clip) {
             return Vec::new();
         }
         // **On the selected channel**, whatever the note said and whatever
