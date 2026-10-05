@@ -48,6 +48,11 @@ it to work well so users can work on songs together"*. `docs/collab-plan.md`
   lost or waited for for ever; the link's own words never reached the
   person; the version refusal told the newer side to update; the relay
   ending a lobby reached a joiner as bare words.
+- **From Ty's session with a friend**: the host's edits never reached the
+  joiner — they queued behind a soundfont on its way (the fix above); a
+  plugin the joiner lacks is now named as the copy opens. And a new
+  instrument is selected by its id, not as the last in the list, and
+  somebody else's never moves your selection.
 - **Open**: F78 (no *Reconnecting…* status on the panels, only toasts), F79
   (remove cannot close the removed studio's relay connection).
 - **Next, not in this patch**: verified names with a fopull account join
