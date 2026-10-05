@@ -111,6 +111,9 @@ pub enum GuiError {
     NoDisplay(String),
     /// The plugin refused a step of the opening sequence.
     Refused(&'static str),
+    /// This build shows no plugin windows on this platform — macOS, until
+    /// an editor can be embedded in an `NSView`.
+    NotOnThisPlatform,
 }
 
 impl std::fmt::Display for GuiError {
@@ -122,6 +125,11 @@ impl std::fmt::Display for GuiError {
                 "a plugin editor needs an X server (XWayland on a Wayland desktop): {why}"
             ),
             Self::Refused(step) => write!(f, "the plugin refused to {step} its editor"),
+            Self::NotOnThisPlatform => write!(
+                f,
+                "plugin windows are not shown on this platform yet \u{2014} its \
+                 parameters are in Fontelle's own panel for it"
+            ),
         }
     }
 }
@@ -681,9 +689,7 @@ impl Drop for PluginWindow {
 #[cfg(not(any(target_os = "linux", windows)))]
 impl PluginWindow {
     pub fn open(_title: &str, _size: GuiSize) -> Result<Self, GuiError> {
-        Err(GuiError::NoDisplay(
-            "plugin editors are not shown on this platform yet".to_string(),
-        ))
+        Err(GuiError::NotOnThisPlatform)
     }
 
     pub fn open_with_header(title: &str, size: GuiSize, _header: u32) -> Result<Self, GuiError> {

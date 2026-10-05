@@ -303,6 +303,9 @@ enum Library {
 
 /// The session's plugins.
 pub struct PluginRack {
+    /// A plugin not opened whatever the document says — see
+    /// [`hold_back`](PluginRack::hold_back).
+    held_back: Option<fontelle_types::PluginKey>,
     /// The bridges found in Fontelle's own folder at startup — see
     /// `fontelle_host::bridge`. What makes a VST3 hostable on *this* machine
     /// without a line of SDK in this tree.
@@ -366,6 +369,7 @@ impl Default for PluginRack {
     /// studio that finds no plugins at all.
     fn default() -> Self {
         Self {
+            held_back: None,
             bridges: Arc::default(),
             host: PluginHost::default(),
             scan: PluginScan::default(),
@@ -536,6 +540,44 @@ impl PluginRack {
 
     pub fn take_message(&mut self) -> Option<String> {
         self.message.take()
+    }
+
+    /// The bay a slot's processor is parked in, while the slot is open —
+    /// what the graph's node shares with the rack.
+    pub fn bay(&self, slot: PluginSlot) -> Option<Arc<ProcessorBay>> {
+        self.live.get(&slot).map(|live| Arc::clone(&live.bay))
+    }
+
+    /// The plugins whose node silenced something they played that was not a
+    /// number since this was last asked, with their names — see
+    /// `fontelle_engine::PluginNode` and `Session::deal_with_silenced`.
+    pub fn take_silenced(&mut self) -> Vec<(PluginSlot, String)> {
+        self.live
+            .iter()
+            .filter(|(_, live)| live.bay.take_silenced())
+            .map(|(slot, live)| (*slot, live.plugin.name().to_string()))
+            .collect()
+    }
+
+    /// Lets go of a slot's plugin, so the next realise opens it again from
+    /// the document's copy of its state.
+    pub fn reopen(&mut self, slot: PluginSlot) {
+        if let Some(mut old) = self.live.remove(&slot)
+            && !old.retire()
+        {
+            self.retired.push(old);
+        }
+    }
+
+    /// Whether a render has the plugins — see [`lend_for_render`](Self::lend_for_render).
+    pub fn is_rendering(&self) -> bool {
+        self.rendering
+    }
+
+    /// A plugin not to open, whatever the document says — the one a crash
+    /// named. See `Session::with_held_back`.
+    pub fn hold_back(&mut self, key: Option<fontelle_types::PluginKey>) {
+        self.held_back = key;
     }
 
     /// A fresh [`PluginState`] naming one of the scanned plugins, by its place
@@ -765,6 +807,16 @@ impl PluginRack {
                 && !old.retire()
             {
                 self.retired.push(old);
+            }
+            // The plugin the last crash named (`Session::with_held_back`):
+            // not run, and said why. The document keeps it, so a save keeps it
+            // and the next opening tries it again.
+            if self.held_back.as_ref() == Some(&state.key) {
+                self.message = Some(format!(
+                    "{} was not opened: it crashed Fontelle last time. Open the song again to try it",
+                    state.name
+                ));
+                return None;
             }
             let Some(found) = self.scan.find(&state.key) else {
                 // §17.4's rule for a missing file, applied to a missing

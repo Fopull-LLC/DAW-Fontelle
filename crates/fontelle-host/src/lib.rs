@@ -52,6 +52,7 @@
 
 mod atom;
 pub mod bridge;
+pub mod guard;
 pub mod gui;
 // LV2 is loaded through `lilv`, a system library that lives on Linux where
 // the format does. Elsewhere the same module names answer "not here" — see

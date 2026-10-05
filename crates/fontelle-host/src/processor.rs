@@ -88,6 +88,12 @@ impl Default for PluginTransport {
 /// The bus copies in and out are shared between the formats and live here;
 /// what differs is inside [`Inner`].
 pub struct HostedProcessor {
+    /// **First**, so the plugin's teardown below is marked as a call into it
+    /// — see [`crate::guard::DropMark`].
+    drop_mark: crate::guard::DropMark,
+    /// Which plugin this is, for every block it runs — see
+    /// [`crate::guard`].
+    label: Option<crate::guard::Label>,
     inner: Inner,
     /// Which keys this has started and not ended — so a [`reset`](Self::reset)
     /// can end them itself rather than trusting the plugin to. See there.
@@ -98,6 +104,8 @@ pub struct HostedProcessor {
     /// on (`PluginState::mpe`) and it hears raw MIDI — see
     /// [`set_mpe`](Self::set_mpe). `None` is one channel, as always.
     mpe: Option<crate::MpeZone>,
+    /// **Last** — see `drop_mark`.
+    drop_unmark: crate::guard::DropUnmark,
 }
 
 enum Inner {
@@ -142,6 +150,9 @@ impl HostedProcessor {
             held: [false; 128],
             transport: PluginTransport::default(),
             mpe: None,
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
         }
     }
 
@@ -151,6 +162,9 @@ impl HostedProcessor {
             held: [false; 128],
             transport: PluginTransport::default(),
             mpe: None,
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
         }
     }
 
@@ -160,6 +174,9 @@ impl HostedProcessor {
             held: [false; 128],
             transport: PluginTransport::default(),
             mpe: None,
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
         }
     }
 
@@ -169,7 +186,17 @@ impl HostedProcessor {
             held: [false; 128],
             transport: PluginTransport::default(),
             mpe: None,
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
         }
+    }
+
+    /// Names the plugin this runs, for a crash report — see [`crate::guard`].
+    pub(crate) fn mark(&mut self, label: crate::guard::Label) {
+        self.label = Some(label);
+        self.drop_mark = crate::guard::DropMark(Some(label));
+        self.drop_unmark = crate::guard::DropUnmark(true);
     }
 
     /// The block size this was prepared for.
@@ -406,6 +433,7 @@ impl HostedProcessor {
     /// stuck one. Only the keys held, so a plugin that did as it was told
     /// hears a note-off for nothing it still had rather than 128 of them.
     pub fn reset(&mut self) {
+        let _inside = self.label.map(crate::guard::calling);
         match &mut self.inner {
             Inner::Clap(p) => p.reset(),
             Inner::Lv2(p) => p.reset(),
@@ -426,6 +454,7 @@ impl HostedProcessor {
         I: AsRef<[f32]>,
         O: AsMut<[f32]>,
     {
+        let _inside = self.label.map(crate::guard::calling);
         let frames = frames.min(self.max_block());
         match &mut self.inner {
             Inner::Clap(p) => {
@@ -465,6 +494,7 @@ impl HostedProcessor {
     where
         B: AsMut<[f32]>,
     {
+        let _inside = self.label.map(crate::guard::calling);
         let frames = frames.min(self.max_block());
         match &mut self.inner {
             Inner::Clap(p) => {
@@ -509,6 +539,7 @@ impl HostedProcessor {
     where
         B: AsMut<[f32]>,
     {
+        let _inside = self.label.map(crate::guard::calling);
         let frames = frames.min(self.max_block());
         match &mut self.inner {
             Inner::Clap(p) => {
@@ -539,6 +570,7 @@ impl HostedProcessor {
     where
         O: AsMut<[f32]>,
     {
+        let _inside = self.label.map(crate::guard::calling);
         let frames = frames.min(self.max_block());
         match &mut self.inner {
             Inner::Clap(p) => {
@@ -1062,11 +1094,28 @@ pub struct ProcessorBay {
     parked: std::sync::Mutex<Option<HostedProcessor>>,
     /// The main thread wants the processor home. See [`recall`](Self::recall).
     wanted: std::sync::atomic::AtomicBool,
+    /// The node turned something the plugin played that was not a number
+    /// into silence — see [`mark_silenced`](Self::mark_silenced).
+    silenced: std::sync::atomic::AtomicBool,
 }
 
 impl ProcessorBay {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// **RT-safe.** Says that the plugin played something that was not a
+    /// number and was silenced for it — the node's word to the main thread,
+    /// which says it out loud (`fontelle_app::PluginRack::take_silenced`).
+    pub fn mark_silenced(&self) {
+        self.silenced
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether it has been silenced since this was last asked.
+    pub fn take_silenced(&self) -> bool {
+        self.silenced
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Puts a processor in. Off the audio thread.

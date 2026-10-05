@@ -1335,6 +1335,16 @@ pub trait StudioHost: DocumentHost {
     /// Takes the `index`th recent project off the list. A row drawn dead
     /// because its bundle has gone is forgotten this way, on purpose.
     fn forget_recent(&mut self, _index: usize) {}
+    /// What the start menu's recover button says, while the last run — which
+    /// did not end cleanly — left work in a backup that its song does not
+    /// have. `None` draws no button.
+    fn recovery_offer(&self) -> Option<String> {
+        None
+    }
+    /// Opens that backup as the song it belongs to, unsaved.
+    fn recover(&mut self) -> Result<(), String> {
+        Err("there is nothing to recover".to_string())
+    }
     /// Whether a projects folder has been chosen — what the start menu asks
     /// before it asks for a name, so that *New project* on a fresh machine
     /// picks the folder first rather than failing after the name is typed.

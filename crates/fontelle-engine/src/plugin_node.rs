@@ -600,13 +600,17 @@ pub fn plugin_transport(
 /// padthv1 plays NaN when it is rendered the moment it opens (its own thread
 /// has not built the tables it reads yet), and no plugin's mistake should
 /// cost more than that plugin's own sound; so what a plugin hands back is
-/// checked here, before it reaches anything else.
-fn only_numbers(samples: &mut [f32]) {
+/// checked here, before it reaches anything else — and said, through the
+/// bay, so the channel's silence is explained.
+fn only_numbers(samples: &mut [f32]) -> bool {
+    let mut silenced = false;
     for sample in samples {
         if !sample.is_finite() {
             *sample = 0.0;
+            silenced = true;
         }
     }
+    silenced
 }
 
 /// The plugin's own parameter id, from the tail of an address.
@@ -684,8 +688,12 @@ impl AudioNode for PluginNode {
                     }
                     _ => processor.process_insert(ctx.outputs, frames),
                 }
+                let mut silenced = false;
                 for channel in ctx.outputs.iter_mut() {
-                    only_numbers(channel);
+                    silenced |= only_numbers(channel);
+                }
+                if silenced {
+                    self.bay.mark_silenced();
                 }
             }
             PluginRole::Instrument => {
@@ -697,8 +705,12 @@ impl AudioNode for PluginNode {
                 let mut rendered: [&mut [f32]; SCRATCH_CHANNELS] =
                     [&mut first[..frames], &mut second[..frames]];
                 processor.process_instrument(&mut rendered[..channels], frames);
+                let mut silenced = false;
                 for channel in rendered[..channels].iter_mut() {
-                    only_numbers(channel);
+                    silenced |= only_numbers(channel);
+                }
+                if silenced {
+                    self.bay.mark_silenced();
                 }
                 place(&mut rendered[..channels], frames, gain_db, pan);
                 for (index, channel) in ctx.outputs.iter_mut().enumerate() {

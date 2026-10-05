@@ -980,11 +980,16 @@ fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
         fontelle_types::PluginFormat::Lv2,
         fontelle_testlv2::LOADER_URI,
     );
-    let (_host, _plugin, _bay, mut node) =
+    let (_host, _plugin, bay, mut node) =
         wire_key(&key, &lv2_bundle(), PluginRole::Instrument, BLOCK);
     // Another instrument on the same bus, already there.
     let mut left = vec![0.25f32; BLOCK];
     let mut right = vec![0.25f32; BLOCK];
+    run(&mut node, &mut [&mut left, &mut right], &[]);
+    assert!(
+        !bay.take_silenced(),
+        "a plugin playing numbers is not flagged"
+    );
     run(
         &mut node,
         &mut [&mut left, &mut right],
@@ -995,6 +1000,10 @@ fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
         "the bus carries what the plugin played: {:?}",
         &left[..4]
     );
+    // And the studio is told, through the bay it shares with the node, so
+    // the channel's silence can be explained (`PluginRack::take_silenced`).
+    assert!(bay.take_silenced(), "what was silenced is said");
+    assert!(!bay.take_silenced(), "once");
 }
 
 /// And an insert: what it hands back is the bus, so a number or silence.

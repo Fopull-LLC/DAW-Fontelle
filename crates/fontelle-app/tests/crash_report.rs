@@ -19,6 +19,8 @@ fn marker() -> Marker {
         version: "0.0.0".to_string(),
         started: 1_757_500_000,
         project: Some("SynthTesty".to_string()),
+        path: None,
+        backup: None,
     }
 }
 

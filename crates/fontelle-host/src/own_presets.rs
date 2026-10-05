@@ -205,6 +205,7 @@ impl HostedPlugin {
     /// what the preset set. An LV2 plugin that is not running is handed the
     /// preset to take when it starts.
     pub fn load_own_preset(&mut self, preset: &OwnPreset) -> Result<(), String> {
+        let _inside = self.inside();
         let message = format!("{} would not load {}", self.info.name, preset.name);
         let refused = || message.clone();
         match &preset.source {
@@ -283,6 +284,7 @@ impl HostedPlugin {
         processor: &mut HostedProcessor,
         preset: &OwnPreset,
     ) -> Result<(), String> {
+        let _inside = self.inside();
         let OwnPresetSource::Lv2 { ports, state, .. } = &preset.source else {
             return self.load_own_preset(preset);
         };

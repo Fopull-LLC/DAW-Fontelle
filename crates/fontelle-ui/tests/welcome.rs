@@ -542,3 +542,34 @@ fn a_message_of_two_sentences_has_room() {
         }
     }
 }
+
+/// > *"i want to give people a good experience"* — and after a crash, the
+/// > work it would have taken is offered back on the card
+/// > (`docs/plugin-experience-backlog.md` §1).
+///
+/// The offer is a full-width button just above the ways in, carved out of
+/// the message room, so the card does not reflow around it and nothing
+/// else moves.
+#[test]
+fn work_a_crash_would_have_lost_is_offered_above_the_ways_in() {
+    use fontelle_ui::canvas::with_recovery;
+    let plain = welcome_layout(window(), &metrics(), 3, false);
+    assert_eq!(plain.recover_button, None, "nothing to offer, no button");
+    assert_eq!(with_recovery(plain.clone(), false), plain);
+
+    let l = with_recovery(plain.clone(), true);
+    let button = l.recover_button.expect("the offer");
+    assert!(button.bottom() <= l.new_button.y, "above the ways in");
+    assert!(
+        !overlaps(button, l.message),
+        "the message keeps its own room"
+    );
+    assert!(within(button, l.frame));
+    assert_eq!(
+        (l.new_button, l.open_button, l.update),
+        (plain.new_button, plain.open_button, plain.update),
+        "and nothing else moves"
+    );
+    let (x, y) = (button.x + 4.0, button.y + 4.0);
+    assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Recover));
+}

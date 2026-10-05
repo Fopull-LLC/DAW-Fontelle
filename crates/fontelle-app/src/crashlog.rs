@@ -38,7 +38,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// One line of `key=value`, because a half-written file has to be
 /// *unparseable* rather than plausible: a marker read wrongly would report a
-/// crash that never happened.
+/// crash that never happened. Where the song lives and where an untitled one
+/// is backed up follow on lines of their own ([`text`](Self::text)): each is
+/// a path, read to the end of its line, and an older Fontelle reads only the
+/// first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     pub pid: u32,
@@ -48,6 +51,11 @@ pub struct Marker {
     /// What was open, so a report says which project was in front of somebody
     /// when it went.
     pub project: Option<String>,
+    /// The bundle of the song that was open, if it had one — whose
+    /// `backups/autosave.fontelle` the next launch may offer.
+    pub path: Option<PathBuf>,
+    /// Where a song never saved was backed up — see [`recovery`].
+    pub backup: Option<PathBuf>,
 }
 
 impl Marker {
@@ -58,7 +66,28 @@ impl Marker {
             version: env!("CARGO_PKG_VERSION").to_string(),
             started: now(),
             project: project.map(str::to_string),
+            path: None,
+            backup: None,
         }
+    }
+
+    /// The whole marker file: [`line`](Self::line), then a line for each
+    /// path there is.
+    pub fn text(&self) -> String {
+        let flat = |path: &Path| {
+            path.to_string_lossy()
+                .chars()
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .collect::<String>()
+        };
+        let mut text = self.line();
+        if let Some(path) = &self.path {
+            text.push_str(&format!("\npath={}", flat(path)));
+        }
+        if let Some(backup) = &self.backup {
+            text.push_str(&format!("\nbackup={}", flat(backup)));
+        }
+        text
     }
 
     /// The one line written to the marker file.
@@ -123,11 +152,23 @@ impl Marker {
                 _ => {}
             }
         }
+        // The lines after the first: a path each, to the end of its line.
+        let mut path = None;
+        let mut backup = None;
+        for line in text.lines().skip(1) {
+            if let Some(value) = line.strip_prefix("path=") {
+                path = Some(PathBuf::from(value)).filter(|p| !p.as_os_str().is_empty());
+            } else if let Some(value) = line.strip_prefix("backup=") {
+                backup = Some(PathBuf::from(value)).filter(|p| !p.as_os_str().is_empty());
+            }
+        }
         Some(Self {
             pid: pid?,
             version: version?,
             started: started?,
             project,
+            path,
+            backup,
         })
     }
 }
@@ -278,6 +319,27 @@ pub fn native_report_text(what: &str, module: Option<&str>, marker: &Marker) -> 
     text
 }
 
+/// The plugin a report says the crashing thread was inside, if it says one
+/// — the `plugin:` line the fault handler writes from
+/// [`fontelle_host::guard::current`].
+pub fn culprit(report: &str) -> Option<fontelle_types::PluginKey> {
+    let line = report
+        .lines()
+        .find_map(|line| line.strip_prefix(PLUGIN_LINE))?;
+    let (_, key) = line.rsplit_once('\t')?;
+    fontelle_types::PluginKey::parse(key.trim())
+}
+
+/// The plugin the faulting thread was inside, or failing that the one the
+/// main thread was — async-signal-safe (`fontelle_host::guard`).
+fn marked_plugin() -> Option<&'static [u8]> {
+    fontelle_host::guard::current().or_else(fontelle_host::guard::main)
+}
+
+/// How a report's line naming the plugin begins — the name and the key
+/// follow, a tab between them (`fontelle_host::guard::Label`).
+pub const PLUGIN_LINE: &str = "plugin:    ";
+
 /// What a report written at `unix` is called.
 ///
 /// Zero-padded so the file names sort in the order the crashes happened, which
@@ -296,25 +358,163 @@ pub fn marker_path(dir: &Path) -> PathBuf {
 ///
 /// Returns what happened last time, for the window to say out loud.
 pub fn begin(dir: &Path, project: Option<&str>) -> LastRun {
+    begin_run(dir, project).verdict
+}
+
+/// What the run before this one left behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Previous {
+    pub verdict: LastRun,
+    /// Its marker, when it did not end cleanly — where its song was.
+    pub marker: Option<Marker>,
+    /// The plugin its crash report says the crashing thread was inside —
+    /// see [`culprit`].
+    pub culprit: Option<fontelle_types::PluginKey>,
+}
+
+/// [`begin`], keeping everything the last run left: what is offered on the
+/// start menu ([`recovery`]) and the plugin held back ([`culprit`]).
+pub fn begin_run(dir: &Path, project: Option<&str>) -> Previous {
     // Read *before* writing this run's marker, or the run would find its own.
     let left_behind = std::fs::read_to_string(marker_path(dir)).ok();
     let newest = left_behind.as_ref().and_then(|_| newest_report(dir));
     let verdict = last_run(left_behind.as_deref(), newest.as_deref());
+    let marker = left_behind.as_deref().and_then(Marker::parse);
+    // Only a report written by that run says what that run was doing.
+    let culprit = match (&verdict, &marker) {
+        (LastRun::Panicked { report, .. }, Some(marker))
+            if report_time(report).is_some_and(|at| at >= marker.started) =>
+        {
+            std::fs::read_to_string(report)
+                .ok()
+                .and_then(|text| culprit(&text))
+        }
+        _ => None,
+    };
 
-    let marker = Marker::here(project);
+    let mine = Marker::here(project);
     // Nothing here is allowed to fail loudly: a studio that would not open
     // because a log directory is read-only is a worse bug than any it could
     // catch.
     let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::write(marker_path(dir), marker.line());
-    native::install(dir, &marker);
-    install_hook(dir.to_path_buf(), marker);
-    verdict
+    let _ = std::fs::write(marker_path(dir), mine.text());
+    native::install(dir, &mine);
+    if let Ok(mut run) = RUN.lock() {
+        *run = Some((dir.to_path_buf(), mine));
+    }
+    install_hook(dir.to_path_buf());
+    Previous {
+        verdict,
+        marker,
+        culprit,
+    }
 }
 
-/// Ends a run cleanly: the marker goes, so the next launch has no news.
+/// When a report was written, from its name ([`report_name`]).
+fn report_time(report: &Path) -> Option<u64> {
+    report
+        .file_name()?
+        .to_str()?
+        .strip_prefix("crash-")?
+        .strip_suffix(".log")?
+        .parse()
+        .ok()
+}
+
+/// This run's marker and where it is written, once [`begin_run`] has run.
+static RUN: std::sync::Mutex<Option<(PathBuf, Marker)>> = std::sync::Mutex::new(None);
+
+/// Says which song is open now, and where an untitled one is backed up, so
+/// a crash from here on is recovered into the right place. Nothing before
+/// [`begin_run`] (a test, a bounce), and nothing loud if it fails.
+pub fn note(project: Option<&str>, path: Option<&Path>, backup: Option<&Path>) {
+    let Ok(mut run) = RUN.lock() else { return };
+    let Some((dir, marker)) = run.as_mut() else {
+        return;
+    };
+    let changed = marker.project.as_deref() != project
+        || marker.path.as_deref() != path
+        || marker.backup.as_deref() != backup;
+    if !changed {
+        return;
+    }
+    marker.project = project.map(str::to_string);
+    marker.path = path.map(Path::to_path_buf);
+    marker.backup = backup.map(Path::to_path_buf);
+    let _ = std::fs::write(marker_path(dir), marker.text());
+    // So a fault's report names the song open now, not the one at launch.
+    native::install(dir, marker);
+}
+
+/// Ends a run cleanly: the marker goes, so the next launch has no news —
+/// and an untitled song's backup with it, since a clean exit is somebody
+/// having decided what to do with it.
 pub fn end(dir: &Path) {
+    if let Ok(run) = RUN.lock()
+        && let Some(backup) = run.as_ref().and_then(|(_, marker)| marker.backup.clone())
+    {
+        let _ = std::fs::remove_dir_all(backup);
+    }
     let _ = std::fs::remove_file(marker_path(dir));
+}
+
+/// What the start menu offers after a run that did not end cleanly: a
+/// backup holding work its song on disk does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recovery {
+    /// The backup bundle.
+    pub backup: PathBuf,
+    /// The song it is a backup of, which it opens as; `None` for a song
+    /// never saved, which opens untitled.
+    pub home: Option<PathBuf>,
+    /// What to call it on the menu.
+    pub name: String,
+}
+
+/// Whether the last run left work worth offering back.
+///
+/// A saved song's backup (`backups/autosave.fontelle` inside it) when it is
+/// newer than the song itself — an autosave writes only when there are
+/// unsaved changes, so a newer one holds what the song does not — or an
+/// untitled song's backup. Nothing after a clean exit: what was not saved
+/// then was not wanted.
+pub fn recovery(previous: &Previous) -> Option<Recovery> {
+    if previous.verdict == LastRun::Clean {
+        return None;
+    }
+    let marker = previous.marker.as_ref()?;
+    let modified = |bundle: &Path| {
+        std::fs::metadata(bundle.join("project.json"))
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    if let Some(home) = &marker.path {
+        let backup = home.join("backups").join("autosave.fontelle");
+        let newer = match (modified(&backup), modified(home)) {
+            (Some(backup), Some(song)) => backup > song,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        let name = home
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .or_else(|| marker.project.clone())
+            .unwrap_or_default();
+        return newer.then(|| Recovery {
+            backup,
+            home: Some(home.clone()),
+            name,
+        });
+    }
+    let backup = marker.backup.as_ref()?;
+    modified(backup).map(|_| Recovery {
+        backup: backup.clone(),
+        home: None,
+        name: marker
+            .project
+            .clone()
+            .unwrap_or_else(|| "Untitled".to_string()),
+    })
 }
 
 /// The newest report in `dir`, by the name [`report_name`] gives them.
@@ -341,9 +541,18 @@ fn newest_report(dir: &Path) -> Option<PathBuf> {
 ///
 /// Chained onto the hook that is already there rather than replacing it, so
 /// the message still reaches stderr for whoever *is* watching a terminal.
-fn install_hook(dir: PathBuf, marker: Marker) {
+fn install_hook(dir: PathBuf) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // The marker as it is now — the song open now, not the one at launch.
+        let Some(marker) = RUN
+            .try_lock()
+            .ok()
+            .and_then(|run| run.as_ref().map(|(_, marker)| marker.clone()))
+        else {
+            previous(info);
+            return;
+        };
         let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
             (*s).to_string()
         } else if let Some(s) = info.payload().downcast_ref::<String>() {
@@ -353,7 +562,12 @@ fn install_hook(dir: PathBuf, marker: Marker) {
         };
         let location = info.location().map(|l| l.to_string());
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-        let text = report_text(&payload, location.as_deref(), &backtrace, &marker);
+        let mut text = report_text(&payload, location.as_deref(), &backtrace, &marker);
+        if let Some(label) = marked_plugin() {
+            text.push_str(PLUGIN_LINE);
+            text.push_str(&String::from_utf8_lossy(label));
+            text.push('\n');
+        }
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join(report_name(now())), text);
         previous(info);
@@ -594,12 +808,16 @@ mod native {
                     #[cfg(target_os = "linux")]
                     if !tail.is_empty() {
                         where_it_was(signal, info, context, &put);
+                        inside_plugin(&put);
                         // The tail opens with the blank line the module's
                         // line ended in; ours ended in their own.
                         put(&tail[1..]);
                     }
                     #[cfg(not(target_os = "linux"))]
-                    let _ = (info, context, tail);
+                    {
+                        let _ = (info, context, tail);
+                        inside_plugin(&put);
+                    }
                     libc::close(fd);
                 }
             }
@@ -614,6 +832,19 @@ mod native {
             if signal == libc::SIGABRT {
                 libc::raise(signal);
             }
+        }
+    }
+
+    /// Which plugin the faulting thread was calling into, when the host had
+    /// marked it — or, for a thread the host never marks (a plugin's own),
+    /// the one the main thread was inside. See [`fontelle_host::guard`]. The
+    /// module line says which *file* the instruction was in, and that is
+    /// `libc` for a plugin that aborts; this says which plugin.
+    fn inside_plugin(put: &dyn Fn(&[u8])) {
+        if let Some(label) = super::marked_plugin() {
+            put(super::PLUGIN_LINE.as_bytes());
+            put(label);
+            put(b"\n");
         }
     }
 
@@ -800,7 +1031,13 @@ mod native {
         };
         let what = format!("{} at {address:p}", describe(code));
         let module = module_of(address);
-        let text = super::native_report_text(&what, module.as_deref(), marker);
+        let mut text = super::native_report_text(&what, module.as_deref(), marker);
+        // Which plugin this thread was inside — see `fontelle_host::guard`.
+        if let Some(label) = super::marked_plugin() {
+            text.push_str(super::PLUGIN_LINE);
+            text.push_str(&String::from_utf8_lossy(label));
+            text.push('\n');
+        }
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(dir.join(super::report_name(super::now())), text);
         CONTINUE_SEARCH

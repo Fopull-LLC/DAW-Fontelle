@@ -570,9 +570,25 @@ fn play_or_render(
         // Beside the session logs, so the folder the start menu opens holds
         // both halves of a bug report.
         let crash_dir = fontelle_app::logs::default_dir();
-        let crash_news = crash_dir
+        let previous = crash_dir
             .as_ref()
-            .and_then(|dir| fontelle_app::crashlog::begin(dir, Some(&project.meta.name)).message());
+            .map(|dir| fontelle_app::crashlog::begin_run(dir, Some(&project.meta.name)));
+        let crash_news = previous.as_ref().and_then(|p| p.verdict.message());
+        // What a crash would otherwise have taken: the start menu offers it
+        // back, and the plugin the report names is held back the next time
+        // its song opens (`docs/plugin-experience-backlog.md` §1).
+        let recovery = previous.as_ref().and_then(fontelle_app::crashlog::recovery);
+        let culprit = previous.as_ref().and_then(|p| {
+            p.culprit
+                .clone()
+                .map(|key| (p.marker.as_ref().and_then(|m| m.path.clone()), key))
+        });
+        // A song never saved is backed up beside the logs, in a folder of
+        // Fontelle's own.
+        let untitled_backup = crash_dir.as_ref().and_then(|dir| {
+            dir.parent()
+                .map(|data| data.join("recovery").join("Untitled.fontelle"))
+        });
         if let Some(said) = &crash_news {
             // On the terminal too, for whoever launched it from one.
             eprintln!("Fontelle: {said}");
@@ -670,6 +686,23 @@ fn play_or_render(
             // And the ring the output stream is already reading, so choosing
             // an input on a mixer strip is heard through that strip.
             .with_monitor(std::sync::Arc::clone(&monitor));
+            if let Some(path) = untitled_backup.clone() {
+                session = session.with_untitled_backup(path);
+            }
+            // Offered on the start menu; a launch straight into a project has
+            // none, so it is said where the backup is instead.
+            match recovery.clone() {
+                Some(recovery) if welcome => session = session.with_recovery(recovery),
+                Some(recovery) => session.announce(format!(
+                    "Fontelle closed unexpectedly \u{2014} unsaved work in {} is in {}",
+                    recovery.name,
+                    recovery.backup.display()
+                )),
+                None => {}
+            }
+            if let Some((home, key)) = culprit.clone() {
+                session = session.with_held_back(home, key);
+            }
             // The recording end of the live channel, so pressing record in the
             // window keeps a take the same way `--record` does.
             if let Some(reader) = capture.take() {

@@ -103,6 +103,10 @@ pub struct WelcomeLayout {
     /// — [`update_progress`] says when — so the card does not reflow
     /// between the press and the bar.
     pub update_button: Option<Rect>,
+    /// *Recover unsaved work in …*, after a run that did not end cleanly
+    /// left a backup worth having — see [`with_recovery`]. Just above the
+    /// ways in, carved out of the message room.
+    pub recover_button: Option<Rect>,
     /// Two rows above the buttons for what went wrong — a bundle that would
     /// not open, a picker that is not installed. Empty most of the time.
     pub message: Rect,
@@ -296,6 +300,7 @@ pub fn welcome_layout(
         version,
         update,
         update_button,
+        recover_button: None,
         message,
         new_button,
         open_button,
@@ -357,6 +362,24 @@ pub fn with_learn(mut layout: WelcomeLayout, metrics: &Metrics, offer: bool) -> 
     layout
 }
 
+/// Places the offer to recover what a crash would have lost, when there is
+/// one: a full-width button at the foot of the message room, just above
+/// *New project*, the message keeping what is left. Nothing else moves.
+pub fn with_recovery(mut layout: WelcomeLayout, offer: bool) -> WelcomeLayout {
+    if !offer {
+        return layout;
+    }
+    let button = Rect::new(
+        layout.new_button.x,
+        layout.new_button.y - STACK_GAP - BUTTON_HEIGHT,
+        layout.message.width,
+        BUTTON_HEIGHT,
+    );
+    layout.message.height = (button.y - BUTTON_GAP - layout.message.y).max(0.0);
+    layout.recover_button = Some(button);
+    layout
+}
+
 /// What a press on the card means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WelcomeHit {
@@ -383,6 +406,9 @@ pub enum WelcomeHit {
     Learn,
     /// "No thanks" on the first-launch card.
     DismissLearn,
+    /// Recover what the last run, which did not end cleanly, left in a
+    /// backup — see [`with_recovery`].
+    Recover,
 }
 
 /// What Enter does on the card: reopens the newest recent project that is
@@ -427,6 +453,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.join_button.contains(x, y) {
         return Some(WelcomeHit::Join);
+    }
+    if layout.recover_button.is_some_and(|b| b.contains(x, y)) {
+        return Some(WelcomeHit::Recover);
     }
     if layout.update_button.is_some_and(|b| b.contains(x, y)) {
         return Some(WelcomeHit::Update);

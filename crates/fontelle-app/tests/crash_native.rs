@@ -148,3 +148,134 @@ fn an_address_is_found_in_the_file_it_is_mapped_from() {
         "/home/k/.vst3/Vital.vst3/Contents/x86_64-linux/Vital.so"
     );
 }
+
+/// > *"sometimes they'll just revert back to the init preset"* — and the
+/// > sweep behind it found plugins that crash in their own code.
+///
+/// padthv1 calls a pure virtual function and `libstdc++` aborts: the fault
+/// is in `libc`, and the module line names `libc`. The host marks every call
+/// it makes into a plugin on the thread that makes it, and the report names
+/// the plugin from that mark — the one fact the next launch needs to open
+/// the project without it.
+#[cfg(unix)]
+#[test]
+fn a_crash_inside_a_plugin_call_names_the_plugin_whatever_module_it_was_in() {
+    const NAMED_CHILD: &str = "FONTELLE_CRASH_NAMED_CHILD";
+    let key = fontelle_types::PluginKey::clap("com.fopull.fontelle.testgain");
+    if let Some(dir) = std::env::var_os(NAMED_CHILD) {
+        crashlog::begin(&PathBuf::from(dir), Some("Faulty Project"));
+        let label = fontelle_host::guard::Label::new("Fontelle Test Gain", &key);
+        let _inside = fontelle_host::guard::calling(label);
+        std::process::abort();
+    }
+
+    let dir = std::env::temp_dir().join(format!("fontelle-crash-named-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let status = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "a_crash_inside_a_plugin_call_names_the_plugin_whatever_module_it_was_in",
+            "--nocapture",
+        ])
+        .env(NAMED_CHILD, &dir)
+        .status()
+        .expect("the child runs");
+    assert!(!status.success(), "the child should have aborted");
+
+    let text = newest_report(&dir);
+    assert!(
+        text.contains("plugin:    Fontelle Test Gain\tclap:com.fopull.fontelle.testgain"),
+        "the report names the plugin:\n{text}"
+    );
+    assert_eq!(crashlog::culprit(&text), Some(key), "and says it back");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A report with no plugin in it names none — Fontelle's own crash is not a
+/// reason to hold a plugin back.
+#[test]
+fn a_report_that_names_no_plugin_has_no_culprit() {
+    let marker = crashlog::Marker::here(Some("Song"));
+    let text = crashlog::native_report_text("SIGSEGV", Some("/usr/bin/fontelle"), &marker);
+    assert_eq!(crashlog::culprit(&text), None);
+}
+
+/// And the host makes the mark: a real plugin aborting in its own `process`,
+/// called the way the audio thread calls it, is named in the report.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plugin_that_aborts_in_its_own_process_is_named_in_the_report() {
+    const PROCESS_CHILD: &str = "FONTELLE_CRASH_PROCESS_CHILD";
+    if let Some(dir) = std::env::var_os(PROCESS_CHILD) {
+        crashlog::begin(&PathBuf::from(dir), None);
+        let mut host = fontelle_host::PluginHost::new();
+        let mut plugin = host
+            .open(
+                &test_plugin(),
+                &fontelle_types::PluginKey::clap("com.fopull.fontelle.testgain"),
+            )
+            .expect("the test gain opens");
+        let mut processor = plugin.activate(48_000.0, 256).expect("it activates");
+        let mut bus = vec![vec![0.0f32; 256]; 2];
+        processor.process_insert(&mut bus, 256);
+        unreachable!("the plugin aborts in its process");
+    }
+
+    let dir = std::env::temp_dir().join(format!("fontelle-crash-process-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let status = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "a_plugin_that_aborts_in_its_own_process_is_named_in_the_report",
+            "--nocapture",
+        ])
+        .env(PROCESS_CHILD, &dir)
+        .env(fontelle_testplug::ABORTS_IN_PROCESS_ENV, "1")
+        .status()
+        .expect("the child runs");
+    assert!(!status.success(), "the child should have aborted");
+    let text = newest_report(&dir);
+    assert_eq!(
+        crashlog::culprit(&text),
+        Some(fontelle_types::PluginKey::clap(
+            "com.fopull.fontelle.testgain"
+        )),
+        "the report names the plugin:\n{text}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(unix)]
+fn newest_report(dir: &std::path::Path) -> String {
+    let report = std::fs::read_dir(dir)
+        .expect("the directory")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("crash-"))
+        })
+        .max()
+        .expect("a report");
+    std::fs::read_to_string(report).expect("readable")
+}
+
+/// The test CLAP bundle, built beside this binary, under a `.clap` name.
+#[cfg(target_os = "linux")]
+fn test_plugin() -> PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop();
+    path.pop();
+    let built = path.join(if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    });
+    let folder = std::env::temp_dir().join(format!("fontelle-crash-plugin-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&folder);
+    let bundle = folder.join("fontelle-testplug.clap");
+    std::fs::copy(&built, &bundle).expect("the test plugin copies");
+    bundle
+}

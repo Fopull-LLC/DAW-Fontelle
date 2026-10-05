@@ -194,6 +194,10 @@ impl InputFailure {
     }
 }
 
+/// How soon a plugin silenced again after being opened again for it is left
+/// silenced — see `Session::deal_with_silenced`.
+const SILENCED_AGAIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct Session {
     project: Project,
     history: History,
@@ -422,6 +426,19 @@ pub struct Session {
     selected: usize,
     bundle: Option<PathBuf>,
     dirty: bool,
+    /// Where a song never saved is backed up — see [`Session::autosave`].
+    /// `None` keeps no such backup (a test, a bounce).
+    untitled_backup: Option<PathBuf>,
+    /// What the start menu offers back after a run that did not end
+    /// cleanly — see [`crate::crashlog::recovery`]. Offered once.
+    recovery: Option<crate::crashlog::Recovery>,
+    /// The plugin the last run's crash report named, and the song it was
+    /// in (`None` for a song never saved): held back, once, the next time
+    /// that song opens — see [`Session::with_held_back`].
+    hold_back_once: Option<(Option<PathBuf>, fontelle_types::PluginKey)>,
+    /// When each slot's plugin was last opened again for playing what was not
+    /// a number — see [`Session::deal_with_silenced`].
+    silenced_reopened: HashMap<crate::PluginSlot, std::time::Instant>,
     /// The shared session this studio is in, hosting or joined
     /// (`docs/collab-plan.md`) — `None`, and nothing opened, until *Share* or
     /// *Join* is pressed.
@@ -1088,6 +1105,7 @@ impl Session {
             crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
             self.name_after(&path);
             self.bundle = Some(path);
+            self.note_for_crashes();
             self.projects.rescan();
             self.dirty = false;
             self.touch();
@@ -1411,6 +1429,10 @@ impl Session {
             clip,
             selected: 0,
             bundle,
+            untitled_backup: None,
+            recovery: None,
+            hold_back_once: None,
+            silenced_reopened: HashMap::new(),
             dirty: false,
             collab: None,
             sharing: None,
@@ -1576,6 +1598,134 @@ impl Session {
     pub fn with_reduce_motion(mut self, reduce: bool) -> Self {
         self.reduce_motion = reduce;
         self
+    }
+
+    /// Where a song never saved is backed up, so a crash does not take it
+    /// with it — a folder of Fontelle's own, beside the logs.
+    pub fn with_untitled_backup(mut self, path: PathBuf) -> Self {
+        self.untitled_backup = Some(path);
+        self.note_for_crashes();
+        self
+    }
+
+    /// What the last run left that is worth offering back — the start
+    /// menu's *Recover* button. See [`crate::crashlog::recovery`].
+    pub fn with_recovery(mut self, recovery: crate::crashlog::Recovery) -> Self {
+        self.recovery = Some(recovery);
+        self
+    }
+
+    /// The plugin the last run's crash report named (`crashlog::culprit`),
+    /// held back the next time the song it crashed in (`home`; `None` for
+    /// one never saved) is opened: kept in the document, not run, and said
+    /// on the status line. Once — opening the song again tries it again.
+    pub fn with_held_back(mut self, home: Option<PathBuf>, key: fontelle_types::PluginKey) -> Self {
+        // The song it crashed in is the one opening now — a project named on
+        // the command line — so its plugins are about to be opened.
+        if home.is_some() && home == self.bundle {
+            self.plugins.hold_back(Some(key));
+        } else {
+            self.hold_back_once = Some((home, key));
+        }
+        self
+    }
+
+    /// Tells the crash marker which song is open now and where an untitled
+    /// one is backed up — see [`crate::crashlog::note`].
+    fn note_for_crashes(&self) {
+        let backup = match &self.bundle {
+            Some(_) => None,
+            None => self.untitled_backup.as_deref(),
+        };
+        crate::crashlog::note(
+            Some(&self.project.meta.name),
+            self.bundle.as_deref(),
+            backup,
+        );
+    }
+
+    /// Opens what the start menu offered back after a crash: the backup,
+    /// **as the song it belongs to** — its samples found where that song
+    /// keeps them, Save writing there — and unsaved, since nobody has said
+    /// to keep it yet. A song never saved opens untitled.
+    pub fn recover(&mut self) -> Result<(), String> {
+        let recovery = self
+            .recovery
+            .take()
+            .ok_or_else(|| "there is nothing to recover".to_string())?;
+        let opened = crate::bundle::open_recovered(
+            &recovery.backup,
+            recovery.home.as_deref(),
+            &self.library_dirs(),
+        )
+        .map_err(|e| e.to_string())?;
+        self.adopt_at(opened, recovery.home.clone());
+        self.dirty = true;
+        if self.message.is_none() {
+            self.message = Some(format!(
+                "Recovered {} \u{2014} save to keep it",
+                recovery.name
+            ));
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// > *"most times it just renders with nothing"*
+    ///
+    /// A plugin that played what is not a number is silenced at its node,
+    /// and the rest of the mix plays on — which left its channel quiet with
+    /// nothing saying why, and padthv1, once it has played NaN, plays nothing
+    /// else. So it is named, and opened again from the song's copy of its
+    /// state; one that does it again within [`SILENCED_AGAIN`] is left
+    /// silenced and that is said, rather than opened over and over. During a
+    /// render it is only said: the render has the plugins.
+    fn deal_with_silenced(&mut self) {
+        let silenced = self.plugins.take_silenced();
+        if silenced.is_empty() {
+            return;
+        }
+        let rendering = self.plugins.is_rendering();
+        let mut reopened = false;
+        for (slot, name) in silenced {
+            let again = self
+                .silenced_reopened
+                .get(&slot)
+                .is_some_and(|at| at.elapsed() < SILENCED_AGAIN);
+            if rendering {
+                self.message = Some(format!(
+                    "{name} played invalid audio during the render \u{2014} its part is silent"
+                ));
+            } else if again {
+                self.message = Some(format!(
+                    "{name} keeps playing invalid audio \u{2014} it is silenced. Choose it again on the strip to reload it"
+                ));
+            } else {
+                if !reopened {
+                    // Whatever was turned in it since the last capture, kept.
+                    self.capture_plugin_states();
+                }
+                self.plugins.reopen(slot);
+                self.silenced_reopened
+                    .insert(slot, std::time::Instant::now());
+                self.message = Some(format!(
+                    "{name} played invalid audio and was silenced \u{2014} it has been opened again"
+                ));
+                reopened = true;
+            }
+        }
+        if reopened {
+            self.rebuild_graph();
+        }
+        self.touch();
+    }
+
+    /// What the start menu's *Recover* button says, while there is
+    /// something to recover.
+    pub fn recovery_offer(&self) -> Option<String> {
+        self.recovery
+            .as_ref()
+            .map(|recovery| format!("Recover unsaved work in {}", recovery.name))
     }
 
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
@@ -2613,6 +2763,7 @@ impl Session {
         crate::save_project(&self.project, &path).map_err(|e| e.to_string())?;
         self.remember_project(&path);
         self.bundle = Some(path);
+        self.note_for_crashes();
         self.projects.rescan();
         self.dirty = false;
         self.touch();
@@ -2752,13 +2903,21 @@ impl Session {
     /// reused control surface would be a fader silently moving somebody
     /// else's track.
     fn adopt(&mut self, opened: crate::bundle::OpenedProject, path: PathBuf) {
+        self.adopt_at(opened, Some(path));
+    }
+
+    /// [`adopt`](Self::adopt), for a song that has a folder or — recovered
+    /// from an untitled song's backup — none.
+    fn adopt_at(&mut self, opened: crate::bundle::OpenedProject, path: Option<PathBuf>) {
         self.project = opened.project;
         // The **folder's** name is the project's name. They could drift apart
         // — `save_project` writes `meta.name` and never renames a bundle — so
         // opening `MySong.fontelle` used to put "Untitled" in the title bar,
         // in the projects list, and on every render it exported. The folder is
         // the name somebody typed, so the folder wins.
-        self.name_after(&path);
+        if let Some(path) = &path {
+            self.name_after(path);
+        }
         self.library = opened.library;
         self.history = History::new();
         self.lanes_unsettled = None;
@@ -2769,8 +2928,18 @@ impl Session {
             .collect();
         self.routing_question = false;
         self.clip = Session::first_clip(&self.project).unwrap_or_default();
-        self.remember_project(&path);
-        self.bundle = Some(path);
+        if let Some(path) = &path {
+            self.remember_project(path);
+        }
+        // The plugin the last crash named, held back if this is the song it
+        // crashed in — once (`with_held_back`).
+        let held = self
+            .hold_back_once
+            .take_if(|(home, _)| *home == path)
+            .map(|(_, key)| key);
+        self.plugins.hold_back(held);
+        self.bundle = path;
+        self.note_for_crashes();
         self.dirty = false;
         self.patch_cache = None;
         self.channel_presets.clear();
@@ -3701,10 +3870,13 @@ impl Session {
         if !self.dirty {
             return false;
         }
-        let Some(bundle) = self.bundle.clone() else {
-            return false; // nowhere the user named to put it
+        // A song never saved goes where Fontelle keeps its own files: an
+        // hour of work nobody had named yet is the work a crash took whole.
+        let path = match (&self.bundle, &self.untitled_backup) {
+            (Some(bundle), _) => bundle.join("backups").join("autosave.fontelle"),
+            (None, Some(backup)) => backup.clone(),
+            (None, None) => return false,
         };
-        let path = bundle.join("backups").join("autosave.fontelle");
         // A backup that recovers a project without its plugins' settings is a
         // backup of half the session. After the dirty check, so this still
         // writes nothing when nothing has changed.
@@ -8217,6 +8389,7 @@ impl StudioHost for Session {
         // library listed on its thread since the last one.
         self.register_plugin_libraries();
         self.plugins.service_main_thread();
+        self.deal_with_silenced();
         let open = self.plugins.tick_editors();
         // *"Every time I log out the instrument resets, this is when I
         // save."* A knob turned in a plugin's own window is an edit the
@@ -10099,6 +10272,14 @@ impl StudioHost for Session {
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
+    }
+
+    fn recovery_offer(&self) -> Option<String> {
+        Session::recovery_offer(self)
+    }
+
+    fn recover(&mut self) -> Result<(), String> {
+        Session::recover(self)
     }
 
     fn reveal_logs_dir(&mut self) -> Result<(), String> {

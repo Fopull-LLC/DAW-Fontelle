@@ -290,19 +290,35 @@ impl PluginHost {
 
     /// Starts one plugin out of `path`.
     pub fn open(&mut self, path: &Path, key: &PluginKey) -> Result<HostedPlugin, HostError> {
-        match key.format {
+        // Marked from the start: a plugin that crashes as it is made is named
+        // in the report like one that crashes playing (`crate::guard`). Called
+        // after its file until it can say its own name.
+        let named = path.file_stem().map_or_else(
+            || key.id.clone(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
+        let label = crate::guard::Label::new(&named, key);
+        let _inside = crate::guard::calling_main(label);
+        let mut plugin = match key.format {
             PluginFormat::Clap => self.open_clap(path, key),
             PluginFormat::Lv2 => self.open_lv2(path, key),
             PluginFormat::Vst3 => self.open_vst3(path, key),
             other if self.bridges.serves(other) => self.open_bridged(path, key),
             other => Err(HostError::Unsupported(other)),
-        }
+        }?;
+        plugin.label = Some(label);
+        plugin.drop_mark = crate::guard::DropMark(Some(label));
+        plugin.drop_unmark = crate::guard::DropUnmark(true);
+        Ok(plugin)
     }
 
     fn open_bridged(&mut self, path: &Path, key: &PluginKey) -> Result<HostedPlugin, HostError> {
         let opened = crate::bridge::open(&self.bridges, path, key)?;
         let values = Arc::new(ParamValues::new(&opened.params));
         Ok(HostedPlugin {
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
             info: opened.info,
             atoms: Arc::new(crate::atom::AtomPipes::new(None, None)),
             inner: Inner::Bridged(opened.plugin),
@@ -340,6 +356,9 @@ impl PluginHost {
         let opened = crate::vst3::open(&module, path, key)?;
         let accepts_notes = opened.accepts_notes;
         Ok(HostedPlugin {
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
             info: opened.info,
             atoms: Arc::new(crate::atom::AtomPipes::new(None, None)),
             inner: Inner::Vst3(opened.plugin),
@@ -388,6 +407,9 @@ impl PluginHost {
         let values = Arc::new(ParamValues::new(&opened.params));
         let (atom_in, atom_out) = opened.plugin.atom_ports();
         Ok(HostedPlugin {
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
             info: opened.info,
             atoms: Arc::new(crate::atom::AtomPipes::new(atom_in, atom_out)),
             inner: Inner::Lv2(opened.plugin),
@@ -461,6 +483,9 @@ impl PluginHost {
         let values = Arc::new(ParamValues::new(&params));
 
         Ok(HostedPlugin {
+            drop_mark: crate::guard::DropMark(None),
+            label: None,
+            drop_unmark: crate::guard::DropUnmark(false),
             info: found,
             atoms: Arc::new(crate::atom::AtomPipes::new(None, None)),
             inner: Inner::Clap(instance),
@@ -553,6 +578,11 @@ fn text(value: Option<&CStr>) -> String {
 /// extension here, and no display strings) the method says so honestly
 /// rather than pretending.
 pub struct HostedPlugin {
+    /// **First**, so the plugin's teardown below is marked as a call into it
+    /// — see [`crate::guard::DropMark`].
+    drop_mark: crate::guard::DropMark,
+    /// Which plugin this is, for a crash report — see [`crate::guard`].
+    label: Option<crate::guard::Label>,
     pub(crate) info: PluginInfo,
     pub(crate) inner: Inner,
     params: Vec<HostedParam>,
@@ -590,6 +620,8 @@ pub struct HostedPlugin {
     /// it, exactly as [`ParamValues`] is: the editor comes and goes, and the
     /// pipes have to outlive it in both directions.
     atoms: Arc<crate::atom::AtomPipes>,
+    /// **Last** — see `drop_mark`.
+    drop_unmark: crate::guard::DropUnmark,
 }
 
 /// Which language a plugin's note port speaks, which decides how a
@@ -657,6 +689,12 @@ pub struct SettleMark {
 }
 
 impl HostedPlugin {
+    /// Marks the calls that follow as made into this plugin, on the main
+    /// thread — see [`crate::guard`].
+    pub(crate) fn inside(&self) -> Option<crate::guard::Calling> {
+        self.label.map(crate::guard::calling_main)
+    }
+
     pub(crate) fn clap(&mut self) -> Option<&mut PluginInstance<FontelleHost>> {
         match &mut self.inner {
             Inner::Clap(instance) => Some(instance),
@@ -809,6 +847,7 @@ impl HostedPlugin {
     /// [`state_needs_processor`](Self::state_needs_processor) for how to
     /// know which to call.
     pub fn snapshot(&mut self) -> PluginState {
+        let _inside = self.inside();
         self.hear_params();
         // What was heard is in this snapshot, so it is no longer unsaved.
         self.values.take_heard();
@@ -831,6 +870,7 @@ impl HostedPlugin {
     /// it. For the other formats the processor is not needed and not
     /// touched.
     pub fn snapshot_with(&mut self, processor: &mut HostedProcessor) -> PluginState {
+        let _inside = self.inside();
         self.hear_params();
         self.values.take_heard();
         let mut state = PluginState::new(self.info.key.clone(), self.info.name.clone());
@@ -881,6 +921,7 @@ impl HostedPlugin {
     /// The first half of [`restore`](Self::restore): the plugin's own state.
     /// Whether one went in.
     pub fn restore_blob(&mut self, state: &PluginState) -> bool {
+        let _inside = self.inside();
         if state.key != self.info.key {
             return false;
         }
@@ -915,6 +956,7 @@ impl HostedPlugin {
     /// — and an LV2 one, whose ports are not in its state — is told the lot,
     /// as before.
     pub fn restore_params(&mut self, state: &PluginState) {
+        let _inside = self.inside();
         if state.key != self.info.key {
             return;
         }
@@ -941,6 +983,7 @@ impl HostedPlugin {
     /// it when it stopped), not the state it is in now — that needs the
     /// processor; see [`save_state_with`](Self::save_state_with).
     pub fn save_state(&mut self) -> Option<Vec<u8>> {
+        let _inside = self.inside();
         if let Inner::Bridged(plugin) = &self.inner {
             return plugin.save_state();
         }
@@ -964,6 +1007,7 @@ impl HostedPlugin {
     /// `save_state` for everything else. The state read is also kept, so a
     /// later `save_state` without the processor answers with it.
     pub fn save_state_with(&mut self, processor: &mut HostedProcessor) -> Option<Vec<u8>> {
+        let _inside = self.inside();
         if let Inner::Lv2(plugin) = &mut self.inner {
             if !plugin.keeps_state() {
                 return None;
@@ -984,6 +1028,7 @@ impl HostedPlugin {
     /// which is also the one moment LV2 lets a host restore a plugin
     /// without asking whether it is thread-safe to.
     pub fn load_state(&mut self, bytes: &[u8]) -> bool {
+        let _inside = self.inside();
         if let Inner::Lv2(plugin) = &mut self.inner {
             return plugin.stash_state(bytes);
         }
@@ -1030,13 +1075,14 @@ impl HostedPlugin {
         sample_rate: f64,
         max_block: u32,
     ) -> Result<HostedProcessor, HostError> {
+        let _inside = self.inside();
         let max_block = max_block.max(1) as usize;
         // An LV2 editor may be holding the instance this replaces, through
         // `instance-access` — see `Lv2Plugin::instance`. It goes first.
         if self.lv2_editor.is_some() {
             self.close_editor();
         }
-        let processor = match &mut self.inner {
+        let mut processor = match &mut self.inner {
             Inner::Clap(instance) => {
                 let config = PluginAudioConfiguration {
                     sample_rate,
@@ -1114,6 +1160,9 @@ impl HostedPlugin {
         if !matches!(self.inner, Inner::Vst3(_)) && !self.from_state {
             self.values.mark_all();
         }
+        if let Some(label) = self.label {
+            processor.mark(label);
+        }
         Ok(processor)
     }
 
@@ -1127,6 +1176,7 @@ impl HostedPlugin {
     /// thread is exactly the deactivate-and-cleanup the specification asks
     /// for.
     pub fn deactivate(&mut self, mut processor: HostedProcessor) {
+        let _inside = self.inside();
         // The last thing an LV2 instance was, read before it goes: a
         // snapshot after this has no instance to ask and answers with it.
         if let Inner::Lv2(plugin) = &mut self.inner
@@ -1157,6 +1207,7 @@ impl HostedPlugin {
     /// `None` for an LV2 plugin, whose Turtle has units but no formatter;
     /// the panel then shows the number, which is what every LV2 host does.
     pub fn display(&mut self, id: u32, value: f64) -> Option<String> {
+        let _inside = self.inside();
         if let Inner::Bridged(plugin) = &self.inner {
             return plugin.display(id, value);
         }
@@ -1191,6 +1242,7 @@ impl HostedPlugin {
     /// 2). `false` for Calf, which ships no UI at all — that keeps the
     /// generated panel.
     pub fn has_editor(&mut self) -> bool {
+        let _inside = self.inside();
         if let Inner::Lv2(plugin) = &self.inner {
             return plugin.has_editor();
         }
@@ -1225,6 +1277,7 @@ impl HostedPlugin {
         window: &crate::gui::PluginWindow,
         scale: f64,
     ) -> Result<crate::gui::GuiSize, crate::gui::GuiError> {
+        let _inside = self.inside();
         use crate::gui::GuiError;
         if let Inner::Lv2(plugin) = &self.inner {
             let editor = plugin.open_editor(
@@ -1324,6 +1377,7 @@ impl HostedPlugin {
     /// whose editor is a fixed image, and setting a size it refused would
     /// leave the window and the drawing disagreeing.
     pub fn resize_editor(&mut self, size: crate::gui::GuiSize) {
+        let _inside = self.inside();
         if matches!(self.inner, Inner::Lv2(_)) {
             // An LV2 UI is told the size by the window it was given being that
             // size; there is no call for it in the extension this build uses.
@@ -1365,6 +1419,7 @@ impl HostedPlugin {
 
     /// Whether the plugin's editor may be dragged to a different size.
     pub fn editor_resizable(&mut self) -> bool {
+        let _inside = self.inside();
         if matches!(self.inner, Inner::Lv2(_)) {
             return true;
         }
@@ -1389,6 +1444,7 @@ impl HostedPlugin {
     /// Frees the editor's resources. **Before the window is dropped**, so the
     /// plugin unhooks from a window that still exists.
     pub fn close_editor(&mut self) {
+        let _inside = self.inside();
         if !self.editor_open {
             return;
         }
@@ -1443,6 +1499,7 @@ impl HostedPlugin {
     /// answered, so whatever a plugin put off until then never happened. The
     /// other formats have no such call, and nothing is done for them.
     pub fn service_main_thread(&mut self) {
+        let _inside = self.inside();
         let Inner::Clap(instance) = &mut self.inner else {
             return;
         };
@@ -1463,6 +1520,7 @@ impl HostedPlugin {
     /// X11 connection is readable. Both are the host's to do, and this is
     /// where. A window that opens grey and stays grey is this call missing.
     pub fn tick_editor(&mut self) {
+        let _inside = self.inside();
         if let Some(editor) = &mut self.lv2_editor {
             // `false` is the editor saying it has closed itself, which LV2
             // spells as a non-zero return from `idle`.
@@ -1690,6 +1748,7 @@ impl HostedPlugin {
     /// this thread is the plugin's audio thread for as long as the call
     /// lasts.
     pub fn settle_with(&mut self, processor: &mut HostedProcessor, before: &SettleMark) {
+        let _inside = self.inside();
         let frames = processor.max_block();
         let mut bus = vec![vec![0.0f32; frames]; 2];
         let instrument = self.info.is_instrument();
@@ -1775,6 +1834,7 @@ impl HostedPlugin {
 
     /// Reads every parameter's value back off the plugin onto the wire.
     pub(crate) fn reread_params(&mut self) {
+        let _inside = self.inside();
         let ids: Vec<u32> = self.params.iter().map(|param| param.id).collect();
         let values = Arc::clone(&self.values);
         if let Inner::Bridged(plugin) = &self.inner {

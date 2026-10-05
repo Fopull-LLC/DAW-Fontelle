@@ -5192,6 +5192,7 @@ fn shoot_welcome_status(
                 version: "Version 0.1.0",
                 update: &line,
                 update_button: button,
+                recover_button: None,
                 progress,
                 recent,
                 hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),

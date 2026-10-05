@@ -250,6 +250,9 @@ pub struct WelcomeChrome<'a> {
     pub update: &'a TextLayout,
     /// The offer, when there is one.
     pub update_button: Option<&'a str>,
+    /// What the recover button says, while there is something to recover —
+    /// see `canvas::with_recovery`.
+    pub recover_button: Option<&'a str>,
     /// The bar in the offer's slot while an archive comes down:
     /// `Some(Some(fraction))`, or `Some(None)` for a size the server did
     /// not say. See `canvas::update_progress`.
@@ -2499,6 +2502,9 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         l.update.y,
         p.text_muted,
     );
+    if let (Some(button), Some(rect)) = (chrome.recover_button, l.recover_button) {
+        draw_welcome_button(scene, theme, labels, button, rect, hot(WelcomeHit::Recover));
+    }
     if let (Some(button), Some(rect)) = (chrome.update_button, l.update_button) {
         draw_welcome_button(scene, theme, labels, button, rect, hot(WelcomeHit::Update));
     } else if let (Some(progress), Some(rect)) = (chrome.progress, l.update_button) {

@@ -1046,6 +1046,9 @@ struct Welcome {
     /// What went wrong with the last press, if anything did; shaped like
     /// the update line.
     message: TextLayout,
+    /// What the recover button says, while the host has something a crash
+    /// would have lost — `DocumentHost::recovery_offer`.
+    recover: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2575,15 +2578,24 @@ impl WindowApp {
             .document
             .as_ref()
             .is_some_and(|doc| !doc.tour_offered());
-        let layout = crate::canvas::with_learn(
-            crate::canvas::welcome_layout(
-                self.layout.window,
+        // What a crash would have lost, offered back.
+        let recover = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.recovery_offer());
+        let layout = crate::canvas::with_recovery(
+            crate::canvas::with_learn(
+                crate::canvas::welcome_layout(
+                    self.layout.window,
+                    &self.options.theme.metrics,
+                    recent.len(),
+                    button.is_some() || progress.is_some(),
+                ),
                 &self.options.theme.metrics,
-                recent.len(),
-                button.is_some() || progress.is_some(),
+                offer,
             ),
-            &self.options.theme.metrics,
-            offer,
+            recover.is_some(),
         );
         let line = self.text.layout(&line, font, Some(layout.update.width));
         self.welcome = Some(Welcome {
@@ -2597,6 +2609,7 @@ impl WindowApp {
             version,
             recent,
             message: TextLayout::default(),
+            recover,
         });
         if let Some(hint) = self
             .welcome
@@ -2637,15 +2650,18 @@ impl WindowApp {
             .as_ref()
             .is_some_and(|doc| !doc.tour_offered());
         if let Some(welcome) = &mut self.welcome {
-            welcome.layout = crate::canvas::with_learn(
-                crate::canvas::welcome_layout(
-                    window,
+            welcome.layout = crate::canvas::with_recovery(
+                crate::canvas::with_learn(
+                    crate::canvas::welcome_layout(
+                        window,
+                        metrics,
+                        welcome.recent.len(),
+                        welcome.button.is_some() || welcome.progress.is_some(),
+                    ),
                     metrics,
-                    welcome.recent.len(),
-                    welcome.button.is_some() || welcome.progress.is_some(),
+                    offer,
                 ),
-                metrics,
-                offer,
+                welcome.recover.is_some(),
             );
             welcome.hover =
                 crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
@@ -2781,6 +2797,9 @@ impl WindowApp {
                 self.relayout_welcome();
                 return;
             }
+            // The backup opens as the song it belongs to, and the menu
+            // gives way to it.
+            WelcomeHit::Recover => doc.recover().map(|()| true),
             WelcomeHit::Update => {
                 match welcome.status {
                     UpdateStatus::Available { .. } => doc.upgrade(),
@@ -3319,6 +3338,7 @@ impl WindowApp {
                         version: &welcome.version,
                         update: &welcome.line,
                         update_button: welcome.button,
+                        recover_button: welcome.recover.as_deref(),
                         progress: welcome.progress,
                         recent: &welcome.recent,
                         hover: welcome.hover,

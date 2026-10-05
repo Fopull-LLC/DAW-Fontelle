@@ -140,7 +140,28 @@ pub fn open_project(path: &Path) -> Result<OpenedProject, OpenError> {
 /// prefab of an audio clip and a sound waiting in an A/B slot opened silent
 /// (`docs/collab-plan.md` §18, F57).
 pub fn open_project_with(path: &Path, banks: &[PathBuf]) -> Result<OpenedProject, OpenError> {
-    let project = fontelle_model::load_project(path)?;
+    open_document_at(path, path, banks)
+}
+
+/// Opens a backup **as the song it belongs to**: the document from `backup`,
+/// every file it names looked for where `home` keeps them — a song's
+/// samples and takes are inside the song's folder, not its backup's. A
+/// backup of a song never saved (`home` is `None`) is its own home.
+pub fn open_recovered(
+    backup: &Path,
+    home: Option<&Path>,
+    banks: &[PathBuf],
+) -> Result<OpenedProject, OpenError> {
+    open_document_at(backup, home.unwrap_or(backup), banks)
+}
+
+/// The document at `document`, its relative files read from `path`.
+fn open_document_at(
+    document: &Path,
+    path: &Path,
+    banks: &[PathBuf],
+) -> Result<OpenedProject, OpenError> {
+    let project = fontelle_model::load_project(document)?;
 
     // Grouped by file: one read of a soundfont serves every sample any patch
     // takes from it, which on a 325 MB library is the difference between one

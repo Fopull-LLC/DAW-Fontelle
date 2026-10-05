@@ -191,3 +191,14 @@ fn a_plugin_that_asks_for_a_size_gets_it_below_the_strip() {
     });
     assert!(grown, "the frame grew by the plugin's size and the strip");
 }
+
+/// > *"plugin editors are not shown on this platform yet"* — said on a Mac as
+/// > *"a plugin editor needs an X server (XWayland on a Wayland desktop)"*,
+/// > which sends a Mac user looking for something no Mac has
+/// > (`docs/plugin-experience-backlog.md` §3).
+#[test]
+fn a_platform_without_plugin_windows_says_so_and_where_the_controls_are() {
+    let said = fontelle_host::GuiError::NotOnThisPlatform.to_string();
+    assert!(!said.contains("X server"), "{said}");
+    assert!(said.contains("panel"), "and where to go instead: {said}");
+}
