@@ -2503,6 +2503,11 @@ impl Session {
         Ok(())
     }
 
+    /// How far along the file `hash` is while it is on its way here.
+    pub fn collab_fetching(&self, hash: u64) -> Option<f32> {
+        self.collab.as_ref()?.fetching(hash)
+    }
+
     /// The files that have arrived whole in this session, by hash.
     pub fn files_received(&self) -> Vec<u64> {
         self.collab

@@ -321,6 +321,47 @@ impl Files {
         }
     }
 
+    /// The link to `old` dropped, and everything in flight on it with it: it
+    /// is now reachable as `new` — the same peer back, or a new connection —
+    /// or not at all. A file half way across would arrive with a hole in it
+    /// and be thrown away as damaged, or wait for the rest for ever and keep
+    /// every file after it waiting too; it is asked for again from the start,
+    /// of whoever has it now. What was being sent to `old` stops: the other
+    /// side asks again. `Some` is a sentence when a file now has nobody to
+    /// come from.
+    pub fn relink(&mut self, old: PeerId, new: Option<PeerId>) -> Option<String> {
+        self.uploads.remove(&old);
+        self.owed.retain(|(peer, _)| *peer != old);
+        let mut lost = None;
+        if let Some(fetching) = self.fetching.take_if(|f| f.from == old) {
+            let _ = std::fs::remove_file(&fetching.part);
+            match new {
+                Some(new) => self.wanted.push_front((fetching.entry, new)),
+                None => {
+                    lost = Some(format!(
+                        "\u{201c}{}\u{201d} was still on its way when its sender left \u{2014} \
+                         its clips stay silent.",
+                        display_name(&fetching.entry.file_name)
+                    ));
+                }
+            }
+        }
+        match new {
+            Some(new) => {
+                for (_, from) in self.wanted.iter_mut().chain(self.held.iter_mut()) {
+                    if *from == old {
+                        *from = new;
+                    }
+                }
+            }
+            None => {
+                self.wanted.retain(|(_, from)| *from != old);
+                self.held.retain(|(_, from)| *from != old);
+            }
+        }
+        lost
+    }
+
     /// The other side has not got it either.
     pub fn missing(&mut self, transport: &mut dyn Transport, hash: u64) -> Option<String> {
         let fetching = self.fetching.take_if(|f| f.entry.hash == hash)?;

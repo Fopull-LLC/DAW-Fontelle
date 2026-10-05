@@ -339,6 +339,9 @@ impl Collab {
             .map(|(&id, _)| id)
             .ok_or("that person has left")?;
         let who = host.peers.remove(&id).expect("just found");
+        if let Some(lost) = self.files.relink(id, None) {
+            self.notices.push(lost);
+        }
         send(
             self.transport.as_mut(),
             id,
@@ -675,6 +678,7 @@ impl Host {
                 // either side sent meanwhile is lost. They are welcomed
                 // again and sent the song as it is now (F38).
                 Incoming::Connected(peer) if self.peers.contains_key(&peer) => {
+                    turn.files.relink(peer, Some(peer));
                     if self.peers[&peer].welcomed {
                         self.welcome(turn, peer, doc);
                     }
@@ -775,6 +779,7 @@ impl Host {
                         .find(|(id, p)| **id != peer && p.welcomed && p.session == Some(session))
                         .map(|(&id, _)| id)?;
                     turn.transport.disconnect(old);
+                    turn.files.relink(old, Some(peer));
                     self.peers.remove(&old)
                 });
                 let free = |space: u16, peers: &BTreeMap<PeerId, HostPeer>| {
@@ -886,6 +891,9 @@ impl Host {
         let Some(who) = self.peers.remove(&peer) else {
             return;
         };
+        if let Some(lost) = turn.files.relink(peer, None) {
+            turn.notices.push(lost);
+        }
         if !who.welcomed {
             return;
         }
@@ -1273,6 +1281,9 @@ impl Joiner {
             }
             Msg::Resumed { handled } => {
                 if self.stage == Stage::Live {
+                    // Whatever was crossing the link when it dropped did not
+                    // arrive whole, either way.
+                    turn.files.relink(SERVER, Some(SERVER));
                     // Those the host has had are in the copy that follows
                     // (or were refused, and the copy is without them); the
                     // rest never reached it, and go again.

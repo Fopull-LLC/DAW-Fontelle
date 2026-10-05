@@ -1928,6 +1928,134 @@ fn a_joiner_back_after_the_host_saw_him_go_gets_his_place_again() {
     assert!(pair.joiner.collab_live());
 }
 
+/// Alice's song with a long take in it, saved, and Bob's empty studio.
+fn a_song_with_a_take(dir: &Path) -> (Session, Session) {
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.drop_file_at(&a_tone(&dir.join("desktop"), "take.wav", 20.0, 440.0), 0)
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    (host, joiner)
+}
+
+/// A file half way across when the host's link drops: what was in flight is
+/// lost, so the joiner asks for it again from the start once the host is
+/// back — rather than keeping a file with a hole in it, finding it damaged,
+/// and leaving its clips silent for good.
+#[test]
+fn a_file_cut_off_by_the_hosts_drop_is_fetched_again() {
+    let dir = scratch("file-host-drop");
+    let (host, joiner) = a_song_with_a_take(&dir);
+    let cut = Cut::default();
+    let theirs = cut.clone();
+    let clock = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let ticking = clock.clone();
+    let mut pair = Pair::through(
+        host,
+        joiner,
+        dir.clone(),
+        2,
+        Cleanup(dir.clone()),
+        move |link| {
+            Box::new(fontelle_net::Paced::with_clock(
+                Outage {
+                    inner: link,
+                    cut: theirs,
+                    held: Vec::new(),
+                },
+                fontelle_net::CLOUD_PACE,
+                Box::new(move || *ticking.lock().unwrap()),
+            ))
+        },
+        |hub| Box::new(hub.connect()),
+    );
+    pair.clock = Some(clock);
+    pair.answer(JoinAnswer::Copy);
+    let take = pair.joiner.missing_files()[0];
+    let mut ticks = 0;
+    while pair.joiner.collab_fetching(take).unwrap_or(0.0) == 0.0 {
+        pair.tick(1);
+        ticks += 1;
+        assert!(ticks < 100, "the take never started coming");
+    }
+    assert!(
+        !pair.joiner.missing_files().is_empty(),
+        "half way, not there"
+    );
+
+    cut.down();
+    pair.tick(10);
+    cut.restore();
+    pair.tick(300);
+
+    let said = pair.joiner.take_collab_notices().join(" ");
+    assert!(!said.contains("could not be kept"), "{said}");
+    assert!(
+        pair.joiner.missing_files().is_empty(),
+        "the take arrived whole"
+    );
+    pair.same();
+}
+
+/// The same when it is the joiner's link that drops and joins again: the
+/// host was sending to a connection that is gone, and the joiner waited
+/// forever for the rest — and, one file at a time, for every file after it.
+#[test]
+fn a_file_cut_off_by_the_joiners_drop_is_fetched_again() {
+    let dir = scratch("file-joiner-drop");
+    let (host, joiner) = a_song_with_a_take(&dir);
+    let cut = Cut::default();
+    let theirs = cut.clone();
+    let clock = std::sync::Arc::new(std::sync::Mutex::new(std::time::Duration::ZERO));
+    let ticking = clock.clone();
+    let mut pair = Pair::through(
+        host,
+        joiner,
+        dir.clone(),
+        2,
+        Cleanup(dir.clone()),
+        move |link| {
+            Box::new(fontelle_net::Paced::with_clock(
+                link,
+                fontelle_net::CLOUD_PACE,
+                Box::new(move || *ticking.lock().unwrap()),
+            ))
+        },
+        move |hub| {
+            Box::new(Rejoins {
+                hub: hub.clone(),
+                inner: hub.connect(),
+                cut: theirs,
+            })
+        },
+    );
+    pair.clock = Some(clock);
+    pair.answer(JoinAnswer::Copy);
+    let take = pair.joiner.missing_files()[0];
+    let mut ticks = 0;
+    while pair.joiner.collab_fetching(take).unwrap_or(0.0) == 0.0 {
+        pair.tick(1);
+        ticks += 1;
+        assert!(ticks < 100, "the take never started coming");
+    }
+
+    cut.down();
+    pair.tick(10);
+    cut.restore();
+    pair.tick(300);
+
+    assert!(
+        pair.joiner.missing_files().is_empty(),
+        "the take arrived whole"
+    );
+    pair.same();
+}
+
 /// What the relay's side of the link has to say — the host lost it and is
 /// getting it back, under which code — reaches the person, not just a log.
 #[test]
