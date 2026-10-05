@@ -136,6 +136,8 @@ impl Lv2Processor {
 
     pub(crate) fn learn_latency(&mut self) {}
 
+    pub(crate) fn ask_values(&mut self) {}
+
     pub(crate) fn restore_state(&mut self, _bytes: &[u8]) -> bool {
         false
     }
@@ -210,3 +212,17 @@ pub(crate) fn presets(
 ) -> Vec<crate::OwnPreset> {
     Vec::new()
 }
+
+/// See the LV2 build's `patch_param_id`; the same ids, so a song saved on
+/// Linux keeps its LV2 plugin's values when it is opened elsewhere.
+pub fn patch_param_id(uri: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in uri.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    (1 << 20) + hash % (u32::MAX - (1 << 20))
+}
+
+/// See the LV2 build's: where `patch:` parameter ids start.
+pub(crate) const PATCH_PARAM_BASE: u32 = 1 << 20;

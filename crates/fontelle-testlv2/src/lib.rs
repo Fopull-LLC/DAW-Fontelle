@@ -873,17 +873,47 @@ pub const LOADER_FREE_WHEELING_PORT: u32 = 2;
 /// output port — written in every `run`, which is where LV2 says a plugin
 /// reports it.
 pub const LOADER_LATENCY: u32 = 64;
+/// The loader's one parameter that is no port: a `patch:writable` property,
+/// the way Ultramaster KR-106 keeps all of its own. It multiplies what the
+/// loader plays; set with `patch:Set` on the event input, said back with
+/// `patch:Set` on the notify output — when asked with `patch:Get`, and when
+/// the loader changes it itself.
+pub const LOADER_BOOST_URI: &str = "http://fopull.com/fontelle/testlv2/loader#boost";
+const LOADER_BOOST_URI_C: &CStr = c"http://fopull.com/fontelle/testlv2/loader#boost";
+/// The key that has the loader set its boost to [`LOADER_BOOST_OWN`] itself
+/// — a knob turned in its own window — and say so.
+pub const LOADER_BOOST_KEY: u8 = 1;
+pub const LOADER_BOOST_OWN: f32 = 0.5;
+
+/// What the loader's patch messages are spelled with.
+#[derive(Default, Clone, Copy)]
+struct PatchUrids {
+    object: u32,
+    set: u32,
+    get: u32,
+    property: u32,
+    value: u32,
+    float: u32,
+    urid: u32,
+    sequence: u32,
+    boost: u32,
+}
 
 struct Loader {
     midi_in: *const LV2AtomSequence,
     output: *mut f32,
     free_wheeling: *const f32,
     latency: *mut f32,
+    notify: *mut LV2AtomSequence,
     schedule: *const lv2_raw::sys::LV2_Worker_Schedule,
     midi_urid: u32,
+    patch: PatchUrids,
     asked: bool,
     loaded: bool,
     held: Option<u8>,
+    boost: f32,
+    /// Say the boost on the notify port at the end of this block.
+    tell: bool,
 }
 
 extern "C" fn loader_instantiate(
@@ -893,6 +923,7 @@ extern "C" fn loader_instantiate(
     features: *const *const LV2Feature,
 ) -> LV2Handle {
     let mut midi_urid = 0;
+    let mut patch = PatchUrids::default();
     let mut schedule: *const lv2_raw::sys::LV2_Worker_Schedule = std::ptr::null();
     let mut cursor = features;
     // SAFETY: a NULL-terminated array of valid features — LV2's contract.
@@ -904,6 +935,18 @@ extern "C" fn loader_instantiate(
                 if uri == URID_MAP_URI {
                     let map = &*feature.data.cast::<LV2UridMap>();
                     midi_urid = (map.map)(map.handle, MIDI_EVENT_URI.as_ptr());
+                    let urid = |uri: &CStr| (map.map)(map.handle, uri.as_ptr());
+                    patch = PatchUrids {
+                        object: urid(c"http://lv2plug.in/ns/ext/atom#Object"),
+                        set: urid(c"http://lv2plug.in/ns/ext/patch#Set"),
+                        get: urid(c"http://lv2plug.in/ns/ext/patch#Get"),
+                        property: urid(c"http://lv2plug.in/ns/ext/patch#property"),
+                        value: urid(c"http://lv2plug.in/ns/ext/patch#value"),
+                        float: urid(c"http://lv2plug.in/ns/ext/atom#Float"),
+                        urid: urid(c"http://lv2plug.in/ns/ext/atom#URID"),
+                        sequence: urid(ATOM_SEQUENCE_URI),
+                        boost: urid(LOADER_BOOST_URI_C),
+                    };
                 } else if uri == WORKER_SCHEDULE_URI {
                     schedule = feature.data.cast();
                 }
@@ -920,11 +963,15 @@ extern "C" fn loader_instantiate(
         output: std::ptr::null_mut(),
         free_wheeling: std::ptr::null(),
         latency: std::ptr::null_mut(),
+        notify: std::ptr::null_mut(),
         schedule,
         midi_urid,
+        patch,
         asked: false,
         loaded: false,
         held: None,
+        boost: 1.0,
+        tell: false,
     }))
     .cast()
 }
@@ -937,6 +984,7 @@ extern "C" fn loader_connect_port(handle: LV2Handle, port: u32, data: *mut c_voi
         1 => loader.output = data.cast(),
         LOADER_FREE_WHEELING_PORT => loader.free_wheeling = data.cast(),
         3 => loader.latency = data.cast(),
+        4 => loader.notify = data.cast(),
         _ => {}
     }
 }
@@ -977,8 +1025,15 @@ extern "C" fn loader_run(handle: LV2Handle, samples: u32) {
                     .cast::<LV2AtomEvent>();
                 let data = (event as *const LV2AtomEvent as *const u8)
                     .add(std::mem::size_of::<LV2AtomEvent>());
+                if event.body.type_ == loader.patch.object && event.body.size >= 8 {
+                    loader.hear_patch(data, event.body.size as usize);
+                }
                 if event.body.type_ == loader.midi_urid && event.body.size >= 3 {
                     match *data & 0xF0 {
+                        0x90 if *data.add(2) > 0 && *data.add(1) == LOADER_BOOST_KEY => {
+                            loader.boost = LOADER_BOOST_OWN;
+                            loader.tell = true;
+                        }
                         0x90 if *data.add(2) > 0 => loader.held = Some(*data.add(1)),
                         0x80 | 0x90 => loader.held = None,
                         0xB0 if *data.add(1) == 123 => loader.held = None,
@@ -994,11 +1049,110 @@ extern "C" fn loader_run(handle: LV2Handle, samples: u32) {
     let level = match (loader.held, loader.loaded, free_wheeling) {
         (Some(LOADER_NAN_KEY), _, _) => f32::NAN,
         (None, _, _) | (_, false, _) => 0.0,
-        (Some(_), true, false) => LOADER_LEVEL,
-        (Some(_), true, true) => LOADER_LEVEL * 2.0,
+        (Some(_), true, false) => LOADER_LEVEL * loader.boost,
+        (Some(_), true, true) => LOADER_LEVEL * 2.0 * loader.boost,
     };
+    loader.say_patch();
     // SAFETY: the host connected `samples` floats.
     unsafe { std::slice::from_raw_parts_mut(loader.output, samples as usize) }.fill(level);
+}
+
+impl Loader {
+    /// A `patch:Set` of the boost, or a `patch:Get` of everything.
+    ///
+    /// # Safety
+    /// `body` is `size` bytes of an `atom:Object`'s body.
+    unsafe fn hear_patch(&mut self, body: *const u8, size: usize) {
+        let word = |at: usize| unsafe { (body.add(at) as *const u32).read_unaligned() };
+        let otype = word(4);
+        if otype == self.patch.get {
+            self.tell = true;
+            return;
+        }
+        if otype != self.patch.set {
+            return;
+        }
+        let (mut property, mut value) = (0u32, None);
+        let mut at = 8;
+        while at + 16 <= size {
+            let key = word(at);
+            let value_size = word(at + 8) as usize;
+            let value_type = word(at + 12);
+            let data = unsafe { body.add(at + 16) };
+            if key == self.patch.property && value_type == self.patch.urid && value_size >= 4 {
+                property = unsafe { (data as *const u32).read_unaligned() };
+            } else if key == self.patch.value && value_type == self.patch.float && value_size >= 4 {
+                value = Some(unsafe { (data as *const f32).read_unaligned() });
+            }
+            at += 16 + ((value_size + 7) & !7);
+        }
+        if property == self.patch.boost
+            && let Some(value) = value
+        {
+            self.boost = value.clamp(0.0, 4.0);
+        }
+    }
+
+    /// Writes the notify port: a `patch:Set` of the boost when there is
+    /// something to say, and an empty sequence otherwise.
+    fn say_patch(&mut self) {
+        // SAFETY: the host connects an output atom port to a buffer and sets
+        // its `atom.size` to that buffer's capacity before every run.
+        let Some(sequence) = (unsafe { self.notify.as_mut() }) else {
+            return;
+        };
+        let capacity = sequence.atom.size as usize;
+        sequence.atom.type_ = self.patch.sequence;
+        sequence.body.unit = 0;
+        sequence.body.pad = 0;
+        let header = size_of::<lv2_raw::LV2AtomSequenceBody>();
+        sequence.atom.size = header as u32;
+        if !std::mem::take(&mut self.tell) {
+            return;
+        }
+        // id, otype; then two properties of a four-byte atom padded to eight.
+        let mut body = [0u8; 8 + 2 * 24];
+        let mut at = 0;
+        let mut put = |bytes: &[u8]| {
+            body[at..at + bytes.len()].copy_from_slice(bytes);
+            at += bytes.len();
+        };
+        put(&0u32.to_ne_bytes());
+        put(&self.patch.set.to_ne_bytes());
+        for (key, kind, value) in [
+            (
+                self.patch.property,
+                self.patch.urid,
+                self.patch.boost.to_ne_bytes(),
+            ),
+            (self.patch.value, self.patch.float, self.boost.to_ne_bytes()),
+        ] {
+            put(&key.to_ne_bytes());
+            put(&0u32.to_ne_bytes());
+            put(&4u32.to_ne_bytes());
+            put(&kind.to_ne_bytes());
+            put(&value);
+            put(&[0u8; 4]);
+        }
+        let event = size_of::<LV2AtomEvent>() + body.len();
+        if header + event > capacity {
+            return;
+        }
+        // SAFETY: within the capacity checked above.
+        unsafe {
+            let start = (self.notify as *mut u8).add(size_of::<LV2AtomSequence>());
+            let event_at = start.cast::<LV2AtomEvent>();
+            (*event_at).time_in_frames = 0;
+            (*event_at).body.type_ = self.patch.object;
+            (*event_at).body.size = body.len() as u32;
+            std::ptr::copy_nonoverlapping(
+                body.as_ptr(),
+                start.add(size_of::<LV2AtomEvent>()),
+                body.len(),
+            );
+            (*self.notify).atom.size = (header + event) as u32;
+        }
+    }
 }
 
 extern "C" fn loader_cleanup(handle: LV2Handle) {

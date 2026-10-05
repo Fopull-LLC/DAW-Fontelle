@@ -289,6 +289,11 @@ impl HostedPlugin {
             return self.load_own_preset(preset);
         };
         if let Some(state) = state {
+            // What the studio had not sent its `patch:` parameters yet is
+            // older than this preset: sent after it, it put the patch from
+            // before back over it.
+            self.values()
+                .forget_unsent(|id| id >= crate::lv2::PATCH_PARAM_BASE);
             processor.lv2_restore_preset(state);
         }
         for (index, value) in ports {

@@ -3,6 +3,7 @@
 @prefix foaf: <http://xmlns.com/foaf/0.1/> .
 @prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
 @prefix midi: <http://lv2plug.in/ns/ext/midi#> .
+@prefix patch: <http://lv2plug.in/ns/ext/patch#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix rsz:  <http://lv2plug.in/ns/ext/resize-port#> .
 @prefix state: <http://lv2plug.in/ns/ext/state#> .
@@ -223,7 +224,7 @@
     lv2:port [
         a lv2:InputPort, atom:AtomPort ;
         atom:bufferType atom:Sequence ;
-        atom:supports midi:MidiEvent ;
+        atom:supports midi:MidiEvent, patch:Message ;
         lv2:index 0 ;
         lv2:symbol "midi_in" ;
         lv2:name "MIDI In" ;
@@ -251,4 +252,22 @@
         lv2:symbol "latency" ;
         lv2:name "Latency" ;
         lv2:portProperty lv2:reportsLatency, lv2:integer ;
-    ] .
+    ] , [
+        # Where it says its `patch:` parameter back — see
+        # `fontelle_testlv2::LOADER_BOOST_URI`.
+        a lv2:OutputPort, atom:AtomPort ;
+        atom:bufferType atom:Sequence ;
+        atom:supports patch:Message ;
+        lv2:index 4 ;
+        lv2:symbol "notify" ;
+        lv2:name "Notify" ;
+    ] ;
+    patch:writable <http://fopull.com/fontelle/testlv2/loader#boost> .
+
+<http://fopull.com/fontelle/testlv2/loader#boost>
+    a lv2:Parameter ;
+    rdfs:label "Boost" ;
+    rdfs:range atom:Float ;
+    lv2:default 1.0 ;
+    lv2:minimum 0.0 ;
+    lv2:maximum 4.0 .

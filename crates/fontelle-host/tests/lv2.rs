@@ -1394,3 +1394,119 @@ fn an_lv2_plugin_with_no_latency_port_delays_by_nothing() {
     assert_eq!(plugin.latency_samples(), 0);
     plugin.deactivate(processor);
 }
+
+/// The loader's `patch:` parameter, by name — its id is the host's to give.
+fn boost(plugin: &fontelle_host::HostedPlugin) -> fontelle_host::HostedParam {
+    plugin
+        .params()
+        .iter()
+        .find(|param| param.name == "Boost")
+        .cloned()
+        .expect("the loader's patch parameter is a parameter")
+}
+
+/// > Ultramaster KR-106's LV2 keeps every one of its parameters as a
+/// > `patch:writable` property rather than a control port, and the studio
+/// > showed none of them (`docs/plugin-experience-backlog.md` §7).
+///
+/// 42 of the 339 bundles on the devbox declare some. A numeric one is a
+/// parameter like any other now: named, ranged and defaulted off the Turtle,
+/// with an id past every port's.
+#[test]
+fn an_lv2_plugins_patch_properties_are_parameters() {
+    let mut host = PluginHost::new();
+    let plugin = loader(&mut host);
+    let boost = boost(&plugin);
+    assert_eq!((boost.min, boost.max, boost.default), (0.0, 4.0, 1.0));
+    assert!(!boost.stepped && !boost.readonly);
+    assert!(
+        plugin
+            .params()
+            .iter()
+            .filter(|p| p.id != boost.id)
+            .all(|p| p.id < boost.id),
+        "past the ports"
+    );
+}
+
+/// Set from the studio, it reaches the plugin as a `patch:Set`.
+#[test]
+fn a_patch_parameter_set_in_the_studio_is_what_the_plugin_does() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    let id = boost(&plugin).id;
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.finish_work();
+    plugin.set_param(id, 2.0);
+    processor.note_on(0, 60, 1.0);
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.process_instrument(&mut output, 256);
+    processor.process_instrument(&mut output, 256);
+    assert_eq!(peak(&output), fontelle_testlv2::LOADER_LEVEL * 2.0);
+}
+
+/// And one the plugin changes itself — a knob in its own window — reaches
+/// the studio's knob from the `patch:Set` it says, and counts as an edit.
+#[test]
+fn a_patch_parameter_the_plugin_changes_itself_is_heard() {
+    let mut host = PluginHost::new();
+    let mut plugin = loader(&mut host);
+    let id = boost(&plugin).id;
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.process_instrument(&mut output, 256);
+    let _ = plugin.values().take_heard();
+    processor.note_on(0, fontelle_testlv2::LOADER_BOOST_KEY, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert_eq!(
+        plugin.values().get(id),
+        Some(f64::from(fontelle_testlv2::LOADER_BOOST_OWN))
+    );
+    assert!(plugin.values().take_heard(), "an edit the studio heard");
+}
+
+/// A saved song keeps a `patch:` parameter by its id, so the id has to be
+/// the same every time the plugin opens — on this machine and the next,
+/// and after the plugin adds a parameter in an update. lilv hands the list
+/// over in an order of its own, different per opening: numbered by place,
+/// Ultramaster KR-106 reopened with its voice count in its saw switch. The
+/// id is made from the parameter's URI.
+#[test]
+fn a_patch_parameters_id_comes_from_its_uri_not_its_place() {
+    let mut host = PluginHost::new();
+    let plugin = loader(&mut host);
+    assert_eq!(
+        boost(&plugin).id,
+        fontelle_host::lv2::patch_param_id(fontelle_testlv2::LOADER_BOOST_URI)
+    );
+    assert!(fontelle_host::lv2::patch_param_id("urn:a") >= 1 << 20);
+    assert_ne!(
+        fontelle_host::lv2::patch_param_id("urn:a"),
+        fontelle_host::lv2::patch_param_id("urn:b")
+    );
+}
+
+/// > Ultramaster KR-106, one walk in two: a preset chosen after an undo did
+/// > not stay.
+///
+/// The undo put the song's values back on the wire for the next block; when
+/// the next preset was loaded before that block ran, they went out after
+/// it, as `patch:Set`s, and put the undo's patch back over the preset. A
+/// load is newer than anything waiting to be sent from before it.
+#[test]
+fn what_the_studio_had_not_sent_yet_is_forgotten_by_a_load() {
+    let mut host = PluginHost::new();
+    let plugin = loader(&mut host);
+    let id = boost(&plugin).id;
+    let values = plugin.values();
+    values.set(id, 3.0);
+    values.forget_unsent(|unsent| unsent == id);
+    let mut sent = Vec::new();
+    values.drain(|id, value| sent.push((id, value)));
+    assert!(sent.is_empty(), "{sent:?}");
+
+    values.set(id, 3.0);
+    values.forget_unsent(|unsent| unsent != id);
+    values.drain(|id, value| sent.push((id, value)));
+    assert_eq!(sent, [(id, 3.0)], "only what it was asked to forget");
+}

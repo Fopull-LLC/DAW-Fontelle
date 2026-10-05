@@ -391,6 +391,15 @@ impl HostedProcessor {
         }
     }
 
+    /// Asks an LV2 plugin, on the next block, what its `patch:` parameters
+    /// are (`patch:Get`). Nothing for the other formats, whose parameters are
+    /// read on the main thread whenever they are wanted.
+    pub(crate) fn ask_values(&mut self) {
+        if let Inner::Lv2(p) = &mut self.inner {
+            p.ask_values();
+        }
+    }
+
     /// What the next block will be told about the song.
     pub fn transport(&self) -> PluginTransport {
         self.transport

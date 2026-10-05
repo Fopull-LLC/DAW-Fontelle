@@ -172,6 +172,33 @@ impl ParamValues {
         true
     }
 
+    /// **RT-safe.** What the plugin answers when asked what a parameter is
+    /// (an LV2 plugin's reply to `patch:Get`): kept, unmarked and **not** an
+    /// edit — it is the plugin's own state, as it starts or after a load —
+    /// and, like [`hear`](Self::hear), not over a value the studio has set
+    /// and not yet sent.
+    pub fn answer(&self, id: u32, value: f64) -> bool {
+        let Some(slot) = self.slots.iter().find(|slot| slot.id == id) else {
+            return false;
+        };
+        if slot.moved.load(Ordering::Acquire) {
+            return false;
+        }
+        slot.value.store(value.to_bits(), Ordering::Relaxed);
+        true
+    }
+
+    /// Drops what the studio set and has not sent yet, for the parameters
+    /// `which` names — after a load, which is newer than anything waiting
+    /// from before it. The values stay; only the sending is called off.
+    pub fn forget_unsent(&self, which: impl Fn(u32) -> bool) {
+        for slot in &self.slots {
+            if which(slot.id) {
+                slot.moved.store(false, Ordering::Release);
+            }
+        }
+    }
+
     /// **RT-safe.** Says the plugin changed something itself, by a way other
     /// than [`hear`](Self::hear) — a VST 3 editor's edit arrives as a `set`.
     pub fn note_heard(&self) {

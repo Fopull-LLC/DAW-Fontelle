@@ -653,6 +653,19 @@ fn one_note_through_the_bundle_at_a_path() {
     let mut plugin = host.open(&path, &info.key).expect("it opens");
     let mut processor = plugin.activate(48_000.0, 256).expect("it activates");
     let mut output = vec![vec![0.0f32; 256]; plugin.audio_outputs().max(2) as usize];
+    if std::env::var_os("FONTELLE_DEBUG_VALUES").is_some() {
+        for _ in 0..4 {
+            processor.process_instrument(&mut output, 256);
+        }
+        for param in plugin.params().iter().filter(|p| p.id >= 1 << 20).take(30) {
+            eprintln!(
+                "  {} = {:?} (default {})",
+                param.name,
+                plugin.values().get(param.id),
+                param.default
+            );
+        }
+    }
     for offline in [false, true] {
         processor.set_transport(&fontelle_host::PluginTransport {
             playing: true,

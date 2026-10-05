@@ -960,6 +960,9 @@ impl HostedPlugin {
         if !plugin.stash_state(&bytes) {
             return false;
         }
+        // Older than this state — see `load_own_preset_with`.
+        self.values
+            .forget_unsent(|id| id >= crate::lv2::PATCH_PARAM_BASE);
         let taken = processor.lv2_restore_state(&bytes);
         // What it handed its worker for that state, done before it plays.
         processor.finish_work();
@@ -1844,6 +1847,8 @@ impl HostedPlugin {
         let mut blocks = 0u32;
         loop {
             self.service_main_thread();
+            // An LV2 plugin's `patch:` parameters are known only by asking.
+            processor.ask_values();
             if instrument {
                 processor.process_instrument(&mut bus, frames);
             } else {

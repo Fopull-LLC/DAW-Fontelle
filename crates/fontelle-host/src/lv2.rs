@@ -97,6 +97,23 @@ const ATOM_CAPACITY_MAX: usize = 64 * 1024 * 1024;
 
 const MINIMUM_SIZE: &str = "http://lv2plug.in/ns/ext/resize-port#minimumSize";
 const TIME_POSITION: &str = "http://lv2plug.in/ns/ext/time#Position";
+const PATCH: &str = "http://lv2plug.in/ns/ext/patch#";
+const ATOM: &str = "http://lv2plug.in/ns/ext/atom#";
+/// Where the ids of an LV2 plugin's `patch:` parameters start — past any
+/// port index a plugin will have, which is what a port's parameter id is.
+pub(crate) const PATCH_PARAM_BASE: u32 = 1 << 20;
+
+/// The parameter id of the `patch:` property `uri`: made from the URI, so a
+/// saved song finds the same parameter whatever order lilv lists them in
+/// and after the plugin adds one. FNV-1a, folded past the ports.
+pub fn patch_param_id(uri: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in uri.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    PATCH_PARAM_BASE + hash % (u32::MAX - PATCH_PARAM_BASE)
+}
 
 /// A `time:Position`'s body: id and type, and seven properties of at most
 /// twenty-four bytes each.
@@ -406,6 +423,9 @@ pub(crate) struct Lv2Plugin {
     free_wheeling: Option<u32>,
     /// The output port it says its latency on, if it has one — see `open`.
     latency_port: Option<u32>,
+    /// Its parameters that are `patch:` properties rather than ports — see
+    /// `patch_parameters`.
+    patch_params: Arc<[PatchParam]>,
     /// The running instance's own `LV2_Handle`, while there is one, or null.
     ///
     /// What an editor asking for **`instance-access`** is handed. Written by
@@ -504,7 +524,21 @@ pub(crate) fn open(
                 readonly: false,
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // **And the parameters that are not ports** — see `patch_parameters`.
+    let patch_params = patch_parameters(&plugin, world);
+    let mut params = params;
+    params.extend(patch_params.iter().map(|patch| HostedParam {
+        id: patch.id,
+        name: patch.name.clone(),
+        module: String::new(),
+        min: patch.min,
+        max: patch.max,
+        default: patch.default,
+        stepped: patch.kind != PatchKind::Float && patch.kind != PatchKind::Double,
+        hidden: false,
+        readonly: patch.readonly,
+    }));
     let midi = lilv.new_uri(MIDI_EVENT);
     let accepts_notes = plugin
         .ports_with_type(PortType::AtomSequenceInput)
@@ -602,6 +636,7 @@ pub(crate) fn open(
             wants_time,
             free_wheeling,
             latency_port,
+            patch_params: patch_params.into(),
         },
     })
 }
@@ -757,6 +792,13 @@ impl Lv2Plugin {
             free_wheeling: self.free_wheeling.map(|port| PortIndex(port as usize)),
             offline: false,
             latency_port: self.latency_port.map(|port| PortIndex(port as usize)),
+            patch: (!self.patch_params.is_empty()).then(|| {
+                PatchIo::new(
+                    &self.features,
+                    Arc::clone(&self.patch_params),
+                    self.atom_in_sizes.first().copied().unwrap_or(ATOM_CAPACITY),
+                )
+            }),
         };
         // Every control port starts at the plugin's default; the wire
         // carries the document's answer and is applied on the first block.
@@ -874,6 +916,8 @@ pub(crate) struct Lv2Processor {
     offline: bool,
     /// Where it says what it delays by — see [`latency`](Self::latency).
     latency_port: Option<PortIndex>,
+    /// Its `patch:` parameters' messages, when it has any — see [`PatchIo`].
+    patch: Option<PatchIo>,
 }
 
 impl Lv2Processor {
@@ -882,6 +926,12 @@ impl Lv2Processor {
     /// `ProcessorBay::recall`). Port values are not set here: they reach the
     /// plugin as parameters, through the wire every other value takes.
     pub(crate) fn restore_preset(&mut self, preset: &Lv2Preset) {
+        // A preset is a state like any other: what its `patch:` parameters
+        // are now is asked on the next block (KR-106's presets are a program
+        // number in its state, and every knob moves with it).
+        if let Some(patch) = &mut self.patch {
+            patch.ask = true;
+        }
         let instance = self.instance.raw().instance();
         let Some(descriptor) = instance.descriptor() else {
             return;
@@ -1024,6 +1074,15 @@ impl Lv2Processor {
         }
     }
 
+    /// Asks, on the next block, what its `patch:` parameters are — for a
+    /// wait on something loading, which a plugin may finish a block or two
+    /// after it was handed it.
+    pub(crate) fn ask_values(&mut self) {
+        if let Some(patch) = &mut self.patch {
+            patch.ask = true;
+        }
+    }
+
     /// What the plugin says it delays by, in frames — off its latency port,
     /// as it was left by the last `run`. Zero for a plugin with none.
     pub(crate) fn latency(&self) -> u32 {
@@ -1056,6 +1115,10 @@ impl Lv2Processor {
         let Some(state) = crate::lv2_state::Lv2State::decode(bytes) else {
             return false;
         };
+        // What its `patch:` parameters are now is asked on the next block.
+        if let Some(patch) = &mut self.patch {
+            patch.ask = true;
+        }
         // SAFETY: the instance is this processor's and nothing is running it
         // — the caller holds the processor, off the audio thread.
         unsafe { crate::lv2_state::restore(self.instance.raw().instance(), &self.features, &state) }
@@ -1091,9 +1154,21 @@ impl Lv2Processor {
         // plugin reads during `run`, so writing it now is the whole of a
         // parameter change — there is no event to build.
         let instance = &mut self.instance;
+        let patch = &mut self.patch;
         self.values.drain(|id, value| {
-            instance.set_control_input(PortIndex(id as usize), value as f32);
+            if id >= PATCH_PARAM_BASE {
+                if let Some(patch) = patch.as_mut() {
+                    patch.queue(id, value);
+                }
+            } else {
+                instance.set_control_input(PortIndex(id as usize), value as f32);
+            }
         });
+        // The patch messages, then the position ahead of them: both at frame
+        // zero, ahead of the notes.
+        if let (Some(patch), Some(first)) = (&mut self.patch, self.atom_in.first_mut()) {
+            patch.put_ahead_of(first);
+        }
         if let (Some(time), Some(first)) = (&mut self.time, self.atom_in.first_mut()) {
             time.put_ahead_of(first);
         }
@@ -1149,6 +1224,10 @@ impl Lv2Processor {
             let pipe = &self.atoms.to_editor;
             for event in first.iter() {
                 pipe.push(event.event.body.mytype, event.data);
+            }
+            // And what it said about its `patch:` parameters.
+            if let Some(patch) = &mut self.patch {
+                patch.hear(first, &self.values);
             }
         }
 
@@ -1215,6 +1294,355 @@ pub(crate) fn search_paths(home: Option<&PathBuf>) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+// ------------------------------------------------------- patch parameters
+
+/// What an LV2 `patch:` parameter's value is, as an atom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PatchKind {
+    Float,
+    Double,
+    Int,
+    Long,
+    Bool,
+}
+
+/// One parameter an LV2 plugin keeps as a `patch:writable` (or only
+/// `patch:readable`) property rather than a control port.
+#[derive(Debug, Clone)]
+pub(crate) struct PatchParam {
+    /// Its parameter id — see [`patch_param_id`].
+    id: u32,
+    uri: String,
+    name: String,
+    kind: PatchKind,
+    min: f64,
+    max: f64,
+    default: f64,
+    readonly: bool,
+}
+
+/// > *Ultramaster KR-106's LV2 keeps every one of its parameters as a
+/// > `patch:writable` property* — and the studio showed none of them.
+///
+/// The newer of LV2's two ways to have parameters: a property the plugin
+/// lists as `patch:writable` (or `patch:readable`, for one it only reports),
+/// described as an `lv2:Parameter` with a label, an `rdfs:range` and a
+/// minimum, maximum and default, and set and reported with `patch:Set`
+/// messages on the event ports. The numeric ones are parameters here like
+/// any port; a path (a sampler's file) is not a knob and is left to the
+/// plugin's own editor.
+pub(crate) fn patch_parameters(plugin: &livi::Plugin, world: &World) -> Vec<PatchParam> {
+    let lilv = world.raw();
+    let uri = |name: &str| lilv.new_uri(name);
+    let (label, range) = (
+        uri("http://www.w3.org/2000/01/rdf-schema#label"),
+        uri("http://www.w3.org/2000/01/rdf-schema#range"),
+    );
+    let (minimum, maximum, default) = (
+        uri(&format!("{LV2_CORE}minimum")),
+        uri(&format!("{LV2_CORE}maximum")),
+        uri(&format!("{LV2_CORE}default")),
+    );
+    let number = |node: livi::lilv::node::Node| -> Option<f64> {
+        if node.is_float() {
+            node.as_float().map(f64::from)
+        } else if node.is_int() {
+            node.as_int().map(f64::from)
+        } else if node.is_bool() {
+            node.as_bool().map(|b| if b { 1.0 } else { 0.0 })
+        } else {
+            node.as_str().and_then(|text| text.trim().parse().ok())
+        }
+    };
+    let mut found: Vec<PatchParam> = Vec::new();
+    for (property, readonly) in [("writable", false), ("readable", true)] {
+        let listed = plugin.raw().value(&uri(&format!("{PATCH}{property}")));
+        for node in listed.iter() {
+            let Some(id) = node.as_uri().map(str::to_string) else {
+                continue;
+            };
+            // Writable and readable both, it is writable.
+            if found.iter().any(|known| known.uri == id) {
+                continue;
+            }
+            let kind = match lilv
+                .get(Some(&node), Some(&range), None)
+                .and_then(|range| range.as_uri().map(str::to_string))
+                .as_deref()
+                .and_then(|range| range.strip_prefix(ATOM))
+            {
+                Some("Float") => PatchKind::Float,
+                Some("Double") => PatchKind::Double,
+                Some("Int") => PatchKind::Int,
+                Some("Long") => PatchKind::Long,
+                Some("Bool") => PatchKind::Bool,
+                _ => continue,
+            };
+            let get = |predicate: &livi::lilv::node::Node| {
+                lilv.get(Some(&node), Some(predicate), None)
+                    .and_then(number)
+            };
+            let (min, max) = match kind {
+                PatchKind::Bool => (0.0, 1.0),
+                _ => (get(&minimum).unwrap_or(0.0), get(&maximum).unwrap_or(1.0)),
+            };
+            let name = lilv
+                .get(Some(&node), Some(&label), None)
+                .and_then(|label| label.as_str().map(str::to_string))
+                .unwrap_or_else(|| id.rsplit(['#', '/', ':']).next().unwrap_or(&id).to_string());
+            // Two URIs that fold to one id: the later in URI order moves on,
+            // so the answer is the same however lilv ordered them.
+            found.push(PatchParam {
+                id: patch_param_id(&id),
+                uri: id,
+                name,
+                kind,
+                min,
+                max: max.max(min),
+                default: get(&default).unwrap_or(min).clamp(min, max.max(min)),
+                readonly,
+            });
+        }
+    }
+    found.sort_by(|a, b| a.uri.cmp(&b.uri));
+    for at in 1..found.len() {
+        while found[..at].iter().any(|earlier| earlier.id == found[at].id) {
+            found[at].id = PATCH_PARAM_BASE.max(found[at].id.wrapping_add(1));
+        }
+    }
+    found
+}
+
+/// The `patch:` messages of one running instance: the `patch:Set`s the
+/// studio's changes become, a `patch:Get` when what it holds is to be asked
+/// (as it starts, and after a state goes in), and the `patch:Set`s it says.
+struct PatchIo {
+    params: Arc<[PatchParam]>,
+    /// Each parameter's URID, in `params` order.
+    keys: Vec<u32>,
+    urids: PatchUrids,
+    /// Changes waiting for the next block: `(index, value)`. Sized for one
+    /// of each, so queueing never allocates.
+    pending: Vec<(usize, f64)>,
+    /// A `patch:Get` goes out on the next block.
+    ask: bool,
+    /// One went out on this block: what comes back is the plugin's own
+    /// state, adopted rather than heard (not an edit).
+    asked: bool,
+    scratch: LV2AtomSequence,
+}
+
+#[derive(Clone, Copy)]
+struct PatchUrids {
+    object: u32,
+    blank: u32,
+    set: u32,
+    get: u32,
+    property: u32,
+    value: u32,
+    urid: u32,
+    float: u32,
+    double: u32,
+    int: u32,
+    long: u32,
+    bool: u32,
+}
+
+/// Room for one `patch:Set` body: id, type, two properties of up to eight.
+const PATCH_SET_BODY: usize = 8 + 2 * 24;
+
+impl PatchIo {
+    fn new(features: &Arc<Features>, params: Arc<[PatchParam]>, capacity: usize) -> Self {
+        let urid = |uri: &str| {
+            let uri = std::ffi::CString::new(uri).expect("a URI has no NUL");
+            features.urid(&uri)
+        };
+        let keys = params.iter().map(|param| urid(&param.uri)).collect();
+        let urids = PatchUrids {
+            object: urid(&format!("{ATOM}Object")),
+            blank: urid(&format!("{ATOM}Blank")),
+            set: urid(&format!("{PATCH}Set")),
+            get: urid(&format!("{PATCH}Get")),
+            property: urid(&format!("{PATCH}property")),
+            value: urid(&format!("{PATCH}value")),
+            urid: urid(&format!("{ATOM}URID")),
+            float: urid(&format!("{ATOM}Float")),
+            double: urid(&format!("{ATOM}Double")),
+            int: urid(&format!("{ATOM}Int")),
+            long: urid(&format!("{ATOM}Long")),
+            bool: urid(&format!("{ATOM}Bool")),
+        };
+        Self {
+            pending: Vec::with_capacity(params.len()),
+            params,
+            keys,
+            urids,
+            ask: true,
+            asked: false,
+            scratch: LV2AtomSequence::new(features, capacity),
+        }
+    }
+
+    /// **RT.** A change from the studio, for the next block.
+    fn queue(&mut self, id: u32, value: f64) {
+        let Some(index) = self.params.iter().position(|param| param.id == id) else {
+            return;
+        };
+        let param = &self.params[index];
+        if param.readonly || self.pending.len() == self.pending.capacity() {
+            return;
+        }
+        self.pending.retain(|(at, _)| *at != index);
+        self.pending.push((index, value));
+    }
+
+    /// **RT.** Puts this block's `patch:Get` and `patch:Set`s at frame zero
+    /// of `sequence`, ahead of whatever is in it — `TimeWriter`'s way.
+    fn put_ahead_of(&mut self, sequence: &mut LV2AtomSequence) {
+        self.asked = false;
+        if !self.ask && self.pending.is_empty() {
+            return;
+        }
+        let u = self.urids;
+        self.scratch.clear();
+        if std::mem::take(&mut self.ask) {
+            let mut body = [0u8; 8];
+            body[4..].copy_from_slice(&u.get.to_ne_bytes());
+            if let Ok(event) =
+                livi::event::LV2AtomEventBuilder::<PATCH_SET_BODY>::new(0, u.object, &body)
+            {
+                let _ = self.scratch.push_event(&event);
+                self.asked = true;
+            }
+        }
+        for (index, value) in self.pending.drain(..) {
+            let param = &self.params[index];
+            let mut body = [0u8; PATCH_SET_BODY];
+            let mut at = 0;
+            let mut put = |bytes: &[u8]| {
+                body[at..at + bytes.len()].copy_from_slice(bytes);
+                at += bytes.len();
+            };
+            put(&0u32.to_ne_bytes());
+            put(&u.set.to_ne_bytes());
+            let mut property = |key: u32, kind: u32, bytes: &[u8]| {
+                put(&key.to_ne_bytes());
+                put(&0u32.to_ne_bytes());
+                put(&(bytes.len() as u32).to_ne_bytes());
+                put(&kind.to_ne_bytes());
+                put(bytes);
+                put(&[0u8; 8][..(8 - bytes.len() % 8) % 8]);
+            };
+            property(u.property, u.urid, &self.keys[index].to_ne_bytes());
+            match param.kind {
+                PatchKind::Float => property(u.value, u.float, &(value as f32).to_ne_bytes()),
+                PatchKind::Double => property(u.value, u.double, &value.to_ne_bytes()),
+                PatchKind::Int => property(u.value, u.int, &(value.round() as i32).to_ne_bytes()),
+                PatchKind::Long => property(u.value, u.long, &(value.round() as i64).to_ne_bytes()),
+                PatchKind::Bool => {
+                    property(u.value, u.bool, &i32::from(value >= 0.5).to_ne_bytes())
+                }
+            }
+            let used = at;
+            if let Ok(event) =
+                livi::event::LV2AtomEventBuilder::<PATCH_SET_BODY>::new(0, u.object, &body[..used])
+            {
+                let _ = self.scratch.push_event(&event);
+            }
+        }
+        // The events already there after them, as `TimeWriter` copies them.
+        // SAFETY: both are livi sequences — a 16-byte header, then events —
+        // and the copy is bounded by the scratch's capacity.
+        unsafe {
+            let from = sequence.as_ptr();
+            let events = ((*from).atom.size as usize).saturating_sub(8);
+            let to = self.scratch.as_mut_ptr();
+            let used = (*to).atom.size as usize;
+            if 8 + used + events > self.scratch.capacity() + 8 {
+                return;
+            }
+            let source = (from as *const u8).add(16);
+            let target = (to as *mut u8).add(8 + used);
+            std::ptr::copy_nonoverlapping(source, target, events);
+            (*to).atom.size += events as u32;
+        }
+        std::mem::swap(sequence, &mut self.scratch);
+    }
+
+    /// **RT.** The `patch:Set`s the plugin said on its output this block:
+    /// adopted when they answer the studio's `patch:Get` (its own state, as
+    /// it starts or after a restore), heard otherwise (an edit in its own
+    /// window).
+    fn hear(&mut self, sequence: &LV2AtomSequence, values: &ParamValues) {
+        let u = self.urids;
+        for event in sequence.iter() {
+            let kind = event.event.body.mytype;
+            if kind != u.object && kind != u.blank {
+                continue;
+            }
+            let body = event.data;
+            let word = |at: usize| -> Option<u32> {
+                body.get(at..at + 4)
+                    .map(|bytes| u32::from_ne_bytes(bytes.try_into().unwrap_or_default()))
+            };
+            if word(4) != Some(u.set) {
+                continue;
+            }
+            let (mut key, mut value) = (None, None);
+            let mut at = 8;
+            while let (Some(property), Some(size), Some(atom)) =
+                (word(at), word(at + 8), word(at + 12))
+            {
+                let size = size as usize;
+                let Some(data) = body.get(at + 16..at + 16 + size) else {
+                    break;
+                };
+                if property == u.property && atom == u.urid {
+                    key = word(at + 16);
+                } else if property == u.value {
+                    value = read_number(&u, atom, data);
+                }
+                at += 16 + ((size + 7) & !7);
+            }
+            let (Some(key), Some(value)) = (key, value) else {
+                continue;
+            };
+            let Some(index) = self.keys.iter().position(|known| *known == key) else {
+                continue;
+            };
+            let id = self.params[index].id;
+            if self.asked {
+                values.answer(id, value);
+            } else {
+                values.hear(id, value);
+            }
+        }
+    }
+}
+
+/// A number out of an atom of one of the kinds a `patch:` parameter is.
+fn read_number(u: &PatchUrids, atom: u32, data: &[u8]) -> Option<f64> {
+    let four = || {
+        data.get(..4)
+            .map(|b| <[u8; 4]>::try_from(b).unwrap_or_default())
+    };
+    let eight = || {
+        data.get(..8)
+            .map(|b| <[u8; 8]>::try_from(b).unwrap_or_default())
+    };
+    if atom == u.float {
+        four().map(|b| f64::from(f32::from_ne_bytes(b)))
+    } else if atom == u.double {
+        eight().map(f64::from_ne_bytes)
+    } else if atom == u.int || atom == u.bool {
+        four().map(|b| f64::from(i32::from_ne_bytes(b)))
+    } else if atom == u.long {
+        eight().map(|b| i64::from_ne_bytes(b) as f64)
+    } else {
+        None
+    }
 }
 
 // ------------------------------------------------------------ own presets
