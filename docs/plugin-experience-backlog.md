@@ -9,6 +9,14 @@ frustration each item causes, then by cost.
 
 Sizes: **S** is under a day, **M** a few days, **L** a week or more.
 
+**Status, 2026-10-05: items 1 to 9 of the order below are done (v0.24.0)**
+— see `PROGRESS.md`. Item 7 (Wayland scaling) has the fix but has not been
+looked at on a scaled screen. Left: Windows and macOS real-plugin CI (10),
+LV2 `patch:` parameters (11), plugin-loaded samples travelling with a song
+(12), macOS editors (13), plugins in their own process (14), upstream
+reports (15). VST 3's offline process mode (part of 11 in the tiers) is not
+done either; no plugin has been found that needs it.
+
 ---
 
 ## Tier 1: things that make people think their work is lost

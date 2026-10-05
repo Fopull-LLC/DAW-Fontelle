@@ -730,7 +730,8 @@ impl<const MIDI: bool> Plugin for SinePlugin<MIDI> {
         builder
             .register::<PluginParams>()
             .register::<PluginAudioPorts>()
-            .register::<PluginNotePorts>();
+            .register::<PluginNotePorts>()
+            .register::<clack_extensions::render::PluginRender>();
     }
 }
 
@@ -1066,6 +1067,34 @@ impl PluginAudioProcessorParams for SineProcessor<'_> {
 /// so a test can count them (a render that opened a second one of the
 /// studio's plugins, which some plugins do not survive).
 pub const CREATE_LOG_ENV: &str = "FONTELLE_TESTPLUG_CREATE_LOG";
+
+/// When this names a file, every render mode the sine is set to appends a
+/// line — `offline` or `realtime` — so a test can see a render tell it.
+pub const RENDER_LOG_ENV: &str = "FONTELLE_TESTPLUG_RENDER_LOG";
+
+impl<const MIDI: bool> clack_extensions::render::PluginRenderImpl for SineMain<'_, MIDI> {
+    fn has_hard_realtime_requirement(&self) -> bool {
+        false
+    }
+
+    fn set(&mut self, mode: clack_extensions::render::RenderMode) -> Result<(), PluginError> {
+        if let Some(file) = std::env::var_os(RENDER_LOG_ENV) {
+            use std::io::Write;
+            if let Ok(mut out) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+            {
+                let said = match mode {
+                    clack_extensions::render::RenderMode::Offline => "offline\n",
+                    clack_extensions::render::RenderMode::Realtime => "realtime\n",
+                };
+                let _ = out.write_all(said.as_bytes());
+            }
+        }
+        Ok(())
+    }
+}
 
 pub const TURNS_AND_SAYS: u8 = 1;
 pub const OWN_LEVEL_SAID: f64 = 0.125;

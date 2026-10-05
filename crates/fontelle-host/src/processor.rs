@@ -606,6 +606,15 @@ impl HostedProcessor {
         }
     }
 
+    /// An LV2 plugin's running instance, handed a whole state of its own —
+    /// see `Lv2Processor::restore_state`. `false` for any other format.
+    pub(crate) fn lv2_restore_state(&mut self, bytes: &[u8]) -> bool {
+        match &mut self.inner {
+            Inner::Lv2(p) => p.restore_state(bytes),
+            Inner::Clap(_) | Inner::Bridged(_) | Inner::Vst3(_) => false,
+        }
+    }
+
     pub(crate) fn lv2_save_state(&mut self) -> Option<Vec<u8>> {
         match &mut self.inner {
             Inner::Lv2(p) => p.save_state(),

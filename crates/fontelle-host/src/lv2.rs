@@ -1048,6 +1048,19 @@ impl Lv2Processor {
         }
     }
 
+    /// Hands the instance a whole state of its own (Fontelle's LV2 state
+    /// form, as [`save_state`](Self::save_state) wrote it). **Only with the
+    /// processor recalled**: nothing may be running it — the one condition
+    /// LV2 puts on `restore`, and the one the rack's recall meets.
+    pub(crate) fn restore_state(&mut self, bytes: &[u8]) -> bool {
+        let Some(state) = crate::lv2_state::Lv2State::decode(bytes) else {
+            return false;
+        };
+        // SAFETY: the instance is this processor's and nothing is running it
+        // — the caller holds the processor, off the audio thread.
+        unsafe { crate::lv2_state::restore(self.instance.raw().instance(), &self.features, &state) }
+    }
+
     /// See [`crate::HostedProcessor::finish_work`]. Each block is one
     /// round of the conversation — the work the last one asked for done
     /// before it, its answer handed over after it — and a plugin may ask

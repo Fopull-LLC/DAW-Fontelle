@@ -766,6 +766,71 @@ mod linux_only {
         assert!(saved.blob.is_none());
     }
 
+    fn runs_in(state: &PluginState) -> i32 {
+        let blob = state.blob.as_deref().expect("the gain keeps a blob");
+        let bytes = fontelle_types::decode_base64(blob).expect("base64");
+        let decoded = fontelle_host::Lv2State::decode(&bytes).expect("Fontelle's LV2 state form");
+        let runs = decoded
+            .properties
+            .iter()
+            .find(|property| property.key == fontelle_testlv2::STATE_RUNS_KEY)
+            .expect("the run counter is stored");
+        i32::from_ne_bytes(runs.value[..4].try_into().unwrap())
+    }
+
+    /// > `docs/plugin-experience-backlog.md` §12: loading a preset into an
+    /// > LV2 plugin reopens it.
+    ///
+    /// LV2 lets a host restore a state into an instance nothing is running,
+    /// and the rack takes a plugin's processor home to do exactly that for
+    /// every other format. An LV2 plugin used to be **opened again** for
+    /// every new state instead — an undo, a preset from the strip — which
+    /// closed its window and cost a gap in its sound. It is restored where it
+    /// stands now, the same instance, with the state it was handed.
+    #[test]
+    fn a_new_state_goes_into_a_running_lv2_plugin_without_opening_it_again() {
+        let (mut project, _) = project_with_a_held_note();
+        let master = project.mixer.master.unwrap();
+        project.mixer.tracks[master]
+            .inserts
+            .push(EffectSlot::hosting(PluginState::new(lv2(LV2_GAIN), "Gain")));
+        let slot = PluginSlot::Insert {
+            track: master,
+            slot: 0,
+        };
+        let mut rack = rack_with_both_formats();
+        let _ = rack.realise(&project, SR as f64, 8);
+        let bay = rack.bay(slot).expect("it is open");
+        let run = |blocks: usize| {
+            let mut processor = bay.take().expect("parked");
+            let input = vec![vec![0.5f32; 8]];
+            let mut output = vec![vec![0.0f32; 8]];
+            for _ in 0..blocks {
+                processor.process_effect(&input, &mut output, 8);
+            }
+            bay.park(processor);
+        };
+        run(5);
+        let saved = rack.snapshot(slot).expect("a snapshot");
+        let at_save = runs_in(&saved);
+        run(500);
+
+        // The document goes back to that state — an undo.
+        project.mixer.tracks[master].inserts[0].plugin = Some(saved);
+        let _ = rack.realise(&project, SR as f64, 8);
+
+        let now = rack.bay(slot).expect("still open");
+        assert!(
+            std::sync::Arc::ptr_eq(&bay, &now),
+            "the same instance, not a new one"
+        );
+        let runs = runs_in(&rack.snapshot(slot).unwrap());
+        assert!(
+            runs >= at_save && runs < at_save + 100,
+            "the state went in: {runs} runs, saved at {at_save}"
+        );
+    }
+
     // ------------------------------- a sampler's file, saved while it plays (2026-09-05)
 
     /// An LV2 plugin's own state is captured **while the graph is playing it**,

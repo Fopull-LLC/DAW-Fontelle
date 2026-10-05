@@ -47,11 +47,22 @@ counts non-finite samples, `FONTELLE_ATOM_TRACE=1` prints recall and settle
 timings. Cardinal writes a `patch.json` into the working directory: delete
 it, never commit it. The known plugin-side faults are listed in `PROGRESS.md`.
 
-(e) **Open**: LV2 parameters declared as `patch:writable` properties rather
-than control ports (Ultramaster KR-106's) are not shown as knobs; CLAP's
-`render` extension and VST 3's offline process mode are not set during a
-render; plugins still run in the studio's process, so a plugin that crashes
-takes the studio with it.
+(e) **Open** — `docs/plugin-experience-backlog.md` is the list, and its
+status line says what is done (items 1 to 9, v0.24.0, 2026-10-05). Plugins
+still run in the studio's process; a crash is now recovered from and its
+plugin held back once (`fontelle_host::guard`, `crashlog::recovery`), not
+contained.
+
+(f) **Disk.** `target/` reached 3.9 TB on 2026-10-05 and filled the disk the
+FocalLoid training writes to; the dev profile now splits debug info. Check
+`df -h /mnt/disks/6tb` before a long loop, and `cargo clean` freely.
+
+(g) **yabridge** is installed on the devbox from its August 2026 CI build
+(`~/.local/share/yabridge`; the 5.1.1 release is kept in
+`FocalLoidData/tools/winebridge`). Windows Dexed and Dub Stage Piano are in
+the Wine prefix. `real_plugins.rs`'s `one_note_through_the_bundle_at_a_path`
+(`FONTELLE_REAL_PATH`) plays a bundle that shares its key with another
+install.
 
 **Updated 2026-09-29 (hosted plugins: notes, presets, the strip).**
 `PROGRESS.md`'s top entry. Things to know:

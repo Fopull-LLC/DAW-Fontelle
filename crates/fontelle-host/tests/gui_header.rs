@@ -202,3 +202,34 @@ fn a_platform_without_plugin_windows_says_so_and_where_the_controls_are() {
     assert!(!said.contains("X server"), "{said}");
     assert!(said.contains("panel"), "and where to go instead: {said}");
 }
+
+/// > Fedora and most new installs run Wayland, where a plugin's editor is
+/// > an X11 window through XWayland (`docs/plugin-experience-backlog.md`
+/// > §10).
+///
+/// A desktop scaled to 150% or 200% tells X11 programs so in the resource
+/// database (`Xft.dpi`, 96 per 1×): KDE and GNOME both set it. A plugin told
+/// it draws its editor that much bigger (CLAP `set_scale`, VST 3
+/// `setContentScaleFactor`); one told 1× on a 2× screen draws a postage
+/// stamp. The window said 1× always.
+#[test]
+fn an_editor_window_reads_the_desktops_scale_from_its_resources() {
+    use fontelle_host::gui::scale_from_resources;
+    assert_eq!(
+        scale_from_resources("Xft.dpi:\t96\nXft.antialias:\t1\n"),
+        1.0
+    );
+    assert_eq!(
+        scale_from_resources("Xft.antialias:\t1\nXft.dpi:\t192\n"),
+        2.0
+    );
+    assert_eq!(scale_from_resources("Xft.dpi: 144\n"), 1.5);
+    assert_eq!(scale_from_resources(""), 1.0, "nothing said is 1×");
+    assert_eq!(scale_from_resources("Xft.dpi:\tlots\n"), 1.0);
+    assert_eq!(
+        scale_from_resources("Xft.dpi:\t48\n"),
+        1.0,
+        "smaller than 1× is not a scale anybody means"
+    );
+    assert_eq!(scale_from_resources("Xft.dpi:\t9600\n"), 4.0, "nor past 4×");
+}

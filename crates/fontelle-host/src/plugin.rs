@@ -933,6 +933,39 @@ impl HostedPlugin {
         self.from_state
     }
 
+    /// [`restore_blob`](Self::restore_blob), with the processor in hand: an
+    /// LV2 plugin that is running takes the state **where it stands**, its
+    /// processor recalled so nothing runs it — rather than being kept for an
+    /// instance not yet made, which had the rack open it again for every new
+    /// state (an undo, a preset from the strip), closing its window. Kept for
+    /// the next instance as well. Every other format is `restore_blob`.
+    pub fn restore_blob_with(
+        &mut self,
+        processor: &mut HostedProcessor,
+        state: &PluginState,
+    ) -> bool {
+        let _inside = self.inside();
+        if !matches!(self.inner, Inner::Lv2(_)) || !self.active {
+            return self.restore_blob(state);
+        }
+        if state.key != self.info.key {
+            return false;
+        }
+        let Some(bytes) = state.blob.as_ref().and_then(|blob| decode_base64(blob)) else {
+            return false;
+        };
+        let Inner::Lv2(plugin) = &mut self.inner else {
+            return false;
+        };
+        if !plugin.stash_state(&bytes) {
+            return false;
+        }
+        let taken = processor.lv2_restore_state(&bytes);
+        // What it handed its worker for that state, done before it plays.
+        processor.finish_work();
+        taken
+    }
+
     /// The second half: the document's parameters — **only the ones the
     /// plugin does not already hold**, when its own state has just gone in.
     ///
@@ -1197,6 +1230,36 @@ impl HostedPlugin {
             _ => {}
         }
         self.active = false;
+    }
+
+    /// Tells a CLAP plugin whether what follows is a render — faster than
+    /// real time, nobody listening — or playback. CLAP's `render` extension:
+    /// a plugin set to offline may use the slower, better algorithms it
+    /// cannot afford live. One that says it must run in real time (a proxy
+    /// for hardware) is left alone, and so is every other format: LV2 is told
+    /// per block (`PluginTransport::offline`), and VST 3 fixes its mode when
+    /// it is set up.
+    pub fn set_offline(&mut self, offline: bool) {
+        let _inside = self.inside();
+        let Some(instance) = self.clap() else {
+            return;
+        };
+        let Some(render) = instance
+            .plugin_handle()
+            .get_extension::<clack_extensions::render::PluginRender>()
+        else {
+            return;
+        };
+        let mut handle = instance.plugin_handle();
+        if render.has_realtime_requirement(&mut handle) {
+            return;
+        }
+        let mode = if offline {
+            clack_extensions::render::RenderMode::Offline
+        } else {
+            clack_extensions::render::RenderMode::Realtime
+        };
+        let _ = render.set(&mut handle, mode);
     }
 
     pub fn is_active(&self) -> bool {

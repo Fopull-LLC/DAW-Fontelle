@@ -136,6 +136,10 @@ impl Lv2Processor {
 
     pub(crate) fn learn_latency(&mut self) {}
 
+    pub(crate) fn restore_state(&mut self, _bytes: &[u8]) -> bool {
+        false
+    }
+
     pub(crate) fn latency(&self) -> u32 {
         0
     }

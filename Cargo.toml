@@ -41,3 +41,12 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 1
+# Debug information kept beside the objects, not copied into every binary:
+# 415 test binaries, each with the whole workspace's, filled a 5.5 TB disk
+# in a day of work (2026-10-05). Backtraces and debuggers read it as before.
+split-debuginfo = "unpacked"
+
+# Dependencies with line tables only: a backtrace through them still says
+# file and line, at a fraction of the size.
+[profile.dev.package."*"]
+debug = "line-tables-only"

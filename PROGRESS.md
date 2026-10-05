@@ -19,8 +19,62 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-04 (latest) — a hosted plugin keeps its patch, and a render
-has the plugins in it.** Not released. From one user's report:
+**As of 2026-10-05 (latest) — what still made plugins frustrating, items 1
+to 9 of `docs/plugin-experience-backlog.md`.** v0.24.0.
+
+- **Crash recovery.** A song never saved is backed up beside the logs
+  (`recovery/Untitled.fontelle`); the run marker (`crashlog::note`) says
+  which song is open and where its backup is, on lines after the one an
+  older Fontelle reads. After a run that did not end cleanly,
+  `crashlog::recovery` offers a backup newer than its song on the start menu
+  (`canvas::with_recovery`, *Recover unsaved work in …*): `Session::recover`
+  opens it **as that song** (`bundle::open_recovered` finds its files where
+  the song keeps them), unsaved. Tests: `fontelle-app/tests/recovery.rs`.
+- **The crash guard.** `fontelle_host::guard` marks every call into a plugin
+  on the thread that makes it; main-thread calls and a plugin's teardown
+  (`DropMark`/`DropUnmark`, first and last fields) also leave a process-wide
+  mark for the plugin's own threads. The fault handler and the panic hook
+  write a `plugin:` line from it, so a report names the plugin even when it
+  aborted inside `libc` (padthv1). The next launch holds that plugin back
+  once when its song opens (`Session::with_held_back`,
+  `PluginRack::hold_back`): kept in the document, not run, said. Tests:
+  `crash_native.rs` (a child aborting in the test gain's own `process`).
+- **Silenced plugins are said.** The node's NaN guard marks its bay
+  (`ProcessorBay::mark_silenced`); `Session::deal_with_silenced` names the
+  plugin and opens it again from the song's copy of its state, once, and
+  leaves it silenced (and says so) if it does it again within 10 s.
+- **OB-Xf: a preset after an undo did not stay**, one walk in four. It takes
+  a state on its message thread and saves the new bytes back at once, so
+  `settle_with` returned straight away and the undo's state landed over the
+  next preset. A state saved back as handed now counts as landed and is
+  waited on until the plugin holds still. Fixture: the test gain's
+  `DEFERS_STATES` mode.
+- **LV2**: latency read off the `lv2:latency` port after one silent block
+  at activation, and compensated; a new state (preset, undo) restored into
+  the running instance with its processor recalled
+  (`HostedPlugin::restore_blob_with`) instead of opening it again, so its
+  window stays open.
+- **CLAP**: told when a render is offline (`render` extension, around
+  `lend_for_render`/`end_render`).
+- **Editors on a scaled Linux desktop** are told the scale, read from
+  `Xft.dpi` in the X resources (`gui::scale_from_resources`). Not yet looked
+  at on a scaled screen: this machine is at 1×.
+- **macOS** says plugin windows are not shown there yet, and where the
+  parameters are, instead of talking about X servers.
+- **Windows plugins through yabridge**, tried for the first time (yabridge's
+  August 2026 CI build; the 5.1.1 release and Wine 11 sat behind Wine's own
+  Mono dialog on first start). Dexed's Windows build plays level for level
+  with the Linux one. Dub Stage Piano's first save crashed a debug build:
+  yabridge hands `IBStream::write` a null buffer for an empty chunk, and a
+  slice of a null pointer is undefined behaviour; read and write take it as
+  nothing now. A bridged plugin that never answers the scan says to look at
+  Wine and yabridge.
+- **Vital 1.6.4** (CLAP, VST 3 and VST 2) passes every walk.
+- The dev profile keeps debug info split and dependencies at line tables:
+  the target directory had grown to 3.9 TB and filled the disk.
+
+**As of 2026-10-04 — a hosted plugin keeps its patch, and a render
+has the plugins in it.** v0.23.1. From one user's report:
 
 > *"sometimes they'll just revert back to the init preset when working on a
 > saved project ... I have trouble rendering midi to audio. most times it

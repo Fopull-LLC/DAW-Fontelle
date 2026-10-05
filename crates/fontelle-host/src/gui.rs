@@ -101,6 +101,22 @@ pub struct GuiPoll {
     pub header_hover: Option<Option<(i32, i32)>>,
 }
 
+/// The scale a desktop asks X11 programs to draw at, from the X server's
+/// resource database: `Xft.dpi` over the 96 that is 1×.
+///
+/// KDE and GNOME both set it when the desktop is scaled — on Wayland too,
+/// for the programs XWayland runs, which every plugin editor is. Clamped to
+/// 1×–4×: smaller is not a scale anybody means, and a stray value must not
+/// open a window bigger than any screen. Nothing said is 1×.
+pub fn scale_from_resources(resources: &str) -> f64 {
+    resources
+        .lines()
+        .find_map(|line| line.strip_prefix("Xft.dpi:"))
+        .and_then(|dpi| dpi.trim().parse::<f64>().ok())
+        .filter(|dpi| dpi.is_finite())
+        .map_or(1.0, |dpi| (dpi / 96.0).clamp(1.0, 4.0))
+}
+
 /// Why a plugin's editor could not be opened.
 #[derive(Debug)]
 pub enum GuiError {
@@ -232,6 +248,9 @@ struct OnScreen {
     /// The strip, as the server takes it (BGRX), and its size — kept so an
     /// expose can put it back.
     strip: Option<(Vec<u8>, u32, u32)>,
+    /// The desktop's scale, as the X server's resources say it — see
+    /// [`scale_from_resources`].
+    scale: f64,
 }
 
 /// The same on Windows: the window's handle and what its window procedure
@@ -352,6 +371,22 @@ impl PluginWindow {
                 &[delete_window],
             );
         }
+        // What the desktop is scaled to, from the resources a scaled desktop
+        // sets for X11 programs — see `scale_from_resources`.
+        let scale = x11rb::protocol::xproto::ConnectionExt::get_property(
+            &connection,
+            false,
+            root,
+            AtomEnum::RESOURCE_MANAGER,
+            AtomEnum::STRING,
+            0,
+            1 << 16,
+        )
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map_or(1.0, |reply| {
+            scale_from_resources(&String::from_utf8_lossy(&reply.value))
+        });
         let mut screen_window = Self::offscreen(size, header);
         screen_window.server = Some(OnScreen {
             connection,
@@ -361,6 +396,7 @@ impl PluginWindow {
             gc,
             depth,
             strip: None,
+            scale,
         });
         screen_window.set_title(title);
         if let Some(server) = &screen_window.server {
@@ -436,7 +472,7 @@ impl PluginWindow {
     /// The display scale the plugin is told. One on X11, where a plugin
     /// reads the desktop's own setting.
     pub fn scale(&self) -> f64 {
-        1.0
+        self.server.as_ref().map_or(1.0, |server| server.scale)
     }
 
     /// Names the window, so a desktop full of them can be told apart.

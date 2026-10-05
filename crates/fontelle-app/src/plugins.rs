@@ -665,6 +665,10 @@ impl PluginRack {
             transport.hold();
         }
         self.rendering = true;
+        // Told before the render starts — see `HostedPlugin::set_offline`.
+        for live in self.live.values_mut() {
+            live.plugin.set_offline(true);
+        }
         // The callback parks the live graph's processors on its next block;
         // with no callback running they are home already.
         let deadline = std::time::Instant::now() + STATE_RECALL_TIMEOUT;
@@ -681,6 +685,9 @@ impl PluginRack {
     pub fn end_render(&mut self) {
         if self.rendering {
             self.rendering = false;
+            for live in self.live.values_mut() {
+                live.plugin.set_offline(false);
+            }
             if let Some(transport) = &self.transport {
                 transport.release();
             }
@@ -897,18 +904,13 @@ impl PluginRack {
             // last save, and whatever was done in the plugin's own editor
             // since is newer; a rebuild for something else must not undo it.
             //
-            // LV2 takes a state only as it is instantiated (`Lv2Plugin::
-            // activate`, the one moment LV2 lets a host restore without
-            // asking whether that is thread-safe), so an LV2 plugin is opened
-            // again with it rather than told in place.
-            if state.key.format == fontelle_types::PluginFormat::Lv2 {
-                if let Some(mut old) = self.live.remove(&slot)
-                    && !old.retire()
-                {
-                    self.retired.push(old);
-                }
-                return self.ensure(slot, state, sample_rate, max_block);
-            }
+            // LV2 lets a host restore a state only into an instance nothing
+            // is running. An LV2 plugin used to be opened again with it for
+            // that reason, closing its window; now its processor is taken
+            // home like any other and it takes the state where it stands
+            // (`HostedPlugin::restore_blob_with`). Opening it again is what
+            // is left for one whose processor does not come home in time.
+            let lv2 = state.key.format == fontelle_types::PluginFormat::Lv2;
             // **With its processor home, and run until it is in.** Surge XT
             // hands a state to its audio thread once it has processed, so
             // one put in where it stood was not in it when the call came
@@ -918,6 +920,7 @@ impl PluginRack {
             let transport = self.transport.clone();
             let rendering = self.rendering;
             let mut refused = false;
+            let mut reopen = false;
             if let Some(live) = self.live.get_mut(&slot) {
                 match recall_home(&live.bay, transport.as_ref(), rendering) {
                     Some(mut processor) => {
@@ -933,7 +936,7 @@ impl PluginRack {
                         // then what the document says beyond it: asked
                         // before it landed, the plugin would answer with
                         // the patch it is leaving.
-                        if live.plugin.restore_blob(state) {
+                        if live.plugin.restore_blob_with(&mut processor, state) {
                             live.plugin.settle_with(&mut processor, &before);
                         } else {
                             refused = true;
@@ -941,12 +944,23 @@ impl PluginRack {
                         live.plugin.restore_params(state);
                         live.bay.park(processor);
                     }
+                    // An LV2 plugin takes a state only with nothing running
+                    // it: opened again with it instead.
+                    None if lv2 => reopen = true,
                     None => {
                         refused = !live.plugin.restore_blob(state);
                         live.plugin.restore_params(state);
                     }
                 }
                 live.refresh_displays();
+            }
+            if reopen {
+                if let Some(mut old) = self.live.remove(&slot)
+                    && !old.retire()
+                {
+                    self.retired.push(old);
+                }
+                return self.ensure(slot, state, sample_rate, max_block);
             }
             if refused {
                 self.message = Some(format!(
