@@ -583,6 +583,88 @@ fn a_host_back_under_a_new_code_lets_the_old_lobbys_joiners_go() {
     drop(again);
 }
 
+/// The joiner's side of the same thing: its own connection drops — the
+/// laptop changed networks — and it joins the same lobby again by itself,
+/// saying so with a second `Connected`, so the session can say hello again.
+/// The host sees the old connection go and a new one come.
+#[test]
+fn a_joiner_whose_connection_drops_joins_again_on_its_own() {
+    let relay = InProcessRelay::start(
+        None,
+        Some(RelayLimits {
+            bytes_per_window: 32 * 1024,
+            strikes: 1,
+            ..RelayLimits::default()
+        }),
+    );
+    let (mut host, code) = fontelle_net::host(&relay.relay(), "test").expect("hosts");
+    let mut joiner = fontelle_net::join(&relay.relay(), &code).expect("joins");
+    let first = gather_until(joiner.as_mut(), Duration::from_secs(5), |seen| {
+        seen.iter()
+            .any(|i| matches!(i, Incoming::Connected(SERVER)))
+    });
+    assert!(
+        first
+            .iter()
+            .any(|i| matches!(i, Incoming::Connected(SERVER))),
+        "{first:?}"
+    );
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let heard = poll_until(host.as_mut(), |i| message(i).is_some()).expect("the joiner is in");
+    let old = message(&heard).unwrap().0;
+
+    // Over the budget: the relay closes the joiner's connection.
+    joiner.send(SERVER, Channel::Reliable, &vec![0u8; 100_000]);
+    let again = gather_until(joiner.as_mut(), Duration::from_secs(10), |seen| {
+        seen.iter()
+            .any(|i| matches!(i, Incoming::Connected(SERVER)))
+    });
+    assert!(
+        again
+            .iter()
+            .any(|i| matches!(i, Incoming::Connected(SERVER))),
+        "the joiner did not join again: {again:?}"
+    );
+    assert!(
+        !again
+            .iter()
+            .any(|i| matches!(i, Incoming::Disconnected(..))),
+        "a blip is not the end: {again:?}"
+    );
+
+    joiner.send(SERVER, Channel::Reliable, b"back");
+    let mut seen = Vec::new();
+    let back = poll_until(host.as_mut(), |i| {
+        seen.push(format!("{i:?}"));
+        message(i).is_some()
+    })
+    .expect("it reaches the host");
+    let new = message(&back).unwrap().0;
+    assert_ne!(new, old, "a new connection is a new peer to the relay");
+    host.send(new, Channel::Reliable, b"welcome back");
+    let reply = poll_until(joiner.as_mut(), |i| message(i).is_some()).expect("and back");
+    assert_eq!(message(&reply).unwrap().1, b"welcome back");
+    let said = joiner.take_notices().join(" ");
+    assert!(said.contains("reconnect"), "{said}");
+}
+
+/// A join the relay turns away is told so at once, and is not tried again:
+/// a wrong code stays wrong.
+#[test]
+fn a_join_the_relay_turns_away_is_told_and_not_retried() {
+    let relay = InProcessRelay::open();
+    let mut joiner = fontelle_net::join(&relay.relay(), "ZZZZZ").expect("connects");
+    let seen = gather_until(joiner.as_mut(), Duration::from_secs(5), |seen| {
+        seen.iter().any(|i| matches!(i, Incoming::Disconnected(..)))
+    });
+    assert!(
+        seen.iter().any(
+            |i| matches!(i, Incoming::Disconnected(SERVER, Some(why)) if why.contains("ZZZZZ"))
+        ),
+        "{seen:?}"
+    );
+}
+
 /// F40. A lobby nobody joins ends on the relay after its idle window; the
 /// host is told, in words, and its code is no longer offered as if it worked.
 #[test]

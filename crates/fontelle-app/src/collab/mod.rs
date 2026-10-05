@@ -1118,6 +1118,12 @@ impl Joiner {
         }
         for incoming in turn.transport.poll() {
             match incoming {
+                // A connection again after the welcome: the link dropped and
+                // `fontelle-net` joined again by itself. The host knows this
+                // connection as nobody yet; hello says who it is (F39).
+                Incoming::Connected(_) if self.stage != Stage::Waiting => {
+                    self.say_hello(turn.transport, turn.options);
+                }
                 Incoming::Connected(_) => {}
                 Incoming::Disconnected(_, why) => {
                     // What the two copies last agreed on is the host's song

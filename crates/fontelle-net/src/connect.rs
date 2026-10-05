@@ -409,6 +409,141 @@ pub fn reclaim(
 /// a disconnect with the relay's own words.
 pub fn join(relay: &Relay, code: &str) -> Result<Box<dyn Transport>, String> {
     let addr = relay.address_for(code)?;
-    let inner = RelayClient::join(&addr, &code.trim().to_uppercase())?;
-    Ok(Box::new(Framed::new(Paced::new(inner, PACE))))
+    let code = code.trim().to_uppercase();
+    let inner = RelayClient::join(&addr, &code)?;
+    Ok(Box::new(Joining {
+        inner: Some(Framed::new(Paced::new(inner, PACE))),
+        addr,
+        code,
+        joined: false,
+        lost_at: None,
+        next_try: Instant::now(),
+        notices: Vec::new(),
+        wake: None,
+    }))
+}
+
+/// A lobby this studio has joined, and what to do when its connection goes.
+///
+/// **A drop after the relay let it in is answered by joining again**, on its
+/// own, every few seconds for a minute: a laptop that changed networks, a
+/// Wi-Fi blip, a lid closed for a moment (§9.2, F39). The lobby is still
+/// there — it is the host's — so the same code gets back in, as a new
+/// connection the host hears about as somebody arriving. What this passes on
+/// is a second `Connected(SERVER)`, which the session answers by saying hello
+/// again; the host knows the join by its session and gives it back its place.
+/// A join that never got in fails as it always did, at once, and the relay
+/// turning a join away (the lobby ended, a wrong code) is the end, not a blip.
+struct Joining {
+    inner: Option<Framed<Paced<RelayClient>>>,
+    addr: String,
+    code: String,
+    /// The relay has let this join in at least once.
+    joined: bool,
+    /// When the connection went, while it is being got back.
+    lost_at: Option<Instant>,
+    next_try: Instant,
+    notices: Vec<String>,
+    /// Handed to every leg (F48).
+    wake: Option<crate::transport::Wake>,
+}
+
+/// How long a joiner that lost its connection keeps trying to get back in.
+const REJOIN_FOR: Duration = Duration::from_secs(60);
+
+/// How often it tries: under the relay's limit of thirty joins a minute from
+/// one address, with room for somebody else at the same address.
+const REJOIN_EVERY: Duration = Duration::from_secs(3);
+
+impl Transport for Joining {
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        if let Some(inner) = &mut self.inner {
+            inner.set_wake(wake.clone());
+        }
+        self.wake = Some(wake);
+    }
+
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        // Nothing to send it on while the connection is being got back: the
+        // session sends again whatever the host turns out not to have had.
+        if let Some(inner) = &mut self.inner {
+            inner.send(peer, channel, bytes);
+        }
+    }
+
+    fn poll(&mut self) -> Vec<Incoming> {
+        let mut out = Vec::new();
+        if let Some(lost_at) = self.lost_at {
+            if lost_at.elapsed() >= REJOIN_FOR {
+                self.lost_at = None;
+                self.inner = None;
+                out.push(Incoming::dropped(SERVER));
+                return out;
+            }
+            if self.inner.is_none() && Instant::now() >= self.next_try {
+                self.next_try = Instant::now() + REJOIN_EVERY;
+                if let Ok(leg) = RelayClient::join(&self.addr, &self.code) {
+                    let mut leg = Framed::new(Paced::new(leg, PACE));
+                    if let Some(wake) = &self.wake {
+                        leg.set_wake(wake.clone());
+                    }
+                    self.inner = Some(leg);
+                }
+            }
+        }
+        let Some(inner) = &mut self.inner else {
+            return out;
+        };
+        for event in inner.poll() {
+            match event {
+                Incoming::Connected(SERVER) => {
+                    if self.lost_at.take().is_some() {
+                        self.notices
+                            .push(format!("Back in the session \u{2014} {}", self.code));
+                    }
+                    self.joined = true;
+                    out.push(Incoming::Connected(SERVER));
+                }
+                // The connection went, and not because the relay said no.
+                Incoming::Disconnected(SERVER, None) if self.joined => {
+                    self.inner = None;
+                    if self.lost_at.is_none() {
+                        self.lost_at = Some(Instant::now());
+                        self.next_try = Instant::now();
+                        self.notices.push(
+                            "Lost the connection to the session \u{2014} reconnecting".to_string(),
+                        );
+                    }
+                    return out;
+                }
+                event => out.push(event),
+            }
+        }
+        out
+    }
+
+    fn stats(&self, peer: PeerId) -> LinkStats {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.stats(peer))
+            .unwrap_or_default()
+    }
+
+    fn disconnect(&mut self, peer: PeerId) {
+        if let Some(inner) = &mut self.inner {
+            inner.disconnect(peer);
+        }
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        let mut notices = std::mem::take(&mut self.notices);
+        if let Some(inner) = &mut self.inner {
+            notices.extend(inner.take_notices());
+        }
+        notices
+    }
+
+    fn take_join_progress(&mut self) -> Option<String> {
+        self.inner.as_mut()?.take_join_progress()
+    }
 }

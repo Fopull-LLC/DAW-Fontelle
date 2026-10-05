@@ -250,10 +250,19 @@ impl Pair {
         latency: u64,
         cleanup: Cleanup,
     ) -> Pair {
-        Pair::through(host, joiner, dir, latency, cleanup, |link| Box::new(link))
+        Pair::through(
+            host,
+            joiner,
+            dir,
+            latency,
+            cleanup,
+            |link| Box::new(link),
+            |hub| Box::new(hub.connect()),
+        )
     }
 
-    /// [`Pair::between`], with the host's end of the link made by `host_link`.
+    /// [`Pair::between`], with the host's end of the link made by `host_link`
+    /// and the joiner's by `joiner_link`.
     fn through(
         mut host: Session,
         mut joiner: Session,
@@ -261,6 +270,7 @@ impl Pair {
         latency: u64,
         cleanup: Cleanup,
         host_link: impl FnOnce(fontelle_net::MemoryTransport) -> Box<dyn fontelle_net::Transport>,
+        joiner_link: impl FnOnce(&MemoryHub) -> Box<dyn fontelle_net::Transport>,
     ) -> Pair {
         let hub = MemoryHub::new();
         hub.set_conditions(latency, 0.0);
@@ -268,7 +278,7 @@ impl Pair {
         host.share(host_link(hub.server_endpoint()), options("Alice", alice))
             .expect("a saved song can be shared");
         joiner
-            .join(Box::new(hub.connect()), options("Bob", bob))
+            .join(joiner_link(&hub), options("Bob", bob))
             .expect("a studio with nothing unsaved can join");
         let mut pair = Pair {
             hub,
@@ -1604,13 +1614,21 @@ impl Pair {
         let cleanup = Cleanup(dir.clone());
         let cut = Cut::default();
         let theirs = cut.clone();
-        let pair = Pair::through(host, joiner, dir, latency, cleanup, move |link| {
-            Box::new(Outage {
-                inner: link,
-                cut: theirs,
-                held: Vec::new(),
-            })
-        });
+        let pair = Pair::through(
+            host,
+            joiner,
+            dir,
+            latency,
+            cleanup,
+            move |link| {
+                Box::new(Outage {
+                    inner: link,
+                    cut: theirs,
+                    held: Vec::new(),
+                })
+            },
+            |hub| Box::new(hub.connect()),
+        );
         (pair, cut)
     }
 }
@@ -1706,13 +1724,21 @@ fn a_join_made_while_the_host_was_away_still_gets_the_song() {
         let cut = Cut::default();
         cut.down();
         let theirs = cut.clone();
-        let pair = Pair::through(host, joiner, dir, 2, cleanup, move |link| {
-            Box::new(Outage {
-                inner: link,
-                cut: theirs,
-                held: Vec::new(),
-            })
-        });
+        let pair = Pair::through(
+            host,
+            joiner,
+            dir,
+            2,
+            cleanup,
+            move |link| {
+                Box::new(Outage {
+                    inner: link,
+                    cut: theirs,
+                    held: Vec::new(),
+                })
+            },
+            |hub| Box::new(hub.connect()),
+        );
         (pair, cut)
     };
     assert!(
@@ -1725,6 +1751,139 @@ fn a_join_made_while_the_host_was_away_still_gets_the_song() {
     pair.answer(JoinAnswer::Copy);
     assert!(pair.joiner.collab_live());
     pair.same();
+}
+
+/// The joiner's link, dropped and joined again the way `fontelle-net` does
+/// it: while it is cut nothing goes either way, and then a new connection —
+/// a new peer to the host, which hears of it arriving — says `Connected`.
+/// The old connection is left for the test to end, as the relay does when it
+/// notices.
+struct Rejoins {
+    hub: MemoryHub,
+    inner: fontelle_net::MemoryTransport,
+    cut: Cut,
+}
+
+impl fontelle_net::Transport for Rejoins {
+    fn send(&mut self, peer: fontelle_net::PeerId, channel: fontelle_net::Channel, bytes: &[u8]) {
+        if !self.cut.mute.load(std::sync::atomic::Ordering::SeqCst) {
+            self.inner.send(peer, channel, bytes);
+        }
+    }
+    fn poll(&mut self) -> Vec<fontelle_net::Incoming> {
+        use std::sync::atomic::Ordering;
+        if self.cut.back.swap(false, Ordering::SeqCst) {
+            self.inner = self.hub.connect();
+            let mut got = vec![fontelle_net::Incoming::Connected(fontelle_net::SERVER)];
+            got.extend(self.inner.poll());
+            return got;
+        }
+        let got = self.inner.poll();
+        if self.cut.deaf.load(Ordering::SeqCst) {
+            return Vec::new();
+        }
+        got
+    }
+    fn stats(&self, peer: fontelle_net::PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+impl Pair {
+    /// [`Pair::joined`] with the joiner's link able to drop and join again.
+    fn rejoining(name: &str, latency: u64) -> (Pair, Cut) {
+        let dir = scratch(name);
+        let mut host = a_session();
+        host.set_projects_dir(Some(dir.join("alice")));
+        std::fs::create_dir_all(dir.join("alice")).unwrap();
+        host.save_as("Song").unwrap();
+        let mut joiner = a_session();
+        std::fs::create_dir_all(dir.join("bob")).unwrap();
+        joiner.set_projects_dir(Some(dir.join("bob")));
+        let cleanup = Cleanup(dir.clone());
+        let cut = Cut::default();
+        let theirs = cut.clone();
+        let mut pair = Pair::through(
+            host,
+            joiner,
+            dir,
+            latency,
+            cleanup,
+            |link| Box::new(link),
+            move |hub| {
+                Box::new(Rejoins {
+                    hub: hub.clone(),
+                    inner: hub.connect(),
+                    cut: theirs,
+                })
+            },
+        );
+        pair.answer(JoinAnswer::Copy);
+        pair.same();
+        (pair, cut)
+    }
+}
+
+/// F39, without anybody pressing anything: the joiner's connection drops and
+/// `fontelle-net` joins again by itself. The joiner says hello again; the
+/// host knows the join and gives it back its place — before it has even
+/// noticed the old connection gone — and both catch up on what the other did
+/// meanwhile. Nobody else is told anybody left or came.
+#[test]
+fn a_joiner_whose_link_drops_is_back_in_its_place() {
+    let (mut pair, cut) = Pair::rejoining("rejoin-replace", 2);
+    let clip = open_clip(&pair.host);
+    let before = notes_of(&pair.host, clip).len();
+    pair.host.take_collab_notices();
+
+    cut.down();
+    draw(&mut pair.host, 0, 60);
+    draw(&mut pair.joiner, PPQN, 72);
+    pair.settle();
+    cut.restore();
+    pair.settle();
+
+    pair.same();
+    assert_eq!(notes_of(&pair.joiner, clip).len(), before + 2);
+    assert!(pair.joiner.collab_live(), "Bob never left");
+    assert_eq!(pair.host.session_peers().len(), 1, "one Bob, not two");
+    // The relay notices the old connection gone, later.
+    pair.hub.disconnect(1);
+    pair.settle();
+    assert_eq!(pair.host.session_peers().len(), 1, "Bob is still here");
+    let said = pair.host.take_collab_notices().join(" ");
+    assert!(!said.contains("left"), "{said}");
+
+    draw(&mut pair.joiner, 2 * PPQN, 74);
+    draw(&mut pair.host, 3 * PPQN, 62);
+    pair.settle();
+    pair.same();
+    assert_eq!(notes_of(&pair.host, clip).len(), before + 4);
+}
+
+/// The same, when the host noticed the old connection go first: he left, and
+/// he is back, in the colour he had.
+#[test]
+fn a_joiner_back_after_the_host_saw_him_go_gets_his_place_again() {
+    let (mut pair, cut) = Pair::rejoining("rejoin-after", 2);
+    let clip = open_clip(&pair.host);
+    let before = notes_of(&pair.host, clip).len();
+    let colour = pair.host.session_peers()[0].colour;
+
+    cut.down();
+    pair.hub.disconnect(1);
+    draw(&mut pair.joiner, PPQN, 72);
+    pair.settle();
+    assert!(pair.host.session_peers().is_empty(), "Alice saw him go");
+    cut.restore();
+    pair.settle();
+
+    pair.same();
+    assert_eq!(notes_of(&pair.host, clip).len(), before + 1);
+    let peers = pair.host.session_peers();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].colour, colour, "in the colour he had");
+    assert!(pair.joiner.collab_live());
 }
 
 /// What the relay's side of the link has to say — the host lost it and is
