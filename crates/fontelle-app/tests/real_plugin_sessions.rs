@@ -441,9 +441,14 @@ fn a_real_instruments_patch_survives_working_saving_and_reopening() {
         // oscillator type uses ("Osc 2 Unison Voices") by the patch it is
         // leaving as well as the one it loads. What is Fontelle's is that
         // nothing it does afterwards moves the plugin off it.
+        // Waited for until it has both arrived near the patch and left the
+        // one before: two of a library's patches can differ in a handful of
+        // parameters, already "near" each other, and a block is 10 ms at the
+        // default buffer (v0.25.1), so the first look can come before it.
         let waited = std::time::Instant::now();
         let mut chosen = live(&mut session);
-        while differences(&chosen, &second_state).0 * 50 >= chosen.params.len().max(50)
+        while (differences(&chosen, &second_state).0 * 50 >= chosen.params.len().max(50)
+            || differences(&chosen, &first_state).0 == 0)
             && waited.elapsed() < std::time::Duration::from_secs(3)
         {
             std::thread::sleep(std::time::Duration::from_millis(20));

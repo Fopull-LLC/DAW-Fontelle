@@ -127,11 +127,12 @@ decision made during scaffolding that isn't explicit in the TDD.
 
 ## Building
 
-Requires Rust 2024 edition (MSRV 1.88.0). On Linux you'll also need ALSA, lilv
+Requires Rust 2024 edition (MSRV 1.88.0). On Linux you'll also need ALSA, the
+JACK headers (JACK itself is loaded at run time, only if it is there), lilv
 (LV2), D-Bus (for rtkit) and windowing/XKB development headers:
 
 ```sh
-sudo apt install libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+sudo apt install libasound2-dev libjack-jackd2-dev libudev-dev libxkbcommon-dev libwayland-dev \
     libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
     liblilv-dev libdbus-1-dev
 
