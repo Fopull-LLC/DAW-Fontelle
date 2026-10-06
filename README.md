@@ -190,4 +190,9 @@ The factory kits' recordings (`assets/flopsynth/samples/kit/`) are Fontelle's
 own drum machine, cut hit by hit; `assets/flopsynth/samples/kit/README.md` says
 how.
 
+The note detection model (`crates/fontelle-analysis/models/`) is Spotify's
+[basic-pitch](https://github.com/spotify/basic-pitch), Apache-2.0, Copyright
+2022 Spotify AB; its licence and notice are in `licenses/basic-pitch/`, and
+`licenses/MODELS.md` records the exact file.
+
 "SoundFont" is a Creative/E-mu trademark and is used here only descriptively.

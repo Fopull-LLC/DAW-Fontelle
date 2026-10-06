@@ -19,6 +19,45 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-06 — Analyze Musically P0: basic-pitch runs in pure Rust.**
+Branch `feature/analyze-musically`, not merged; v0.25.2. The spike of
+`docs/analyze-musically-plan.md` §4 P0, no UI.
+
+- **New crate `fontelle-analysis`** (pure; rubato, tract-onnx behind the
+  default `model` feature). `transcribe::basic_pitch::BasicPitch` loads
+  Spotify's ICASSP 2022 `nmp.onnx` (230 444 bytes, embedded with
+  `include_bytes!`, SHA-256 pinned by a test and `licenses/MODELS.md`) with
+  **tract 0.23.8: every operator of the graph, in-graph CQT included, runs**
+  — no `ort`, no native library. The windowing is `inference.py`'s (22 050 Hz
+  mono, 43 844-sample windows hopping 36 164, 15 frames cut each side);
+  `transcribe::notes` ports `note_creation.py` decision for decision (onset
+  peaks, inferred onsets, note tracking, melodia trick, pitch bends).
+- **Matches Python basic-pitch** (onnxruntime 1.30, at upstream commit
+  `fa5997a`) on three synthesised fixtures: posteriorgrams within 2.1e-4,
+  notes identical frame for frame, amplitudes within 1e-3, bends equal. The
+  one difference is a window of pure digital silence, where the graph
+  normalises 0/0: tract gives a flat 0.108, onnxruntime its rounding noise
+  stretched up to 0.32; neither is near a threshold. References (u16, every
+  4th frame, 280 KB) and `make_reference.py` are in `tests/fixtures/`; the
+  audio is made by `testsignals` and never committed.
+- **`tidy_notes`**, on top of the faithful port, because raw basic-pitch
+  splits a sung note at every vibrato swing and reports the 3rd partial of
+  a triad as a quiet G5: joins same-key notes that touch where the model's
+  onset is weak (< 0.75) and the note never let go; drops ghost partials
+  (an octave/twelfth/two octaves/5th/6th partial above a louder note, under
+  0.55 of its activation, 80 % covered); drops faint slivers touching a
+  stronger note within two semitones. Triad → exactly C4 E4 G4; the sung
+  line and the melody-over-chords mix → every note, onsets within 30 ms.
+- **Timing**: frames are placed where the windows actually put them
+  (`Posteriorgrams::frame_time`); upstream's `model_frames_to_time` corrects
+  per 172 frames instead of 142 and drifts about 0.9 ms late per second.
+- **Speed**: 3 minutes of audio in **4.8 s on one core** (4.95 s from
+  44.1 kHz, resampling included); batching windows is slower in tract.
+- **Preflight**: tract-linalg assembles its kernels with the target's C
+  compiler, so macOS cross-clippy lints `fontelle-analysis` without `model`.
+- Tests: `fontelle-analysis/tests/transcribe_model.rs`. Bench:
+  `benches/analysis.rs`.
+
 **As of 2026-10-05, latest — Vital's window refused instead of crashing,
 and Compatible plugin graphics.** Still v0.25.1 (not bumped; for v0.25.2).
 The entry below found the cause; this makes the studio survive it.

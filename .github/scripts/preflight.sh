@@ -11,6 +11,9 @@
 # Two gaps, said rather than hidden:
 # - macOS skips fontelle-app and fontelle-net. They reach `ring`, whose build
 #   script compiles C against the macOS SDK, which is not on this machine.
+#   fontelle-analysis is linted there without its `model` feature: tract's
+#   matrix kernels are assembly its build script assembles with the target's
+#   C compiler, which is not on this machine either.
 # - Tests are not run here. CI runs them on all three; push `main` when a
 #   chunk lands, not only at release, so a runner-only failure turns up days
 #   before the release instead of on the release commit.
@@ -49,6 +52,10 @@ fi
 if installed aarch64-apple-darwin; then
     step "clippy (macOS, without fontelle-app and fontelle-net)" \
         cargo clippy -q --workspace --exclude fontelle-app --exclude fontelle-net \
+        --exclude fontelle-analysis \
+        --all-targets --target aarch64-apple-darwin -- -D warnings
+    step "clippy (macOS, fontelle-analysis without the model)" \
+        cargo clippy -q -p fontelle-analysis --no-default-features \
         --all-targets --target aarch64-apple-darwin -- -D warnings
 else
     echo "preflight: skipping macOS — rustup target add aarch64-apple-darwin"
