@@ -135,6 +135,15 @@ fn shoot_sized(
     width: u32,
 ) -> Option<Shot> {
     let shared = headless()?;
+    let menu = MENU.with(|menu| menu.borrow().clone());
+    // The open menu's captions, laid out the way the window lays them out.
+    let mut labels = Labels::new();
+    if let Some(menu) = &menu {
+        let mut text = TextContext::new();
+        for entry in &menu.entries {
+            labels.ensure(&entry.label, &theme.font, &mut text);
+        }
+    }
     let layout = window_layout(
         width as f32,
         H as f32,
@@ -181,13 +190,13 @@ fn shoot_sized(
             tab: fontelle_ui::layout::EditorTab::Roll,
             hover_tab: None,
             browser_title: "Soundfonts",
-            labels: &Labels::new(),
+            labels: &labels,
             status: "",
             toast: None,
             confirm: None,
             notices: Default::default(),
             tooltip: None,
-            menu: None,
+            menu: menu.as_ref(),
             carry: None,
             welcome: None,
             keybinds: None,
@@ -7256,4 +7265,115 @@ fn a_tour_step_with_a_clip_draws_its_picture_beside_the_words() {
         }
     }
     assert!(colours.len() > 20, "{} colours", colours.len());
+}
+
+thread_local! {
+    /// A drop-down open over the next [`shoot_sized`] — a side door, like
+    /// `LANE_STATE`, so its callers keep their signature.
+    static MENU: std::cell::RefCell<Option<fontelle_ui::canvas::ContextMenu>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// > *"in fl their preset menu thats attached to the plugin windows show the
+/// > user presets as well as all the presets in the plugin thats made into
+/// > its bank"*
+///
+/// A plugin device's drop-down: the user's own presets first, then the
+/// plugin's bank of 32 programs under its list's name, the one playing
+/// marked — a list longer than the window, laid out in columns.
+#[test]
+fn the_preset_menu_lists_the_users_presets_then_the_plugins_bank() {
+    use fontelle_types::PresetOrigin;
+    use fontelle_ui::canvas::{
+        CHOSEN_MARK, PresetChoice, context_menu_layout, preset_menu_marking,
+    };
+    let theme = Theme::dark_default();
+    let choice = |name: String, category: &str, origin| PresetChoice {
+        name,
+        category: category.to_string(),
+        origin,
+        favourite: false,
+        tags: Vec::new(),
+        notes: String::new(),
+    };
+    let mut choices = vec![
+        choice("My Brass".to_string(), "Saved", PresetOrigin::User),
+        choice("Late Night".to_string(), "Saved", PresetOrigin::User),
+    ];
+    for n in 1..=32 {
+        choices.push(choice(
+            format!("{n:02} VOICE {n}"),
+            "Factory Presets",
+            PresetOrigin::Plugin,
+        ));
+    }
+    let (entries, _) = preset_menu_marking(&choices, "", Some(18));
+    let marked = entries
+        .iter()
+        .position(|entry| entry.label.starts_with(CHOSEN_MARK))
+        .expect("the playing preset is marked");
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let mut menu = context_menu_layout(
+        (40.0, 20.0),
+        layout.window,
+        &theme.metrics,
+        theme.font.size,
+        entries,
+    );
+    // Opened on it, as the window opens a menu with a mark in it.
+    menu.scroll_to(marked);
+    assert!(
+        !menu.rows[marked].is_empty(),
+        "the playing preset is on screen when the menu opens"
+    );
+    MENU.with(|slot| *slot.borrow_mut() = Some(menu.clone()));
+    let shot = shoot_sized(
+        theme.clone(),
+        TransportView::default(),
+        [Meter::default(), Meter::default()],
+        false,
+        W,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = None);
+    let Some(shot) = shot else {
+        return;
+    };
+    dump_sized(&shot.pixels, "preset-menu-programs", W, H);
+    let row = menu.rows[marked];
+    let inked = (row.x as u32..row.right() as u32)
+        .flat_map(|x| (row.y as u32..row.bottom() as u32).map(move |y| (x, y)))
+        .filter(|(x, y)| {
+            let c = pixel(&shot.pixels, W, *x, *y);
+            c.0.iter()
+                .zip(theme.palette.panel.0.iter())
+                .any(|(a, b)| a.abs_diff(*b) > 60)
+        })
+        .count();
+    assert!(inked > 10, "the marked row is drawn: {inked} pixels of ink");
+
+    // Its top: the user's own presets, then the plugin's bank under the
+    // program list's name.
+    let (entries, _) = preset_menu_marking(&choices, "", None);
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels[2], "Saved");
+    assert_eq!(labels[5], "Factory Presets");
+    let top = context_menu_layout(
+        (40.0, 20.0),
+        layout.window,
+        &theme.metrics,
+        theme.font.size,
+        entries,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = Some(top));
+    let shot = shoot_sized(
+        theme.clone(),
+        TransportView::default(),
+        [Meter::default(), Meter::default()],
+        false,
+        W,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = None);
+    if let Some(shot) = shot {
+        dump_sized(&shot.pixels, "preset-menu-top", W, H);
+    }
 }

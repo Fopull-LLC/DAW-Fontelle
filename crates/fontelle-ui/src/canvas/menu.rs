@@ -329,6 +329,19 @@ impl ContextMenu {
         Rect::new(row.right() - width, row.y, width, row.height)
     }
 
+    /// Brings entry `index` into sight, two rows below the top so what is
+    /// above it shows too — what a preset drop-down opens on, the preset
+    /// playing, which in a plugin's bank of programs may be far down. A row
+    /// already in sight, and an index that is not a row, leave it where it
+    /// is.
+    pub fn scroll_to(&mut self, index: usize) {
+        if !self.rows.get(index).is_some_and(Rect::is_empty) {
+            return;
+        }
+        let top = (index % self.per_column.max(1)) as f32 * self.row;
+        self.scroll_by(top - 2.0 * self.row - self.scroll);
+    }
+
     /// Scrolls by `pixels`, positive downward, and puts the rows where that
     /// leaves them. A menu that fits does not move.
     pub fn scroll_by(&mut self, pixels: f32) {

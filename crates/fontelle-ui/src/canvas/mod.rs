@@ -131,10 +131,10 @@ pub use overlays::{
     job_card_layout, project_caption, save_prompt_layout, saved_flash, toast_layout,
 };
 pub use preset_bar::{
-    NO_PRESET, PLUGIN_HEADER_HEIGHT, PRESET_MENU_HEADING, PluginHeaderView, PresetBarHit,
-    PresetBarLayout, PresetBarView, PresetChoice, PresetDevice, PresetMenuRow, RANDOM_PRESET,
-    USER_MARK, plugin_header_hit, plugin_header_layout, preset_bar_hit, preset_bar_layout,
-    preset_bar_name, preset_menu, random_preset_row,
+    NO_PRESET, PLUGIN_HEADER_HEIGHT, PLUGIN_PRESETS_HEADING, PRESET_MENU_HEADING, PluginHeaderView,
+    PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice, PresetDevice, PresetMenuRow,
+    RANDOM_PRESET, USER_MARK, plugin_header_hit, plugin_header_layout, preset_bar_hit,
+    preset_bar_layout, preset_bar_name, preset_menu, preset_menu_marking, random_preset_row,
 };
 pub use settings_page::{
     SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingsPageHit, SettingsPageLayout,

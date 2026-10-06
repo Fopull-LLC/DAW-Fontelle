@@ -646,3 +646,27 @@ fn a_row_with_a_swatch_keeps_the_picture_column_for_it() {
         assert!(swatch.right() <= swatched.label_x(index) + 0.01);
     }
 }
+
+/// A preset drop-down opens on the preset playing: a plugin's bank of 32
+/// programs is a list longer than the window, and the one playing may be
+/// far down it. Brought into sight, a few rows below the top so what is
+/// above it shows too; a row already in sight leaves the menu where it is.
+#[test]
+fn a_menu_can_be_opened_scrolled_to_a_row() {
+    let (mut menu, _) = long_menu(359);
+    menu.scroll_to(0);
+    assert_eq!(menu.scroll(), 0.0, "a row in sight does not move it");
+    menu.scroll_to(200);
+    assert!(!menu.rows[200].is_empty(), "the row is in sight");
+    assert!(
+        !menu.rows[198].is_empty(),
+        "with the rows just above it in sight too"
+    );
+    let at = menu.scroll();
+    menu.scroll_to(201);
+    assert_eq!(menu.scroll(), at, "a row already in sight leaves it");
+    menu.scroll_to(358);
+    assert_eq!(menu.scroll(), menu.max_scroll(), "never past the end");
+    menu.scroll_to(9999);
+    assert_eq!(menu.scroll(), menu.max_scroll(), "a row that is not one");
+}

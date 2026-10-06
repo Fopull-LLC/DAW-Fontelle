@@ -13,8 +13,9 @@
 
 use fontelle_types::PresetOrigin;
 use fontelle_ui::canvas::{
-    PresetBarHit, PresetBarView, PresetChoice, PresetMenuRow, RANDOM_PRESET, preset_bar_hit,
-    preset_bar_layout, preset_bar_name, preset_menu, random_preset_row,
+    CHOSEN_MARK, PLUGIN_PRESETS_HEADING, PresetBarHit, PresetBarView, PresetChoice, PresetMenuRow,
+    RANDOM_PRESET, preset_bar_hit, preset_bar_layout, preset_bar_name, preset_menu,
+    preset_menu_marking, random_preset_row,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -377,4 +378,57 @@ fn typing_into_the_drop_down_narrows_it_to_matching_presets() {
     assert_eq!(entries.len(), 2);
     assert!(!entries[1].enabled);
     assert_eq!(rows[1], PresetMenuRow::Heading);
+}
+
+/// > *"in fl their preset menu thats attached to the plugin windows show the
+/// > user presets as well as all the presets in the plugin"*
+///
+/// The one playing is marked where it stands in the list — in its category,
+/// not pulled out of it — and in the Favorites section too when it is one.
+#[test]
+fn the_preset_playing_is_marked_in_the_menu() {
+    let mut choices = vec![
+        a_choice("Mine", "Saved", PresetOrigin::User),
+        a_choice("1 Soft", "Factory", PresetOrigin::Plugin),
+        a_choice("2 Medium", "Factory", PresetOrigin::Plugin),
+    ];
+    choices[2].favourite = true;
+    let (entries, rows) = preset_menu_marking(&choices, "", Some(2));
+    let marked: Vec<(usize, &str)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.label.starts_with(CHOSEN_MARK))
+        .map(|(at, e)| (at, e.label.as_str()))
+        .collect();
+    assert_eq!(marked.len(), 2, "{entries:#?}");
+    for (at, label) in marked {
+        assert_eq!(rows[at], PresetMenuRow::Preset(2));
+        assert_eq!(label, format!("{CHOSEN_MARK}2 Medium"));
+    }
+    // Nothing playing, nothing marked — and the plain menu is the same.
+    let (plain, _) = preset_menu_marking(&choices, "", None);
+    assert!(!plain.iter().any(|e| e.label.starts_with(CHOSEN_MARK)));
+    assert_eq!(plain, preset_menu(&choices, "").0);
+}
+
+/// A plugin's presets with no category of their own are under a heading
+/// that says whose they are, not under a blank one.
+#[test]
+fn a_plugins_presets_without_a_category_have_a_heading() {
+    let choices = vec![
+        a_choice("Mine", "Saved", PresetOrigin::User),
+        a_choice("Init", "", PresetOrigin::Plugin),
+    ];
+    let (entries, _) = preset_menu(&choices, "");
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(
+        &labels[1..],
+        [
+            RANDOM_PRESET,
+            "Saved",
+            "Mine  \u{00b7} mine",
+            PLUGIN_PRESETS_HEADING,
+            "Init"
+        ]
+    );
 }
