@@ -84,6 +84,24 @@ patches in that tab said *"No such file or directory (os error 2)"*; and
   (`the_strips_drop_down_is_put_up…`), `plugin_programs.rs` (the browser
   press, the heading); headless shots `plugin-preset-menu-{dark,light}`,
   `plugin-preset-menu-long`.
+- **Stars** (Ty: *"the stars are not very responsive like especially for
+  presets or mixer tracks ... sometimes clicking a star just doesnt make
+  any noticable change"*). Audited every star: the studio's preset
+  drop-down and a mixer track's chain menu had **no answer for a star at
+  all** (`toggle_star` knew only the effect, instrument and plugin menus;
+  the press was taken and nothing changed) — now `preset_menu_star` names
+  the preset and it is toggled. In **every** menu a star that added to or
+  took from the Favorites section moved every row below under the pointer,
+  so the row now under it was another, unstarred one — now the menu keeps
+  the pressed row where it was (`keep_starred_row_in_place`: scrolls, or
+  lays the menu out higher), the plugin window's drop-down too. The strip's
+  star with no preset loaded said nothing; it says "Load or save a preset to
+  star it". Unchanged and checked: hit areas (a menu's star is the row's
+  last 20 px, full height; the strip's 24 px button; Flopsynth's preset rows
+  20 px), one toggle per press (press only), written to settings at once.
+  A preset favourite is keyed by device, name and origin, not category, so
+  two of one name in two banks star together (left as is: the settings
+  format would change).
 - **Not done**: the whole studio was not run with a plugin window open (no
   display allowed here; the studio's wgpu found no adapter on Xvfb), so the
   drop-down has been seen in a real plugin window only through the probe.

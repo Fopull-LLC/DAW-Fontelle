@@ -645,6 +645,39 @@ pub fn context_menu_hit(menu: &ContextMenu, x: f32, y: f32) -> Option<usize> {
         })
 }
 
+/// Keeps the row a star was pressed on where it was, once the menu is laid
+/// out again around the new favourites (`new`, from the same anchor).
+///
+/// > *"sometimes clicking a star just doesnt make any noticable change"*
+///
+/// Starring a thing adds it to the Favorites section at the top — and every
+/// row below moved down under the pointer, so the row now under it was
+/// another one, unstarred. The row pressed is found again (the last with its
+/// caption: the full list is under the favourites) and the list scrolled to
+/// put it back; what scrolling cannot do — a menu that fits has nothing to
+/// scroll — is returned, and the caller lays the menu out that much higher.
+/// Zero when it is in place, and for a menu in columns, which reflows.
+pub fn keep_starred_row_in_place(old: &ContextMenu, index: usize, new: &mut ContextMenu) -> f32 {
+    let Some(label) = old.entries.get(index).map(|entry| &entry.label) else {
+        return 0.0;
+    };
+    let Some(now) = new.entries.iter().rposition(|entry| &entry.label == label) else {
+        return 0.0;
+    };
+    if old.columns() > 1 || new.columns() > 1 {
+        return 0.0;
+    }
+    let row = new.row.max(1.0);
+    // Where each sits in its own list, unscrolled, from its menu's top.
+    let was = old.frame.y + index as f32 * row - old.scroll;
+    new.scroll_by(old.scroll - new.scroll);
+    let is = new.frame.y + now as f32 * row - new.scroll;
+    let before = new.scroll;
+    new.scroll_by(is - was);
+    let left = (is - was) - (new.scroll - before);
+    if left.abs() < 0.5 { 0.0 } else { left }
+}
+
 /// Which entry's star `(x, y)` is on, if it is on one.
 ///
 /// A greyed row's star still answers — the kind a channel already is can be

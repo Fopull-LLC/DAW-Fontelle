@@ -7481,6 +7481,80 @@ fn the_preset_menu_lists_the_users_presets_then_the_plugins_bank() {
     }
 }
 
+/// A preset drop-down just after a star was pressed on "Late Night": it is
+/// lit, it is under Favorites at the top, and the menu rose so the row
+/// pressed is still where it was — in both themes.
+#[test]
+fn a_starred_preset_is_lit_listed_first_and_stays_put() {
+    use fontelle_types::PresetOrigin;
+    use fontelle_ui::canvas::{
+        PresetChoice, context_menu_layout, keep_starred_row_in_place, preset_menu_marking,
+    };
+    let choice = |name: &str, favourite| PresetChoice {
+        name: name.to_string(),
+        category: "Saved".to_string(),
+        origin: PresetOrigin::User,
+        favourite,
+        tags: Vec::new(),
+        notes: String::new(),
+    };
+    let names = ["Brass", "Late Night", "Organ", "Pad", "Strings"];
+    let plain: Vec<PresetChoice> = names.iter().map(|n| choice(n, false)).collect();
+    let starred: Vec<PresetChoice> = names
+        .iter()
+        .map(|n| choice(n, *n == "Late Night"))
+        .collect();
+    for (theme, name) in [
+        (Theme::dark_default(), "preset-menu-starred-dark"),
+        (Theme::light_default(), "preset-menu-starred-light"),
+    ] {
+        let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+        let at = (60.0, 120.0);
+        let (entries, _) = preset_menu_marking(&plain, "", None);
+        let old = context_menu_layout(at, layout.window, &theme.metrics, theme.font.size, entries);
+        let pressed = old
+            .entries
+            .iter()
+            .position(|e| e.label.starts_with("Late Night"))
+            .unwrap();
+        let (entries, _) = preset_menu_marking(&starred, "", None);
+        let mut menu = context_menu_layout(
+            at,
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries.clone(),
+        );
+        let lift = keep_starred_row_in_place(&old, pressed, &mut menu);
+        let mut menu = context_menu_layout(
+            (at.0, at.1 - lift),
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries,
+        );
+        keep_starred_row_in_place(&old, pressed, &mut menu);
+        let now = menu
+            .entries
+            .iter()
+            .rposition(|e| e.label.starts_with("Late Night"))
+            .unwrap();
+        assert!((menu.rows[now].y - old.rows[pressed].y).abs() < 0.5);
+        MENU.with(|slot| *slot.borrow_mut() = Some(menu));
+        let shot = shoot_sized(
+            theme.clone(),
+            TransportView::default(),
+            [Meter::default(), Meter::default()],
+            false,
+            W,
+        );
+        MENU.with(|slot| *slot.borrow_mut() = None);
+        if let Some(shot) = shot {
+            dump_sized(&shot.pixels, name, W, H);
+        }
+    }
+}
+
 /// The piano roll's scale chooser with a key on and a scale on the clipboard:
 /// Copy, Paste by name, and the notes of the key, above the catalogue.
 #[test]

@@ -11972,7 +11972,20 @@ impl WindowApp {
             }
             Outcome::Random(which) => changed(self, &|doc| doc.apply_preset(device, which)),
             Outcome::Step(delta) => changed(self, &|doc| doc.step_preset(device, delta)),
-            Outcome::Star(which) => changed(self, &|doc| doc.toggle_preset_star(device, which)),
+            Outcome::Star(which) => {
+                let old = self.plugin_menu.as_ref().map(|menu| menu.menu.clone());
+                let pressed = self.plugin_menu.as_ref().and_then(|menu| {
+                    menu.rows
+                        .iter()
+                        .position(|row| *row == crate::canvas::PluginMenuRow::Preset(which))
+                });
+                changed(self, &|doc| doc.toggle_preset_star(device, which));
+                if let (Some(old), Some(pressed), Some(menu)) =
+                    (old, pressed, self.plugin_menu.as_mut())
+                {
+                    crate::canvas::keep_starred_row_in_place(&old, pressed, &mut menu.menu);
+                }
+            }
             Outcome::ShowInBrowser => {
                 self.close_plugin_menu();
                 self.show_presets_in_browser(device);
@@ -17508,18 +17521,52 @@ impl WindowApp {
     /// scrolled where it was — a star that closed the menu would make
     /// starring three effects three trips.
     fn toggle_star(&mut self, target: &MenuTarget, index: usize) {
-        let Some(favorite) = self.favorite_at(target, index) else {
-            return;
+        // > *"the stars are not very responsive like especially for presets
+        // > or mixer tracks"* — a preset menu's star (a device's drop-down, a
+        // > mixer track's chain menu) had no answer here at all: the press
+        // > was taken and nothing changed.
+        let preset = match target {
+            MenuTarget::PresetMenu(kind) => self.preset_device(*kind).and_then(|device| {
+                crate::canvas::preset_menu_star(&self.preset_menu_rows(*kind).1, index)
+                    .map(|which| (device, which))
+            }),
+            MenuTarget::TrackPresetMenu(strip) => {
+                crate::canvas::preset_menu_star(&self.track_preset_rows(*strip).1, index)
+                    .map(|which| (crate::canvas::PresetDevice::Track { strip: *strip }, which))
+            }
+            _ => None,
         };
-        if let Some(doc) = &mut self.options.document {
-            doc.toggle_favorite(favorite);
+        match preset {
+            Some((device, which)) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_preset_star(device, which);
+                }
+            }
+            None => {
+                let Some(favorite) = self.favorite_at(target, index) else {
+                    return;
+                };
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_favorite(favorite);
+                }
+            }
         }
-        let scroll = self.menu.as_ref().map_or(0.0, |(_, menu)| menu.scroll());
+        // Rebuilt around the new list, with the row pressed kept under the
+        // pointer — the Favorites section above it grew or shrank, and a row
+        // that slid away under the pointer read as a star that did nothing.
+        let old = self.menu.as_ref().map(|(_, menu)| menu.clone());
         self.relayout_menu();
-        if let Some((_, menu)) = &mut self.menu {
-            menu.scroll_by(scroll);
+        if let (Some(old), Some((_, menu))) = (old.as_ref(), self.menu.as_mut()) {
+            let lift = crate::canvas::keep_starred_row_in_place(old, index, menu);
+            if lift != 0.0 && self.menu_beside.is_none() {
+                self.menu_at.0.1 -= lift;
+                self.relayout_menu();
+                if let Some((_, menu)) = self.menu.as_mut() {
+                    crate::canvas::keep_starred_row_in_place(old, index, menu);
+                }
+            }
         }
-        self.refresh_studio();
+        self.after_preset_change();
     }
 
     fn menu_entries(&self, target: &MenuTarget) -> Vec<crate::canvas::MenuEntry> {

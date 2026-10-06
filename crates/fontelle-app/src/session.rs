@@ -14762,6 +14762,10 @@ impl Session {
     pub fn toggle_preset_favorite(&mut self, device: PresetDevice) {
         let (Some(kind), Some(reference)) = (self.preset_device(device), self.preset_ref(device))
         else {
+            // A star pressed with nothing to star said nothing, and read as a
+            // star that did not work.
+            self.message = Some("Load or save a preset to star it".to_string());
+            self.touch();
             return;
         };
         self.toggle_favorite(fontelle_types::Favorite::Preset {

@@ -420,6 +420,16 @@ pub enum PresetMenuRow {
     Random,
 }
 
+/// Which preset the star on row `index` of a preset menu is — every row
+/// [`preset_menu_marking`] gives a star is a preset's. `None` for a heading,
+/// the random row, or a row that is not there.
+pub fn preset_menu_star(rows: &[PresetMenuRow], index: usize) -> Option<usize> {
+    match rows.get(index)? {
+        PresetMenuRow::Preset(which) => Some(*which),
+        PresetMenuRow::Heading | PresetMenuRow::Random => None,
+    }
+}
+
 /// What the random row says.
 pub const RANDOM_PRESET: &str = "\u{2684} Random preset";
 

@@ -559,3 +559,58 @@ fn an_lv2_plugins_banks_are_offered_and_load() {
     assert_eq!(state.param(2), Some(0.25));
     assert_eq!(session.preset_bar(device).name.as_deref(), Some("Quieter"));
 }
+
+/// > *"sometimes clicking a star just doesnt make any noticable change.
+/// > please ensure that the favoriting system works correctly everywhere."*
+///
+/// A star on one of a plugin's own presets: one press is one change, the
+/// menu has it under Favorites at once, it is written to the settings, and
+/// the preset is not loaded by it.
+#[test]
+fn a_star_on_a_plugins_preset_toggles_once_shows_at_once_and_is_kept() {
+    let dir = scratch("star");
+    let (mut session, device) = with_programs(&dir);
+    let before = live_program(&mut session);
+    let at = choice(&session, device, "3 Loud");
+    session.toggle_preset_star(device, at);
+    assert!(session.preset_choices(device)[at].favourite);
+    assert_eq!(live_program(&mut session), before, "a star is not a load");
+    let (entries, _) =
+        fontelle_ui::canvas::preset_menu_marking(&session.preset_choices(device), "", None);
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    let favorites = labels
+        .iter()
+        .position(|l| *l == "Favorites")
+        .expect("a Favorites section");
+    assert_eq!(labels[favorites + 1], "3 Loud", "{labels:?}");
+    let saved = fontelle_app::settings::Settings::from_json(
+        &std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        saved.favorites.iter().any(|f| matches!(
+            f,
+            fontelle_types::Favorite::Preset { name, .. } if name == "3 Loud"
+        )),
+        "{:?}",
+        saved.favorites
+    );
+    session.toggle_preset_star(device, at);
+    assert!(
+        !session.preset_choices(device)[at].favourite,
+        "and off again"
+    );
+}
+
+/// The strip's star with no preset loaded has nothing to star. It said
+/// nothing; it says why.
+#[test]
+fn the_strips_star_with_no_preset_says_why() {
+    let dir = scratch("star-none");
+    let (mut session, device) = with_programs(&dir);
+    assert_eq!(session.preset_bar(device).name, None);
+    session.take_message();
+    session.toggle_preset_favorite(device);
+    let said = session.take_message().unwrap_or_default();
+    assert!(said.contains("preset"), "{said:?}");
+}

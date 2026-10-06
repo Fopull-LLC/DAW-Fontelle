@@ -478,3 +478,118 @@ fn two_builds_of_one_plugin_say_which_format_each_is() {
         ]
     );
 }
+
+// ------------------------------------------- a press on a star, kept ---
+//
+// Ty: *"the stars are not very responsive like especially for presets or
+// mixer tracks and maybe other places ... sometimes clicking a star just
+// doesnt make any noticable change."*
+
+/// Every star a preset menu draws — the studio's drop-down, a mixer
+/// track's chain menu, the plugin window's — means one preset, and a press
+/// on it is that preset's star. The window had no answer for a preset menu's
+/// star at all: the press was taken and nothing changed.
+#[test]
+fn every_star_in_a_preset_menu_names_its_preset() {
+    use fontelle_types::PresetOrigin;
+    use fontelle_ui::canvas::{PresetChoice, preset_menu_marking, preset_menu_star};
+    let choice = |name: &str, favourite| PresetChoice {
+        name: name.to_string(),
+        category: "Keys".to_string(),
+        origin: PresetOrigin::Factory,
+        favourite,
+        tags: Vec::new(),
+        notes: String::new(),
+    };
+    let choices = vec![
+        choice("Ep", false),
+        choice("Organ", true),
+        choice("Piano", false),
+    ];
+    let (entries, rows) = preset_menu_marking(&choices, "", None);
+    let mut starred = 0;
+    for (index, entry) in entries.iter().enumerate() {
+        match (entry.star, preset_menu_star(&rows, index)) {
+            (Some(_), Some(which)) => {
+                starred += 1;
+                assert_eq!(
+                    entry.label.trim_start_matches(CHOSEN_MARK),
+                    choices[which].name,
+                    "row {index}"
+                );
+            }
+            (None, None) => {}
+            (star, which) => panic!("row {index}: star {star:?}, preset {which:?}"),
+        }
+    }
+    // The three, and Organ again under Favorites.
+    assert_eq!(starred, 4);
+}
+
+/// Starring a thing grows the Favorites section above it, and every row
+/// under the pointer moved down: the row just starred slid away and another
+/// one was under the pointer, unstarred — *"doesnt make any noticable
+/// change"*. Laid out again, the starred row stays where it was pressed.
+#[test]
+fn a_starred_row_stays_under_the_pointer_when_the_favorites_grow() {
+    use fontelle_ui::canvas::keep_starred_row_in_place;
+    let theme = Theme::dark_default();
+    let at = (40.0, 100.0);
+    // Room for everything, and above it: a menu that does not scroll.
+    let before = effect_menu_rows(&[], &plugins());
+    let entries: Vec<MenuEntry> = before.iter().map(|(e, _)| e.clone()).collect();
+    let tall = Rect::new(0.0, 0.0, 800.0, 1200.0);
+    let old = context_menu_layout(at, tall, &metrics(), font_size(), entries);
+    assert!(!old.scrolls());
+    let index = before
+        .iter()
+        .position(|(_, row)| *row == EffectRow::Builtin(EffectKind::Reverb))
+        .unwrap();
+    let was = old.rows[index];
+
+    let after = effect_menu_rows(&[Favorite::Effect(EffectKind::Reverb)], &plugins());
+    let entries: Vec<MenuEntry> = after.iter().map(|(e, _)| e.clone()).collect();
+    let mut new = context_menu_layout(at, tall, &metrics(), font_size(), entries.clone());
+    let lift = keep_starred_row_in_place(&old, index, &mut new);
+    assert!(lift > 0.0, "the menu has to rise for the row to stay");
+    let mut new = context_menu_layout(
+        (at.0, at.1 - lift),
+        tall,
+        &metrics(),
+        font_size(),
+        entries.clone(),
+    );
+    assert_eq!(keep_starred_row_in_place(&old, index, &mut new), 0.0);
+    let now = entries
+        .iter()
+        .rposition(|e| e.label == old.entries[index].label)
+        .unwrap();
+    assert!(
+        (new.rows[now].y - was.y).abs() < 0.5,
+        "{:?} vs {was:?}",
+        new.rows[now]
+    );
+    assert!(new.entries[now].is_favorite(), "and it is lit");
+
+    // In a menu that scrolls, the list scrolls instead.
+    let short = Rect::new(0.0, 0.0, 220.0, 160.0);
+    let entries: Vec<MenuEntry> = before.iter().map(|(e, _)| e.clone()).collect();
+    let mut old = context_menu_layout((40.0, 0.0), short, &metrics(), font_size(), entries);
+    assert!(old.scrolls());
+    old.scroll_by(theme.metrics.row_height * (index as f32 - 2.0));
+    let was = old.rows[index];
+    assert!(!was.is_empty());
+    let entries: Vec<MenuEntry> = after.iter().map(|(e, _)| e.clone()).collect();
+    let mut new = context_menu_layout((40.0, 0.0), short, &metrics(), font_size(), entries);
+    assert_eq!(keep_starred_row_in_place(&old, index, &mut new), 0.0);
+    let now = new
+        .entries
+        .iter()
+        .rposition(|e| e.label == old.entries[index].label)
+        .unwrap();
+    assert!(
+        (new.rows[now].y - was.y).abs() < 0.5,
+        "{:?} vs {was:?}",
+        new.rows[now]
+    );
+}
