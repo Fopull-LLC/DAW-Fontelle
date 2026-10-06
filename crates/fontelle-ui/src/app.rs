@@ -3006,6 +3006,10 @@ impl WindowApp {
         // And the tour's spotlight, which reads the layout and the clock.
         let tour_spot = self.tour_spot();
         let tour_target = self.tour_target();
+        // And the ghost of a first clip's breath, which reads the clock.
+        let ghost = self.clips.is_empty().then(|| {
+            crate::canvas::ghost_pulse(self.started.elapsed().as_secs_f32(), self.ghost_moving())
+        });
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
         };
@@ -3246,6 +3250,7 @@ impl WindowApp {
                     take_notes: &self.takes,
                     glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
                     selected_lane: self.selected_lane,
+                    ghost,
                     can_paste: self
                         .options
                         .document
@@ -3469,6 +3474,20 @@ impl WindowApp {
         self.frames += 1;
     }
 
+    /// Whether the ghost of a first clip is drawn **moving**: there is no clip,
+    /// the arrangement is showing, the theme's motion is on, and somebody can
+    /// see the window. Still and Off hold it at one strength, and an
+    /// unfocused or hidden window does not wake for it.
+    fn ghost_moving(&self) -> bool {
+        self.clips.is_empty()
+            && self.options.document.is_some()
+            && !self.layout.timeline.frame.is_empty()
+            && self.motion.effects == crate::backdrop::Effects::Moving
+            && self.sight.focused
+            && !self.sight.occluded
+            && !self.sight.minimized
+    }
+
     /// Asks for a frame when a moving backdrop is due one (hub card 0366).
     ///
     /// The only thing that keeps a moving theme moving: the loop is
@@ -3571,6 +3590,17 @@ impl WindowApp {
         let now = std::time::Instant::now();
         // A moving theme moves, at its own rate, while somebody can see it.
         self.tick_backdrops(now);
+        // And the ghost of a first clip breathes, on the same terms.
+        if self.ghost_moving() {
+            let grid = self.timeline_layout.grid;
+            let row = crate::layout::Rect::new(
+                grid.x,
+                crate::canvas::lane_to_y(&self.timeline.view, grid, 0),
+                grid.width,
+                self.timeline.view.lane_height,
+            );
+            self.tree.invalidate_rect(row.intersection(&grid));
+        }
         // Clamped: a window that was dragged, minimised, or simply not
         // scheduled for a second must not make the meters jump a second's
         // worth of release in one step.
@@ -8069,6 +8099,11 @@ impl WindowApp {
                 &self.timeline.view,
                 self.timeline_layout.grid,
             );
+            // The ghost of a first clip says how to make one.
+            if self.clips.is_empty() {
+                let hint = crate::canvas::ghost_clip_hint(self.timeline.tool());
+                self.labels.ensure(hint, &font, &mut self.text);
+            }
             for clip in &self.clips {
                 if lanes.contains(&clip.lane)
                     && clip.start <= ticks.end
@@ -22402,6 +22437,12 @@ impl WindowApp {
         // while nobody can see it (`tick_backdrops`).
         if let Some(due) = self.backdrop_due {
             wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+
+        // The ghost of a first clip breathes at the sky's pace while there is
+        // one to draw and somebody can see it move.
+        if self.ghost_moving() {
+            wake = Some(wake.map_or(now + SKY_FRAME, |w| w.min(now + SKY_FRAME)));
         }
 
         // A clip in the guide plays on its own, frame by frame.

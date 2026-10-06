@@ -472,6 +472,10 @@ pub struct TimelineChrome<'a> {
     /// The row a click on its header selected, lit — where new material with
     /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
     pub selected_lane: Option<usize>,
+    /// How strongly to draw the ghost of a first clip, 0..1, while the
+    /// arrangement has none — `canvas::ghost_pulse`'s breath. `None` draws
+    /// no ghost; and with any clip there is none to draw whatever this says.
+    pub ghost: Option<f32>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -8037,6 +8041,28 @@ fn draw_timeline(
         }
     }
 
+    // The ghost of a first clip, on an arrangement with none — under where
+    // the clip it promises will be. See `canvas::ghost_clip`.
+    if let Some(strength) = chrome.ghost
+        && let Some(ghost) = crate::canvas::ghost_clip(
+            v,
+            l.grid,
+            chrome.clips,
+            chrome.lanes.len(),
+            chrome.beats_per_bar,
+        )
+    {
+        draw_ghost_clip(
+            scene,
+            theme,
+            labels,
+            l.grid,
+            ghost,
+            crate::canvas::ghost_clip_hint(chrome.tool),
+            strength,
+        );
+    }
+
     // The clips.
     for clip in chrome.clips {
         if !lanes.contains(&clip.lane) {
@@ -8410,6 +8436,64 @@ fn draw_focus_edge(scene: &mut Scene, theme: &Theme, frame: Rect, focused: bool)
 /// colour: a preview has to read as part of the clip it is in rather than as
 /// something lying on top of it, and every lane has a different colour to be
 /// part of.
+/// The ghost of a first clip: a faint block with a dashed edge, in the
+/// accent, and its tip inside it — or after it, where the block is too short
+/// for the words. `strength` is the breath, 0..1. Clipped to the grid, so a
+/// scrolled arrangement does not draw it over the lane names.
+fn draw_ghost_clip(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    grid: Rect,
+    ghost: Rect,
+    hint: &str,
+    strength: f32,
+) {
+    let p = &theme.palette;
+    let strength = strength.clamp(0.0, 1.0);
+    let alpha = |most: f32| (most * strength).round().clamp(0.0, 255.0) as u8;
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            grid.x as f64,
+            grid.y as f64,
+            grid.right() as f64,
+            grid.bottom() as f64,
+        ),
+    );
+    fill_rect_rounded(scene, ghost, 3.0, p.accent.with_alpha(alpha(70.0)));
+    scene.stroke(
+        &Stroke::new(1.5).with_dashes(0.0, [6.0, 4.0]),
+        Affine::IDENTITY,
+        p.accent.with_alpha(alpha(255.0)).to_peniko(),
+        None,
+        &rounded(ghost, 3.0),
+    );
+    if let Some(text) = labels.get(hint) {
+        let inside = text.width + 16.0 <= ghost.width;
+        let x = if inside {
+            ghost.x + (ghost.width - text.width) / 2.0
+        } else {
+            ghost.right() + 8.0
+        };
+        let y = ghost.y + (ghost.height - text.height) / 2.0;
+        let ink = p.text;
+        let shown = Rect::new(x, ghost.y, text.width, ghost.height).intersection(&grid);
+        draw_text_clipped(
+            scene,
+            text,
+            shown,
+            x,
+            y,
+            Color([ink.0[0], ink.0[1], ink.0[2], alpha(255.0).max(0x60)]),
+        );
+    }
+    scene.pop_layer();
+}
+
 fn draw_clip_notes(
     scene: &mut Scene,
     theme: &Theme,

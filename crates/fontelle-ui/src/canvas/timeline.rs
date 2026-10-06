@@ -3609,3 +3609,67 @@ pub fn lane_track_chip(header: Rect) -> Rect {
         side,
     )
 }
+
+// ------------------------------------------- the ghost of a first clip ---
+//
+// Ty: *"whenever there are no clips in the arrangement, theres a small ghost
+// of a clip in the arrangement that is kind of pulsating / flickering and it
+// has a tip text saying double click with the pencil to create a new clip or
+// something along those lines. ... doesnt really get in the way of returning
+// users"*.
+//
+// A picture and nothing more. Nothing in this canvas's input reads it, so a
+// press where it is drawn is a press on empty grid — and a double-click
+// there, with the draw tool, is exactly the gesture it describes, and makes
+// the clip where the ghost was.
+
+/// How many bars the ghost spans.
+const GHOST_BARS: i64 = 2;
+
+/// Where the ghost of a first clip is drawn: two bars from the start of the
+/// first lane, inset like a block — or `None` once there is any clip at all,
+/// or no lane to put one on.
+pub fn ghost_clip(
+    view: &TimelineView,
+    grid: Rect,
+    clips: &[ClipInfo],
+    lanes: usize,
+    beats_per_bar: u32,
+) -> Option<Rect> {
+    if !clips.is_empty() || lanes == 0 || grid.is_empty() {
+        return None;
+    }
+    let bar = fontelle_types::PPQN * i64::from(beats_per_bar.max(1));
+    let x0 = timeline_tick_to_x(view, grid, 0);
+    let x1 = timeline_tick_to_x(view, grid, bar * GHOST_BARS);
+    // Never thinner than a word, so a zoomed-out arrangement still has one.
+    let width = (x1 - x0).max(96.0);
+    let rect = Rect::new(x0, lane_to_y(view, grid, 0), width, view.lane_height).inset(2.0);
+    let shown = rect.intersection(&grid);
+    (!shown.is_empty()).then_some(rect)
+}
+
+/// What the ghost says: the gesture that really makes a clip
+/// ([`Timeline::double_press`], which only the draw tool answers), and with
+/// another tool on, how to get the draw tool back first.
+pub fn ghost_clip_hint(tool: TimelineTool) -> &'static str {
+    match tool {
+        TimelineTool::Draw => "Double-click to draw a clip",
+        TimelineTool::Select | TimelineTool::Slice => "Press P, then double-click to draw a clip",
+    }
+}
+
+/// How strongly the ghost is drawn at `seconds`, 0..1: a slow breath while
+/// the theme's motion is on (`moving`), and held halfway when it is Still or
+/// Off — a picture that moves is the one thing Still promises it will not.
+pub fn ghost_pulse(seconds: f32, moving: bool) -> f32 {
+    const MID: f32 = 0.55;
+    const SWING: f32 = 0.2;
+    /// One breath, in seconds: slow enough to read as a pulse rather than a
+    /// flicker, which is the thing that would get in a returning user's way.
+    const PERIOD: f32 = 2.4;
+    if !moving || !seconds.is_finite() {
+        return MID;
+    }
+    MID + SWING * (seconds * std::f32::consts::TAU / PERIOD).sin()
+}

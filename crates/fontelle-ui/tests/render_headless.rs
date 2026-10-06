@@ -1276,7 +1276,10 @@ fn shoot_timeline_recording(
     use fontelle_ui::document::LaneInfo;
     use fontelle_ui::render::TimelineChrome;
 
-    let theme = Theme::dark_default();
+    let theme = SHOT_THEME
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(Theme::dark_default);
+    let ghost = GHOST.with(|slot| slot.get());
     let shared = headless()?;
     let layout = window_layout(
         RW as f32,
@@ -1303,6 +1306,12 @@ fn shoot_timeline_recording(
         };
         labels.ensure(caption, &theme.font, &mut text);
     }
+    // The ghost's tip, as the window shapes it.
+    labels.ensure(
+        fontelle_ui::canvas::ghost_clip_hint(fontelle_ui::canvas::TimelineTool::default()),
+        &theme.font,
+        &mut text,
+    );
     // A clip still on its way says how far along it is — shaped as the
     // window's own `shape_labels` shapes it.
     for clip in clips {
@@ -1378,6 +1387,7 @@ fn shoot_timeline_recording(
                 take_notes: takes,
                 glow,
                 selected_lane,
+                ghost,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -7110,6 +7120,59 @@ thread_local! {
     /// side door, so its callers keep their signature.
     static LANE_STATE: std::cell::Cell<(Option<usize>, Option<usize>)> =
         const { std::cell::Cell::new((None, None)) };
+}
+
+thread_local! {
+    /// How strongly the ghost of a first clip is drawn in the next timeline
+    /// shot, and the theme it is drawn in — the same side door.
+    static GHOST: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    static SHOT_THEME: std::cell::RefCell<Option<Theme>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An empty arrangement, as the window draws it with the ghost of a first
+/// clip in it — in two themes, a dark and a light.
+#[test]
+fn an_empty_arrangement_shows_the_ghost_of_a_first_clip_and_its_tip() {
+    use fontelle_ui::canvas::{ghost_clip, timeline_layout};
+    for (theme, name) in [
+        (Theme::dark_default(), "ghost-clip-dark"),
+        (Theme::light_default(), "ghost-clip-light"),
+    ] {
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = Some(theme.clone()));
+        GHOST.with(|slot| slot.set(Some(0.75)));
+        let shot = shoot_timeline(&[]);
+        GHOST.with(|slot| slot.set(None));
+        let bare = shoot_timeline(&[]);
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = None);
+        let (Some(shot), Some(bare)) = (shot, bare) else {
+            return;
+        };
+        dump_sized(&shot.pixels, name, RW, RH);
+        let layout = window_layout(
+            RW as f32,
+            RH as f32,
+            &theme.metrics,
+            DEFAULT_TIMELINE_HEIGHT,
+        );
+        let l = timeline_layout(layout.timeline.body, &theme.metrics);
+        let ghost = ghost_clip(&shot.view, l.grid, &[], 4, 4).expect("a ghost");
+        let differs = (ghost.x as u32 + 2..ghost.right() as u32 - 2)
+            .flat_map(|x| (ghost.y as u32 + 2..ghost.bottom() as u32 - 2).map(move |y| (x, y)))
+            .filter(|(x, y)| pixel(&shot.pixels, RW, *x, *y) != pixel(&bare.pixels, RW, *x, *y))
+            .count();
+        assert!(
+            differs > 200,
+            "{name}: the ghost and its tip are drawn ({differs} pixels)"
+        );
+        // And nothing else on the arrangement moved for it.
+        let away = (l.grid.x as u32 + 10..l.grid.right() as u32 - 10)
+            .flat_map(|x| {
+                (ghost.bottom() as u32 + 4..l.grid.bottom() as u32 - 2).map(move |y| (x, y))
+            })
+            .filter(|(x, y)| pixel(&shot.pixels, RW, *x, *y) != pixel(&bare.pixels, RW, *x, *y))
+            .count();
+        assert_eq!(away, 0, "{name}: drawn only where it is");
+    }
 }
 
 fn shoot_timeline_lanes(selected: Option<usize>, soloed: Option<usize>) -> Option<TimelineShot> {
