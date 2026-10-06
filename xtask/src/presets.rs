@@ -213,6 +213,14 @@ fn effect_presets() -> Vec<Preset> {
             EffectConfig::Notepad(NotepadConfig::from_preset(preset)),
         ));
     }
+    // Analyze Musically's insert: its arming setups (`docs/analyze-musically-
+    // plan.md` §6.1), a recorder's useful presets.
+    for preset in fontelle_types::AnalyzePreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Analyze(fontelle_types::AnalyzeConfig::from_preset(preset)),
+        ));
+    }
     // The sixteen **track** chains — a whole mixer strip rather than one
     // device. Three categories rather than one, because unlike the corrector's
     // forty these are not points on one control surface: "Spoken Word" and

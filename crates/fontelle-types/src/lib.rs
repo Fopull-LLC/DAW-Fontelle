@@ -38,7 +38,7 @@ mod scale;
 mod time;
 mod wavetable_edit;
 
-pub use analyze_insert::{AnalyzeConfig, ArmMode};
+pub use analyze_insert::{AnalyzeConfig, AnalyzePreset, ArmMode};
 pub use asset::{AssetKind, AssetRef};
 pub use audio_clip::{
     AudioClipData, AudioPlacement, ClipLoopMode, ClipStretch, Fade, FadeCurve, MAX_CLIP_GAIN_DB,

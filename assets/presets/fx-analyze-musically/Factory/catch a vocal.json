@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Analyze"
+  },
+  "name": "catch a vocal",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Analyze": {
+        "arm": "OnInput",
+        "threshold_db": -40.0,
+        "release_ms": 1500.0,
+        "post_fader": false,
+        "study": null,
+        "mix": 1.0
+      }
+    }
+  }
+}

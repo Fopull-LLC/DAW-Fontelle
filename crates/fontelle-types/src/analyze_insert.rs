@@ -182,3 +182,80 @@ static ANALYZE_OWN_PARAMS: [crate::ParamSpec; 4] = [
         positions: &[],
     },
 ];
+
+/// The insert's bank: the ways to arm it that come up, by what they are for.
+/// Every built-in ships one (`fontelle-app/tests/effect_editor.rs`), and for
+/// a recorder the useful presets are its arming setups — Edison's "on
+/// input" thresholds for a quiet booth or a loud stage are what people dial
+/// in over and over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum AnalyzePreset {
+    /// On input at -40 dB, a second and a half of release: a sung or spoken
+    /// phrase in a quiet room, breaths and all.
+    CatchAVocal,
+    /// On input at -24 dB, half a second: a loud source over a noisy room.
+    CatchALoudSource,
+    /// On input at -45 dB, three seconds: long phrases with gaps in them,
+    /// kept as one take.
+    CatchLongPhrases,
+    OnPlay,
+    OnPlayPostFader,
+    Now,
+    NowPostFader,
+}
+
+impl AnalyzePreset {
+    pub const ALL: [Self; 7] = [
+        Self::CatchAVocal,
+        Self::CatchALoudSource,
+        Self::CatchLongPhrases,
+        Self::OnPlay,
+        Self::OnPlayPostFader,
+        Self::Now,
+        Self::NowPostFader,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CatchAVocal => "catch a vocal",
+            Self::CatchALoudSource => "catch a loud source",
+            Self::CatchLongPhrases => "catch long phrases",
+            Self::OnPlay => "on play",
+            Self::OnPlayPostFader => "on play, post fader",
+            Self::Now => "now",
+            Self::NowPostFader => "now, post fader",
+        }
+    }
+}
+
+impl AnalyzeConfig {
+    /// The settings `preset` names. The study it records into is not a
+    /// setting: a preset leaves it unbound.
+    pub fn from_preset(preset: AnalyzePreset) -> Self {
+        let on_input = |threshold_db: f32, release_ms: f32| Self {
+            arm: ArmMode::OnInput,
+            threshold_db,
+            release_ms,
+            ..Self::new()
+        };
+        match preset {
+            AnalyzePreset::CatchAVocal => on_input(-40.0, 1_500.0),
+            AnalyzePreset::CatchALoudSource => on_input(-24.0, 500.0),
+            AnalyzePreset::CatchLongPhrases => on_input(-45.0, 3_000.0),
+            AnalyzePreset::OnPlay => Self::new(),
+            AnalyzePreset::OnPlayPostFader => Self {
+                post_fader: true,
+                ..Self::new()
+            },
+            AnalyzePreset::Now => Self {
+                arm: ArmMode::Now,
+                ..Self::new()
+            },
+            AnalyzePreset::NowPostFader => Self {
+                arm: ArmMode::Now,
+                post_fader: true,
+                ..Self::new()
+            },
+        }
+    }
+}

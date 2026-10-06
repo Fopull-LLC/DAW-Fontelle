@@ -9412,7 +9412,17 @@ impl Command for ApplyPreset {
                                 kind
                             )));
                         }
-                        slot.config = *config;
+                        let mut config = *config;
+                        // An Analyze Musically insert's study is where its
+                        // takes go, not a setting a preset carries: keep it.
+                        if let (
+                            fontelle_types::EffectConfig::Analyze(new),
+                            fontelle_types::EffectConfig::Analyze(held),
+                        ) = (&mut config, &slot.config)
+                        {
+                            new.study = held.study;
+                        }
+                        slot.config = config;
                     }
                     // DisgustingBeat's state is a config *and* a bank, so its
                     // preset carries both — `PresetPayload::DisgustingBeat`
