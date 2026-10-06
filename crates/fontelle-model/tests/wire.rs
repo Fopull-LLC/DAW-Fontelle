@@ -132,6 +132,7 @@ struct Studio {
     prefab: PrefabId,
     place: ClipId,
     marker: fontelle_types::MarkerId,
+    study: fontelle_types::StudyId,
 }
 
 fn a_studio() -> Studio {
@@ -283,6 +284,16 @@ fn a_studio() -> Studio {
     )
     .clip()
     .unwrap();
+    let study = applied(
+        fontelle_model::AddStudy::new(fontelle_types::Study::new(
+            "Vox",
+            fontelle_types::StudySource::Clip(audio_clip),
+            an_asset("take.wav"),
+        )),
+        &mut project,
+    )
+    .id()
+    .unwrap();
     let marker = applied(AddMarker::new("Chorus", PPQN * 16), &mut project)
         .id()
         .unwrap();
@@ -306,6 +317,7 @@ fn a_studio() -> Studio {
         prefab,
         place,
         marker,
+        study,
     }
 }
 
@@ -788,6 +800,33 @@ fn every_command() -> Vec<(&'static str, Make)> {
             Box::new(AddMarker::new("Bridge", PPQN * 32))
         }),
         ("RemoveMarker", |s| Box::new(RemoveMarker::new(s.marker))),
+        // --- Analyze Musically's studies
+        ("AddStudy", |s| {
+            Box::new(fontelle_model::AddStudy::new(fontelle_types::Study::new(
+                "Take 2",
+                fontelle_types::StudySource::Standalone,
+                an_asset("take 2.wav"),
+            )))
+        }),
+        ("RemoveStudy", |s| {
+            Box::new(fontelle_model::RemoveStudy::new(s.study))
+        }),
+        ("SetStudyEdits", |s| {
+            Box::new(fontelle_model::SetStudyEdits::new(
+                s.study,
+                vec![fontelle_types::PitchEdit {
+                    shift_cents: 30.0,
+                    flatten: 0.7,
+                    ..fontelle_types::PitchEdit::none((4_800, 24_000))
+                }],
+            ))
+        }),
+        ("SetStudyRender", |s| {
+            Box::new(fontelle_model::SetStudyRender::new(
+                s.study,
+                Some(an_asset("renders/take (edited 1).wav")),
+            ))
+        }),
         ("Compound", |s| {
             Box::new(Compound::new(
                 "two at once",
@@ -892,6 +931,10 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"Compound":{"label":"both","parts":[{"MoveLane":{"from":0,"delta":1}}],"applied":false}}"#,
             "Compound",
+        ),
+        (
+            r#"{"SetStudyEdits":{"study":{"idx":1,"version":1},"edits":[],"before":null}}"#,
+            "SetStudyEdits",
         ),
     ];
     for (json, tag) in pinned {

@@ -19,6 +19,7 @@ mod project;
 mod recording;
 mod storage;
 mod stretch;
+mod study;
 mod tools;
 pub mod trim;
 pub mod wire;
@@ -68,6 +69,7 @@ pub use storage::{
     save_project,
 };
 pub use stretch::with_stretch;
+pub use study::{AddStudy, RemoveStudy, RestoreStudy, SetStudyEdits, SetStudyRender};
 pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
     RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,

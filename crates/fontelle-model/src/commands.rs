@@ -5171,6 +5171,10 @@ impl Command for AddClip {
 pub struct RemoveClip {
     clip: ClipId,
     removed: Option<Clip>,
+    /// The studies of this clip it left standalone, for the undo to link
+    /// back (`docs/analyze-musically-plan.md` §3.9).
+    #[serde(default)]
+    orphaned: Vec<fontelle_types::StudyId>,
 }
 
 impl RemoveClip {
@@ -5178,6 +5182,7 @@ impl RemoveClip {
         Self {
             clip,
             removed: None,
+            orphaned: Vec::new(),
         }
     }
 }
@@ -5191,6 +5196,15 @@ impl Command for RemoveClip {
         match doc.clips.remove(self.clip) {
             Some(clip) => {
                 self.removed = Some(clip);
+                // A study of the clip outlives it, standalone: never a
+                // dangling id, never lost.
+                self.orphaned.clear();
+                for (id, study) in doc.studies.iter_mut() {
+                    if study.source == fontelle_types::StudySource::Clip(self.clip) {
+                        study.source = fontelle_types::StudySource::Standalone;
+                        self.orphaned.push(id);
+                    }
+                }
                 Ok(())
             }
             None => Err(no_clip(self.clip)),
@@ -5202,6 +5216,7 @@ impl Command for RemoveClip {
             Some(clip) => Box::new(RestoreClip {
                 id: self.clip,
                 clip: clip.clone(),
+                studies: self.orphaned.clone(),
             }),
             None => Box::new(NotApplied::new("deleting a clip")),
         }
@@ -5229,6 +5244,10 @@ impl Command for RemoveClip {
 pub struct RestoreClip {
     id: ClipId,
     clip: Clip,
+    /// Studies to link back to the clip: the ones its removal left
+    /// standalone.
+    #[serde(default)]
+    studies: Vec<fontelle_types::StudyId>,
 }
 
 impl Command for RestoreClip {
@@ -5239,6 +5258,11 @@ impl Command for RestoreClip {
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
         if !doc.clips.insert_at(self.id, self.clip.clone()) {
             return Err(CommandError("that clip id is taken".into()));
+        }
+        for id in &self.studies {
+            if let Some(study) = doc.studies.get_mut(*id) {
+                study.source = fontelle_types::StudySource::Clip(self.id);
+            }
         }
         Ok(())
     }

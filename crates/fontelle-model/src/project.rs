@@ -333,6 +333,12 @@ pub struct Project {
     /// is rack-style, which is what it was made in.
     #[serde(default)]
     pub lane_routing: crate::LaneRouting,
+    /// What Analyze Musically was asked to do to pieces of audio: the
+    /// pitch edits, by span of samples, and the renders they made
+    /// (`docs/analyze-musically-plan.md` §3.9). Defaulted: a song from
+    /// before studies has none, and needs no format bump to open.
+    #[serde(default)]
+    pub studies: Arena<fontelle_types::StudyId, fontelle_types::Study>,
 }
 
 impl Project {
@@ -500,6 +506,11 @@ impl Project {
                 files_in(&patch.body, &mut files);
             }
         }
+        // Last, so every older song's walk is the same walk it always was.
+        for study in self.studies.values() {
+            files.push(study.original.clone());
+            files.extend(study.rendered.clone());
+        }
         files
     }
 
@@ -520,6 +531,12 @@ impl Project {
             let patches = [&mut channel.patch_data, &mut channel.ab.other];
             for patch in patches.into_iter().flatten() {
                 files_in_mut(&mut patch.body, &mut f);
+            }
+        }
+        for study in self.studies.values_mut() {
+            f(&mut study.original);
+            if let Some(rendered) = &mut study.rendered {
+                f(rendered);
             }
         }
     }
@@ -581,6 +598,7 @@ impl Project {
             loop_range: None,
             view_state: ViewState::default(),
             lane_routing: crate::LaneRouting::default(),
+            studies: Arena::default(),
         }
     }
 }

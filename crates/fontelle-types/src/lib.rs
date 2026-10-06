@@ -34,6 +34,7 @@ mod patch_data;
 mod plugin;
 mod preset;
 mod scale;
+mod study;
 mod time;
 mod wavetable_edit;
 
@@ -86,7 +87,7 @@ pub use event::{
 pub use favorite::Favorite;
 pub use id::{
     AssetId, AudioInputId, ChannelId, ClipId, LaneId, MarkerId, MixerTrackId, NodeId, NoteId,
-    PersistentId, PointId, PrefabId,
+    PersistentId, PointId, PrefabId, StudyId,
 };
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
@@ -110,5 +111,6 @@ pub use scale::{
     KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, parse_scale, scale,
     scale_matches, scale_notes, scale_text,
 };
+pub use study::{DEFAULT_GLIDE_MS, PitchEdit, Study, StudyEngines, StudyMode, StudySource};
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};

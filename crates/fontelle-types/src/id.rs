@@ -12,6 +12,8 @@ new_key_type! {
     pub struct AudioInputId;
     pub struct MarkerId;
     pub struct NodeId;
+    /// An Analyze Musically study (`docs/analyze-musically-plan.md` §3.9).
+    pub struct StudyId;
 }
 
 impl NodeId {
