@@ -148,3 +148,52 @@ fn a_sung_line_and_a_chord_part_as_the_window_shows_them() {
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&dir2).ok();
 }
+
+/// P2 on real audio: the sung line with its third note moved up a whole
+/// tone and its fifth snapped, through the session's own study, and the
+/// view it hands back drawn — the moved notes where they went, their sung
+/// lines ghosted.
+#[test]
+fn a_sung_line_with_notes_moved() {
+    use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeEditChange};
+    let dir = scratch("real-edited");
+    let sung = testsignals::vibrato_melody(SR);
+    let mut session: Session = common::a_session_in(
+        common::a_project_with_a_clip(16, 120.0, SR),
+        Some(dir.join("Song")),
+    );
+    let path = dir.join("Vox take 3.wav");
+    std::fs::write(&path, build_wav(SR, 1, &sung.samples)).expect("writable");
+    session
+        .drop_file_on(&path, i64::from(SR) * 4, Some(0))
+        .expect("the drop lands");
+    let clip = session
+        .clips()
+        .into_iter()
+        .find(|c| c.kind == ClipKind::Audio)
+        .expect("an audio clip")
+        .id;
+    session.analyze_musically(clip).expect("analysable");
+    while matches!(session.poll_analysis(), JobPoll::Running(_)) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let view = session.analyze_view().unwrap();
+    let change = |i: usize, cents: f32| AnalyzeEditChange {
+        start: view.melody[i].start,
+        end: view.melody[i].end,
+        edit: Some(AnalyzeEdit {
+            shift_cents: cents,
+            ..AnalyzeEdit::default()
+        }),
+    };
+    session
+        .set_analysis_edits(&[change(2, 200.0), change(4, -100.0)], false)
+        .unwrap();
+    let view = session.analyze_view().unwrap();
+    assert!(view.melody[2].edit.is_some());
+    let mut state = AnalyzeState::default();
+    state.click_note(2, false);
+    state.playhead = Some(1.6);
+    dump("analyze-real-edited", &view, &mut state);
+    std::fs::remove_dir_all(&dir).ok();
+}

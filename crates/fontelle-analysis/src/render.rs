@@ -205,12 +205,7 @@ fn quietest(mono: &[f32], lo: usize, from: usize, to: usize) -> usize {
 /// The factor each of the track's frames is moved by: 1 outside every
 /// member's span, and inside it the note's contour edited (the module
 /// doc's formula), eased by its glides.
-fn edited_ratio(
-    track: &F0Track,
-    track_start: usize,
-    sr: f64,
-    members: &[Member<'_>],
-) -> Vec<f32> {
+fn edited_ratio(track: &F0Track, track_start: usize, sr: f64, members: &[Member<'_>]) -> Vec<f32> {
     let per_frame = track.hop * sr;
     let frame_of = |input: usize| ((input as f64 - track_start as f64) / per_frame).round();
     let mut cents = vec![0.0f32; track.len()];

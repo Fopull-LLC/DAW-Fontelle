@@ -19,7 +19,87 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-06, latest — Analyze Musically P1, the UI half: see it,
+**As of 2026-10-06, latest — Analyze Musically P2: hear it, move it,
+render it.** Same branch (`feature/analyze-musically`), not merged, not
+bumped. `docs/analyze-musically-plan.md` §2.4, §3.3, §3.5, §3.7, §3.9–3.10,
+§4 P2, and Ty's reports from trying P1 in Preview.
+
+- **The pitch picture opens, and is dark.** Ty: *"the pitch picture is
+  more useful ... lets make that the default"*, and it was *"a lot
+  brighter ... kind of just looks cloudy"*. basic-pitch's contour carries
+  ~0.1 of full scale in every cell (73..89 of 255 measured); that floor
+  (`pitch_picture_floor`: 60th percentile + 8, worked out once by the
+  host) is no longer drawn, the ramp starts in a deep accent, a row that
+  peaks its column is drawn at its parabolic peak a sub-row thick, and a
+  cell more than a semitone from a sounding note at three quarters. Tab
+  still shows the waveform. Headless `analyze-pitch-picture` and
+  `analyze-real-chords-pitch` (before/after in the report).
+- **Study model** (`fontelle-types::study`, `fontelle-model::study`):
+  `StudyId`, `Study`, `PitchEdit` (span in frames of the original file);
+  `Project::studies` (serde default); `AddStudy` / `RemoveStudy` /
+  `RestoreStudy` / `SetStudyEdits` (a drag merges, and the drag that
+  starts a study merges into its `AddStudy`) / `SetStudyRender`, wire
+  forms appended and one pinned. Studies' originals and renders are in
+  `files()` (walked last) and load with the song; deleting a clip leaves
+  its study standalone, undo relinks.
+- **Offline PSOLA** (`fontelle-analysis::resynth`, `render`): marks on the
+  waveform's peaks a period apart (pYIN-guided), grains of the nearest
+  mark laid period/ratio apart, normalised by the window sum (ratio 1 is
+  the input back). `render_edits` moves only edited spans (30 ms padding,
+  10 ms splice at the quietest point), along the edited contour (shift
+  eased by the glides, drift flattened, vibrato scaled). **The splice is
+  constant-gain, not equal-power** as the plan said: at the seam both
+  sides are the same signal, and equal-power of coherent signals is a
+  3 dB swell. Measured: a 30-cent-flat A3 Q'd lands at +0.06 ct; seams
+  -116/-141 dBFS high-passed at 8 kHz; vibrato 20.5 -> 20.8 ct RMS over a
+  200-cent move; a vowel up 300 ct keeps F1 700 -> 668 Hz (4.6 %, the
+  test's 5 % is tight here) and F2 1249 -> 1249 Hz; flatten takes 34 ct
+  of drift to 2; vibrato x0.5 gives 10.7 of 20.5 ct; levels within
+  0.6 dB; unedited samples bit identical.
+- **The preview** (`fontelle-engine::study_player`): `StudyPlayer` shared
+  by the session and a `StudyPlayerNode` the session appends to the
+  master of every graph it publishes. Plays from a frame, over a range,
+  round a loop, at the file's rate, A/B in place, 5 ms fades; new audio
+  through a one-slot mailbox, the old handed back to be freed off the
+  audio thread (`study_player_no_allocation.rs`). The session re-renders
+  the edits 120 ms after they rest, on its own worker.
+- **The window**: Select/Move tools, ▶/■, A/B and a read-out on the glass;
+  ruler click = cursor, drag = region; Space plays from the cursor
+  (round the region; the transport's own key, answered by the window),
+  Enter the selection, the lane follows the playhead; a note click plays
+  its own audio span as edited (Ty: *"its just playing like a synth
+  wave"*), the key column is a labelled reference tone. Move: drag up/down
+  (semitones, Alt cents, the selection together), a moved note's ends set
+  its glides; ↑↓ (Shift octave, Alt 10 ct), Q (half then whole, scale-aware
+  when shown), F, V, Del. Chord notes say they can't be moved yet. The
+  note card says where a moved note is now and where it was sung; the
+  Output card has Render to clip (Ctrl+Enter) ▾ *new clip below*, and
+  Revert to original when the clip plays a render.
+- **Render to clip**: from the study's original, whole-file length, to
+  `<bundle>/renders/<name> (edited N).wav` (an unsaved song is made real
+  first, as a take does — `make_real`), clip swapped + study stamped in
+  one compound; *new clip below* is one `AddAudioClip`. A clip playing its
+  render is analysed as recorded, so a re-render never compounds.
+- Eight new rebindable actions, ids permanent: `analyze-play-selection`,
+  `analyze-ab`, `analyze-render`, `analyze-snap`, `analyze-flatten`,
+  `analyze-vibrato`, `analyze-select-tool`, `analyze-move-tool`. Space is
+  `play` and Delete `remove-band`, answered by the window.
+- Tests: `fontelle-model/tests/study_commands.rs`, `wire.rs`;
+  `fontelle-analysis/tests/{resynth_psola,render}.rs`;
+  `fontelle-engine/tests/{study_player,study_player_no_allocation}.rs`;
+  `fontelle-app/tests/analyze_render.rs` (a moved note auditioned through
+  the player's node: 6400.2 -> 6600.1 ct); `fontelle-ui/tests/
+  analyze_window.rs` (+7); headless `analyze-pitch-picture`,
+  `analyze-edited`, `analyze-real-edited`. The window tests were written
+  alongside the window code, not before it.
+- **Not done**: the render runs on the window's thread (fast — a note is
+  milliseconds — but a long take with many edits would stall a frame; the
+  job strip is P2b); no formant knob or Pitch card of knobs (the note card
+  reads the edit out; `formant_cents` is in the model and the engine);
+  Ctrl+drag contour drawing (P2b); Z zoom-to-selection; the window has not
+  been driven on a real display — headless only.
+
+**As of 2026-10-06, later — Analyze Musically P1, the UI half: see it,
 copy it.** Same branch (`feature/analyze-musically`), not merged, not
 bumped. `docs/analyze-musically-plan.md` §3.1–§3.6, §3.10, §4 P1.
 
