@@ -105,6 +105,9 @@ jobs:
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/fontelle" "dist/$NAME/"
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$NAME/"
+          # Third-party notices (basic-pitch's Apache-2.0 NOTICE) travel with
+          # the program, as their licences ask.
+          cp -R licenses "dist/$NAME/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp packaging/linux/com.fopull.Fontelle.desktop packaging/linux/com.fopull.Fontelle.png packaging/linux/install.sh "dist/$NAME/"
           fi
@@ -116,6 +119,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/$env:NAME" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fontelle.exe" "dist/$env:NAME/"
           Copy-Item LICENSE-MIT, LICENSE-APACHE, README.md "dist/$env:NAME/"
+          Copy-Item -Recurse licenses "dist/$env:NAME/"
           Compress-Archive -Path "dist/$env:NAME" -DestinationPath "$env:NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
