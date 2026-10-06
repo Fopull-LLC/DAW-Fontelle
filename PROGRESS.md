@@ -19,7 +19,52 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05, latest — Vital's window refused instead of crashing,
+**As of 2026-10-06, latest — five arrangement and studio requests from Ty.**
+Still v0.25.2 (not bumped). Branch `feature/arrangement-ux`.
+
+- **Shift-dragging several clips' ends** loops each at its own length. One
+  period (the shortest in the selection) used to be set on every clip —
+  *"it chops everything up into the same loop time and then squishes it
+  weirdly"*. The first step is `ArrangeEdit::ResizeLooping` with a period
+  per clip (none for one already looping); every step of an edge drag, one
+  clip or many, is `fontelle_model::ResizeClips`, which folds into one undo
+  entry and whose inverse restores each clip whole. Wire form appended.
+- **Copy / paste a scale** between the roll's scale chooser and the pitch
+  corrector, as plain words ("A minor"): `fontelle_types::{scale_text,
+  parse_scale, scale_notes}`, `TuneScale::{scale_id, from_scale_id}`. The
+  chooser has Copy, Paste <key> (clipboard read as it opens) and
+  "Notes: A B C …" (pressed, copies them); the corrector's key and scale
+  controls have Copy/Paste scale on right-click and Ctrl+C/V while hovered.
+- **The ghost of a first clip** on an empty arrangement: a dashed block at
+  the start of lane 1 saying "Double-click to draw a clip" (or "Press P,
+  then double-click" with another tool), breathing while the theme's motion
+  is Moving, still under Still/Off; a picture only (`canvas::ghost_clip`).
+- **A clip's name, centred**, between the grips and fade handles, cut with
+  an ellipsis to fit (`canvas::clip_name_slot`, `clip_caption`); clicking it
+  opens the clip's menu (`canvas::clip_menu`): Rename…, Render to audio
+  (`Session::render_clip`, `CompileScope::Clip`, a row "<clip> (rendered)"),
+  Analyze Musically (audio; `StudioHost::analyze_musically(clip)`, a stub
+  that says "coming soon" — the next phase fills it), Duplicate, Mute, Loop,
+  Delete. `Clip.name` (skipped when unset) and `RenameClip` (wire form
+  appended) are the model half. Loop passes no longer repeat the caption.
+- **Compatible plugin graphics is offered** when the probe refuses an
+  editor and nobody has answered: Turn on and restart / Don't ask again
+  (settings format 11) / Not now (next session). The restart leaves through
+  the quit path (save prompt) and `fontelle_app::relaunch` starts the same
+  binary on the song once the window is gone.
+- Tests: `fontelle-model/tests/looping.rs` (ResizeClips, RenameClip),
+  `fontelle-types/tests/scale_text.rs`, `fontelle-ui/tests/{looping,
+  ghost_clip, clip_names, roll_scale, tune, stretch_toggle}.rs`,
+  `fontelle-app/tests/{multi_instrument_clips, clip_menu,
+  plugin_window_gl}.rs`; headless shots `ghost-clip-{dark,light}`,
+  `clip-names`, `clip-menu-audio`, `scale-menu-copy-paste`,
+  `graphics-question`.
+- **Not done**: the clip name has no hover cursor of its own; an automation
+  clip's name in a shallow lane sits over its curve and is not clickable
+  there (the curve keeps its press); the restart was not exercised on a
+  real display.
+
+**As of 2026-10-05 — Vital's window refused instead of crashing,
 and Compatible plugin graphics.** Still v0.25.1 (not bumped; for v0.25.2).
 The entry below found the cause; this makes the studio survive it.
 
