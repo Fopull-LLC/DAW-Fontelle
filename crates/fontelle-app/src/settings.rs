@@ -46,11 +46,13 @@ pub use fontelle_types::FolderKind;
 /// grew how much a theme's backdrops may move (hub card 0366), nine since it
 /// grew the audio output's backend, device and buffer, ten since it grew
 /// Compatible plugin graphics, eleven since it remembers "Don't ask again"
-/// about it. Every added field carries
+/// about it, twelve since a preset's star names its category
+/// (`Favorite::Preset::category`; an older star is matched to a preset by the
+/// session). Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 11;
+pub const SETTINGS_FORMAT_VERSION: u32 = 12;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.

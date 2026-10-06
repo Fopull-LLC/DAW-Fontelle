@@ -3687,14 +3687,22 @@ pub fn ghost_pulse(seconds: f32, moving: bool) -> f32 {
 const MIN_CAPTION_PX: f32 = 18.0;
 
 /// How tall a line of a name is, for where it goes and what a press on it
-/// is: a caption band shallower than this cannot hold it, and the name goes
-/// down the middle of the block instead, as it always did.
+/// is.
 const NAME_LINE_PX: f32 = 16.0;
 
-/// The room a clip's name has: the part of the block on screen, in its
-/// caption band (the whole block when it is too shallow for one), with the
-/// edge grips and an audio block's corner fade handles kept clear on **both**
-/// sides, so the name sits in the middle of what is left.
+/// How far down from the block's top edge the name's line starts.
+///
+/// > *"the names of the arrangement clips also are slightly too low make
+/// > them anchored closer to the top so the name isnt positioned weirdly."*
+///
+/// A title, a couple of pixels under the edge, whatever the lane's height —
+/// down the middle it sat over the notes and the wave it names.
+const NAME_TOP_PX: f32 = 2.0;
+
+/// The room a clip's name has: one line across the top of the part of the
+/// block on screen, with the edge grips and an audio block's corner fade
+/// handles kept clear on **both** sides, so the name sits in the middle of
+/// what is left.
 pub fn clip_name_slot(block: Rect, grid: Rect, clip: &ClipInfo) -> Rect {
     let shown = block.intersection(&grid);
     if shown.is_empty() {
@@ -3704,33 +3712,30 @@ pub fn clip_name_slot(block: Rect, grid: Rect, clip: &ClipInfo) -> Rect {
     if clip.kind == ClipKind::Audio {
         keep_clear = keep_clear.max(FADE_HANDLE_PX.min(block.width / 2.0) + 4.0);
     }
-    let (header, _) = clip_bands(block);
-    let (y, height) = if header.height >= NAME_LINE_PX {
-        (header.y, header.height)
-    } else {
-        (block.y, block.height)
-    };
+    // A block too shallow for the line and its gap gives the line what it
+    // has, from its top.
+    let top = NAME_TOP_PX.min((block.height - NAME_LINE_PX).max(0.0));
+    let height = NAME_LINE_PX.min(block.height - top).max(0.0);
     // Measured against the whole block's ends, so a name on a block running
     // off the edge of the grid is still clear of the grip it will come to.
     let left = shown.x.max(block.x + keep_clear);
     let right = shown.right().min(block.right() - keep_clear);
-    Rect::new(left, y, (right - left).max(0.0), height)
+    Rect::new(left, block.y + top, (right - left).max(0.0), height)
 }
 
-/// Where a name `text_width` wide is drawn in `slot`: centred both ways,
-/// one line tall — which is also what a press on the name is, so the rest
-/// of the block's middle is still the block. `None` when it does not fit —
+/// Where a name `text_width` wide is drawn in `slot`: centred across it, at
+/// its top, one line tall — which is also what a press on the name is, so
+/// the rest of the block is still the block. `None` when it does not fit —
 /// [`clip_caption`] is what makes it fit.
 pub fn clip_name_rect(slot: Rect, text_width: f32) -> Option<Rect> {
     if slot.is_empty() || text_width <= 0.0 || text_width > slot.width {
         return None;
     }
-    let height = NAME_LINE_PX.min(slot.height);
     Some(Rect::new(
         slot.x + (slot.width - text_width) / 2.0,
-        slot.y + (slot.height - height) / 2.0,
+        slot.y,
         text_width,
-        height,
+        NAME_LINE_PX.min(slot.height),
     ))
 }
 

@@ -134,6 +134,9 @@ struct Live {
     /// Spaces the editor's window heard that the plugin did not take — the
     /// studio's play and stop (`fontelle_host::GuiPoll::play_pause`).
     play_pause: u32,
+    /// What was done to the preset drop-down up over the editor's window
+    /// since the session last asked (`fontelle_host::GuiPoll::overlay`).
+    overlay: Vec<fontelle_host::OverlayEvent>,
 }
 
 /// The document's parameter list for a plugin, by id.
@@ -244,6 +247,7 @@ impl Live {
         }
         self.header_presses
             .extend(polled.header_presses.iter().copied());
+        self.overlay.extend(polled.overlay);
         self.play_pause += polled.play_pause;
         if let Some(hover) = polled.header_hover {
             self.header_hover = hover;
@@ -267,6 +271,7 @@ impl Live {
         self.editor = None;
         self.header_presses.clear();
         self.header_hover = None;
+        self.overlay.clear();
     }
 
     /// Takes the processor back and stops the plugin, so it can be dropped
@@ -293,6 +298,9 @@ pub struct EditorHeader {
     /// The strip's size, in the window's own pixels.
     pub width: u32,
     pub height: u32,
+    /// The plugin's area under the strip, as tall as it is in the same
+    /// pixels: the room the preset drop-down has.
+    pub area: u32,
     /// The window's pixels per logical one.
     pub scale: f32,
     /// Where the pointer is over the strip.
@@ -932,6 +940,7 @@ impl PluginRack {
                 header_presses: Vec::new(),
                 header_hover: None,
                 play_pause: 0,
+                overlay: Vec::new(),
             };
             live.refresh_displays();
             self.list_library(&found_info, &mut live, programs, lv2_state);
@@ -1439,6 +1448,7 @@ impl PluginRack {
                     slot: *slot,
                     width: window.size().width,
                     height: window.header_height(),
+                    area: window.size().height,
                     scale: window.scale() as f32,
                     hover: live.header_hover,
                 })
@@ -1477,6 +1487,63 @@ impl PluginRack {
             .and_then(|live| live.editor.as_mut())
         {
             window.set_header(rgba, width, height);
+        }
+    }
+
+    /// What was done to the preset drop-downs up over editors' windows
+    /// since this was last asked, in each window's own pixels.
+    pub fn take_overlay_events(&mut self) -> Vec<(PluginSlot, fontelle_host::OverlayEvent)> {
+        let mut events = Vec::new();
+        for (slot, live) in &mut self.live {
+            events.extend(live.overlay.drain(..).map(|event| (*slot, event)));
+        }
+        events
+    }
+
+    /// Puts `rgba` up over `slot`'s editor window at `(x, y)` of it, with
+    /// the pointer and the keyboard — see
+    /// `fontelle_host::PluginWindow::show_overlay`.
+    pub fn show_overlay(
+        &mut self,
+        slot: PluginSlot,
+        (x, y): (i32, i32),
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        if let Some(window) = self
+            .live
+            .get_mut(&slot)
+            .and_then(|live| live.editor.as_mut())
+        {
+            window.show_overlay(x, y, rgba, width, height);
+        }
+    }
+
+    /// Takes down what [`show_overlay`](Self::show_overlay) put up.
+    pub fn hide_overlay(&mut self, slot: PluginSlot) {
+        if let Some(live) = self.live.get_mut(&slot) {
+            live.overlay.clear();
+            if let Some(window) = live.editor.as_mut() {
+                window.hide_overlay();
+            }
+        }
+    }
+
+    /// Where the drop-down over `slot`'s editor window is, while one is up.
+    pub fn overlay(&self, slot: PluginSlot) -> Option<(i32, i32, u32, u32)> {
+        self.live.get(&slot)?.editor.as_ref()?.overlay()
+    }
+
+    /// **A headless editor only**: something done to the drop-down over
+    /// it — see `fontelle_host::PluginWindow::overlay_event`.
+    pub fn overlay_event(&mut self, slot: PluginSlot, event: fontelle_host::OverlayEvent) {
+        if let Some(window) = self
+            .live
+            .get_mut(&slot)
+            .and_then(|live| live.editor.as_mut())
+        {
+            window.overlay_event(event);
         }
     }
 

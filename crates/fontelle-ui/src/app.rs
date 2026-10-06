@@ -1756,6 +1756,11 @@ pub struct WindowApp {
     /// one of the studio's to draw on. `Err` once it could not be made — the
     /// strip is then left black rather than tried again every frame.
     header_renderer: Option<Result<crate::render::Headless, String>>,
+    /// The preset drop-down a plugin window's strip dropped, while it is up
+    /// in that window (`StudioHost::show_plugin_menu`), and whether it has
+    /// changed since it was last put there.
+    plugin_menu: Option<crate::canvas::PluginPresetMenu>,
+    plugin_menu_dirty: bool,
     /// And which key chip, in the same panel.
     hover_key: Option<usize>,
     hover_tab: Option<EditorTab>,
@@ -2450,6 +2455,8 @@ impl WindowApp {
             pending_device_save: None,
             plugin_headers_drawn: Vec::new(),
             header_renderer: None,
+            plugin_menu: None,
+            plugin_menu_dirty: false,
             hover_key: None,
             hover_tab: None,
             knob: None,
@@ -11832,10 +11839,57 @@ impl WindowApp {
         let Some(doc) = self.options.document.as_mut() else {
             return;
         };
-        let presses = doc.take_plugin_header_presses();
+        let inputs = doc.take_plugin_menu_input();
+        let mut presses = doc.take_plugin_header_presses();
         let headers = doc.plugin_headers();
-        if headers.is_empty() && self.plugin_headers_drawn.is_empty() {
+        if headers.is_empty() && self.plugin_headers_drawn.is_empty() && self.plugin_menu.is_none()
+        {
             return;
+        }
+        // The drop-down goes with its window.
+        if self
+            .plugin_menu
+            .as_ref()
+            .is_some_and(|menu| !headers.iter().any(|header| header.device == menu.device))
+        {
+            self.plugin_menu = None;
+        }
+        // What was done to it, first: a press it hands back is the strip's.
+        for (device, input) in inputs {
+            if let Some(press) = self.plugin_menu_input(device, input, &headers) {
+                presses.push(press);
+            }
+        }
+        // A press on the strip with the drop-down up — where the window could
+        // not hand the menu the pointer — shuts it, and a press on the name
+        // that shut it does not open it again: a drop-down is a toggle.
+        if let Some(open) = self.plugin_menu.as_ref().map(|menu| menu.device)
+            && presses.iter().any(|(device, _, _)| *device == open)
+        {
+            self.close_plugin_menu();
+            let metrics = self.options.theme.metrics;
+            presses.retain(|(device, x, y)| {
+                *device != open
+                    || headers
+                        .iter()
+                        .find(|h| h.device == open)
+                        .is_none_or(|header| {
+                            let scale = header.scale.max(0.25);
+                            !matches!(
+                                crate::canvas::plugin_header_hit(
+                                    header.width as f32 / scale,
+                                    &header.bar,
+                                    &metrics,
+                                    x / scale,
+                                    y / scale,
+                                ),
+                                Some(
+                                    crate::canvas::PresetBarHit::Name
+                                        | crate::canvas::PresetBarHit::Category
+                                )
+                            )
+                        })
+            });
         }
         let metrics = self.options.theme.metrics;
         let hit = |header: &crate::canvas::PluginHeaderView, x: f32, y: f32| {
@@ -11900,6 +11954,209 @@ impl WindowApp {
                 None => self.plugin_headers_drawn.push((header, hover)),
             }
         }
+        self.draw_plugin_menu();
+    }
+
+    /// Drops the preset list from the name on `device`'s plugin window strip,
+    /// in that window — or shuts it, when it is already down there.
+    ///
+    /// > *"when clicking the preset dropdown on the top of the plugin window
+    /// > it didnt drop down any of those presets for me to select there or
+    /// > hit random preset to get a random one, it just opened the preset tab
+    /// > on the left."*
+    ///
+    /// A window with no room for a row gets the browser's tab, as before.
+    fn open_plugin_menu(&mut self, device: crate::canvas::PresetDevice) {
+        if self
+            .plugin_menu
+            .as_ref()
+            .is_some_and(|menu| menu.device == device)
+        {
+            self.close_plugin_menu();
+            return;
+        }
+        self.close_plugin_menu();
+        let Some(doc) = self.options.document.as_ref() else {
+            return;
+        };
+        let Some(header) = doc
+            .plugin_headers()
+            .into_iter()
+            .find(|header| header.device == device)
+        else {
+            return;
+        };
+        let (choices, current) = Self::choices_and_current(doc.as_ref(), device);
+        let theme = &self.options.theme;
+        self.plugin_menu = crate::canvas::PluginPresetMenu::open(
+            &header,
+            &choices,
+            current,
+            &theme.metrics,
+            theme.font.size,
+        );
+        self.plugin_menu_dirty = true;
+        if self.plugin_menu.is_none() {
+            self.show_presets_in_browser(device);
+        }
+    }
+
+    /// Takes the plugin window's drop-down down.
+    fn close_plugin_menu(&mut self) {
+        if let Some(menu) = self.plugin_menu.take()
+            && let Some(doc) = self.options.document.as_mut()
+        {
+            doc.hide_plugin_menu(menu.device);
+        }
+        self.plugin_menu_dirty = false;
+    }
+
+    /// The Presets tab, on `device`'s presets, with the studio brought in
+    /// front of the plugin's window.
+    fn show_presets_in_browser(&mut self, device: crate::canvas::PresetDevice) {
+        if let Some(doc) = self.options.document.as_mut() {
+            doc.open_presets_for(device);
+        }
+        self.show_browser_mode(crate::canvas::BrowserMode::Presets);
+        self.bring_studio_forward();
+    }
+
+    /// What an input on the plugin window's drop-down does — and, for a
+    /// press it hands back to the strip under it, that press.
+    fn plugin_menu_input(
+        &mut self,
+        device: crate::canvas::PresetDevice,
+        input: crate::canvas::PluginMenuInput,
+        headers: &[crate::canvas::PluginHeaderView],
+    ) -> Option<(crate::canvas::PresetDevice, f32, f32)> {
+        use crate::canvas::PluginMenuOutcome as Outcome;
+        if self.plugin_menu.as_ref()?.device != device {
+            return None;
+        }
+        let header = headers.iter().find(|header| header.device == device)?;
+        let doc = self.options.document.as_mut()?;
+        let (choices, current) = Self::choices_and_current(doc.as_ref(), device);
+        let theme = &self.options.theme;
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let outcome = self.plugin_menu.as_mut()?.input(
+            input,
+            header,
+            &choices,
+            current,
+            &theme.metrics,
+            theme.font.size,
+            seed,
+        );
+        // A load that leaves the menu up: done, and the mark moved to it.
+        let changed = |this: &mut Self, load: &dyn Fn(&mut dyn StudioHost)| {
+            if let Some(doc) = this.options.document.as_mut() {
+                load(doc.as_mut());
+            }
+            this.after_preset_change();
+            let Some(doc) = this.options.document.as_ref() else {
+                return;
+            };
+            let (choices, current) = Self::choices_and_current(doc.as_ref(), device);
+            let header = doc
+                .plugin_headers()
+                .into_iter()
+                .find(|header| header.device == device);
+            let theme = &this.options.theme;
+            if let (Some(menu), Some(header)) = (this.plugin_menu.as_mut(), header) {
+                menu.refresh(&header, &choices, current, &theme.metrics, theme.font.size);
+            }
+            this.plugin_menu_dirty = true;
+        };
+        match outcome {
+            Outcome::Nothing => {}
+            Outcome::Redraw => self.plugin_menu_dirty = true,
+            Outcome::Close => self.close_plugin_menu(),
+            Outcome::Choose(which) => {
+                self.close_plugin_menu();
+                if let Some(doc) = self.options.document.as_mut() {
+                    doc.apply_preset(device, which);
+                }
+                self.after_preset_change();
+            }
+            Outcome::Random(which) => changed(self, &|doc| doc.apply_preset(device, which)),
+            Outcome::Step(delta) => changed(self, &|doc| doc.step_preset(device, delta)),
+            Outcome::Star(which) => {
+                let old = self.plugin_menu.as_ref().map(|menu| menu.menu.clone());
+                let pressed = self.plugin_menu.as_ref().and_then(|menu| {
+                    menu.rows
+                        .iter()
+                        .position(|row| *row == crate::canvas::PluginMenuRow::Preset(which))
+                });
+                changed(self, &|doc| doc.toggle_preset_star(device, which));
+                if let (Some(old), Some(pressed), Some(menu)) =
+                    (old, pressed, self.plugin_menu.as_mut())
+                {
+                    crate::canvas::keep_starred_row_in_place(&old, pressed, &mut menu.menu);
+                }
+            }
+            Outcome::ShowInBrowser => {
+                self.close_plugin_menu();
+                self.show_presets_in_browser(device);
+            }
+            Outcome::PassToStrip(x, y) => {
+                self.close_plugin_menu();
+                return Some((device, x, y));
+            }
+        }
+        None
+    }
+
+    /// Puts the drop-down up in its plugin's window, when it has changed —
+    /// laid out again first if the window was resized under it.
+    fn draw_plugin_menu(&mut self) {
+        let Some(device) = self.plugin_menu.as_ref().map(|menu| menu.device) else {
+            return;
+        };
+        let Some(doc) = self.options.document.as_ref() else {
+            return;
+        };
+        let Some(header) = doc
+            .plugin_headers()
+            .into_iter()
+            .find(|header| header.device == device)
+        else {
+            return;
+        };
+        if self
+            .plugin_menu
+            .as_ref()
+            .is_some_and(|menu| menu.is_stale(&header))
+        {
+            let (choices, current) = Self::choices_and_current(doc.as_ref(), device);
+            let theme = &self.options.theme;
+            if let Some(menu) = self.plugin_menu.as_mut() {
+                menu.refresh(&header, &choices, current, &theme.metrics, theme.font.size);
+            }
+            self.plugin_menu_dirty = true;
+        }
+        if !self.plugin_menu_dirty {
+            return;
+        }
+        self.plugin_menu_dirty = false;
+        let renderer = self
+            .header_renderer
+            .get_or_insert_with(|| crate::render::Headless::new().map_err(|e| e.to_string()));
+        let (Ok(renderer), Some(menu)) = (renderer, self.plugin_menu.as_ref()) else {
+            return;
+        };
+        let pixels = crate::render::plugin_menu_pixels(
+            renderer,
+            &self.options.theme,
+            &mut self.labels,
+            &mut self.text,
+            menu,
+        );
+        let (x, y, width, height) = menu.pixel_rect();
+        if let (Ok(pixels), Some(doc)) = (pixels, self.options.document.as_mut()) {
+            doc.show_plugin_menu(device, x, y, &pixels, width, height);
+        }
     }
 
     /// What a press on a plugin window's strip does: what the same press on
@@ -11918,13 +12175,13 @@ impl WindowApp {
             PresetBarHit::Next => doc.step_preset(device, 1),
             PresetBarHit::Star => doc.toggle_preset_favorite(device),
             PresetBarHit::Save => doc.save_preset(device),
-            // The list is the browser's: the plugin's window is the plugin's
-            // and has no room for four hundred rows, and the Presets tab
-            // already searches, groups and stars them.
+            // A drop-down, in the plugin's own window under the name — not
+            // the browser's tab, which is now its last row. Ty: *"when
+            // clicking the preset dropdown on the top of the plugin window it
+            // didnt drop down any of those presets for me to select there"*.
             PresetBarHit::Name | PresetBarHit::Category => {
-                doc.open_presets_for(device);
-                self.show_browser_mode(crate::canvas::BrowserMode::Presets);
-                self.bring_studio_forward();
+                self.open_plugin_menu(device);
+                return;
             }
             PresetBarHit::SaveAs => {
                 let seed = doc
@@ -17144,6 +17401,12 @@ impl WindowApp {
                     self.tree.invalidate(BROWSER);
                     return;
                 }
+                // In the Presets tab the first press already loaded it, onto
+                // what it is for (`StudioHost::preview_preset`); the second
+                // would only load it again, one more undo of nothing.
+                if self.browser_mode == BrowserMode::Presets && !self.modifiers.control_key() {
+                    return;
+                }
                 // A preset click puts it on the **selected** channel, which is
                 // what "try this sound on this part" means. The add button —
                 // and Ctrl+click — make a new one instead.
@@ -17368,18 +17631,52 @@ impl WindowApp {
     /// scrolled where it was — a star that closed the menu would make
     /// starring three effects three trips.
     fn toggle_star(&mut self, target: &MenuTarget, index: usize) {
-        let Some(favorite) = self.favorite_at(target, index) else {
-            return;
+        // > *"the stars are not very responsive like especially for presets
+        // > or mixer tracks"* — a preset menu's star (a device's drop-down, a
+        // > mixer track's chain menu) had no answer here at all: the press
+        // > was taken and nothing changed.
+        let preset = match target {
+            MenuTarget::PresetMenu(kind) => self.preset_device(*kind).and_then(|device| {
+                crate::canvas::preset_menu_star(&self.preset_menu_rows(*kind).1, index)
+                    .map(|which| (device, which))
+            }),
+            MenuTarget::TrackPresetMenu(strip) => {
+                crate::canvas::preset_menu_star(&self.track_preset_rows(*strip).1, index)
+                    .map(|which| (crate::canvas::PresetDevice::Track { strip: *strip }, which))
+            }
+            _ => None,
         };
-        if let Some(doc) = &mut self.options.document {
-            doc.toggle_favorite(favorite);
+        match preset {
+            Some((device, which)) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_preset_star(device, which);
+                }
+            }
+            None => {
+                let Some(favorite) = self.favorite_at(target, index) else {
+                    return;
+                };
+                if let Some(doc) = &mut self.options.document {
+                    doc.toggle_favorite(favorite);
+                }
+            }
         }
-        let scroll = self.menu.as_ref().map_or(0.0, |(_, menu)| menu.scroll());
+        // Rebuilt around the new list, with the row pressed kept under the
+        // pointer — the Favorites section above it grew or shrank, and a row
+        // that slid away under the pointer read as a star that did nothing.
+        let old = self.menu.as_ref().map(|(_, menu)| menu.clone());
         self.relayout_menu();
-        if let Some((_, menu)) = &mut self.menu {
-            menu.scroll_by(scroll);
+        if let (Some(old), Some((_, menu))) = (old.as_ref(), self.menu.as_mut()) {
+            let lift = crate::canvas::keep_starred_row_in_place(old, index, menu);
+            if lift != 0.0 && self.menu_beside.is_none() {
+                self.menu_at.0.1 -= lift;
+                self.relayout_menu();
+                if let Some((_, menu)) = self.menu.as_mut() {
+                    crate::canvas::keep_starred_row_in_place(old, index, menu);
+                }
+            }
         }
-        self.refresh_studio();
+        self.after_preset_change();
     }
 
     fn menu_entries(&self, target: &MenuTarget) -> Vec<crate::canvas::MenuEntry> {

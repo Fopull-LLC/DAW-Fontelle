@@ -18,6 +18,7 @@ mod note_clipboard;
 mod notepad;
 mod overlays;
 mod piano_roll;
+mod plugin_menu;
 mod prefabs;
 mod preset_bar;
 mod rack;
@@ -124,19 +125,24 @@ pub use menu::{
     CHOSEN_MARK, ContextMenu, MENU_TEXT_INSET, MenuEntry, NAME_CARET, STAR_WIDTH, THUMB_H, THUMB_W,
     automate_menu, context_menu_hit, context_menu_layout, context_menu_layout_beside,
     context_menu_star_hit, export_menu_choice, export_menu_entries, input_menu_choice,
-    input_menu_entries, instrument_menu_entries, menu_matches, name_prompt_entries,
-    thumbnail_points,
+    input_menu_entries, instrument_menu_entries, keep_starred_row_in_place, menu_matches,
+    name_prompt_entries, thumbnail_points,
 };
 pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
     job_card_layout, project_caption, save_prompt_layout, saved_flash, toast_layout,
 };
+pub use plugin_menu::{
+    NEXT_PRESET, PREVIOUS_PRESET, PluginMenuInput, PluginMenuKey, PluginMenuOutcome, PluginMenuRow,
+    PluginPresetMenu, SHOW_IN_BROWSER, plugin_preset_menu,
+};
 pub use preset_bar::{
     NO_PRESET, PLUGIN_HEADER_HEIGHT, PLUGIN_PRESETS_HEADING, PRESET_MENU_HEADING, PluginHeaderView,
     PresetBarHit, PresetBarLayout, PresetBarView, PresetChoice, PresetDevice, PresetMenuRow,
     RANDOM_PRESET, USER_MARK, plugin_header_hit, plugin_header_layout, preset_bar_hit,
-    preset_bar_layout, preset_bar_name, preset_menu, preset_menu_marking, random_preset_row,
+    preset_bar_layout, preset_bar_name, preset_menu, preset_menu_marking, preset_menu_star,
+    random_preset_row,
 };
 pub use settings_page::{
     SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingsPageHit, SettingsPageLayout,

@@ -2713,6 +2713,31 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// What was done to the preset drop-down up over a plugin's window
+    /// since last asked: whose, and what, in the window's own pixels.
+    fn take_plugin_menu_input(
+        &mut self,
+    ) -> Vec<(crate::canvas::PresetDevice, crate::canvas::PluginMenuInput)> {
+        Vec::new()
+    }
+
+    /// Puts `rgba` (`width` × `height`) up over `device`'s editor window at
+    /// `(x, y)` of it — the strip's preset drop-down — with the pointer and
+    /// the keyboard, until [`hide_plugin_menu`](Self::hide_plugin_menu).
+    fn show_plugin_menu(
+        &mut self,
+        _device: crate::canvas::PresetDevice,
+        _x: i32,
+        _y: i32,
+        _rgba: &[u8],
+        _width: u32,
+        _height: u32,
+    ) {
+    }
+
+    /// Takes the drop-down down again.
+    fn hide_plugin_menu(&mut self, _device: crate::canvas::PresetDevice) {}
+
     /// Opens the browser's Presets tab on `device`'s presets, with a row
     /// pressed there going to that device.
     fn open_presets_for(&mut self, _device: crate::canvas::PresetDevice) {}

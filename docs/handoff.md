@@ -84,6 +84,18 @@ walk `what_each_real_instruments_preset_menu_lists`
 that loaded a Cardinal patch segfaults at exit in Cardinal's destructors; the
 studio does not (it ends with `exit_now`).
 
+(i) **The plugin window's preset drop-down** (2026-10-06, `PROGRESS.md`'s
+top entry) is a picture put up over the plugin with
+`PluginWindow::show_overlay`, which **grabs the pointer and keyboard on
+X11** until `hide_overlay`. Anything that leaves it up leaves the plugin
+unclickable: every path that ends the menu goes through
+`WindowApp::close_plugin_menu`. To look at it over a real plugin without a
+display of Ty's: a private `Xvfb` (the Arch package unpacked into a scratch
+folder runs as is), `PROBE_HEADER=32 PROBE_MENU=<png>` on the
+`plugin_editor` example, the PNG from `FONTELLE_UI_DUMP` of
+`fontelle-ui --test plugin_menu` (`*-alone.png`), and XTEST from
+python-xlib to press and type.
+
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their
 init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has

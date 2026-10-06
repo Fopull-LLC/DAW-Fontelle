@@ -3337,6 +3337,90 @@ pub fn plugin_header_pixels(
     headless.render(&scene, width, height, theme.palette.panel_header)
 }
 
+/// The preset drop-down a plugin window's strip drops, as pixels the size of
+/// its place in that window ([`PluginPresetMenu::pixel_rect`]) — RGBA, row
+/// after row — for the window to put up over the plugin
+/// (`fontelle_host::PluginWindow::show_overlay`). The studio's own menu,
+/// drawn by the same code, with the row the pointer or the arrows are on
+/// lit.
+///
+/// Shapes the captions of the rows on screen only: a bank of three thousand
+/// patches is a menu of thirty rows at a time.
+///
+/// [`PluginPresetMenu::pixel_rect`]: crate::canvas::PluginPresetMenu::pixel_rect
+pub fn plugin_menu_pixels(
+    headless: &mut Headless,
+    theme: &Theme,
+    labels: &mut Labels,
+    text: &mut crate::text::TextContext,
+    menu: &crate::canvas::PluginPresetMenu,
+) -> Result<Vec<u8>, RenderError> {
+    let laid = &menu.menu;
+    for (row, entry) in laid.rows.iter().zip(&laid.entries) {
+        if !row.is_empty() {
+            labels.ensure(&entry.label, &theme.font, text);
+        }
+    }
+    let search = menu.search();
+    let typed = !menu.query().is_empty();
+    let search_text = if typed {
+        format!("{}{}", menu.query(), crate::canvas::NAME_CARET)
+    } else {
+        "Type to search presets".to_string()
+    };
+    labels.ensure(&search_text, &theme.font, text);
+    let p = theme.palette.solid();
+    let m = &theme.metrics;
+    let frame = menu.frame();
+    let mut inner = Scene::new();
+    // The ground under the search line and the list both.
+    fill_rect_rounded(&mut inner, frame, m.corner_radius, p.border);
+    fill_rect_rounded(
+        &mut inner,
+        frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
+    draw_context_menu(&mut inner, theme, labels, Some(laid), None);
+    // The search line, pinned over the list: a field, so it reads as
+    // somewhere typing goes.
+    if !search.is_empty() {
+        let field = search.inset(3.0);
+        fill_rect_rounded(&mut inner, field, m.corner_radius, p.window);
+        stroke_rect_rounded(
+            &mut inner,
+            field,
+            m.corner_radius,
+            1.0,
+            if typed { p.accent } else { p.border },
+        );
+        if let Some(caption) = labels_get(labels, &search_text) {
+            draw_text_clipped(
+                &mut inner,
+                caption,
+                field,
+                field.x + 6.0,
+                field.y + (field.height - caption.height) / 2.0,
+                if typed { p.text } else { p.text_muted },
+            );
+        }
+    }
+    if let Some(row) = menu.hover().and_then(|index| laid.rows.get(index))
+        && !row.is_empty()
+    {
+        fill_rect_rounded(&mut inner, *row, m.corner_radius, p.accent.with_alpha(0x38));
+        stroke_rect_rounded(&mut inner, *row, m.corner_radius, 1.0, p.accent);
+    }
+    let (_, _, width, height) = menu.pixel_rect();
+    let s = f64::from(menu.scale());
+    let mut scene = Scene::new();
+    scene.append(
+        &inner,
+        Some(Affine::scale(s) * Affine::translate((-f64::from(frame.x), -f64::from(frame.y)))),
+    );
+    headless.render(&scene, width, height, p.border)
+}
+
 /// The preset bar, across the right-hand end of an editor window's header
 /// (`docs/flopsynth-plan.md` §P.7).
 ///
@@ -3736,9 +3820,12 @@ pub fn draw_context_menu(
             caption,
             menu.label_x(index),
             row.y + (row.height - text.height) / 2.0,
-            // A greyed entry is drawn in the same ink as a panel's border,
-            // which is this theme's "there, and not for you".
-            if entry.enabled { p.text } else { p.border },
+            // A greyed entry — a section's heading, or a row that says why
+            // something is not there — in the secondary text colour: there,
+            // not for pressing, and **readable**. It was the border's ink,
+            // which on a dark ground read as nothing at all (*"the section
+            // headings are nearly invisible"*).
+            if entry.enabled { p.text } else { p.text_muted },
         );
     }
 }
@@ -8200,8 +8287,10 @@ fn draw_timeline(
         // rather than at the left where the front grip and the fade-in live:
         // Ty, *"there should be a name on each clip that is in the center of
         // the clip so its not overlapping any of the end of clip controls"*.
-        // Cut to fit with an ellipsis, and left off a block too narrow for a
-        // word. Clicking it opens the clip's menu.
+        // Across the top, a title — *"make them anchored closer to the top"*
+        // — on a plate of the block's own colour, so it reads over the notes
+        // or the wave under it. Cut to fit with an ellipsis, and left off a
+        // block too narrow for a word. Clicking it opens the clip's menu.
         let caption = chrome
             .captions
             .get(&clip.id)
@@ -8218,6 +8307,11 @@ fn draw_timeline(
             } else {
                 p.panel
             };
+            let plate =
+                Rect::new(name.x - 4.0, name.y, name.width + 8.0, name.height).intersection(&block);
+            if !plate.is_empty() && !automation {
+                fill_rect_rounded(scene, plate, 3.0, body.with_alpha(0xe0));
+            }
             let y = name.y + (name.height - text.height) / 2.0;
             draw_text_clipped(scene, text, block, name.x, y, ink);
         }

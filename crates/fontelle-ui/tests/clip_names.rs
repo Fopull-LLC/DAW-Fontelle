@@ -102,6 +102,68 @@ fn the_name_sits_between_the_edge_grips_and_the_fade_handles() {
     }
 }
 
+/// > *"the names of the arrangement clips also are slightly too low make
+/// > them anchored closer to the top so the name isnt positioned weirdly."*
+///
+/// A title across the top of the block, a few pixels down, whatever the
+/// lane's height — not down the middle of it over the notes or the wave.
+/// Still centred between the grips, and still what a press on it is.
+#[test]
+fn the_name_is_anchored_near_the_top_of_its_block_like_a_title() {
+    let metrics = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &metrics);
+    for height in [34.0, 80.0] {
+        let v = TimelineView {
+            lane_height: height,
+            ..view()
+        };
+        for kind in [ClipKind::Notes, ClipKind::Audio, ClipKind::Automation] {
+            let clip = a_clip(kind, PPQN * 8);
+            let block = clip_rect(&v, l.grid, &clip);
+            let slot = clip_name_slot(block, l.grid, &clip);
+            let name = clip_name_rect(slot, 70.0).expect("room for it");
+            let down = name.y - block.y;
+            assert!(
+                (1.0..=4.0).contains(&down),
+                "{kind:?} at {height}: {down} px down a block {} tall",
+                block.height
+            );
+            assert!(
+                name.bottom() <= block.y + 20.0,
+                "{kind:?} at {height}: a title, not the middle: {name:?} in {block:?}"
+            );
+            assert!(
+                (name.x + name.width / 2.0 - (slot.x + slot.width / 2.0)).abs() < 0.5,
+                "{kind:?}: still centred across"
+            );
+        }
+        // And a press on it is the name's, where it is drawn.
+        let clip = a_clip(ClipKind::Notes, PPQN * 8);
+        let clips = vec![clip.clone()];
+        let block = clip_rect(&v, l.grid, &clip);
+        let name = clip_name_rect(clip_name_slot(block, l.grid, &clip), 70.0).unwrap();
+        let width = |_: &ClipInfo| Some(70.0);
+        let (cx, cy) = (name.x + name.width / 2.0, name.y + name.height / 2.0);
+        assert_eq!(
+            clip_name_hit(&v, &l, &clips, width, cx, cy),
+            Some(clip.id),
+            "at {height}"
+        );
+        assert_eq!(
+            clip_name_hit(
+                &v,
+                &l,
+                &clips,
+                width,
+                cx,
+                block.y + block.height / 2.0 + 10.0
+            ),
+            None,
+            "the middle of the block is the block's at {height}"
+        );
+    }
+}
+
 #[test]
 fn a_name_wider_than_its_room_has_no_place() {
     let slot = Rect::new(0.0, 0.0, 50.0, 14.0);

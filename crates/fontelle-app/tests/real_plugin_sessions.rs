@@ -1060,3 +1060,71 @@ fn what_each_real_instruments_preset_menu_lists() {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
+
+/// > *"i could see them inside of that folder but when i click one it says
+/// > os error [No such file or directory (os error 2)]. that was testing
+/// > with cardinal synth."*
+///
+/// For each matching instrument: the browser's Presets tab on it, as the
+/// plugin window's "Show in browser" opens it, and a press on its first and
+/// last own preset there loads it — the bar names it. No heading is blank.
+#[test]
+#[ignore]
+fn each_real_instruments_own_presets_load_from_the_browser() {
+    use fontelle_ui::document::LibraryKind;
+    let dir = scratch("browser-presses");
+    let found = instruments(&a_session(&dir));
+    assert!(
+        !found.is_empty(),
+        "nothing installed matches {:?}",
+        wanted()
+    );
+    for (which, listing) in found {
+        let dir = scratch("browser-presses");
+        let (mut session, stop) = a_running_session(&dir);
+        session.set_channel_plugin(0, which);
+        settle();
+        session.settle_plugin_presets();
+        let own: Vec<String> = session
+            .preset_choices(CHANNEL)
+            .into_iter()
+            .filter(|choice| choice.origin == fontelle_types::PresetOrigin::Plugin)
+            .map(|choice| choice.name)
+            .collect();
+        session.open_presets_for(CHANNEL);
+        let rows = session.library_presets();
+        let headings: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.kind == LibraryKind::Group)
+            .map(|row| row.name.as_str())
+            .collect();
+        eprintln!(
+            "== {listing}\n   {} rows, {} own; headings {:?}",
+            rows.len(),
+            own.len(),
+            headings.iter().take(6).collect::<Vec<_>>()
+        );
+        assert!(
+            headings.iter().all(|name| !name.trim().is_empty()),
+            "{listing}: a blank heading in {headings:?}"
+        );
+        let at: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.kind != LibraryKind::Group && own.contains(&row.name))
+            .map(|(at, _)| at)
+            .collect();
+        let mut picks: Vec<usize> = at.first().into_iter().chain(at.last()).copied().collect();
+        picks.dedup();
+        for row in picks {
+            let name = rows[row].name.clone();
+            let pressed = session.preview_preset(row);
+            settle();
+            let bar = session.preset_bar(CHANNEL).name;
+            eprintln!("   pressed {name:?}: {pressed:?}; the bar says {bar:?}");
+            assert!(pressed.is_ok(), "{listing}: {name}: {pressed:?}");
+            assert_eq!(bar.as_deref(), Some(name.as_str()), "{listing}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}

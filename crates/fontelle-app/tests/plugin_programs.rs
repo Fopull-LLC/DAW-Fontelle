@@ -139,6 +139,17 @@ fn a_session_with_roots(
     project: fontelle_model::Project,
     roots: Option<fontelle_host::PresetRoots>,
 ) -> Session {
+    settings(dir);
+    a_session_keeping_settings(dir, project, roots)
+}
+
+/// [`a_session_with_roots`], on whatever `settings.json` is already in
+/// `dir`.
+fn a_session_keeping_settings(
+    dir: &Path,
+    project: fontelle_model::Project,
+    roots: Option<fontelle_host::PresetRoots>,
+) -> Session {
     let clip = Session::first_clip(&project).unwrap_or_default();
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -162,7 +173,7 @@ fn a_session_with_roots(
     )
     .with_graphs(graphs, realised.track_controls)
     .with_param_nodes(realised.param_nodes)
-    .with_settings_path(settings(dir))
+    .with_settings_path(dir.join("settings.json"))
     .with_plugin_folders(plugin_folders());
     if let Some(roots) = roots {
         session.plugin_rack_mut().set_preset_roots(roots);
@@ -373,6 +384,80 @@ fn the_browser_lists_the_programs_and_marks_the_one_playing() {
     assert_eq!(marked, vec!["3 Loud"]);
 }
 
+/// > *"i could see them inside of that folder but when i click one it says
+/// > os error [No such file or directory (os error 2)]. that was testing
+/// > with cardinal synth."*
+///
+/// A press on a row of the Presets tab is a listen in the Sounds tab — it
+/// loaded the row's file as a soundfont, and a plugin's own preset has no
+/// file. Here a press loads it into the plugin, the way the preset bar
+/// does: one undo, the bar naming it.
+#[test]
+fn a_press_on_a_plugins_own_preset_in_the_browser_loads_it() {
+    let dir = scratch("browser-click");
+    let (mut session, device) = with_programs(&dir);
+    session.open_presets_for(device);
+    let rows = session.library_presets();
+    let row = rows
+        .iter()
+        .position(|row| row.name == "3 Loud")
+        .expect("listed");
+    session
+        .preview_preset(row)
+        .expect("a press on a plugin's own preset loads it");
+    assert_eq!(live_program(&mut session), (2, 0, 0.7));
+    assert_eq!(session.preset_bar(device).name.as_deref(), Some("3 Loud"));
+    session.undo();
+    assert_eq!(live_program(&mut session), (0, 0, 0.1), "one undo");
+}
+
+/// Cardinal's patches at the top of its folder have no category, and the
+/// tab's heading over them was a blank line. It names the plugin — the LV2
+/// gain's "Half", in no bank, is the same shape.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plugins_presets_with_no_category_are_under_its_name_in_the_browser() {
+    let dir = scratch("browser-heading");
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    let master = project.mixer.master.expect("a project has a master track");
+    project.mixer.tracks[master]
+        .inserts
+        .push(fontelle_model::EffectSlot::hosting(PluginState::new(
+            PluginKey::new(
+                fontelle_types::PluginFormat::Lv2,
+                fontelle_testlv2::GAIN_URI,
+            ),
+            "Fontelle Test Gain LV2",
+        )));
+    let mut session = a_session_on(&dir, project);
+    let strip = (0..session.mixer_strips().len())
+        .find(|&strip| {
+            !session
+                .preset_choices(PresetDevice::Insert { strip, slot: 0 })
+                .is_empty()
+        })
+        .expect("the gain's preset is offered on a strip");
+    let device = PresetDevice::Insert { strip, slot: 0 };
+    let half = choice(&session, device, "Half");
+    assert_eq!(
+        session.preset_choices(device)[half].category,
+        "",
+        "in no bank"
+    );
+    session.open_presets_for(device);
+    let rows = session.library_presets();
+    let at = rows.iter().position(|row| row.name == "Half").unwrap();
+    let over = rows[..at]
+        .iter()
+        .rev()
+        .find(|row| row.kind == LibraryKind::Group)
+        .expect("a heading over it");
+    assert_eq!(over.name, "Fontelle Test Gain LV2");
+    // And a press on it loads it.
+    session.preview_preset(at).expect("loads");
+    assert_eq!(session.preset_bar(device).name.as_deref(), Some("Half"));
+}
+
 /// An LV2 plugin whose presets are compiled into it and offered through the
 /// KXStudio programs extension — Dexed's LV2 — has them in the menu, read
 /// off the instance the studio is running, and one chosen is played.
@@ -484,4 +569,206 @@ fn an_lv2_plugins_banks_are_offered_and_load() {
     // The gain port is index 2.
     assert_eq!(state.param(2), Some(0.25));
     assert_eq!(session.preset_bar(device).name.as_deref(), Some("Quieter"));
+}
+
+/// > *"sometimes clicking a star just doesnt make any noticable change.
+/// > please ensure that the favoriting system works correctly everywhere."*
+///
+/// A star on one of a plugin's own presets: one press is one change, the
+/// menu has it under Favorites at once, it is written to the settings, and
+/// the preset is not loaded by it.
+#[test]
+fn a_star_on_a_plugins_preset_toggles_once_shows_at_once_and_is_kept() {
+    let dir = scratch("star");
+    let (mut session, device) = with_programs(&dir);
+    let before = live_program(&mut session);
+    let at = choice(&session, device, "3 Loud");
+    session.toggle_preset_star(device, at);
+    assert!(session.preset_choices(device)[at].favourite);
+    assert_eq!(live_program(&mut session), before, "a star is not a load");
+    let (entries, _) =
+        fontelle_ui::canvas::preset_menu_marking(&session.preset_choices(device), "", None);
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    let favorites = labels
+        .iter()
+        .position(|l| *l == "Favorites")
+        .expect("a Favorites section");
+    assert_eq!(labels[favorites + 1], "3 Loud", "{labels:?}");
+    let saved = fontelle_app::settings::Settings::from_json(
+        &std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        saved.favorites.iter().any(|f| matches!(
+            f,
+            fontelle_types::Favorite::Preset { name, .. } if name == "3 Loud"
+        )),
+        "{:?}",
+        saved.favorites
+    );
+    session.toggle_preset_star(device, at);
+    assert!(
+        !session.preset_choices(device)[at].favourite,
+        "and off again"
+    );
+}
+
+/// The strip's star with no preset loaded has nothing to star. It said
+/// nothing; it says why.
+#[test]
+fn the_strips_star_with_no_preset_says_why() {
+    let dir = scratch("star-none");
+    let (mut session, device) = with_programs(&dir);
+    assert_eq!(session.preset_bar(device).name, None);
+    session.take_message();
+    session.toggle_preset_favorite(device);
+    let said = session.take_message().unwrap_or_default();
+    assert!(said.contains("preset"), "{said:?}");
+}
+
+// ------------------------------------------- a star names its bank, too
+
+/// The LV2 bank fixture with two banks that both have a "Quieter" — what
+/// amsynth's 27 banks do with their "Init"s.
+#[cfg(target_os = "linux")]
+fn two_banks(dir: &Path, keep: bool) -> (Session, PresetDevice) {
+    let library = dir.join("library");
+    let banks = library.join("Fontelle Test Plain LV2").join("banks");
+    std::fs::create_dir_all(&banks).unwrap();
+    std::fs::write(
+        banks.join("Alpha.bank"),
+        "amSynth\n<preset> <name> Quieter\n<parameter> gain 0.25\n",
+    )
+    .unwrap();
+    std::fs::write(
+        banks.join("Beta.bank"),
+        "amSynth\n<preset> <name> Quieter\n<parameter> gain 0.5\n",
+    )
+    .unwrap();
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    let master = project.mixer.master.expect("a project has a master track");
+    project.mixer.tracks[master]
+        .inserts
+        .push(fontelle_model::EffectSlot::hosting(PluginState::new(
+            plain_key(),
+            "Fontelle Test Plain LV2",
+        )));
+    let roots = Some(fontelle_host::PresetRoots {
+        data: vec![library],
+        vst3: Vec::new(),
+    });
+    let session = if keep {
+        a_session_keeping_settings(dir, project, roots)
+    } else {
+        a_session_with_roots(dir, project, roots)
+    };
+    let strip = (0..session.mixer_strips().len())
+        .find(|&strip| {
+            !session
+                .preset_choices(PresetDevice::Insert { strip, slot: 0 })
+                .is_empty()
+        })
+        .expect("the banks are offered on a strip");
+    (session, PresetDevice::Insert { strip, slot: 0 })
+}
+
+#[cfg(target_os = "linux")]
+fn plain_key() -> PluginKey {
+    PluginKey::new(
+        fontelle_types::PluginFormat::Lv2,
+        fontelle_testlv2::PLAIN_URI,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn stars(session: &Session, device: PresetDevice) -> Vec<(String, bool)> {
+    session
+        .preset_choices(device)
+        .into_iter()
+        .filter(|c| c.name == "Quieter")
+        .map(|c| (c.category, c.favourite))
+        .collect()
+}
+
+/// Two presets of one name in two banks are two presets: starring one does
+/// not star the other, and the file says which.
+#[cfg(target_os = "linux")]
+#[test]
+fn same_named_presets_in_two_banks_star_independently() {
+    let dir = scratch("star-banks");
+    let (mut session, device) = two_banks(&dir, false);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), false)]
+    );
+    let beta = session
+        .preset_choices(device)
+        .iter()
+        .position(|c| c.name == "Quieter" && c.category == "Beta")
+        .unwrap();
+    session.toggle_preset_star(device, beta);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), true)]
+    );
+    // Written and read back.
+    drop(session);
+    let (session, device) = two_banks(&dir, true);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), true)]
+    );
+}
+
+/// A star from before (no category) on a name two banks share goes to the
+/// first of them, in the order the menu lists them — the one the person saw
+/// first under that name — and is written with its bank. A star that matches
+/// no preset here is kept as it was, never dropped.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_old_star_goes_to_the_first_preset_of_its_name_and_none_is_lost() {
+    let dir = scratch("star-migrate");
+    let legacy = |name: &str| fontelle_types::Favorite::Preset {
+        device: fontelle_types::DeviceKind::Plugin(plain_key()),
+        name: name.to_string(),
+        origin: PresetOrigin::Plugin,
+        category: None,
+    };
+    let old = Settings {
+        preset_dir: Some(dir.join("presets")),
+        projects_dir: Some(dir.join("projects")),
+        favorites: vec![legacy("Quieter"), legacy("Gone Now")],
+        ..Default::default()
+    };
+    // As a format-11 file was written: no category on either.
+    let mut json: serde_json::Value = serde_json::from_str(&old.to_json()).unwrap();
+    json["format_version"] = 11.into();
+    std::fs::write(dir.join("settings.json"), json.to_string()).unwrap();
+
+    let (session, device) = two_banks(&dir, true);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), true), ("Beta".to_string(), false)]
+    );
+    drop(session);
+    let written =
+        Settings::from_json(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    let names: Vec<(String, Option<String>)> = written
+        .favorites
+        .iter()
+        .filter_map(|f| match f {
+            fontelle_types::Favorite::Preset { name, category, .. } => {
+                Some((name.clone(), category.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&("Quieter".to_string(), Some("Alpha".to_string()))),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&("Gone Now".to_string(), None)),
+        "a star with nothing to match is kept: {names:?}"
+    );
 }

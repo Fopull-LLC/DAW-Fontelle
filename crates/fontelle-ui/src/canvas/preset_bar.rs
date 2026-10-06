@@ -306,6 +306,9 @@ pub struct PluginHeaderView {
     /// The strip's size in the plugin window's own pixels.
     pub width: u32,
     pub height: u32,
+    /// How tall the plugin's area under the strip is, in the same pixels —
+    /// the room the preset drop-down has to drop into.
+    pub area: u32,
     /// The window's scale: its pixels per logical one.
     pub scale: f32,
     /// Where the pointer is over the strip, in its pixels.
@@ -415,6 +418,16 @@ pub enum PresetMenuRow {
     /// *Random preset*: one of the presets this menu is showing, chosen by
     /// [`random_preset_row`] when it is pressed.
     Random,
+}
+
+/// Which preset the star on row `index` of a preset menu is — every row
+/// [`preset_menu_marking`] gives a star is a preset's. `None` for a heading,
+/// the random row, or a row that is not there.
+pub fn preset_menu_star(rows: &[PresetMenuRow], index: usize) -> Option<usize> {
+    match rows.get(index)? {
+        PresetMenuRow::Preset(which) => Some(*which),
+        PresetMenuRow::Heading | PresetMenuRow::Random => None,
+    }
 }
 
 /// What the random row says.

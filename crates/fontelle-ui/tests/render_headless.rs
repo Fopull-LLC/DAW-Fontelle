@@ -7481,6 +7481,147 @@ fn the_preset_menu_lists_the_users_presets_then_the_plugins_bank() {
     }
 }
 
+/// A preset drop-down just after a star was pressed on "Late Night": it is
+/// lit, it is under Favorites at the top, and the menu rose so the row
+/// pressed is still where it was — in both themes.
+#[test]
+fn a_starred_preset_is_lit_listed_first_and_stays_put() {
+    use fontelle_types::PresetOrigin;
+    use fontelle_ui::canvas::{
+        PresetChoice, context_menu_layout, keep_starred_row_in_place, preset_menu_marking,
+    };
+    let choice = |name: &str, favourite| PresetChoice {
+        name: name.to_string(),
+        category: "Saved".to_string(),
+        origin: PresetOrigin::User,
+        favourite,
+        tags: Vec::new(),
+        notes: String::new(),
+    };
+    let names = ["Brass", "Late Night", "Organ", "Pad", "Strings"];
+    let plain: Vec<PresetChoice> = names.iter().map(|n| choice(n, false)).collect();
+    let starred: Vec<PresetChoice> = names
+        .iter()
+        .map(|n| choice(n, *n == "Late Night"))
+        .collect();
+    for (theme, name) in [
+        (Theme::dark_default(), "preset-menu-starred-dark"),
+        (Theme::light_default(), "preset-menu-starred-light"),
+    ] {
+        let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+        let at = (60.0, 120.0);
+        let (entries, _) = preset_menu_marking(&plain, "", None);
+        let old = context_menu_layout(at, layout.window, &theme.metrics, theme.font.size, entries);
+        let pressed = old
+            .entries
+            .iter()
+            .position(|e| e.label.starts_with("Late Night"))
+            .unwrap();
+        let (entries, _) = preset_menu_marking(&starred, "", None);
+        let mut menu = context_menu_layout(
+            at,
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries.clone(),
+        );
+        let lift = keep_starred_row_in_place(&old, pressed, &mut menu);
+        let mut menu = context_menu_layout(
+            (at.0, at.1 - lift),
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries,
+        );
+        keep_starred_row_in_place(&old, pressed, &mut menu);
+        let now = menu
+            .entries
+            .iter()
+            .rposition(|e| e.label.starts_with("Late Night"))
+            .unwrap();
+        assert!((menu.rows[now].y - old.rows[pressed].y).abs() < 0.5);
+        MENU.with(|slot| *slot.borrow_mut() = Some(menu));
+        let shot = shoot_sized(
+            theme.clone(),
+            TransportView::default(),
+            [Meter::default(), Meter::default()],
+            false,
+            W,
+        );
+        MENU.with(|slot| *slot.borrow_mut() = None);
+        if let Some(shot) = shot {
+            dump_sized(&shot.pixels, name, W, H);
+        }
+    }
+}
+
+/// A menu's section headings ("Favorites", a category, "Plugin effects")
+/// are captions to read, not greyed rows: their ink stands well off the
+/// menu's ground in both themes. They were drawn in the border's colour,
+/// which on a dark ground read as nothing.
+#[test]
+fn a_menus_headings_are_legible_in_both_themes() {
+    use fontelle_ui::canvas::{FAVORITES_HEADING, context_menu_layout, effect_menu_rows};
+    let rows = effect_menu_rows(
+        &[fontelle_types::Favorite::Effect(
+            fontelle_types::EffectKind::Reverb,
+        )],
+        &[],
+    );
+    let entries: Vec<_> = rows.into_iter().map(|(entry, _)| entry).collect();
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+        let menu = context_menu_layout(
+            (60.0, 40.0),
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries.clone(),
+        );
+        let heading = menu
+            .entries
+            .iter()
+            .position(|e| e.label == FAVORITES_HEADING)
+            .expect("a Favorites heading");
+        let row = menu.rows[heading];
+        MENU.with(|slot| *slot.borrow_mut() = Some(menu.clone()));
+        let shot = shoot_sized(
+            theme.clone(),
+            TransportView::default(),
+            [Meter::default(), Meter::default()],
+            false,
+            W,
+        );
+        MENU.with(|slot| *slot.borrow_mut() = None);
+        let Some(shot) = shot else {
+            return;
+        };
+        let name = if theme.name == Theme::dark_default().name {
+            "menu-headings-dark"
+        } else {
+            "menu-headings-light"
+        };
+        dump_sized(&shot.pixels, name, W, H);
+        let ground = theme.palette.solid().panel_header.0;
+        let contrast = (row.x as u32 + 4..row.right() as u32 - 4)
+            .flat_map(|x| (row.y as u32 + 2..row.bottom() as u32 - 2).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                let c = pixel(&shot.pixels, W, x, y);
+                (0..3)
+                    .map(|i| c.0[i].abs_diff(ground[i]) as u32)
+                    .max()
+                    .unwrap()
+            })
+            .max()
+            .unwrap();
+        assert!(
+            contrast > 90,
+            "{}: heading ink {contrast} off the ground",
+            theme.name
+        );
+    }
+}
+
 /// The piano roll's scale chooser with a key on and a scale on the clipboard:
 /// Copy, Paste by name, and the notes of the key, above the catalogue.
 #[test]
@@ -7570,6 +7711,75 @@ fn a_clips_name_is_drawn_in_the_middle_of_its_block() {
         0,
         "and not at the front"
     );
+}
+
+/// > *"the names of the arrangement clips also are slightly too low make
+/// > them anchored closer to the top so the name isnt positioned weirdly."*
+///
+/// Note blocks with notes in them, in both built-in themes: the name across
+/// the top of each, on a plate of the block's colour, over the notes rather
+/// than in the middle of them.
+#[test]
+fn a_clips_name_sits_across_its_top_over_its_notes() {
+    use fontelle_ui::canvas::clip_rect;
+    use fontelle_ui::document::NotePreview;
+    let notes: Vec<NotePreview> = (0..24)
+        .map(|n| NotePreview {
+            start: n * PPQN / 2,
+            length: PPQN / 2,
+            key: 60 + (n % 7) as u8 * 2,
+        })
+        .collect();
+    let mut wide = a_clip(0, 0, PPQN * 12, [0x4f, 0x8f, 0xd0, 0xff]);
+    wide.name = "Grand Piano".to_string();
+    wide.notes = notes.clone();
+    let mut long = a_clip(1, 0, PPQN * 5, [0xd0, 0x8f, 0x4f, 0xff]);
+    long.name = "Layered Strings and Choir Pad".to_string();
+    long.notes = notes.clone();
+    let mut audio = a_clip(2, PPQN * 2, PPQN * 10, [0x6f, 0xc0, 0x7f, 0xff]);
+    audio.name = "vocal take 3".to_string();
+    audio.kind = fontelle_ui::document::ClipKind::Audio;
+    let mut arena: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    for clip in [&mut wide, &mut long, &mut audio] {
+        clip.id = arena.insert(());
+    }
+    let clips = vec![wide.clone(), long.clone(), audio.clone()];
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let dark = theme.name == Theme::dark_default().name;
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = Some(theme.clone()));
+        CAPTIONS.with(|on| on.set(true));
+        let shot = shoot_timeline(&clips);
+        CAPTIONS.with(|on| on.set(false));
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = None);
+        let Some(shot) = shot else {
+            return;
+        };
+        let name = if dark {
+            "clip-names-top-dark"
+        } else {
+            "clip-names-top-light"
+        };
+        dump_sized(&shot.pixels, name, RW, RH);
+        // The plate: the block's own colour, solid, across the middle of
+        // the top of the block where the name is, whatever notes are under.
+        let block = clip_rect(&shot.view, shot.layout.grid, &wide);
+        let mid = (block.x + block.width / 2.0) as u32;
+        let plated = (block.y as u32 + 3..block.y as u32 + 16)
+            .filter(|&y| {
+                (mid - 50..mid + 50).any(|x| {
+                    let c = pixel(&shot.pixels, RW, x, y);
+                    c.0.iter()
+                        .zip(wide.color.iter())
+                        .take(3)
+                        .any(|(a, b)| a.abs_diff(*b) > 60)
+                })
+            })
+            .count();
+        assert!(
+            plated > 3,
+            "the name is inked across the top: {plated} rows"
+        );
+    }
 }
 
 /// The menu an audio clip's name opens.

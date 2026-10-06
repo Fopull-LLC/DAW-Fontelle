@@ -84,7 +84,9 @@ pub use alpha_egl::{
 };
 pub use atom::{AtomPipe, AtomPipes, MAX_ATOM_BYTES, trace as atom_trace};
 pub use bridge::{BridgeFailure, Bridges, bridge_search_paths};
-pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
+pub use gui::{
+    GuiError, GuiPoll, GuiSize, OverlayEvent, OverlayKey, PluginWindow, pump_gui_messages,
+};
 pub use lv2_state::{Lv2Property, Lv2State};
 pub use mpe::MpeZone;
 pub use own_presets::{

@@ -47,3 +47,35 @@ fn a_favourite_naming_a_plugin_this_build_cannot_name_is_refused_rather_than_gue
     let read: Result<Favorite, _> = serde_json::from_str(r#"{"plugin":"aax:com.example.thing"}"#);
     assert!(read.is_err());
 }
+
+/// A preset is starred by its category (its bank) as well as its name: two
+/// "Init"s in two banks are two presets. A star written before the
+/// category was part of it — no `category` — still reads, as one waiting
+/// to be matched to a preset.
+#[test]
+fn a_preset_favourite_names_its_category_and_an_old_one_without_still_reads() {
+    use fontelle_types::{DeviceKind, PresetOrigin};
+    let device = DeviceKind::Plugin(PluginKey::clap("org.example.synth"));
+    let new = Favorite::Preset {
+        device: device.clone(),
+        name: "Init".to_string(),
+        origin: PresetOrigin::Plugin,
+        category: Some("Bank A".to_string()),
+    };
+    let json = serde_json::to_string(&new).unwrap();
+    assert!(json.contains("\"category\":\"Bank A\""), "{json}");
+    assert_eq!(serde_json::from_str::<Favorite>(&json).unwrap(), new);
+
+    let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+    old["preset"].as_object_mut().unwrap().remove("category");
+    let read: Favorite = serde_json::from_value(old).unwrap();
+    assert_eq!(
+        read,
+        Favorite::Preset {
+            device,
+            name: "Init".to_string(),
+            origin: PresetOrigin::Plugin,
+            category: None,
+        }
+    );
+}

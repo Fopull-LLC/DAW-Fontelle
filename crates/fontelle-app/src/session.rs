@@ -1848,6 +1848,7 @@ impl Session {
             .unwrap_or_else(fontelle_ui::Theme::dark_default);
         self.theme_revision += 1;
         self.read_import_folder();
+        self.adopt_old_preset_stars();
         self
     }
 
@@ -5108,7 +5109,58 @@ impl Session {
             self.preset_bank
                 .set_library(&fontelle_types::DeviceKind::Plugin(key), &presets);
         }
+        self.adopt_old_preset_stars();
         self.touch();
+    }
+
+    /// Matches the stars on presets written before a star named its
+    /// category (settings format 11 and older) to presets the bank now has.
+    ///
+    /// An old star said only a device, a name and an origin, so two presets
+    /// of one name in two banks shared it. It goes to the **first** preset of
+    /// that name, in the order the menu lists them — the one the person saw
+    /// first under that name, and on a device with one of the name, the only
+    /// one — and is written with its category. A star that matches nothing
+    /// here (a plugin whose library is still being listed, a preset since
+    /// deleted) is kept as it was, to be matched later: a star is never
+    /// dropped.
+    fn adopt_old_preset_stars(&mut self) {
+        let mut changed = false;
+        let mut favorites = self.settings.favorites.clone();
+        for favorite in favorites.iter_mut() {
+            let fontelle_types::Favorite::Preset {
+                device,
+                name,
+                origin,
+                category: category @ None,
+            } = favorite
+            else {
+                continue;
+            };
+            if let Some(first) = self
+                .preset_bank
+                .for_device(device)
+                .into_iter()
+                .find(|entry| entry.name == *name && entry.origin == *origin)
+            {
+                *category = Some(first.category.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        // Two old stars may have come to name one preset.
+        let mut seen = Vec::new();
+        favorites.retain(|favorite| {
+            let new = !seen.contains(favorite);
+            seen.push(favorite.clone());
+            new
+        });
+        self.settings.favorites = favorites;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     /// Waits for the plugins' libraries still being listed, and puts them in
@@ -9140,6 +9192,7 @@ impl StudioHost for Session {
                     bar: self.preset_bar(device),
                     width: header.width,
                     height: header.height,
+                    area: header.area,
                     scale: header.scale,
                     hover: header.hover.map(|(x, y)| (x as f32, y as f32)),
                 })
@@ -9169,6 +9222,58 @@ impl StudioHost for Session {
             .into_iter()
             .filter_map(|(slot, x, y)| Some((self.device_of_slot(slot)?, x as f32, y as f32)))
             .collect()
+    }
+
+    fn take_plugin_menu_input(
+        &mut self,
+    ) -> Vec<(PresetDevice, fontelle_ui::canvas::PluginMenuInput)> {
+        use fontelle_host::{OverlayEvent, OverlayKey};
+        use fontelle_ui::canvas::{PluginMenuInput, PluginMenuKey};
+        self.plugins
+            .take_overlay_events()
+            .into_iter()
+            .filter_map(|(slot, event)| {
+                let input = match event {
+                    OverlayEvent::Press(x, y) => PluginMenuInput::Press(x as f32, y as f32),
+                    OverlayEvent::Pointer(x, y) => PluginMenuInput::Pointer(x as f32, y as f32),
+                    OverlayEvent::Scroll(notches) => PluginMenuInput::Scroll(notches),
+                    OverlayEvent::Lost => PluginMenuInput::Lost,
+                    OverlayEvent::Key(key) => PluginMenuInput::Key(match key {
+                        OverlayKey::Text(text) => PluginMenuKey::Text(text),
+                        OverlayKey::Backspace => PluginMenuKey::Backspace,
+                        OverlayKey::Enter => PluginMenuKey::Enter,
+                        OverlayKey::Escape => PluginMenuKey::Escape,
+                        OverlayKey::Up => PluginMenuKey::Up,
+                        OverlayKey::Down => PluginMenuKey::Down,
+                        OverlayKey::PageUp => PluginMenuKey::PageUp,
+                        OverlayKey::PageDown => PluginMenuKey::PageDown,
+                        OverlayKey::Home => PluginMenuKey::Home,
+                        OverlayKey::End => PluginMenuKey::End,
+                    }),
+                };
+                Some((self.device_of_slot(slot)?, input))
+            })
+            .collect()
+    }
+
+    fn show_plugin_menu(
+        &mut self,
+        device: PresetDevice,
+        x: i32,
+        y: i32,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        if let Some(slot) = self.plugin_slot_of(device) {
+            self.plugins.show_overlay(slot, (x, y), rgba, width, height);
+        }
+    }
+
+    fn hide_plugin_menu(&mut self, device: PresetDevice) {
+        if let Some(slot) = self.plugin_slot_of(device) {
+            self.plugins.hide_overlay(slot);
+        }
     }
 
     fn open_presets_for(&mut self, device: PresetDevice) {
@@ -11632,6 +11737,17 @@ impl StudioHost for Session {
     }
 
     fn preview_preset(&mut self, preset: usize) -> Result<(), String> {
+        // > *"i could see them inside of that folder but when i click one it
+        // > says os error [No such file or directory (os error 2)]. that was
+        // > testing with cardinal synth."*
+        //
+        // A row of the Presets tab is no soundfont's: hearing one is loading
+        // it onto what it is for, as the preset bar does — one undo. A
+        // plugin's own preset has no file at all, and this went on to read
+        // its empty path as a soundfont.
+        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Presets {
+            return self.install_bank_preset(preset);
+        }
         // Which row was clicked, the same way `install_preset` reads it: a
         // search lists hits from the whole collection, so the row is not
         // always a preset of the open file.
@@ -14931,6 +15047,7 @@ impl Session {
                     device: kind.clone(),
                     name: reference.name.clone(),
                     origin: reference.origin,
+                    category: Some(reference.category.clone()),
                 })
         });
         PresetBarView {
@@ -14963,6 +15080,7 @@ impl Session {
                         device: kind.clone(),
                         name: entry.name.clone(),
                         origin: entry.origin,
+                        category: Some(entry.category.clone()),
                     }),
                 name: entry.name.clone(),
                 category: entry.category.clone(),
@@ -15214,11 +15332,11 @@ impl Session {
         let Some(kind) = self.preset_device(device) else {
             return;
         };
-        let Some((name, origin)) = self
+        let Some((name, origin, category)) = self
             .preset_bank
             .for_device(&kind)
             .get(index)
-            .map(|entry| (entry.name.clone(), entry.origin))
+            .map(|entry| (entry.name.clone(), entry.origin, entry.category.clone()))
         else {
             return;
         };
@@ -15226,6 +15344,7 @@ impl Session {
             device: kind,
             name,
             origin,
+            category: Some(category),
         });
     }
 
@@ -15233,12 +15352,17 @@ impl Session {
     pub fn toggle_preset_favorite(&mut self, device: PresetDevice) {
         let (Some(kind), Some(reference)) = (self.preset_device(device), self.preset_ref(device))
         else {
+            // A star pressed with nothing to star said nothing, and read as a
+            // star that did not work.
+            self.message = Some("Load or save a preset to star it".to_string());
+            self.touch();
             return;
         };
         self.toggle_favorite(fontelle_types::Favorite::Preset {
             device: kind,
             name: reference.name,
             origin: reference.origin,
+            category: Some(reference.category),
         });
     }
 
@@ -15873,9 +15997,11 @@ impl Session {
         let mut rows = Vec::new();
         let mut heading: Option<String> = None;
         for (index, entry) in entries.iter().enumerate() {
+            // A preset with no category — Cardinal's patches at the top of
+            // its folder — is under the plugin's name, not a blank heading.
             let group = match searching {
-                true => self.device_label(&entry.device),
-                false => entry.category.clone(),
+                false if !entry.category.trim().is_empty() => entry.category.clone(),
+                _ => self.device_label(&entry.device),
             };
             if heading.as_deref() != Some(group.as_str()) {
                 rows.push(PresetRow::Group {
