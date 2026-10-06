@@ -625,3 +625,64 @@ fn dragging_several_clips_is_one_undo() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------- Shift-dragging several clips' ends ---
+
+#[test]
+fn shift_dragging_a_mixed_selection_loops_each_at_its_own_length_in_one_undo() {
+    // Ty: *"if you have multiple clips selected, some looping and some not,
+    // and then youre holding shift and drag the end of the clips out ... it
+    // would basically be like if you dragged each one out manually. however
+    // whenever i do this, it chops everything up into the same loop time and
+    // then squishes it weirdly."* — and the drag is one thing to take back.
+    let dir = scratch("loop-many");
+    let mut session = studio(&dir);
+    let first = session.clips()[0].clone();
+    let made = session.arrange(ArrangeEdit::Add {
+        lane: first.lane,
+        start: PPQN * 64,
+    });
+    let second = made.clips[0];
+    session.end_gesture();
+    session.arrange(ArrangeEdit::SetLoop {
+        ids: vec![second],
+        loop_length: Some(PPQN * 2),
+    });
+    session.end_gesture();
+    let shape = |s: &Session| -> Vec<(i64, Option<i64>)> {
+        let clips = s.clips();
+        [first.id, second]
+            .iter()
+            .map(|id| {
+                let c = clips.iter().find(|c| c.id == *id).unwrap();
+                (c.length, c.loop_length)
+            })
+            .collect()
+    };
+    let before = shape(&session);
+    assert_ne!(before[0].0, before[1].0, "two lengths, to tell apart");
+
+    session.arrange(ArrangeEdit::ResizeLooping {
+        ids: vec![first.id, second],
+        tick_delta: PPQN,
+        loops: vec![Some(before[0].0), None],
+    });
+    for _ in 0..7 {
+        session.arrange(ArrangeEdit::Resize {
+            ids: vec![first.id, second],
+            tick_delta: PPQN,
+        });
+    }
+    session.end_gesture();
+    assert_eq!(
+        shape(&session),
+        vec![
+            (before[0].0 + PPQN * 8, Some(before[0].0)),
+            (before[1].0 + PPQN * 8, Some(PPQN * 2)),
+        ]
+    );
+
+    session.undo();
+    assert_eq!(shape(&session), before, "one undo puts the whole drag back");
+    std::fs::remove_dir_all(&dir).ok();
+}

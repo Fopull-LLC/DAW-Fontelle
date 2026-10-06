@@ -329,7 +329,8 @@ impl TextClipboard {
         }
     }
 
-    fn copy(&mut self, text: &str) {
+    /// Puts `text` on the desktop's clipboard as well as this one.
+    pub fn copy(&mut self, text: &str) {
         self.text.clear();
         self.text.push_str(text);
         // Copying nothing leaves the desktop's clipboard as it was, as every
@@ -341,7 +342,9 @@ impl TextClipboard {
         }
     }
 
-    fn paste(&self) -> String {
+    /// What a paste would put down: the desktop's clipboard first, one
+    /// line of it.
+    pub fn paste(&self) -> String {
         let from_desktop = self
             .system
             .and_then(|system| (system.read)().ok())

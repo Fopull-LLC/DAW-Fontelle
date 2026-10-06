@@ -17,15 +17,15 @@ use fontelle_model::{
     MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane, MoveMixerTrack, MoveNotes,
     NoteData, NoteProperty, NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project,
     RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker,
-    RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane,
-    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert,
-    SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
-    SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
-    SetInsertParam, SetKey, SetLoopRange, SetMixerOrder, SetMixerTrackColor, SetNoteKeys,
-    SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart, load_project, peek_meta, save_project,
+    RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameClip, RenameLane,
+    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes,
+    RestoreInsert, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
+    SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
+    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetMixerOrder,
+    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
+    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
+    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -192,6 +192,7 @@ fn a_studio() -> Studio {
     ];
     let notes_clip = applied(
         AddClip::new(Clip {
+            name: None,
             lane: lanes[0],
             start: 0,
             length: PPQN * 4,
@@ -229,6 +230,7 @@ fn a_studio() -> Studio {
     }
     let auto_clip = applied(
         AddClip::new(Clip {
+            name: None,
             lane: lanes[1],
             start: 0,
             length: PPQN * 4,
@@ -626,6 +628,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
         // --- clips
         ("AddClip", |s| {
             Box::new(AddClip::new(Clip {
+                name: None,
                 lane: s.lanes[1],
                 start: PPQN * 8,
                 length: PPQN * 4,
@@ -642,6 +645,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("AddClip on a new row", |s| {
             Box::new(AddClip::on_new_row(
                 Clip {
+                    name: None,
                     lane: s.lanes[0],
                     start: 0,
                     length: PPQN * 4,
@@ -674,6 +678,15 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("ResizeClip", |s| {
             Box::new(ResizeClip::new(s.notes_clip, PPQN))
+        }),
+        ("RenameClip", |s| {
+            Box::new(RenameClip::new(s.notes_clip, Some("Hook".to_string())))
+        }),
+        ("ResizeClips", |s| {
+            Box::new(
+                ResizeClips::new(vec![s.notes_clip, s.audio_clip], PPQN)
+                    .with_loops(vec![Some(PPQN * 2), None]),
+            )
         }),
         ("TrimClipStart", |s| {
             Box::new(TrimClipStart::new(s.audio_clip, PPQN / 2))

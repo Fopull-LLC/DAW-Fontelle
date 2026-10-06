@@ -65,6 +65,7 @@ fn two_rows() -> (
         let mut notes = Arena::default();
         notes.insert(a_note(0, key));
         AddClip::new(Clip {
+            name: None,
             lane,
             start: 0,
             length: PPQN * 4,

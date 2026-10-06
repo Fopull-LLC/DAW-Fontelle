@@ -73,6 +73,17 @@ its surface; another plugin that aborts the same way goes in
 `NEEDS_ALPHA_EGL`. Settings → Compatible plugin graphics puts EGL on Mesa
 from the next start.
 
+(h) **A plugin's library files** (2026-10-06, `PROGRESS.md`'s top entry):
+`.fxp`, `.vital`, `.vcv` and amsynth banks are offered only when the
+plugin's own state has the shape the file fits (`state_from_file` in
+`fontelle_host::own_presets`), and fitted into that state. A new kind is a
+`FileKind` and, if the state holds it somewhere new, a `Carrier` — verify it
+on the real plugin first (load one, read the state back) and add it to the
+walk `what_each_real_instruments_preset_menu_lists`
+(`FONTELLE_REAL_ONLY=<name>`, `FONTELLE_REAL_PRESET=<preset>`). A test binary
+that loaded a Cardinal patch segfaults at exit in Cardinal's destructors; the
+studio does not (it ends with `exit_now`).
+
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their
 init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has

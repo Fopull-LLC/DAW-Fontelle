@@ -76,6 +76,7 @@ fn add_note_clip(
         arena.insert(note);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start,
         length,

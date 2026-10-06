@@ -77,6 +77,7 @@ impl Rig {
             order: 0,
         });
         self.project.clips.insert(Clip {
+            name: None,
             lane,
             start,
             length,

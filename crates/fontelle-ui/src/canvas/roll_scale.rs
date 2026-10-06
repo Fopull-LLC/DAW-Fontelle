@@ -159,6 +159,16 @@ pub enum ScaleMenuRow {
     /// Fit the notes to the scale that is on — for notes drawn with Alt, or
     /// brought in from elsewhere since.
     FitNotes,
+    /// Put the key that is on on the clipboard, in plain words
+    /// (`fontelle_types::scale_text`).
+    CopyScale,
+    /// Make the key on the clipboard the song's — only listed when there is
+    /// one, and named.
+    PasteScale,
+    /// The notes of the key that is on, from its root. Pressed, they are
+    /// copied — the row is there to be read, and a greyed row in this menu
+    /// is a heading too faint to read across a room.
+    CopyNotes,
     Scale(&'static str),
 }
 
@@ -168,6 +178,22 @@ pub enum ScaleMenuRow {
 /// whose names match (`fontelle_types::scale_matches`) and the headings of
 /// the families they are in.
 pub fn scale_menu(query: &str, current: Option<&KeyScale>) -> (Vec<MenuEntry>, Vec<ScaleMenuRow>) {
+    scale_menu_with(query, current, None)
+}
+
+/// [`scale_menu`], with the key the clipboard holds (`pasted`), if it holds
+/// one.
+///
+/// Ty: a "Copy scale" / "Paste scale" between this chooser and the pitch
+/// corrector's, *"when the clipboard holds a scale, show 'Paste <scale>'"*,
+/// and the notes of the scale that is on, in the menu. Those rows are with
+/// the menu's other actions, so only while nothing has been typed: a filter
+/// is a search for a scale.
+pub fn scale_menu_with(
+    query: &str,
+    current: Option<&KeyScale>,
+    pasted: Option<&KeyScale>,
+) -> (Vec<MenuEntry>, Vec<ScaleMenuRow>) {
     let query = query.trim();
     let mut entries = vec![MenuEntry::disabled(if query.is_empty() {
         "Scales \u{2014} type to filter".to_string()
@@ -192,6 +218,27 @@ pub fn scale_menu(query: &str, current: Option<&KeyScale>) -> (Vec<MenuEntry>, V
             MenuEntry::disabled(fit)
         });
         rows.push(ScaleMenuRow::FitNotes);
+        entries.push(match current {
+            Some(key) => MenuEntry::new(format!("   Copy {}", fontelle_types::scale_text(key))),
+            None => MenuEntry::disabled("   Copy scale"),
+        });
+        rows.push(ScaleMenuRow::CopyScale);
+        if let Some(key) = pasted {
+            entries.push(MenuEntry::new(format!(
+                "   Paste {}",
+                fontelle_types::scale_text(key)
+            )));
+            rows.push(ScaleMenuRow::PasteScale);
+        }
+        // The notes of the key that is on, from its root: what "A minor"
+        // *is*, for whoever has to play it.
+        if let Some(key) = current {
+            let notes = fontelle_types::scale_notes(key);
+            if !notes.is_empty() {
+                entries.push(MenuEntry::new(format!("   Notes: {}", notes.join("  "))));
+                rows.push(ScaleMenuRow::CopyNotes);
+            }
+        }
     }
 
     let chosen = current.map(|key| key.scale.as_str());

@@ -983,3 +983,80 @@ fn one_note_through_the_rack() {
     let mut rack = studio_rack();
     eprintln!("peak {}", offline_peak(&project, &mut rack));
 }
+
+/// > *"i tried a bunch of different instruments including obxf, amsynth,
+/// > and cardinal synth. all of these have built in presets but our daws
+/// > preset system did not detect them"*
+///
+/// What the strip's drop-down lists for each matching instrument, as the
+/// studio puts it on a channel, and that the first of its own loads.
+#[test]
+#[ignore]
+fn what_each_real_instruments_preset_menu_lists() {
+    let dir = scratch("menus");
+    let found = instruments(&a_session(&dir));
+    assert!(
+        !found.is_empty(),
+        "nothing installed matches {:?}",
+        wanted()
+    );
+    for (which, listing) in found {
+        let dir = scratch("menus");
+        let (mut session, stop) = a_running_session(&dir);
+        session.set_channel_plugin(0, which);
+        settle();
+        session.settle_plugin_presets();
+        let choices = session.preset_choices(CHANNEL);
+        let own: Vec<_> = choices
+            .iter()
+            .filter(|choice| choice.origin == fontelle_types::PresetOrigin::Plugin)
+            .collect();
+        eprintln!(
+            "== {listing}\n   {} in the menu, {} the plugin's own; first {:?}",
+            choices.len(),
+            own.len(),
+            own.iter()
+                .take(3)
+                .map(|c| (&c.category, &c.name))
+                .collect::<Vec<_>>()
+        );
+        // The first of its own, and the last — a library file, where a
+        // plugin lists files after what it lists itself. `FONTELLE_REAL_PRESET`
+        // names one instead.
+        let own_at: Vec<usize> = choices
+            .iter()
+            .enumerate()
+            .filter(|(_, choice)| choice.origin == fontelle_types::PresetOrigin::Plugin)
+            .map(|(at, _)| at)
+            .collect();
+        let mut picks: Vec<usize> = match std::env::var("FONTELLE_REAL_PRESET") {
+            Ok(name) => choices
+                .iter()
+                .position(|choice| choice.name == name)
+                .into_iter()
+                .collect(),
+            Err(_) => own_at
+                .first()
+                .into_iter()
+                .chain(own_at.last())
+                .copied()
+                .collect(),
+        };
+        picks.dedup();
+        for at in picks {
+            let before = live(&mut session);
+            session.apply_preset(CHANNEL, at);
+            settle();
+            let after = live(&mut session);
+            eprintln!(
+                "   loaded {:?}: said {:?}; {} parameters moved, blob changed {}; the bar says {:?}",
+                choices[at].name,
+                session.take_message(),
+                differences(&before, &after).0,
+                before.blob != after.blob,
+                session.preset_bar(CHANNEL).name
+            );
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}

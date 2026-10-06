@@ -49,6 +49,15 @@ pub struct Clip {
     /// play-once clips it was made of.
     #[serde(default)]
     pub loop_length: Option<Tick>,
+    /// What the clip is called, when somebody has named it.
+    ///
+    /// `None` is a clip captioned with what it plays — its channel, its
+    /// file, its prefab, its parameter — which is every clip until it is
+    /// renamed. The clip's own, so a copy, a cut half or a loop of it carries
+    /// it. Left out of the file when there is none, so a project of unnamed
+    /// clips is written exactly as it was before names existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Clip {

@@ -86,6 +86,7 @@ fn compile_clip_looping(
         arena.insert(note);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length,

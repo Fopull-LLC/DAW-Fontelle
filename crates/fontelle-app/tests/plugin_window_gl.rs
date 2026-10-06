@@ -218,6 +218,12 @@ const FACE: NeedsAlphaEgl = NeedsAlphaEgl {
 /// `gate` asked before one opens.
 fn with_face(dir: &Path, gate: EditorGate) -> Session {
     std::fs::write(dir.join("settings.json"), Settings::default().to_json()).unwrap();
+    with_face_keeping_settings(dir, gate)
+}
+
+/// [`with_face`] over whatever `settings.json` the last session left — the
+/// next session on the same machine.
+fn with_face_keeping_settings(dir: &Path, gate: EditorGate) -> Session {
     let mut project = common::a_project_with_a_clip(8, 120.0, SR);
     let master = project.mixer.master.expect("a project has a master track");
     project.mixer.tracks[master]
@@ -301,5 +307,171 @@ fn an_editor_the_driver_cannot_draw_is_refused_before_the_plugin_is_called() {
         }),
     );
     assert!(open_any(&mut session), "the editor opened");
+    // And a window that opens offers nothing: Compatible plugin graphics is
+    // asked about only when it would help.
+    assert_eq!(session.session_question(), None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ------------------------------------------------- asking, the first time
+//
+// Ty: *"we should make it detect if the user should need that setting
+// enabled and ask them if they want it if weve never asked them, then theyll
+// dismiss forever or chose yes to enable it without having to go in
+// settings. im just worried about users not knowing it exists and just
+// thinking the daw is broken."*
+
+use fontelle_app::settings::offer_compatible_graphics;
+
+#[test]
+fn the_offer_is_made_only_when_it_would_help_and_nobody_has_answered() {
+    // refused, on, never, asked, mesa
+    assert!(offer_compatible_graphics(true, false, false, false, true));
+    assert!(
+        !offer_compatible_graphics(false, false, false, false, true),
+        "nothing refused"
+    );
+    assert!(
+        !offer_compatible_graphics(true, true, false, false, true),
+        "already on"
+    );
+    assert!(
+        !offer_compatible_graphics(true, false, true, false, true),
+        "never again"
+    );
+    assert!(
+        !offer_compatible_graphics(true, false, false, true, true),
+        "asked this session"
+    );
+    assert!(
+        !offer_compatible_graphics(true, false, false, false, false),
+        "nothing to turn on"
+    );
+}
+
+#[test]
+fn dont_ask_again_is_written_down_and_an_older_file_has_never_answered() {
+    let settings = Settings::default();
+    assert!(!settings.never_ask_compatible_graphics);
+    assert!(!settings.to_json().contains("never_ask_compatible_graphics"));
+    let never = Settings {
+        never_ask_compatible_graphics: true,
+        ..Settings::default()
+    };
+    assert_eq!(Settings::from_json(&never.to_json()).unwrap(), never);
+    const { assert!(SETTINGS_FORMAT_VERSION >= 11) };
+}
+
+#[test]
+fn a_restart_reopens_the_same_song_in_the_window() {
+    let args = fontelle_app::relaunch::args_for(Some(Path::new("/songs/My Song")));
+    assert_eq!(
+        args,
+        vec![
+            std::ffi::OsString::from("--open"),
+            std::ffi::OsString::from("/songs/My Song"),
+            std::ffi::OsString::from("--window"),
+        ]
+    );
+    assert!(
+        fontelle_app::relaunch::args_for(None).is_empty(),
+        "a song never saved: the plain studio"
+    );
+}
+
+fn refusing_gate() -> EditorGate {
+    EditorGate::with(vec![FACE], false, || AlphaEgl::Fails {
+        vendor: "NVIDIA".to_string(),
+        why: "EGL_BAD_CONFIG".to_string(),
+    })
+}
+
+fn with_mesa(session: Session) -> Session {
+    session.with_mesa_egl(Some(PathBuf::from(
+        "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+    )))
+}
+
+#[test]
+fn a_refused_window_asks_once_with_three_answers() {
+    let dir = scratch("asks");
+    let mut session = with_mesa(with_face(&dir, refusing_gate()));
+    assert_eq!(session.session_question(), None);
+    assert!(!open_any(&mut session));
+    let question = session.session_question().expect("it asks");
+    let said = question.lines.join(" ");
+    assert!(said.contains("Compatible plugin graphics"), "{said}");
+    assert!(said.contains("restarts"), "{said}");
+    assert_eq!(
+        question.buttons,
+        ["Turn on and restart", "Don't ask again", "Not now"]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn not_now_asks_again_next_session_and_not_again_in_this_one() {
+    let dir = scratch("not-now");
+    let mut session = with_mesa(with_face(&dir, refusing_gate()));
+    open_any(&mut session);
+    session.answer_session_question(2).unwrap();
+    assert_eq!(session.session_question(), None);
+    open_any(&mut session);
+    assert_eq!(session.session_question(), None, "not twice in a session");
+    let (settings, _) = Settings::load_from(session.settings_path().unwrap());
+    assert!(!settings.never_ask_compatible_graphics);
+    assert!(!settings.compatible_plugin_graphics);
+    assert!(!session.take_restart_request());
+    drop(session);
+
+    // The next session — the same settings file.
+    let mut again = with_mesa(with_face_keeping_settings(&dir, refusing_gate()));
+    open_any(&mut again);
+    assert!(again.session_question().is_some(), "asked again");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn dont_ask_again_is_never_asked_again() {
+    let dir = scratch("never");
+    let mut session = with_mesa(with_face(&dir, refusing_gate()));
+    open_any(&mut session);
+    session.answer_session_question(1).unwrap();
+    let (settings, _) = Settings::load_from(session.settings_path().unwrap());
+    assert!(settings.never_ask_compatible_graphics);
+    assert!(!settings.compatible_plugin_graphics, "and it stays off");
+    drop(session);
+    let mut again = with_mesa(with_face_keeping_settings(&dir, refusing_gate()));
+    open_any(&mut again);
+    assert_eq!(again.session_question(), None);
+    // The status line still says why the window did not open.
+    let said = again.take_message().unwrap_or_default();
+    assert!(said.contains("Compatible"), "{said}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn turn_on_and_restart_writes_the_setting_and_asks_the_window_to_restart() {
+    let dir = scratch("turn-on");
+    let mut session = with_mesa(with_face(&dir, refusing_gate()));
+    open_any(&mut session);
+    session.answer_session_question(0).unwrap();
+    let (settings, _) = Settings::load_from(session.settings_path().unwrap());
+    assert!(settings.compatible_plugin_graphics, "on, in the file");
+    assert_eq!(session.session_question(), None);
+    assert!(
+        session.take_restart_request(),
+        "the window is asked to restart"
+    );
+    assert!(!session.take_restart_request(), "once");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn with_no_mesa_there_is_nothing_to_offer() {
+    let dir = scratch("no-mesa");
+    let mut session = with_face(&dir, refusing_gate()).with_mesa_egl(None);
+    open_any(&mut session);
+    assert_eq!(session.session_question(), None);
     std::fs::remove_dir_all(&dir).ok();
 }

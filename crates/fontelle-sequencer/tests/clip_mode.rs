@@ -94,6 +94,7 @@ impl Rig {
         let mut notes = Arena::default();
         notes.insert(a_note(0, key));
         self.project.clips.insert(Clip {
+            name: None,
             lane: self.lane,
             start,
             length: BAR,
@@ -120,6 +121,7 @@ impl Rig {
             tension: 0.0,
         });
         self.project.clips.insert(Clip {
+            name: None,
             lane: self.lane,
             start,
             length,

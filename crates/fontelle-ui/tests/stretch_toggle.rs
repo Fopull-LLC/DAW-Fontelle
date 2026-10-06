@@ -379,12 +379,14 @@ fn a_shift_drag_with_stretch_off_loops_the_clip_at_its_own_rate_and_stretches_no
             ArrangeEdit::SetStretch { .. } => "stretch",
             ArrangeEdit::SetLoop { .. } => "loop",
             ArrangeEdit::Resize { .. } => "resize",
+            ArrangeEdit::ResizeLooping { .. } => "loop and resize",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["loop", "resize"]);
+    // One edit for the loop and the growth, so one undo (`ResizeClips`).
+    assert_eq!(kinds, vec!["loop and resize"]);
     let period = edits.iter().find_map(|e| match e {
-        ArrangeEdit::SetLoop { loop_length, .. } => Some(*loop_length),
+        ArrangeEdit::ResizeLooping { loops, .. } => loops.first().copied(),
         _ => None,
     });
     assert_eq!(period, Some(Some(BAR)), "the period is the length it had");
@@ -406,11 +408,11 @@ fn a_shift_drag_with_stretch_on_loops_a_stretched_pass() {
         vec![(vec![id], ClipStretch::Resample)]
     );
     assert!(
-        edits
-            .iter()
-            .any(|e| matches!(e, ArrangeEdit::SetLoop { .. }))
+        edits.iter().any(
+            |e| matches!(e, ArrangeEdit::ResizeLooping { loops, .. } if loops == &vec![Some(BAR)])
+        ),
+        "loops and grows: {edits:?}"
     );
-    assert!(has_resize(&edits));
 }
 
 // ------------------------------------------------------------ the picture ---

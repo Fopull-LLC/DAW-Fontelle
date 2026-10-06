@@ -41,6 +41,7 @@ fn fixture(points: Vec<AutomationPoint>) -> (Project, ClipId) {
         arena.insert(p);
     }
     let clip = project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -152,6 +153,7 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         gain_db: 0.0,
     });
     let clip = project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN,

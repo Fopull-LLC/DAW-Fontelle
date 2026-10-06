@@ -136,6 +136,7 @@ fn an_audio_clip_makes_the_song_as_long_as_it_is() {
         SR,
     );
     AddClip::new(Clip {
+        name: None,
         lane,
         start: BAR * 2,
         length: BAR * 2,

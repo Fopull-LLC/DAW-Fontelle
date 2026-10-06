@@ -81,6 +81,7 @@ fn a_clip(
     notes: Vec<Note>,
 ) -> ClipId {
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start,
         length,
@@ -623,6 +624,7 @@ fn an_automation_clip(
         });
     }
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start,
         length,

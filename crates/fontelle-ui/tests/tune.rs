@@ -11,8 +11,8 @@
 
 use fontelle_ui::canvas::{
     FlopsynthCard, FlopsynthPicture, InstrumentGroup, InstrumentParam, ParamKind, TuneHit,
-    TuneView, key_click_mask, key_solo_mask, trace_at, tune_hit, tune_keyboard_layout, tune_layout,
-    viewport_points, viewport_rails,
+    TunePaste, TuneView, key_click_mask, key_solo_mask, trace_at, tune_hit, tune_keyboard_layout,
+    tune_layout, tune_paste, tune_scale_text, viewport_points, viewport_rails,
 };
 use fontelle_ui::layout::Rect;
 
@@ -477,4 +477,54 @@ fn the_midi_source_is_a_chooser_the_layout_can_reach() {
         Some(TuneHit::Control { card, param: 0 }),
         "clicking it reaches the source and nothing else"
     );
+}
+
+// ------------------------------------------- copying and pasting a scale ---
+//
+// Ty: "Copy scale" / "Paste scale" here and in the piano roll's chooser, the
+// clipboard holding plain words — "A minor" — so it is useful in a browser
+// too.
+
+#[test]
+fn the_correctors_scale_is_copied_in_plain_words() {
+    let mut view = a_view();
+    view.root = 9;
+    view.mask = TuneScale::NaturalMinor.mask(9);
+    assert_eq!(tune_scale_text(&view), "A minor");
+    view.root = 1;
+    view.mask = TuneScale::Major.mask(1);
+    assert_eq!(tune_scale_text(&view), "C# major");
+}
+
+#[test]
+fn a_custom_set_of_switches_is_named_when_it_is_a_scale_and_spelled_when_not() {
+    let mut view = a_view();
+    view.root = 9;
+    view.mask = fontelle_types::scale("hirajoshi").unwrap().mask(9);
+    assert_eq!(tune_scale_text(&view), "A hirajoshi");
+    // A, B and C# alone are no scale anybody named: the notes, from the root.
+    view.mask = (1 << 9) | (1 << 11) | (1 << 1);
+    assert_eq!(tune_scale_text(&view), "A B C#");
+}
+
+#[test]
+fn a_scale_the_corrector_lists_is_pasted_as_its_own_choice() {
+    let paste = tune_paste(&fontelle_types::KeyScale::new(2, "dorian"));
+    assert_eq!(
+        paste,
+        TunePaste {
+            root: 2,
+            scale: Some(TuneScale::Dorian),
+            mask: TuneScale::Dorian.mask(2),
+        }
+    );
+}
+
+#[test]
+fn any_other_scale_is_pasted_as_its_notes() {
+    let key = fontelle_types::KeyScale::new(4, "hirajoshi");
+    let paste = tune_paste(&key);
+    assert_eq!(paste.root, 4);
+    assert_eq!(paste.scale, None, "Custom, with the switches set");
+    assert_eq!(paste.mask, key.mask().unwrap());
 }

@@ -1276,7 +1276,10 @@ fn shoot_timeline_recording(
     use fontelle_ui::document::LaneInfo;
     use fontelle_ui::render::TimelineChrome;
 
-    let theme = Theme::dark_default();
+    let theme = SHOT_THEME
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or_else(Theme::dark_default);
+    let ghost = GHOST.with(|slot| slot.get());
     let shared = headless()?;
     let layout = window_layout(
         RW as f32,
@@ -1303,6 +1306,27 @@ fn shoot_timeline_recording(
         };
         labels.ensure(caption, &theme.font, &mut text);
     }
+    // Each clip's name, as the window shapes and fits it.
+    let mut captions = std::collections::HashMap::new();
+    if CAPTIONS.with(|on| on.get()) {
+        for clip in clips {
+            let block = fontelle_ui::canvas::clip_rect(&TimelineView::default(), l.grid, clip);
+            let slot = fontelle_ui::canvas::clip_name_slot(block, l.grid, clip);
+            let caption = fontelle_ui::canvas::clip_caption(&clip.name, slot.width, |s| {
+                labels.ensure(s, &theme.font, &mut text);
+                labels.get(s).map_or(f32::MAX, |t| t.width)
+            });
+            if let Some(caption) = caption {
+                captions.insert(clip.id, caption);
+            }
+        }
+    }
+    // The ghost's tip, as the window shapes it.
+    labels.ensure(
+        fontelle_ui::canvas::ghost_clip_hint(fontelle_ui::canvas::TimelineTool::default()),
+        &theme.font,
+        &mut text,
+    );
     // A clip still on its way says how far along it is — shaped as the
     // window's own `shape_labels` shapes it.
     for clip in clips {
@@ -1378,6 +1402,8 @@ fn shoot_timeline_recording(
                 take_notes: takes,
                 glow,
                 selected_lane,
+                ghost,
+                captions: &captions,
             }),
             mixer: None,
             tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
@@ -6759,6 +6785,19 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     words.push(status.to_string());
     words.extend(lines.iter().cloned());
     words.extend(buttons.iter().cloned());
+    // The offer of Compatible plugin graphics, worded as the session words
+    // it, in the same card.
+    let graphics_lines = vec![
+        "Vital's window needs Compatible plugin graphics on this computer.".to_string(),
+        "Turn it on? Fontelle restarts to apply it.".to_string(),
+    ];
+    let graphics_buttons = vec![
+        "Turn on and restart".to_string(),
+        "Don't ask again".to_string(),
+        "Not now".to_string(),
+    ];
+    words.extend(graphics_lines.iter().cloned());
+    words.extend(graphics_buttons.iter().cloned());
     for word in &words {
         labels.ensure(word, &theme.font, &mut text);
     }
@@ -6898,6 +6937,15 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         ..Default::default()
     });
     dump_sized(&asked, "join-question", W, H);
+    let offered = shoot(Notices {
+        question: Some(QuestionNotice {
+            lines: &graphics_lines,
+            buttons: &graphics_buttons,
+            default: 0,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&offered, "graphics-question", W, H);
     let prompt = choice_prompt_layout(layout.window, &theme.metrics, lines.len(), buttons.len());
     let corner = |r: Rect| at(&asked, r.x + 3.0, r.y + 3.0);
     assert!(
@@ -7110,6 +7158,61 @@ thread_local! {
     /// side door, so its callers keep their signature.
     static LANE_STATE: std::cell::Cell<(Option<usize>, Option<usize>)> =
         const { std::cell::Cell::new((None, None)) };
+}
+
+thread_local! {
+    /// How strongly the ghost of a first clip is drawn in the next timeline
+    /// shot, and the theme it is drawn in — the same side door.
+    static GHOST: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    /// Whether the next timeline shot shapes and draws its clips' names.
+    static CAPTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SHOT_THEME: std::cell::RefCell<Option<Theme>> = const { std::cell::RefCell::new(None) };
+}
+
+/// An empty arrangement, as the window draws it with the ghost of a first
+/// clip in it — in two themes, a dark and a light.
+#[test]
+fn an_empty_arrangement_shows_the_ghost_of_a_first_clip_and_its_tip() {
+    use fontelle_ui::canvas::{ghost_clip, timeline_layout};
+    for (theme, name) in [
+        (Theme::dark_default(), "ghost-clip-dark"),
+        (Theme::light_default(), "ghost-clip-light"),
+    ] {
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = Some(theme.clone()));
+        GHOST.with(|slot| slot.set(Some(0.75)));
+        let shot = shoot_timeline(&[]);
+        GHOST.with(|slot| slot.set(None));
+        let bare = shoot_timeline(&[]);
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = None);
+        let (Some(shot), Some(bare)) = (shot, bare) else {
+            return;
+        };
+        dump_sized(&shot.pixels, name, RW, RH);
+        let layout = window_layout(
+            RW as f32,
+            RH as f32,
+            &theme.metrics,
+            DEFAULT_TIMELINE_HEIGHT,
+        );
+        let l = timeline_layout(layout.timeline.body, &theme.metrics);
+        let ghost = ghost_clip(&shot.view, l.grid, &[], 4, 4).expect("a ghost");
+        let differs = (ghost.x as u32 + 2..ghost.right() as u32 - 2)
+            .flat_map(|x| (ghost.y as u32 + 2..ghost.bottom() as u32 - 2).map(move |y| (x, y)))
+            .filter(|(x, y)| pixel(&shot.pixels, RW, *x, *y) != pixel(&bare.pixels, RW, *x, *y))
+            .count();
+        assert!(
+            differs > 200,
+            "{name}: the ghost and its tip are drawn ({differs} pixels)"
+        );
+        // And nothing else on the arrangement moved for it.
+        let away = (l.grid.x as u32 + 10..l.grid.right() as u32 - 10)
+            .flat_map(|x| {
+                (ghost.bottom() as u32 + 4..l.grid.bottom() as u32 - 2).map(move |y| (x, y))
+            })
+            .filter(|(x, y)| pixel(&shot.pixels, RW, *x, *y) != pixel(&bare.pixels, RW, *x, *y))
+            .count();
+        assert_eq!(away, 0, "{name}: drawn only where it is");
+    }
 }
 
 fn shoot_timeline_lanes(selected: Option<usize>, soloed: Option<usize>) -> Option<TimelineShot> {
@@ -7375,5 +7478,127 @@ fn the_preset_menu_lists_the_users_presets_then_the_plugins_bank() {
     MENU.with(|slot| *slot.borrow_mut() = None);
     if let Some(shot) = shot {
         dump_sized(&shot.pixels, "preset-menu-top", W, H);
+    }
+}
+
+/// The piano roll's scale chooser with a key on and a scale on the clipboard:
+/// Copy, Paste by name, and the notes of the key, above the catalogue.
+#[test]
+fn the_scale_menu_offers_copy_paste_and_the_notes_of_the_key() {
+    use fontelle_types::KeyScale;
+    use fontelle_ui::canvas::{context_menu_layout, scale_menu_with};
+    let theme = Theme::dark_default();
+    let current = KeyScale::new(9, "natural-minor");
+    let pasted = KeyScale::new(2, "dorian");
+    let (entries, _) = scale_menu_with("", Some(&current), Some(&pasted));
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.trim()).collect();
+    assert!(labels.contains(&"Copy A minor"), "{labels:?}");
+    assert!(labels.contains(&"Paste D dorian"), "{labels:?}");
+    assert!(labels.contains(&"Notes: A  B  C  D  E  F  G"), "{labels:?}");
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let menu = context_menu_layout(
+        (40.0, 20.0),
+        layout.window,
+        &theme.metrics,
+        theme.font.size,
+        entries,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = Some(menu));
+    let shot = shoot_sized(
+        theme,
+        TransportView::default(),
+        [Meter::default(), Meter::default()],
+        false,
+        W,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = None);
+    if let Some(shot) = shot {
+        dump_sized(&shot.pixels, "scale-menu-copy-paste", W, H);
+    }
+}
+
+/// Clips with their names in the middle of their caption bands: a long name
+/// cut short with an ellipsis, a short block with none, an audio block's name
+/// clear of its fade handles.
+#[test]
+fn a_clips_name_is_drawn_in_the_middle_of_its_block() {
+    use fontelle_ui::canvas::clip_rect;
+    let mut wide = a_clip(0, 0, PPQN * 12, [0x4f, 0x8f, 0xd0, 0xff]);
+    wide.name = "Grand Piano".to_string();
+    let mut long = a_clip(1, 0, PPQN * 5, [0xd0, 0x8f, 0x4f, 0xff]);
+    long.name = "Layered Strings and Choir Pad".to_string();
+    let mut audio = a_clip(2, PPQN * 2, PPQN * 10, [0x6f, 0xc0, 0x7f, 0xff]);
+    audio.name = "vocal take 3".to_string();
+    audio.kind = fontelle_ui::document::ClipKind::Audio;
+    let mut tiny = a_clip(3, PPQN * 4, PPQN / 2, [0xa0, 0x6f, 0xd0, 0xff]);
+    tiny.name = "Hat".to_string();
+    // Four ids of their own: `a_clip` mints each from a fresh arena.
+    let mut arena: Arena<fontelle_types::ClipId, ()> = Arena::default();
+    for clip in [&mut wide, &mut long, &mut audio, &mut tiny] {
+        clip.id = arena.insert(());
+    }
+    let clips = vec![wide.clone(), long.clone(), audio.clone(), tiny.clone()];
+    CAPTIONS.with(|on| on.set(true));
+    let shot = shoot_timeline(&clips);
+    CAPTIONS.with(|on| on.set(false));
+    let Some(shot) = shot else {
+        return;
+    };
+    dump_sized(&shot.pixels, "clip-names", RW, RH);
+    // The wide block's name is inked in its middle, and nothing of it at
+    // either end of the band.
+    let block = clip_rect(&shot.view, shot.layout.grid, &wide);
+    let ink = |x0: f32, x1: f32| {
+        (x0 as u32..x1 as u32)
+            .flat_map(|x| (block.y as u32 + 2..block.bottom() as u32 - 2).map(move |y| (x, y)))
+            .filter(|(x, y)| {
+                let c = pixel(&shot.pixels, RW, *x, *y);
+                c.0.iter()
+                    .zip(wide.color.iter())
+                    .take(3)
+                    .any(|(a, b)| a.abs_diff(*b) > 60)
+            })
+            .count()
+    };
+    let mid = block.x + block.width / 2.0;
+    assert!(
+        ink(mid - 30.0, mid + 30.0) > 10,
+        "the name is in the middle"
+    );
+    assert_eq!(
+        ink(block.x + 2.0, block.x + 20.0),
+        0,
+        "and not at the front"
+    );
+}
+
+/// The menu an audio clip's name opens.
+#[test]
+fn an_audio_clips_name_opens_its_menu() {
+    use fontelle_ui::canvas::{clip_menu, context_menu_layout};
+    let theme = Theme::dark_default();
+    let mut clip = a_clip(0, 0, PPQN * 8, [0x6f, 0xc0, 0x7f, 0xff]);
+    clip.name = "vocal take 3".to_string();
+    clip.kind = fontelle_ui::document::ClipKind::Audio;
+    let (entries, _) = clip_menu(&clip);
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let menu = context_menu_layout(
+        (120.0, 60.0),
+        layout.window,
+        &theme.metrics,
+        theme.font.size,
+        entries,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = Some(menu));
+    let shot = shoot_sized(
+        theme,
+        TransportView::default(),
+        [Meter::default(), Meter::default()],
+        false,
+        W,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = None);
+    if let Some(shot) = shot {
+        dump_sized(&shot.pixels, "clip-menu-audio", W, H);
     }
 }

@@ -1847,6 +1847,22 @@ unsafe extern "C" fn ignore_port_value(
 /// The `pset:Preset`s that apply to the plugin `uri` names, read whole: a
 /// label, a bank's label as the category, each port value by index, and
 /// lilv's state.
+/// The control inputs of the plugin `uri` names, by symbol — what a library
+/// naming parameters by symbol is mapped onto (amsynth's banks).
+pub(crate) fn control_ports(world: &World, uri: &str) -> Vec<crate::Lv2ControlPort> {
+    let Some(plugin) = world.plugin_by_uri(uri) else {
+        return Vec::new();
+    };
+    plugin
+        .ports_with_type(PortType::ControlInput)
+        .map(|port| crate::Lv2ControlPort {
+            symbol: port.symbol.clone(),
+            index: port.index.0 as u32,
+            default: port.default_value,
+        })
+        .collect()
+}
+
 pub(crate) fn presets(world: &World, features: &Arc<Features>, uri: &str) -> Vec<crate::OwnPreset> {
     let Some(handle) = world.plugin_by_uri(uri) else {
         return Vec::new();

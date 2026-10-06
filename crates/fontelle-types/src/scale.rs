@@ -303,3 +303,169 @@ pub fn fit_to_scale(key: u8, mask: u16) -> u8 {
     }
     key as u8
 }
+
+// ------------------------------------------------------- a key as text ---
+//
+// What Copy scale puts on the clipboard and Paste scale reads back, between
+// the piano roll's chooser and the pitch corrector — and anywhere else, which
+// is why it is plain words: "A minor", "C# major", "D dorian".
+
+/// `key` as plain words: the root and the scale's name in lower case, the
+/// natural minor said the way everybody says it — "A minor".
+pub fn scale_text(key: &KeyScale) -> String {
+    if key.scale == "natural-minor" {
+        return format!("{} minor", PITCH_NAMES[usize::from(key.root % 12)]);
+    }
+    key.label()
+}
+
+/// The notes of `key`, from its root up, by the names the chooser uses.
+/// Empty for a scale this build does not know.
+pub fn scale_notes(key: &KeyScale) -> Vec<&'static str> {
+    scale(&key.scale).map_or_else(Vec::new, |s| {
+        s.steps
+            .iter()
+            .map(|step| PITCH_NAMES[usize::from((key.root % 12 + step) % 12)])
+            .collect()
+    })
+}
+
+/// A note name at the front of `text` — a letter, then any sharps or flats —
+/// and what is left after it.
+fn leading_note(text: &str) -> Option<(u8, &str)> {
+    let letter = text.chars().next()?;
+    let natural: i16 = match letter.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let mut shift = 0i16;
+    let mut rest = &text[letter.len_utf8()..];
+    while let Some(sign) = rest.chars().next() {
+        let after = &rest[sign.len_utf8()..];
+        match sign {
+            '#' | '\u{266f}' => shift += 1,
+            '\u{266d}' => shift -= 1,
+            // A "b" after the letter is a flat only when it is not the start
+            // of a word: "Bb major" and "Bbm", but "B blues" is B.
+            'b' if !after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() && c != 'm') =>
+            {
+                shift -= 1
+            }
+            _ => break,
+        }
+        rest = after;
+    }
+    Some(((natural + shift).rem_euclid(12) as u8, rest))
+}
+
+/// The words people shorten, spelled out the way the catalogue spells them.
+fn spelled_out(word: &str) -> &str {
+    match word {
+        "min" | "mi" => "minor",
+        "maj" | "ma" => "major",
+        "nat" => "natural",
+        "harm" | "harmon" => "harmonic",
+        "mel" | "melod" => "melodic",
+        "pent" | "penta" => "pentatonic",
+        "dim" => "diminished",
+        "dom" => "dominant",
+        "aug" => "augmented",
+        other => other,
+    }
+}
+
+/// A key typed or pasted, read leniently: "A minor", "A min", "Am", "a
+/// natural minor", "C#maj", "Db major", "D dorian", "E spanish gypsy" — or
+/// the notes of one, "A B C D E F G", the first being the root. A bare root
+/// is its major. `None` for anything that is not a key this build knows.
+pub fn parse_scale(text: &str) -> Option<KeyScale> {
+    let text = text.trim();
+    if let Some(spelled) = parse_note_list(text) {
+        return spelled;
+    }
+    let (root, rest) = leading_note(text)?;
+    let rest = rest.trim().trim_start_matches(['-', '_', ' ']).trim();
+    // Case matters only here: "AM" is A major and "Am" A minor, the way a
+    // chord symbol is written.
+    let id = match rest {
+        "" | "M" => "major",
+        "m" | "-" => "natural-minor",
+        _ => {
+            let words: Vec<String> = rest
+                .to_lowercase()
+                .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == ',')
+                .filter(|w| !w.is_empty())
+                .map(|w| spelled_out(w).to_string())
+                .collect();
+            let wanted = words.join(" ");
+            find_scale(&wanted)?
+        }
+    };
+    Some(KeyScale::new(root, id))
+}
+
+/// The catalogue's scale called `wanted` (lower case, single spaces): by
+/// its id, its name or an alias, exactly; failing that, the one with the
+/// shortest name every word of `wanted` is in.
+fn find_scale(wanted: &str) -> Option<&'static str> {
+    if wanted.is_empty() {
+        return None;
+    }
+    let same = |name: &str| name.to_lowercase().replace('-', " ") == wanted;
+    if let Some(s) = SCALES
+        .iter()
+        .find(|s| same(s.id) || same(s.name) || s.aka.iter().any(|a| same(a)))
+    {
+        return Some(s.id);
+    }
+    SCALES
+        .iter()
+        .filter(|s| {
+            let name = s.name.to_lowercase();
+            wanted
+                .split(' ')
+                .all(|word| name.split(' ').any(|own| own.starts_with(word)))
+        })
+        .min_by_key(|s| s.name.len())
+        .map(|s| s.id)
+}
+
+/// "A B C D E F G": two notes or more and nothing else, read as the scale
+/// whose notes they are, rooted on the first. `None` for text that is not
+/// a list of notes; `Some(None)` for notes that are no scale in the
+/// catalogue.
+fn parse_note_list(text: &str) -> Option<Option<KeyScale>> {
+    let tokens: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let mut mask = 0u16;
+    let mut root = None;
+    for token in tokens {
+        let (class, rest) = leading_note(token)?;
+        if !rest.is_empty() {
+            return None;
+        }
+        root.get_or_insert(class);
+        mask |= 1 << class;
+    }
+    let root = root?;
+    Some(
+        SCALES
+            .iter()
+            .find(|s| s.mask(root) == mask)
+            .map(|s| KeyScale::new(root, s.id)),
+    )
+}

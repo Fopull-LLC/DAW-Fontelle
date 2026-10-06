@@ -21,8 +21,8 @@
 //! before this.
 
 use fontelle_model::{
-    AddClip, Arena, Clip, ClipSource, Command, Note, NoteData, Project, ResizeClip, SetClipLoop,
-    TempoMap,
+    AddClip, Arena, Clip, ClipSource, Command, Note, NoteData, Project, RenameClip, ResizeClip,
+    ResizeClips, SetClipLoop, TempoMap,
 };
 use fontelle_types::{ClipId, LaneId, PPQN};
 
@@ -75,6 +75,7 @@ fn fixture() -> (Project, ClipId, LaneId) {
     notes.insert(a_note(0, 60));
 
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -179,4 +180,176 @@ fn a_period_longer_than_the_clip_is_one_repeat_and_not_zero() {
         .apply(&mut project)
         .unwrap();
     assert_eq!(project.clips[clip].repeats(), 1);
+}
+
+// ------------------------------------------- several clips, one edge drag ---
+//
+// Ty, from using the window: *"if you have multiple clips selected, some
+// looping and some not, and then youre holding shift and drag the end of the
+// clips out, the expected behavior is it should make any nonlooping clips
+// loop from their end point and extend from there looping, any already
+// looping clips just extend like normal. it would basically be like if you
+// dragged each one out manually. however whenever i do this, it chops
+// everything up into the same loop time and then squishes it weirdly."*
+//
+// `ResizeClips` is the whole selection's edge drag as **one** command: each
+// clip's own period (if it is being made to loop) set on the first step, the
+// same delta on every end, and every later step folded into it — one undo.
+
+/// Another clip on `lane`, `length` long, looping at `loop_length`.
+fn another(project: &mut Project, lane: LaneId, length: i64, loop_length: Option<i64>) -> ClipId {
+    let channel = project
+        .channels
+        .keys()
+        .next()
+        .expect("the fixture has a channel");
+    let mut add = AddClip::new(Clip {
+        name: None,
+        lane,
+        start: PPQN * 16,
+        length,
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes: Arena::default(),
+        }),
+        prefab_link: None,
+        color: None,
+        muted: false,
+        loop_length,
+    });
+    add.apply(project).unwrap();
+    add.id().unwrap()
+}
+
+#[test]
+fn a_mixed_selection_loops_each_clip_at_its_own_period_and_grows_each_by_the_same() {
+    let (mut project, a, lane) = fixture(); // one bar, not looping
+    let b = another(&mut project, lane, PPQN * 8, Some(PPQN * 4)); // two bars of a one-bar loop
+    let c = another(&mut project, lane, PPQN * 6, None); // a bar and a half, not looping
+
+    let mut drag = ResizeClips::new(vec![a, b, c], PPQN * 8).with_loops(vec![
+        Some(PPQN * 4),
+        None,
+        Some(PPQN * 6),
+    ]);
+    drag.apply(&mut project).unwrap();
+
+    let got = |id: ClipId| (project.clips[id].length, project.clips[id].loop_length);
+    assert_eq!(got(a), (PPQN * 12, Some(PPQN * 4)), "loops at its own end");
+    assert_eq!(got(b), (PPQN * 16, Some(PPQN * 4)), "keeps the loop it had");
+    assert_eq!(got(c), (PPQN * 14, Some(PPQN * 6)), "loops at its own end");
+}
+
+#[test]
+fn the_whole_drag_is_one_undo_that_puts_every_clip_back() {
+    let (mut project, a, lane) = fixture();
+    let b = another(&mut project, lane, PPQN * 8, Some(PPQN * 4));
+    let before = (project.clips[a].clone(), project.clips[b].clone());
+
+    let mut history = fontelle_model::History::new();
+    history
+        .apply(
+            Box::new(ResizeClips::new(vec![a, b], PPQN).with_loops(vec![Some(PPQN * 4), None])),
+            &mut project,
+        )
+        .unwrap();
+    for _ in 0..5 {
+        history
+            .apply(Box::new(ResizeClips::new(vec![a, b], PPQN)), &mut project)
+            .unwrap();
+    }
+    history.break_gesture();
+    assert_eq!(history.depth(), 1, "one drag, one entry");
+    assert_eq!(project.clips[a].length, PPQN * 10);
+    assert_eq!(project.clips[b].length, PPQN * 14);
+
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(project.clips[a].length, before.0.length);
+    assert_eq!(
+        project.clips[a].loop_length, None,
+        "the loop it was given goes too"
+    );
+    assert_eq!(project.clips[b].length, before.1.length);
+    assert_eq!(project.clips[b].loop_length, Some(PPQN * 4));
+
+    history.redo(&mut project).unwrap().unwrap();
+    assert_eq!(
+        (project.clips[a].length, project.clips[a].loop_length),
+        (PPQN * 10, Some(PPQN * 4))
+    );
+    assert_eq!(project.clips[b].length, PPQN * 14);
+}
+
+#[test]
+fn a_selection_shrunk_stops_at_the_shortest_length_a_clip_may_have() {
+    let (mut project, a, lane) = fixture();
+    let b = another(&mut project, lane, PPQN * 8, None);
+    ResizeClips::new(vec![a, b], -PPQN * 6)
+        .apply(&mut project)
+        .unwrap();
+    assert_eq!(project.clips[a].length, fontelle_model::MIN_CLIP_LENGTH);
+    assert_eq!(project.clips[b].length, PPQN * 2);
+}
+
+// ------------------------------------------------------- a clip's own name ---
+//
+// Ty: *"there should be a name on each clip ... and make it so you can click
+// that name to open a little menu ... renaming it"*. A clip is captioned
+// with what it plays until somebody names it; the name is the clip's, so a
+// copy, a cut half or a loop of it carries it.
+
+#[test]
+fn a_clip_has_no_name_of_its_own_until_it_is_given_one() {
+    let (mut project, clip, _) = fixture();
+    assert_eq!(project.clips[clip].name, None);
+    let mut rename = RenameClip::new(clip, Some("Verse riff".to_string()));
+    rename.apply(&mut project).unwrap();
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse riff"));
+    rename.invert().apply(&mut project).unwrap();
+    assert_eq!(
+        project.clips[clip].name, None,
+        "the undo takes the name back off"
+    );
+}
+
+#[test]
+fn typing_a_name_is_one_undo_and_a_blank_one_goes_back_to_the_caption() {
+    let (mut project, clip, _) = fixture();
+    let mut history = fontelle_model::History::new();
+    for typed in ["V", "Ve", "Verse"] {
+        history
+            .apply(
+                Box::new(RenameClip::new(clip, Some(typed.to_string()))),
+                &mut project,
+            )
+            .unwrap();
+    }
+    history.break_gesture();
+    assert_eq!(history.depth(), 1);
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse"));
+    // Blank is no name: the clip is captioned with what it plays again.
+    history
+        .apply(
+            Box::new(RenameClip::new(clip, Some("  ".to_string()))),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(project.clips[clip].name, None);
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse"));
+}
+
+#[test]
+fn a_name_survives_saving_and_a_clip_without_one_saves_as_it_always_did() {
+    let (mut project, clip, _) = fixture();
+    let plain = serde_json::to_string(&project.clips[clip]).unwrap();
+    assert!(!plain.contains("\"name\""), "{plain}");
+    RenameClip::new(clip, Some("Hook".to_string()))
+        .apply(&mut project)
+        .unwrap();
+    let named = serde_json::to_string(&project.clips[clip]).unwrap();
+    let back: Clip = serde_json::from_str(&named).unwrap();
+    assert_eq!(back.name.as_deref(), Some("Hook"));
+    let old: Clip = serde_json::from_str(&plain).unwrap();
+    assert_eq!(old.name, None, "a file from before names opens unnamed");
 }

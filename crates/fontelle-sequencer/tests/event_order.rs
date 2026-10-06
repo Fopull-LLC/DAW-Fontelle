@@ -76,6 +76,7 @@ fn compile_notes(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         arena.insert(note);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 8,

@@ -270,6 +270,7 @@ fn an_ordinary_clip_is_untouched_by_any_of_this() {
     let mut notes = Arena::default();
     notes.insert(a_note(0, PPQN, 72));
     rig.project.clips.insert(Clip {
+        name: None,
         lane: rig.other,
         start: PPQN * 8,
         length: PPQN * 4,

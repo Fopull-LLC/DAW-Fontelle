@@ -265,6 +265,7 @@ fn a_clip_that_references_a_prefab_says_where_its_edits_belong() {
 
     // An ordinary clip answers itself.
     let plain = project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -493,6 +494,7 @@ fn a_written_clip_becomes_a_prefab_in_place() {
 
     let (mut project, channel, lane, other) = a_project();
     let clip = project.clips.insert(Clip {
+        name: None,
         lane,
         start: PPQN * 4,
         length: PPQN * 8,

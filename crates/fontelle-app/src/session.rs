@@ -30,7 +30,7 @@ use fontelle_engine::{GraphPublisher, TimelinePublisher};
 use fontelle_model::{
     AddChannel, AddClip, AddNotes, Arena, Clip, ClipSource, Command, DuplicateClip, FlagTarget,
     History, ImportPart, ImportParts, MoveClip, MoveNotes, Note, NoteData, NumberTarget, Project,
-    RemoveClip, RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
+    RemoveClip, RemoveNotes, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
 };
 use fontelle_types::{
     ChannelId, ClipId, EventPayload, LaneId, MixerTrackId, NodeId, NoteId, PPQN, Sample, Tick,
@@ -85,6 +85,12 @@ enum BounceEnd {
 }
 
 /// What happens on the session's thread once a bounce's file is written.
+/// The offer of Compatible plugin graphics' three answers, the one Enter
+/// presses first and the one Escape presses last.
+const GRAPHICS_TURN_ON: &str = "Turn on and restart";
+const GRAPHICS_NEVER: &str = "Don't ask again";
+const GRAPHICS_NOT_NOW: &str = "Not now";
+
 enum AfterBounce {
     /// An export: say where it went.
     Export,
@@ -501,6 +507,15 @@ pub struct Session {
     /// Mesa's EGL vendor file, looked for once: without it the Compatible
     /// plugin graphics row says why it cannot be turned on.
     mesa_egl: Option<PathBuf>,
+    /// The plugin whose window was just refused, while the offer to turn on
+    /// Compatible plugin graphics is up (`settings::offer_compatible_graphics`).
+    graphics_offer: Option<String>,
+    /// Whether that offer has been made this session: "Not now" is until
+    /// the next one.
+    graphics_asked: bool,
+    /// "Turn on and restart" was answered, and the window has not yet taken
+    /// it (`StudioHost::take_restart_request`).
+    restart_request: bool,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -1494,6 +1509,9 @@ impl Session {
             theme_revision: 1,
             reduce_motion: false,
             mesa_egl: fontelle_host::gui::mesa_egl_vendor(|path| path.is_file()),
+            graphics_offer: None,
+            graphics_asked: false,
+            restart_request: false,
             settings,
             settings_path: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -2081,6 +2099,40 @@ impl Session {
     /// release.
     pub fn checks_for_updates(&self) -> bool {
         self.settings.check_for_updates
+    }
+
+    /// The offer of Compatible plugin graphics, answered: 0 turns it on and
+    /// asks the window to restart, 1 is "Don't ask again", anything else
+    /// "Not now".
+    fn answer_graphics_offer(&mut self, answer: usize) {
+        match answer {
+            0 => {
+                self.settings.compatible_plugin_graphics = true;
+                self.message = Some(match self.save_settings() {
+                    Err(e) => format!("could not write settings: {e}"),
+                    // Only a binary that knows where it is can start itself
+                    // again; otherwise the person does it.
+                    Ok(()) if std::env::current_exe().is_err() => {
+                        "Compatible plugin graphics is on. Restart Fontelle to finish".to_string()
+                    }
+                    Ok(()) => {
+                        self.restart_request = true;
+                        "Compatible plugin graphics is on \u{2014} restarting".to_string()
+                    }
+                });
+            }
+            1 => {
+                self.settings.never_ask_compatible_graphics = true;
+                self.message = Some(match self.save_settings() {
+                    Ok(()) => "Not asked again \u{2014} it is in Settings \u{2192} Compatible \
+                               plugin graphics"
+                        .to_string(),
+                    Err(e) => format!("could not write settings: {e}"),
+                });
+            }
+            _ => {}
+        }
+        self.touch();
     }
 
     fn save_settings(&self) -> std::io::Result<()> {
@@ -3652,6 +3704,101 @@ impl Session {
         self.finish_bounce(then, &path, clipped?)
     }
 
+    /// Bounces **one clip** to audio, onto a row of its own under the clip's,
+    /// named `<clip> (rendered)`, at the clip's own place.
+    ///
+    /// Ty: *"rendering just that clip into audio"*, from the menu a clip's
+    /// name opens. **Through `CompileScope::Clip`**, so what comes out is that
+    /// clip alone — not the clip beside it on its row, and not the song —
+    /// and with the release ringing on past its end, as a whole-row bounce
+    /// keeps it.
+    pub fn render_clip(&mut self, clip: ClipId) -> Result<String, String> {
+        let (bounce, then) = self.prepare_render_clip(clip)?;
+        let path = bounce.path.clone();
+        let clipped = bounce.run(&mut |_| {});
+        self.end_render();
+        self.finish_bounce(then, &path, clipped?)
+    }
+
+    /// The half of [`render_clip`](Self::render_clip) that needs the session.
+    fn prepare_render_clip(&mut self, id: ClipId) -> Result<(Bounce, AfterBounce), String> {
+        let bundle = self
+            .bundle
+            .clone()
+            .ok_or_else(|| "save this project first — a render goes inside it".to_string())?;
+        let clip = self
+            .project
+            .clips
+            .get(id)
+            .cloned()
+            .ok_or("that clip is not there")?;
+        if clip.muted {
+            return Err("that clip is muted \u{2014} unmute it to render it".to_string());
+        }
+        let index = self
+            .lane_ids()
+            .iter()
+            .position(|lane| *lane == clip.lane)
+            .ok_or("that clip is on no row")?;
+        let name = self
+            .clips()
+            .into_iter()
+            .find(|info| info.id == id)
+            .map_or_else(|| "Clip".to_string(), |info| info.name);
+        let before = self.lane_ids();
+        let options = RealiseOptions {
+            quality: crate::RENDER_QUALITY,
+            ..self.options
+        };
+        let realised = self.realise_for_render(options)?;
+        let timeline = fontelle_sequencer::compile_with(
+            &self.project,
+            &fontelle_sequencer::NodeMaps {
+                channels: &realised.channel_nodes,
+                params: &realised.param_nodes,
+                audio: &realised.audio_nodes,
+            },
+            fontelle_sequencer::CompileScope::Clip(id),
+        );
+        // From the song's zero and cut to the clip, for the reason a row's
+        // bounce gives; cut where the drawn tempo puts it.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let from = tempo.tick_to_sample(clip.start).max(0);
+        let to = tempo.tick_to_sample(clip.start + clip.length).max(from);
+        let tail = tempo.tick_to_sample(RELEASE_TAIL).max(0);
+        let renders = bundle.join("renders");
+        std::fs::create_dir_all(&renders).map_err(|e| format!("{}: {e}", renders.display()))?;
+        let path = free_render_path(&renders, &name);
+        let at = self.project.tempo_map.tick_to_sample(clip.start);
+        Ok((
+            Bounce {
+                timeline,
+                graph: realised.graph,
+                render_to: to + tail,
+                from,
+                end: BounceEnd::At(to + tail),
+                floor: 0,
+                path,
+                sample_rate: self.options.sample_rate,
+            },
+            AfterBounce::Row {
+                index,
+                at,
+                name,
+                before,
+            },
+        ))
+    }
+
+    /// Names a clip, per keystroke — or, blank, gives it back the caption of
+    /// what it plays. One undo for the typing (`RenameClip` coalesces).
+    pub fn rename_clip(&mut self, clip: ClipId, name: &str) {
+        self.run(Box::new(fontelle_model::RenameClip::new(
+            clip,
+            Some(name.to_string()),
+        )));
+    }
+
     /// The half of [`render_lane`](Self::render_lane) that needs the session.
     fn prepare_render_lane(
         &mut self,
@@ -4763,6 +4910,21 @@ impl Session {
                 // opening instead said nothing of why.
                 eprintln!("Fontelle: the plugin's own editor did not open \u{2014} {e}");
                 self.message = Some(e);
+                // Refused by the driver probe, with the setting that fixes it
+                // off and never answered: offer it, there and then, rather
+                // than leave somebody thinking the studio is broken.
+                if let Some(plugin) = self.plugins.take_gate_refusal()
+                    && crate::settings::offer_compatible_graphics(
+                        true,
+                        self.settings.compatible_plugin_graphics,
+                        self.settings.never_ask_compatible_graphics,
+                        self.graphics_asked,
+                        self.mesa_egl.is_some(),
+                    )
+                {
+                    self.graphics_offer = Some(plugin);
+                    self.graphics_asked = true;
+                }
                 self.touch();
                 false
             }
@@ -7231,6 +7393,7 @@ impl Session {
             },
         };
         let clip = Clip {
+            name: None,
             lane,
             start,
             length: end - start,
@@ -9026,6 +9189,28 @@ impl StudioHost for Session {
         self.start_bounce(|s| s.prepare_render_lane(index, span), "Rendering")
     }
 
+    fn render_clip(&mut self, clip: ClipId) -> Result<String, String> {
+        self.start_bounce(|s| s.prepare_render_clip(clip), "Rendering")
+    }
+
+    fn rename_clip(&mut self, clip: ClipId, name: &str) {
+        Session::rename_clip(self, clip, name);
+    }
+
+    /// The hook the next phase fills: an audio clip's key, tempo and chords.
+    /// Until then it says so, and only of audio — the menu offers it on
+    /// nothing else.
+    fn analyze_musically(&mut self, clip: ClipId) -> Result<String, String> {
+        match self.project.clips.get(clip).map(|clip| &clip.source) {
+            Some(ClipSource::Audio(_)) => {
+                eprintln!("Fontelle: Analyze Musically asked of clip {clip:?} (not yet built)");
+                Ok("Analyze Musically is coming soon".to_string())
+            }
+            Some(_) => Err("only an audio clip can be analysed musically".to_string()),
+            None => Err("that clip is not there".to_string()),
+        }
+    }
+
     fn add_lane_at(&mut self, index: usize) {
         // Named for the stack's size and not for its position: two rows called
         // "Lane 4" is worse than a row called "Lane 11" sitting third.
@@ -9285,6 +9470,20 @@ impl StudioHost for Session {
     }
 
     fn session_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        if let Some(plugin) = &self.graphics_offer {
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines: vec![
+                    format!("{plugin}'s window needs Compatible plugin graphics on this computer."),
+                    "Turn it on? Fontelle restarts to apply it.".to_string(),
+                ],
+                buttons: vec![
+                    GRAPHICS_TURN_ON.to_string(),
+                    GRAPHICS_NEVER.to_string(),
+                    GRAPHICS_NOT_NOW.to_string(),
+                ],
+                default: 0,
+            });
+        }
         if let Some(question) = self.routing_question_view() {
             return Some(question);
         }
@@ -9311,6 +9510,10 @@ impl StudioHost for Session {
     }
 
     fn answer_session_question(&mut self, answer: usize) -> Result<(), String> {
+        if self.graphics_offer.take().is_some() {
+            self.answer_graphics_offer(answer);
+            return Ok(());
+        }
         if self.routing_question {
             self.answer_routing_question(answer);
             return Ok(());
@@ -9343,6 +9546,19 @@ impl StudioHost for Session {
         if let Err(why) = Session::remove_peer(self, peer) {
             self.session_notices.push(why);
         }
+    }
+
+    fn take_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.restart_request)
+    }
+
+    /// Leaves this binary, on this song as it is on disk, for `main` to
+    /// start once the window has gone (`crate::relaunch`).
+    fn prepare_restart(&mut self) -> Result<(), String> {
+        let relaunch = crate::relaunch::this_binary_on(self.bundle.as_deref())
+            .map_err(|_| "Restart Fontelle to finish".to_string())?;
+        crate::relaunch::request(relaunch);
+        Ok(())
     }
 
     fn take_session_notices(&mut self) -> Vec<String> {
@@ -12115,6 +12331,7 @@ impl StudioHost for Session {
         }
 
         let clip = Clip {
+            name: None,
             lane: fontelle_types::LaneId::default(),
             start,
             length,
@@ -13049,6 +13266,9 @@ impl StudioHost for Session {
                         )
                     }
                 };
+                // A clip somebody has named is called that, whatever it
+                // plays.
+                let name = clip.name.clone().unwrap_or(name);
                 ClipInfo {
                     id,
                     lane: lanes.iter().position(|l| *l == clip.lane).unwrap_or(0),
@@ -13114,9 +13334,25 @@ impl StudioHost for Session {
                     )));
                 }
             }
+            // **One command for the whole selection**, as a move is: a
+            // `ResizeClip` per clip alternated on the history and never
+            // folded, so a drag of three ends was three undo entries a step.
+            // A Shift-drag's first step makes the clips loop, each at its own
+            // period, and the plain steps after it fold into that same entry.
             ArrangeEdit::Resize { ids, tick_delta } => {
-                for id in ids {
-                    self.run(Box::new(ResizeClip::new(id, tick_delta)));
+                if !ids.is_empty() {
+                    self.run(Box::new(fontelle_model::ResizeClips::new(ids, tick_delta)));
+                }
+            }
+            ArrangeEdit::ResizeLooping {
+                ids,
+                tick_delta,
+                loops,
+            } => {
+                if !ids.is_empty() {
+                    self.run(Box::new(
+                        fontelle_model::ResizeClips::new(ids, tick_delta).with_loops(loops),
+                    ));
                 }
             }
             ArrangeEdit::TrimStart { ids, tick_delta } => {
@@ -13198,6 +13434,7 @@ impl StudioHost for Session {
 
                 let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
                 let clip = Clip {
+                    name: None,
                     lane: lane_id,
                     start,
                     length: bar,

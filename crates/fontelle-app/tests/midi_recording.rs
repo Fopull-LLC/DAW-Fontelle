@@ -230,6 +230,7 @@ fn keep(take: &mut Take) -> fontelle_types::ClipId {
         .max()
         .unwrap_or(0);
     let mut add = AddClip::new(Clip {
+        name: None,
         lane: take.lane,
         start: 0,
         length,
