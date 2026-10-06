@@ -71,7 +71,7 @@ impl Default for PyinParams {
 
 /// A fundamental-frequency track: one frame every `hop` seconds, frame `i`
 /// centred at `i * hop`.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct F0Track {
     pub hop: f64,
     /// Hertz; 0 where unvoiced.
@@ -402,7 +402,7 @@ fn decode_pitch(
 }
 
 /// One sung note: a run of voiced frames with one pitch centre.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MonoNote {
     /// Its frames in the track, `[first, end)`, and the same in seconds.
     pub first: usize,

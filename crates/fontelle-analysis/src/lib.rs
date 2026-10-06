@@ -4,6 +4,8 @@
 //! confidences. Nothing here touches the UI, the engine or the disk, and none
 //! of it may run on the RT thread (INVARIANT 1) — it allocates freely.
 
+pub mod analysis;
+pub mod cache;
 pub mod chords;
 pub mod confidence;
 pub mod key;

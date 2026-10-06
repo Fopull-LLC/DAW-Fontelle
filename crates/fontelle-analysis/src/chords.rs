@@ -30,7 +30,7 @@ impl From<&NoteEvent> for TimedPitch {
 }
 
 /// The chord qualities read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Quality {
     Major,
     Minor,
@@ -45,7 +45,7 @@ pub enum Quality {
 }
 
 /// A chord: a root pitch class (0 = C) and a quality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Chord {
     pub root: u8,
     pub quality: Quality,
@@ -79,7 +79,7 @@ impl Chord {
 }
 
 /// One stretch of the chord lane.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ChordSpan {
     pub start: f64,
     pub end: f64,

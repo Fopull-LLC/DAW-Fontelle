@@ -5,7 +5,7 @@ use crate::transcribe::{NoteEvent, Posteriorgrams};
 
 /// The measurements the confidence is built from, each 0..1 except the
 /// signal-to-noise ratio.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExtractionEvidence {
     /// The mean, over notes, of each note's peak activation.
     pub posterior: f32,
@@ -28,7 +28,7 @@ const CONFIDENT_NOTE: f32 = 0.35;
 const FLATNESS_FFT: usize = 1024;
 
 /// The three words the badge says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Clarity {
     Clear,
     Usable,

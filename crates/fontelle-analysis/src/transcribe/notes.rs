@@ -69,7 +69,7 @@ impl Default for NoteParams {
 }
 
 /// One detected note.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NoteEvent {
     /// First frame, and one past the last.
     pub start_frame: usize,

@@ -22,12 +22,14 @@ fontelle-types = { path = "../fontelle-types" }
 # Resampling to basic-pitch's 22 050 Hz.
 rubato = "5.0.0"
 audioadapter-buffers = "5.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+# The cache. `float_roundtrip`: an analysis read back is the one written.
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+# The cache key: the samples' SHA-256.
+sha2 = "0.10.9"
 tract-onnx = { version = "0.23.8", optional = true }
 
 [dev-dependencies]
-# The model file's hash is pinned against the reviewed one (licenses/MODELS.md).
-sha2 = "0.10.9"
-serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]

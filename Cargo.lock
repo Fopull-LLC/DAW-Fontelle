@@ -1268,6 +1268,7 @@ dependencies = [
  "fontelle-dsp",
  "fontelle-types",
  "rubato",
+ "serde",
  "serde_json",
  "sha2",
  "tract-onnx",
