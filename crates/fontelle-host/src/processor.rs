@@ -615,6 +615,24 @@ impl HostedProcessor {
         }
     }
 
+    /// An LV2 plugin's programs — see `Lv2Processor::programs`. Nothing,
+    /// for any other format.
+    pub(crate) fn lv2_programs(&mut self) -> Vec<(u32, u32, String)> {
+        match &mut self.inner {
+            Inner::Lv2(p) => p.programs(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Selects one of an LV2 plugin's programs — see
+    /// `Lv2Processor::select_program`. `false` for any other format.
+    pub(crate) fn lv2_select_program(&mut self, bank: u32, program: u32) -> bool {
+        match &mut self.inner {
+            Inner::Lv2(p) => p.select_program(bank, program),
+            _ => false,
+        }
+    }
+
     /// An LV2 plugin's running instance, handed a whole state of its own —
     /// see `Lv2Processor::restore_state`. `false` for any other format.
     pub(crate) fn lv2_restore_state(&mut self, bytes: &[u8]) -> bool {

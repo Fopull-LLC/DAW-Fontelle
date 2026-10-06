@@ -66,11 +66,12 @@ fn the_folders_lv2_nominates_are_searched() {
 #[test]
 fn an_lv2_bundle_is_a_folder_and_reports_every_plugin_in_it() {
     let found = scan_bundle(&common::lv2_bundle()).expect("the LV2 test bundle loads");
-    // Five: the gain, the sine, the gain again under a name that ships no
+    // Six: the gain, the sine, the gain again under a name that ships no
     // editor (`fontelle_testlv2::PLAIN_URI`), and again under one whose
     // editor listens to nothing (`fontelle_testlv2::DEAF_URI`), and the
-    // instrument that loads on the worker (`fontelle_testlv2::LOADER_URI`).
-    assert_eq!(found.len(), 5, "{found:#?}");
+    // instrument that loads on the worker (`fontelle_testlv2::LOADER_URI`),
+    // and the plain gain with programs (`fontelle_testlv2::PROGRAMS_URI`).
+    assert_eq!(found.len(), 6, "{found:#?}");
     let ids: Vec<_> = found.iter().map(|p| p.key.id.as_str()).collect();
     assert!(ids.contains(&common::LV2_GAIN), "{ids:?}");
     assert!(ids.contains(&common::LV2_SINE), "{ids:?}");
@@ -121,14 +122,14 @@ fn a_scan_of_a_folder_finds_lv2_bundles_beside_clap_ones() {
     std::fs::create_dir_all(dir.join("atom.lv2")).unwrap();
 
     let scan = PluginScan::of(std::slice::from_ref(&dir));
-    // Four CLAP and five LV2 — see the bundle test above for the last three
+    // Four CLAP and six LV2 — see the bundle test above for the last four
     // LV2; `fontelle_testplug::FacePlugin` for the third CLAP, which is a
     // note effect and so on neither list below; and
     // `fontelle_testplug::SINE_CLAP_ONLY` for the fourth.
-    assert_eq!(scan.plugins.len(), 9, "{:#?}", scan.plugins);
+    assert_eq!(scan.plugins.len(), 10, "{:#?}", scan.plugins);
     assert!(scan.failures.is_empty(), "{:#?}", scan.failures);
     assert_eq!(scan.instruments().count(), 4);
-    assert_eq!(scan.effects().count(), 4);
+    assert_eq!(scan.effects().count(), 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

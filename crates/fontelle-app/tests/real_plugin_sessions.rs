@@ -189,6 +189,12 @@ fn two_different_presets(
         session.apply_preset(CHANNEL, *at);
         let state = live(session);
         session.undo();
+        // The undo hands the plugin a state, and **Dexed ignores a program
+        // change for two seconds after a state recall** (its own guard,
+        // `lastStateSave + 2 > time(NULL)`, against hosts that send one
+        // straight after `setState`). A program chosen sooner is not taken;
+        // a person choosing one is slower than that.
+        std::thread::sleep(std::time::Duration::from_millis(2100));
         let differs_from_init = differences(&state, init).0 > 0;
         let differs_from_found = found.iter().all(|(_, f)| differences(&state, f).0 > 0);
         if differs_from_init && differs_from_found {

@@ -142,6 +142,22 @@ fn every_installed_plugins_own_presets_are_listed_and_load() {
             preset.category,
             loaded.as_ref().map(|_| "ok"),
         );
+        // By category, in the order listed, and the first names of each: a
+        // program list reads "Factory Presets: 32 (01 BRASS 1, …)".
+        let mut categories: Vec<(&str, Vec<&str>)> = Vec::new();
+        for preset in &presets {
+            match categories.iter_mut().find(|(c, _)| *c == preset.category) {
+                Some((_, names)) => names.push(&preset.name),
+                None => categories.push((&preset.category, vec![&preset.name])),
+            }
+        }
+        for (category, names) in categories.iter().take(12) {
+            let first: Vec<&str> = names.iter().take(3).copied().collect();
+            eprintln!("    {category:?}: {} ({})", names.len(), first.join(", "));
+        }
+        if categories.len() > 12 {
+            eprintln!("    … {} categories in all", categories.len());
+        }
         if loaded.is_err() {
             refused.push(info.name.clone());
         }

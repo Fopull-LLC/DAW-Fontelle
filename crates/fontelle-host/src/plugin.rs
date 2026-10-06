@@ -701,6 +701,80 @@ impl HostedPlugin {
         }
     }
 
+    /// The presets compiled into the plugin — a VST 3 plugin's programs (see
+    /// `Vst3Plugin::programs`), in the plugin's order. Empty for the other
+    /// formats: CLAP lists what is inside a plugin through its discovery
+    /// factory (location kind `PLUGIN`), and LV2 in its Turtle.
+    pub fn programs(&mut self) -> Vec<crate::OwnPreset> {
+        let _inside = self.inside();
+        match &self.inner {
+            Inner::Vst3(plugin) => plugin.programs(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// [`programs`](Self::programs), with the processor in hand — which an
+    /// LV2 plugin's need: they are asked of the running instance, through
+    /// the KXStudio programs extension (Dexed's LV2, DISTRHO's ports, DPF).
+    /// Filed under "Programs", or "Bank n" for a plugin with several banks.
+    pub fn programs_with(&mut self, processor: &mut HostedProcessor) -> Vec<crate::OwnPreset> {
+        if !matches!(self.inner, Inner::Lv2(_)) {
+            return self.programs();
+        }
+        let _inside = self.inside();
+        let listed = processor.lv2_programs();
+        // One program is the patch it is on, not a bank: DISTRHO's ports
+        // offer a single "Program 1" (ADLplug, Vitalium), which JUCE's VST 3
+        // wrapper leaves out for the same reason.
+        if listed.len() < 2 {
+            return Vec::new();
+        }
+        let banks: Vec<u32> = listed.iter().fold(Vec::new(), |mut banks, (bank, ..)| {
+            if !banks.contains(bank) {
+                banks.push(*bank);
+            }
+            banks
+        });
+        let mut found = Vec::new();
+        for bank in &banks {
+            let in_bank: Vec<&(u32, u32, String)> =
+                listed.iter().filter(|(held, ..)| held == bank).collect();
+            let width = in_bank.len().to_string().len();
+            let category = if banks.len() > 1 {
+                format!("Bank {bank}")
+            } else {
+                "Programs".to_string()
+            };
+            for (at, (bank, program, name)) in in_bank.into_iter().enumerate() {
+                let name = if name.is_empty() {
+                    format!("Program {}", program + 1)
+                } else {
+                    name.clone()
+                };
+                found.push(crate::OwnPreset {
+                    name: format!("{:0width$} {name}", at + 1),
+                    category: category.clone(),
+                    source: crate::OwnPresetSource::Lv2Program {
+                        bank: *bank,
+                        program: *program,
+                    },
+                });
+            }
+        }
+        found
+    }
+
+    /// Whether the plugin has said, since this was last asked, that its
+    /// programs may be others — a program list it changed (Dexed loading a
+    /// cartridge), or its parameters' names or values reloaded. Ask
+    /// [`programs`](Self::programs) again and compare.
+    pub fn take_programs_changed(&self) -> bool {
+        match &self.inner {
+            Inner::Vst3(plugin) => plugin.take_programs_changed(),
+            _ => false,
+        }
+    }
+
     /// Whether the plugin has asked to be restarted since this was last
     /// asked — its latency changed, its parameters were reloaded, its
     /// buses changed. Recorded when the plugin says so and taken here,
@@ -1926,6 +2000,19 @@ impl HostedPlugin {
                 landed.is_some()
             );
         }
+    }
+
+    /// Runs one block of silence through the plugin, with the processor in
+    /// hand — so a value just set reaches its processor before the next is.
+    pub(crate) fn run_quiet_block(&mut self, processor: &mut HostedProcessor) {
+        let frames = processor.max_block();
+        let mut bus = vec![vec![0.0f32; frames]; 2];
+        if self.info.is_instrument() {
+            processor.process_instrument(&mut bus, frames);
+        } else {
+            processor.process_insert(&mut bus, frames);
+        }
+        self.service_main_thread();
     }
 
     /// Reads every parameter's value back off the plugin onto the wire.

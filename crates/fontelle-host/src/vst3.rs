@@ -838,10 +838,25 @@ struct Handler {
     scale: Arc<Vec<(u32, f64)>>,
     wants_restart: AtomicBool,
     wants_reread: AtomicBool,
+    /// The plugin said its programs may be others now — see
+    /// [`Vst3Plugin::take_programs_changed`].
+    programs_changed: AtomicBool,
 }
 
 impl Class for Handler {
-    type Interfaces = (IComponentHandler,);
+    type Interfaces = (IComponentHandler, IUnitHandler);
+}
+
+/// How a controller says its program lists changed: a cartridge loaded in
+/// Dexed is 32 other names.
+impl IUnitHandlerTrait for Handler {
+    unsafe fn notifyUnitSelection(&self, _unit: UnitID) -> tresult {
+        kResultOk
+    }
+    unsafe fn notifyProgramListChange(&self, _list: ProgramListID, _program: int32) -> tresult {
+        self.programs_changed.store(true, Ordering::Release);
+        kResultOk
+    }
 }
 
 impl IComponentHandlerTrait for Handler {
@@ -894,6 +909,17 @@ impl IComponentHandlerTrait for Handler {
         }
         if flags & (RestartFlags_::kParamValuesChanged as u32) != 0 {
             self.wants_reread.store(true, Ordering::Release);
+        }
+        // Not every plugin says `notifyProgramListChange` when its programs
+        // are others: a JUCE plugin's `updateHostDisplay` arrives as these
+        // two. The names are read again and compared, which costs a few
+        // dozen calls.
+        if flags
+            & (RestartFlags_::kParamValuesChanged as u32
+                | RestartFlags_::kParamTitlesChanged as u32)
+            != 0
+        {
+            self.programs_changed.store(true, Ordering::Release);
         }
         if flags
             & (RestartFlags_::kLatencyChanged as u32
@@ -1553,6 +1579,7 @@ pub(crate) fn open(
         scale: Arc::clone(&scale),
         wants_restart: AtomicBool::new(false),
         wants_reread: AtomicBool::new(false),
+        programs_changed: AtomicBool::new(false),
     });
     unsafe {
         controller.setComponentHandler(handler.to_com_ptr::<IComponentHandler>().unwrap().as_ptr())
@@ -1783,6 +1810,131 @@ impl Vst3Plugin {
         for id in &self.ids {
             values.adopt(*id, self.get_param(*id));
         }
+    }
+
+    /// Whether the plugin has said its programs may have changed since this
+    /// was last asked.
+    pub(crate) fn take_programs_changed(&self) -> bool {
+        self.handler.programs_changed.swap(false, Ordering::AcqRel)
+    }
+
+    /// The presets compiled into the plugin: its **programs**.
+    ///
+    /// > *"other daws manage to do this like in fl their preset menu thats
+    /// > attached to the plugin windows show the user presets as well as all
+    /// > the presets in the plugin thats made into its bank"*
+    ///
+    /// VST 3 keeps them as a program list on a unit (`IUnitInfo`), selected
+    /// by the parameter flagged `kIsProgramChange` in that unit: program `n`
+    /// of `count` is that parameter at `n / (count - 1)`. A JUCE plugin
+    /// offers its `getNumPrograms()` this way — Dexed's 32 voices, under
+    /// "Factory Presets" — and has no preset files at all. A program list
+    /// with no parameter to select it is left out (nothing could choose
+    /// one); a program-change parameter with no list is a list of its steps,
+    /// named the way the controller prints each.
+    ///
+    /// Numbered, `01 Name`: the plugin's order is the bank's, and two voices
+    /// of a cartridge often share a name.
+    pub(crate) fn programs(&self) -> Vec<crate::OwnPreset> {
+        /// More is not a bank anybody scrolls; it is a plugin answering
+        /// nonsense.
+        const MOST: i32 = 4096;
+        let count = unsafe { self.controller.getParameterCount() }.max(0);
+        let mut changers = Vec::new();
+        for index in 0..count {
+            let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+            if unsafe { self.controller.getParameterInfo(index, &mut info) } == kResultOk
+                && info.flags as u32 & ParameterInfo_::ParameterFlags_::kIsProgramChange as u32 != 0
+            {
+                changers.push((info.id, info.unitId, info.stepCount.max(0)));
+            }
+        }
+        if changers.is_empty() {
+            return Vec::new();
+        }
+        // Each unit's program list, and each list's name and length.
+        let mut list_of_unit: HashMap<UnitID, ProgramListID> = HashMap::new();
+        let mut lists: Vec<(ProgramListID, String, i32)> = Vec::new();
+        let units = self.controller.cast::<IUnitInfo>();
+        if let Some(units) = &units {
+            for index in 0..unsafe { units.getUnitCount() }.max(0) {
+                let mut info: UnitInfo = unsafe { std::mem::zeroed() };
+                if unsafe { units.getUnitInfo(index, &mut info) } == kResultOk
+                    && info.programListId != kNoProgramListId
+                {
+                    list_of_unit.insert(info.id, info.programListId);
+                }
+            }
+            for index in 0..unsafe { units.getProgramListCount() }.max(0) {
+                let mut info: ProgramListInfo = unsafe { std::mem::zeroed() };
+                if unsafe { units.getProgramListInfo(index, &mut info) } == kResultOk {
+                    lists.push((info.id, wide_string(&info.name), info.programCount));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for (param, unit, steps) in changers {
+            // The list of the parameter's unit — or, when the plugin names
+            // no unit's list but has exactly one, that one.
+            let list = list_of_unit
+                .get(&unit)
+                .and_then(|id| lists.iter().find(|(held, ..)| held == id))
+                .or_else(|| (lists.len() == 1).then(|| &lists[0]));
+            let (category, names) = match (list, &units) {
+                (Some((id, name, count)), Some(units)) if *count > 0 => {
+                    let names: Vec<String> = (0..(*count).min(MOST))
+                        .map(|program| {
+                            let mut text: String128 = [0; 128];
+                            let read = unsafe { units.getProgramName(*id, program, &mut text) };
+                            if read == kResultOk {
+                                wide_string(&text).trim().to_string()
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .collect();
+                    (name.clone(), names)
+                }
+                _ if steps > 0 => {
+                    let names = (0..=steps.min(MOST - 1))
+                        .map(|step| {
+                            self.display(param, step as f64 * self.scale_of(param) / steps as f64)
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string()
+                        })
+                        .collect();
+                    ("Programs".to_string(), names)
+                }
+                _ => continue,
+            };
+            let count = names.len();
+            let width = count.to_string().len();
+            for (program, name) in names.into_iter().enumerate() {
+                let normalised = if count > 1 {
+                    program as f64 / (count - 1) as f64
+                } else {
+                    0.0
+                };
+                let scale = self.scale_of(param);
+                let value = if scale > 1.0 {
+                    (normalised * scale).round()
+                } else {
+                    normalised
+                };
+                let name = if name.is_empty() {
+                    format!("Program {}", program + 1)
+                } else {
+                    name
+                };
+                found.push(crate::OwnPreset {
+                    name: format!("{:0width$} {name}", program + 1),
+                    category: category.clone(),
+                    source: crate::OwnPresetSource::Program { param, value },
+                });
+            }
+        }
+        found
     }
 
     /// Whether the plugin has asked to be restarted since last asked.

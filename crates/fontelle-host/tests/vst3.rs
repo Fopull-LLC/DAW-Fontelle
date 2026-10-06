@@ -93,7 +93,7 @@ fn a_vst3_bundle_is_a_folder_and_reports_every_plugin_in_it() {
     );
     // Controller classes are half of a plugin, not a plugin: the listing
     // holds the audio module classes alone.
-    assert_eq!(found.len(), 3, "{found:#?}");
+    assert_eq!(found.len(), 4, "{found:#?}");
 }
 
 #[test]
