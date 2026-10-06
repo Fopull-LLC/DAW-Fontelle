@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use fontelle_types::KeyScale;
 
+pub use super::analyze_pages::*;
 use super::piano_roll::Modifiers;
 use super::roll_scale::{RollScale, RowShade, row_shade};
 use crate::layout::Rect;
@@ -234,6 +235,55 @@ pub struct AnalyzeView {
     pub rendered: bool,
     /// Edits made that the preview has not caught up with yet.
     pub preview_pending: bool,
+    /// Frames a second of the study's original file, and which of its frames
+    /// is the lane's 0 s: what turns the study's frames into the lane's time.
+    pub rate: u32,
+    pub offset: i64,
+    /// The Clean page's settings (the study's, or nothing done yet).
+    pub clean: fontelle_types::StudyClean,
+    /// The Slice page's markers.
+    pub markers: Vec<fontelle_types::StudyMarker>,
+    /// Every transient found, (seconds, strength 0..1): the Slice page's
+    /// sensitivity knob shows the ones over its line, live, and the Clean
+    /// page draws them faintly.
+    pub onsets: Vec<(f64, f32)>,
+    /// A beat of the song's tempo, in seconds of this audio.
+    pub beat_seconds: Option<f64>,
+    /// This build has the voice denoiser.
+    pub voice_denoise: bool,
+    /// Where the audio came from: what Render and Send do.
+    pub source: AnalyzeSource,
+    /// The Record page, for a study that records.
+    pub record: Option<AnalyzeRecordView>,
+    pub takes: Vec<fontelle_types::StudyTake>,
+    pub comp: Vec<fontelle_types::StudyCompSpan>,
+    /// Which take is in the lane.
+    pub current_take: Option<u32>,
+    /// A render running off the window's thread, and how far it has got.
+    pub rendering: Option<f32>,
+    /// There is audio in the lane (a record study before its first take has
+    /// none).
+    pub has_audio: bool,
+}
+
+impl AnalyzeView {
+    /// A frame of the study's original, as seconds on the lane.
+    pub fn seconds_of(&self, frame: i64) -> f64 {
+        (frame - self.offset) as f64 / f64::from(self.rate.max(1))
+    }
+
+    /// Seconds on the lane as a frame of the study's original.
+    pub fn frame_of(&self, seconds: f64) -> i64 {
+        self.offset + (seconds * f64::from(self.rate.max(1))).round() as i64
+    }
+
+    /// The trim, in the lane's seconds; all of it when there is none.
+    pub fn trim_seconds(&self) -> (f64, f64) {
+        match self.clean.trim {
+            Some((a, b)) => (self.seconds_of(a), self.seconds_of(b)),
+            None => (0.0, self.duration),
+        }
+    }
 }
 
 // ------------------------------------------------------------ the state ---

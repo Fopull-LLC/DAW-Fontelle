@@ -838,10 +838,12 @@ fn every_command() -> Vec<(&'static str, Make)> {
             ))
         }),
         ("SetStudyClean", |s| {
-            let mut clean = fontelle_types::StudyClean::default();
-            clean.trim = Some((480, 40_000));
-            clean.fade_in = 480;
-            clean.gain_db = -3.0;
+            let mut clean = fontelle_types::StudyClean {
+                trim: Some((480, 40_000)),
+                fade_in: 480,
+                gain_db: -3.0,
+                ..Default::default()
+            };
             clean.denoise.on = true;
             clean.denoise.noise = Some(fontelle_types::StudyNoise {
                 magnitudes: vec![0.002, 0.004],

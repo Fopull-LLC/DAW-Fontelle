@@ -215,3 +215,299 @@ impl Drop for InsertTakeWriter {
         }
     }
 }
+
+// ------------------------------------------------- a device's takes ---
+
+/// What an input recorder is told from the window, read by its thread.
+#[derive(Debug)]
+pub struct InputControl {
+    pub armed: AtomicBool,
+    mode: std::sync::atomic::AtomicU8,
+    threshold: std::sync::atomic::AtomicU32,
+    release_ms: std::sync::atomic::AtomicU32,
+    /// Written by the thread: a take is running, the last block's peak, the
+    /// frames in the running take, and what the device's ring lost.
+    pub recording: AtomicBool,
+    level: std::sync::atomic::AtomicU32,
+    pub take_frames: std::sync::atomic::AtomicU64,
+    pub dropped: std::sync::atomic::AtomicU64,
+}
+
+impl Default for InputControl {
+    fn default() -> Self {
+        let config = fontelle_types::AnalyzeConfig::new();
+        let this = Self {
+            armed: AtomicBool::new(false),
+            mode: std::sync::atomic::AtomicU8::new(0),
+            threshold: std::sync::atomic::AtomicU32::new(0),
+            release_ms: std::sync::atomic::AtomicU32::new(0),
+            recording: AtomicBool::new(false),
+            level: std::sync::atomic::AtomicU32::new(0),
+            take_frames: std::sync::atomic::AtomicU64::new(0),
+            dropped: std::sync::atomic::AtomicU64::new(0),
+        };
+        this.configure(&config);
+        this
+    }
+}
+
+impl InputControl {
+    /// The arm mode, threshold and release, as an insert's are set.
+    pub fn configure(&self, config: &fontelle_types::AnalyzeConfig) {
+        self.mode.store(config.arm.index() as u8, Ordering::Relaxed);
+        self.threshold
+            .store(config.threshold_db.to_bits(), Ordering::Relaxed);
+        self.release_ms
+            .store(config.release_ms.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn mode(&self) -> fontelle_types::ArmMode {
+        fontelle_types::ArmMode::ALL
+            .get(usize::from(self.mode.load(Ordering::Relaxed)))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn threshold_db(&self) -> f32 {
+        f32::from_bits(self.threshold.load(Ordering::Relaxed))
+    }
+
+    pub fn release_ms(&self) -> f32 {
+        f32::from_bits(self.release_ms.load(Ordering::Relaxed))
+    }
+
+    /// The last block's peak, linear.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+}
+
+/// Takes from an input device, decided as an insert's are (now, on play, on
+/// input) but on the reader's side: a device's callback hands over every
+/// block whatever happens, so this is where a take starts and stops. Pure
+/// apart from the files; [`InputTakeWriter`] runs one on a thread.
+pub struct InputTakes {
+    dir: PathBuf,
+    sample_rate: u32,
+    channels: u16,
+    open: Option<OpenTake>,
+    silent: u64,
+}
+
+impl InputTakes {
+    pub fn new(dir: PathBuf, sample_rate: u32, channels: u16) -> Self {
+        Self {
+            dir,
+            sample_rate,
+            channels: channels.max(1),
+            open: None,
+            silent: 0,
+        }
+    }
+
+    /// One block from the device (interleaved), with what the window and the
+    /// transport say now; the takes that ended.
+    pub fn feed(
+        &mut self,
+        block: &[f32],
+        control: &InputControl,
+        rolling: bool,
+        song_sample: i64,
+    ) -> Vec<Result<InsertTake, String>> {
+        let mut finished = Vec::new();
+        let channels = usize::from(self.channels);
+        let peak = block.iter().fold(0.0f32, |p, s| p.max(s.abs()));
+        control.level.store(peak.to_bits(), Ordering::Relaxed);
+        let armed = control.armed.load(Ordering::Relaxed);
+        let mode = control.mode();
+        let stop = |this: &mut Self, finished: &mut Vec<_>| {
+            if let Some(done) = this.close() {
+                finished.push(done);
+            }
+        };
+        if !armed || (mode == fontelle_types::ArmMode::OnPlay && !rolling) {
+            stop(self, &mut finished);
+            control.recording.store(false, Ordering::Relaxed);
+            return finished;
+        }
+        let at = rolling.then_some(song_sample);
+        match mode {
+            fontelle_types::ArmMode::OnPlay | fontelle_types::ArmMode::Now => {
+                if self.open.is_none() {
+                    match self.create(at) {
+                        Ok(open) => self.open = Some(open),
+                        Err(e) => finished.push(Err(e)),
+                    }
+                }
+                self.write(block);
+            }
+            fontelle_types::ArmMode::OnInput => {
+                let threshold = 10f32.powf(control.threshold_db() / 20.0);
+                let release =
+                    (control.release_ms() / 1000.0 * self.sample_rate as f32).max(1.0) as u64;
+                for (i, frame) in block.chunks(channels).enumerate() {
+                    let loud = frame.iter().any(|s| s.abs() >= threshold);
+                    if self.open.is_none() {
+                        if !loud {
+                            continue;
+                        }
+                        match self.create(at.map(|a| a + i as i64)) {
+                            Ok(open) => self.open = Some(open),
+                            Err(e) => {
+                                finished.push(Err(e));
+                                continue;
+                            }
+                        }
+                        self.silent = 0;
+                    }
+                    self.write(frame);
+                    self.silent = if loud { 0 } else { self.silent + 1 };
+                    if self.silent >= release {
+                        stop(self, &mut finished);
+                    }
+                }
+            }
+        }
+        control
+            .recording
+            .store(self.open.is_some(), Ordering::Relaxed);
+        control.take_frames.store(
+            self.open.as_ref().map_or(0, |o| o.writer.frames()),
+            Ordering::Relaxed,
+        );
+        finished
+    }
+
+    /// Closes a take still running.
+    pub fn finish(&mut self) -> Option<Result<InsertTake, String>> {
+        self.close()
+    }
+
+    fn write(&mut self, samples: &[f32]) {
+        if let Some(open) = &mut self.open
+            && open.error.is_none()
+            && let Err(e) = open.writer.write(samples)
+        {
+            open.error = Some(e.to_string());
+        }
+    }
+
+    fn create(&self, song_sample: Option<i64>) -> Result<OpenTake, String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        let path = (1..100_000)
+            .map(|n| self.dir.join(format!("Take {n}.wav")))
+            .find(|path| !path.exists())
+            .ok_or("the recordings folder is full")?;
+        let writer = fontelle_assets::WavWriter::create(&path, self.sample_rate, self.channels)
+            .map_err(|e| e.to_string())?;
+        Ok(OpenTake {
+            writer,
+            path,
+            song_sample,
+            error: None,
+        })
+    }
+
+    fn close(&mut self) -> Option<Result<InsertTake, String>> {
+        let open = self.open.take()?;
+        let frames = open.writer.frames() as usize;
+        Some(match open.error {
+            Some(e) => Err(format!("{}: {e}", open.path.display())),
+            None => open
+                .writer
+                .finish()
+                .map(|()| InsertTake {
+                    path: open.path,
+                    frames,
+                    sample_rate: self.sample_rate,
+                    song_sample: open.song_sample,
+                    dropped_frames: 0,
+                })
+                .map_err(|e| e.to_string()),
+        })
+    }
+}
+
+/// Where an input recorder's blocks come from: a tap on a device a track
+/// already has open, or a stream of its own.
+pub type InputSource = Box<dyn FnMut(&mut Vec<f32>) -> u64 + Send>;
+
+/// A thread turning an input device's blocks into takes.
+pub struct InputTakeWriter {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    finished: std::sync::mpsc::Receiver<Result<InsertTake, String>>,
+    pub control: Arc<InputControl>,
+}
+
+impl InputTakeWriter {
+    /// Drains `source` (which answers the frames its ring has lost) every
+    /// [`InsertTakeWriter::PERIOD`] into takes in `dir`.
+    pub fn spawn(
+        mut source: InputSource,
+        channels: u16,
+        sample_rate: u32,
+        dir: PathBuf,
+        control: Arc<InputControl>,
+        transport: Option<Arc<fontelle_engine::Transport>>,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (send, finished) = std::sync::mpsc::channel();
+        let stopping = Arc::clone(&stop);
+        let held = Arc::clone(&control);
+        let thread = std::thread::Builder::new()
+            .name("fontelle-input-takes".into())
+            .spawn(move || {
+                let mut takes = InputTakes::new(dir, sample_rate, channels);
+                let mut block = Vec::new();
+                loop {
+                    let last = stopping.load(Ordering::Acquire);
+                    block.clear();
+                    let lost = source(&mut block);
+                    held.dropped.store(lost, Ordering::Relaxed);
+                    let (rolling, at) = transport
+                        .as_ref()
+                        .map_or((false, 0), |t| (t.is_playing(), t.position_sample()));
+                    for take in takes.feed(&block, &held, rolling, at) {
+                        let _ = send.send(take);
+                    }
+                    if last {
+                        if let Some(take) = takes.finish() {
+                            let _ = send.send(take);
+                        }
+                        held.recording.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                    std::thread::sleep(InsertTakeWriter::PERIOD);
+                }
+            })
+            .ok();
+        Self {
+            stop,
+            thread,
+            finished,
+            control,
+        }
+    }
+
+    pub fn poll(&self) -> Vec<Result<InsertTake, String>> {
+        self.finished.try_iter().collect()
+    }
+
+    pub fn stop(mut self) -> Vec<Result<InsertTake, String>> {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.finished.try_iter().collect()
+    }
+}
+
+impl Drop for InputTakeWriter {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}

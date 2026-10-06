@@ -84,6 +84,21 @@ fn settle(session: &mut Session) {
     }
 }
 
+/// Render to clip runs off the window's thread: started, then waited for.
+fn render_now(session: &mut Session, below: bool) -> Result<String, String> {
+    session.render_analysis(below)?;
+    let started = Instant::now();
+    loop {
+        match session.poll_analysis_render() {
+            JobPoll::Finished(result) => return result,
+            JobPoll::Running(_) => {}
+            JobPoll::Idle => panic!("no render was running"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn note(session: &Session, index: usize) -> AnalyzedNote {
     session.analyze_view().unwrap().melody[index].clone()
 }
@@ -273,7 +288,7 @@ fn render_swaps_the_clip_and_undo_restores_it() {
         .set_analysis_edits(&[moved(&n, 100.0)], false)
         .unwrap();
     session.end_gesture();
-    let said = session.render_analysis(false).expect("renders");
+    let said = render_now(&mut session, false).expect("renders");
     println!("{said}");
     let rendered = the_asset(&session, clip);
     assert_ne!(rendered, original);
@@ -324,7 +339,7 @@ fn a_rerender_starts_from_the_original() {
         .set_analysis_edits(&[moved(&n, 100.0)], false)
         .unwrap();
     session.end_gesture();
-    session.render_analysis(false).unwrap();
+    render_now(&mut session, false).unwrap();
     // The window shows the original's notes and the edits, whatever the
     // clip plays now.
     session.close_analysis();
@@ -337,7 +352,7 @@ fn a_rerender_starts_from_the_original() {
         .set_analysis_edits(&[moved(&again, 200.0)], false)
         .unwrap();
     session.end_gesture();
-    session.render_analysis(false).unwrap();
+    render_now(&mut session, false).unwrap();
     let path = dir.join("Song").join("renders").join("Take (edited 2).wav");
     let (render, rate) = read_wav(&path);
     let (source, _) = read_wav(&dir.join("Take.wav"));
@@ -360,7 +375,7 @@ fn render_as_a_new_clip_below() {
         .unwrap();
     session.end_gesture();
     let clips = session.project().clips.len();
-    session.render_analysis(true).unwrap();
+    render_now(&mut session, true).unwrap();
     assert_eq!(the_asset(&session, clip), original);
     assert_eq!(session.project().clips.len(), clips + 1);
     let start = session.project().clips[clip].start;
@@ -386,7 +401,7 @@ fn edits_survive_a_save_and_a_reopen() {
         .set_analysis_edits(&[moved(&n, -50.0)], false)
         .unwrap();
     session.end_gesture();
-    session.render_analysis(false).unwrap();
+    render_now(&mut session, false).unwrap();
     DocumentHost::save(&mut session).expect("saves");
     session.close_analysis();
     let bundle = dir.join("Song");

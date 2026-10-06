@@ -17,7 +17,7 @@ use fontelle_analysis::analysis::{Analysed, Analysis, Mode};
 use fontelle_analysis::confidence::Clarity;
 use fontelle_analysis::transcribe::NoteEvent;
 use fontelle_analysis::transcribe::basic_pitch::BasicPitch;
-use fontelle_types::{ClipId, Tick};
+use fontelle_types::Tick;
 use fontelle_ui::canvas::{
     AnalyzeClarity, AnalyzeImage, AnalyzeKey, AnalyzeMode, AnalyzeView, AnalyzedChord, AnalyzedNote,
 };
@@ -78,6 +78,9 @@ pub(crate) struct Finished {
     pub image_data: Arc<[u8]>,
     /// The level most of them sit at, worked out once (it reads every cell).
     pub image_floor: u8,
+    /// Every transient, (seconds, strength): the Slice page's and the
+    /// Clean page's.
+    pub onsets: Vec<(f64, f32)>,
 }
 
 /// What the worker and the window share.
@@ -95,7 +98,6 @@ struct Shared {
 
 /// One clip's analysis, open in the window.
 pub(crate) struct OpenAnalysis {
-    pub clip: ClipId,
     pub name: String,
     /// What was analysed: the asset and the span of it, for the key memo.
     pub span: (fontelle_types::AssetId, i64, i64),
@@ -171,6 +173,7 @@ fn finish(analysed: Analysed, mono: &[f32], rate: u32) -> Finished {
         melody_loudness,
         image_data,
         image_floor,
+        onsets: transients(mono, rate),
     }
 }
 
@@ -179,7 +182,6 @@ impl OpenAnalysis {
     /// `key` is known and kept there — finished at once — and otherwise on a
     /// worker of its own.
     pub fn start(
-        clip: ClipId,
         name: String,
         span: (fontelle_types::AssetId, i64, i64),
         mono: Vec<f32>,
@@ -194,7 +196,6 @@ impl OpenAnalysis {
             ..Default::default()
         }));
         let open = |worker| Self {
-            clip,
             name: name.clone(),
             span,
             shared: Arc::clone(&shared),
@@ -548,6 +549,7 @@ fn fill_view(view: &mut AnalyzeView, finished: &Finished) {
         floor: finished.image_floor,
         data: Arc::clone(&finished.image_data),
     });
+    view.onsets = finished.onsets.clone();
 }
 
 /// Melody mode's chord lane: what the line implies, a bar of `bar` seconds
@@ -707,17 +709,30 @@ pub(crate) struct Preview {
     pub original: Arc<[f32]>,
     pub channels: usize,
     pub rate: u32,
-    /// The edits the player's audio has, once it has any.
-    heard: Option<Vec<fontelle_types::PitchEdit>>,
-    /// The edits the song has now, and when they last changed.
-    wanted: Vec<fontelle_types::PitchEdit>,
+    /// What the player's audio was made from, once it has any.
+    heard: Option<Want>,
+    /// What the song asks for now, and when it last changed.
+    wanted: Want,
     changed_at: std::time::Instant,
-    job: Option<(
-        Vec<fontelle_types::PitchEdit>,
-        std::thread::JoinHandle<Vec<f32>>,
-    )>,
+    job: Option<(Want, std::thread::JoinHandle<Vec<f32>>)>,
     /// Bumped whenever [`pending`](Self::pending) may have changed.
     pub version: u64,
+}
+
+/// What the preview plays: the edits, the Clean page, and whether it is
+/// only what the denoiser removes.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct Want {
+    pub edits: Vec<fontelle_types::PitchEdit>,
+    pub clean: fontelle_types::StudyClean,
+    pub removed: bool,
+}
+
+impl Want {
+    /// Nothing to do: the original is what it sounds like.
+    fn is_original(&self) -> bool {
+        self.edits.is_empty() && !self.clean.changes_samples()
+    }
 }
 
 impl Preview {
@@ -727,72 +742,73 @@ impl Preview {
             channels: usize::from(buffer.channels.max(1)),
             rate: buffer.sample_rate,
             heard: None,
-            wanted: Vec::new(),
+            wanted: Want::default(),
             changed_at: std::time::Instant::now(),
             job: None,
             version: 0,
         }
     }
 
-    /// The song's edits now: a change starts the debounce.
-    pub fn want(&mut self, edits: &[fontelle_types::PitchEdit]) {
-        if self.wanted != edits {
-            self.wanted = edits.to_vec();
+    /// What the song asks for now: a change starts the debounce.
+    pub fn want(&mut self, want: Want) {
+        if self.wanted != want {
+            self.wanted = want;
             self.changed_at = std::time::Instant::now();
             self.version += 1;
         }
     }
 
-    /// Edits made that the player has not got yet.
+    /// Changes made that the player has not got yet.
     pub fn pending(&self) -> bool {
-        self.heard.as_deref() != Some(self.wanted.as_slice())
+        self.heard.as_ref() != Some(&self.wanted)
     }
 
-    /// Once a frame: a finished render goes to the player; edits that have
-    /// rested start the next.
+    /// Once a frame: a finished render goes to the player; changes that
+    /// have rested start the next.
     pub fn service(&mut self, player: &fontelle_engine::StudyPlayer) {
         if self
             .job
             .as_ref()
             .is_some_and(|(_, worker)| worker.is_finished())
-            && let Some((edits, worker)) = self.job.take()
+            && let Some((want, worker)) = self.job.take()
             && let Ok(edited) = worker.join()
         {
             player.submit(self.audio(edited.into()));
-            self.heard = Some(edits);
+            self.heard = Some(want);
             self.version += 1;
         }
         if self.job.is_some() || !self.pending() {
             player.reclaim();
             return;
         }
-        // Nothing edited: the original is the edited audio, at once.
-        if self.wanted.is_empty() {
+        // Nothing done: the original is the edited audio, at once.
+        if self.wanted.is_original() && !self.wanted.removed {
             player.submit(self.audio(Arc::clone(&self.original)));
-            self.heard = Some(Vec::new());
+            self.heard = Some(self.wanted.clone());
             self.version += 1;
             return;
         }
         if self.changed_at.elapsed() < PREVIEW_DEBOUNCE && self.heard.is_some() {
             return;
         }
-        let edits = self.wanted.clone();
+        let want = self.wanted.clone();
         let (original, channels, rate) = (Arc::clone(&self.original), self.channels, self.rate);
-        let job_edits = edits.clone();
+        let job = want.clone();
         if let Ok(worker) = std::thread::Builder::new()
             .name("fontelle-study-preview".to_string())
             .spawn(move || {
-                fontelle_analysis::render::render_edits(
+                process_study(
                     &original,
                     channels,
                     rate,
-                    &job_edits,
-                    &fontelle_analysis::resynth::Psola,
+                    &job.edits,
+                    &job.clean,
+                    job.removed,
+                    None,
                 )
-                .audio
             })
         {
-            self.job = Some((edits, worker));
+            self.job = Some((want, worker));
         }
     }
 
@@ -846,4 +862,217 @@ pub(crate) fn show_edits(
                 glide_out_ms: e.glide_out_ms,
             });
     }
+}
+
+// ------------------------------------------------ the study's sound ---
+
+/// Whether this build has the voice denoiser (the `voice-denoise` feature).
+pub(crate) const VOICE_DENOISE: bool = cfg!(feature = "voice-denoise");
+
+/// One channel of interleaved `audio`.
+fn channel_of(audio: &[f32], channels: usize, which: usize) -> Vec<f32> {
+    audio
+        .iter()
+        .skip(which)
+        .step_by(channels.max(1))
+        .copied()
+        .collect()
+}
+
+/// `mono` written back into channel `which` of interleaved `audio`.
+fn put_channel(audio: &mut [f32], channels: usize, which: usize, mono: &[f32]) {
+    for (slot, value) in audio
+        .iter_mut()
+        .skip(which)
+        .step_by(channels.max(1))
+        .zip(mono)
+    {
+        *slot = *value;
+    }
+}
+
+/// The denoiser over one channel, as the study is set.
+fn denoise_channel(mono: &[f32], rate: u32, denoise: &fontelle_types::StudyDenoise) -> Vec<f32> {
+    let mut out = mono.to_vec();
+    if let Some(noise) = &denoise.noise {
+        let profile = fontelle_analysis::denoise::NoiseProfile {
+            magnitudes: noise.magnitudes.clone(),
+            sample_rate: noise.sample_rate,
+        };
+        let settings = fontelle_analysis::denoise::DenoiseSettings {
+            reduce_db: denoise.reduce_db,
+            amount: denoise.amount,
+            sensitivity: denoise.sensitivity,
+            output: fontelle_analysis::denoise::DenoiseOutput::Cleaned,
+        };
+        out = fontelle_analysis::denoise::denoise(&out, &profile, &settings);
+    }
+    if denoise.voice {
+        out = voice_denoise(&out, rate);
+    }
+    out
+}
+
+/// RNNoise, at the 48 kHz it runs at, and back.
+#[cfg(feature = "voice-denoise")]
+fn voice_denoise(mono: &[f32], rate: u32) -> Vec<f32> {
+    use fontelle_analysis::resample::resample_mono;
+    if rate == 48_000 {
+        return fontelle_analysis::denoise::denoise_voice(mono);
+    }
+    let up = resample_mono(mono, rate, 48_000);
+    let mut back = resample_mono(
+        &fontelle_analysis::denoise::denoise_voice(&up),
+        48_000,
+        rate,
+    );
+    back.resize(mono.len(), 0.0);
+    back
+}
+
+#[cfg(not(feature = "voice-denoise"))]
+fn voice_denoise(mono: &[f32], _rate: u32) -> Vec<f32> {
+    mono.to_vec()
+}
+
+/// Where a study's processing has got to, for the job strip.
+pub(crate) type Progress = Arc<std::sync::atomic::AtomicU32>;
+
+fn report(progress: Option<&Progress>, fraction: f32) {
+    if let Some(p) = progress {
+        p.store(fraction.to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// What a study sounds like: `original` (interleaved, `channels` wide, at
+/// `rate`) through its Clean page and its pitch edits, **whole-file
+/// length** — denoised, the edits rendered, then the gain and the fades
+/// from the trim's ends (plan §3.7). The trim itself is not cut: it is a
+/// span, which Render to clip makes the clip's.
+///
+/// With `removed`, only what the denoiser takes out: "Listen to what's
+/// removed".
+pub(crate) fn process_study(
+    original: &[f32],
+    channels: usize,
+    rate: u32,
+    edits: &[fontelle_types::PitchEdit],
+    clean: &fontelle_types::StudyClean,
+    removed: bool,
+    progress: Option<&Progress>,
+) -> Vec<f32> {
+    let channels = channels.max(1);
+    let mut audio = original.to_vec();
+    report(progress, 0.05);
+    if clean.denoise.active() {
+        for which in 0..channels {
+            let mono = channel_of(&audio, channels, which);
+            let cleaned = denoise_channel(&mono, rate, &clean.denoise);
+            put_channel(&mut audio, channels, which, &cleaned);
+            report(progress, 0.05 + 0.45 * (which + 1) as f32 / channels as f32);
+        }
+    }
+    if removed {
+        for (out, was) in audio.iter_mut().zip(original) {
+            *out = was - *out;
+        }
+        report(progress, 1.0);
+        return audio;
+    }
+    if !edits.is_empty() {
+        audio = fontelle_analysis::render::render_edits(
+            &audio,
+            channels,
+            rate,
+            edits,
+            &fontelle_analysis::resynth::Psola,
+        )
+        .audio;
+    }
+    report(progress, 0.9);
+    apply_level(&mut audio, channels, clean);
+    report(progress, 1.0);
+    audio
+}
+
+/// The study's gain, and its fades from the trim's ends.
+fn apply_level(audio: &mut [f32], channels: usize, clean: &fontelle_types::StudyClean) {
+    let gain = 10f32.powf(clean.gain_db / 20.0);
+    let frames = audio.len() / channels.max(1);
+    let (from, to) = clean.trim.map_or((0, frames), |(a, b)| {
+        let a = (a.max(0) as usize).min(frames);
+        (a, (b.max(0) as usize).clamp(a, frames))
+    });
+    let shape = match clean.fade_shape {
+        fontelle_types::StudyFadeShape::Linear => fontelle_analysis::edit::FadeShape::Linear,
+        fontelle_types::StudyFadeShape::Smooth => fontelle_analysis::edit::FadeShape::EqualPower,
+        fontelle_types::StudyFadeShape::Exponential => {
+            fontelle_analysis::edit::FadeShape::Exponential
+        }
+    };
+    let fade_in = clean.fade_in.max(0) as usize;
+    let fade_out = clean.fade_out.max(0) as usize;
+    for frame in 0..frames {
+        let mut g = gain;
+        if fade_in > 0 && frame >= from && frame < from + fade_in {
+            g *= shape.gain((frame - from) as f32 / fade_in as f32);
+        }
+        if fade_out > 0 && frame < to && frame + fade_out >= to {
+            g *= shape.gain((to - 1 - frame) as f32 / fade_out as f32);
+        }
+        if (g - 1.0).abs() > f32::EPSILON {
+            for sample in &mut audio[frame * channels..(frame + 1) * channels] {
+                *sample *= g;
+            }
+        }
+    }
+}
+
+/// The denoiser's profile from frames `from..to` of `original`: `Err` says
+/// why not (too short to tell noise from anything).
+pub(crate) fn capture_noise(
+    original: &[f32],
+    channels: usize,
+    rate: u32,
+    from: usize,
+    to: usize,
+) -> Result<fontelle_types::StudyNoise, String> {
+    let channels = channels.max(1);
+    let frames = original.len() / channels;
+    let (from, to) = (from.min(frames), to.min(frames));
+    let mono: Vec<f32> = (from..to.max(from))
+        .map(|f| {
+            original[f * channels..(f + 1) * channels]
+                .iter()
+                .sum::<f32>()
+                / channels as f32
+        })
+        .collect();
+    let profile =
+        fontelle_analysis::denoise::NoiseProfile::capture(&mono, rate).ok_or_else(|| {
+            format!(
+                "drag over at least {} ms of noise alone to capture it",
+                (fontelle_analysis::denoise::FFT_SIZE as f64 * 1000.0 / f64::from(rate.max(1)))
+                    .ceil()
+            )
+        })?;
+    let rms = (mono.iter().map(|s| s * s).sum::<f32>() / mono.len().max(1) as f32).sqrt();
+    Ok(fontelle_types::StudyNoise {
+        magnitudes: profile.magnitudes,
+        sample_rate: profile.sample_rate,
+        level_db: 20.0 * rms.max(1e-9).log10(),
+    })
+}
+
+/// Every transient in `mono`, at the most sensitive setting, with how
+/// strong each is: the Slice page's knob shows those over its line.
+pub(crate) fn transients(mono: &[f32], rate: u32) -> Vec<(f64, f32)> {
+    let settings = fontelle_analysis::onsets::OnsetSettings {
+        sensitivity: 1.0,
+        ..Default::default()
+    };
+    fontelle_analysis::onsets::detect_onsets(mono, rate, &settings)
+        .into_iter()
+        .map(|o| (o.sample as f64 / f64::from(rate.max(1)), o.strength))
+        .collect()
 }

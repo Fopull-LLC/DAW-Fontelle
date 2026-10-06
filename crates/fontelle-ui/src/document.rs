@@ -1348,6 +1348,109 @@ pub trait StudioHost: DocumentHost {
     fn revert_analysis(&mut self) -> Result<String, String> {
         Err("this studio cannot render edits".to_string())
     }
+    /// How a render started by [`render_analysis`](Self::render_analysis)
+    /// is getting on: it runs off the window's thread, and lands (one undo)
+    /// when it is done.
+    fn poll_analysis_render(&mut self) -> JobPoll {
+        JobPoll::Idle
+    }
+    /// The Clean page's settings, whole (trim, fades, gain, the denoiser):
+    /// one command, and with `merge` part of a gesture still in the hand.
+    fn set_analysis_clean(
+        &mut self,
+        _clean: fontelle_types::StudyClean,
+        _merge: bool,
+    ) -> Result<String, String> {
+        Err("this studio cannot clean audio".to_string())
+    }
+    /// The noise between `from` and `to` seconds, captured as the
+    /// denoiser's profile: says how loud it was.
+    fn capture_analysis_noise(&mut self, _from: f64, _to: f64) -> Result<String, String> {
+        Err("this studio cannot clean audio".to_string())
+    }
+    /// "Listen to what's removed": the preview plays only what the denoiser
+    /// takes out.
+    fn analysis_listen_removed(&mut self, _on: bool) {}
+    /// The Slice page's markers, whole; `merge` as for the edits.
+    fn set_analysis_markers(
+        &mut self,
+        _markers: Vec<fontelle_types::StudyMarker>,
+        _merge: bool,
+    ) -> Result<String, String> {
+        Err("this studio cannot slice audio".to_string())
+    }
+    /// Where the slices cut at `cuts` (seconds) would land laid out as
+    /// `layout`, for the keyboard preview.
+    fn analysis_slice_keys(
+        &mut self,
+        _cuts: &[f64],
+        _layout: crate::canvas::AnalyzeSliceLayout,
+    ) -> Vec<crate::canvas::AnalyzeSliceKey> {
+        Vec::new()
+    }
+    /// **Send to sampler** (plan §3.8): the cleaned and edited audio rendered
+    /// once, cut at `cuts` (seconds), on a new Sampler channel laid out as
+    /// `layout` — and with `replay`, a clip that plays the slices in order.
+    /// One undo; the new channel selected. The replay clip starts at the
+    /// clip's place, or at `playhead` (a song sample) for audio with none.
+    fn send_analysis_to_sampler(
+        &mut self,
+        _cuts: &[f64],
+        _layout: crate::canvas::AnalyzeSliceLayout,
+        _replay: bool,
+        _playhead: fontelle_types::Sample,
+    ) -> Result<String, String> {
+        Err("this studio cannot slice audio".to_string())
+    }
+    /// The Record page: arm, the arm mode, the source.
+    fn analysis_record(&mut self, _op: crate::canvas::AnalyzeRecordOp) -> Result<String, String> {
+        Err("this studio cannot record into a study".to_string())
+    }
+    /// The takes list: load, star, rename, discard, use the comp.
+    fn analysis_take(&mut self, _op: crate::canvas::AnalyzeTakeOp) -> Result<String, String> {
+        Err("this studio cannot record into a study".to_string())
+    }
+    /// The comp, whole: spans of takes; `merge` as for the edits.
+    fn set_analysis_comp(
+        &mut self,
+        _comp: Vec<fontelle_types::StudyCompSpan>,
+        _merge: bool,
+    ) -> Result<String, String> {
+        Err("this studio cannot record into a study".to_string())
+    }
+    /// **Send to arrangement** (plan P5, §6.1): what is in the lane, with
+    /// its clean and its edits, as a new audio clip where it was recorded
+    /// (or at `playhead`, a song sample, for a free take). One undo, once the
+    /// render off the window's thread has landed.
+    fn send_analysis_to_arrangement(
+        &mut self,
+        _playhead: fontelle_types::Sample,
+    ) -> Result<String, String> {
+        Err("this studio cannot send a study to the arrangement".to_string())
+    }
+    /// Every study in the song, for the browser and the window's title
+    /// menu (plan §6 answer 4).
+    fn analysis_studies(&self) -> Vec<crate::canvas::AnalyzeStudyRow> {
+        Vec::new()
+    }
+    /// Opens the window on a study, whatever it is of.
+    fn open_study_analysis(&mut self, _study: fontelle_types::StudyId) -> Result<String, String> {
+        Err("this studio cannot analyse audio".to_string())
+    }
+    /// Whether the insert in `slot` of mixer strip `strip` is Analyze
+    /// Musically: its slot opens the window, not a panel of knobs.
+    fn is_analyze_insert(&self, _strip: usize, _slot: usize) -> bool {
+        false
+    }
+    /// Opens the window on that insert's study, making it the first time.
+    fn open_insert_analysis(&mut self, _strip: usize, _slot: usize) -> Result<String, String> {
+        Err("this studio cannot record into a study".to_string())
+    }
+    /// *Record into Analyze Musically…*: a new study that records from the
+    /// input device, open in the window.
+    fn record_into_analysis(&mut self) -> Result<String, String> {
+        Err("this studio cannot record into a study".to_string())
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///

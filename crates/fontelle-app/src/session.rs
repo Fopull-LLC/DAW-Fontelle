@@ -22,6 +22,8 @@
 //! note cost a timeline recompile and nothing else, and it is why adding a
 //! channel no longer needs the audio device restarted.
 
+mod study;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -481,6 +483,25 @@ pub struct Session {
     study_player: std::sync::Arc<fontelle_engine::StudyPlayer>,
     /// What it plays for the clip open in the window.
     preview: Option<crate::analyze::Preview>,
+    /// What the Analyze Musically window is open on (`session/study.rs`).
+    analysis_target: Option<study::StudyTarget>,
+    /// A study's render running off the window's thread (plan §3.7).
+    render_job: Option<study::RenderJob>,
+    /// The open study's recorder: an insert's capture or an input device.
+    recorder: Option<study::Recorder>,
+    /// "Listen to what's removed".
+    listen_removed: bool,
+    /// Take files written this session, deleted once nothing names them.
+    take_files: Vec<PathBuf>,
+    /// The Slice page's keyboard preview, for the last cuts asked about.
+    slice_keys_memo: Option<(
+        Vec<i64>,
+        fontelle_ui::canvas::AnalyzeSliceLayout,
+        Vec<fontelle_ui::canvas::AnalyzeSliceKey>,
+    )>,
+    /// A second reader of the open input device (§5 R4), for a study
+    /// recording from the microphone a track already has open.
+    input_tap: Option<fontelle_engine::InputTap>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1073,6 +1094,10 @@ impl Session {
         // more than the gap between two drains. §15.4's ring, sized so a stall
         // in the window cannot cost a take.
         let (writer, reader) = fontelle_engine::input_capture_channel(96_000 * 2);
+        // A second reader on the same stream, for Analyze Musically recording
+        // from this microphone while the track has it (plan §5 R4).
+        let (writer, tap) = writer.with_tap(96_000 * 2);
+        self.input_tap = Some(tap);
         match device.start_input_stream(Some(&name), writer) {
             Ok((rate, channels)) => {
                 // Attached, not armed: an open microphone is monitoring until
@@ -1529,6 +1554,13 @@ impl Session {
             analysis_keys: HashMap::new(),
             study_player: fontelle_engine::StudyPlayer::new(),
             preview: None,
+            analysis_target: None,
+            render_job: None,
+            recorder: None,
+            listen_removed: false,
+            take_files: Vec::new(),
+            slice_keys_memo: None,
+            input_tap: None,
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -4186,285 +4218,6 @@ impl Session {
             worker,
         });
         Ok(format!("{label}\u{2026}"))
-    }
-
-    /// Opens Analyze Musically on `clip`: refused for anything but audio,
-    /// and for audio still loading. The span the clip plays is what is
-    /// analysed, so its notes line up with the block.
-    fn open_analysis(&mut self, id: ClipId) -> Result<String, String> {
-        let clip = self.project.clips.get(id).ok_or("that clip is not there")?;
-        let ClipSource::Audio(data) = &clip.source else {
-            return Err("only an audio clip can be analysed musically".to_string());
-        };
-        let mut data = data.clone();
-        // A clip playing a render of its study's edits is studied as it was
-        // recorded: the window shows the original's notes and the edits on
-        // them, and a re-render starts from the original (plan §3.7).
-        if let Some(study) = self.study_of(id).and_then(|s| self.project.studies.get(s))
-            && study.rendered.as_ref() == Some(&data.asset)
-        {
-            data.asset = study.original.clone();
-        }
-        let buffer = self
-            .library
-            .audio_store()
-            .get(data.asset.id)
-            .cloned()
-            .ok_or("that clip's audio is still loading \u{2014} try again in a moment")?;
-        let name = self
-            .clips()
-            .into_iter()
-            .find(|info| info.id == id)
-            .map_or_else(|| "Audio".to_string(), |info| info.name);
-        let from = data.source_start.max(0) as usize;
-        let to = (data.source_end.max(0) as usize).min(buffer.frames());
-        if to <= from {
-            return Err(format!("there is no sound in \u{201c}{name}\u{201d}"));
-        }
-        let mono = crate::analyze::mono_span(&buffer, from, to);
-        let span = (data.asset.id, from as i64, to as i64);
-        let cache = crate::analyze::cache_dir_here(self.bundle.as_deref());
-        let known = self.analysis_keys.get(&span).cloned();
-        // The one open before goes: its job stops.
-        self.close_analysis();
-        let open = crate::analyze::OpenAnalysis::start(
-            id,
-            name.clone(),
-            span,
-            mono,
-            buffer.sample_rate,
-            cache,
-            known,
-        );
-        let said = if open.finished().is_some() {
-            format!("Analyze Musically \u{2014} \u{201c}{name}\u{201d}")
-        } else {
-            format!("Analyze Musically: analysing \u{201c}{name}\u{201d}\u{2026}")
-        };
-        self.analysis = Some(open);
-        self.study_player.stop();
-        self.study_player.set_original(false);
-        self.preview = Some(crate::analyze::Preview::new(&buffer));
-        self.service_preview();
-        Ok(said)
-    }
-
-    /// The study of `clip`, if anything has been done to it.
-    fn study_of(&self, clip: ClipId) -> Option<fontelle_types::StudyId> {
-        self.project
-            .studies
-            .iter()
-            .find(|(_, s)| s.source == fontelle_types::StudySource::Clip(clip))
-            .map(|(id, _)| id)
-    }
-
-    /// Analyze Musically's preview player, shared with the node on the
-    /// master of every graph.
-    pub fn study_player(&self) -> std::sync::Arc<fontelle_engine::StudyPlayer> {
-        std::sync::Arc::clone(&self.study_player)
-    }
-
-    /// The preview follows the song's edits (an undo is an edit too).
-    fn service_preview(&mut self) {
-        let edits = self
-            .analysis
-            .as_ref()
-            .and_then(|open| self.study_of(open.clip))
-            .and_then(|id| self.project.studies.get(id))
-            .map(|s| s.pitch_edits.clone())
-            .unwrap_or_default();
-        if let Some(preview) = &mut self.preview {
-            preview.want(&edits);
-            preview.service(&self.study_player);
-        }
-    }
-
-    /// Seconds into the analysed audio, as a frame of its file.
-    fn analysis_frame(&self, seconds: f64) -> Option<i64> {
-        let open = self.analysis.as_ref()?;
-        let rate = self.preview.as_ref()?.rate;
-        Some(open.span.1 + (seconds.max(0.0) * f64::from(rate)).round() as i64)
-    }
-
-    /// Where a render goes: `<bundle>/renders/<name> (edited N).wav`, the
-    /// first N free. A song not saved yet is saved into the projects
-    /// folder first, as a take makes it (`take_path`).
-    fn render_path(&mut self, name: &str) -> Result<PathBuf, String> {
-        let dir = self.make_real()?.join("renders");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for n in 1..10_000 {
-            let path = dir.join(format!("{name} (edited {n}).wav"));
-            if !path.exists() {
-                return Ok(path);
-            }
-        }
-        Err("the renders folder is full".to_string())
-    }
-
-    /// Render to clip (plan §3.7): the study's edits rendered from its
-    /// original, whole-file length, at its rate and width; the clip
-    /// swapped to it with the study stamped — or a new clip of it on a row
-    /// under — as one command.
-    fn render_study(&mut self, below: bool) -> Result<String, String> {
-        let open = self
-            .analysis
-            .as_ref()
-            .ok_or("nothing is open in Analyze Musically")?;
-        let clip_id = open.clip;
-        let study_id = self
-            .study_of(clip_id)
-            .ok_or("move a note first \u{2014} nothing is edited yet")?;
-        let study = self.project.studies[study_id].clone();
-        // Named for what was recorded, not for the last render's file.
-        let name = study.name.clone();
-        if study.pitch_edits.is_empty() {
-            return Err("move a note first \u{2014} nothing is edited yet".to_string());
-        }
-        let clip = self
-            .project
-            .clips
-            .get(clip_id)
-            .cloned()
-            .ok_or("the analysed clip is not there any more")?;
-        let ClipSource::Audio(data) = &clip.source else {
-            return Err("only an audio clip can take a render".to_string());
-        };
-        let buffer = self
-            .library
-            .audio_store()
-            .get(study.original.id)
-            .cloned()
-            .ok_or("the original audio is not loaded")?;
-        let rendered = fontelle_analysis::render::render_edits(
-            &buffer.data,
-            usize::from(buffer.channels.max(1)),
-            buffer.sample_rate,
-            &study.pitch_edits,
-            &fontelle_analysis::resynth::Psola,
-        );
-        let path = self.render_path(&name)?;
-        let mut writer =
-            fontelle_assets::WavWriter::create(&path, buffer.sample_rate, buffer.channels)
-                .map_err(|e| e.to_string())?;
-        writer
-            .write(&rendered.audio)
-            .and_then(|()| writer.finish())
-            .map_err(|e| e.to_string())?;
-        let imported = self
-            .library
-            .import_audio(&path)
-            .map_err(|e| e.to_string())?;
-        let mut swapped = data.clone();
-        swapped.asset = imported.asset.clone();
-        let file = path
-            .file_name()
-            .map(|f| f.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let command: Box<dyn Command> = if below {
-            let row = self
-                .lane_ids()
-                .iter()
-                .position(|lane| *lane == clip.lane)
-                .map_or(0, |row| row + 1);
-            Box::new(
-                fontelle_model::AddAudioClip::new(
-                    format!("{name} (edited)"),
-                    swapped,
-                    clip.start,
-                    clip.length,
-                )
-                .at_row(row),
-            )
-        } else {
-            Box::new(fontelle_model::Compound::new(
-                format!("Render edits to {name}"),
-                vec![
-                    Box::new(fontelle_model::SetAudioClip::new(clip_id, swapped)),
-                    Box::new(fontelle_model::SetStudyRender::new(
-                        study_id,
-                        Some(imported.asset),
-                    )),
-                ],
-            ))
-        };
-        self.history.break_gesture();
-        self.run(command);
-        self.let_go();
-        self.rebuild_graph();
-        Ok(if below {
-            format!("Rendered to \u{201c}{file}\u{201d}, on a new row under \u{201c}{name}\u{201d}")
-        } else {
-            format!(
-                "\u{201c}{name}\u{201d} plays your edits ({file}) \u{2014} Revert to original undoes it"
-            )
-        })
-    }
-
-    /// *Notes under the audio*: the analysed notes as a note clip on a new
-    /// row directly under the clip, playing the selected channel, as long as
-    /// the clip. One command, so one undo.
-    fn analysis_clip(
-        &mut self,
-        mode: fontelle_ui::canvas::AnalyzeMode,
-        selection: &[usize],
-        keep_bends: bool,
-    ) -> Result<String, String> {
-        let open = self.analysis.as_ref().ok_or("nothing is being analysed")?;
-        let audio = self
-            .project
-            .clips
-            .get(open.clip)
-            .cloned()
-            .ok_or("the analysed clip is not there any more")?;
-        let (notes, _) = StudioHost::analysis_notes(self, mode, selection, keep_bends)
-            .ok_or("there are no notes to put under it yet")?;
-        let channel = self
-            .selected_channel_id()
-            .ok_or("there is no instrument to play the notes \u{2014} add one first")?;
-        let row = self
-            .lane_ids()
-            .iter()
-            .position(|lane| *lane == audio.lane)
-            .ok_or("the analysed clip is on no row")?;
-        let name = format!("{} notes", open.name);
-        let mut arena = Arena::default();
-        for note in notes {
-            // The clip starts where the audio does; a note heard before that
-            // has nowhere to go.
-            let start = note.start - audio.start;
-            if start >= 0 {
-                arena.insert(fontelle_model::Note { start, ..note });
-            }
-        }
-        let count = arena.len();
-        let clip = fontelle_model::Clip {
-            name: None,
-            lane: audio.lane,
-            start: audio.start,
-            length: audio.length,
-            source: ClipSource::Notes(fontelle_model::NoteData {
-                channel,
-                notes: arena,
-            }),
-            prefab_link: None,
-            color: None,
-            muted: false,
-            loop_length: None,
-        };
-        let command = fontelle_model::AddClip::on_new_row_at(
-            clip,
-            name.clone(),
-            [0x8a, 0xa4, 0xe8, 0xff],
-            row + 1,
-        );
-        self.apply_for::<fontelle_model::AddClip>(Box::new(command))?;
-        self.let_go();
-        self.dirty = true;
-        self.republish();
-        self.touch();
-        Ok(format!(
-            "{count} note(s) on \u{201c}{name}\u{201d}, under the audio"
-        ))
     }
 
     /// [`StudioHost::poll_job`]'s answer: how far the running bounce has got,
@@ -9767,6 +9520,7 @@ impl StudioHost for Session {
     }
 
     fn poll_analysis(&mut self) -> JobPoll {
+        self.service_recorder();
         self.service_preview();
         let Some(open) = &mut self.analysis else {
             return JobPoll::Idle;
@@ -9789,42 +9543,56 @@ impl StudioHost for Session {
     }
 
     fn analysis_revision(&self) -> u64 {
-        // The analysis, the song's edits and the preview, each moving it.
-        self.analysis.as_ref().map_or(0, |open| {
-            open.revision()
-                .wrapping_add(self.history.generation().wrapping_mul(0x1_0000))
-                .wrapping_add(
-                    self.preview
-                        .as_ref()
-                        .map_or(0, |p| p.version.wrapping_mul(0x1_0000_0000)),
-                )
-        })
+        // The analysis, the song's edits, the preview, the render and the
+        // recorder, each moving it.
+        if self.analysis_target.is_none() {
+            return 0;
+        }
+        self.analysis
+            .as_ref()
+            .map_or(1, |open| open.revision())
+            .wrapping_add(self.history.generation().wrapping_mul(0x1_0000))
+            .wrapping_add(
+                self.preview
+                    .as_ref()
+                    .map_or(0, |p| p.version.wrapping_mul(0x1_0000_0000)),
+            )
+            .wrapping_add(self.study_revision().wrapping_mul(0x1_0000_0000_0000))
     }
 
     fn analyze_view(&self) -> Option<fontelle_ui::canvas::AnalyzeView> {
-        let open = self.analysis.as_ref()?;
-        let mut view = open.view();
+        self.analysis_target?;
+        let mut view = match &self.analysis {
+            Some(open) => open.view(),
+            None => fontelle_ui::canvas::AnalyzeView::default(),
+        };
         // Melody mode's chord lane, a bar of the song's tempo at a time: the
         // half-second reading named every sung note as a chord.
         let bar = f64::from(self.project.beats_per_bar.max(1))
             * f64::from(crate::beat_samples(&self.project))
             / f64::from(self.options.sample_rate.max(1));
         view.melody_chords = crate::analyze::melody_chords(&view.melody, view.duration, bar);
-        let study = self
-            .study_of(open.clip)
-            .and_then(|id| self.project.studies.get(id));
-        if let (Some(study), Some(preview)) = (study, &self.preview) {
+        if let (Some(open), Some(study), Some(preview)) = (
+            &self.analysis,
+            self.open_study_id()
+                .and_then(|id| self.project.studies.get(id)),
+            &self.preview,
+        ) {
             let (from, rate) = (open.span.1, f64::from(preview.rate));
             let frame_of = |t: f64| from + (t * rate).round() as i64;
             crate::analyze::show_edits(&mut view.melody, &study.pitch_edits, frame_of);
             crate::analyze::show_edits(&mut view.notes, &study.pitch_edits, frame_of);
             view.rendered = study.rendered.is_some()
                 && matches!(
-                    self.project.clips.get(open.clip).map(|c| &c.source),
-                    Some(ClipSource::Audio(d)) if Some(&d.asset) == study.rendered.as_ref()
+                    self.analysis_target,
+                    Some(study::StudyTarget::Clip(clip)) if matches!(
+                        self.project.clips.get(clip).map(|c| &c.source),
+                        Some(ClipSource::Audio(d)) if Some(&d.asset) == study.rendered.as_ref()
+                    )
                 );
         }
         view.preview_pending = self.preview.as_ref().is_some_and(|p| p.pending());
+        self.fill_study_view(&mut view);
         Some(view)
     }
 
@@ -9860,54 +9628,7 @@ impl StudioHost for Session {
         changes: &[fontelle_ui::canvas::AnalyzeEditChange],
         merge: bool,
     ) -> Result<String, String> {
-        let open = self
-            .analysis
-            .as_ref()
-            .ok_or("nothing is open in Analyze Musically")?;
-        let clip = open.clip;
-        let name = open.name.clone();
-        let study = self.study_of(clip);
-        let mut edits = study
-            .and_then(|id| self.project.studies.get(id))
-            .map(|s| s.pitch_edits.clone())
-            .unwrap_or_default();
-        for change in changes {
-            let (Some(a), Some(b)) = (
-                self.analysis_frame(change.start),
-                self.analysis_frame(change.end),
-            ) else {
-                continue;
-            };
-            edits.retain(|e| !e.overlaps((a, b)));
-            if let Some(edit) = change.edit.filter(|e| !e.is_identity()) {
-                edits.push(crate::analyze::pitch_edit((a, b), &edit));
-            }
-        }
-        edits.sort_by_key(|e| e.span.0);
-        if !merge {
-            self.history.break_gesture();
-        }
-        let command: Box<dyn Command> = match study {
-            Some(id) => Box::new(fontelle_model::SetStudyEdits::new(id, edits)),
-            None => {
-                // The first edit of this clip starts its study, of the audio
-                // the window is studying.
-                let Some(ClipSource::Audio(data)) = self.project.clips.get(clip).map(|c| &c.source)
-                else {
-                    return Err("only an audio clip's notes can be moved".to_string());
-                };
-                let mut fresh = fontelle_types::Study::new(
-                    name,
-                    fontelle_types::StudySource::Clip(clip),
-                    data.asset.clone(),
-                );
-                fresh.pitch_edits = edits;
-                Box::new(fontelle_model::AddStudy::new(fresh))
-            }
-        };
-        self.run(command);
-        self.service_preview();
-        Ok(String::new())
+        self.set_study_edits(changes, merge)
     }
 
     fn render_analysis(&mut self, new_clip_below: bool) -> Result<String, String> {
@@ -9915,45 +9636,100 @@ impl StudioHost for Session {
     }
 
     fn revert_analysis(&mut self) -> Result<String, String> {
-        let open = self
-            .analysis
-            .as_ref()
-            .ok_or("nothing is open in Analyze Musically")?;
-        let (clip, name) = (open.clip, open.name.clone());
-        let id = self.study_of(clip).ok_or("this clip has no edits")?;
-        let study = self.project.studies[id].clone();
-        let Some(ClipSource::Audio(data)) = self.project.clips.get(clip).map(|c| &c.source) else {
-            return Err("the analysed clip is not there any more".to_string());
-        };
-        if study.rendered.is_none() || study.rendered.as_ref() != Some(&data.asset) {
-            return Err(format!("\u{201c}{name}\u{201d} already plays the original"));
-        }
-        let mut back = data.clone();
-        back.asset = study.original.clone();
-        self.history.break_gesture();
-        self.run(Box::new(fontelle_model::Compound::new(
-            format!("Revert {name} to the original"),
-            vec![
-                Box::new(fontelle_model::SetAudioClip::new(clip, back)),
-                Box::new(fontelle_model::SetStudyRender::new(id, None)),
-            ],
-        )));
-        self.let_go();
-        self.rebuild_graph();
-        Ok(format!(
-            "\u{201c}{name}\u{201d} plays the original again (your edits are kept)"
-        ))
+        self.revert_study()
+    }
+
+    fn poll_analysis_render(&mut self) -> JobPoll {
+        self.poll_study_render()
+    }
+
+    fn set_analysis_clean(
+        &mut self,
+        clean: fontelle_types::StudyClean,
+        merge: bool,
+    ) -> Result<String, String> {
+        self.set_study_clean(clean, merge)
+    }
+
+    fn capture_analysis_noise(&mut self, from: f64, to: f64) -> Result<String, String> {
+        self.capture_study_noise(from, to)
+    }
+
+    fn analysis_listen_removed(&mut self, on: bool) {
+        self.set_listen_removed(on);
+    }
+
+    fn set_analysis_markers(
+        &mut self,
+        markers: Vec<fontelle_types::StudyMarker>,
+        merge: bool,
+    ) -> Result<String, String> {
+        self.set_study_markers(markers, merge)
+    }
+
+    fn analysis_slice_keys(
+        &mut self,
+        cuts: &[f64],
+        layout: fontelle_ui::canvas::AnalyzeSliceLayout,
+    ) -> Vec<fontelle_ui::canvas::AnalyzeSliceKey> {
+        self.study_slice_keys(cuts, layout)
+    }
+
+    fn send_analysis_to_sampler(
+        &mut self,
+        cuts: &[f64],
+        layout: fontelle_ui::canvas::AnalyzeSliceLayout,
+        replay: bool,
+        playhead: Sample,
+    ) -> Result<String, String> {
+        self.send_study_to_sampler(cuts, layout, replay, playhead)
+    }
+
+    fn analysis_record(
+        &mut self,
+        op: fontelle_ui::canvas::AnalyzeRecordOp,
+    ) -> Result<String, String> {
+        self.study_record(op)
+    }
+
+    fn analysis_take(&mut self, op: fontelle_ui::canvas::AnalyzeTakeOp) -> Result<String, String> {
+        self.study_take(op)
+    }
+
+    fn set_analysis_comp(
+        &mut self,
+        comp: Vec<fontelle_types::StudyCompSpan>,
+        merge: bool,
+    ) -> Result<String, String> {
+        self.set_study_comp(comp, merge)
+    }
+
+    fn send_analysis_to_arrangement(&mut self, playhead: Sample) -> Result<String, String> {
+        self.send_study_to_arrangement(playhead)
+    }
+
+    fn analysis_studies(&self) -> Vec<fontelle_ui::canvas::AnalyzeStudyRow> {
+        self.study_rows()
+    }
+
+    fn open_study_analysis(&mut self, study: fontelle_types::StudyId) -> Result<String, String> {
+        self.open_study_window(study)
+    }
+
+    fn is_analyze_insert(&self, strip: usize, slot: usize) -> bool {
+        self.is_analyze_slot(strip, slot)
+    }
+
+    fn open_insert_analysis(&mut self, strip: usize, slot: usize) -> Result<String, String> {
+        self.open_insert_study(strip, slot)
+    }
+
+    fn record_into_analysis(&mut self) -> Result<String, String> {
+        self.record_into_study()
     }
 
     fn close_analysis(&mut self) {
-        self.study_player.stop();
-        self.preview = None;
-        if let Some(open) = self.analysis.take()
-            && let Some(key) = open.key()
-            && open.finished().is_some()
-        {
-            self.analysis_keys.insert(open.span, key);
-        }
+        self.close_study_window();
     }
 
     fn analysis_notes(
@@ -9963,16 +9739,41 @@ impl StudioHost for Session {
         keep_bends: bool,
     ) -> Option<(Vec<fontelle_model::Note>, Tick)> {
         let open = self.analysis.as_ref()?;
-        let clip = self.project.clips.get(open.clip)?;
-        let ClipSource::Audio(data) = &clip.source else {
-            return None;
-        };
-        let placement = crate::analyze::Placement {
-            tempo: &self.effective_tempo,
-            start_sample: self.effective_tempo.tick_to_sample(clip.start),
-            sample_rate: self.options.sample_rate,
-            speed: data.speed,
-            semitones: data.pitch_semitones,
+        let placement = match self.analysis_target? {
+            study::StudyTarget::Clip(id) => {
+                let clip = self.project.clips.get(id)?;
+                let ClipSource::Audio(data) = &clip.source else {
+                    return None;
+                };
+                crate::analyze::Placement {
+                    tempo: &self.effective_tempo,
+                    start_sample: self.effective_tempo.tick_to_sample(clip.start),
+                    sample_rate: self.options.sample_rate,
+                    speed: data.speed,
+                    semitones: data.pitch_semitones,
+                }
+            }
+            // Audio with no clip is placed where it was recorded, else at
+            // the top of the song.
+            _ => {
+                let study = self
+                    .open_study_id()
+                    .and_then(|id| self.project.studies.get(id));
+                let at = study
+                    .and_then(|s| {
+                        s.current_take
+                            .and_then(|t| s.takes.iter().find(|k| k.id == t))
+                    })
+                    .and_then(|t| t.song_sample)
+                    .unwrap_or(0);
+                crate::analyze::Placement {
+                    tempo: &self.effective_tempo,
+                    start_sample: at,
+                    sample_rate: self.options.sample_rate,
+                    speed: 1.0,
+                    semitones: 0.0,
+                }
+            }
         };
         crate::analyze::notes_for_roll(&open.view(), mode, selection, keep_bends, &placement)
     }

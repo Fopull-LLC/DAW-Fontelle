@@ -455,8 +455,10 @@ fn takes_comp_and_the_take_in_the_lane() {
 #[test]
 fn a_study_from_before_clean_and_takes_opens() {
     let (mut project, _, id) = a_song();
-    let mut clean = StudyClean::default();
-    clean.trim = Some((10, 20));
+    let clean = StudyClean {
+        trim: Some((10, 20)),
+        ..StudyClean::default()
+    };
     SetStudyClean::new(id, clean).apply(&mut project).unwrap();
     SetStudyMarkers::new(id, vec![marker(3, 99)])
         .apply(&mut project)

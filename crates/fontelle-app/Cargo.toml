@@ -13,6 +13,11 @@ repository.workspace = true
 name = "fontelle"
 path = "src/main.rs"
 
+[features]
+# Analyze Musically's voice denoiser (`fontelle-analysis/voice-denoise`):
+# off by default, as there; the Clean page shows its switch only when on.
+voice-denoise = ["fontelle-analysis/voice-denoise"]
+
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
 fontelle-core = { path = "../fontelle-core" }

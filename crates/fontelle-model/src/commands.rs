@@ -6070,6 +6070,18 @@ pub struct ReplaceClip {
     replaced: Option<Clip>,
 }
 
+impl ReplaceClip {
+    /// Sets one clip whole: its place, its length and what it plays at once
+    /// — Render to clip with a trim moves all three (Analyze Musically).
+    pub fn new(clip: ClipId, value: Clip) -> Self {
+        Self {
+            clip,
+            previous: value,
+            replaced: None,
+        }
+    }
+}
+
 impl Command for ReplaceClip {
     fn to_edit(&self) -> crate::wire::Edit {
         crate::wire::Edit::ReplaceClip(self.clone())
@@ -7939,6 +7951,21 @@ pub struct RestoreInsertConfig {
     slot: Option<PersistentId>,
     config: fontelle_types::EffectConfig,
     replaced: Option<fontelle_types::EffectConfig>,
+}
+
+impl RestoreInsertConfig {
+    /// Sets the insert at `index` on `track` to `config`, whole — for a
+    /// setting that is not a parameter, such as the study an Analyze
+    /// Musically insert records into.
+    pub fn new(track: MixerTrackId, index: usize, config: fontelle_types::EffectConfig) -> Self {
+        Self {
+            track,
+            index,
+            slot: None,
+            config,
+            replaced: None,
+        }
+    }
 }
 
 impl Command for RestoreInsertConfig {
