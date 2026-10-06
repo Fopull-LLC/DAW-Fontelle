@@ -62,6 +62,7 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         arena.insert(note);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 16,
@@ -182,6 +183,7 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
     let mut arena = Arena::default();
     arena.insert(note);
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 8,

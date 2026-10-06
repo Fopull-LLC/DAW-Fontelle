@@ -21,8 +21,8 @@
 //! before this.
 
 use fontelle_model::{
-    AddClip, Arena, Clip, ClipSource, Command, Note, NoteData, Project, ResizeClip, ResizeClips,
-    SetClipLoop, TempoMap,
+    AddClip, Arena, Clip, ClipSource, Command, Note, NoteData, Project, RenameClip, ResizeClip,
+    ResizeClips, SetClipLoop, TempoMap,
 };
 use fontelle_types::{ClipId, LaneId, PPQN};
 
@@ -75,6 +75,7 @@ fn fixture() -> (Project, ClipId, LaneId) {
     notes.insert(a_note(0, 60));
 
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -203,6 +204,7 @@ fn another(project: &mut Project, lane: LaneId, length: i64, loop_length: Option
         .next()
         .expect("the fixture has a channel");
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start: PPQN * 16,
         length,
@@ -287,4 +289,67 @@ fn a_selection_shrunk_stops_at_the_shortest_length_a_clip_may_have() {
         .unwrap();
     assert_eq!(project.clips[a].length, fontelle_model::MIN_CLIP_LENGTH);
     assert_eq!(project.clips[b].length, PPQN * 2);
+}
+
+// ------------------------------------------------------- a clip's own name ---
+//
+// Ty: *"there should be a name on each clip ... and make it so you can click
+// that name to open a little menu ... renaming it"*. A clip is captioned
+// with what it plays until somebody names it; the name is the clip's, so a
+// copy, a cut half or a loop of it carries it.
+
+#[test]
+fn a_clip_has_no_name_of_its_own_until_it_is_given_one() {
+    let (mut project, clip, _) = fixture();
+    assert_eq!(project.clips[clip].name, None);
+    let mut rename = RenameClip::new(clip, Some("Verse riff".to_string()));
+    rename.apply(&mut project).unwrap();
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse riff"));
+    rename.invert().apply(&mut project).unwrap();
+    assert_eq!(
+        project.clips[clip].name, None,
+        "the undo takes the name back off"
+    );
+}
+
+#[test]
+fn typing_a_name_is_one_undo_and_a_blank_one_goes_back_to_the_caption() {
+    let (mut project, clip, _) = fixture();
+    let mut history = fontelle_model::History::new();
+    for typed in ["V", "Ve", "Verse"] {
+        history
+            .apply(
+                Box::new(RenameClip::new(clip, Some(typed.to_string()))),
+                &mut project,
+            )
+            .unwrap();
+    }
+    history.break_gesture();
+    assert_eq!(history.depth(), 1);
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse"));
+    // Blank is no name: the clip is captioned with what it plays again.
+    history
+        .apply(
+            Box::new(RenameClip::new(clip, Some("  ".to_string()))),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(project.clips[clip].name, None);
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(project.clips[clip].name.as_deref(), Some("Verse"));
+}
+
+#[test]
+fn a_name_survives_saving_and_a_clip_without_one_saves_as_it_always_did() {
+    let (mut project, clip, _) = fixture();
+    let plain = serde_json::to_string(&project.clips[clip]).unwrap();
+    assert!(!plain.contains("\"name\""), "{plain}");
+    RenameClip::new(clip, Some("Hook".to_string()))
+        .apply(&mut project)
+        .unwrap();
+    let named = serde_json::to_string(&project.clips[clip]).unwrap();
+    let back: Clip = serde_json::from_str(&named).unwrap();
+    assert_eq!(back.name.as_deref(), Some("Hook"));
+    let old: Clip = serde_json::from_str(&plain).unwrap();
+    assert_eq!(old.name, None, "a file from before names opens unnamed");
 }

@@ -204,6 +204,7 @@ edits!(
     SetClipChannel,
     SetNotePath,
     ResizeClips,
+    RenameClip,
 );
 
 impl Edit {

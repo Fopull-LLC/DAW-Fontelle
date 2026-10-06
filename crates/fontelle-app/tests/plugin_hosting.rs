@@ -150,6 +150,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         channel: None,
     });
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 8,

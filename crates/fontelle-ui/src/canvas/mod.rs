@@ -235,17 +235,18 @@ pub use share::{
 };
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use timeline::{
-    ArrangeEdit, CLIP_HEADER_PX, ClipOverlap, ClipPart, EDGE_REACH_PX, FadeAnatomy, FadeEnd,
-    FadeGrip, MAGNET_PX, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
+    ArrangeEdit, CLIP_HEADER_PX, ClipMenuRow, ClipOverlap, ClipPart, EDGE_REACH_PX, FadeAnatomy,
+    FadeEnd, FadeGrip, MAGNET_PX, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
     NOTE_PREVIEW_MIN_KEYS, Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineLine,
-    TimelineTool, TimelineToolbar, TimelineView, arrival_row, clip_bands, clip_cuts, clip_grip,
-    clip_notes, clip_overlaps, clip_rect, clip_waveform, clip_waveform_core, content_end,
-    content_fraction, content_ticks, fade_anatomy, fade_caption, fade_curve, fetching_caption,
-    ghost_clip, ghost_clip_hint, ghost_pulse, lane_scroll_to_show, lane_switches, lane_to_y,
-    lane_track_chip, loop_marks, slice_marks, time_selection, timeline_beat_labels, timeline_grab,
-    timeline_grid_units, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
-    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+    TimelineTool, TimelineToolbar, TimelineView, arrival_row, clip_bands, clip_caption, clip_cuts,
+    clip_grip, clip_menu, clip_name_hit, clip_name_rect, clip_name_slot, clip_notes, clip_overlaps,
+    clip_rect, clip_waveform, clip_waveform_core, content_end, content_fraction, content_ticks,
+    fade_anatomy, fade_caption, fade_curve, fetching_caption, ghost_clip, ghost_clip_hint,
+    ghost_pulse, lane_scroll_to_show, lane_switches, lane_to_y, lane_track_chip, loop_marks,
+    slice_marks, time_selection, timeline_beat_labels, timeline_grab, timeline_grid_units,
+    timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x, timeline_toolbar_hit,
+    timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
+    timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

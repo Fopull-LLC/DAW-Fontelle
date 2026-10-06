@@ -37,7 +37,7 @@ pub use commands::{
     MoveInsert, MoveLane, MoveMixerTrack, MoveNotes, NEW_SEND_DB, NudgeNoteProperty, NumberTarget,
     PlaceAutomationPoints, PluginTarget, PresetTarget, RelocateAssets, RemoveAutomationPoints,
     RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack,
-    RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane, RenameMixerTrack,
+    RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameClip, RenameLane, RenameMixerTrack,
     RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes, RestoreAutomationPoints,
     RestoreChannelPlugin, RestoreInsert, RestoreInsertConfig, RestorePluginParam,
     RestorePointCurves, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,

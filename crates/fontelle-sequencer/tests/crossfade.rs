@@ -81,6 +81,7 @@ impl Rig {
         let mut data = AudioClipData::whole(an_asset(), 100_000, 48_000);
         data.mixer_track = Some(self.track);
         self.project.clips.insert(Clip {
+            name: None,
             lane,
             start,
             length,
@@ -221,6 +222,7 @@ fn a_note_clip_on_the_same_row_is_not_something_to_fade_against() {
         gain_db: 0.0,
     });
     r.project.clips.insert(Clip {
+        name: None,
         lane: r.lane,
         start: BAR,
         length: BAR * 2,

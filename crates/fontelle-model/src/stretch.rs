@@ -95,6 +95,7 @@ mod tests {
 
     fn block(length: fontelle_types::Tick, loop_length: Option<fontelle_types::Tick>) -> Clip {
         Clip {
+            name: None,
             lane: fontelle_types::LaneId::default(),
             start: PPQN * 4,
             length,

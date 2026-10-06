@@ -3652,6 +3652,101 @@ impl Session {
         self.finish_bounce(then, &path, clipped?)
     }
 
+    /// Bounces **one clip** to audio, onto a row of its own under the clip's,
+    /// named `<clip> (rendered)`, at the clip's own place.
+    ///
+    /// Ty: *"rendering just that clip into audio"*, from the menu a clip's
+    /// name opens. **Through `CompileScope::Clip`**, so what comes out is that
+    /// clip alone — not the clip beside it on its row, and not the song —
+    /// and with the release ringing on past its end, as a whole-row bounce
+    /// keeps it.
+    pub fn render_clip(&mut self, clip: ClipId) -> Result<String, String> {
+        let (bounce, then) = self.prepare_render_clip(clip)?;
+        let path = bounce.path.clone();
+        let clipped = bounce.run(&mut |_| {});
+        self.end_render();
+        self.finish_bounce(then, &path, clipped?)
+    }
+
+    /// The half of [`render_clip`](Self::render_clip) that needs the session.
+    fn prepare_render_clip(&mut self, id: ClipId) -> Result<(Bounce, AfterBounce), String> {
+        let bundle = self
+            .bundle
+            .clone()
+            .ok_or_else(|| "save this project first — a render goes inside it".to_string())?;
+        let clip = self
+            .project
+            .clips
+            .get(id)
+            .cloned()
+            .ok_or("that clip is not there")?;
+        if clip.muted {
+            return Err("that clip is muted \u{2014} unmute it to render it".to_string());
+        }
+        let index = self
+            .lane_ids()
+            .iter()
+            .position(|lane| *lane == clip.lane)
+            .ok_or("that clip is on no row")?;
+        let name = self
+            .clips()
+            .into_iter()
+            .find(|info| info.id == id)
+            .map_or_else(|| "Clip".to_string(), |info| info.name);
+        let before = self.lane_ids();
+        let options = RealiseOptions {
+            quality: crate::RENDER_QUALITY,
+            ..self.options
+        };
+        let realised = self.realise_for_render(options)?;
+        let timeline = fontelle_sequencer::compile_with(
+            &self.project,
+            &fontelle_sequencer::NodeMaps {
+                channels: &realised.channel_nodes,
+                params: &realised.param_nodes,
+                audio: &realised.audio_nodes,
+            },
+            fontelle_sequencer::CompileScope::Clip(id),
+        );
+        // From the song's zero and cut to the clip, for the reason a row's
+        // bounce gives; cut where the drawn tempo puts it.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let from = tempo.tick_to_sample(clip.start).max(0);
+        let to = tempo.tick_to_sample(clip.start + clip.length).max(from);
+        let tail = tempo.tick_to_sample(RELEASE_TAIL).max(0);
+        let renders = bundle.join("renders");
+        std::fs::create_dir_all(&renders).map_err(|e| format!("{}: {e}", renders.display()))?;
+        let path = free_render_path(&renders, &name);
+        let at = self.project.tempo_map.tick_to_sample(clip.start);
+        Ok((
+            Bounce {
+                timeline,
+                graph: realised.graph,
+                render_to: to + tail,
+                from,
+                end: BounceEnd::At(to + tail),
+                floor: 0,
+                path,
+                sample_rate: self.options.sample_rate,
+            },
+            AfterBounce::Row {
+                index,
+                at,
+                name,
+                before,
+            },
+        ))
+    }
+
+    /// Names a clip, per keystroke — or, blank, gives it back the caption of
+    /// what it plays. One undo for the typing (`RenameClip` coalesces).
+    pub fn rename_clip(&mut self, clip: ClipId, name: &str) {
+        self.run(Box::new(fontelle_model::RenameClip::new(
+            clip,
+            Some(name.to_string()),
+        )));
+    }
+
     /// The half of [`render_lane`](Self::render_lane) that needs the session.
     fn prepare_render_lane(
         &mut self,
@@ -7231,6 +7326,7 @@ impl Session {
             },
         };
         let clip = Clip {
+            name: None,
             lane,
             start,
             length: end - start,
@@ -9024,6 +9120,28 @@ impl StudioHost for Session {
 
     fn render_lane(&mut self, index: usize, span: Option<(Tick, Tick)>) -> Result<String, String> {
         self.start_bounce(|s| s.prepare_render_lane(index, span), "Rendering")
+    }
+
+    fn render_clip(&mut self, clip: ClipId) -> Result<String, String> {
+        self.start_bounce(|s| s.prepare_render_clip(clip), "Rendering")
+    }
+
+    fn rename_clip(&mut self, clip: ClipId, name: &str) {
+        Session::rename_clip(self, clip, name);
+    }
+
+    /// The hook the next phase fills: an audio clip's key, tempo and chords.
+    /// Until then it says so, and only of audio — the menu offers it on
+    /// nothing else.
+    fn analyze_musically(&mut self, clip: ClipId) -> Result<String, String> {
+        match self.project.clips.get(clip).map(|clip| &clip.source) {
+            Some(ClipSource::Audio(_)) => {
+                eprintln!("Fontelle: Analyze Musically asked of clip {clip:?} (not yet built)");
+                Ok("Analyze Musically is coming soon".to_string())
+            }
+            Some(_) => Err("only an audio clip can be analysed musically".to_string()),
+            None => Err("that clip is not there".to_string()),
+        }
     }
 
     fn add_lane_at(&mut self, index: usize) {
@@ -12115,6 +12233,7 @@ impl StudioHost for Session {
         }
 
         let clip = Clip {
+            name: None,
             lane: fontelle_types::LaneId::default(),
             start,
             length,
@@ -13049,6 +13168,9 @@ impl StudioHost for Session {
                         )
                     }
                 };
+                // A clip somebody has named is called that, whatever it
+                // plays.
+                let name = clip.name.clone().unwrap_or(name);
                 ClipInfo {
                     id,
                     lane: lanes.iter().position(|l| *l == clip.lane).unwrap_or(0),
@@ -13214,6 +13336,7 @@ impl StudioHost for Session {
 
                 let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
                 let clip = Clip {
+                    name: None,
                     lane: lane_id,
                     start,
                     length: bar,

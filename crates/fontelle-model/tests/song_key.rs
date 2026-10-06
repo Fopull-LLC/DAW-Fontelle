@@ -74,6 +74,7 @@ fn fixture() -> Fixture {
         notes.insert(a_note(PPQN * 2, 67, 120)),
     ];
     let clip = project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

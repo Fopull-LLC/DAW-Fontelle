@@ -660,6 +660,7 @@ pub fn read_midi(
             .unwrap_or(0);
         let note_count = notes.len();
         project.clips.insert(Clip {
+            name: None,
             lane,
             start: 0,
             length,

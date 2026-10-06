@@ -100,6 +100,7 @@ fn session() -> Session {
         channel: None,
     });
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

@@ -1261,6 +1261,19 @@ pub trait StudioHost: DocumentHost {
     ) -> Result<String, String> {
         Err("this studio cannot render".to_string())
     }
+    /// Bounces **one clip** to audio, onto a row of its own under the clip's
+    /// — the clip's name menu's "Render to audio". Answers when it has
+    /// started, as [`render_lane`](Self::render_lane) does.
+    fn render_clip(&mut self, _clip: fontelle_types::ClipId) -> Result<String, String> {
+        Err("this studio cannot render".to_string())
+    }
+    /// Names a clip — blank gives it back the caption of what it plays.
+    fn rename_clip(&mut self, _clip: fontelle_types::ClipId, _name: &str) {}
+    /// **Analyze Musically**, on an audio clip: the hook the analysis fills.
+    /// What comes back is said on the status line.
+    fn analyze_musically(&mut self, _clip: fontelle_types::ClipId) -> Result<String, String> {
+        Err("this studio cannot analyse audio".to_string())
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///

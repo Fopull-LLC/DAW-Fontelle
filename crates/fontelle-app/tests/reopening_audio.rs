@@ -66,6 +66,7 @@ fn a_project_with_a_take(dir: &Path, name: &str) -> (Project, SampleLibrary, Ass
         .expect("a blank project has lanes");
     let asset = imported.asset.clone();
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

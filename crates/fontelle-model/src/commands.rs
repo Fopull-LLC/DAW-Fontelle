@@ -4474,6 +4474,7 @@ impl Command for AddAudioClip {
         let onto = self.onto.filter(|lane| doc.lanes.get(*lane).is_some());
 
         let clip = Clip {
+            name: None,
             lane: LaneId::default(),
             start: self.start,
             length: self.length,
@@ -4923,6 +4924,7 @@ impl Command for ImportParts {
                 notes.insert(note.clone());
             }
             let clip = Clip {
+                name: None,
                 lane: lane_id,
                 start: 0,
                 length,
@@ -5650,6 +5652,84 @@ impl Command for ResizeClip {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+/// Names a clip, or takes its name off (`None`, or a name of nothing but
+/// spaces): it is captioned with what it plays again.
+///
+/// Ty: *"there should be a name on each clip ... click that name to open a
+/// little menu ... renaming it"*. Coalescing, like every other rename here:
+/// typing is one gesture and one undo entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RenameClip {
+    clip: ClipId,
+    name: Option<String>,
+    #[serde(with = "crate::wire::nested")]
+    previous: Option<Option<String>>,
+}
+
+impl RenameClip {
+    pub fn new(clip: ClipId, name: Option<String>) -> Self {
+        Self {
+            clip,
+            name: name
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty()),
+            previous: None,
+        }
+    }
+}
+
+impl Command for RenameClip {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RenameClip(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let clip = doc
+            .clips
+            .get_mut(self.clip)
+            .ok_or_else(|| no_clip(self.clip))?;
+        let previous = std::mem::replace(&mut clip.name, self.name.clone());
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(RenameClip::new(self.clip, previous.clone())),
+            None => Box::new(NotApplied::new("renaming a clip")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Rename clip"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<RenameClip>() else {
+            return false;
+        };
+        if next.clip != self.clip {
+            return false;
+        }
+        self.name = next.name.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.name.as_ref().map_or(0, String::len)
+            + self
+                .previous
+                .as_ref()
+                .and_then(Option::as_ref)
+                .map_or(0, String::len)
     }
 }
 
@@ -9934,6 +10014,7 @@ impl Command for AddPrefabInstance {
             }
         };
         let clip = Clip {
+            name: None,
             lane: self.lane,
             start: self.start,
             length: self.length.max(MIN_CLIP_LENGTH),

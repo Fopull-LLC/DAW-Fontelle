@@ -64,6 +64,7 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
         order: 0,
     });
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 16,

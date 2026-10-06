@@ -22,6 +22,7 @@ use std::ops::Range;
 use fontelle_types::{ClipId, ClipStretch, PPQN, PointId, Tick};
 
 use crate::canvas::automation::{automation_block, block_tick_at, block_value_at};
+use crate::canvas::menu::MenuEntry;
 use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit, subdivision_unit};
 use crate::canvas::{Modifiers, MouseButton, clamp_to_grid};
 use crate::document::{ClipInfo, ClipKind};
@@ -3672,4 +3673,169 @@ pub fn ghost_pulse(seconds: f32, moving: bool) -> f32 {
         return MID;
     }
     MID + SWING * (seconds * std::f32::consts::TAU / PERIOD).sin()
+}
+
+// ------------------------------------------------- a clip's name, centred ---
+//
+// Ty: *"there should be a name on each clip that is in the center of the clip
+// so its not overlapping any of the end of clip controls like looping
+// extending etc. and make it so you can click that name to open a little
+// menu thats like a right click menu"*.
+
+/// How narrow a name may be cut before it is not worth drawing: a letter and
+/// its ellipsis.
+const MIN_CAPTION_PX: f32 = 18.0;
+
+/// How tall a line of a name is, for where it goes and what a press on it
+/// is: a caption band shallower than this cannot hold it, and the name goes
+/// down the middle of the block instead, as it always did.
+const NAME_LINE_PX: f32 = 16.0;
+
+/// The room a clip's name has: the part of the block on screen, in its
+/// caption band (the whole block when it is too shallow for one), with the
+/// edge grips and an audio block's corner fade handles kept clear on **both**
+/// sides, so the name sits in the middle of what is left.
+pub fn clip_name_slot(block: Rect, grid: Rect, clip: &ClipInfo) -> Rect {
+    let shown = block.intersection(&grid);
+    if shown.is_empty() {
+        return Rect::ZERO;
+    }
+    let mut keep_clear = clip_grip(block) + 4.0;
+    if clip.kind == ClipKind::Audio {
+        keep_clear = keep_clear.max(FADE_HANDLE_PX.min(block.width / 2.0) + 4.0);
+    }
+    let (header, _) = clip_bands(block);
+    let (y, height) = if header.height >= NAME_LINE_PX {
+        (header.y, header.height)
+    } else {
+        (block.y, block.height)
+    };
+    // Measured against the whole block's ends, so a name on a block running
+    // off the edge of the grid is still clear of the grip it will come to.
+    let left = shown.x.max(block.x + keep_clear);
+    let right = shown.right().min(block.right() - keep_clear);
+    Rect::new(left, y, (right - left).max(0.0), height)
+}
+
+/// Where a name `text_width` wide is drawn in `slot`: centred both ways,
+/// one line tall — which is also what a press on the name is, so the rest
+/// of the block's middle is still the block. `None` when it does not fit —
+/// [`clip_caption`] is what makes it fit.
+pub fn clip_name_rect(slot: Rect, text_width: f32) -> Option<Rect> {
+    if slot.is_empty() || text_width <= 0.0 || text_width > slot.width {
+        return None;
+    }
+    let height = NAME_LINE_PX.min(slot.height);
+    Some(Rect::new(
+        slot.x + (slot.width - text_width) / 2.0,
+        slot.y + (slot.height - height) / 2.0,
+        text_width,
+        height,
+    ))
+}
+
+/// `name` as it fits in `room` pixels, `measure` saying how wide a string
+/// is: whole when it fits, cut short with an ellipsis when it does not, and
+/// `None` when not even a letter and its ellipsis would.
+pub fn clip_caption(name: &str, room: f32, mut measure: impl FnMut(&str) -> f32) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || room < MIN_CAPTION_PX {
+        return None;
+    }
+    if measure(name) <= room {
+        return Some(name.to_string());
+    }
+    let chars: Vec<char> = name.chars().collect();
+    // The longest front of it that fits with its ellipsis: a binary search,
+    // because each guess is a string to shape.
+    let (mut fits, mut fails) = (0usize, chars.len());
+    while fails - fits > 1 {
+        let mid = (fits + fails) / 2;
+        let cut: String = chars[..mid].iter().collect();
+        if measure(&format!("{}\u{2026}", cut.trim_end())) <= room {
+            fits = mid;
+        } else {
+            fails = mid;
+        }
+    }
+    if fits == 0 {
+        return None;
+    }
+    let cut: String = chars[..fits].iter().collect();
+    Some(format!("{}\u{2026}", cut.trim_end()))
+}
+
+/// Which clip's **name** is under the point, if any — the topmost block's,
+/// and only where a press on the block would be a press on its body: a fade
+/// handle, a grip, a point or an automation curve keeps its own press even
+/// where a name is drawn over it. `width` is how wide each block's caption
+/// is drawn, `None` for a block too narrow to show one.
+pub fn clip_name_hit(
+    view: &TimelineView,
+    layout: &TimelineLayout,
+    clips: &[ClipInfo],
+    width: impl Fn(&ClipInfo) -> Option<f32>,
+    x: f32,
+    y: f32,
+) -> Option<ClipId> {
+    let TimelineHit::Clip(id, ClipPart::Body) = timeline_hit(view, layout, clips, x, y) else {
+        return None;
+    };
+    let clip = clips.iter().rev().find(|clip| clip.id == id)?;
+    let block = clip_rect(view, layout.grid, clip);
+    let name = clip_name_rect(clip_name_slot(block, layout.grid, clip), width(clip)?)?;
+    name.contains(x, y).then_some(id)
+}
+
+/// What a row of a clip's menu does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipMenuRow {
+    /// The clip's name, greyed: whose menu this is.
+    Heading,
+    Rename,
+    /// Just this clip, bounced to audio on a row of its own under it.
+    Render,
+    Duplicate,
+    Delete,
+    Mute,
+    Loop,
+    /// An audio clip's key, tempo and chords — `StudioHost::analyze_musically`.
+    AnalyzeMusically,
+}
+
+/// The menu a clip's name opens: the right-click menu a clip would have, with
+/// what can be done to this one clip.
+pub fn clip_menu(clip: &ClipInfo) -> (Vec<MenuEntry>, Vec<ClipMenuRow>) {
+    let mut entries = vec![MenuEntry::disabled(clip.name.clone())];
+    let mut rows = vec![ClipMenuRow::Heading];
+    let mut push = |entry: MenuEntry, row| {
+        entries.push(entry);
+        rows.push(row);
+    };
+    push(MenuEntry::new("Rename\u{2026}"), ClipMenuRow::Rename);
+    push(MenuEntry::new("Render to audio"), ClipMenuRow::Render);
+    if clip.kind == ClipKind::Audio {
+        push(
+            MenuEntry::new("Analyze Musically"),
+            ClipMenuRow::AnalyzeMusically,
+        );
+    }
+    push(
+        MenuEntry::new("Duplicate").after_rule(),
+        ClipMenuRow::Duplicate,
+    );
+    push(
+        MenuEntry::new(if clip.muted { "Unmute" } else { "Mute" }),
+        ClipMenuRow::Mute,
+    );
+    push(
+        MenuEntry::new(if clip.loop_length.is_some() {
+            "Stop looping"
+        } else {
+            "Loop"
+        }),
+        ClipMenuRow::Loop,
+    );
+    push(MenuEntry::new("Delete").after_rule(), ClipMenuRow::Delete);
+    (entries, rows)
 }

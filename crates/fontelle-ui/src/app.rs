@@ -632,6 +632,12 @@ enum MenuTarget {
         strip: usize,
         inputs: Vec<String>,
     },
+    /// A clip's own menu, opened by clicking its name: rename it, render
+    /// just it, duplicate, mute, loop or delete it — and, for audio, Analyze
+    /// Musically. See `canvas::clip_menu`.
+    Clip(fontelle_types::ClipId),
+    /// "Rename…" from that menu, asking for the clip's name.
+    ClipName(fontelle_types::ClipId),
     /// One point of an automation block: its shape, or its removal.
     Point {
         clip: fontelle_types::ClipId,
@@ -806,6 +812,7 @@ impl MenuTarget {
             Self::DevicePresetNewCategory(_) => "New category",
             Self::TypeValue { .. } => "Value",
             Self::WaveFormula { .. } => "Formula",
+            Self::ClipName(_) => "Clip name",
             _ => return None,
         })
     }
@@ -885,6 +892,8 @@ impl MenuTarget {
             | Self::MixerTrack(_)
             | Self::TrackInput { .. }
             | Self::Point { .. }
+            | Self::Clip(_)
+            | Self::ClipName(_)
             | Self::PluginPicker(_)
             | Self::NameProject(_)
             | Self::ImportChoice => None,
@@ -2033,6 +2042,13 @@ pub struct WindowApp {
     /// Read once at the open: the clipboard is another program's, and asking
     /// it on every redraw of the menu is a process a frame.
     scale_paste: Option<fontelle_types::KeyScale>,
+    /// What each clip on screen is captioned with, cut to fit between its
+    /// grips (`canvas::clip_caption`) — measured as the labels are shaped,
+    /// and what a press is tested against to say it landed on the name.
+    clip_captions: std::collections::HashMap<fontelle_types::ClipId, String>,
+    /// A left press that landed on a clip's name, and where: let go there
+    /// without moving, it opens the clip's menu.
+    name_press: Option<(fontelle_types::ClipId, f32, f32)>,
     /// Which band of the open EQ the controls under the curve describe, and
     /// which handle is drawn as the one in hand.
     ///
@@ -2488,6 +2504,8 @@ impl WindowApp {
             song_key: None,
             key_root: 0,
             scale_paste: None,
+            clip_captions: std::collections::HashMap::new(),
+            name_press: None,
             eq_band: 0,
             eq_drag: None,
             mix_drag: None,
@@ -3251,6 +3269,7 @@ impl WindowApp {
                     glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
                     selected_lane: self.selected_lane,
                     ghost,
+                    captions: &self.clip_captions,
                     can_paste: self
                         .options
                         .document
@@ -4864,6 +4883,12 @@ impl ApplicationHandler for WindowApp {
                 let edits =
                     self.timeline
                         .release_over(x, y, &self.timeline_layout, &self.clips, beats);
+                // A click on a clip's name — down and up in one place.
+                let name_click = self
+                    .name_press
+                    .take()
+                    .filter(|(_, px, py)| (x - px).abs() <= 3.0 && (y - py).abs() <= 3.0)
+                    .map(|(id, _, _)| id);
                 // The cut tool's whole edit lands here, like the roll's: a
                 // line half-drawn is not a cut.
                 self.apply_arrange_edits(edits);
@@ -4882,6 +4907,9 @@ impl ApplicationHandler for WindowApp {
                 // this for itself.
                 if let Some(doc) = &mut self.options.document {
                     doc.end_gesture();
+                }
+                if let Some(id) = name_click {
+                    self.open_clip_menu(id, x, y);
                 }
                 self.tree.invalidate(PANEL);
                 self.update_cursor();
@@ -8110,6 +8138,28 @@ impl WindowApp {
                     && clip.start + clip.length >= ticks.start
                 {
                     self.labels.ensure(&clip.name, &font, &mut self.text);
+                    // The name, cut to the room between the block's grips —
+                    // each guess shaped, so the one drawn is one measured.
+                    let block = crate::canvas::clip_rect(
+                        &self.timeline.view,
+                        self.timeline_layout.grid,
+                        clip,
+                    );
+                    let slot =
+                        crate::canvas::clip_name_slot(block, self.timeline_layout.grid, clip);
+                    let (labels, text) = (&mut self.labels, &mut self.text);
+                    let caption = crate::canvas::clip_caption(&clip.name, slot.width, |s| {
+                        labels.ensure(s, &font, text);
+                        labels.get(s).map_or(f32::MAX, |t| t.width)
+                    });
+                    match caption {
+                        Some(caption) => {
+                            self.clip_captions.insert(clip.id, caption);
+                        }
+                        None => {
+                            self.clip_captions.remove(&clip.id);
+                        }
+                    }
                     if let Some(fraction) = clip.audio.fetching {
                         let caption = crate::canvas::fetching_caption(fraction);
                         self.labels.ensure(&caption, &font, &mut self.text);
@@ -14613,6 +14663,31 @@ impl WindowApp {
             && self
                 .double_click
                 .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        // A press on a clip's name: let go there without moving, and the
+        // clip's menu opens (`release`). It still picks the clip up first, so
+        // a drag that starts on the name moves the clip as it always did.
+        self.name_press = (button == MouseButton::Left
+            && !doubled
+            && !self.modifiers.shift_key()
+            && !self.modifiers.control_key()
+            && self.timeline.tool() != crate::canvas::TimelineTool::Slice)
+            .then(|| {
+                crate::canvas::clip_name_hit(
+                    &self.timeline.view,
+                    &self.timeline_layout,
+                    &self.clips,
+                    |clip| {
+                        self.clip_captions
+                            .get(&clip.id)
+                            .and_then(|caption| self.labels.get(caption))
+                            .map(|text| text.width)
+                    },
+                    x,
+                    y,
+                )
+            })
+            .flatten()
+            .map(|id| (id, x, y));
         let edits = if doubled {
             self.timeline.double_press(
                 button,
@@ -17334,6 +17409,15 @@ impl WindowApp {
             MenuTarget::NameProject(purpose) => {
                 crate::canvas::name_prompt_entries(purpose.title(), self.menu_filter.text())
             }
+            MenuTarget::Clip(id) => self
+                .clips
+                .iter()
+                .find(|clip| clip.id == *id)
+                .map(|clip| crate::canvas::clip_menu(clip).0)
+                .unwrap_or_default(),
+            MenuTarget::ClipName(_) => {
+                crate::canvas::name_prompt_entries("Clip name", self.menu_filter.text())
+            }
             MenuTarget::PresetMenu(kind) => self.preset_menu_rows(*kind).0,
             // One row per page, worded by the view so that the menu and
             // anything else that lists them cannot disagree. The page you are
@@ -18021,6 +18105,7 @@ impl WindowApp {
                     | MenuTarget::DevicePresetNewCategory(_)
                     | MenuTarget::TypeValue { .. }
                     | MenuTarget::WaveFormula { .. }
+                    | MenuTarget::ClipName(_)
             )
         );
         if !naming
@@ -18198,6 +18283,26 @@ impl WindowApp {
     /// [`menu_entries`](Self::menu_entries), and the two are read together.
     fn choose_menu(&mut self, target: &MenuTarget, index: usize) {
         match (target, index) {
+            (MenuTarget::Clip(id), index) => {
+                let id = *id;
+                let Some(clip) = self.clips.iter().find(|clip| clip.id == id).cloned() else {
+                    return;
+                };
+                let row = crate::canvas::clip_menu(&clip).1.get(index).copied();
+                self.choose_clip_menu(&clip, row);
+            }
+            (MenuTarget::ClipName(id), _) => {
+                let id = *id;
+                let name = self.menu_filter.text().to_string();
+                self.menu_filter.clear();
+                if let Some(doc) = &mut self.options.document {
+                    doc.rename_clip(id, &name);
+                    doc.end_gesture();
+                }
+                self.refresh_studio();
+                self.refresh_title();
+                self.tree.invalidate(TIMELINE);
+            }
             (MenuTarget::Channel(channel), 0) => {
                 if let Some(doc) = &mut self.options.document {
                     doc.select_channel(*channel);
@@ -21486,6 +21591,115 @@ impl WindowApp {
                 );
                 self.tree.invalidate(TIMELINE);
             }
+        }
+    }
+
+    /// Opens a clip's own menu under its name — or, when the name is not on
+    /// screen, where the pointer is.
+    fn open_clip_menu(&mut self, id: fontelle_types::ClipId, x: f32, y: f32) {
+        let at = self
+            .clips
+            .iter()
+            .find(|clip| clip.id == id)
+            .and_then(|clip| {
+                let grid = self.timeline_layout.grid;
+                let block = crate::canvas::clip_rect(&self.timeline.view, grid, clip);
+                let width = self
+                    .clip_captions
+                    .get(&id)
+                    .and_then(|caption| self.labels.get(caption))?
+                    .width;
+                crate::canvas::clip_name_rect(
+                    crate::canvas::clip_name_slot(block, grid, clip),
+                    width,
+                )
+            })
+            .map_or((x, y), |name| (name.x, name.bottom()));
+        let bounds = self.layout.window;
+        self.open_menu(MenuTarget::Clip(id), at.0, at.1, bounds);
+    }
+
+    /// What a row of a clip's name menu does — see `canvas::clip_menu`.
+    fn choose_clip_menu(
+        &mut self,
+        clip: &crate::document::ClipInfo,
+        row: Option<crate::canvas::ClipMenuRow>,
+    ) {
+        use crate::canvas::{ArrangeEdit, ClipMenuRow};
+        let id = clip.id;
+        let edit = match row {
+            None | Some(ClipMenuRow::Heading) => return,
+            Some(ClipMenuRow::Rename) => {
+                self.ask_for_a_name_of(MenuTarget::ClipName(id), clip.name.clone());
+                return;
+            }
+            // A render is slow and silent while it runs; it says when it has
+            // started, and the take lands on a row under the clip's.
+            Some(ClipMenuRow::Render) => {
+                if let Some(doc) = &mut self.options.document {
+                    self.status = match doc.render_clip(id) {
+                        Ok(said) | Err(said) => said,
+                    };
+                }
+                self.tree.invalidate(TRANSPORT);
+                return;
+            }
+            Some(ClipMenuRow::AnalyzeMusically) => {
+                self.analyze_musically(id);
+                return;
+            }
+            Some(ClipMenuRow::Duplicate) => ArrangeEdit::Duplicate {
+                ids: vec![id],
+                tick_offset: clip.length,
+            },
+            Some(ClipMenuRow::Delete) => ArrangeEdit::Remove(vec![id]),
+            Some(ClipMenuRow::Mute) => ArrangeEdit::SetMuted {
+                ids: vec![id],
+                muted: !clip.muted,
+            },
+            Some(ClipMenuRow::Loop) => ArrangeEdit::SetLoop {
+                ids: vec![id],
+                loop_length: if clip.loop_length.is_some() {
+                    None
+                } else {
+                    Some(clip.length)
+                },
+            },
+        };
+        self.apply_arrange_edits(vec![edit]);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.tree.invalidate(TIMELINE);
+    }
+
+    /// **Analyze Musically**, on one audio clip: the hook the analysis fills
+    /// (`StudioHost::analyze_musically`). Takes nothing but the clip, and
+    /// says what came back on the status line.
+    fn analyze_musically(&mut self, clip: fontelle_types::ClipId) {
+        if let Some(doc) = &mut self.options.document {
+            self.status = match doc.analyze_musically(clip) {
+                Ok(said) | Err(said) => said,
+            };
+        }
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    /// A name prompt for `target`, seeded with `seed` and all of it
+    /// selected — [`ask_for_a_name`](Self::ask_for_a_name) for a prompt
+    /// that is not a project's.
+    fn ask_for_a_name_of(&mut self, target: MenuTarget, seed: String) {
+        self.dismissed = None;
+        let bounds = self.layout.window;
+        let (x, y) = (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 3.0,
+        );
+        self.open_menu(target, x, y, bounds);
+        if self.menu.is_some() && !seed.is_empty() {
+            self.menu_filter.set(seed);
+            self.menu_filter.select_all();
+            self.relayout_menu();
         }
     }
 

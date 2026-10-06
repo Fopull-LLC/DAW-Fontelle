@@ -38,6 +38,7 @@ fn channel(project: &mut Project, name: &str) -> ChannelId {
 
 fn notes_clip(project: &mut Project, lane: LaneId, channel: ChannelId, start: i64) -> ClipId {
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start,
         length: PPQN * 4,
@@ -63,6 +64,7 @@ fn audio_clip(project: &mut Project, lane: LaneId) -> ClipId {
         kind: AssetKind::Sample,
     };
     let mut add = AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

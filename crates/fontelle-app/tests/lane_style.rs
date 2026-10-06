@@ -332,6 +332,7 @@ fn an_audio_clips_route_reads_as_its_lanes_track_and_is_not_changed_from_the_edi
         kind: fontelle_types::AssetKind::Sample,
     };
     let take = project.clips.insert(fontelle_model::Clip {
+        name: None,
         lane: row,
         start: 0,
         length: BAR,

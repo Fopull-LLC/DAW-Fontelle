@@ -982,6 +982,7 @@ fn keep_the_take(
         order: 0,
     });
     AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length,

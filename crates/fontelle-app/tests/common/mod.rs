@@ -149,6 +149,7 @@ pub fn a_project_with_a_clip(bars: i64, bpm: f64, sample_rate: u32) -> Project {
         .copied()
         .expect("a blank project has rows");
     AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4 * bars.max(1),

@@ -87,6 +87,7 @@ fn fixture() -> Fixture {
         notes.insert(a_note(PPQN * 2, 67)),
     ];
     let clip = project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -198,6 +199,7 @@ fn every_note_command_inverts_exactly() {
 fn every_clip_command_inverts_exactly() {
     let mut f = fixture();
     let new_clip = Clip {
+        name: None,
         lane: f.lane,
         start: PPQN * 8,
         length: PPQN * 4,
@@ -1320,6 +1322,7 @@ fn a_clip_on_a_new_row_is_one_command_and_one_undo() {
     let mut f = fixture();
     let lanes_before = f.project.lanes.len();
     let clip = Clip {
+        name: None,
         lane: f.lane,
         start: 0,
         length: PPQN * 4,
@@ -1412,6 +1415,7 @@ fn relocating_a_file_rewrites_every_reference_to_it() {
     };
     let old = asset("/home/alice/loop.wav", 0);
     AddClip::new(Clip {
+        name: None,
         lane: f.lane,
         start: PPQN * 8,
         length: PPQN,
@@ -1444,6 +1448,7 @@ fn relocating_a_file_rewrites_every_reference_to_it() {
     .unwrap();
     let other = asset("/home/alice/other.wav", 5);
     AddClip::new(Clip {
+        name: None,
         lane: f.lane,
         start: PPQN * 12,
         length: PPQN,
