@@ -67,7 +67,11 @@ the example gives the plugin's backtrace; a gdb Python breakpoint on
 `eglCreateWindowSurface` / `XCreateWindow` printing arguments and `$rax`
 is what showed Vital drawing into the root window. The studio sets
 `GDK_SCALE=1` at start on a display with no XSETTINGS manager (amsynth
-2.0.0).
+2.0.0). Vital's editor is refused where the EGL probe
+(`fontelle --fontelle-egl-probe`, `fontelle_host::alpha_egl`) cannot make
+its surface; another plugin that aborts the same way goes in
+`NEEDS_ALPHA_EGL`. Settings → Compatible plugin graphics puts EGL on Mesa
+from the next start.
 
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their

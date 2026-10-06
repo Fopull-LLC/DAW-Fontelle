@@ -19,7 +19,44 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05, latest — two plugin windows that took the studio down
+**As of 2026-10-05, latest — Vital's window refused instead of crashing,
+and Compatible plugin graphics.** Still v0.25.1 (not bumped; for v0.25.2).
+The entry below found the cause; this makes the studio survive it.
+
+- **The studio asks before it opens an editor that needs an alpha EGL
+  config** (`fontelle_host::alpha_egl`). A small table (`NEEDS_ALPHA_EGL`:
+  Vital's CLAP, VST 3 and VST 2 keys, and its whole name) says which. For
+  those, a child process (`fontelle --fontelle-egl-probe`) does what bgfx
+  does — the first RGBA8/D24S8 window config, a surface on an unmapped
+  window of the root's visual — and says whether the surface was made.
+  Asked once a session (`EditorGate`), SIGTERM before SIGKILL at its 10 s
+  timeout (it holds a driver's display). Where it fails (or the probe
+  crashed), `PluginRack::open_editor` refuses before the window is made or
+  the plugin is called: *"Vital's window can't open with this graphics
+  driver (NVIDIA on X11). Its knobs are in Fontelle's panel. Turn on
+  Settings → Compatible plugin graphics and restart to use its window."*,
+  and the panel opens. An unknown answer (no display, no libEGL) opens it
+  as before. On Ty's machine the probe answers `EGL_BAD_CONFIG` from
+  NVIDIA and a surface from Mesa — the report, reproduced.
+- **Settings → Compatible plugin graphics** (Linux, off; settings format
+  10). On, `main` sets `__EGL_VENDOR_LIBRARY_FILENAMES` to Mesa's vendor
+  file at start, beside `GDK_SCALE`, unless somebody set it
+  (`gui::egl_vendor_for`, `steady_egl_vendor`). Flipping it says "applies
+  after restart" and the row says "On after restart" until then; without
+  Mesa's `50_mesa.json` the row has nothing to press and says why.
+  **Fontelle's window is unaffected**: wgpu enumerates NVIDIA Vulkan first
+  either way (checked); only its GL fallback would become llvmpipe, used
+  if Vulkan is missing. GLX plugins do not read the variable.
+- **Seen on `:1`**: off, the gate refuses Vital (CLAP and VST 3) and
+  nothing aborts; on, both open and draw their sign-in screen (grabbed off
+  the window) and the example exits 0; Dragonfly Room (DPF, OpenGL)
+  draws with it on. `plugin_editor` takes `PROBE_COMPATIBLE=1` and
+  `PROBE_GATE=<fontelle-scan-probe>`.
+- Tests: `fontelle-host/tests/alpha_egl.rs` (table, decision, parsing, the
+  child with no display, the variable), `fontelle-app/tests/plugin_window_gl.rs`
+  (the setting, the row, the refusal with no plugin call).
+
+**As of 2026-10-05 — two plugin windows that took the studio down
 (Ty's machine: KDE Plasma on Wayland, Xwayland, NVIDIA 615 with egl-x11).**
 Still v0.25.1 (not bumped). Neither is Fontelle's bug, and neither came from
 v0.25.1's key-press masks: both happen with the plain window (no strip),

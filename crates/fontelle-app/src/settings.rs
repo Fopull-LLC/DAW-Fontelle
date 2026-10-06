@@ -44,11 +44,12 @@ pub use fontelle_types::FolderKind;
 /// grew the recent projects and the update switch, seven since it grew the
 /// three a shared song needs (`docs/collab-plan.md` §10.4), eight since it
 /// grew how much a theme's backdrops may move (hub card 0366), nine since it
-/// grew the audio output's backend, device and buffer. Every added field carries
+/// grew the audio output's backend, device and buffer, ten since it grew
+/// Compatible plugin graphics. Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 9;
+pub const SETTINGS_FORMAT_VERSION: u32 = 10;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.
@@ -243,6 +244,12 @@ pub struct Settings {
     /// default: Ty likes *"lots of moving windows"*.
     #[serde(default = "yes")]
     pub backdrops_when_unfocused: bool,
+    /// Plugin windows that draw with EGL draw with Mesa's, from the next
+    /// start (`fontelle_host::gui::egl_vendor_for`). Off by default, and
+    /// Linux's alone: Vital's window aborts the studio on NVIDIA's EGL under
+    /// X11 and draws on Mesa's (`fontelle_host::alpha_egl`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compatible_plugin_graphics: bool,
 }
 
 fn thirty() -> u16 {
@@ -309,6 +316,7 @@ impl Default for Settings {
             backdrop_scale_percent: fifty(),
             hold_backdrops_while_playing: false,
             backdrops_when_unfocused: true,
+            compatible_plugin_graphics: false,
         }
     }
 }
@@ -553,6 +561,9 @@ pub enum SettingRow {
     /// Where "Save as…" puts a preset, and where the bank reads the user's
     /// own back from (§P.3).
     PresetFolder,
+    /// Plugin windows that draw with EGL use Mesa's, from the next start.
+    /// A switch; Linux only, and a sentence where Mesa's EGL is missing.
+    CompatibleGraphics,
     /// Walks the plugin folders again. Also a button.
     ///
     /// Its own row because a scan `dlopen`s every bundle it finds, so it does
@@ -780,8 +791,28 @@ pub fn setting_rows_with(
         if row == SettingRow::Heading("Extensions") {
             rows.extend((0..crate::extensions::CATALOGUE.len()).map(SettingRow::Extension));
         }
+        // Linux's alone: plugin windows are X11 there, and EGL's vendor is
+        // glvnd's to choose.
+        if row == SettingRow::RescanPlugins && cfg!(target_os = "linux") {
+            rows.push(SettingRow::CompatibleGraphics);
+        }
     }
     rows
+}
+
+/// What the Compatible plugin graphics row says: the setting (`on`), whether
+/// it is in force in this process (`active`, `gui::compatible_graphics_active`)
+/// and whether Mesa's EGL is installed (`mesa`). It changes the environment
+/// the process starts with, so a flip applies after restart, and says so.
+pub fn compatible_graphics_value(on: bool, active: bool, mesa: bool) -> String {
+    match (mesa, on, active) {
+        (false, _, false) => "Unavailable: Mesa's EGL is not installed",
+        (_, true, true) => "On",
+        (_, false, false) => "Off",
+        (_, true, false) => "On after restart",
+        (_, false, true) => "Off after restart",
+    }
+    .to_string()
 }
 
 /// How far transpose goes either way. Two octaves is as far as anybody moves a
@@ -866,6 +897,7 @@ impl SettingRow {
             Self::ImportFlFolders => "Use FL Studio's folders",
             Self::PresetFolder => "My presets",
             Self::RescanPlugins => "Rescan plugins",
+            Self::CompatibleGraphics => "Compatible plugin graphics",
             Self::CheckForUpdates => "Check at launch",
             Self::YourName => "Your name",
             Self::Relay => "Relay",
@@ -1002,6 +1034,13 @@ impl SettingRow {
                 },
                 None => String::new(),
             },
+            // As this file has it; the session says when it takes effect.
+            Self::CompatibleGraphics => if settings.compatible_plugin_graphics {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
             Self::CheckForUpdates => if settings.check_for_updates {
                 "On"
             } else {
@@ -1125,6 +1164,12 @@ impl SettingRow {
             Self::PluginDir(_) => "A folder you added; plugins in it are found at launch",
             Self::ImportFlFolders => "Adds the plugin folders FL Studio searches",
             Self::RescanPlugins => "Looks again, after you install a plugin",
+            // One line, so the rest is the README's: Mesa draws on the CPU
+            // unless it has a GPU driver of its own here, and the studio's
+            // own window is Vulkan and does not change.
+            Self::CompatibleGraphics => {
+                "Plugin windows using OpenGL/EGL draw with Mesa, slower but sure. Applies after restart"
+            }
             Self::PresetFolder => "Where your saved presets go and are read from",
             Self::Extension(_) => "An optional part of Fontelle, downloaded on request",
             Self::YourName => "What the people you share a project with see",
@@ -1185,6 +1230,7 @@ impl SettingRow {
             | Self::ImportFlFolders
             | Self::RescanPlugins
             | Self::Extension(_)
+            | Self::CompatibleGraphics
             | Self::CheckForUpdates
             | Self::YourName
             | Self::Relay
@@ -1299,7 +1345,7 @@ impl SettingRow {
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }
-            Self::CheckForUpdates => SettingControlKind::Switch,
+            Self::CheckForUpdates | Self::CompatibleGraphics => SettingControlKind::Switch,
             Self::YourName | Self::Relay => SettingControlKind::Text,
             Self::PluginFolder
             | Self::PluginDir(_)

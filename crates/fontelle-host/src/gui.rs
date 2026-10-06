@@ -186,6 +186,75 @@ pub unsafe fn steady_gdk_scale() {
     }
 }
 
+/// Where glvnd looks for EGL vendor files, in its order: the system's
+/// configuration first, then the distribution's.
+pub const EGL_VENDOR_DIRS: [&str; 3] = [
+    "/etc/glvnd/egl_vendor.d",
+    "/usr/share/glvnd/egl_vendor.d",
+    "/usr/local/share/glvnd/egl_vendor.d",
+];
+
+/// The file glvnd names Mesa's EGL by, on every distribution that ships it.
+pub const MESA_EGL_VENDOR_FILE: &str = "50_mesa.json";
+
+/// Mesa's EGL vendor file, if `exists` finds one in [`EGL_VENDOR_DIRS`].
+pub fn mesa_egl_vendor(exists: impl Fn(&std::path::Path) -> bool) -> Option<std::path::PathBuf> {
+    EGL_VENDOR_DIRS
+        .iter()
+        .map(|dir| std::path::Path::new(dir).join(MESA_EGL_VENDOR_FILE))
+        .find(|file| exists(file))
+}
+
+/// The `__EGL_VENDOR_LIBRARY_FILENAMES` the studio sets for itself when
+/// **Compatible plugin graphics** is on (`enabled`): Mesa's vendor file,
+/// so a plugin editor that draws with EGL draws with Mesa — llvmpipe on the
+/// CPU unless a Mesa GPU driver is there. Nothing when the setting is off,
+/// when somebody set the variable already (theirs), or when Mesa's EGL is
+/// not installed.
+///
+/// Reported: Vital's editor aborts the studio on NVIDIA's EGL
+/// (`alpha_egl`), and draws on Mesa's. The studio's own window is Vulkan
+/// through wgpu and does not use EGL; GLX plugins (JUCE's and DPF's OpenGL)
+/// do not read this variable either.
+pub fn egl_vendor_for(
+    enabled: bool,
+    already_set: bool,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if !enabled || already_set {
+        return None;
+    }
+    mesa_egl_vendor(exists)
+}
+
+/// Whether [`steady_egl_vendor`] set the variable for this process.
+static EGL_VENDOR_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether Compatible plugin graphics is in force in this process: the
+/// studio set Mesa's EGL at start.
+pub fn compatible_graphics_active() -> bool {
+    EGL_VENDOR_SET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets [`egl_vendor_for`]'s variable for this process, if there is one to
+/// set, and answers whether it did.
+///
+/// # Safety
+///
+/// Changes the environment: call it before the process has a second thread.
+#[cfg(target_os = "linux")]
+pub unsafe fn steady_egl_vendor(enabled: bool) -> bool {
+    const VARIABLE: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+    let already_set = std::env::var_os(VARIABLE).is_some();
+    let Some(file) = egl_vendor_for(enabled, already_set, |path| path.is_file()) else {
+        return false;
+    };
+    // SAFETY: the caller's — no other thread yet.
+    unsafe { std::env::set_var(VARIABLE, file) };
+    EGL_VENDOR_SET.store(true, std::sync::atomic::Ordering::Relaxed);
+    true
+}
+
 /// Why a plugin's editor could not be opened.
 #[derive(Debug)]
 pub enum GuiError {

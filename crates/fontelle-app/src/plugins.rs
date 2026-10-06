@@ -365,6 +365,10 @@ pub struct PluginRack {
     /// [`lend_for_render`](Self::lend_for_render). Nothing asks for a
     /// processor back while it is.
     rendering: bool,
+    /// Asked before a plugin's own editor is opened: one that would abort
+    /// the studio on this machine's EGL is refused, and its knobs are in the
+    /// panel (`fontelle_host::alpha_egl`). Off for a rack with no studio.
+    editor_gate: fontelle_host::EditorGate,
 }
 
 impl Default for PluginRack {
@@ -391,6 +395,7 @@ impl Default for PluginRack {
             transport: None,
             prober: None,
             rendering: false,
+            editor_gate: fontelle_host::EditorGate::off(),
         }
     }
 }
@@ -1236,6 +1241,15 @@ impl PluginRack {
         if !live.plugin.has_editor() {
             return Ok(false);
         }
+        // Before the window and before the plugin is asked anything: Vital's
+        // editor aborts the process from its own thread once it has a window
+        // its driver cannot draw on, and nothing after that is ours.
+        if let Some(refusal) = self
+            .editor_gate
+            .refusal(live.plugin.key(), live.plugin.name())
+        {
+            return Err(refusal);
+        }
         let title = live.plugin.name().to_string();
         let window = match self.headless_editors {
             true => PluginWindow::headless_with_header(
@@ -1307,6 +1321,12 @@ impl PluginRack {
     /// high across its top — see the field.
     pub fn set_editor_header(&mut self, height: u32) {
         self.editor_header = height;
+    }
+
+    /// What is asked before a plugin's own editor opens — see
+    /// [`fontelle_host::EditorGate`]. The studio's probes its machine.
+    pub fn set_editor_gate(&mut self, gate: fontelle_host::EditorGate) {
+        self.editor_gate = gate;
     }
 
     /// Opens editors on no screen — see the field.

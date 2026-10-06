@@ -70,10 +70,13 @@ fn every_folder_is_its_own_row_with_a_remove() {
     let none = setting_rows(&Settings::default());
     assert!(!none.iter().any(|r| matches!(r, SettingRow::PluginDir(_))));
     // The static skeleton plus one row per catalogue extension, and no
-    // plugin-folder rows when none are set.
+    // plugin-folder rows when none are set — and on Linux, Compatible
+    // plugin graphics under the plugin rows.
     assert_eq!(
         none.len(),
-        SETTING_ROWS.len() + fontelle_app::extensions::CATALOGUE.len()
+        SETTING_ROWS.len()
+            + fontelle_app::extensions::CATALOGUE.len()
+            + usize::from(cfg!(target_os = "linux"))
     );
 }
 

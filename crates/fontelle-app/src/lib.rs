@@ -592,6 +592,21 @@ pub fn studio_prober() -> Option<std::sync::Arc<fontelle_host::BundleProber>> {
     Some(std::sync::Arc::new(prober))
 }
 
+/// What the studio asks before a plugin's own editor opens: itself, in a
+/// child process (`fontelle --fontelle-egl-probe`), whether this machine's
+/// EGL can draw an editor like Vital's — see [`fontelle_host::alpha_egl`].
+/// Asked the first time such an editor is opened, once a session. Refuses
+/// nothing when this binary cannot say where it is.
+pub fn studio_editor_gate() -> fontelle_host::EditorGate {
+    match std::env::current_exe() {
+        Ok(helper) => fontelle_host::EditorGate::probing(
+            helper,
+            fontelle_host::gui::compatible_graphics_active(),
+        ),
+        Err(_) => fontelle_host::EditorGate::off(),
+    }
+}
+
 /// An offline bounce of `project` **with its plugins in it**.
 ///
 /// `--render-wav` used to realise its graph with no rack at all, so a channel

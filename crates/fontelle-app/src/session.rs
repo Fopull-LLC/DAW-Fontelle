@@ -498,6 +498,9 @@ pub struct Session {
     /// read once at launch: with Effects never chosen, it starts the
     /// backdrops Still.
     reduce_motion: bool,
+    /// Mesa's EGL vendor file, looked for once: without it the Compatible
+    /// plugin graphics row says why it cannot be turned on.
+    mesa_egl: Option<PathBuf>,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -829,6 +832,23 @@ impl Session {
             if let Err(e) = self.save_settings() {
                 self.message = Some(format!("could not write settings: {e}"));
             }
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::CompatibleGraphics {
+            if self.mesa_egl.is_none() {
+                self.message = Some(
+                    "Compatible plugin graphics needs Mesa's EGL, which is not installed"
+                        .to_string(),
+                );
+                self.touch();
+                return;
+            }
+            self.settings.compatible_plugin_graphics = !self.settings.compatible_plugin_graphics;
+            self.message = Some(match self.save_settings() {
+                Ok(()) => "Compatible plugin graphics applies after restart".to_string(),
+                Err(e) => format!("could not write settings: {e}"),
+            });
             self.touch();
             return;
         }
@@ -1473,6 +1493,7 @@ impl Session {
                 .unwrap_or_else(fontelle_ui::Theme::dark_default),
             theme_revision: 1,
             reduce_motion: false,
+            mesa_egl: fontelle_host::gui::mesa_egl_vendor(|path| path.is_file()),
             settings,
             settings_path: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -1561,6 +1582,21 @@ impl Session {
     /// a plugin's window, which has no display to put one on.
     pub fn with_headless_plugin_editors(mut self) -> Self {
         self.plugins.set_headless_editors(true);
+        self
+    }
+
+    /// What is asked before a plugin's own editor opens — see
+    /// [`crate::PluginRack::set_editor_gate`]. The studio's probes its
+    /// machine ([`crate::studio_editor_gate`]).
+    pub fn with_plugin_editor_gate(mut self, gate: fontelle_host::EditorGate) -> Self {
+        self.plugins.set_editor_gate(gate);
+        self
+    }
+
+    /// Where Mesa's EGL vendor file is, if anywhere — what the Compatible
+    /// plugin graphics row is offered by. Looked for at start; a test says.
+    pub fn with_mesa_egl(mut self, file: Option<PathBuf>) -> Self {
+        self.mesa_egl = file;
         self
     }
 
@@ -9526,6 +9562,15 @@ impl StudioHost for Session {
                             Some(n) => n.to_string(),
                         }
                     }
+                    // Whether it is in force in this process, and whether it
+                    // can be at all.
+                    crate::settings::SettingRow::CompatibleGraphics => {
+                        crate::settings::compatible_graphics_value(
+                            self.settings.compatible_plugin_graphics,
+                            fontelle_host::gui::compatible_graphics_active(),
+                            self.mesa_egl.is_some(),
+                        )
+                    }
                     // The theme's, which the session holds.
                     crate::settings::SettingRow::Theme => self.theme.name.clone(),
                     crate::settings::SettingRow::CornerRounding => {
@@ -9670,6 +9715,15 @@ impl StudioHost for Session {
             .iter()
             .map(|row| match row.control_kind() {
                 K::Heading => SettingControl::Heading,
+                // Nothing to press without Mesa's EGL; the value says why.
+                K::Switch
+                    if *row == crate::settings::SettingRow::CompatibleGraphics
+                        && self.mesa_egl.is_none() =>
+                {
+                    SettingControl::Button {
+                        caption: String::new(),
+                    }
+                }
                 K::Button => SettingControl::Button {
                     caption: match row {
                         crate::settings::SettingRow::Backdrop(panel) => {
@@ -9778,6 +9832,8 @@ impl StudioHost for Session {
                         self.settings.hold_backdrops_while_playing
                     } else if *row == crate::settings::SettingRow::BackdropsUnfocused {
                         self.settings.backdrops_when_unfocused
+                    } else if *row == crate::settings::SettingRow::CompatibleGraphics {
+                        self.settings.compatible_plugin_graphics
                     } else {
                         self.settings.check_for_updates
                     },

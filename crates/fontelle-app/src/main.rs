@@ -672,6 +672,9 @@ fn play_or_render(
             // Plugin bundles read in child processes: one that crashes is a
             // line in the list, not a studio that will not start.
             .with_plugin_prober_if(fontelle_app::studio_prober())
+            // An editor this machine's EGL cannot draw (Vital's on NVIDIA) is
+            // refused rather than allowed to abort the studio.
+            .with_plugin_editor_gate(fontelle_app::studio_editor_gate())
             // The meters the first graph was built with, so a project opened
             // on a synth says how many voices it is playing from the first
             // frame rather than after the next rebuild.
@@ -1393,6 +1396,11 @@ fn main() {
     if let Some(code) = fontelle_host::probe_main(&args[1..]) {
         std::process::exit(code);
     }
+    // And a child asked whether this machine's EGL can draw an editor like
+    // Vital's (`fontelle_host::alpha_egl`).
+    if let Some(code) = fontelle_host::egl_probe_main(&args[1..]) {
+        std::process::exit(code);
+    }
     // `GDK_SCALE=1` where Xwayland has no XSETTINGS manager — what GTK uses
     // there anyway, and what keeps amsynth 2.0.0's editor from taking the
     // studio down (`fontelle_host::gui::gdk_scale_for`). Here, because it
@@ -1401,6 +1409,19 @@ fn main() {
     // SAFETY: the process has one thread so far.
     unsafe {
         fontelle_host::gui::steady_gdk_scale();
+    }
+    // Compatible plugin graphics: plugin windows that draw with EGL draw with
+    // Mesa's (`fontelle_host::gui::egl_vendor_for`) — Vital's aborts on
+    // NVIDIA's. Here for the same reason: glvnd reads the variable once, at
+    // the first EGL call, and no other thread exists yet. The settings are
+    // read again, properly, by the studio.
+    #[cfg(target_os = "linux")]
+    {
+        let (settings, _) = fontelle_app::settings::Settings::load();
+        // SAFETY: the process has one thread so far.
+        if unsafe { fontelle_host::gui::steady_egl_vendor(settings.compatible_plugin_graphics) } {
+            eprintln!("Fontelle: compatible plugin graphics: plugin windows use Mesa's EGL");
+        }
     }
     // The previous binary an upgrade could not delete (`updates::install`)
     // goes now, on the launch after — quietly, because it is housekeeping.

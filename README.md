@@ -120,16 +120,25 @@ windows and their state in the project.
 *Vital's window on NVIDIA (Linux).* Vital draws with EGL into the X
 server's root window, and NVIDIA's EGL offers what Vital asks for (an
 alpha channel) only with a 32-bit visual, which the root window does not
-have — so Vital's window comes up black and
-Vital aborts (`BGFX FATAL ... Failed to create surface`) — in any host,
-and in Vital's own standalone app. Until Vital changes that, start
-Fontelle with Mesa's EGL, which Vital draws with on the CPU:
+have — so Vital aborts (`BGFX FATAL ... Failed to create surface`) in any
+host, and in Vital's own standalone app. Fontelle checks for this before
+it opens Vital's window (in a separate process, once a session): where the
+driver cannot draw it, the window is not opened, the status line says why,
+and Vital's knobs are in Fontelle's own panel.
+
+To use Vital's window there, turn on **Settings → Compatible plugin
+graphics** and restart Fontelle. Plugin windows that draw with OpenGL
+through EGL then use Mesa's EGL — on the CPU (llvmpipe) unless Mesa has a
+GPU driver for your card: slower, but they open. Fontelle's own window
+draws with Vulkan and is not affected, nor are plugins that use OpenGL
+through GLX (JUCE's and DPF's, such as the Dragonfly reverbs).
+The row is greyed out with the reason when Mesa's EGL is not installed.
+The same, by hand, for one run:
 
     __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json fontelle
 
 Adding `MESA_LOADER_DRIVER_OVERRIDE=zink` puts Mesa on the GPU instead,
-through Vulkan. Fontelle's own window draws with Vulkan and is not
-affected; another plugin that draws with EGL draws through Mesa too.
+through Vulkan.
 
 **Not built.** VST2/VST3 hosting (a bridge is designed, out of tree), plugin
 *export*, sample streaming (a soundfont is fully resident), and the later

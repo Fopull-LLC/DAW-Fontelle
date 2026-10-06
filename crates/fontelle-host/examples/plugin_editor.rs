@@ -15,6 +15,13 @@
 //! `PROBE_HEADER=<pixels>` opens the window the studio does: a strip across
 //! the top, and the plugin in a window of its own under it.
 //!
+//! `PROBE_COMPATIBLE=1` starts as the studio does with Settings → Compatible
+//! plugin graphics on: EGL is Mesa's (`fontelle_host::gui::egl_vendor_for`).
+//!
+//! `PROBE_GATE=<helper>` asks what the studio asks before it opens an editor
+//! (`fontelle_host::alpha_egl`), with `helper` — a `fontelle` or
+//! `fontelle-scan-probe` binary — as the probe, and opens nothing if refused.
+//!
 //! `PROBE_THREADED=1` runs the processor on a thread of its own, at roughly
 //! real-time pace, the way the studio does — so a plugin whose editor and
 //! audio half disagree only when they are on different threads can be caught
@@ -25,6 +32,12 @@ fn main() {
     // SAFETY: one thread so far.
     unsafe {
         fontelle_host::gui::steady_gdk_scale();
+    }
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("PROBE_COMPATIBLE").is_some() {
+        // SAFETY: one thread so far.
+        let set = unsafe { fontelle_host::gui::steady_egl_vendor(true) };
+        println!("compatible plugin graphics: {set}");
     }
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("bundle"));
     let seconds: u64 = std::env::args()
@@ -40,6 +53,17 @@ fn main() {
             .expect("no such plugin"),
         None => plugins.first().expect("empty bundle"),
     };
+    if let Some(helper) = std::env::var_os("PROBE_GATE") {
+        let gate = fontelle_host::EditorGate::probing(
+            helper.into(),
+            fontelle_host::gui::compatible_graphics_active(),
+        );
+        if let Some(refusal) = gate.refusal(&info.key, &info.name) {
+            println!("refused: {refusal}");
+            return;
+        }
+        println!("the gate lets it open ({} probe)", gate.probes());
+    }
     let mut host = fontelle_host::PluginHost::new();
     let mut plugin = host.open(&info.path, &info.key).expect("open");
     println!("has_editor: {}", plugin.has_editor());

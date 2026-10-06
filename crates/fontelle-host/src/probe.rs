@@ -281,7 +281,7 @@ impl BundleProber {
 }
 
 #[cfg(unix)]
-fn crashed_by(status: &std::process::ExitStatus) -> Option<String> {
+pub(crate) fn crashed_by(status: &std::process::ExitStatus) -> Option<String> {
     use std::os::unix::process::ExitStatusExt;
     status.signal().map(|signal| {
         let name = match signal {
@@ -297,7 +297,7 @@ fn crashed_by(status: &std::process::ExitStatus) -> Option<String> {
 }
 
 #[cfg(not(unix))]
-fn crashed_by(status: &std::process::ExitStatus) -> Option<String> {
+pub(crate) fn crashed_by(status: &std::process::ExitStatus) -> Option<String> {
     // A Windows process that faults exits with the exception's code; one
     // that calls `abort` exits with 3. The child answers before it exits
     // and exits with 0, so any other end without an answer is a crash.

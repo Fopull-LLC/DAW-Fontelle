@@ -50,6 +50,7 @@
 //!
 //! [`PluginFormat`]: fontelle_types::PluginFormat
 
+pub mod alpha_egl;
 mod atom;
 pub mod bridge;
 pub mod guard;
@@ -78,6 +79,9 @@ mod resident;
 mod scan;
 pub mod vst3;
 
+pub use alpha_egl::{
+    AlphaEgl, EGL_PROBE_FLAG, EditorGate, NEEDS_ALPHA_EGL, NeedsAlphaEgl, egl_probe_main,
+};
 pub use atom::{AtomPipe, AtomPipes, MAX_ATOM_BYTES, trace as atom_trace};
 pub use bridge::{BridgeFailure, Bridges, bridge_search_paths};
 pub use gui::{GuiError, GuiPoll, GuiSize, PluginWindow, pump_gui_messages};
