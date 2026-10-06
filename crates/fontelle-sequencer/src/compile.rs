@@ -818,6 +818,7 @@ mod tests {
         });
 
         project.clips.insert(Clip {
+            name: None,
             lane: lane_id,
             start: 0,
             length: fontelle_types::PPQN,

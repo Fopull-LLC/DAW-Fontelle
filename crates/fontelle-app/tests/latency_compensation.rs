@@ -180,6 +180,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             channel: None,
         });
         project.clips.insert(Clip {
+            name: None,
             lane,
             start: 0,
             length: PPQN * 4,

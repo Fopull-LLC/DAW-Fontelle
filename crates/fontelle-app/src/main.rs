@@ -982,6 +982,7 @@ fn keep_the_take(
         order: 0,
     });
     AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length,
@@ -1675,6 +1676,17 @@ fn main() {
             fontelle_app::desktop::show_alert("Fontelle could not start", &e);
         }
         fontelle_host::exit_now(1);
+    }
+    // A restart the studio was asked for (Compatible plugin graphics, turned
+    // on from its offer): this binary again, on the song as it is on disk —
+    // started now that the window is gone and the song is written.
+    if let Some(relaunch) = fontelle_app::relaunch::take()
+        && let Err(e) = fontelle_app::relaunch::start(&relaunch)
+    {
+        eprintln!("Fontelle: could not start again \u{2014} {e}");
+        if window {
+            fontelle_app::desktop::show_alert("Restart Fontelle to finish", &e);
+        }
     }
     // Everything of the studio's own is written and dropped by now. What is
     // left are the plugin libraries kept loaded to the end, whose static

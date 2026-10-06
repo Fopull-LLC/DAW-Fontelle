@@ -62,6 +62,7 @@ fn compile(
         arena.insert(p);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start,
         length,
@@ -130,6 +131,7 @@ fn a_target_no_node_owns_emits_nothing() {
     let mut arena = Arena::default();
     arena.insert(point(0, 0.5));
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -234,6 +236,7 @@ fn a_muted_automation_clip_emits_nothing() {
     arena.insert(point(0, 0.0));
     arena.insert(point(PPQN * 4, 1.0));
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
@@ -284,6 +287,7 @@ fn where_two_clips_overlap_the_later_one_is_what_is_emitted() {
         let mut arena = Arena::default();
         arena.insert(point(0, value));
         project.clips.insert(Clip {
+            name: None,
             lane,
             start,
             length: PPQN * 8,

@@ -146,6 +146,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         channel: None,
     });
     project.clips.insert(Clip {
+        name: None,
         lane: lane_id,
         start: 0,
         length: note_length_ticks,

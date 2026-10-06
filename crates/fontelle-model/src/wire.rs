@@ -203,6 +203,8 @@ edits!(
     LaneUpkeep,
     SetClipChannel,
     SetNotePath,
+    ResizeClips,
+    RenameClip,
 );
 
 impl Edit {

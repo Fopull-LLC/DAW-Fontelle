@@ -183,6 +183,7 @@ fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
         order: 0,
     });
     let notes = project.clips.insert(fontelle_model::Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN,

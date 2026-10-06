@@ -183,6 +183,7 @@ impl Rig {
             channel: None,
         });
         project.clips.insert(Clip {
+            name: None,
             lane,
             start: 0,
             length: PPQN * 8,
@@ -538,6 +539,7 @@ impl Rig {
         points.insert(a_point(0, from));
         points.insert(a_point(PPQN * 2, to));
         self.project.clips.insert(Clip {
+            name: None,
             lane,
             start: 0,
             length: PPQN * 2,

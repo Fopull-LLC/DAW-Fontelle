@@ -310,6 +310,7 @@ fn peak_of_channel(
         channel: None,
     });
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

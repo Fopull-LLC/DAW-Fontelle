@@ -45,11 +45,12 @@ pub use fontelle_types::FolderKind;
 /// three a shared song needs (`docs/collab-plan.md` §10.4), eight since it
 /// grew how much a theme's backdrops may move (hub card 0366), nine since it
 /// grew the audio output's backend, device and buffer, ten since it grew
-/// Compatible plugin graphics. Every added field carries
+/// Compatible plugin graphics, eleven since it remembers "Don't ask again"
+/// about it. Every added field carries
 /// `#[serde(default)]`, so an older file still reads — the bump is so that an
 /// *older build* handed a newer file says "upgrade Fontelle" rather than
 /// "unknown field `midi_dir`".
-pub const SETTINGS_FORMAT_VERSION: u32 = 10;
+pub const SETTINGS_FORMAT_VERSION: u32 = 11;
 
 /// How many projects the start menu remembers. A menu's worth: past this a
 /// list stops being something you glance at and becomes something you search.
@@ -250,6 +251,11 @@ pub struct Settings {
     /// X11 and draws on Mesa's (`fontelle_host::alpha_egl`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compatible_plugin_graphics: bool,
+    /// "Don't ask again", answered to the offer of Compatible plugin
+    /// graphics when a plugin's window was refused
+    /// ([`offer_compatible_graphics`]). Never answered is `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub never_ask_compatible_graphics: bool,
 }
 
 fn thirty() -> u16 {
@@ -317,6 +323,7 @@ impl Default for Settings {
             hold_backdrops_while_playing: false,
             backdrops_when_unfocused: true,
             compatible_plugin_graphics: false,
+            never_ask_compatible_graphics: false,
         }
     }
 }
@@ -798,6 +805,29 @@ pub fn setting_rows_with(
         }
     }
     rows
+}
+
+/// Whether to **offer** Compatible plugin graphics, there and then.
+///
+/// Ty: *"we should make it detect if the user should need that setting
+/// enabled and ask them if they want it if weve never asked them, then theyll
+/// dismiss forever or chose yes to enable it without having to go in
+/// settings. im just worried about users not knowing it exists and just
+/// thinking the daw is broken."*
+///
+/// Only when it would help: a plugin's window was just refused by the
+/// driver probe (`refused`), the setting is off (`on`), nobody has answered
+/// "Don't ask again" (`never`), it has not been asked this session already
+/// (`asked` — "Not now" asks again next time), and there is Mesa's EGL to
+/// turn on (`mesa`).
+pub fn offer_compatible_graphics(
+    refused: bool,
+    on: bool,
+    never: bool,
+    asked: bool,
+    mesa: bool,
+) -> bool {
+    refused && !on && !never && !asked && mesa
 }
 
 /// What the Compatible plugin graphics row says: the setting (`on`), whether

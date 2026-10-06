@@ -139,18 +139,11 @@ fn holding_shift_on_the_same_edge_loops_it_instead() {
     assert!(
         edits.iter().any(|e| matches!(
             e,
-            ArrangeEdit::SetLoop {
-                loop_length: Some(length),
-                ..
-            } if *length == PPQN * 4
+            ArrangeEdit::ResizeLooping { loops, tick_delta, .. }
+                if loops == &vec![Some(PPQN * 4)] && *tick_delta > 0
         )),
-        "the period is the length the clip had when the drag started: {edits:?}"
-    );
-    assert!(
-        edits
-            .iter()
-            .any(|e| matches!(e, ArrangeEdit::Resize { .. })),
-        "and it still grows: {edits:?}"
+        "the period is the length the clip had when the drag started, and it \
+         still grows, in one edit: {edits:?}"
     );
 }
 
@@ -185,14 +178,17 @@ fn a_clip_that_already_loops_keeps_its_period_when_it_is_stretched_further() {
         4,
     );
     assert!(
-        !edits.iter().any(|e| matches!(
-            e,
-            ArrangeEdit::SetLoop {
-                loop_length: Some(length),
-                ..
-            } if *length != PPQN * 4
-        )),
+        loop_edits(&edits)
+            .iter()
+            .all(|period| *period == Some(PPQN * 4)),
         "the period must not follow the length: {edits:?}"
+    );
+    assert!(
+        edits.iter().any(|e| matches!(
+            e,
+            ArrangeEdit::ResizeLooping { loops, .. } if loops == &vec![None]
+        )),
+        "a clip already looping is only grown: {edits:?}"
     );
 }
 
@@ -349,12 +345,17 @@ fn drag_edge_to_bars(
     timeline.drag(want_x, y, &l, clips, 4)
 }
 
+/// Every period these edits set: a `SetLoop`'s, and each one a first step of
+/// a Shift-drag gives a clip it makes loop.
 fn loop_edits(edits: &[ArrangeEdit]) -> Vec<Option<Tick>> {
     edits
         .iter()
-        .filter_map(|e| match e {
-            ArrangeEdit::SetLoop { loop_length, .. } => Some(*loop_length),
-            _ => None,
+        .flat_map(|e| match e {
+            ArrangeEdit::SetLoop { loop_length, .. } => vec![*loop_length],
+            ArrangeEdit::ResizeLooping { loops, .. } => {
+                loops.iter().flatten().map(|period| Some(*period)).collect()
+            }
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -442,4 +443,85 @@ fn the_unloop_is_sent_once_rather_than_on_every_step_of_the_drag() {
     let settled = vec![clip(id, 0, PPQN * 4, None)];
     let second = timeline.drag(block.x + bar_px * 0.75, y, &l, &settled, 4);
     assert!(loop_edits(&second).is_empty(), "said twice: {second:?}");
+}
+
+// ------------------------------------------------- a mixed selection ---
+//
+// Ty: *"if you have multiple clips selected, some looping and some not, and
+// then youre holding shift and drag the end of the clips out, the expected
+// behavior is it should make any nonlooping clips loop from their end point
+// and extend from there looping, any already looping clips just extend like
+// normal. it would basically be like if you dragged each one out manually.
+// however whenever i do this, it chops everything up into the same loop time
+// and then squishes it weirdly."*
+//
+// The drag measured **one** period for the whole selection — the shortest
+// clip's, or the shortest loop's — and set it on every clip, looping ones
+// included. Each clip is its own question.
+
+#[test]
+fn shift_dragging_a_mixed_selection_loops_each_clip_as_dragging_it_alone_would() {
+    let m = Theme::dark_default().metrics;
+    let l = timeline_layout(body(), &m);
+    let ids = ids(3);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    let mut on_b = clip(b, PPQN * 4 * 8, PPQN * 4 * 2, Some(PPQN * 4));
+    on_b.lane = 1;
+    let mut on_c = clip(c, 0, PPQN * 6, None);
+    on_c.lane = 2;
+    // A: two bars, not looping. B: two bars of a one-bar loop. C: a bar and
+    // a half, not looping. The shortest of everything is B's one bar, which
+    // is what every clip used to be chopped into.
+    let clips = vec![clip(a, 0, PPQN * 4 * 2, None), on_b, on_c];
+
+    let mut timeline = Timeline::new(view());
+    timeline.select(vec![a, b, c]);
+    timeline.set_modifiers(Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    });
+    let block = clip_rect(&timeline.view, l.grid, &clips[0]);
+    let y = block.y + 5.0;
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    let bar_px = PPQN as f32 * 4.0 * timeline.view.pixels_per_tick;
+    let first = timeline.drag(block.right() - 2.0 + bar_px, y, &l, &clips, 4);
+
+    // One edit for the first step, carrying each clip's own answer.
+    let resizing: Vec<_> = first
+        .iter()
+        .filter_map(|e| match e {
+            ArrangeEdit::ResizeLooping {
+                ids,
+                tick_delta,
+                loops,
+            } => Some((ids.clone(), *tick_delta, loops.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resizing.len(), 1, "{first:?}");
+    let (ids, delta, loops) = &resizing[0];
+    assert_eq!(*delta, PPQN * 4, "every end moves by the same bar");
+    let period_of = |id: ClipId| {
+        let at = ids.iter().position(|x| *x == id).expect("in the edit");
+        loops[at]
+    };
+    assert_eq!(period_of(a), Some(PPQN * 8), "A loops at its own end");
+    assert_eq!(period_of(b), None, "B keeps the loop it had");
+    assert_eq!(period_of(c), Some(PPQN * 6), "C loops at its own end");
+    assert!(
+        !first
+            .iter()
+            .any(|e| matches!(e, ArrangeEdit::SetLoop { .. } | ArrangeEdit::Resize { .. })),
+        "nothing else sets a period or grows them on the first step: {first:?}"
+    );
+
+    // And the steps after it only grow them, by the same amount each.
+    let second = timeline.drag(block.right() - 2.0 + bar_px * 2.0, y, &l, &clips, 4);
+    assert_eq!(
+        second,
+        vec![ArrangeEdit::Resize {
+            ids: ids.clone(),
+            tick_delta: PPQN * 4,
+        }]
+    );
 }

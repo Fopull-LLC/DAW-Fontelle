@@ -472,6 +472,14 @@ pub struct TimelineChrome<'a> {
     /// The row a click on its header selected, lit — where new material with
     /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
     pub selected_lane: Option<usize>,
+    /// How strongly to draw the ghost of a first clip, 0..1, while the
+    /// arrangement has none — `canvas::ghost_pulse`'s breath. `None` draws
+    /// no ghost; and with any clip there is none to draw whatever this says.
+    pub ghost: Option<f32>,
+    /// Each clip's name as it fits its block (`canvas::clip_caption`),
+    /// drawn in the middle of its caption band. A clip with none here
+    /// shows its whole name when it fits, and nothing when it does not.
+    pub captions: &'a std::collections::HashMap<fontelle_types::ClipId, String>,
 }
 
 /// Everything the piano roll draws from. All of it is read-only: the roll is a
@@ -6482,12 +6490,6 @@ fn draw_lane_menu(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Ro
     }
 }
 
-/// How solid the caption on a repeat is, against the first one.
-///
-/// Faint enough that the first pass still reads as the head of the clip,
-/// strong enough that the repeats are legibly the same thing again.
-const REPEAT_CAPTION_ALPHA: u8 = 0x80;
-
 /// How solid a ghosted note is, and its edge.
 ///
 /// Faint enough that the grid still reads through it, strong enough to see the
@@ -8037,6 +8039,28 @@ fn draw_timeline(
         }
     }
 
+    // The ghost of a first clip, on an arrangement with none — under where
+    // the clip it promises will be. See `canvas::ghost_clip`.
+    if let Some(strength) = chrome.ghost
+        && let Some(ghost) = crate::canvas::ghost_clip(
+            v,
+            l.grid,
+            chrome.clips,
+            chrome.lanes.len(),
+            chrome.beats_per_bar,
+        )
+    {
+        draw_ghost_clip(
+            scene,
+            theme,
+            labels,
+            l.grid,
+            ghost,
+            crate::canvas::ghost_clip_hint(chrome.tool),
+            strength,
+        );
+    }
+
     // The clips.
     for clip in chrome.clips {
         if !lanes.contains(&clip.lane) {
@@ -8164,49 +8188,30 @@ fn draw_timeline(
                 fill_rect(scene, notch, p.panel);
             }
         }
-        if let Some(text) = labels.get(&clip.name) {
-            // Written once per repeat, faint after the first. A four-bar loop
-            // that says its name four times is a loop; one that says it once
-            // is a long block.
-            //
-            // In the **caption band** rather than down the middle of the
-            // block: the middle is where the content is drawn now, and a name
-            // written across a preview is a name over the thing it names. On
-            // a block too short to have a band it goes back to the centre,
-            // because there is nothing under it there either.
-            let (header, _) = crate::canvas::clip_bands(whole);
-            let first = block.x + 5.0;
-            let y = if header.height >= text.height {
-                header.y + (header.height - text.height) / 2.0
-            } else {
-                block.y + (block.height - text.height) / 2.0
-            };
-            let ink = if clip.muted {
-                p.text_muted
-            } else if automation {
+        // **The name, in the middle**, between the grips and the fade handles
+        // rather than at the left where the front grip and the fade-in live:
+        // Ty, *"there should be a name on each clip that is in the center of
+        // the clip so its not overlapping any of the end of clip controls"*.
+        // Cut to fit with an ellipsis, and left off a block too narrow for a
+        // word. Clicking it opens the clip's menu.
+        let caption = chrome
+            .captions
+            .get(&clip.id)
+            .map_or(clip.name.as_str(), String::as_str);
+        let slot = crate::canvas::clip_name_slot(whole, l.grid, clip);
+        if let Some(text) = labels.get(caption)
+            && let Some(name) = crate::canvas::clip_name_rect(slot, text.width)
+        {
+            let ink = if clip.muted || automation {
                 // Behind the curve, not competing with it: on an automation
-                // block the name says *which parameter*, and the shape is what
-                // is actually being read.
+                // block the name says *which parameter*, and the shape is
+                // what is actually being read.
                 p.text_muted
             } else {
                 p.panel
             };
-            draw_text_clipped(scene, text, block, first, y, ink);
-            for x in &seams {
-                let repeat =
-                    Rect::new(*x, block.y, block.right() - *x, block.height).intersection(&l.grid);
-                if repeat.width < text.width + 6.0 {
-                    continue;
-                }
-                draw_text_clipped(
-                    scene,
-                    text,
-                    repeat,
-                    x + 5.0,
-                    y,
-                    Color([ink.0[0], ink.0[1], ink.0[2], REPEAT_CAPTION_ALPHA]),
-                );
-            }
+            let y = name.y + (name.height - text.height) / 2.0;
+            draw_text_clipped(scene, text, block, name.x, y, ink);
         }
     }
 
@@ -8410,6 +8415,64 @@ fn draw_focus_edge(scene: &mut Scene, theme: &Theme, frame: Rect, focused: bool)
 /// colour: a preview has to read as part of the clip it is in rather than as
 /// something lying on top of it, and every lane has a different colour to be
 /// part of.
+/// The ghost of a first clip: a faint block with a dashed edge, in the
+/// accent, and its tip inside it — or after it, where the block is too short
+/// for the words. `strength` is the breath, 0..1. Clipped to the grid, so a
+/// scrolled arrangement does not draw it over the lane names.
+fn draw_ghost_clip(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    grid: Rect,
+    ghost: Rect,
+    hint: &str,
+    strength: f32,
+) {
+    let p = &theme.palette;
+    let strength = strength.clamp(0.0, 1.0);
+    let alpha = |most: f32| (most * strength).round().clamp(0.0, 255.0) as u8;
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            grid.x as f64,
+            grid.y as f64,
+            grid.right() as f64,
+            grid.bottom() as f64,
+        ),
+    );
+    fill_rect_rounded(scene, ghost, 3.0, p.accent.with_alpha(alpha(70.0)));
+    scene.stroke(
+        &Stroke::new(1.5).with_dashes(0.0, [6.0, 4.0]),
+        Affine::IDENTITY,
+        p.accent.with_alpha(alpha(255.0)).to_peniko(),
+        None,
+        &rounded(ghost, 3.0),
+    );
+    if let Some(text) = labels.get(hint) {
+        let inside = text.width + 16.0 <= ghost.width;
+        let x = if inside {
+            ghost.x + (ghost.width - text.width) / 2.0
+        } else {
+            ghost.right() + 8.0
+        };
+        let y = ghost.y + (ghost.height - text.height) / 2.0;
+        let ink = p.text;
+        let shown = Rect::new(x, ghost.y, text.width, ghost.height).intersection(&grid);
+        draw_text_clipped(
+            scene,
+            text,
+            shown,
+            x,
+            y,
+            Color([ink.0[0], ink.0[1], ink.0[2], alpha(255.0).max(0x60)]),
+        );
+    }
+    scene.pop_layer();
+}
+
 fn draw_clip_notes(
     scene: &mut Scene,
     theme: &Theme,

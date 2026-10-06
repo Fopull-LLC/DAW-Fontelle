@@ -46,6 +46,7 @@ fn with_tempo_clip(project: &mut Project, start: Tick, length: Tick, points: Vec
         arena.insert(p);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start,
         length,

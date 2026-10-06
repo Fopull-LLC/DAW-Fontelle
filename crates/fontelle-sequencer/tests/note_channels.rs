@@ -80,6 +80,7 @@ fn rig() -> Rig {
     notes.insert(a_note(PPQN, 40, Some(bass)));
     notes.insert(a_note(PPQN * 2, 38, Some(drums)));
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,

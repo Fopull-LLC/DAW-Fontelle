@@ -164,6 +164,7 @@ impl Rig {
             channel: None,
         });
         self.project.clips.insert(Clip {
+            name: None,
             lane: self.lane,
             start: 0,
             length: PPQN * 8,

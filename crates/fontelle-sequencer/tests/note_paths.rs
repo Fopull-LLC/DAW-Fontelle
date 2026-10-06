@@ -72,6 +72,7 @@ fn compile_in(clip_length: Tick, notes: Vec<Note>) -> fontelle_types::CompiledTi
         arena.insert(note);
     }
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: clip_length,

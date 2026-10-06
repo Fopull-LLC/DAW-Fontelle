@@ -21,6 +21,7 @@ pub mod preset_bank;
 pub mod preview_index;
 mod projects;
 mod realise;
+pub mod relaunch;
 pub mod sampling;
 mod session;
 pub mod settings;
@@ -219,6 +220,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
     }
 
     AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: chord_start + chord_length,

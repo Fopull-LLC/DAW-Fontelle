@@ -199,6 +199,7 @@ fn a_clip_dropped_on_a_track_compiles_to_a_placement_on_that_tracks_player() {
     );
     data.mixer_track = Some(track);
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: PPQN * 4,
         length: PPQN * 8,

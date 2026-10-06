@@ -62,6 +62,7 @@ fn clip(project: &mut Project, lane: LaneId, channel: ChannelId, notes: Vec<Note
         arena.insert(n);
     }
     AddClip::new(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4 * BARS,

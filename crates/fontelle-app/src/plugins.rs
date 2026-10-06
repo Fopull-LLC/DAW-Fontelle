@@ -388,6 +388,10 @@ pub struct PluginRack {
     /// the studio on this machine's EGL is refused, and its knobs are in the
     /// panel (`fontelle_host::alpha_egl`). Off for a rack with no studio.
     editor_gate: fontelle_host::EditorGate,
+    /// The name of the plugin whose editor [`editor_gate`](Self::editor_gate)
+    /// last refused, until the session asks — what decides whether to offer
+    /// Compatible plugin graphics.
+    gate_refused: Option<String>,
 }
 
 impl Default for PluginRack {
@@ -416,6 +420,7 @@ impl Default for PluginRack {
             prober: None,
             rendering: false,
             editor_gate: fontelle_host::EditorGate::off(),
+            gate_refused: None,
         }
     }
 }
@@ -1330,6 +1335,7 @@ impl PluginRack {
             .editor_gate
             .refusal(live.plugin.key(), live.plugin.name())
         {
+            self.gate_refused = Some(live.plugin.name().to_string());
             return Err(refusal);
         }
         let title = live.plugin.name().to_string();
@@ -1403,6 +1409,12 @@ impl PluginRack {
     /// high across its top — see the field.
     pub fn set_editor_header(&mut self, height: u32) {
         self.editor_header = height;
+    }
+
+    /// The plugin whose editor the driver probe refused last, taken — see
+    /// `gate_refused`.
+    pub fn take_gate_refusal(&mut self) -> Option<String> {
+        self.gate_refused.take()
     }
 
     /// What is asked before a plugin's own editor opens — see

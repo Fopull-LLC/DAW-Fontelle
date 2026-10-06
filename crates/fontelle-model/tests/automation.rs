@@ -216,6 +216,7 @@ fn project_with(clips: &[(Tick, Tick, f64)]) -> Project {
         let mut points = Arena::default();
         points.insert(point(0, *value, CurveShape::Linear));
         project.clips.insert(Clip {
+            name: None,
             lane,
             start: *start,
             length: *length,
@@ -340,6 +341,7 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         gain_db: 0.0,
     });
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 8,
@@ -367,6 +369,7 @@ fn every_automated_target_in_a_project_can_be_listed() {
     let mut points = Arena::default();
     points.insert(point(0, 0.5, CurveShape::Linear));
     project.clips.insert(Clip {
+        name: None,
         lane,
         start: 0,
         length: PPQN * 4,
