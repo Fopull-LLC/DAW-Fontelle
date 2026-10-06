@@ -200,3 +200,87 @@ fn read_step(notes: &[TimedPitch], a: f64, b: f64) -> (Option<Chord>, f32) {
         None => (None, 0.0),
     }
 }
+
+/// The share of a bar's weight a pitch class needs to count as sounded.
+const MELODY_CLASS_SHARE: f32 = 0.1;
+/// The share of a bar's weight a chord's tones must carry together for a
+/// single line to imply it.
+const MELODY_CHORD_SHARE: f32 = 0.6;
+
+/// Chords implied by **one voice** (Melody mode's chord lane), a span of
+/// `bar` seconds at a time — a bar of the song's tempo, or two seconds
+/// without one — equal neighbours merged.
+///
+/// A sung line holds one note at a time, so [`detect_chords`]' half-second
+/// steps read each note as a chord of its own: a held E is "E5", a step
+/// from D to E "Dsus2". Over a bar, a line *implies* a chord only when it
+/// spells one: at least three pitch classes sounded, every tone of the
+/// chord among them, and the chord's tones most of what was sung. No power
+/// chords (two notes are an interval, not a chord). A bar that spells none
+/// says nothing — better a blank than a wrong name.
+pub fn melody_chords(notes: &[TimedPitch], length: f64, bar: f64) -> Vec<ChordSpan> {
+    let bar = bar.max(0.25);
+    let steps = (length / bar).ceil().max(0.0) as usize;
+    let mut spans: Vec<ChordSpan> = Vec::new();
+    for k in 0..steps {
+        let (a, b) = (k as f64 * bar, ((k + 1) as f64 * bar).min(length));
+        let (chord, confidence) = read_line(notes, a, b);
+        match spans.last_mut() {
+            Some(last) if last.chord == chord => {
+                last.end = b;
+                last.confidence = last.confidence.min(confidence);
+            }
+            _ => spans.push(ChordSpan {
+                start: a,
+                end: b,
+                chord,
+                confidence,
+            }),
+        }
+    }
+    spans
+}
+
+fn read_line(notes: &[TimedPitch], a: f64, b: f64) -> (Option<Chord>, f32) {
+    let mut chroma = [0.0f32; 12];
+    for n in notes {
+        let overlap = n.end.min(b) - n.start.max(a);
+        if overlap > 0.0 {
+            chroma[usize::from(n.midi % 12)] += (overlap * f64::from(n.weight.max(0.0))) as f32;
+        }
+    }
+    let total: f32 = chroma.iter().sum();
+    if f64::from(total) < MIN_WEIGHT_PER_SECOND * (b - a) {
+        return (None, 0.0);
+    }
+    let sounded = |class: usize| chroma[class] >= total * MELODY_CLASS_SHARE;
+    if (0..12).filter(|c| sounded(*c)).count() < 3 {
+        return (None, 0.0);
+    }
+    let mut best: Option<(Chord, f32)> = None;
+    for root in 0..12u8 {
+        for quality in QUALITIES {
+            if quality == Quality::Power {
+                continue;
+            }
+            let tones = intervals(quality);
+            let classes = tones.iter().map(|i| usize::from((root + i) % 12));
+            if !classes.clone().all(sounded) {
+                continue;
+            }
+            let share = classes.map(|c| chroma[c]).sum::<f32>() / total;
+            if share < MELODY_CHORD_SHARE {
+                continue;
+            }
+            // A seventh only when its fourth tone is there: the triad wins a
+            // tie, being the simpler reading of the same notes.
+            if best.is_none_or(|(_, s)| share > s + 1e-4) {
+                best = Some((Chord { root, quality }, share));
+            }
+        }
+    }
+    match best {
+        Some((chord, share)) => (Some(chord), share.clamp(0.0, 1.0)),
+        None => (None, 0.0),
+    }
+}

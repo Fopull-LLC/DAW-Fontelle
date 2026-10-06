@@ -9804,6 +9804,12 @@ impl StudioHost for Session {
     fn analyze_view(&self) -> Option<fontelle_ui::canvas::AnalyzeView> {
         let open = self.analysis.as_ref()?;
         let mut view = open.view();
+        // Melody mode's chord lane, a bar of the song's tempo at a time: the
+        // half-second reading named every sung note as a chord.
+        let bar = f64::from(self.project.beats_per_bar.max(1))
+            * f64::from(crate::beat_samples(&self.project))
+            / f64::from(self.options.sample_rate.max(1));
+        view.melody_chords = crate::analyze::melody_chords(&view.melody, view.duration, bar);
         let study = self
             .study_of(open.clip)
             .and_then(|id| self.project.studies.get(id));

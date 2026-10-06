@@ -1047,7 +1047,7 @@ fn draw_chord_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &A
     }
     let t = bridge_type(chrome.layout.scale);
     fill_rect(scene, area, darken(p.window, 0.25).with_alpha(0xc0));
-    for (index, chord) in chrome.view.chords.iter().enumerate() {
+    for (index, chord) in state.chord_spans(chrome.view).iter().enumerate() {
         if chord.label.is_empty() {
             continue;
         }

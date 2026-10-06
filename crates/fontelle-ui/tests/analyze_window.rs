@@ -96,6 +96,7 @@ fn a_view() -> AnalyzeView {
         spectrogram: None,
         rendered: false,
         preview_pending: false,
+        ..AnalyzeView::default()
     }
 }
 
@@ -415,6 +416,38 @@ fn melody_or_chords_chooses_which_notes_are_drawn() {
     );
     s.mode = Some(AnalyzeMode::Chords);
     assert_eq!(s.notes(&view).len(), view.notes.len());
+}
+
+/// Melody mode's chord lane is the line's bar-by-bar reading, not the
+/// half-second one that named every sung note a chord (the coordinator, on
+/// `analyze-real-edited`: *"Csus2", "Dsus2", "E5", "G5"*).
+#[test]
+fn melody_mode_reads_its_chord_lane_a_bar_at_a_time() {
+    let mut view = a_view();
+    view.chords = (0..12)
+        .map(|k| AnalyzedChord {
+            start: k as f64,
+            end: k as f64 + 1.0,
+            label: format!("E5 {k}"),
+        })
+        .collect();
+    view.melody_chords = vec![AnalyzedChord {
+        start: 0.0,
+        end: 4.0,
+        label: "Am".to_string(),
+    }];
+    let mut s = state(1.0);
+    assert_eq!(s.chord_spans(&view), &view.melody_chords[..]);
+    let (w, h) = analyze_window_size(1.0);
+    let l = laid_out(w as f32, h as f32, &view, &mut s);
+    let strings: Vec<String> = analyze_strings(&view, &s, &l)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert!(strings.contains(&"Am".to_string()));
+    assert!(!strings.iter().any(|t| t.starts_with("E5")), "{strings:?}");
+    s.mode = Some(AnalyzeMode::Chords);
+    assert_eq!(s.chord_spans(&view), &view.chords[..]);
 }
 
 // ---------------------------------------------------- selection ---

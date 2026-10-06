@@ -7982,6 +7982,7 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
         }),
         rendered: false,
         preview_pending: false,
+        ..AnalyzeView::default()
     }
 }
 

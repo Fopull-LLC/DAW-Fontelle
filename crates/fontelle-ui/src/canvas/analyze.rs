@@ -214,6 +214,10 @@ pub struct AnalyzeView {
     /// Every note heard (chords mode, and what arrives while analysing).
     pub notes: Vec<AnalyzedNote>,
     pub chords: Vec<AnalyzedChord>,
+    /// The chords a single voice implies, a bar at a time (Melody mode's
+    /// chord lane): a sung line read every half second named each note as a
+    /// chord of its own.
+    pub melody_chords: Vec<AnalyzedChord>,
     pub key: Option<AnalyzeKey>,
     /// The badge: the word and the confidence.
     pub clarity: Option<(AnalyzeClarity, f32)>,
@@ -455,6 +459,15 @@ impl AnalyzeState {
         match self.effective_mode(view) {
             AnalyzeMode::Melody if view.detected.is_some() => &view.melody,
             _ => &view.notes,
+        }
+    }
+
+    /// The chord lane's chords: in Melody mode the bar-by-bar reading of the
+    /// line, else every chord heard.
+    pub fn chord_spans<'a>(&self, view: &'a AnalyzeView) -> &'a [AnalyzedChord] {
+        match self.effective_mode(view) {
+            AnalyzeMode::Melody if view.detected.is_some() => &view.melody_chords,
+            _ => &view.chords,
         }
     }
 
@@ -1491,8 +1504,8 @@ pub fn analyze_hit(
     }
     if lane.chords.contains(x, y) {
         let t = lane.t_of(state, x);
-        return view
-            .chords
+        return state
+            .chord_spans(view)
             .iter()
             .position(|c| t >= c.start && t < c.end && !c.label.is_empty())
             .map(AnalyzeHit::Chord)
@@ -1618,7 +1631,7 @@ pub fn analyze_press(
         }
         AnalyzeHit::Chord(index) => {
             // A chord's notes: everything sounding inside it.
-            let chord = view.chords.get(index)?;
+            let chord = state.chord_spans(view).get(index)?;
             let inside: Vec<usize> = state
                 .notes(view)
                 .iter()
@@ -2025,7 +2038,12 @@ pub fn analyze_strings(
                 .map(|(_, t)| (t, Caption)),
         );
         if state.chords {
-            out.extend(view.chords.iter().map(|c| (c.label.clone(), Value)));
+            out.extend(
+                state
+                    .chord_spans(view)
+                    .iter()
+                    .map(|c| (c.label.clone(), Value)),
+            );
         }
         let notes = state.notes(view);
         for (index, note) in notes.iter().enumerate() {
@@ -2134,7 +2152,7 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
         AnalyzeHit::RenderMenu => "Render as a new clip below".to_string(),
         AnalyzeHit::Revert => "Play the original audio again (your edits are kept)".to_string(),
         AnalyzeHit::Chord(index) => {
-            let chord = view.chords.get(*index)?;
+            let chord = state.chord_spans(view).get(*index)?;
             format!(
                 "{}, {} \u{2013} {} \u{2014} click to select its notes",
                 chord.label,

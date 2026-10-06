@@ -550,6 +550,37 @@ fn fill_view(view: &mut AnalyzeView, finished: &Finished) {
     });
 }
 
+/// Melody mode's chord lane: what the line implies, a bar of `bar` seconds
+/// at a time (`fontelle_analysis::chords::melody_chords`).
+pub(crate) fn melody_chords(
+    melody: &[AnalyzedNote],
+    duration: f64,
+    bar: f64,
+) -> Vec<AnalyzedChord> {
+    let timed: Vec<fontelle_analysis::chords::TimedPitch> = melody
+        .iter()
+        .map(|n| fontelle_analysis::chords::TimedPitch {
+            start: n.start,
+            end: n.end,
+            midi: n.midi,
+            weight: n.amplitude.max(0.05) * n.confidence.max(0.05),
+        })
+        .collect();
+    let bar = if bar.is_finite() && bar > 0.25 {
+        bar
+    } else {
+        2.0
+    };
+    fontelle_analysis::chords::melody_chords(&timed, duration, bar)
+        .into_iter()
+        .map(|c| AnalyzedChord {
+            start: c.start,
+            end: c.end,
+            label: c.chord.map(|c| c.label()).unwrap_or_default(),
+        })
+        .collect()
+}
+
 // ------------------------------------------- notes for a piano roll ---
 
 /// Where the analysed audio sits in the song: what turns its seconds into
