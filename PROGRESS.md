@@ -19,6 +19,104 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-06, latest — Analyze Musically P3–P5 in the window:
+clean it, chop it, record it.** Same branch (`feature/analyze-musically`,
+with `main` and `feature/analyze-engine` merged in), not merged, not
+bumped. `docs/analyze-musically-plan.md` §2.7, §3.1, §3.7–3.8, §6, §6.1,
+P3–P5. The "coming in a later update" cards are gone.
+
+- **Studies grow** (`fontelle-types::study`): `markers`, `clean`
+  (`StudyClean`: trim, fades and shape, gain, `StudyDenoise` with its
+  captured `StudyNoise`), `takes` (`StudyTake`, study-local ids), `comp`
+  (`StudyCompSpan` by take id), `insert` (the key an Analyze insert's
+  `AnalyzeConfig::study` names), `current_take`; all serde-defaulted.
+  Commands `SetStudyMarkers`, `SetStudyClean`, `SetStudyTakes`,
+  `SetStudyOriginal`, wire forms appended; a drag merges, and the first
+  clean or marker change of a clip merges into the `AddStudy` that starts
+  it. `History::references(text)` says whether anything undo or redo could
+  bring back names a file. `ReplaceClip::new`, `RestoreInsertConfig::new`
+  made public.
+- **The session's study code** moved to `session/study.rs`, on a
+  `StudyTarget` (clip, study, insert, recording) rather than a clip. What a
+  study sounds like is `analyze::process_study` (denoise per channel,
+  edits, gain, fades from the trim's ends; *removed* for "Hear what's
+  removed"); the preview and every render use it. **Renders run off the
+  window's thread** (`RenderJob`, `poll_analysis_render`, the job strip
+  with its fraction) and land one undo: Render to clip (the trim becomes
+  the clip's span, start and length — the file is never cut), Send to
+  arrangement (at the take's song position, else the playhead), Send to
+  sampler (`add_sampler_slices` on the processed render).
+- **Recording**: the insert's slot opens this window (not the generic
+  panel), binding a study key on first open; `InsertTakeWriter` per armed
+  capture; takes land in the study (the first makes it and loads), never
+  the arrangement; arm settings are the insert's parameters
+  (`SetInsertParam`, normalised). An input device records through the
+  `InputTap` when a track has it open (§5 R4: the tap is now made in
+  `sync_audio_input`), else a stream of its own (`InputTakeWriter`,
+  `InputTakes` deciding Now / On play / On input on the reader's side).
+  Takes load (edits, markers, trim cleared in the same compound — one undo
+  brings them back), star, rename, discard; Use comp renders the comp to a
+  take and loads it. A discarded take's file is deleted only once nothing
+  in the song or the history names it (swept on discard and on close).
+  `AnalyzeCapture::level()` / `take_frames()` feed the meter
+  (`analysis_meter`, read once a frame, not a view rebuild).
+- **The window**: every page keeps the transport and wears its card ink.
+  *Notes* gains a **Pitch** card of Flopsynth knobs for the selected notes
+  (centre, flatten, vibrato, glide in/out, formant, gain; two rows of small
+  ones where the window is narrow; a note's gain is now rendered over its
+  span, `render_edits`). *Clean*: the take as a wave lane the screen wide,
+  the Noise tool (captures as it lets go, says the level), the trim's ends
+  and the fades' handles to drag, faint transients; Noise, Denoise
+  (on, reduce, amount, sensitivity, voice where built), Trim & fades
+  (fade in/out, gain, shape, Trim to selection, Reset). *Slice*: the Marker
+  tool (click adds, drag moves, Del removes), auto-slice by transients (the
+  sensitivity knob previews the cuts, dashed), notes, beats or equal
+  pieces, Use as markers, the layout with a keyboard preview from the host,
+  the replay switch, Send to sampler. *Record*: Source, After the fader, the
+  lamp, On play / On input / Now (threshold and release knobs on input), a
+  meter, what was lost; the take in the lane over the takes with their
+  waveforms (click loads, double-click renames, ☆, ×) and comp spans
+  dragged across them; Send to arrangement, Use comp, Clear comp.
+  Knobs: drag (Shift fine, Ctrl finer), Alt-click default, double-click or
+  right-click to type. Z zooms to the selection, Shift+Z all; N and K are
+  the Noise and Marker tools (four new rebindable actions, ids permanent).
+- **Studies are never lost** (§6 answer 4): the header's Studies ▾ lists
+  every study (and Record into…), the browser's Projects tab lists them
+  above the projects; the record menu has *Record into Analyze
+  Musically…*.
+- **Melody mode's chord lane** (coordinator, on `analyze-real-edited`):
+  `chords::melody_chords` reads a bar of the song's tempo at a time and
+  names a chord only when the line spells one (three pitch classes, every
+  tone sounded, most of the weight; no power chords); Chords mode is as
+  it was.
+- Tests: `fontelle-analysis/tests/{chords,render}.rs` (+4),
+  `fontelle-model/tests/{study_commands,wire}.rs` (+6, four wire forms),
+  `fontelle-engine/tests/analyze_insert.rs` (the meter),
+  `fontelle-app/tests/analyze_clean.rs` (6), `analyze_record.rs` (9),
+  `analyze_insert_takes.rs` (input takes), `analyze_render.rs` (waits for
+  the render now), `fontelle-ui/tests/analyze_pages.rs` (10),
+  `analyze_window.rs` (every page fits and says what everything is).
+  Tests first, confirmed failing, for the model, the clean host, the chord
+  lane, the note gain and the meter; the record host's and the pages'
+  tests were written after the seams they test (they passed first time),
+  and say so here. Headless: `analyze-notes-pitch`, `analyze-clean`,
+  `analyze-slice`, `analyze-slice-markers`, `analyze-record`,
+  `analyze-record-empty`, each also at 75 %. Changed after looking: the
+  Noise and Marker tools had no words; clipped captions (a knob's cell now
+  widens for its caption); the Denoise switch, the Noise card's rows; the
+  wave held back so the marks read; the takes take only their rows; SHAPE
+  and FIND captions; the Record line and lamp word shaped; an empty
+  recording study's header.
+- **Not done**: dragging a take out of the window onto an arrangement lane
+  (Send to arrangement does it); the Record page's meter for an insert is
+  its capture's own peak, not the strip's meter; the takes' lanes share the
+  longest take's time rather than the lane's zoom; closing the window stops
+  a recording (its take lands); no count-in or punch on the Record page;
+  slice *one-shot/hold* and *de-click* are still not modelled; the voice
+  denoiser is behind the app's `voice-denoise` feature, off; none of this
+  has been driven on a real display or with a real microphone — headless
+  and synthesized signals only.
+
 **As of 2026-10-06, latest — Analyze Musically P2: hear it, move it,
 render it.** Same branch (`feature/analyze-musically`), not merged, not
 bumped. `docs/analyze-musically-plan.md` §2.4, §3.3, §3.5, §3.7, §3.9–3.10,
