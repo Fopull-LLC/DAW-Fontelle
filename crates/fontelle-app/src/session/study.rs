@@ -1125,11 +1125,24 @@ impl Session {
         };
         match self.target_insert() {
             Some((track, slot)) => {
-                self.history.break_gesture();
+                // The parameter's normalised value, as the insert's panel
+                // would send it; a knob's drag merges, a choice is its own.
+                let value = EffectConfig::Analyze(config)
+                    .normalised(param.0)
+                    .unwrap_or(param.1);
+                let knob = matches!(
+                    op,
+                    AnalyzeRecordOp::Threshold(_) | AnalyzeRecordOp::Release(_)
+                );
+                if !knob {
+                    self.history.break_gesture();
+                }
                 self.try_run(Box::new(fontelle_model::SetInsertParam::new(
-                    track, slot, param.0, param.1,
+                    track, slot, param.0, value,
                 )))?;
-                self.let_go();
+                if !knob {
+                    self.let_go();
+                }
             }
             None => {
                 if let Some(r) = &mut self.recorder {

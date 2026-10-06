@@ -234,3 +234,71 @@ fn the_live_graph_records_what_plays_through_the_track_pre_and_post_fader() {
         }
     }
 }
+
+/// *Record into Analyze Musically…* from an input device: the device hands
+/// over every block, and the reader decides where takes start and stop —
+/// Now from the arm, On input at the threshold until the release, On play
+/// only while the transport rolls, at the song position.
+#[test]
+fn an_input_devices_takes_start_and_stop_as_an_inserts_do() {
+    use fontelle_app::insert_takes::{InputControl, InputTakes};
+    let dir = scratch("input");
+    let control = InputControl::default();
+    let mut takes = InputTakes::new(dir.clone(), SR, 1);
+    let loud = vec![0.5f32; 480];
+    let quiet = vec![0.0f32; 480];
+    // Disarmed: nothing.
+    assert!(takes.feed(&loud, &control, false, 0).is_empty());
+    assert!(!control.recording.load(std::sync::atomic::Ordering::Relaxed));
+    // Now: from the arm until the disarm.
+    control.configure(&AnalyzeConfig {
+        arm: ArmMode::Now,
+        ..AnalyzeConfig::new()
+    });
+    control
+        .armed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..10 {
+        assert!(takes.feed(&quiet, &control, false, 0).is_empty());
+    }
+    assert!(control.recording.load(std::sync::atomic::Ordering::Relaxed));
+    control
+        .armed
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    let now: Vec<_> = takes.feed(&quiet, &control, false, 0);
+    assert_eq!(now.len(), 1);
+    let now = now[0].clone().expect("written");
+    assert_eq!(now.frames, 4_800);
+    assert_eq!(now.song_sample, None);
+    // On input: silence waits, the first loud frame starts it, a release of
+    // quiet ends it.
+    control.configure(&AnalyzeConfig {
+        arm: ArmMode::OnInput,
+        threshold_db: -20.0,
+        release_ms: 50.0,
+        ..AnalyzeConfig::new()
+    });
+    control
+        .armed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(takes.feed(&quiet, &control, true, 0).is_empty());
+    assert!(!control.recording.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(takes.feed(&loud, &control, true, 9_600).is_empty());
+    let mut ended = Vec::new();
+    for _ in 0..10 {
+        ended.extend(takes.feed(&quiet, &control, true, 0));
+    }
+    assert_eq!(ended.len(), 1, "the release ended it");
+    let caught = ended[0].clone().expect("written");
+    assert_eq!(caught.song_sample, Some(9_600));
+    assert_eq!(caught.frames, 480 + 2_400, "the loud block and the release");
+    // On play: nothing while stopped.
+    control.configure(&AnalyzeConfig::new());
+    assert!(takes.feed(&loud, &control, false, 0).is_empty());
+    assert!(!control.recording.load(std::sync::atomic::Ordering::Relaxed));
+    takes.feed(&loud, &control, true, 48_000);
+    let played = takes.feed(&loud, &control, false, 0);
+    assert_eq!(played.len(), 1);
+    assert_eq!(played[0].clone().unwrap().song_sample, Some(48_000));
+    std::fs::remove_dir_all(&dir).ok();
+}
