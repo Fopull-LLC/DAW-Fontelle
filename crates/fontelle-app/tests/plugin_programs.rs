@@ -139,6 +139,17 @@ fn a_session_with_roots(
     project: fontelle_model::Project,
     roots: Option<fontelle_host::PresetRoots>,
 ) -> Session {
+    settings(dir);
+    a_session_keeping_settings(dir, project, roots)
+}
+
+/// [`a_session_with_roots`], on whatever `settings.json` is already in
+/// `dir`.
+fn a_session_keeping_settings(
+    dir: &Path,
+    project: fontelle_model::Project,
+    roots: Option<fontelle_host::PresetRoots>,
+) -> Session {
     let clip = Session::first_clip(&project).unwrap_or_default();
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -162,7 +173,7 @@ fn a_session_with_roots(
     )
     .with_graphs(graphs, realised.track_controls)
     .with_param_nodes(realised.param_nodes)
-    .with_settings_path(settings(dir))
+    .with_settings_path(dir.join("settings.json"))
     .with_plugin_folders(plugin_folders());
     if let Some(roots) = roots {
         session.plugin_rack_mut().set_preset_roots(roots);
@@ -613,4 +624,151 @@ fn the_strips_star_with_no_preset_says_why() {
     session.toggle_preset_favorite(device);
     let said = session.take_message().unwrap_or_default();
     assert!(said.contains("preset"), "{said:?}");
+}
+
+// ------------------------------------------- a star names its bank, too
+
+/// The LV2 bank fixture with two banks that both have a "Quieter" — what
+/// amsynth's 27 banks do with their "Init"s.
+#[cfg(target_os = "linux")]
+fn two_banks(dir: &Path, keep: bool) -> (Session, PresetDevice) {
+    let library = dir.join("library");
+    let banks = library.join("Fontelle Test Plain LV2").join("banks");
+    std::fs::create_dir_all(&banks).unwrap();
+    std::fs::write(
+        banks.join("Alpha.bank"),
+        "amSynth\n<preset> <name> Quieter\n<parameter> gain 0.25\n",
+    )
+    .unwrap();
+    std::fs::write(
+        banks.join("Beta.bank"),
+        "amSynth\n<preset> <name> Quieter\n<parameter> gain 0.5\n",
+    )
+    .unwrap();
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    let master = project.mixer.master.expect("a project has a master track");
+    project.mixer.tracks[master]
+        .inserts
+        .push(fontelle_model::EffectSlot::hosting(PluginState::new(
+            plain_key(),
+            "Fontelle Test Plain LV2",
+        )));
+    let roots = Some(fontelle_host::PresetRoots {
+        data: vec![library],
+        vst3: Vec::new(),
+    });
+    let session = if keep {
+        a_session_keeping_settings(dir, project, roots)
+    } else {
+        a_session_with_roots(dir, project, roots)
+    };
+    let strip = (0..session.mixer_strips().len())
+        .find(|&strip| {
+            !session
+                .preset_choices(PresetDevice::Insert { strip, slot: 0 })
+                .is_empty()
+        })
+        .expect("the banks are offered on a strip");
+    (session, PresetDevice::Insert { strip, slot: 0 })
+}
+
+#[cfg(target_os = "linux")]
+fn plain_key() -> PluginKey {
+    PluginKey::new(
+        fontelle_types::PluginFormat::Lv2,
+        fontelle_testlv2::PLAIN_URI,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn stars(session: &Session, device: PresetDevice) -> Vec<(String, bool)> {
+    session
+        .preset_choices(device)
+        .into_iter()
+        .filter(|c| c.name == "Quieter")
+        .map(|c| (c.category, c.favourite))
+        .collect()
+}
+
+/// Two presets of one name in two banks are two presets: starring one does
+/// not star the other, and the file says which.
+#[cfg(target_os = "linux")]
+#[test]
+fn same_named_presets_in_two_banks_star_independently() {
+    let dir = scratch("star-banks");
+    let (mut session, device) = two_banks(&dir, false);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), false)]
+    );
+    let beta = session
+        .preset_choices(device)
+        .iter()
+        .position(|c| c.name == "Quieter" && c.category == "Beta")
+        .unwrap();
+    session.toggle_preset_star(device, beta);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), true)]
+    );
+    // Written and read back.
+    drop(session);
+    let (session, device) = two_banks(&dir, true);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), false), ("Beta".to_string(), true)]
+    );
+}
+
+/// A star from before (no category) on a name two banks share goes to the
+/// first of them, in the order the menu lists them — the one the person saw
+/// first under that name — and is written with its bank. A star that matches
+/// no preset here is kept as it was, never dropped.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_old_star_goes_to_the_first_preset_of_its_name_and_none_is_lost() {
+    let dir = scratch("star-migrate");
+    let legacy = |name: &str| fontelle_types::Favorite::Preset {
+        device: fontelle_types::DeviceKind::Plugin(plain_key()),
+        name: name.to_string(),
+        origin: PresetOrigin::Plugin,
+        category: None,
+    };
+    let old = Settings {
+        preset_dir: Some(dir.join("presets")),
+        projects_dir: Some(dir.join("projects")),
+        favorites: vec![legacy("Quieter"), legacy("Gone Now")],
+        ..Default::default()
+    };
+    // As a format-11 file was written: no category on either.
+    let mut json: serde_json::Value = serde_json::from_str(&old.to_json()).unwrap();
+    json["format_version"] = 11.into();
+    std::fs::write(dir.join("settings.json"), json.to_string()).unwrap();
+
+    let (session, device) = two_banks(&dir, true);
+    assert_eq!(
+        stars(&session, device),
+        vec![("Alpha".to_string(), true), ("Beta".to_string(), false)]
+    );
+    drop(session);
+    let written =
+        Settings::from_json(&std::fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+    let names: Vec<(String, Option<String>)> = written
+        .favorites
+        .iter()
+        .filter_map(|f| match f {
+            fontelle_types::Favorite::Preset { name, category, .. } => {
+                Some((name.clone(), category.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        names.contains(&("Quieter".to_string(), Some("Alpha".to_string()))),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&("Gone Now".to_string(), None)),
+        "a star with nothing to match is kept: {names:?}"
+    );
 }

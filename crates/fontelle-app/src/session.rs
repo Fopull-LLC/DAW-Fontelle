@@ -1823,6 +1823,7 @@ impl Session {
             .unwrap_or_else(fontelle_ui::Theme::dark_default);
         self.theme_revision += 1;
         self.read_import_folder();
+        self.adopt_old_preset_stars();
         self
     }
 
@@ -4804,7 +4805,58 @@ impl Session {
             self.preset_bank
                 .set_library(&fontelle_types::DeviceKind::Plugin(key), &presets);
         }
+        self.adopt_old_preset_stars();
         self.touch();
+    }
+
+    /// Matches the stars on presets written before a star named its
+    /// category (settings format 11 and older) to presets the bank now has.
+    ///
+    /// An old star said only a device, a name and an origin, so two presets
+    /// of one name in two banks shared it. It goes to the **first** preset of
+    /// that name, in the order the menu lists them — the one the person saw
+    /// first under that name, and on a device with one of the name, the only
+    /// one — and is written with its category. A star that matches nothing
+    /// here (a plugin whose library is still being listed, a preset since
+    /// deleted) is kept as it was, to be matched later: a star is never
+    /// dropped.
+    fn adopt_old_preset_stars(&mut self) {
+        let mut changed = false;
+        let mut favorites = self.settings.favorites.clone();
+        for favorite in favorites.iter_mut() {
+            let fontelle_types::Favorite::Preset {
+                device,
+                name,
+                origin,
+                category: category @ None,
+            } = favorite
+            else {
+                continue;
+            };
+            if let Some(first) = self
+                .preset_bank
+                .for_device(device)
+                .into_iter()
+                .find(|entry| entry.name == *name && entry.origin == *origin)
+            {
+                *category = Some(first.category.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        // Two old stars may have come to name one preset.
+        let mut seen = Vec::new();
+        favorites.retain(|favorite| {
+            let new = !seen.contains(favorite);
+            seen.push(favorite.clone());
+            new
+        });
+        self.settings.favorites = favorites;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     /// Waits for the plugins' libraries still being listed, and puts them in
@@ -14460,6 +14512,7 @@ impl Session {
                     device: kind.clone(),
                     name: reference.name.clone(),
                     origin: reference.origin,
+                    category: Some(reference.category.clone()),
                 })
         });
         PresetBarView {
@@ -14492,6 +14545,7 @@ impl Session {
                         device: kind.clone(),
                         name: entry.name.clone(),
                         origin: entry.origin,
+                        category: Some(entry.category.clone()),
                     }),
                 name: entry.name.clone(),
                 category: entry.category.clone(),
@@ -14743,11 +14797,11 @@ impl Session {
         let Some(kind) = self.preset_device(device) else {
             return;
         };
-        let Some((name, origin)) = self
+        let Some((name, origin, category)) = self
             .preset_bank
             .for_device(&kind)
             .get(index)
-            .map(|entry| (entry.name.clone(), entry.origin))
+            .map(|entry| (entry.name.clone(), entry.origin, entry.category.clone()))
         else {
             return;
         };
@@ -14755,6 +14809,7 @@ impl Session {
             device: kind,
             name,
             origin,
+            category: Some(category),
         });
     }
 
@@ -14772,6 +14827,7 @@ impl Session {
             device: kind,
             name: reference.name,
             origin: reference.origin,
+            category: Some(reference.category),
         });
     }
 

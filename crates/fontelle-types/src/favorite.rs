@@ -38,9 +38,18 @@ pub enum Favorite {
     /// The fourth variant, which the `favorites-and-stars` note anticipated:
     /// a preset is something you go looking for the way you go looking for a
     /// soundfont, so it is something you star.
+    ///
+    /// And its category — the bank or folder it is filed under — since two
+    /// presets of one name in two banks are two presets: amsynth's 27 banks
+    /// each have their own "Init", and starring one starred them all. `None`
+    /// is a star written before the category was part of it (settings
+    /// format 11 and older), waiting to be matched to a preset by the
+    /// session; it is never written for a new star.
     Preset {
         device: DeviceKind,
         name: String,
         origin: PresetOrigin,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
     },
 }

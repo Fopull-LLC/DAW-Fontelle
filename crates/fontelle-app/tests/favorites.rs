@@ -114,6 +114,29 @@ fn the_file_format_moved_on_when_favourites_arrived() {
     const { assert!(SETTINGS_FORMAT_VERSION >= 4) };
 }
 
+/// Twelve: a preset's star names its category. A file from before reads,
+/// its stars on presets waiting to be matched (`Session`); a file from a
+/// build newer than this one is still refused by its version.
+#[test]
+fn a_format_eleven_file_with_a_preset_star_still_opens_and_a_newer_one_is_refused() {
+    const { assert!(SETTINGS_FORMAT_VERSION >= 12) };
+    let json = r#"{"format_version":11,"soundfont_dirs":[],"projects_dir":null,"theme":null,
+        "favorites":[{"preset":{"device":{"instrument":"Flopsynth"},"name":"Init","origin":"factory"}}]}"#;
+    let read = Settings::from_json(json).expect("an older file is not a broken one");
+    assert!(matches!(
+        &read.favorites[..],
+        [fontelle_types::Favorite::Preset { name, category: None, .. }] if name == "Init"
+    ));
+    let newer = format!(
+        r#"{{"format_version":{},"soundfont_dirs":[],"projects_dir":null,"theme":null}}"#,
+        SETTINGS_FORMAT_VERSION + 1
+    );
+    assert!(matches!(
+        Settings::from_json(&newer),
+        Err(fontelle_app::settings::SettingsError::FromTheFuture { .. })
+    ));
+}
+
 // --------------------------------------------------------- the session ---
 
 #[test]
