@@ -14,7 +14,7 @@ use fontelle_types::{KeyScale, NoteId, PPQN, SCALES, Tick};
 use fontelle_ui::canvas::{
     CHOSEN_MARK, KeyStyle, Modifiers, MouseButton, PianoRoll, RollControl, RollEdit, RollScale,
     RollView, RowShade, ScaleMenuRow, SnapDivision, key_to_y, root_caption, root_menu, row_shade,
-    scale_caption, scale_fit, scale_menu, tick_to_x, toolbar_layout,
+    scale_caption, scale_fit, scale_menu, scale_menu_with, tick_to_x, toolbar_layout,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
@@ -223,9 +223,10 @@ fn the_scale_menu_lists_every_scale_once_under_its_family() {
         .collect();
     assert_eq!(scales.len(), SCALES.len());
     assert!(rows.contains(&ScaleMenuRow::NoScale));
-    // Headings are rows that cannot be pressed.
+    // Headings are rows that cannot be pressed. Fit and Copy are greyed for
+    // want of a key, below.
     for (entry, row) in entries.iter().zip(&rows) {
-        if *row != ScaleMenuRow::FitNotes {
+        if !matches!(row, ScaleMenuRow::FitNotes | ScaleMenuRow::CopyScale) {
             assert_eq!(
                 entry.enabled,
                 *row != ScaleMenuRow::Heading,
@@ -408,5 +409,83 @@ fn fitting_a_sliding_note_fits_each_point_it_lands_on() {
                 offset: 4
             }]
         )]
+    );
+}
+
+// ------------------------------------------- copying and pasting a scale ---
+//
+// Ty: a "Copy scale" / "Paste scale" between this chooser and the pitch
+// corrector's, the clipboard holding plain words ("A minor"); "when the
+// clipboard holds a scale, show 'Paste <scale>'"; and the notes of the scale
+// that is on, shown in the menu.
+
+fn row_labelled(
+    entries: &[fontelle_ui::canvas::MenuEntry],
+    rows: &[ScaleMenuRow],
+    row: ScaleMenuRow,
+) -> Option<(String, bool)> {
+    rows.iter()
+        .position(|r| *r == row)
+        .map(|at| (entries[at].label.trim().to_string(), entries[at].enabled))
+}
+
+#[test]
+fn the_menu_offers_to_copy_the_key_that_is_on_and_shows_its_notes() {
+    let current = KeyScale::new(9, "natural-minor");
+    let (entries, rows) = scale_menu_with("", Some(&current), None);
+    assert_eq!(
+        row_labelled(&entries, &rows, ScaleMenuRow::CopyScale),
+        Some(("Copy A minor".to_string(), true))
+    );
+    assert_eq!(
+        row_labelled(&entries, &rows, ScaleMenuRow::CopyNotes),
+        Some(("Notes: A  B  C  D  E  F  G".to_string(), true)),
+        "the notes are listed, and pressing them copies them"
+    );
+    assert!(
+        !rows.contains(&ScaleMenuRow::PasteScale),
+        "nothing to paste, nothing offered"
+    );
+}
+
+#[test]
+fn with_no_scale_on_there_is_nothing_to_copy() {
+    let (entries, rows) = scale_menu_with("", None, None);
+    let (label, enabled) = row_labelled(&entries, &rows, ScaleMenuRow::CopyScale).unwrap();
+    assert_eq!(label, "Copy scale");
+    assert!(!enabled);
+    assert!(
+        !rows.contains(&ScaleMenuRow::CopyNotes),
+        "and no notes to list"
+    );
+}
+
+#[test]
+fn a_scale_on_the_clipboard_is_offered_by_name() {
+    let pasted = KeyScale::new(2, "dorian");
+    let (entries, rows) = scale_menu_with("", Some(&KeyScale::new(0, "major")), Some(&pasted));
+    assert_eq!(
+        row_labelled(&entries, &rows, ScaleMenuRow::PasteScale),
+        Some(("Paste D dorian".to_string(), true))
+    );
+}
+
+#[test]
+fn typing_in_the_menu_leaves_only_scales() {
+    let (_, rows) = scale_menu_with(
+        "dor",
+        Some(&KeyScale::new(0, "major")),
+        Some(&KeyScale::new(2, "dorian")),
+    );
+    assert!(!rows.contains(&ScaleMenuRow::CopyScale));
+    assert!(!rows.contains(&ScaleMenuRow::PasteScale));
+}
+
+#[test]
+fn the_plain_menu_is_the_same_menu_with_nothing_on_the_clipboard() {
+    let current = KeyScale::new(4, "phrygian");
+    assert_eq!(
+        scale_menu("", Some(&current)),
+        scale_menu_with("", Some(&current), None)
     );
 }

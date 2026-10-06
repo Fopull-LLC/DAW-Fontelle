@@ -510,3 +510,47 @@ pub fn tune_strings(view: &TuneView) -> Vec<String> {
     out.extend(tune_readout(view));
     out
 }
+
+// ------------------------------------------- copying and pasting a scale ---
+//
+// Ty: a "Copy scale" / "Paste scale" here and in the piano roll's chooser,
+// with Ctrl+C and Ctrl+V on the key and scale controls, and the clipboard
+// holding plain words — "A minor" — so it is useful in a browser too.
+
+/// What Copy scale puts on the clipboard: the corrector's key in plain words
+/// (`fontelle_types::scale_text`) when its notes are a scale the roll knows —
+/// a named choice always is, and switches set by hand often are — and the
+/// notes themselves, from the root up, when they are not.
+pub fn tune_scale_text(view: &TuneView) -> String {
+    let root = view.root % 12;
+    let mask = view.mask & 0x0FFF;
+    if let Some(scale) = fontelle_types::SCALES.iter().find(|s| s.mask(root) == mask) {
+        return fontelle_types::scale_text(&fontelle_types::KeyScale::new(root, scale.id));
+    }
+    (0..12u8)
+        .map(|step| (root + step) % 12)
+        .filter(|class| mask & (1 << class) != 0)
+        .map(|class| fontelle_types::TUNE_ROOTS[usize::from(class)])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What pasting a key into the corrector writes: its root, and either the
+/// corrector's own choice of that scale or — for one it does not list —
+/// Custom with the switches set to its notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunePaste {
+    pub root: u8,
+    /// `None` is Custom, with `mask` written to the twelve switches.
+    pub scale: Option<fontelle_types::TuneScale>,
+    pub mask: u16,
+}
+
+pub fn tune_paste(key: &fontelle_types::KeyScale) -> TunePaste {
+    let root = key.root % 12;
+    TunePaste {
+        root,
+        scale: fontelle_types::TuneScale::from_scale_id(&key.scale),
+        mask: key.mask().unwrap_or(0x0FFF),
+    }
+}

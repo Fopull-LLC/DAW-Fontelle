@@ -107,7 +107,8 @@ pub use preset::{
     PresetRef, TrackChain, TrackInsert, TrackPreset,
 };
 pub use scale::{
-    KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, scale, scale_matches,
+    KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, parse_scale, scale,
+    scale_matches, scale_notes, scale_text,
 };
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};

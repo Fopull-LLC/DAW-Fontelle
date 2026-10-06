@@ -7377,3 +7377,39 @@ fn the_preset_menu_lists_the_users_presets_then_the_plugins_bank() {
         dump_sized(&shot.pixels, "preset-menu-top", W, H);
     }
 }
+
+/// The piano roll's scale chooser with a key on and a scale on the clipboard:
+/// Copy, Paste by name, and the notes of the key, above the catalogue.
+#[test]
+fn the_scale_menu_offers_copy_paste_and_the_notes_of_the_key() {
+    use fontelle_types::KeyScale;
+    use fontelle_ui::canvas::{context_menu_layout, scale_menu_with};
+    let theme = Theme::dark_default();
+    let current = KeyScale::new(9, "natural-minor");
+    let pasted = KeyScale::new(2, "dorian");
+    let (entries, _) = scale_menu_with("", Some(&current), Some(&pasted));
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.trim()).collect();
+    assert!(labels.contains(&"Copy A minor"), "{labels:?}");
+    assert!(labels.contains(&"Paste D dorian"), "{labels:?}");
+    assert!(labels.contains(&"Notes: A  B  C  D  E  F  G"), "{labels:?}");
+    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let menu = context_menu_layout(
+        (40.0, 20.0),
+        layout.window,
+        &theme.metrics,
+        theme.font.size,
+        entries,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = Some(menu));
+    let shot = shoot_sized(
+        theme,
+        TransportView::default(),
+        [Meter::default(), Meter::default()],
+        false,
+        W,
+    );
+    MENU.with(|slot| *slot.borrow_mut() = None);
+    if let Some(shot) = shot {
+        dump_sized(&shot.pixels, "scale-menu-copy-paste", W, H);
+    }
+}

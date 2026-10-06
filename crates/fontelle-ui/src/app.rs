@@ -2028,6 +2028,11 @@ pub struct WindowApp {
     /// The root the root chip shows: the key's while there is one, and the
     /// one a scale chosen next will be built on while there is not.
     key_root: u8,
+    /// The key the clipboard held when the scale chooser opened, if what it
+    /// held reads as one — what the chooser's "Paste <scale>" row offers.
+    /// Read once at the open: the clipboard is another program's, and asking
+    /// it on every redraw of the menu is a process a frame.
+    scale_paste: Option<fontelle_types::KeyScale>,
     /// Which band of the open EQ the controls under the curve describe, and
     /// which handle is drawn as the one in hand.
     ///
@@ -2482,6 +2487,7 @@ impl WindowApp {
             key_style: crate::canvas::KeyStyle::default(),
             song_key: None,
             key_root: 0,
+            scale_paste: None,
             eq_band: 0,
             eq_drag: None,
             mix_drag: None,
@@ -5914,6 +5920,9 @@ impl WindowApp {
             {
                 self.rename_key(event)
             }
+            // Ctrl+C / Ctrl+V on the corrector's key or scale: the key, as
+            // words, to and from the clipboard.
+            EditorKind::Effect if self.tune.is_some() && self.tune_scale_key(event) => true,
             EditorKind::Effect => {
                 let action = self.action_of(event, crate::canvas::Context::Editor);
                 if action == Some(crate::canvas::Action::RemoveBand) {
@@ -14092,6 +14101,109 @@ impl WindowApp {
         self.redraw_editor(EditorKind::Effect);
     }
 
+    /// Whether `param` (an effect's own id for a control) is the corrector's
+    /// key or scale, which copy and paste the key as words.
+    fn tune_scale_param(&self, param: &str) -> bool {
+        self.tune.is_some() && matches!(param, "root" | "scale")
+    }
+
+    /// Puts `text` — a key, in plain words — on the clipboard, and says so.
+    fn copy_scale_text(&mut self, text: &str) {
+        self.clipboard_text.copy(text);
+        self.status = format!("Copied {text}");
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    /// Copy scale, on the corrector: its key as the roll would name it.
+    fn copy_tune_scale(&mut self) {
+        if let Some(view) = &self.tune {
+            let text = crate::canvas::tune_scale_text(view);
+            self.copy_scale_text(&text);
+        }
+    }
+
+    /// Paste scale, on the corrector: whatever the clipboard says, read
+    /// leniently (`fontelle_types::parse_scale`). One undo entry: the root,
+    /// and the corrector's own choice of that scale or Custom with its notes.
+    fn paste_tune_scale(&mut self) {
+        let text = self.clipboard_text.paste();
+        let Some(key) = fontelle_types::parse_scale(&text) else {
+            self.status = if text.trim().is_empty() {
+                "There is no scale on the clipboard".to_string()
+            } else {
+                format!("\u{201c}{}\u{201d} is not a scale", text.trim())
+            };
+            self.tree.invalidate(TRANSPORT);
+            return;
+        };
+        let paste = crate::canvas::tune_paste(&key);
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let spec = fontelle_types::EffectConfig::Tune(fontelle_types::TuneConfig::new());
+        let normalised = |id: &str, value: f32| {
+            spec.specs()
+                .iter()
+                .find(|spec| spec.id == id)
+                .map_or(value, |spec| spec.normalise(value))
+        };
+        let scale = paste.scale.unwrap_or(fontelle_types::TuneScale::Custom);
+        let index = fontelle_types::TuneScale::ALL
+            .iter()
+            .position(|s| *s == scale)
+            .unwrap_or(0) as f32;
+        if let Some(doc) = &mut self.options.document {
+            doc.set_insert_param(
+                strip,
+                slot,
+                "root",
+                normalised("root", f32::from(paste.root)),
+            );
+            doc.set_insert_param(strip, slot, "scale", normalised("scale", index));
+            if paste.scale.is_none() {
+                for (class, id) in fontelle_types::TUNE_NOTE_PARAMS.iter().enumerate() {
+                    let on = paste.mask & (1 << class) != 0;
+                    doc.set_insert_param(strip, slot, id, if on { 1.0 } else { 0.0 });
+                }
+            }
+            doc.end_gesture();
+        }
+        self.status = format!("Scale: {}", fontelle_types::scale_text(&key));
+        self.tree.invalidate(TRANSPORT);
+        self.refresh_studio();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// Ctrl+C and Ctrl+V over the corrector's key or scale control.
+    fn tune_scale_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::Key;
+        if !self.modifiers.control_key() || self.modifiers.alt_key() {
+            return false;
+        }
+        let Some((card, param)) = self.hover_param else {
+            return false;
+        };
+        let Some(address) = self
+            .tune
+            .as_ref()
+            .and_then(|view| view.cards.get(card))
+            .and_then(|card| card.group.params.get(param))
+            .map(|control| insert_param_id(control.address.as_str()))
+        else {
+            return false;
+        };
+        if !self.tune_scale_param(&address) {
+            return false;
+        }
+        match &event.logical_key {
+            Key::Character(c) if c.eq_ignore_ascii_case("c") => self.copy_tune_scale(),
+            Key::Character(c) if c.eq_ignore_ascii_case("v") => self.paste_tune_scale(),
+            _ => return false,
+        }
+        true
+    }
+
     /// And the root, which leaves the scale alone.
     fn write_tune_root(&mut self, class: u8) {
         let Some((strip, slot)) = self.open_insert else {
@@ -17145,6 +17257,14 @@ impl WindowApp {
             // The control's own name first, greyed: a menu of one entry with
             // no heading is a menu you have to remember what you right-clicked
             // to read.
+            // The corrector's key and scale also copy and paste the key, in
+            // plain words, to and from the piano roll's chooser — or anywhere.
+            MenuTarget::InsertParam { param, name } if self.tune_scale_param(param) => {
+                let mut entries = crate::canvas::automate_menu(name);
+                entries.push(MenuEntry::new("Copy scale"));
+                entries.push(MenuEntry::new("Paste scale"));
+                entries
+            }
             MenuTarget::InstrumentParam { name, .. }
             | MenuTarget::InsertParam { name, .. }
             | MenuTarget::AutomateMixer { name, .. } => crate::canvas::automate_menu(name),
@@ -17557,7 +17677,12 @@ impl WindowApp {
             MenuTarget::GhostMenu => self.ghost_menu().0,
             MenuTarget::KeyRoot => crate::canvas::root_menu(self.key_root),
             MenuTarget::KeyScale => {
-                crate::canvas::scale_menu(self.menu_filter.text(), self.song_key.as_ref()).0
+                crate::canvas::scale_menu_with(
+                    self.menu_filter.text(),
+                    self.song_key.as_ref(),
+                    self.scale_paste.as_ref(),
+                )
+                .0
             }
             // The grid, as a list rather than as six presses round a ring.
             MenuTarget::Snap { timeline } => {
@@ -18831,6 +18956,12 @@ impl WindowApp {
                 let (param, name) = (param.clone(), name.clone());
                 self.automate_insert_named(&param, &name);
             }
+            (MenuTarget::InsertParam { param, .. }, 2) if self.tune_scale_param(param) => {
+                self.copy_tune_scale();
+            }
+            (MenuTarget::InsertParam { param, .. }, 3) if self.tune_scale_param(param) => {
+                self.paste_tune_scale();
+            }
             (MenuTarget::InstrumentParam { address, .. }, 1) => {
                 let at = self.view.position_sample;
                 let address = address.clone();
@@ -18946,11 +19077,32 @@ impl WindowApp {
                 }
             }
             (MenuTarget::KeyScale, index) => {
-                let rows =
-                    crate::canvas::scale_menu(self.menu_filter.text(), self.song_key.as_ref()).1;
+                let rows = crate::canvas::scale_menu_with(
+                    self.menu_filter.text(),
+                    self.song_key.as_ref(),
+                    self.scale_paste.as_ref(),
+                )
+                .1;
                 match rows.get(index) {
                     Some(crate::canvas::ScaleMenuRow::NoScale) => self.choose_song_key(None),
                     Some(crate::canvas::ScaleMenuRow::FitNotes) => self.fit_notes_to_key(),
+                    Some(crate::canvas::ScaleMenuRow::CopyScale) => {
+                        if let Some(key) = self.song_key.clone() {
+                            self.copy_scale_text(&fontelle_types::scale_text(&key));
+                        }
+                    }
+                    Some(crate::canvas::ScaleMenuRow::CopyNotes) => {
+                        if let Some(key) = self.song_key.clone() {
+                            self.copy_scale_text(&fontelle_types::scale_notes(&key).join(" "));
+                        }
+                    }
+                    Some(crate::canvas::ScaleMenuRow::PasteScale) => {
+                        if let Some(key) = self.scale_paste.clone() {
+                            self.key_root = key.root;
+                            self.status = format!("Key: {}", fontelle_types::scale_text(&key));
+                            self.choose_song_key(Some(key));
+                        }
+                    }
                     Some(crate::canvas::ScaleMenuRow::Scale(id)) => {
                         let key = fontelle_types::KeyScale::new(self.key_root, id);
                         self.choose_song_key(Some(key));
@@ -21588,6 +21740,11 @@ impl WindowApp {
     /// drop-down is: the list appears where the value was.
     /// Drops the root or the scale list under its chip.
     fn open_key_menu(&mut self, target: MenuTarget) {
+        // What the clipboard holds, read once now, so the chooser can offer
+        // to paste it by name.
+        if target == MenuTarget::KeyScale {
+            self.scale_paste = fontelle_types::parse_scale(&self.clipboard_text.paste());
+        }
         let control = match target {
             MenuTarget::GhostMenu => RollControl::Ghost,
             MenuTarget::KeyRoot => RollControl::Root,

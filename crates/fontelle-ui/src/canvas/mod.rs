@@ -225,7 +225,7 @@ pub use rack::{
 };
 pub use roll_scale::{
     RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
-    scale_fit, scale_fit_paths, scale_menu,
+    scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
 };
 pub use share::{
     COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, NOBODY_YET,
@@ -253,10 +253,10 @@ pub use tools::{
 };
 pub use tune::{
     KEYBOARD_FLOOR, KEYBOARD_HEIGHT, KEYBOARD_KEYS, KEYBOARD_OCTAVES, NO_MIDI, TRACE_SECONDS,
-    TUNE_LOCK_CENTS, TUNE_SOURCE, TracePoint, TuneHit, TuneLayout, TuneView, VIEWPORT_FLOOR,
-    VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class, target_class,
-    trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_readout,
-    tune_strings, viewport_points, viewport_rails,
+    TUNE_LOCK_CENTS, TUNE_SOURCE, TracePoint, TuneHit, TuneLayout, TunePaste, TuneView,
+    VIEWPORT_FLOOR, VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class,
+    target_class, trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_paste,
+    tune_readout, tune_scale_text, tune_strings, viewport_points, viewport_rails,
 };
 pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,

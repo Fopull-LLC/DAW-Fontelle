@@ -4539,6 +4539,37 @@ pub enum TuneScale {
 }
 
 impl TuneScale {
+    /// The piano roll's scale (`crate::SCALES`) with these notes — what a
+    /// scale copied from the corrector is called, and how one pasted into it
+    /// is found. `None` for Custom, whose notes are the switches.
+    pub fn scale_id(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Chromatic => "chromatic",
+            Self::Major => "major",
+            Self::NaturalMinor => "natural-minor",
+            Self::HarmonicMinor => "harmonic-minor",
+            Self::MelodicMinor => "melodic-minor",
+            Self::Dorian => "dorian",
+            Self::Phrygian => "phrygian",
+            Self::Lydian => "lydian",
+            Self::Mixolydian => "mixolydian",
+            Self::Locrian => "locrian",
+            Self::MajorPentatonic => "major-pentatonic",
+            Self::MinorPentatonic => "minor-pentatonic",
+            Self::Blues => "blues",
+            Self::WholeTone => "whole-tone",
+            Self::Custom => return None,
+        })
+    }
+
+    /// The corrector's own scale for the piano roll's `id`, if it has one.
+    pub fn from_scale_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|scale| scale.scale_id() == Some(id))
+    }
+
     /// The scale's intervals above its root, in semitones.
     fn degrees(self) -> &'static [u8] {
         match self {
