@@ -120,6 +120,10 @@ impl Lv2Plugin {
         match *self {}
     }
 
+    pub(crate) fn declares_programs(&self) -> bool {
+        match *self {}
+    }
+
     pub(crate) fn pending_state(&self) -> Option<&[u8]> {
         match *self {}
     }
@@ -147,6 +151,14 @@ impl Lv2Processor {
     }
 
     pub(crate) fn restore_preset(&mut self, _preset: &Lv2Preset) {}
+
+    pub(crate) fn programs(&mut self) -> Vec<(u32, u32, String)> {
+        match *self {}
+    }
+
+    pub(crate) fn select_program(&mut self, _bank: u32, _program: u32) -> bool {
+        match *self {}
+    }
 
     pub(crate) fn max_block(&self) -> usize {
         match *self {}

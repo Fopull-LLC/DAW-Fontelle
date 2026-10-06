@@ -402,6 +402,9 @@ pub(crate) struct Lv2Plugin {
     /// Whether the Turtle declares `state:interface` — read before there is
     /// an instance to ask, because that is when the rack asks.
     keeps_state: bool,
+    /// Whether the Turtle declares the KXStudio programs extension — the
+    /// only plugins asked for it (see `Lv2Processor::programs`).
+    declares_programs: bool,
     /// The state the document handed this plugin, kept until an instance
     /// exists to give it to — and afterwards, so that a plugin which has not
     /// run yet (or has stopped) still answers a snapshot with what it was.
@@ -551,6 +554,9 @@ pub(crate) fn open(
     let counts = *plugin.port_counts();
     let midi_urid = features.midi_urid();
     let keeps_state = crate::lv2_state::declares_interface(&plugin, world);
+    let declares_programs = plugin
+        .raw()
+        .has_extension_data(&world.raw().new_uri(PROGRAMS_INTERFACE));
     // **Which inputs are the sidechain.** LV2 says so with a port property,
     // `lv2:isSideChain`, on an audio input; the host feeds those the key and
     // the rest the bus. `input_order` is the buffer each audio input port is
@@ -627,6 +633,7 @@ pub(crate) fn open(
             midi_urid,
             accepts_notes,
             keeps_state,
+            declares_programs,
             pending_state: None,
             instance: Arc::new(AtomicPtr::new(std::ptr::null_mut())),
             input_order,
@@ -751,6 +758,7 @@ impl Lv2Plugin {
             .store(instance.raw().instance().handle(), Ordering::Release);
         let mut processor = Lv2Processor {
             instance: std::mem::ManuallyDrop::new(instance),
+            declares_programs: self.declares_programs,
             owner: std::thread::current().id(),
             handed_out: Arc::clone(&self.instance),
             _world: self.plugin.clone(),
@@ -816,6 +824,11 @@ impl Lv2Plugin {
         self.keeps_state
     }
 
+    /// Whether its Turtle declares the KXStudio programs extension.
+    pub(crate) fn declares_programs(&self) -> bool {
+        self.declares_programs
+    }
+
     /// What the document last handed this plugin, or what was read off the
     /// instance when it stopped. See the field.
     pub(crate) fn pending_state(&self) -> Option<&[u8]> {
@@ -866,6 +879,9 @@ impl Drop for Lv2Processor {
 pub(crate) struct Lv2Processor {
     /// Freed by hand in `drop`, and only on [`owner`](Self::owner).
     instance: std::mem::ManuallyDrop<livi::Instance>,
+    /// Whether its Turtle declares the programs extension — see
+    /// [`programs`](Self::programs).
+    declares_programs: bool,
     /// The thread that made the instance — the studio's main thread. An LV2
     /// plugin's `cleanup` may assume it runs there (drumkv1 tears down its
     /// Qt application in it), so an instance let go of anywhere else is
@@ -920,7 +936,112 @@ pub(crate) struct Lv2Processor {
     patch: Option<PatchIo>,
 }
 
+/// The KXStudio programs extension (`lv2_programs.h`, from DSSI): presets
+/// compiled into a plugin, which DISTRHO's ports (Dexed's LV2) and DPF
+/// plugins offer through `extension_data`.
+const PROGRAMS_INTERFACE: &str = "http://kxstudio.sf.net/ns/lv2ext/programs#Interface";
+
+/// `LV2_Program_Descriptor`.
+#[repr(C)]
+struct ProgramDescriptor {
+    bank: u32,
+    program: u32,
+    name: *const std::ffi::c_char,
+}
+
+/// `LV2_Programs_Interface`.
+#[repr(C)]
+struct ProgramsInterface {
+    get_program: Option<unsafe extern "C" fn(*mut c_void, u32) -> *const ProgramDescriptor>,
+    select_program: Option<unsafe extern "C" fn(*mut c_void, u32, u32)>,
+}
+
 impl Lv2Processor {
+    /// The programs compiled into the plugin, as `(bank, program, name)` in
+    /// its order — empty for one without the KXStudio programs extension.
+    ///
+    /// **Main thread, with the processor in hand**, like its state: the
+    /// extension is the instance's, and Carla, whose extension it is, calls
+    /// it only with processing stopped.
+    ///
+    /// **Only of a plugin whose Turtle declares it.** Asked for it
+    /// undeclared, blop's 16 Step Sequencer took the process down.
+    pub(crate) fn programs(&mut self) -> Vec<(u32, u32, String)> {
+        /// More is a plugin answering nonsense, not a bank.
+        const MOST: u32 = 4096;
+        if !self.declares_programs {
+            return Vec::new();
+        }
+        let instance = self.instance.raw().instance();
+        // SAFETY: `&mut self` — nothing runs the instance; the struct is the
+        // extension's published layout.
+        let Some(interface) =
+            (unsafe { instance.extension_data::<ProgramsInterface>(PROGRAMS_INTERFACE) })
+        else {
+            return Vec::new();
+        };
+        let Some(get) = (unsafe { interface.as_ref() }).get_program else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for index in 0..MOST {
+            // SAFETY: as above; a null answer ends the list.
+            let Some(program) = (unsafe { get(instance.handle(), index).as_ref() }) else {
+                break;
+            };
+            let name = if program.name.is_null() {
+                String::new()
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(program.name) }
+                    .to_string_lossy()
+                    .trim()
+                    .to_string()
+            };
+            found.push((program.bank, program.program, name));
+        }
+        found
+    }
+
+    /// Selects a program in the running instance, and reads back what it
+    /// wrote into its control ports.
+    ///
+    /// DSSI, where the extension comes from, lets a plugin rewrite its own
+    /// input control ports here and asks the host to read them again. Not
+    /// read, the wire held the values from before and the next block wrote
+    /// them over the program. `false` for a plugin without the extension.
+    pub(crate) fn select_program(&mut self, bank: u32, program: u32) -> bool {
+        if !self.declares_programs {
+            return false;
+        }
+        let instance = self.instance.raw().instance();
+        // SAFETY: as in `programs`.
+        let Some(interface) =
+            (unsafe { instance.extension_data::<ProgramsInterface>(PROGRAMS_INTERFACE) })
+        else {
+            return false;
+        };
+        let Some(select) = (unsafe { interface.as_ref() }).select_program else {
+            return false;
+        };
+        unsafe { select(instance.handle(), bank, program) };
+        let ids: Vec<u32> = self
+            .values
+            .all()
+            .map(|(id, _)| id)
+            .filter(|id| *id < PATCH_PARAM_BASE)
+            .collect();
+        for id in ids {
+            if let Some(value) = self.instance.control_input(PortIndex(id as usize)) {
+                self.values.adopt(id, f64::from(value));
+            }
+        }
+        // And its `patch:` parameters, asked on the next block.
+        if let Some(patch) = &mut self.patch {
+            patch.ask = true;
+        }
+        true
+    }
+
     /// Hands the running instance a preset's own state, with the processor
     /// out of the graph — the only way LV2 allows it (see
     /// `ProcessorBay::recall`). Port values are not set here: they reach the

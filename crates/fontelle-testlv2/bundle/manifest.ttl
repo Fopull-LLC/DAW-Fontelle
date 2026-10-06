@@ -18,6 +18,11 @@
     lv2:binary <fontelle_testlv2.so> ;
     rdfs:seeAlso <testlv2.ttl> .
 
+<http://fopull.com/fontelle/testlv2/programs>
+    a lv2:Plugin ;
+    lv2:binary <fontelle_testlv2.so> ;
+    rdfs:seeAlso <testlv2.ttl> .
+
 <http://fopull.com/fontelle/testlv2/sine>
     a lv2:Plugin ;
     lv2:binary <fontelle_testlv2.so> ;

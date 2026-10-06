@@ -336,6 +336,14 @@ pub struct PluginRack {
     /// By plugin rather than by slot: two slots holding the same plugin have
     /// one library, listed once.
     libraries: HashMap<PluginKey, Library>,
+    /// Each plugin's **programs** — the presets compiled into it, which only
+    /// an instance can list (`HostedPlugin::programs`). Read on the main
+    /// thread when the plugin is opened, and again whenever an open one says
+    /// they may be others; shown after its library.
+    ///
+    /// By plugin, like the library: two instances of Dexed holding different
+    /// cartridges show the names of whichever said so last.
+    programs: HashMap<PluginKey, Vec<OwnPreset>>,
     /// Libraries listed and not yet handed to the preset bank.
     fresh: Vec<PluginKey>,
     /// Where a plugin's library is looked for beyond what it lists itself.
@@ -386,6 +394,7 @@ impl Default for PluginRack {
             scanned: false,
             live: HashMap::new(),
             libraries: HashMap::new(),
+            programs: HashMap::new(),
             fresh: Vec::new(),
             preset_roots: fontelle_host::PresetRoots::standard(),
             editor_header: 0,
@@ -867,6 +876,9 @@ impl PluginRack {
             }
             plugin.restore_params(state);
             let bay = Arc::new(ProcessorBay::new());
+            // The presets compiled into it, read while its processor is in
+            // hand — which an LV2 plugin's need — the first time it opens.
+            let mut programs = Vec::new();
             match plugin.activate(sample_rate, max_block) {
                 Ok(mut processor) => {
                     // What the restore left for the plugin's worker thread,
@@ -875,6 +887,9 @@ impl PluginRack {
                     // moment it opened lost its notes to the swap.
                     if state.blob.is_some() {
                         processor.finish_work();
+                    }
+                    if !self.libraries.contains_key(&state.key) {
+                        programs = plugin.programs_with(&mut processor);
                     }
                     bay.park(processor)
                 }
@@ -897,7 +912,7 @@ impl PluginRack {
                 play_pause: 0,
             };
             live.refresh_displays();
-            self.list_library(&found_info, &mut live);
+            self.list_library(&found_info, &mut live, programs);
             self.live.insert(slot, live);
         } else if self.state_is_new(slot, state) {
             // > *"non native plugins are not integrated with the presets
@@ -1002,12 +1017,28 @@ impl PluginRack {
     /// [`fontelle_host::list_own_presets`]. An LV2 plugin's is listed here
     /// and now, by the host its instances come from: its presets' state is
     /// in that host's URIDs, and a library of Turtle is a millisecond.
-    fn list_library(&mut self, info: &fontelle_host::PluginInfo, live: &mut Live) {
+    ///
+    /// `programs` are the presets compiled into it, read off this instance
+    /// as it was activated (`HostedPlugin::programs_with`) — a few dozen
+    /// calls. An LV2 plugin's are kept only when its Turtle lists no preset
+    /// of its own: a DPF plugin offers the same set both ways.
+    fn list_library(
+        &mut self,
+        info: &fontelle_host::PluginInfo,
+        live: &mut Live,
+        programs: Vec<OwnPreset>,
+    ) {
         if self.libraries.contains_key(&info.key) {
             return;
         }
+        if !programs.is_empty() {
+            self.programs.insert(info.key.clone(), programs);
+        }
         if info.key.format == fontelle_types::PluginFormat::Lv2 {
             let listed = self.host.own_lv2_presets(info);
+            if !listed.is_empty() {
+                self.programs.remove(&info.key);
+            }
             self.libraries
                 .insert(info.key.clone(), Library::Ready(listed));
             self.fresh.push(info.key.clone());
@@ -1043,6 +1074,23 @@ impl PluginRack {
     /// The libraries listed since this was last asked, as `(name, category)`
     /// rows for the preset bank. Does not wait.
     pub fn take_libraries(&mut self) -> Vec<(PluginKey, Vec<(String, String)>)> {
+        // > *"Dexed loading a new cartridge changes its 32 names"*
+        //
+        // A plugin that said its programs may be others is asked again, and
+        // its library handed over again only when they are.
+        for live in self.live.values_mut() {
+            if !live.plugin.take_programs_changed() {
+                continue;
+            }
+            let programs = live.plugin.programs();
+            let held = self.programs.get(&live.key).map_or(&[][..], Vec::as_slice);
+            if programs != held {
+                self.programs.insert(live.key.clone(), programs);
+                if !self.fresh.contains(&live.key) {
+                    self.fresh.push(live.key.clone());
+                }
+            }
+        }
         for (key, library) in &mut self.libraries {
             if let Library::Listing(receiver) = library {
                 match receiver.try_recv() {
@@ -1061,9 +1109,10 @@ impl PluginRack {
             .into_iter()
             .filter_map(|key| match self.libraries.get(&key) {
                 Some(Library::Ready(listed)) => Some((
-                    key,
+                    key.clone(),
                     listed
                         .iter()
+                        .chain(self.programs.get(&key).into_iter().flatten())
                         .map(|preset| (preset.name.clone(), preset.category.clone()))
                         .collect(),
                 )),
@@ -1085,13 +1134,15 @@ impl PluginRack {
 
     /// One preset of a plugin's own library, by what the bank calls it.
     pub fn own_preset(&self, key: &PluginKey, name: &str, category: &str) -> Option<OwnPreset> {
-        match self.libraries.get(key)? {
-            Library::Ready(listed) => listed
-                .iter()
-                .find(|preset| preset.name == name && preset.category == category)
-                .cloned(),
-            Library::Listing(_) => None,
-        }
+        let listed = match self.libraries.get(key)? {
+            Library::Ready(listed) => listed.as_slice(),
+            Library::Listing(_) => &[],
+        };
+        listed
+            .iter()
+            .chain(self.programs.get(key).into_iter().flatten())
+            .find(|preset| preset.name == name && preset.category == category)
+            .cloned()
     }
 
     /// Loads one of a plugin's own presets into the plugin at `slot`, and

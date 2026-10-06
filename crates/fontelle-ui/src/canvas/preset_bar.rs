@@ -30,7 +30,7 @@
 
 use fontelle_types::PresetOrigin;
 
-use super::menu::MenuEntry;
+use super::menu::{CHOSEN_MARK, MenuEntry};
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
@@ -465,6 +465,25 @@ pub const PRESET_MENU_HEADING: &str = "Presets";
 /// neither is a Favorites section with no favourite in it: a heading over
 /// nothing is a heading that says the search failed where it did not.
 pub fn preset_menu(choices: &[PresetChoice], query: &str) -> (Vec<MenuEntry>, Vec<PresetMenuRow>) {
+    preset_menu_marking(choices, query, None)
+}
+
+/// What a plugin's own presets that came with no category are filed under.
+pub const PLUGIN_PRESETS_HEADING: &str = "The plugin\u{2019}s own";
+
+/// [`preset_menu`], with the preset at `current` of `choices` — the one the
+/// device is playing — marked with [`CHOSEN_MARK`] wherever it is listed.
+///
+/// > *"in fl their preset menu thats attached to the plugin windows show the
+/// > user presets as well as all the presets in the plugin"*
+///
+/// A plugin's bank is 32 programs or three thousand patches, and a list that
+/// long needs a "you are here".
+pub fn preset_menu_marking(
+    choices: &[PresetChoice],
+    query: &str,
+    current: Option<usize>,
+) -> (Vec<MenuEntry>, Vec<PresetMenuRow>) {
     let mut entries = Vec::new();
     let mut rows = Vec::new();
 
@@ -507,6 +526,11 @@ pub fn preset_menu(choices: &[PresetChoice], query: &str) -> (Vec<MenuEntry>, Ve
                 choice.name.clone()
             }
         };
+        let label = if current == Some(index) {
+            format!("{CHOSEN_MARK}{label}")
+        } else {
+            label
+        };
         entries.push(MenuEntry::new(label).starred(choice.favourite));
         rows.push(PresetMenuRow::Preset(index));
     };
@@ -521,16 +545,23 @@ pub fn preset_menu(choices: &[PresetChoice], query: &str) -> (Vec<MenuEntry>, Ve
         }
     }
 
-    let mut heading: Option<&str> = None;
+    // By run rather than by name: the user's "Factory" and the plugin's
+    // "Factory" are two sections.
+    let mut heading: Option<(&str, bool)> = None;
     for (index, choice) in &matching {
-        if heading != Some(choice.category.as_str()) {
-            let mut entry = MenuEntry::disabled(choice.category.clone());
+        let plugins = choice.origin == PresetOrigin::Plugin;
+        if heading != Some((choice.category.as_str(), plugins)) {
+            let title = match choice.category.as_str() {
+                "" if plugins => PLUGIN_PRESETS_HEADING.to_string(),
+                category => category.to_string(),
+            };
+            let mut entry = MenuEntry::disabled(title);
             // A rule above every category but the first, so the sections read
             // as sections rather than as one long list with bold lines in it.
             entry.separator = entries.len() > 1;
             entries.push(entry);
             rows.push(PresetMenuRow::Heading);
-            heading = Some(choice.category.as_str());
+            heading = Some((choice.category.as_str(), plugins));
         }
         push(&mut entries, &mut rows, *index, choice);
     }

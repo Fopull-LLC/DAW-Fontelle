@@ -56,6 +56,61 @@ The entry below found the cause; this makes the studio survive it.
   child with no display, the variable), `fontelle-app/tests/plugin_window_gl.rs`
   (the setting, the row, the refusal with no plugin call).
 
+**As of 2026-10-05 — a plugin's built-in presets (its programs) in
+the preset menu.** Still v0.25.1 (not bumped). Ty: *"our built in preset
+menu does not interface with plugin presets that are built into it. other
+daws manage to do this like in fl their preset menu thats attached to the
+plugin windows show the user presets as well as all the presets in the
+plugin thats made into its bank"*. Branch `feature/plugin-programs`.
+
+- **VST 3 programs.** A program list on a unit (`IUnitInfo`) selected by
+  the `kIsProgramChange` parameter — how a JUCE plugin offers
+  `getNumPrograms()` — is listed as the plugin's own presets
+  (`Vst3Plugin::programs`): numbered (`01 Name`, the plugin's order, and two
+  voices of one name kept apart), filed under the list's name ("Factory
+  Presets" for JUCE). Chosen, the parameter is set (controller now,
+  processor on its next block), settled and snapshotted like any own
+  preset: one undo, saved in the song as the resulting state. Re-read when
+  the plugin says `notifyProgramListChange` (the host's handler is an
+  `IUnitHandler` now) or restarts with `kParamValuesChanged` /
+  `kParamTitlesChanged`, and handed to the bank again only when the names
+  differ. **A program is reached by way of another**: JUCE skips a program
+  change to the program it believes it is on, so chosen again after a knob
+  or an undo it did nothing; the parameter goes elsewhere for one block
+  first. Dexed VST 3: 32 voices.
+- **LV2 programs.** A plugin with no `pset:Preset` in its Turtle may offer
+  programs through the KXStudio programs extension (Dexed's LV2, Obxd 128,
+  Yoshimi 1834, JuceOPL, PitchedDelay): asked of the running instance as
+  it is activated, selected with its processor in hand, and its control
+  ports read back (DSSI lets `select_program` write them). **Only when the
+  Turtle declares the extension**: blop's 16 Step Sequencer, asked
+  undeclared, crashed the process. A list of one is left out.
+- **CLAP**: presets a provider keeps inside the plugin (location kind
+  `PLUGIN`, a load key) were already listed and loaded; checked, nothing to
+  add. JUCE's CLAP wrapper has no program API: Dexed's CLAP lists nothing
+  while its VST 3 lists 32 (no cross-format magic).
+- **The menu.** The user's own presets of a plugin come before its library
+  (`PresetBank::for_device`), the one playing is marked `✓` in the
+  drop-down (`preset_menu_marking`) and in the browser's list the plugin
+  window's strip opens (`CURRENT_PRESET_MARK`), a menu with a mark opens
+  scrolled to it (`ContextMenu::scroll_to`), and a plugin's presets with no
+  category are under "The plugin's own". The arrows step through all.
+- **Dexed ignores a program change for two seconds after a state recall**
+  (its own `lastStateSave` guard). A program chosen that soon after opening
+  a song or an undo is not taken; the session walk waits it out.
+- Fixtures: `fontelle-testvst3`'s Programs (a program list, a
+  program-change parameter, JUCE's "only another program" rule, a bank
+  switch that notifies), `fontelle-testlv2`'s Programs (the KXStudio
+  extension). Tests: `fontelle-app/tests/plugin_programs.rs`, the program
+  sections of `fontelle-host/tests/own_presets.rs`, `preset_bar.rs`,
+  `context_menu.rs`, and a headless shot of the menu
+  (`render_headless.rs`, `preset-menu-programs`).
+- **Open**: programs are kept per plugin, not per instance — two Dexeds on
+  different cartridges show the names of whichever said so last. OB-Xf's
+  VST 3 is not installed here; its CLAP lists 488 `.fxp` patches and its
+  LV2 one. LV2 program names are whatever the plugin gives (Dexed's LV2
+  gives none: "Program 1" …).
+
 **As of 2026-10-05 — two plugin windows that took the studio down
 (Ty's machine: KDE Plasma on Wayland, Xwayland, NVIDIA 615 with egl-x11).**
 Still v0.25.1 (not bumped). Neither is Fontelle's bug, and neither came from

@@ -323,6 +323,10 @@ pub fn flopsynth_project(
 /// something plain.
 pub const STARTING_PRESET: &str = "Grand Piano";
 
+/// What the browser's preset list says beside the preset the device it
+/// would load onto is playing.
+pub const CURRENT_PRESET_MARK: &str = "\u{2713} playing";
+
 pub fn blank_project(bars: i64, bpm: f64, sample_rate: u32) -> Project {
     let _ = bars;
     let mut project = Project::new("Untitled");

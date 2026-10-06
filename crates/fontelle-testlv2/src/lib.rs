@@ -32,6 +32,8 @@
 //! - **Fontelle Test Loader LV2** — an instrument that loads on the host's
 //!   worker thread before it sounds, and plays louder while the host says
 //!   it is free-wheeling. See [`LOADER_URI`].
+//! - **Fontelle Test Programs LV2** — the plain gain with programs compiled
+//!   into it, through the KXStudio programs extension. See [`PROGRAMS_URI`].
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -1259,7 +1261,10 @@ static DEAF_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
     run: gain_run,
     deactivate: None,
     cleanup: gain_cleanup,
-    extension_data: Some(no_extension_data),
+    // The programs interface, **undeclared** in its Turtle: a host must not
+    // ask for an extension a plugin does not say it has (blop's sequencer
+    // crashed when asked), so a host that lists these programs asked.
+    extension_data: Some(programs_extension_data),
 });
 
 static LOADER_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
@@ -1273,12 +1278,102 @@ static LOADER_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
     extension_data: Some(loader_extension_data),
 });
 
-static DESCRIPTORS: [&SyncDescriptor; 5] = [
+// ---------------------------------------------------------------- programs
+
+/// **Fontelle Test Programs LV2** — the plain gain, with presets compiled
+/// into it and offered the way DISTRHO's ports (Dexed's LV2) and DPF plugins
+/// offer theirs: the KXStudio programs extension, `extension_data`'s
+/// [`PROGRAMS_INTERFACE`], and no `pset:Preset` in its Turtle at all.
+/// Selecting one writes the gain into its own control port, which DSSI —
+/// where the extension comes from — lets a plugin do and asks the host to
+/// read back.
+pub const PROGRAMS_URI: &str = "http://fopull.com/fontelle/testlv2/programs";
+const PROGRAMS_URI_C: &CStr = c"http://fopull.com/fontelle/testlv2/programs";
+pub const PROGRAMS_INTERFACE: &str = "http://kxstudio.sf.net/ns/lv2ext/programs#Interface";
+const PROGRAMS_INTERFACE_C: &CStr = c"http://kxstudio.sf.net/ns/lv2ext/programs#Interface";
+/// Its programs: a name, and the gain each writes into [`GAIN_PORT`].
+pub const LV2_PROGRAMS: [(&CStr, f32); 2] = [(c"Quiet", 0.25), (c"Loud", 1.5)];
+
+/// `LV2_Program_Descriptor` from `lv2_programs.h`.
+#[repr(C)]
+pub struct ProgramDescriptor {
+    pub bank: u32,
+    pub program: u32,
+    pub name: *const c_char,
+}
+
+/// `LV2_Programs_Interface` from `lv2_programs.h`.
+#[repr(C)]
+pub struct ProgramsInterface {
+    pub get_program: unsafe extern "C" fn(LV2Handle, u32) -> *const ProgramDescriptor,
+    pub select_program: unsafe extern "C" fn(LV2Handle, u32, u32),
+}
+
+struct SyncProgram(ProgramDescriptor);
+// SAFETY: the name points at a `'static` C string and nothing writes it.
+unsafe impl Sync for SyncProgram {}
+
+static LV2_PROGRAM_DESCRIPTORS: [SyncProgram; 2] = [
+    SyncProgram(ProgramDescriptor {
+        bank: 0,
+        program: 0,
+        name: LV2_PROGRAMS[0].0.as_ptr(),
+    }),
+    SyncProgram(ProgramDescriptor {
+        bank: 0,
+        program: 1,
+        name: LV2_PROGRAMS[1].0.as_ptr(),
+    }),
+];
+
+unsafe extern "C" fn programs_get(_handle: LV2Handle, index: u32) -> *const ProgramDescriptor {
+    LV2_PROGRAM_DESCRIPTORS
+        .get(index as usize)
+        .map_or(std::ptr::null(), |program| &program.0 as *const _)
+}
+
+unsafe extern "C" fn programs_select(handle: LV2Handle, bank: u32, program: u32) {
+    // SAFETY: the host's obligation — a live handle, and not while `run`.
+    let gain = unsafe { &mut *handle.cast::<Gain>() };
+    if bank != 0 || gain.gain.is_null() {
+        return;
+    }
+    if let Some((_, level)) = LV2_PROGRAMS.get(program as usize) {
+        // The port is the host's memory and the plugin may write it here.
+        unsafe { *gain.gain.cast_mut() = *level };
+    }
+}
+
+static PROGRAMS_EXTENSION: ProgramsInterface = ProgramsInterface {
+    get_program: programs_get,
+    select_program: programs_select,
+};
+
+extern "C" fn programs_extension_data(uri: *const c_char) -> *const c_void {
+    if !uri.is_null() && unsafe { CStr::from_ptr(uri) } == PROGRAMS_INTERFACE_C {
+        return (&raw const PROGRAMS_EXTENSION).cast();
+    }
+    std::ptr::null()
+}
+
+static PROGRAMS_DESCRIPTOR: SyncDescriptor = SyncDescriptor(LV2Descriptor {
+    uri: PROGRAMS_URI_C.as_ptr(),
+    instantiate: gain_instantiate,
+    connect_port: gain_connect_port,
+    activate: None,
+    run: gain_run,
+    deactivate: None,
+    cleanup: gain_cleanup,
+    extension_data: Some(programs_extension_data),
+});
+
+static DESCRIPTORS: [&SyncDescriptor; 6] = [
     &GAIN_DESCRIPTOR,
     &SINE_DESCRIPTOR,
     &PLAIN_DESCRIPTOR,
     &DEAF_DESCRIPTOR,
     &LOADER_DESCRIPTOR,
+    &PROGRAMS_DESCRIPTOR,
 ];
 
 /// The one symbol an LV2 host looks for.

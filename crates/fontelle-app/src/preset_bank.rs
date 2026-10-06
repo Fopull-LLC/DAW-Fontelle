@@ -177,12 +177,23 @@ impl PresetBank {
     }
 
     /// Every preset for one device, factory first and then the user's own,
-    /// each run ordered by category and then by name.
+    /// each run ordered by category and then by name — and a hosted
+    /// plugin's own library last, in the order the plugin gave it.
+    ///
+    /// > *"in fl their preset menu thats attached to the plugin windows show
+    /// > the user presets as well as all the presets in the plugin"*
+    ///
+    /// Last, whatever order the two were read in: a library is set when the
+    /// plugin has been listed and the user's folder is read again on every
+    /// rescan, so where each landed in `entries` says nothing.
     pub fn for_device(&self, device: &DeviceKind) -> Vec<&PresetEntry> {
-        self.entries
+        let (library, mut rest): (Vec<&PresetEntry>, Vec<&PresetEntry>) = self
+            .entries
             .iter()
             .filter(|e| e.device == *device)
-            .collect()
+            .partition(|e| e.origin == PresetOrigin::Plugin);
+        rest.extend(library);
+        rest
     }
 
     /// The categories this device has presets in, in order and without

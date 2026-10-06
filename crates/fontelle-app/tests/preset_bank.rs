@@ -553,3 +553,52 @@ fn a_pack_of_factory_rows_is_refused_since_every_build_has_them() {
     assert!(!pack.exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// > *"in fl their preset menu thats attached to the plugin windows show the
+/// > user presets as well as all the presets in the plugin"*
+///
+/// A plugin's own library comes **after** the user's presets of it, in the
+/// order the plugin gave it — whichever was read first, and after a rescan.
+#[test]
+fn a_plugins_own_library_comes_after_the_users_presets_of_it() {
+    let dir = scratch("plugin-order");
+    let key = fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Vst3, "0123");
+    let device = DeviceKind::Plugin(key.clone());
+    let mut bank = PresetBank::new(Some(dir.clone()));
+    bank.set_library(
+        &device,
+        &[
+            ("2 B".to_string(), "Factory".to_string()),
+            ("1 A".to_string(), "Factory".to_string()),
+        ],
+    );
+    let mine = Preset::new(
+        device.clone(),
+        "Mine",
+        "Saved",
+        PresetPayload::Plugin(fontelle_types::PluginState::new(key, "Plug")),
+    );
+    bank.save(&mine, false).unwrap();
+    let order = |bank: &PresetBank| -> Vec<(String, PresetOrigin)> {
+        bank.for_device(&device)
+            .into_iter()
+            .map(|e| (e.name.clone(), e.origin))
+            .collect()
+    };
+    let wanted = vec![
+        ("Mine".to_string(), PresetOrigin::User),
+        ("2 B".to_string(), PresetOrigin::Plugin),
+        ("1 A".to_string(), PresetOrigin::Plugin),
+    ];
+    assert_eq!(order(&bank), wanted);
+    bank.rescan();
+    assert_eq!(order(&bank), wanted, "after a rescan");
+    bank.set_library(
+        &device,
+        &[
+            ("2 B".to_string(), "Factory".to_string()),
+            ("1 A".to_string(), "Factory".to_string()),
+        ],
+    );
+    assert_eq!(order(&bank), wanted, "after the library is read again");
+}

@@ -708,10 +708,11 @@ mod linux_only {
         // The LV2 sine and loader, and the CLAP sine twice, once per note
         // dialect.
         assert_eq!(rack.scan().instruments().count(), 4);
-        // Four effects: both gains, and the LV2 gain twice more — under the name
-        // that ships no editor (`fontelle_testlv2::PLAIN_URI`) and the one whose
-        // editor listens to nothing (`fontelle_testlv2::DEAF_URI`).
-        assert_eq!(rack.scan().effects().count(), 4);
+        // Five effects: both gains, and the LV2 gain three times more — under
+        // the name that ships no editor (`fontelle_testlv2::PLAIN_URI`), the
+        // one whose editor listens to nothing (`fontelle_testlv2::DEAF_URI`)
+        // and the one with programs (`fontelle_testlv2::PROGRAMS_URI`).
+        assert_eq!(rack.scan().effects().count(), 5);
     }
 
     #[test]

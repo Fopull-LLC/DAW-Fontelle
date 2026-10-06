@@ -15089,6 +15089,15 @@ impl Session {
     fn preset_tab_rows(&self) -> Vec<PresetRow> {
         let entries = self.preset_tab_entries();
         let searching = !self.query.trim().is_empty();
+        // What the device a press would load onto is playing, so it can be
+        // marked: the plugin window's strip opens this list, and a long bank
+        // of programs is otherwise a list with no "you are here".
+        let playing = self.preset_device_open.as_ref().and_then(|kind| {
+            let target = self.browser_target(kind).ok()?;
+            (self.preset_device(target).as_ref() == Some(kind))
+                .then(|| self.preset_ref(target))
+                .flatten()
+        });
         let mut rows = Vec::new();
         let mut heading: Option<String> = None;
         for (index, entry) in entries.iter().enumerate() {
@@ -15109,11 +15118,18 @@ impl Session {
                 name: entry.name.clone(),
                 // Which bank it came from, so a preset of your own is
                 // tellable from a factory one of the same name (§P.3).
-                detail: match entry.origin {
-                    fontelle_types::PresetOrigin::User => "mine".to_string(),
-                    fontelle_types::PresetOrigin::Factory
-                    | fontelle_types::PresetOrigin::Plugin
-                    | fontelle_types::PresetOrigin::Soundfont => String::new(),
+                detail: {
+                    let mine = entry.origin == fontelle_types::PresetOrigin::User;
+                    let current = !searching
+                        && playing
+                            .as_ref()
+                            .is_some_and(|playing| *playing == entry.reference());
+                    match (mine, current) {
+                        (true, true) => format!("mine \u{00b7} {}", crate::CURRENT_PRESET_MARK),
+                        (true, false) => "mine".to_string(),
+                        (false, true) => crate::CURRENT_PRESET_MARK.to_string(),
+                        (false, false) => String::new(),
+                    }
                 },
             });
         }
@@ -15158,12 +15174,22 @@ impl Session {
             .nth(index)
             .ok_or("that preset is not in the bank")?
             .clone();
-        let device = match &entry.device {
+        let device = self.browser_target(&entry.device)?;
+        // Through the same command every other route uses, by *entry*: this
+        // list is the whole bank and the channel may be playing something
+        // else entirely. A preset for an effect this slot is not is refused by
+        // the command itself, which is where that rule lives.
+        self.apply_preset_entry(device, &entry)
+    }
+
+    /// Where a preset of `device` pressed in the browser goes.
+    fn browser_target(&self, device: &fontelle_types::DeviceKind) -> Result<PresetDevice, String> {
+        Ok(match device {
             fontelle_types::DeviceKind::Effect(_) => {
                 let (strip, slot) = self
                     .open_insert
                     .ok_or("open an effect\u{2019}s window first")?;
-                fontelle_ui::canvas::PresetDevice::Insert { strip, slot }
+                PresetDevice::Insert { strip, slot }
             }
             // A plugin's preset goes to that plugin: the insert whose window
             // is open when it holds it, and otherwise the selected channel —
@@ -15181,19 +15207,14 @@ impl Session {
                     None if self.plugin_is_effect(key) => {
                         return Err(format!(
                             "open {}\u{2019}s window first",
-                            self.device_label(&entry.device)
+                            self.device_label(device)
                         ));
                     }
                     None => PresetDevice::Instrument,
                 }
             }
-            _ => fontelle_ui::canvas::PresetDevice::Instrument,
-        };
-        // Through the same command every other route uses, by *entry*: this
-        // list is the whole bank and the channel may be playing something
-        // else entirely. A preset for an effect this slot is not is refused by
-        // the command itself, which is where that rule lives.
-        self.apply_preset_entry(device, &entry)
+            _ => PresetDevice::Instrument,
+        })
     }
 
     /// What a device is called in the browser. A plugin by the name it

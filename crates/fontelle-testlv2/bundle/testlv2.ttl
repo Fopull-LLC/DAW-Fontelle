@@ -110,6 +110,46 @@
         lv2:portProperty lv2:toggled ;
     ] .
 
+# The plain gain with programs compiled into it, offered through the
+# KXStudio programs extension as DISTRHO's ports offer theirs — and no
+# `pset:Preset` anywhere. See `fontelle_testlv2::PROGRAMS_URI`.
+<http://fopull.com/fontelle/testlv2/programs>
+    a lv2:Plugin, lv2:AmplifierPlugin ;
+    doap:name "Fontelle Test Programs LV2" ;
+    doap:maintainer [ foaf:name "Fopull LLC" ] ;
+    lv2:minorVersion 1 ;
+    lv2:microVersion 0 ;
+    lv2:optionalFeature lv2:hardRTCapable ;
+    lv2:extensionData <http://kxstudio.sf.net/ns/lv2ext/programs#Interface> ;
+    lv2:port [
+        a lv2:AudioPort, lv2:InputPort ;
+        lv2:index 0 ;
+        lv2:symbol "in" ;
+        lv2:name "In" ;
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ;
+        lv2:index 1 ;
+        lv2:symbol "out" ;
+        lv2:name "Out" ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 2 ;
+        lv2:symbol "gain" ;
+        lv2:name "Gain" ;
+        lv2:default 1.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 2.0 ;
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ;
+        lv2:index 3 ;
+        lv2:symbol "invert" ;
+        lv2:name "Invert" ;
+        lv2:default 0.0 ;
+        lv2:minimum 0.0 ;
+        lv2:maximum 1.0 ;
+        lv2:portProperty lv2:toggled ;
+    ] .
+
 # The sine's editor. It speaks in **atoms** rather than control values, which
 # is the half of an editor a float cannot do — see `fontelle_host::lv2_ui`.
 <http://fopull.com/fontelle/testlv2/sine#ui>

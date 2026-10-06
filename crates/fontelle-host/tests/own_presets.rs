@@ -393,6 +393,167 @@ fn a_vst3_plugins_vstpresets_are_found_and_loaded() {
     assert_eq!(plugin.values().get(0), Some(0.75));
 }
 
+// ---------------------------------------------------- VST 3 programs
+//
+// > *"our built in preset menu does not interface with plugin presets that
+// > are built into it. other daws manage to do this like in fl their preset
+// > menu thats attached to the plugin windows show the user presets as well
+// > as all the presets in the plugin thats made into its bank"*
+//
+// A VST 3 plugin's presets compiled into it are **programs**: a program list
+// on a unit (`IUnitInfo`), and a parameter flagged `kIsProgramChange` that
+// selects one. A JUCE plugin offers its `getNumPrograms()` this way — Dexed's
+// 32 cartridge voices — and has no files at all.
+
+fn programs_plugin() -> (PluginHost, fontelle_host::HostedPlugin) {
+    let key = PluginKey::new(PluginFormat::Vst3, fontelle_testvst3::PROGRAMS_ID);
+    let mut host = PluginHost::new();
+    let plugin = host.open(&common::vst3_bundle(), &key).unwrap();
+    (host, plugin)
+}
+
+fn programs_level(bytes: &[u8]) -> (u8, u8, f64) {
+    // The VST 3 blob is the host's framing of both halves; the component's
+    // chunk is the fixture's own bytes, found by its magic.
+    let at = bytes
+        .windows(4)
+        .position(|w| w == fontelle_testvst3::PROGRAMS_MAGIC)
+        .expect("the component's state is in the blob");
+    fontelle_testvst3::read_programs_state(&bytes[at..]).unwrap()
+}
+
+#[test]
+fn a_vst3_plugins_programs_are_its_own_presets_in_their_order() {
+    let (_host, mut plugin) = programs_plugin();
+    let programs = plugin.programs();
+    let listed: Vec<(&str, &str)> = programs
+        .iter()
+        .map(|p| (p.name.as_str(), p.category.as_str()))
+        .collect();
+    // Numbered, which keeps the plugin's order and tells apart two voices
+    // of one name; filed under the program list's own name.
+    assert_eq!(
+        listed,
+        vec![
+            ("1 Soft", "Factory"),
+            ("2 Medium", "Factory"),
+            ("3 Loud", "Factory"),
+            ("4 Soft", "Factory"),
+        ]
+    );
+    assert!(matches!(
+        programs[2].source,
+        OwnPresetSource::Program { param, .. } if param == fontelle_testvst3::PROGRAM_PARAM
+    ));
+}
+
+#[test]
+fn the_library_of_a_vst3_plugin_holds_its_programs() {
+    let key = PluginKey::new(PluginFormat::Vst3, fontelle_testvst3::PROGRAMS_ID);
+    let info = info_of(&common::vst3_bundle(), &key);
+    let mut host = PluginHost::new();
+    let names: Vec<String> = host
+        .own_presets(&info, &PresetRoots::none())
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["1 Soft", "2 Medium", "3 Loud", "4 Soft"]);
+}
+
+/// Chosen, a program goes through the program-change parameter — to the
+/// controller now, and to the processor on its next block — and the
+/// plugin's state is then the program's.
+#[test]
+fn choosing_a_program_sets_the_processor_to_it() {
+    let (_host, mut plugin) = programs_plugin();
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let programs = plugin.programs();
+    let before = plugin.settle_mark(&mut processor);
+    plugin
+        .load_own_preset_with(&mut processor, &programs[2])
+        .unwrap();
+    plugin.settle_with(&mut processor, &before);
+    let state = plugin.save_state_with(&mut processor).unwrap();
+    assert_eq!(programs_level(&state), (2, 0, 0.7));
+    assert_eq!(
+        plugin.values().get(fontelle_testvst3::PROGRAM_PARAM),
+        Some(2.0),
+        "the program parameter reads the program"
+    );
+    plugin.deactivate(processor);
+}
+
+/// A JUCE plugin changes program only when told one other than its own
+/// (`setCurrentProgram` is skipped for the current one). Chosen again after
+/// a knob was turned — or after an undo put back a patch the plugin still
+/// files under that program — the program has to come back whole.
+#[test]
+fn choosing_the_program_it_is_on_again_puts_the_program_back() {
+    let (_host, mut plugin) = programs_plugin();
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let programs = plugin.programs();
+    let load = |plugin: &mut fontelle_host::HostedPlugin,
+                processor: &mut fontelle_host::HostedProcessor,
+                at: usize| {
+        let before = plugin.settle_mark(processor);
+        plugin
+            .load_own_preset_with(processor, &programs[at])
+            .unwrap();
+        plugin.settle_with(processor, &before);
+    };
+    load(&mut plugin, &mut processor, 2);
+    // A knob turned since.
+    plugin.set_param(fontelle_testvst3::PROGRAM_LEVEL_PARAM, 0.3);
+    let mut bus = vec![vec![0.0f32; 256]; 2];
+    processor.process_insert(&mut bus, 256);
+    let state = plugin.save_state_with(&mut processor).unwrap();
+    assert_eq!(programs_level(&state), (2, 0, 0.3));
+    load(&mut plugin, &mut processor, 2);
+    let state = plugin.save_state_with(&mut processor).unwrap();
+    assert_eq!(programs_level(&state), (2, 0, 0.7), "the program, whole");
+    plugin.deactivate(processor);
+}
+
+/// Not running, the controller is told and the component hears it when it
+/// starts.
+#[test]
+fn a_program_chosen_before_the_plugin_runs_is_the_one_it_starts_on() {
+    let (_host, mut plugin) = programs_plugin();
+    let programs = plugin.programs();
+    plugin.load_own_preset(&programs[1]).unwrap();
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut bus = vec![vec![0.0f32; 256]; 2];
+    processor.process_insert(&mut bus, 256);
+    let state = plugin.save_state_with(&mut processor).unwrap();
+    assert_eq!(programs_level(&state), (1, 0, 0.4));
+    plugin.deactivate(processor);
+}
+
+/// Another cartridge is other names: a plugin that says its program list
+/// changed is asked again.
+#[test]
+fn a_program_list_the_plugin_says_has_changed_is_read_again() {
+    let (_host, mut plugin) = programs_plugin();
+    assert!(!plugin.take_programs_changed(), "nothing said yet");
+    plugin.set_param(fontelle_testvst3::PROGRAM_BANK_PARAM, 1.0);
+    assert!(plugin.take_programs_changed(), "the plugin said so");
+    assert!(!plugin.take_programs_changed(), "taken once");
+    let names: Vec<String> = plugin.programs().into_iter().map(|p| p.name).collect();
+    assert_eq!(names, vec!["1 Pad", "2 Lead", "3 Bass", "4 Keys"]);
+}
+
+/// A plugin with no program list has no programs, whatever its format.
+#[test]
+fn a_plugin_without_a_program_list_has_no_programs() {
+    let key = PluginKey::new(PluginFormat::Vst3, common::VST3_GAIN);
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::vst3_bundle(), &key).unwrap();
+    assert!(plugin.programs().is_empty());
+    let (_, info) = clap_gain();
+    let mut clap = host.open(&info.path, &info.key).unwrap();
+    assert!(clap.programs().is_empty());
+}
+
 // --------------------------------------------------------------------- LV2
 
 #[cfg(target_os = "linux")]
@@ -429,6 +590,98 @@ fn an_lv2_preset_is_loaded_into_the_running_instance() {
     let mut output = vec![vec![0.0f32; 8], vec![0.0f32; 8]];
     processor.process_effect(&input, &mut output, 8);
     assert!((output[0][0] - 0.5).abs() < 1e-5, "{}", output[0][0]);
+}
+
+/// An LV2 plugin with presets compiled into it and none in its Turtle —
+/// Dexed's LV2, and DISTRHO's ports — offers them through the KXStudio
+/// programs extension, asked of the running instance.
+#[cfg(target_os = "linux")]
+fn lv2_programs_plugin() -> (
+    PluginHost,
+    fontelle_host::HostedPlugin,
+    fontelle_host::HostedProcessor,
+) {
+    let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PROGRAMS_URI);
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::lv2_bundle(), &key).unwrap();
+    let processor = plugin.activate(48_000.0, 64).unwrap();
+    (host, plugin, processor)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_plugins_programs_are_listed_off_the_running_instance() {
+    let (_host, mut plugin, mut processor) = lv2_programs_plugin();
+    let listed: Vec<(String, String)> = plugin
+        .programs_with(&mut processor)
+        .into_iter()
+        .map(|p| (p.name, p.category))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("1 Quiet".to_string(), "Programs".to_string()),
+            ("2 Loud".to_string(), "Programs".to_string()),
+        ]
+    );
+    // And the library a host lists for it holds them, its Turtle having
+    // no preset of its own.
+    let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PROGRAMS_URI);
+    let info = info_of(&common::lv2_bundle(), &key);
+    let names: Vec<String> = PluginHost::new()
+        .own_presets(&info, &PresetRoots::none())
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["1 Quiet", "2 Loud"]);
+}
+
+/// Selected with the processor in hand, the program writes its control
+/// ports, and the host reads them back onto the wire — otherwise the next
+/// block wrote the old values over the program.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_program_is_selected_in_the_running_instance() {
+    let (_host, mut plugin, mut processor) = lv2_programs_plugin();
+    let programs = plugin.programs_with(&mut processor);
+    assert!(plugin.own_preset_needs_processor());
+    plugin
+        .load_own_preset_with(&mut processor, &programs[1])
+        .unwrap();
+    assert_eq!(plugin.values().get(2), Some(1.5));
+    let input = vec![vec![1.0f32; 8], vec![1.0f32; 8]];
+    let mut output = vec![vec![0.0f32; 8], vec![0.0f32; 8]];
+    processor.process_effect(&input, &mut output, 8);
+    assert!((output[0][0] - 1.5).abs() < 1e-5, "{}", output[0][0]);
+}
+
+/// Only a plugin whose Turtle declares the programs extension is asked for
+/// it: blop's 16 Step Sequencer, asked, crashed the process. The deaf gain
+/// answers for the extension without declaring it.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_plugin_is_not_asked_for_programs_it_does_not_declare() {
+    let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::DEAF_URI);
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&common::lv2_bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    assert!(plugin.programs_with(&mut processor).is_empty());
+    plugin.deactivate(processor);
+}
+
+/// The gain ships a `pset:Preset`: what its Turtle lists is its library, and
+/// nothing else is asked for (a DPF plugin offers the same set both ways).
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_plugin_with_presets_in_its_turtle_lists_no_programs_beside_them() {
+    let key = PluginKey::new(PluginFormat::Lv2, common::LV2_GAIN);
+    let info = info_of(&common::lv2_bundle(), &key);
+    let names: Vec<String> = PluginHost::new()
+        .own_presets(&info, &PresetRoots::none())
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["Half"]);
 }
 
 /// Linux packages name a plugin's data folder in lower case with dashes:

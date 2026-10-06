@@ -9,6 +9,10 @@ frustration each item causes, then by cost.
 
 Sizes: **S** is under a day, **M** a few days, **L** a week or more.
 
+**Status, 2026-10-05, later still:** a plugin's built-in presets — VST 3
+program lists and LV2 KXStudio programs — are in the preset menu beside the
+user's own (`PROGRESS.md`'s top entry).
+
 **Status, 2026-10-05, later: items 10 to 13 are done too (v0.25.0)** — real
 plugins in CI on all three systems, LV2 `patch:` parameters, plugin files
 travelling with the song, plugin windows on macOS. Item 14 has its design

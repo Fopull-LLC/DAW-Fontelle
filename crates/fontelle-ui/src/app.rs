@@ -11512,11 +11512,29 @@ impl WindowApp {
         Vec<crate::canvas::MenuEntry>,
         Vec<crate::canvas::PresetMenuRow>,
     ) {
-        let choices = match (self.preset_device(kind), self.options.document.as_ref()) {
-            (Some(device), Some(doc)) => doc.preset_choices(device),
-            _ => Vec::new(),
+        let (choices, current) = match (self.preset_device(kind), self.options.document.as_ref()) {
+            (Some(device), Some(doc)) => Self::choices_and_current(doc.as_ref(), device),
+            _ => (Vec::new(), None),
         };
-        crate::canvas::preset_menu(&choices, self.menu_filter.text())
+        crate::canvas::preset_menu_marking(&choices, self.menu_filter.text(), current)
+    }
+
+    /// A device's presets, and which of them it is playing — the one its
+    /// bar names — to be marked in the drop-down.
+    fn choices_and_current(
+        doc: &dyn StudioHost,
+        device: crate::canvas::PresetDevice,
+    ) -> (Vec<crate::canvas::PresetChoice>, Option<usize>) {
+        let choices = doc.preset_choices(device);
+        let bar = doc.preset_bar(device);
+        let current = bar.name.as_ref().and_then(|name| {
+            choices.iter().position(|choice| {
+                &choice.name == name
+                    && choice.category == bar.category
+                    && Some(choice.origin) == bar.origin
+            })
+        });
+        (choices, current)
     }
 
     /// Which preset a press on row `index` of a preset menu means: the
@@ -11552,11 +11570,14 @@ impl WindowApp {
         Vec<crate::canvas::MenuEntry>,
         Vec<crate::canvas::PresetMenuRow>,
     ) {
-        let choices = match self.options.document.as_ref() {
-            Some(doc) => doc.preset_choices(crate::canvas::PresetDevice::Track { strip }),
-            None => Vec::new(),
+        let (choices, current) = match self.options.document.as_ref() {
+            Some(doc) => Self::choices_and_current(
+                doc.as_ref(),
+                crate::canvas::PresetDevice::Track { strip },
+            ),
+            None => (Vec::new(), None),
         };
-        crate::canvas::preset_menu(&choices, self.menu_filter.text())
+        crate::canvas::preset_menu_marking(&choices, self.menu_filter.text(), current)
     }
 
     /// Writes the chain, once the name and the shelf are both in hand.
@@ -17702,7 +17723,7 @@ impl WindowApp {
         self.menu_at = ((x, y), bounds);
         self.menu_beside = None;
         let entries = self.menu_entries(&target);
-        let menu = crate::canvas::context_menu_layout(
+        let mut menu = crate::canvas::context_menu_layout(
             (x, y),
             bounds,
             &self.options.theme.metrics,
@@ -17711,6 +17732,17 @@ impl WindowApp {
         );
         if menu.is_empty() {
             return;
+        }
+        // Opened on what is chosen: a plugin's bank of programs is longer
+        // than the window, and the preset playing may be far down it. The
+        // last mark, which is the one in its category rather than among the
+        // favourites above.
+        if let Some(chosen) = menu
+            .entries
+            .iter()
+            .rposition(|entry| entry.label.starts_with(crate::canvas::CHOSEN_MARK))
+        {
+            menu.scroll_to(chosen);
         }
         self.menu = Some((target, menu));
         self.tree.invalidate_rect(bounds);

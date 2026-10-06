@@ -15,12 +15,18 @@
 //!   file format. Surge XT has one.
 //! - **VST 3** — `.vstpreset` files, under `<root>/<vendor>/<plugin>/` in
 //!   the folders the SDK names. Each names the class it is for and carries
-//!   the component's state, and usually the controller's, as chunks.
+//!   the component's state, and usually the controller's, as chunks. And
+//!   **programs**, compiled into the plugin: a program list on a unit and a
+//!   program-change parameter that selects one (`Vst3Plugin::programs`) —
+//!   how a JUCE plugin offers `getNumPrograms()`, Dexed's 32 voices.
 //! - **LV2** — `pset:Preset` resources that apply to the plugin, in its
 //!   bundle's Turtle or beside it: port values, and sometimes a `state:state`
 //!   of properties. Read when listed — the port values by index, and the
 //!   rest as lilv's own state object, which is restored into the running
-//!   instance — so loading one needs no lilv world.
+//!   instance — so loading one needs no lilv world. A plugin with none
+//!   there may have programs compiled into it, offered through the KXStudio
+//!   programs extension (Dexed's LV2, DISTRHO's ports): asked of the running
+//!   instance, and selected in it.
 //! - **`.fxp`** — VST 2's patch file, which JUCE plugins still ship as their
 //!   library (OB-Xf's 488 patches, under `/usr/share/Surge Synth Team/OB-Xf/
 //!   Patches`). No CLAP interface reaches them, but a JUCE plugin's state is
@@ -76,6 +82,15 @@ pub enum OwnPresetSource {
     },
     /// A `.fxp` whose chunk is the plugin's own state.
     Fxp(PathBuf),
+    /// A **program** compiled into the plugin, chosen by setting its
+    /// program-change parameter `param` to `value` (in the host's units for
+    /// that parameter: the step, for a stepped one). Read off the running
+    /// instance — see [`HostedPlugin::programs`].
+    Program { param: u32, value: f64 },
+    /// A program compiled into an LV2 plugin, offered through the KXStudio
+    /// programs extension and selected in its running instance — see
+    /// [`HostedPlugin::programs_with`].
+    Lv2Program { bank: u32, program: u32 },
 }
 
 /// The folders a plugin's library is looked for under.
@@ -150,16 +165,40 @@ impl PluginHost {
     /// takes most of a second.
     pub fn own_presets(&mut self, info: &PluginInfo, roots: &PresetRoots) -> Vec<OwnPreset> {
         if info.key.format == PluginFormat::Lv2 {
-            return sorted(self.lv2_presets(info));
+            let presets = sorted(self.lv2_presets(info));
+            if !presets.is_empty() {
+                return presets;
+            }
+            // None in its Turtle: what is compiled into it, asked of an
+            // instance — see `HostedPlugin::programs_with`.
+            let Ok(mut plugin) = self.open(&info.path, &info.key) else {
+                return presets;
+            };
+            if !matches!(&plugin.inner, Inner::Lv2(lv2) if lv2.declares_programs()) {
+                return presets;
+            }
+            let Ok(mut processor) = plugin.activate(48_000.0, 256) else {
+                return presets;
+            };
+            let programs = plugin.programs_with(&mut processor);
+            plugin.deactivate(processor);
+            return programs;
         }
-        let own = if library_folders(info, &roots.data).is_empty() {
-            None
+        // A VST 3 plugin's programs are known only by asking an instance.
+        let opened = if info.key.format == PluginFormat::Vst3
+            || !library_folders(info, &roots.data).is_empty()
+        {
+            self.open(&info.path, &info.key).ok()
         } else {
-            self.open(&info.path, &info.key)
-                .ok()
-                .and_then(|mut plugin| plugin.save_state())
+            None
         };
-        list_own_presets(info, roots, own.as_deref())
+        let (own, programs) = match opened {
+            Some(mut plugin) => (plugin.save_state(), plugin.programs()),
+            None => (None, Vec::new()),
+        };
+        let mut found = list_own_presets(info, roots, own.as_deref());
+        found.extend(programs);
+        found
     }
 
     /// An LV2 plugin's own library — see [`list_own_presets`] for why this
@@ -257,6 +296,16 @@ impl HostedPlugin {
                 };
                 self.load_state(&blob).then_some(()).ok_or_else(refused)
             }
+            // Through the parameter, as a knob is: the controller now, and
+            // the processor on its next block (or when it starts).
+            OwnPresetSource::Program { param, value } => self
+                .set_param(*param, *value)
+                .then_some(())
+                .ok_or_else(refused),
+            OwnPresetSource::Lv2Program { .. } => Err(format!(
+                "{} has to be running, and paused, to take {}",
+                self.info.name, preset.name
+            )),
             OwnPresetSource::Lv2 { ports, state, .. } => {
                 // A state goes into an instance, and there is none to put it
                 // in until the plugin runs — nor may one that is running be
@@ -285,6 +334,38 @@ impl HostedPlugin {
         preset: &OwnPreset,
     ) -> Result<(), String> {
         let _inside = self.inside();
+        // > *"other daws manage to do this like in fl"*
+        //
+        // **By way of another program.** A JUCE plugin changes program only
+        // when told one other than its current one, and its current one is
+        // not in its state: chosen again after a knob was turned — or after
+        // an undo put back the patch from before, which Dexed still filed
+        // under the program — the program did not come back. So the
+        // parameter is first sent somewhere else for a block, then where it
+        // is to go. Only with the processor in hand, which is the only way
+        // to make the two arrive in separate blocks.
+        if let OwnPresetSource::Program { param, value } = &preset.source
+            && let Some(other) = self
+                .param(*param)
+                .map(|held| {
+                    if *value > held.min {
+                        held.min
+                    } else {
+                        held.max
+                    }
+                })
+                .filter(|other| other != value)
+        {
+            self.set_param(*param, other);
+            self.run_quiet_block(processor);
+            return self.load_own_preset(preset);
+        }
+        if let OwnPresetSource::Lv2Program { bank, program } = &preset.source {
+            return processor
+                .lv2_select_program(*bank, *program)
+                .then_some(())
+                .ok_or_else(|| format!("{} would not load {}", self.info.name, preset.name));
+        }
         let OwnPresetSource::Lv2 { ports, state, .. } = &preset.source else {
             return self.load_own_preset(preset);
         };

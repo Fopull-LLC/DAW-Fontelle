@@ -1,4 +1,4 @@
-//! Three tiny VST 3 plugins, built so `fontelle-host` has a real module of
+//! Four tiny VST 3 plugins, built so `fontelle-host` has a real module of
 //! the format to load in its tests.
 //!
 //! The twin of `fontelle-testplug` (CLAP) and `fontelle-testlv2`, in VST 3
@@ -19,6 +19,11 @@
 //!   expression of `kTuningTypeID` bends one note.
 //! - **Combined**: one object that is both component and controller, which
 //!   the specification allows and some plugins do.
+//! - **Programs**: presets compiled into the plugin, offered as a JUCE
+//!   plugin offers its `getNumPrograms()` — a program list on the root unit
+//!   (`IUnitInfo`) and a `kIsProgramChange` parameter that selects one — and
+//!   a hidden bank switch after which the list's names are others, said
+//!   through `IUnitHandler::notifyProgramListChange`.
 //!
 //! Everything is `unsafe` at the boundary because the binding is: the crate
 //! wraps the SDK's C ABI and nothing else.
@@ -120,7 +125,7 @@ pub fn moduleinfo_json_with_phantom(phantom: &str) -> String {
     }},
   }},
   "Classes": [
-{}{}{}{}    {{
+{}{}{}{}{}    {{
       "CID": "{GAIN_CONTROLLER_ID}",
       "Category": "Component Controller Class",
       "Name": "{GAIN_NAME}",
@@ -138,6 +143,7 @@ pub fn moduleinfo_json_with_phantom(phantom: &str) -> String {
         class(GAIN_ID, GAIN_NAME, r#""Fx", "Tools""#),
         class(SINE_ID, SINE_NAME, r#""Instrument", "Synth""#),
         class(COMBINED_ID, COMBINED_NAME, r#""Fx""#),
+        class(PROGRAMS_ID, PROGRAMS_NAME, r#""Fx""#),
         class("00000000000000000000000000000001", phantom, r#""Fx""#),
     )
 }
@@ -1462,6 +1468,518 @@ impl IEditControllerTrait for Combined {
     }
 }
 
+// ------------------------------------------------------------ the programs
+
+/// The program list's id and name, as `IUnitInfo` gives them.
+pub const PROGRAM_LIST_ID: i32 = 7;
+pub const PROGRAM_LIST_NAME: &str = "Factory";
+/// The program-change parameter: `kIsProgramChange`, a list of
+/// [`PROGRAM_COUNT`] steps, in the root unit — the way a JUCE plugin offers
+/// its `getNumPrograms()` (Dexed's 32 cartridge voices).
+pub const PROGRAM_PARAM: u32 = 1;
+/// The level, which each program sets.
+pub const PROGRAM_LEVEL_PARAM: u32 = 0;
+/// A hidden switch between two banks of programs. Set, the controller tells
+/// its host `IUnitHandler::notifyProgramListChange` — Dexed loading another
+/// cartridge, whose 32 names are then different.
+pub const PROGRAM_BANK_PARAM: u32 = 2;
+pub const PROGRAM_COUNT: usize = 4;
+/// Each bank's programs: a name and the level it sets. Two programs of the
+/// first share a name, as two voices of a cartridge do.
+pub const PROGRAMS: [[(&str, f64); PROGRAM_COUNT]; 2] = [
+    [("Soft", 0.1), ("Medium", 0.4), ("Loud", 0.7), ("Soft", 0.9)],
+    [("Pad", 0.2), ("Lead", 0.5), ("Bass", 0.6), ("Keys", 0.8)],
+];
+pub const PROGRAMS_ID: &str = "464F50554C4C00065445535450524F47";
+pub const PROGRAMS_CONTROLLER_ID: &str = "464F50554C4C00075445535450524F43";
+pub const PROGRAMS_NAME: &str = "Fontelle Test Programs (VST3)";
+pub const PROGRAMS_MAGIC: &[u8; 4] = b"FPR1";
+const PROGRAMS_CID: TUID = uid(0x464F5055, 0x4C4C0006, 0x54455354, 0x50524F47);
+const PROGRAMS_CONTROLLER_CID: TUID = uid(0x464F5055, 0x4C4C0007, 0x54455354, 0x50524F43);
+
+/// The programs fixture's state, the component's: which program, which
+/// bank, and the level — `FPR1`, program, bank, level as an `f64`.
+pub fn programs_state(program: u8, bank: u8, level: f64) -> Vec<u8> {
+    let mut bytes = PROGRAMS_MAGIC.to_vec();
+    bytes.push(program);
+    bytes.push(bank);
+    bytes.extend_from_slice(&level.to_le_bytes());
+    bytes
+}
+
+/// `(program, bank, level)` out of [`programs_state`]'s bytes.
+pub fn read_programs_state(bytes: &[u8]) -> Option<(u8, u8, f64)> {
+    if bytes.len() < 14 || &bytes[..4] != PROGRAMS_MAGIC {
+        return None;
+    }
+    Some((
+        bytes[4],
+        bytes[5],
+        f64::from_le_bytes(bytes[6..14].try_into().ok()?),
+    ))
+}
+
+fn program_of(normalised: f64) -> usize {
+    ((normalised * (PROGRAM_COUNT - 1) as f64).round() as usize).min(PROGRAM_COUNT - 1)
+}
+
+/// The programs fixture's processor: an effect whose output is its input
+/// times the level. A program change takes the program's level — **only
+/// when it is another program than the one it is on**, JUCE's rule
+/// (`setCurrentProgram` is not called for the program already current).
+struct ProgramsProcessor {
+    /// `program | bank << 8`, and the level's bits.
+    program: AtomicU32,
+    level: AtomicU64,
+}
+
+impl Class for ProgramsProcessor {
+    type Interfaces = (
+        IComponent,
+        IAudioProcessor,
+        IProcessContextRequirements,
+        IConnectionPoint,
+    );
+}
+
+impl ProgramsProcessor {
+    fn new() -> Self {
+        Self {
+            program: AtomicU32::new(0),
+            level: AtomicU64::new(PROGRAMS[0][0].1.to_bits()),
+        }
+    }
+    fn now(&self) -> (usize, usize) {
+        let packed = self.program.load(Ordering::Relaxed);
+        ((packed & 0xff) as usize, (packed >> 8) as usize)
+    }
+    fn set(&self, program: usize, bank: usize) {
+        self.program
+            .store((program | (bank << 8)) as u32, Ordering::Relaxed);
+    }
+}
+
+impl IPluginBaseTrait for ProgramsProcessor {
+    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+        kResultOk
+    }
+    unsafe fn terminate(&self) -> tresult {
+        kResultOk
+    }
+}
+
+impl IConnectionPointTrait for ProgramsProcessor {
+    unsafe fn connect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn notify(&self, _message: *mut IMessage) -> tresult {
+        kResultOk
+    }
+}
+
+impl IComponentTrait for ProgramsProcessor {
+    unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
+        unsafe { *class_id = PROGRAMS_CONTROLLER_CID };
+        kResultOk
+    }
+    unsafe fn setIoMode(&self, _mode: IoMode) -> tresult {
+        kResultOk
+    }
+    unsafe fn getBusCount(&self, media: MediaType, _dir: BusDirection) -> i32 {
+        if media == K_AUDIO { 1 } else { 0 }
+    }
+    unsafe fn getBusInfo(
+        &self,
+        media: MediaType,
+        dir: BusDirection,
+        index: i32,
+        bus: *mut BusInfo,
+    ) -> tresult {
+        if media != K_AUDIO || index != 0 {
+            return kInvalidArgument;
+        }
+        let name = if dir == K_INPUT { "Input" } else { "Output" };
+        unsafe { bus_info(bus, media, dir, 2, name, false) }
+    }
+    unsafe fn getRoutingInfo(&self, _in: *mut RoutingInfo, _out: *mut RoutingInfo) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn activateBus(
+        &self,
+        _media: MediaType,
+        _dir: BusDirection,
+        _index: i32,
+        _state: TBool,
+    ) -> tresult {
+        kResultOk
+    }
+    unsafe fn setActive(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn setState(&self, state: *mut IBStream) -> tresult {
+        let bytes = unsafe { read_all(state) };
+        let Some((program, bank, level)) = read_programs_state(&bytes) else {
+            return kResultFalse;
+        };
+        self.set(program as usize, bank as usize);
+        self.level.store(level.to_bits(), Ordering::Relaxed);
+        kResultOk
+    }
+    unsafe fn getState(&self, state: *mut IBStream) -> tresult {
+        let (program, bank) = self.now();
+        let level = f64::from_bits(self.level.load(Ordering::Relaxed));
+        unsafe { write_all(state, &programs_state(program as u8, bank as u8, level)) }
+    }
+}
+
+impl IAudioProcessorTrait for ProgramsProcessor {
+    unsafe fn setBusArrangements(
+        &self,
+        _i: *mut SpeakerArrangement,
+        _ni: i32,
+        _o: *mut SpeakerArrangement,
+        _no: i32,
+    ) -> tresult {
+        kResultOk
+    }
+    unsafe fn getBusArrangement(
+        &self,
+        _dir: BusDirection,
+        _index: i32,
+        arr: *mut SpeakerArrangement,
+    ) -> tresult {
+        unsafe { *arr = SpeakerArr::kStereo };
+        kResultOk
+    }
+    unsafe fn canProcessSampleSize(&self, size: i32) -> tresult {
+        if size == SymbolicSampleSizes_::kSample32 as i32 {
+            kResultOk
+        } else {
+            kResultFalse
+        }
+    }
+    unsafe fn getLatencySamples(&self) -> u32 {
+        0
+    }
+    unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
+        kResultOk
+    }
+    unsafe fn setProcessing(&self, _state: TBool) -> tresult {
+        kResultOk
+    }
+    unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        let data = unsafe { &*data };
+        let mut level = None;
+        let mut program = None;
+        let mut bank = None;
+        unsafe {
+            each_change(data, |id, value| match id {
+                PROGRAM_LEVEL_PARAM => level = Some(value),
+                PROGRAM_PARAM => program = Some(program_of(value)),
+                PROGRAM_BANK_PARAM => bank = Some(usize::from(value >= 0.5)),
+                _ => {}
+            })
+        };
+        if let Some(level) = level {
+            self.level.store(level.to_bits(), Ordering::Relaxed);
+        }
+        let (mut now, mut held) = self.now();
+        if let Some(bank) = bank {
+            held = bank;
+            self.set(now, held);
+        }
+        if let Some(program) = program
+            && program != now
+        {
+            now = program;
+            self.set(now, held);
+            self.level
+                .store(PROGRAMS[held][now].1.to_bits(), Ordering::Relaxed);
+        }
+        if data.numInputs < 1 || data.numOutputs < 1 {
+            return kResultOk;
+        }
+        let n = data.numSamples as usize;
+        let gain = f64::from_bits(self.level.load(Ordering::Relaxed)) as f32;
+        for ch in 0..2 {
+            let input = unsafe { channel(data.inputs, 0, ch, n) };
+            let output = unsafe { channel(data.outputs, 0, ch, n) };
+            for i in 0..n {
+                output[i] = input[i] * gain;
+            }
+        }
+        kResultOk
+    }
+    unsafe fn getTailSamples(&self) -> u32 {
+        0
+    }
+}
+
+impl IProcessContextRequirementsTrait for ProgramsProcessor {
+    unsafe fn getProcessContextRequirements(&self) -> u32 {
+        0
+    }
+}
+
+/// The programs fixture's controller: three parameters, a root unit whose
+/// program list is [`PROGRAM_LIST_ID`], and the names of whichever bank is
+/// switched in.
+struct ProgramsController {
+    /// Level, program and bank, normalised.
+    values: Mutex<[f64; 3]>,
+    handler: Mutex<Option<ComPtr<IComponentHandler>>>,
+}
+
+impl Class for ProgramsController {
+    type Interfaces = (IEditController, IUnitInfo, IConnectionPoint);
+}
+
+impl ProgramsController {
+    fn bank(&self) -> usize {
+        usize::from(self.values.lock().unwrap()[2] >= 0.5)
+    }
+
+    /// Another bank is other names: the host is told, as the SDK says a
+    /// controller whose program list changed tells it.
+    fn say_programs_changed(&self) {
+        if let Some(handler) = self.handler.lock().unwrap().as_ref()
+            && let Some(units) = handler.cast::<IUnitHandler>()
+        {
+            unsafe { units.notifyProgramListChange(PROGRAM_LIST_ID, kAllProgramInvalid) };
+        }
+    }
+}
+
+impl IPluginBaseTrait for ProgramsController {
+    unsafe fn initialize(&self, _context: *mut FUnknown) -> tresult {
+        kResultOk
+    }
+    unsafe fn terminate(&self) -> tresult {
+        *self.handler.lock().unwrap() = None;
+        kResultOk
+    }
+}
+
+impl IConnectionPointTrait for ProgramsController {
+    unsafe fn connect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn disconnect(&self, _other: *mut IConnectionPoint) -> tresult {
+        kResultOk
+    }
+    unsafe fn notify(&self, _message: *mut IMessage) -> tresult {
+        kResultOk
+    }
+}
+
+impl IEditControllerTrait for ProgramsController {
+    unsafe fn setComponentState(&self, state: *mut IBStream) -> tresult {
+        let bytes = unsafe { read_all(state) };
+        let Some((program, bank, level)) = read_programs_state(&bytes) else {
+            return kResultFalse;
+        };
+        let switched = {
+            let mut values = self.values.lock().unwrap();
+            let switched = (values[2] >= 0.5) != (bank != 0);
+            *values = [
+                level,
+                program as f64 / (PROGRAM_COUNT - 1) as f64,
+                f64::from(bank),
+            ];
+            switched
+        };
+        // A state with the other bank in it is a cartridge loaded: said.
+        if switched {
+            self.say_programs_changed();
+        }
+        kResultOk
+    }
+    unsafe fn setState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getState(&self, _state: *mut IBStream) -> tresult {
+        kResultOk
+    }
+    unsafe fn getParameterCount(&self) -> i32 {
+        3
+    }
+    unsafe fn getParameterInfo(&self, index: i32, info: *mut ParameterInfo) -> tresult {
+        use ParameterInfo_::ParameterFlags_::*;
+        let info = unsafe { &mut *info };
+        let (title, steps, flags) = match index as u32 {
+            PROGRAM_LEVEL_PARAM => ("Level", 0, kCanAutomate),
+            PROGRAM_PARAM => (
+                "Program",
+                (PROGRAM_COUNT - 1) as i32,
+                kIsProgramChange | kIsList,
+            ),
+            PROGRAM_BANK_PARAM => ("Bank", 1, kIsHidden),
+            _ => return kInvalidArgument,
+        };
+        info.id = index as ParamID;
+        copy_wstring(title, &mut info.title);
+        copy_wstring(title, &mut info.shortTitle);
+        copy_wstring("", &mut info.units);
+        info.stepCount = steps;
+        info.defaultNormalizedValue = 0.0;
+        info.unitId = kRootUnitId;
+        info.flags = flags as i32;
+        kResultOk
+    }
+    unsafe fn getParamStringByValue(
+        &self,
+        id: ParamID,
+        value: f64,
+        string: *mut String128,
+    ) -> tresult {
+        let text = match id {
+            PROGRAM_PARAM => PROGRAMS[self.bank()][program_of(value)].0.to_string(),
+            _ => format!("{value:.2}"),
+        };
+        copy_wstring(&text, unsafe { &mut *string });
+        kResultOk
+    }
+    unsafe fn getParamValueByString(
+        &self,
+        _id: ParamID,
+        _string: *mut TChar,
+        _value: *mut f64,
+    ) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn normalizedParamToPlain(&self, _id: ParamID, value: f64) -> f64 {
+        value
+    }
+    unsafe fn plainParamToNormalized(&self, _id: ParamID, plain: f64) -> f64 {
+        plain
+    }
+    unsafe fn getParamNormalized(&self, id: ParamID) -> f64 {
+        self.values
+            .lock()
+            .unwrap()
+            .get(id as usize)
+            .copied()
+            .unwrap_or(0.0)
+    }
+    unsafe fn setParamNormalized(&self, id: ParamID, value: f64) -> tresult {
+        let switched = {
+            let mut values = self.values.lock().unwrap();
+            let Some(slot) = values.get_mut(id as usize) else {
+                return kInvalidArgument;
+            };
+            let before = *slot;
+            *slot = value;
+            id == PROGRAM_BANK_PARAM && (before >= 0.5) != (value >= 0.5)
+        };
+        if switched {
+            self.say_programs_changed();
+        }
+        kResultOk
+    }
+    unsafe fn setComponentHandler(&self, handler: *mut IComponentHandler) -> tresult {
+        *self.handler.lock().unwrap() =
+            unsafe { ComRef::from_raw(handler) }.map(|h| h.to_com_ptr());
+        kResultOk
+    }
+    unsafe fn createView(&self, _name: FIDString) -> *mut IPlugView {
+        std::ptr::null_mut()
+    }
+}
+
+impl IUnitInfoTrait for ProgramsController {
+    unsafe fn getUnitCount(&self) -> int32 {
+        1
+    }
+    unsafe fn getUnitInfo(&self, unitIndex: int32, info: *mut UnitInfo) -> tresult {
+        if unitIndex != 0 {
+            return kInvalidArgument;
+        }
+        let info = unsafe { &mut *info };
+        info.id = kRootUnitId;
+        info.parentUnitId = kNoParentUnitId;
+        copy_wstring("Root", &mut info.name);
+        info.programListId = PROGRAM_LIST_ID;
+        kResultOk
+    }
+    unsafe fn getProgramListCount(&self) -> int32 {
+        1
+    }
+    unsafe fn getProgramListInfo(&self, listIndex: int32, info: *mut ProgramListInfo) -> tresult {
+        if listIndex != 0 {
+            return kInvalidArgument;
+        }
+        let info = unsafe { &mut *info };
+        info.id = PROGRAM_LIST_ID;
+        copy_wstring(PROGRAM_LIST_NAME, &mut info.name);
+        info.programCount = PROGRAM_COUNT as int32;
+        kResultOk
+    }
+    unsafe fn getProgramName(
+        &self,
+        listId: ProgramListID,
+        programIndex: int32,
+        name: *mut String128,
+    ) -> tresult {
+        let Some((text, _)) = PROGRAMS[self.bank()].get(programIndex as usize) else {
+            return kInvalidArgument;
+        };
+        if listId != PROGRAM_LIST_ID {
+            return kInvalidArgument;
+        }
+        copy_wstring(text, unsafe { &mut *name });
+        kResultOk
+    }
+    unsafe fn getProgramInfo(
+        &self,
+        _listId: ProgramListID,
+        _programIndex: int32,
+        _attributeId: vst3::Steinberg::Vst::CString,
+        _attributeValue: *mut String128,
+    ) -> tresult {
+        kNotImplemented
+    }
+    unsafe fn hasProgramPitchNames(&self, _listId: ProgramListID, _programIndex: int32) -> tresult {
+        kResultFalse
+    }
+    unsafe fn getProgramPitchName(
+        &self,
+        _listId: ProgramListID,
+        _programIndex: int32,
+        _midiPitch: int16,
+        _name: *mut String128,
+    ) -> tresult {
+        kResultFalse
+    }
+    unsafe fn getSelectedUnit(&self) -> UnitID {
+        kRootUnitId
+    }
+    unsafe fn selectUnit(&self, _unitId: UnitID) -> tresult {
+        kResultOk
+    }
+    unsafe fn getUnitByBus(
+        &self,
+        _type: MediaType,
+        _dir: BusDirection,
+        _busIndex: int32,
+        _channel: int32,
+        unitId: *mut UnitID,
+    ) -> tresult {
+        unsafe { *unitId = kRootUnitId };
+        kResultOk
+    }
+    unsafe fn setUnitProgramData(
+        &self,
+        _listOrUnitId: int32,
+        _programIndex: int32,
+        _data: *mut IBStream,
+    ) -> tresult {
+        kNotImplemented
+    }
+}
+
 // ---------------------------------------------------------------- factory
 
 struct Factory;
@@ -1477,7 +1995,7 @@ struct ClassRow {
     sub: &'static str,
 }
 
-const CLASSES: [ClassRow; 5] = [
+const CLASSES: [ClassRow; 7] = [
     ClassRow {
         cid: GAIN_CID,
         category: "Audio Module Class",
@@ -1507,6 +2025,18 @@ const CLASSES: [ClassRow; 5] = [
         category: "Audio Module Class",
         name: COMBINED_NAME,
         sub: "Fx",
+    },
+    ClassRow {
+        cid: PROGRAMS_CID,
+        category: "Audio Module Class",
+        name: PROGRAMS_NAME,
+        sub: "Fx",
+    },
+    ClassRow {
+        cid: PROGRAMS_CONTROLLER_CID,
+        category: "Component Controller Class",
+        name: PROGRAMS_NAME,
+        sub: "",
     },
 ];
 
@@ -1553,6 +2083,12 @@ impl IPluginFactoryTrait for Factory {
                 edit_gain: Cell::new(1.0),
                 processed: AtomicBool::new(false),
                 pending: AtomicU64::new(f64::NAN.to_bits()),
+            })
+            .to_com_ptr(),
+            PROGRAMS_CID => ComWrapper::new(ProgramsProcessor::new()).to_com_ptr(),
+            PROGRAMS_CONTROLLER_CID => ComWrapper::new(ProgramsController {
+                values: Mutex::new([PROGRAMS[0][0].1, 0.0, 0.0]),
+                handler: Mutex::new(None),
             })
             .to_com_ptr(),
             _ => None,
@@ -1664,5 +2200,7 @@ mod tests {
         assert_eq!(spelled(SINE_CID), SINE_ID);
         assert_eq!(spelled(SINE_CONTROLLER_CID), SINE_CONTROLLER_ID);
         assert_eq!(spelled(COMBINED_CID), COMBINED_ID);
+        assert_eq!(spelled(PROGRAMS_CID), PROGRAMS_ID);
+        assert_eq!(spelled(PROGRAMS_CONTROLLER_CID), PROGRAMS_CONTROLLER_ID);
     }
 }
