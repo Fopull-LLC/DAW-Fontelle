@@ -1266,6 +1266,7 @@ dependencies = [
  "audioadapter-buffers",
  "criterion",
  "fontelle-dsp",
+ "fontelle-types",
  "rubato",
  "serde_json",
  "sha2",

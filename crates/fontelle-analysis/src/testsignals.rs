@@ -263,3 +263,52 @@ pub fn noise(sample_rate: u32, seconds: f64, level: f32) -> Vec<f32> {
         })
         .collect()
 }
+
+/// Note material in a key, for key detection: `n` notes, mostly from the
+/// scale (tonic, fifth and third favoured, as tunes do) with `chromatic`
+/// of them any of the twelve at random, a bass note every fourth,
+/// durations 0.1 to 1 s. Deterministic in `seed`.
+pub fn key_material(
+    seed: u64,
+    root: u8,
+    minor: bool,
+    chromatic: f32,
+    n: usize,
+) -> Vec<crate::key::PitchWeight> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let steps: [u8; 7] = if minor {
+        [0, 2, 3, 5, 7, 8, 10]
+    } else {
+        [0, 2, 4, 5, 7, 9, 11]
+    };
+    let favour = [3.0, 1.0, 2.0, 1.2, 2.5, 1.0, 1.0];
+    let total: f64 = favour.iter().sum();
+    (0..n)
+        .map(|i| {
+            let pc = if next() < f64::from(chromatic) {
+                (next() * 12.0) as u8 % 12
+            } else {
+                let mut pick = next() * total;
+                let mut degree = 0;
+                while degree < 6 && pick >= favour[degree] {
+                    pick -= favour[degree];
+                    degree += 1;
+                }
+                steps[degree]
+            };
+            let bass = i % 4 == 0;
+            let octave = if bass { 3 } else { 5 };
+            crate::key::PitchWeight {
+                midi: 12 * octave + (root + pc) % 12,
+                seconds: (0.1 + 0.9 * next()) as f32,
+                weight: (0.5 + 0.5 * next()) as f32,
+            }
+        })
+        .collect()
+}
