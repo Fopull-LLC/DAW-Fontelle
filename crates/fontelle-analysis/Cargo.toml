@@ -15,6 +15,11 @@ repository.workspace = true
 # fallback (plan §2.2).
 default = ["model"]
 model = ["dep:tract-onnx"]
+# The voice denoiser: nnnoiseless, a pure-Rust port of Xiph's RNNoise
+# (BSD-3-Clause, checked 2026-10-06 against crates.io 0.5.2 and the repo's
+# COPYING; its one library dependency, easyfft, is MIT OR Apache-2.0). Off by
+# default: it is 48 kHz mono only and the spectral denoiser needs nothing.
+voice-denoise = ["dep:nnnoiseless"]
 
 [dependencies]
 fontelle-dsp = { path = "../fontelle-dsp" }
@@ -28,6 +33,9 @@ serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 # The cache key: the samples' SHA-256.
 sha2 = "0.10.9"
 tract-onnx = { version = "0.23.8", optional = true }
+# The denoiser's and the onset detector's STFT (plan §2.7).
+realfft = "3.5.0"
+nnnoiseless = { version = "0.5.2", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.7", default-features = false, features = ["cargo_bench_support"] }
