@@ -1755,10 +1755,12 @@ fn an_inserts_strip_label_fits_the_strip_and_its_menu_name_is_the_product() {
             "{kind:?}'s menu name {full:?} is shorter than its strip label {label:?}"
         );
         // Every other effect has one name and uses it in both places; the
-        // abbreviation is the exception, not the rule.
-        if kind != EffectKind::DisgustingBeat {
+        // abbreviation is the exception, not the rule. Analyze Musically is
+        // the second: its name is Ty's (plan §6 answer 1) and two words.
+        if !matches!(kind, EffectKind::DisgustingBeat | EffectKind::Analyze) {
             assert_eq!(full, label, "{kind:?} grew a second name");
         }
     }
     assert_eq!(EffectKind::DisgustingBeat.full_label(), "DisgustingBeat");
+    assert_eq!(EffectKind::Analyze.full_label(), "Analyze Musically");
 }

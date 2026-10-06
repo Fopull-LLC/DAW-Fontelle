@@ -52,3 +52,59 @@ fn no_insert_allocates_while_it_is_running() {
         fontelle_engine::unmark_current_thread_rt();
     }
 }
+
+/// Analyze Musically's insert with its capture armed, in every arm mode, and
+/// its post-fader point: recording allocates nothing either, full ring or
+/// not (`docs/analyze-musically-plan.md` §6.1).
+#[test]
+fn the_analyze_insert_records_without_allocating() {
+    use fontelle_types::{AnalyzeConfig, ArmMode};
+    use std::sync::Arc;
+    for (arm, post_fader) in [
+        (ArmMode::Now, false),
+        (ArmMode::OnPlay, false),
+        (ArmMode::OnInput, false),
+        (ArmMode::Now, true),
+    ] {
+        // Small, so the ring fills and the dropping path runs too.
+        let capture = Arc::new(fontelle_engine::AnalyzeCapture::new(BLOCK * 8));
+        capture.arm(true);
+        let config = AnalyzeConfig {
+            arm,
+            post_fader,
+            threshold_db: -30.0,
+            release_ms: 50.0,
+            ..AnalyzeConfig::new()
+        };
+        let mut node = EffectNode::new(EffectConfig::Analyze(config))
+            .with_analyze_capture(Arc::clone(&capture));
+        let mut post = fontelle_engine::AnalyzeCaptureNode::new(Arc::clone(&capture));
+        let prepare = PrepareContext {
+            sample_rate: SR,
+            max_block_size: BLOCK as u32,
+        };
+        node.prepare(&prepare);
+        post.prepare(&prepare);
+        let mut left = vec![0.0f32; BLOCK];
+        let mut right = vec![0.0f32; BLOCK];
+
+        fontelle_engine::mark_current_thread_rt();
+        for block in 0..64 {
+            for (index, sample) in left.iter_mut().enumerate() {
+                // Bursts and gaps, so On input starts and stops.
+                let loud = (block / 4) % 2 == 0;
+                let at = (block * BLOCK + index) as f32;
+                *sample = if loud {
+                    (std::f32::consts::TAU * 220.0 * at / SR).sin() * 0.5
+                } else {
+                    0.0
+                };
+            }
+            right.copy_from_slice(&left);
+            process(&mut node, &mut [&mut left, &mut right]);
+            process(&mut post, &mut [&mut left, &mut right]);
+        }
+        node.reset();
+        fontelle_engine::unmark_current_thread_rt();
+    }
+}
