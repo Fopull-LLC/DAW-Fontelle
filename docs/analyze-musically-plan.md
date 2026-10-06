@@ -590,3 +590,61 @@ Each phase ships something usable. Write the tests first and confirm they fail.
 3. **Shipping:** basic-pitch's weights (Spotify's, Apache-2.0) are embedded, hash-pinned. The standard engine is offline PSOLA; the WORLD "High quality" engine waits for a later release. Ty's general rule for what crosses from closed work into this public tree: generic capability that shows what Fontelle can do is welcome, but never enough pieces that someone could rebuild a closed product by stitching them together; the `Resynth` trait stays a plain seam.
 4. **Standalone instances** (an Analyze Musically opened on a file or a recording rather than an arrangement clip): they are listed where the user already looks for things they made, in the browser under the project, as well as in the window's own menu, so one is never "lost" after its window closes.
 5. **Copied notes**, chosen the way a working musician would want MIDI from audio (as Melodyne's and Ableton's audio-to-MIDI default): **clean semitones**, **timing as played** (not snapped; the roll's quantize is one key away), **velocity from loudness**. Pitch bends and cents are an opt-in "Keep slides and bends" switch on the Output card, off by default, because a bend baked into MIDI is rarely what one wants when replaying the part on another instrument.
+
+### 6.1 Analyze Musically as a mixer insert (Ty, 2026-10-06)
+
+> *"you should be able to add it to a mixer track as a plugin like you can
+> with edison in fl to record into it like that and then send something into
+> the playlist ... just want it to be flexible enough to allow for however
+> the user is wanting to interact with it it just kind of works how they
+> expect."*
+
+So there are three ways in, and all three open the same window on a study:
+
+| Way in | Audio comes from | Where it is found again |
+|---|---|---|
+| A clip's name menu (§3.2) | the clip's audio | the clip |
+| The browser, or *Record into Analyze Musically…* | a file, or the input device | the browser, under the project (§6 answer 4) |
+| **An insert on a mixer track (new)** | **whatever plays through that track** | **the track's effect slot**, like any effect |
+
+**The insert.** A new built-in effect kind, "Analyze Musically", added from
+the strip's effect list like the others. Audio passes through it untouched
+(zero latency, no colouring). Its slot opens the window, whose Record page
+gains a *Source* chooser: **This track** (the default when it is an insert)
+or an input device. Record arms, as Edison's do:
+
+- **On play:** records while the transport plays (punch to the loop range if
+  one is set);
+- **On input:** starts when the signal crosses a threshold, stops after a
+  set silence (catch the next take without touching anything);
+- **Now:** records from the press until the next.
+
+Each take lands in the study's takes list, exactly like a device take (P5).
+From there the usual tools apply (notes, clean, slice), and **Send to
+arrangement** puts the result in the playlist as a new audio clip, at the
+song position it was recorded from (or at the playhead for a free take).
+Dragging the take or the selection out of the window onto a lane does the
+same.
+
+**Engineering.**
+
+- The insert's process writes into a preallocated lock-free ring and nothing
+  else (INVARIANT 1). A writer thread drains it to `<bundle>/recordings/`,
+  the same path device takes use (`keep_audio_take`'s writer). Recording
+  never blocks audio; a full ring drops and counts frames and says so.
+- The effect's state (its study id, arm mode, threshold) is the insert's
+  saved state like any effect's; the study itself lives in
+  `Project::studies` (§3.9) with `StudySource::Insert { track, slot }`.
+  Removing the effect leaves the study standalone (listed in the browser),
+  never lost.
+- Recording at the track's point in the graph (post-inserts before it,
+  pre-fader) is what Edison does; a *Pre / Post fader* switch on the Record
+  card covers the other wish.
+- Collaboration: the effect travels like any effect; takes are local until
+  kept, then ship as assets (§3.9).
+- Phase: the insert's pass-through and capture ring join **P5**, with tests
+  first: `analyze_insert.rs::{audio_passes_through_bit_identical,
+  on_play_records_exactly_the_played_span, on_input_starts_at_threshold,
+  a_full_ring_counts_dropped_frames_and_never_blocks,
+  send_to_arrangement_lands_at_the_recorded_song_position}` and the engine's
+  no-allocation guard over the insert's process.
