@@ -76,6 +76,8 @@ pub(crate) struct Finished {
     pub melody_loudness: Vec<f32>,
     /// The contour image's cells, shared with every view rather than copied.
     pub image_data: Arc<[u8]>,
+    /// The level most of them sit at, worked out once (it reads every cell).
+    pub image_floor: u8,
 }
 
 /// What the worker and the window share.
@@ -161,12 +163,14 @@ fn finish(analysed: Analysed, mono: &[f32], rate: u32) -> Finished {
         rate,
         a.melody.iter().map(|n| (n.start_time, n.end_time)),
     );
-    let image_data = analysed.image.data.clone().into();
+    let image_data: Arc<[u8]> = analysed.image.data.clone().into();
+    let image_floor = fontelle_ui::canvas::pitch_picture_floor(&image_data);
     Finished {
         analysed,
         note_loudness,
         melody_loudness,
         image_data,
+        image_floor,
     }
 }
 
@@ -539,6 +543,7 @@ fn fill_view(view: &mut AnalyzeView, finished: &Finished) {
         columns_per_second: image.columns_per_second,
         lowest_midi: image.midi_of_row(0),
         rows_per_semitone: 3.0,
+        floor: finished.image_floor,
         data: Arc::clone(&finished.image_data),
     });
 }

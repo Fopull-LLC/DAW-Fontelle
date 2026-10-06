@@ -178,8 +178,8 @@ pub use analyze::{
     AnalyzePage, AnalyzeScaleRow, AnalyzeState, AnalyzeText, AnalyzeView, AnalyzedChord,
     AnalyzedNote, analyze_cents_tag, analyze_hit, analyze_layout, analyze_press, analyze_row_shade,
     analyze_scale_menu, analyze_strings, analyze_tip, badge_text, bpm_text, job_text, key_name,
-    later_lines, note_card_focus, note_card_lines, popover_lines, ruler_labels, scale_chip_text,
-    scale_degrees, time_text, tuning_text, window_scale_label,
+    later_lines, note_card_focus, note_card_lines, pitch_picture_floor, popover_lines,
+    ruler_labels, scale_chip_text, scale_degrees, time_text, tuning_text, window_scale_label,
 };
 pub use analyze::{
     CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, KEEP_BENDS, LATER, MAKE_CLIP, PITCH_TOGGLE,

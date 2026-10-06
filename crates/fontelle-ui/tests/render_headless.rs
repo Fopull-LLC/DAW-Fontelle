@@ -7710,7 +7710,11 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
     let rows = 264usize;
     let cps = 50.0;
     let columns = (duration * cps) as usize;
-    let mut data = vec![0u8; columns * rows];
+    // The model's own floor: about a tenth of full scale in every cell, a
+    // little ragged (`fontelle-analysis`'s real contours sit at 73..89).
+    let mut data: Vec<u8> = (0..columns * rows)
+        .map(|i| 70 + (((i as u32).wrapping_mul(2_654_435_761) >> 24) % 21) as u8)
+        .collect();
     for n in &melody {
         for c in (n.start * cps) as usize..((n.end * cps) as usize).min(columns) {
             for (partial, gain) in [(0.0f32, 1.0f32), (12.0, 0.45), (19.02, 0.3)] {
@@ -7761,6 +7765,7 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
             columns_per_second: cps,
             lowest_midi: 21.0 - 1.0 / 3.0,
             rows_per_semitone: 3.0,
+            floor: fontelle_ui::canvas::pitch_picture_floor(&data),
             data: data.into(),
         }),
     }
@@ -7929,4 +7934,69 @@ fn analyze_musically_dumps_its_other_faces() {
     let mut state = AnalyzeState::default();
     state.scale = 0.75;
     shoot_analyze("analyze-notes-75", &view, &mut state, |_, _| {});
+}
+
+/// Ty, on the pitch picture in P1: *"when i had that mode on it made that
+/// window a lot brighter ... ensure theres good enough contrast to where the
+/// background is still dark like the other mode but you can make out the
+/// pitches around the graph. right now it kind of just looks cloudy."*
+///
+/// Where nothing sounds the lane is as dark as it is with no picture at
+/// all, though every cell of the image carries the model's floor; a
+/// partial a note throws an octave up stands out of it as a thin line.
+/// **Look at it**: `analyze-pitch-picture`.
+#[test]
+fn the_pitch_picture_is_dark_where_nothing_sounds_and_lit_where_a_partial_is() {
+    use fontelle_ui::canvas::AnalyzeState;
+    let view = an_analyzed_take();
+    let luma = |c: Color| {
+        0.2126 * f32::from(c.0[0]) + 0.7152 * f32::from(c.0[1]) + 0.0722 * f32::from(c.0[2])
+    };
+    let mut state = AnalyzeState::default();
+    state.spectrogram = true;
+    let Some((pixels, _, l, w, _)) =
+        shoot_analyze("analyze-pitch-picture", &view, &mut state, |_, _| {})
+    else {
+        return;
+    };
+    // The same lane with no picture behind it: the dark it has to keep.
+    let mut bare_view = view.clone();
+    bare_view.spectrogram = None;
+    let mut bare = state.clone();
+    let Some((bare_pixels, _, _, _, _)) =
+        shoot_analyze("analyze-no-picture", &bare_view, &mut bare, |_, _| {})
+    else {
+        return;
+    };
+    let at = |pixels: &[u8], t: f64, midi: f32| {
+        luma(analyze_pixel(
+            pixels,
+            w,
+            l.lane.x_of(&state, t),
+            l.lane.y_of(&state, midi),
+        ))
+    };
+    // A minute third under the first note, nothing sounding there: only
+    // the model's floor is in the image.
+    for (t, midi) in [(0.8, 60.6), (6.2, 59.6), (9.0, 61.6)] {
+        let lit = at(&pixels, t, midi);
+        let dark = at(&bare_pixels, t, midi);
+        assert!(
+            (lit - dark).abs() < 6.0,
+            "at {t} s, {midi}: {lit} where the bare lane is {dark} \u{2014} the floor shows"
+        );
+    }
+    // F4 (5.5 to 6.9 s) throws its octave at F5: a line there, and dark a
+    // semitone off it.
+    let partial = at(&pixels, 6.2, 77.07);
+    let ground = at(&bare_pixels, 6.2, 77.07);
+    assert!(
+        partial > ground + 30.0,
+        "the octave of F4 reads at {partial} over a lane of {ground}"
+    );
+    let beside = at(&pixels, 6.2, 76.0);
+    assert!(
+        beside - ground < (partial - ground) * 0.4,
+        "a semitone under the partial is {beside}: the line is thin, not a cloud"
+    );
 }

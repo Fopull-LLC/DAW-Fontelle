@@ -663,16 +663,39 @@ fn draw_waveform(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>) {
     }
 }
 
-/// The pitch picture: the contour, a third of a semitone a row, in the
-/// accent warming to the playhead's ink where it is strongest.
+/// The pitch picture: the contour, a third of a semitone a row, drawn so the
+/// lane stays as dark as the waveform's and only what was heard shows.
+///
+/// Ty, on P1's: *"it made that window a lot brighter ... ensure theres good
+/// enough contrast to where the background is still dark like the other
+/// mode but you can make out the pitches around the graph. right now it kind
+/// of just looks cloudy."* Four things make the difference:
+///
+/// - **The floor goes.** The model's contour carries about a tenth of full
+///   scale in every cell; what is at or under [`AnalyzeImage::floor`] is not
+///   drawn at all, and what is over it is measured from it.
+/// - **A ramp that starts in the dark.** Quiet energy is a deep shade of the
+///   accent at low opacity; only the strongest reaches the accent and past
+///   it towards white.
+/// - **Ridges, not bands.** Where a row is the peak of its column the line
+///   is drawn at its parabolic peak, a sub-row thick; the rows either side
+///   are a faint shoulder.
+/// - **Partials fainter than the notes.** A cell within a semitone of a
+///   note sounding then is drawn whole; anything else — the octave, the
+///   twelfth a voice throws — at three quarters.
 fn draw_spectrogram(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>) {
     let p = &theme.palette;
     let lane = &chrome.layout.lane;
     let state = chrome.state;
-    let Some(image) = &chrome.view.spectrogram else {
+    let view = chrome.view;
+    let Some(image) = &view.spectrogram else {
         return;
     };
-    if image.columns == 0 || image.rows == 0 || image.columns_per_second <= 0.0 {
+    if image.columns == 0
+        || image.rows == 0
+        || image.columns_per_second <= 0.0
+        || image.rows_per_semitone <= 0.0
+    {
         return;
     }
     let grid = lane.grid;
@@ -693,29 +716,90 @@ fn draw_spectrogram(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>
     // a pixel takes the strongest of the cells it covers, so a note is not
     // thinned away and a frame does not build megabytes.
     let stride = (c1 - c0).div_ceil(grid.width.max(1.0) as usize).max(1);
-    let (w, h) = ((c1 - c0).div_ceil(stride), r1 - r0);
-    let cool = p.accent;
-    let hot = lighten(p.playhead, 0.2);
+    let w = (c1 - c0).div_ceil(stride);
+    // Each row drawn as this many sub-rows, about a pixel and a half each,
+    // so a ridge can be thinner than the row it is in.
+    let px_per_row = state.row_height / image.rows_per_semitone;
+    let sub = (px_per_row / 1.6).round().clamp(1.0, 4.0) as usize;
+    let rows = r1 - r0;
+    let h = rows * sub;
+    let floor = f32::from(image.floor);
+    let span = (255.0 - floor).max(1.0);
+    let deep = mix(p.window, p.accent, 0.75);
+    let hot = lighten(p.accent, 0.75);
+    let notes = state.notes(view);
+    let mut sounding: Vec<f32> = Vec::new();
+    let mut column = vec![0.0f32; rows + 2];
     let mut rgba = vec![0u8; w * h * 4];
     for ci in 0..w {
         let first = c0 + ci * stride;
         let last = (first + stride).min(c1);
-        for (ri, row) in (r0..r1).enumerate() {
-            let v = (first..last)
-                .map(|column| image.data[column * image.rows + row])
-                .max()
-                .unwrap_or(0);
-            if v < 24 {
+        let (t0, t1) = (
+            first as f64 / image.columns_per_second,
+            last as f64 / image.columns_per_second,
+        );
+        sounding.clear();
+        sounding.extend(
+            notes
+                .iter()
+                .filter(|n| n.start < t1 && n.end > t0)
+                .map(|n| f32::from(n.midi) + n.cents / 100.0),
+        );
+        // This column's cells over the floor, a row either side for the
+        // peak test (the strongest of the cells a pixel covers).
+        for (i, cell) in column.iter_mut().enumerate() {
+            let row = (r0 + i).checked_sub(1);
+            *cell = row
+                .filter(|r| *r < image.rows)
+                .map(|row| {
+                    (first..last)
+                        .map(|c| image.data[c * image.rows + row])
+                        .max()
+                        .map_or(0.0, |v| (f32::from(v) - floor).max(0.0) / span)
+                })
+                .unwrap_or(0.0);
+        }
+        for ri in 0..rows {
+            let (down, v, up) = (column[ri], column[ri + 1], column[ri + 2]);
+            if v <= 0.0 {
                 continue;
             }
-            let f = f32::from(v) / 255.0;
-            let ink = mix(cool, hot, (f - 0.5).max(0.0) * 2.0);
-            // Top row first in the image: high pitch at the top.
-            let at = ((h - 1 - ri) * w + ci) * 4;
-            rgba[at] = ink.0[0];
-            rgba[at + 1] = ink.0[1];
-            rgba[at + 2] = ink.0[2];
-            rgba[at + 3] = (f * 0.85 * 255.0) as u8;
+            let midi = image.lowest_midi + (r0 + ri) as f32 / image.rows_per_semitone;
+            let fundamental =
+                sounding.is_empty() || sounding.iter().any(|m| (m - midi).abs() <= 0.7);
+            let strength = v.powf(0.75) * if fundamental { 1.0 } else { 0.75 };
+            let ridge = v >= up && v >= down;
+            // Where in the row the peak sits, -0.5..0.5 of a row (up is +).
+            let curvature = down - 2.0 * v + up;
+            let peak = if ridge && curvature < 0.0 {
+                (0.5 * (down - up) / curvature).clamp(-0.5, 0.5)
+            } else {
+                0.0
+            };
+            for k in 0..sub {
+                let centre = (k as f32 + 0.5) / sub as f32 - 0.5;
+                let on_peak = sub == 1 || (centre - peak).abs() <= 0.5 / sub as f32 + 1e-3;
+                let t = match (ridge, on_peak) {
+                    (true, true) => strength,
+                    (true, false) => strength * 0.15,
+                    (false, _) => strength * 0.15,
+                };
+                if t < 0.02 {
+                    continue;
+                }
+                let ink = if t < 0.5 {
+                    mix(deep, p.accent, t * 2.0)
+                } else {
+                    mix(p.accent, hot, (t - 0.5) * 2.0)
+                };
+                // Top row first in the image: high pitch at the top.
+                let y = (rows - 1 - ri) * sub + (sub - 1 - k);
+                let at = (y * w + ci) * 4;
+                rgba[at] = ink.0[0];
+                rgba[at + 1] = ink.0[1];
+                rgba[at + 2] = ink.0[2];
+                rgba[at + 3] = ((t.powf(0.7) * 1.5).min(1.0) * 255.0) as u8;
+            }
         }
     }
     let data = ImageData {

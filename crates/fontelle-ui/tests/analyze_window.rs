@@ -498,3 +498,39 @@ fn fitting_puts_every_note_on_screen() {
     }
     let _ = Arc::new(());
 }
+
+// ------------------------------------------------- the pitch picture ---
+
+/// Ty, trying P1: *"i think the pitch picture is more useful to look at than
+/// the waveform so lets make that the default"*. Tab still shows the
+/// waveform, and another clip keeps whichever was chosen.
+#[test]
+fn the_pitch_picture_is_the_default_and_the_choice_is_kept() {
+    let state = AnalyzeState::default();
+    assert!(state.spectrogram, "the pitch picture is what opens");
+    let mut waveform = AnalyzeState::default();
+    waveform.spectrogram = false;
+    assert!(!waveform.for_another_clip().spectrogram);
+    assert!(state.for_another_clip().spectrogram);
+}
+
+/// The model's contour is never zero: about a tenth of full scale sits in
+/// every cell, and drawn as it is that is the "cloudy" Ty saw. The floor is
+/// what most of the picture is, and what a note rises out of.
+#[test]
+fn the_pitch_picture_floor_sits_on_the_noise_and_under_the_notes() {
+    use fontelle_ui::canvas::pitch_picture_floor;
+    // A floor of 70..90 everywhere, as the model's is, and a few loud cells.
+    let mut data: Vec<u8> = (0..20_000u32)
+        .map(|i| 70 + ((i.wrapping_mul(2_654_435_761) >> 24) % 21) as u8)
+        .collect();
+    for i in (0..data.len()).step_by(40) {
+        data[i] = 220;
+    }
+    let floor = pitch_picture_floor(&data);
+    assert!(floor >= 85, "{floor} is over most of the noise");
+    assert!(floor < 160, "{floor} is well under a note");
+    // Nothing but silence: no floor to speak of, nothing to draw.
+    assert!(pitch_picture_floor(&[0u8; 100]) < 10);
+    assert_eq!(pitch_picture_floor(&[]), 0);
+}

@@ -139,10 +139,11 @@ fn a_sung_line_and_a_chord_part_as_the_window_shows_them() {
     let dir2 = scratch("real-mix");
     let view = analysed_view(&dir2, &mix.samples);
     assert_eq!(view.detected, Some(AnalyzeMode::Chords));
+    // The waveform behind them (Tab), and the pitch picture: what opens.
     let mut state = AnalyzeState::default();
+    state.spectrogram = false;
     dump("analyze-real-chords", &view, &mut state);
     let mut state = AnalyzeState::default();
-    state.spectrogram = true;
     dump("analyze-real-chords-pitch", &view, &mut state);
     std::fs::remove_dir_all(&dir).ok();
     std::fs::remove_dir_all(&dir2).ok();

@@ -112,7 +112,40 @@ pub struct AnalyzeImage {
     pub columns_per_second: f64,
     pub lowest_midi: f32,
     pub rows_per_semitone: f32,
+    /// What most of the picture is: the level a cell has to rise over to be
+    /// drawn at all ([`pitch_picture_floor`]). The model's contour is never
+    /// zero, and drawn from zero the whole lane is a haze.
+    pub floor: u8,
     pub data: Arc<[u8]>,
+}
+
+/// The pitch picture's noise floor: a little over the level most cells sit
+/// at. basic-pitch's contour carries about a tenth of full scale in every
+/// cell (73..89 of 255 on the test signals), and a note's ridge stands far
+/// above it; the 60th percentile is still the floor in a dense chord (a
+/// four-note chord and its partials light under a quarter of the rows), and
+/// the margin takes the floor's own raggedness out.
+///
+/// Ty, on P1: *"right now it kind of just looks cloudy."*
+pub fn pitch_picture_floor(data: &[u8]) -> u8 {
+    if data.is_empty() {
+        return 0;
+    }
+    let mut histogram = [0usize; 256];
+    for v in data {
+        histogram[usize::from(*v)] += 1;
+    }
+    let wanted = data.len() * 6 / 10;
+    let mut seen = 0;
+    let mut level = 0usize;
+    for (value, count) in histogram.iter().enumerate() {
+        seen += count;
+        if seen > wanted {
+            level = value;
+            break;
+        }
+    }
+    (level + 8).min(200) as u8
 }
 
 /// Everything the window shows, from the host.
@@ -228,7 +261,9 @@ impl Default for AnalyzeState {
         Self {
             page: AnalyzePage::Notes,
             scale: 1.0,
-            spectrogram: false,
+            // Ty: *"the pitch picture is more useful to look at than the
+            // waveform so lets make that the default"*.
+            spectrogram: true,
             chords: true,
             show_scale: true,
             mode: None,
