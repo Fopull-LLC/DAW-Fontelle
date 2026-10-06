@@ -100,6 +100,66 @@ bumped. `docs/analyze-musically-plan.md` §2.4, §3.3, §3.5, §3.7, §3.9–3.1
   been driven on a real display — headless only.
 
 **As of 2026-10-06, later — Analyze Musically P1, the UI half: see it,
+**As of 2026-10-06 — Analyze Musically P3–P5, the engines (no
+UI).** Branch `feature/analyze-engine` (from `feature/analyze-musically`
+70ff219), not merged, not bumped. Built beside the window/transport/study
+pass (another branch), so it touches no `fontelle-ui`, no study model and
+no analysis code in `session.rs`. `docs/analyze-musically-plan.md` §2.7,
+§3.8, §5 R4, §6.1, P3–P5.
+
+- **Clean** (`fontelle-analysis`): `denoise` — `NoiseProfile::capture`
+  (per-bin median → Rayleigh mean power, a sixth-of-an-octave smoothing)
+  and `denoise` (decision-directed Wiener, 2048/512 Hann; Amount =
+  over-subtraction 1–4, Reduce by = the floor, Sensitivity = profile ±6 dB,
+  `DenoiseOutput::Removed` adds back to the input). `denoise_voice`
+  (nnnoiseless/RNNoise) behind the `voice-denoise` feature, off by
+  default — BSD-3-Clause checked on crates.io 0.5.2 and the repo's COPYING,
+  its library dependency easyfft MIT/Apache; it is gentle with pure white
+  hiss (~4 dB), the test pins wiring, not quality. `onsets` — super-flux
+  with an adaptive threshold, each onset placed to the millisecond in the
+  waveform. `edit` — fade shapes, fades, trim, gain, sound bounds.
+- **Chop**: `slice` — slices at markers / equal / grid / transients /
+  notes, `slice_pitch` (pYIN), `classify_drum` on what *arrives* at the
+  slice (its first 43 ms less the 43 before, so the last hit's tail is not
+  this one's), `layout_slices` → `SlicerPatch` (zones with frame offsets,
+  keys, roots, tuning; the replay notes; the unmapped). App:
+  `Session::add_sampler_slices(path, slices, layout, replay_at)` — one
+  Sampler channel, and the replay clip amended into the same history entry
+  (`slices.rs` builds the patch: attack 0, release 2 ms, filter off).
+- **Record**: `comp` (crossfaded spans of takes). **The insert** (§6.1):
+  `EffectKind::Analyze` / `AnalyzeConfig` (arm On play / On input / Now,
+  threshold, release, post-fader, `study: Option<PersistentId>`; its mix
+  is a parameter the engine never blends, so the wire is bit-exact) with a seven-preset bank; `fontelle_engine::AnalyzeCapture` — an
+  atomics ring (no unsafe, no lock) the insert writes pre-fader and an
+  `AnalyzeCaptureNode` after the fader writes post-fader, take state in
+  atomics so a rebuild carries a take on, full ring drops and counts.
+  `realise` gives one to every Analyze insert in a *live* graph only
+  (`KeptTaps::analyze`; a render's graph gets none) and keeps it across
+  rebuilds; `Session::analyze_capture(track, slot)`. `insert_takes`:
+  `TakeFiles` / `InsertTakeWriter` drain it into `<dir>/Take N.wav`.
+  ApplyPreset keeps an Analyze slot's study. **R4**:
+  `InputWriter::with_tap` / `InputTap`, a second reader of an open device
+  with its own ring.
+- Tests: `fontelle-analysis/tests/{denoise,onsets,edit,slice,comp}.rs`;
+  `fontelle-types/tests/analyze_insert.rs`; `fontelle-engine/tests/
+  {analyze_insert,audio_input_tap}.rs` and the armed insert in
+  `effects_no_allocation.rs`; `fontelle-app/tests/{analyze_sampler,
+  analyze_insert_takes}.rs`; `fontelle-model/tests/presets.rs`.
+- **Found**: the sampler starts a note at the top of the block its event
+  falls in (`SamplerNode::process`), so a slice off a 128-frame boundary
+  replays up to a block early; `analyze_sampler`'s replay test cuts on
+  blocks and says so. Not fixed here — it is every note's timing, not
+  slicing's.
+- **For the UI pass**: arm/disarm and read `is_recording`/`dropped_frames`
+  through `Session::analyze_capture`; spawn one `InsertTakeWriter` per armed
+  capture into `<bundle>/recordings/` and turn its `InsertTake`s into study
+  takes (P5's `SetStudyTakes`); bind `AnalyzeConfig::study`; open the window
+  from the insert's slot (it has the generic panel today); the Clean, Slice
+  and Record pages over these engines; Send to arrangement; the R4 tap
+  wired where the session opens a device (`open_audio_input`). Slice
+  options *one-shot/hold* and *de-click* are not modelled yet.
+
+**As of 2026-10-06, after that — Analyze Musically P1, the UI half: see it,
 copy it.** Same branch (`feature/analyze-musically`), not merged, not
 bumped. `docs/analyze-musically-plan.md` §3.1–§3.6, §3.10, §4 P1.
 

@@ -12,6 +12,7 @@
 //! behaviour beyond validation, ranges and the arithmetic that keeps two
 //! readings of a number the same.
 
+mod analyze_insert;
 mod asset;
 mod audio_clip;
 mod base64;
@@ -38,6 +39,7 @@ mod study;
 mod time;
 mod wavetable_edit;
 
+pub use analyze_insert::{AnalyzeConfig, AnalyzePreset, ArmMode};
 pub use asset::{AssetKind, AssetRef};
 pub use audio_clip::{
     AudioClipData, AudioPlacement, ClipLoopMode, ClipStretch, Fade, FadeCurve, MAX_CLIP_GAIN_DB,

@@ -7,12 +7,17 @@
 pub mod analysis;
 pub mod cache;
 pub mod chords;
+pub mod comp;
 pub mod confidence;
+pub mod denoise;
+pub mod edit;
 pub mod key;
 pub mod mono;
+pub mod onsets;
 pub mod render;
 pub mod resample;
 pub mod resynth;
+pub mod slice;
 pub mod spectrogram;
 pub mod testsignals;
 pub mod transcribe;

@@ -212,6 +212,47 @@ fn applying_an_effect_preset_writes_the_config_and_the_name() {
 }
 
 #[test]
+fn an_analyze_preset_changes_how_it_arms_and_keeps_the_study_it_records_into() {
+    // An Analyze Musically insert's study is where its takes go, not a
+    // setting: picking "catch a vocal" must not cut it loose from the study
+    // it has been recording into (`docs/analyze-musically-plan.md` §6.1).
+    let (mut project, _, master) = a_project();
+    let study = fontelle_types::PersistentId::new();
+    AddInsert::with_config(
+        master,
+        EffectConfig::Analyze(fontelle_types::AnalyzeConfig {
+            study: Some(study),
+            ..fontelle_types::AnalyzeConfig::new()
+        }),
+    )
+    .apply(&mut project)
+    .unwrap();
+    let preset = EffectConfig::Analyze(fontelle_types::AnalyzeConfig::from_preset(
+        fontelle_types::AnalyzePreset::CatchAVocal,
+    ));
+    let mut apply = ApplyPreset::new(
+        PresetTarget::Insert {
+            track: master,
+            index: 0,
+        },
+        an_effect_preset(preset, "catch a vocal"),
+    );
+    apply.apply(&mut project).unwrap();
+    let EffectConfig::Analyze(now) = project.mixer.tracks[master].inserts[0].config else {
+        panic!("not an Analyze insert any more");
+    };
+    assert_eq!(now.arm, fontelle_types::ArmMode::OnInput);
+    assert_eq!(now.study, Some(study));
+    // And the undo puts back exactly what was there.
+    apply.invert().apply(&mut project).unwrap();
+    let EffectConfig::Analyze(back) = project.mixer.tracks[master].inserts[0].config else {
+        unreachable!()
+    };
+    assert_eq!(back.arm, fontelle_types::ArmMode::OnPlay);
+    assert_eq!(back.study, Some(study));
+}
+
+#[test]
 fn a_preset_for_a_different_effect_is_refused_rather_than_switching_the_slot() {
     // The opposite of the channel, and deliberately: a slot's kind is chosen
     // from the "+ effect" menu, so a reverb preset dropped on a gate is a

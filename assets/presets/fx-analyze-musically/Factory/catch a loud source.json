@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Analyze"
+  },
+  "name": "catch a loud source",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Analyze": {
+        "arm": "OnInput",
+        "threshold_db": -24.0,
+        "release_ms": 500.0,
+        "post_fader": false,
+        "study": null,
+        "mix": 1.0
+      }
+    }
+  }
+}

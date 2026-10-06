@@ -309,6 +309,10 @@ pub struct Session {
     /// `docs/disgusting-beat-plan.md` §7.2.
     disgusting_beat_taps:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// Every Analyze Musically insert's capture, kept across rebuilds — see
+    /// [`Session::analyze_capture`].
+    analyze_captures:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
     /// And the writing end of each one's curves, which is what an edit
     /// publishes down so that a drag is heard before the next rebuild.
     disgusting_beat_controls:
@@ -1476,6 +1480,7 @@ impl Session {
             disgusting_beat_zoom: 1.0,
             disgusting_beat_menu: None,
             disgusting_beat_taps: HashMap::new(),
+            analyze_captures: HashMap::new(),
             disgusting_beat_controls: HashMap::new(),
             plugins: {
                 let mut rack = crate::PluginRack::new();
@@ -5321,6 +5326,7 @@ impl Session {
                 tune: self.tune_taps.clone(),
                 disgusting_beat: self.disgusting_beat_taps.clone(),
                 master: self.master_meter.clone(),
+                analyze: Some(self.analyze_captures.clone()),
             },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
@@ -5344,6 +5350,7 @@ impl Session {
                 self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
                 self.disgusting_beat_taps = realised.disgusting_beat_taps;
+                self.analyze_captures = realised.analyze_captures;
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
@@ -6454,6 +6461,128 @@ impl Session {
             ..fontelle_core::Patch::basic_synth()
         };
         Ok((name, patch, seconds))
+    }
+
+    /// **Send to sampler** (Analyze Musically's Slice page, plan §3.8): the
+    /// slices of the file at `path`, laid out as `layout`, on a new Sampler
+    /// channel — and, with `replay_at`, a note clip on a new row starting at
+    /// that tick that plays them back in order. **One undo** takes back the
+    /// channel and the clip together.
+    ///
+    /// `slices` are frames of the file at `path` (the study renders its
+    /// processed audio there first, `<bundle>/renders/<name> slices.wav`).
+    pub fn add_sampler_slices(
+        &mut self,
+        path: &Path,
+        slices: &[fontelle_analysis::slice::Slice],
+        layout: fontelle_analysis::slice::SliceLayout,
+        replay_at: Option<fontelle_types::Tick>,
+    ) -> Result<crate::slices::SlicesAdded, String> {
+        let imported = self
+            .library
+            .import_sample(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let store = self.library.store();
+        let audio = store
+            .get(imported.id)
+            .ok_or("the slices' file did not load")?;
+        let laid = fontelle_analysis::slice::layout_slices(
+            &audio.data,
+            imported.sample_rate,
+            slices,
+            layout,
+        );
+        if laid.zones.is_empty() {
+            return Err("none of the slices has a key to go on".to_string());
+        }
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file_label(path));
+        let data = crate::slices::slice_patch(imported.id, &laid)
+            .to_data(self.library.provenance())
+            .map_err(|e| e.to_string())?;
+        // Two commands, one entry: the replay clip names the channel the
+        // first one mints, so it cannot be built before it ran — it is
+        // folded into the channel's entry instead (`History::amend`).
+        let channel = self
+            .apply_for::<AddChannel>(Box::new(
+                AddChannel::new(name.clone(), Some(data))
+                    .of_kind(fontelle_types::InstrumentKind::Sampler),
+            ))?
+            .channel()
+            .ok_or("the channel was not created")?;
+        let mut clip = None;
+        if let Some(at) = replay_at {
+            let tempo = fontelle_model::effective_tempo_map(&self.project);
+            let notes = crate::slices::replay_notes(&laid.replay, imported.sample_rate, at, &tempo);
+            let length = notes
+                .iter()
+                .map(|n| n.start + n.length)
+                .max()
+                .unwrap_or(fontelle_types::PPQN);
+            let mut arena = Arena::default();
+            for note in notes {
+                arena.insert(note);
+            }
+            let before: Vec<ClipId> = self.project.clips.keys().collect();
+            let add = fontelle_model::AddClip::on_new_row(
+                fontelle_model::Clip {
+                    name: None,
+                    lane: Default::default(),
+                    start: at,
+                    length,
+                    source: ClipSource::Notes(fontelle_model::NoteData {
+                        channel,
+                        notes: arena,
+                    }),
+                    prefab_link: None,
+                    color: None,
+                    muted: false,
+                    loop_length: None,
+                },
+                name.clone(),
+                [0x8a, 0xa4, 0xe8, 0xff],
+            );
+            self.history
+                .amend(Box::new(add), &mut self.project)
+                .map_err(|e| e.to_string())?;
+            clip = self.project.clips.keys().find(|id| !before.contains(id));
+        }
+        self.let_go();
+        // The new channel is the selected one, as any new channel is
+        // (`new_channel_inner`, which this does not go through because it
+        // ends the history entry the clip has to join).
+        self.selected = self
+            .channel_ids()
+            .iter()
+            .position(|id| *id == channel)
+            .unwrap_or(self.selected);
+        self.patch_cache = None;
+        self.dirty = true;
+        self.rebuild_graph();
+        self.touch();
+        self.collect_if_shared();
+        Ok(crate::slices::SlicesAdded {
+            channel,
+            clip,
+            name,
+            unmapped: laid.unmapped.len(),
+        })
+    }
+
+    /// The capture of the Analyze Musically insert in `slot` on `track`
+    /// (`docs/analyze-musically-plan.md` §6.1): arm it, read whether it is
+    /// recording and what it lost, and hand it to an
+    /// [`InsertTakeWriter`](crate::insert_takes::InsertTakeWriter). The same
+    /// one across graph rebuilds; `None` for a slot that holds something
+    /// else.
+    pub fn analyze_capture(
+        &self,
+        track: MixerTrackId,
+        slot: usize,
+    ) -> Option<std::sync::Arc<fontelle_engine::AnalyzeCapture>> {
+        self.analyze_captures.get(&(track, slot)).cloned()
     }
 
     /// The instrument a channel of `kind` arrives with.

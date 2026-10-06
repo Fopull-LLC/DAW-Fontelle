@@ -3,6 +3,7 @@
 //! allocates, locks, blocks, or performs a syscall — enforced in debug/test builds
 //! by [`rt_guard::RtGuardAllocator`].
 
+mod analyze_capture;
 mod audio_input;
 mod device;
 mod disgusting_beat_channel;
@@ -26,7 +27,10 @@ mod timeline_channel;
 mod transport;
 mod tune_tap;
 
-pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
+pub use analyze_capture::{
+    AnalyzeCapture, AnalyzeCaptureEvent, AnalyzeCaptureNode, AnalyzeTapPoint,
+};
+pub use audio_input::{InputCapture, InputReader, InputTap, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,

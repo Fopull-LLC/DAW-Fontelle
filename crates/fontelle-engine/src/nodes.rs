@@ -827,6 +827,10 @@ pub struct EffectNode {
     disgusting_beat_curves: Option<crate::DisgustingBeatSource>,
     /// What a DisgustingBeat's window is shown, when one is open on it.
     disgusting_beat_tap: Option<std::sync::Arc<crate::DisgustingBeatTap>>,
+    /// An Analyze Musically insert's capture, when this is one and the graph
+    /// is live — see [`EffectNode::with_analyze_capture`]. `None` in an
+    /// offline render, which records nothing.
+    analyze: Option<std::sync::Arc<crate::AnalyzeCapture>>,
     /// Parameters an automation lane has taken over, by their position in
     /// [`EffectConfig::specs`], holding the last normalised value each was
     /// given.
@@ -1031,6 +1035,9 @@ enum EffectState {
     /// so that the empty arms below read as a decision rather than as an
     /// effect somebody forgot to wire up.
     Notepad,
+    /// Analyze Musically's insert: a wire, like the notepad. What it records
+    /// is the node's business (`EffectNode::analyze`), not the DSP's.
+    Analyze,
 }
 
 impl EffectState {
@@ -1096,6 +1103,7 @@ impl EffectState {
                 EffectState::DisgustingBeat(fontelle_fx::DisgustingBeat::new())
             }
             fontelle_types::EffectConfig::Notepad(_) => EffectState::Notepad,
+            fontelle_types::EffectConfig::Analyze(_) => EffectState::Analyze,
         }
     }
 
@@ -1136,7 +1144,7 @@ impl EffectState {
             Self::Width(width) => width.prepare(sample_rate),
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.prepare(sample_rate),
             // Nothing to size and nothing to clear: the signal goes past it.
-            Self::Notepad => {}
+            Self::Notepad | Self::Analyze => {}
         }
     }
 
@@ -1233,6 +1241,7 @@ impl EffectState {
             // `EffectNode::process`.
             (Self::DisgustingBeat(_), fontelle_types::EffectConfig::DisgustingBeat(_)) => {}
             (Self::Notepad, fontelle_types::EffectConfig::Notepad(_)) => {}
+            (Self::Analyze, fontelle_types::EffectConfig::Analyze(_)) => {}
             // A config of a different kind than the state cannot arrive: the
             // chain rebuilds the graph when a slot's *kind* changes, and only
             // tunes it in place when parameters move.
@@ -1268,7 +1277,10 @@ impl EffectState {
             Self::Multiband(multiband) => multiband.reset(),
             Self::Width(width) => width.reset(),
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.reset(),
-            Self::Notepad => {}
+            // A take is not stopped by a transport stop: "Now" and "On input"
+            // record with the transport stopped, and "On play" stops itself
+            // on the next block it sees not rolling.
+            Self::Notepad | Self::Analyze => {}
         }
     }
 }
@@ -1283,6 +1295,7 @@ impl EffectNode {
             controls: None,
             disgusting_beat_curves: None,
             disgusting_beat_tap: None,
+            analyze: None,
             automated: [None; MAX_EFFECT_PARAMS],
             metre: (
                 fontelle_types::DEFAULT_BPM,
@@ -1321,6 +1334,15 @@ impl EffectNode {
         tap: std::sync::Arc<crate::DisgustingBeatTap>,
     ) -> Self {
         self.disgusting_beat_tap = Some(tap);
+        self
+    }
+
+    /// Gives an Analyze Musically insert its capture
+    /// (`crate::analyze_capture`): the ring it records into, shared with the
+    /// post-fader point and the take writer. Carried and never read on any
+    /// other effect.
+    pub fn with_analyze_capture(mut self, capture: std::sync::Arc<crate::AnalyzeCapture>) -> Self {
+        self.analyze = Some(capture);
         self
     }
 
@@ -1573,6 +1595,21 @@ impl AudioNode for EffectNode {
         if let Some(tap) = &self.tap {
             tap.write(ctx.outputs);
         }
+        // Analyze Musically's capture: the settings for this block (which the
+        // post-fader point reads too), then the pre-fader point, here. Before
+        // the bypass so a bypassed insert can end the take it was in; it
+        // writes nothing to the bus either way.
+        if let (Some(capture), fontelle_types::EffectConfig::Analyze(config)) =
+            (&self.analyze, &self.config)
+        {
+            capture.configure(config, self.bypassed);
+            capture.capture(
+                ctx.outputs,
+                crate::AnalyzeTapPoint::PreFader,
+                &ctx.transport,
+                self.sample_rate,
+            );
+        }
         if self.bypassed {
             return;
         }
@@ -1581,7 +1618,11 @@ impl AudioNode for EffectNode {
         // until somebody turns the knob — must cost exactly what it did before
         // this control existed.
         let mix = self.config.mix().clamp(0.0, 1.0);
-        let blending = mix < 1.0 && self.dry_fits(ctx);
+        // Analyze Musically's insert is a wire, and a wire blended with
+        // itself is itself — except to the bit, which its pass-through
+        // promises (`tests/analyze_insert.rs`). So it is never blended.
+        let blending =
+            mix < 1.0 && self.dry_fits(ctx) && !matches!(self.state, EffectState::Analyze);
         if blending {
             for (channel, buffer) in ctx.outputs.iter().enumerate().take(DRY_CHANNELS) {
                 self.dry[channel][..buffer.len()].copy_from_slice(buffer);

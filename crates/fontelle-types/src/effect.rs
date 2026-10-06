@@ -60,6 +60,10 @@ pub enum EffectKind {
     /// wants it — beside the track it is about — and not because it
     /// processes anything.
     Notepad,
+    /// Analyze Musically on a strip (`crate::analyze_insert`,
+    /// `docs/analyze-musically-plan.md` §6.1): a wire that, when armed,
+    /// records what plays through the track into a study — Edison's place.
+    Analyze,
 }
 
 impl EffectKind {
@@ -90,6 +94,7 @@ impl EffectKind {
             // shares them with a dial. Its own name is `full_label`.
             Self::DisgustingBeat => "Disgust",
             Self::Notepad => "Notepad",
+            Self::Analyze => "Analyze",
         }
     }
 
@@ -104,6 +109,7 @@ impl EffectKind {
     pub fn full_label(self) -> &'static str {
         match self {
             Self::DisgustingBeat => "DisgustingBeat",
+            Self::Analyze => "Analyze Musically",
             other => other.label(),
         }
     }
@@ -165,7 +171,7 @@ impl EffectKind {
     ///
     /// The plumbing tool first, then the processors, then the two that sit
     /// under the track.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Utility,
         Self::Width,
         Self::Eq,
@@ -192,6 +198,9 @@ impl EffectKind {
         Self::Delay,
         Self::Reverb,
         Self::DisgustingBeat,
+        // A recorder, not a processor, so after them; before the notepad,
+        // which stays last.
+        Self::Analyze,
         // Last, and on its own: it is not a processor at all, and a menu
         // that put it among them would be a menu that lied about what the
         // things in it do.
@@ -229,6 +238,7 @@ pub enum EffectConfig {
     Width(WidthConfig),
     DisgustingBeat(crate::DisgustingBeatConfig),
     Notepad(crate::NotepadConfig),
+    Analyze(crate::AnalyzeConfig),
 }
 
 impl EffectConfig {
@@ -264,6 +274,7 @@ impl EffectConfig {
             Self::Width(_) => WIDTH_PARAMS.as_slice(),
             Self::DisgustingBeat(_) => crate::disgusting_beat::DISGUSTING_BEAT_PARAMS.as_slice(),
             Self::Notepad(_) => crate::notepad::NOTEPAD_PARAMS.as_slice(),
+            Self::Analyze(_) => crate::analyze_insert::ANALYZE_PARAMS.as_slice(),
         }
     }
 
@@ -300,6 +311,7 @@ impl EffectConfig {
             Self::Width(_) => WIDTH_SECTIONS.as_slice(),
             Self::DisgustingBeat(_) => crate::disgusting_beat::DISGUSTING_BEAT_SECTIONS.as_slice(),
             Self::Notepad(_) => crate::notepad::NOTEPAD_SECTIONS.as_slice(),
+            Self::Analyze(_) => crate::analyze_insert::ANALYZE_SECTIONS.as_slice(),
         }
     }
 
@@ -350,6 +362,7 @@ impl EffectConfig {
             Self::Width(width) => width.get(id),
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.get(id),
             Self::Notepad(notepad) => notepad.get(id),
+            Self::Analyze(analyze) => analyze.get(id),
         }
     }
 
@@ -382,6 +395,7 @@ impl EffectConfig {
             Self::Width(width) => width.set(id, value),
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.set(id, value),
             Self::Notepad(notepad) => notepad.set(id, value),
+            Self::Analyze(analyze) => analyze.set(id, value),
         }
     }
 
@@ -420,6 +434,7 @@ impl EffectConfig {
             Self::Width(_) => EffectKind::Width,
             Self::DisgustingBeat(_) => EffectKind::DisgustingBeat,
             Self::Notepad(_) => EffectKind::Notepad,
+            Self::Analyze(_) => EffectKind::Analyze,
         }
     }
 
@@ -454,6 +469,7 @@ impl EffectConfig {
             Self::Width(width) => width.mix,
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.mix,
             Self::Notepad(notepad) => notepad.mix,
+            Self::Analyze(analyze) => analyze.mix,
         }
     }
 
@@ -523,6 +539,7 @@ impl EffectConfig {
             EffectKind::Width => Self::Width(WidthConfig::new()),
             EffectKind::DisgustingBeat => Self::DisgustingBeat(crate::DisgustingBeatConfig::new()),
             EffectKind::Notepad => Self::Notepad(crate::NotepadConfig::new()),
+            EffectKind::Analyze => Self::Analyze(crate::AnalyzeConfig::new()),
         }
     }
 }

@@ -115,6 +115,7 @@ impl DeviceKind {
                     EffectKind::Width => "width",
                     EffectKind::DisgustingBeat => "disgusting-beat",
                     EffectKind::Notepad => "notepad",
+                    EffectKind::Analyze => "analyze-musically",
                 }
             ),
             // A plugin id is a reverse-domain name or a URI and may carry
