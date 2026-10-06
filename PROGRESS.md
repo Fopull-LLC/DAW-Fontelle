@@ -102,6 +102,24 @@ patches in that tab said *"No such file or directory (os error 2)"*; and
   A preset favourite is keyed by device, name and origin, not category, so
   two of one name in two banks star together (left as is: the settings
   format would change).
+- **Every menu's headings** (Favorites, a category, "Plugin effects") and
+  greyed rows are in the secondary text colour, not the border's
+  (`draw_context_menu`); both themes checked (`menu-headings-*`).
+- **A preset's star names its category** — settings format 12.
+  `Favorite::Preset::category` (written only when known): two "Init"s in two
+  banks star independently. A star from format 11 or older is matched by
+  the session once the bank lists that device (at load and as plugins'
+  libraries arrive) to the **first** preset of its name in menu order, and
+  written with its category; one that matches nothing is kept for later,
+  never dropped (`Session::adopt_old_preset_stars`). An older build is still
+  refused a format-12 file by version.
+- **Sample-accurate notes in every built-in instrument.** `SamplerNode`
+  applied a block's events before rendering any of it, so a note at offset
+  k sounded at the block's top. It renders in stretches cut at the events'
+  offsets now (timeline and live merged in place, no allocation); Flopsynth,
+  Drum Machine, Osc3 and soundfonts are all this node. The metronome,
+  plugins and audio clips already were. `fontelle-engine/tests/
+  sample_accurate_notes.rs`.
 - **Not done**: the whole studio was not run with a plugin window open (no
   display allowed here; the studio's wgpu found no adapter on Xvfb), so the
   drop-down has been seen in a real plugin window only through the probe.
