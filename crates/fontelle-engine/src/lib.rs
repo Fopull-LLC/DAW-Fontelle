@@ -21,6 +21,7 @@ mod plugin_node;
 pub mod rt_budget;
 mod rt_guard;
 mod spectrum_tap;
+mod study_player;
 mod timeline_channel;
 mod transport;
 mod tune_tap;
@@ -66,6 +67,7 @@ pub use rt_guard::{
     with_rt_thread,
 };
 pub use spectrum_tap::SpectrumTap;
+pub use study_player::{StudyAudio, StudyPlayer, StudyPlayerNode};
 pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};
 pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};
 pub use tune_tap::{TUNE_TRACE_FRAMES, TuneTap};
