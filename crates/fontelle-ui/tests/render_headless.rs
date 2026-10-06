@@ -7982,6 +7982,22 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
         }),
         rendered: false,
         preview_pending: false,
+        // A bar a chord, as Melody mode reads the line.
+        melody_chords: ["Am", "F", "C", "Em"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| AnalyzedChord {
+                start: 3.5 * i as f64,
+                end: 3.5 * (i + 1) as f64,
+                label: label.to_string(),
+            })
+            .collect(),
+        rate: 48_000,
+        offset: 0,
+        // A transient at each note's start, the louder ones stronger.
+        onsets: line.iter().map(|n| (n.0, n.4)).collect(),
+        beat_seconds: Some(0.5),
+        has_audio: true,
         ..AnalyzeView::default()
     }
 }
@@ -8087,6 +8103,21 @@ fn analyze_musically_draws_the_lane_the_notes_and_the_header() {
             .map(|i| (i32::from(a.0[i]) - i32::from(b.0[i])).abs())
             .sum::<i32>()
     };
+    // Off the pitch curve drawn through it: the best of a few points along
+    // the blob's middle.
+    let inside = [0.15f32, 0.3, 0.45, 0.6]
+        .iter()
+        .map(|f| {
+            analyze_pixel(
+                &pixels,
+                w,
+                blob.x + blob.width * f,
+                blob.y + blob.height / 2.0,
+            )
+        })
+        .chain(std::iter::once(inside))
+        .min_by_key(|c| distance(*c, p.note_selected))
+        .unwrap();
     assert!(
         distance(inside, p.note_selected) < distance(inside, p.window),
         "{inside:?} reads as the selected ink {:?}",
@@ -8140,10 +8171,7 @@ fn analyze_musically_dumps_its_other_faces() {
         s.hover = Some(AnalyzeHit::ScaleName);
     });
 
-    // A page still to come.
-    let mut state = AnalyzeState::default();
-    state.page = AnalyzePage::Clean;
-    shoot_analyze("analyze-clean-later", &view, &mut state, |_, _| {});
+    let _ = AnalyzePage::Clean;
 
     // The smallest scale, so its header is seen to fit.
     let mut state = AnalyzeState::default();
@@ -8259,4 +8287,194 @@ fn analyze_musically_draws_its_edits_and_its_transport() {
     }
     assert!(found, "the playhead is drawn at {x}");
     assert!(!l.revert.is_empty());
+}
+
+/// Analyze Musically's pages, each as somebody would leave it mid-task.
+/// **Look at them**: `FONTELLE_UI_DUMP=… cargo test -p fontelle-ui --test
+/// render_headless analyze_musically_dumps_its_pages`.
+#[test]
+fn analyze_musically_dumps_its_pages() {
+    use fontelle_types::{StudyCompSpan, StudyMarker, StudyNoise, StudyTake};
+    use fontelle_ui::canvas::{
+        AnalyzeEdit, AnalyzeHit, AnalyzeMeter, AnalyzePage, AnalyzeRecordView, AnalyzeSliceKey,
+        AnalyzeSource, AnalyzeState, AnalyzeTool, AutoSlice,
+    };
+    let view = an_analyzed_take();
+    let frame = |s: f64| (s * 48_000.0) as i64;
+
+    // Notes: two notes selected, one moved and flattened, the Pitch card
+    // reading it.
+    let mut edited = view.clone();
+    edited.melody[2].edit = Some(AnalyzeEdit {
+        shift_cents: -23.0,
+        flatten: 0.7,
+        ..AnalyzeEdit::default()
+    });
+    let mut state = AnalyzeState::default();
+    shoot_analyze("analyze-notes-pitch", &edited, &mut state, |_, s| {
+        s.click_note(2, false);
+        s.click_note(3, true);
+    });
+
+    // Clean: noise captured from the gap, the denoiser on, the head and
+    // tail trimmed, a fade each end, a little gain, a span chosen.
+    let mut clean = view.clone();
+    clean.clean.trim = Some((frame(0.3), frame(13.0)));
+    clean.clean.fade_in = frame(0.25);
+    clean.clean.fade_out = frame(0.8);
+    clean.clean.gain_db = 2.0;
+    clean.clean.denoise.on = true;
+    clean.clean.denoise.reduce_db = 18.0;
+    clean.clean.denoise.noise = Some(StudyNoise {
+        magnitudes: vec![0.001; 1025],
+        sample_rate: 48_000,
+        level_db: -52.4,
+    });
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Clean;
+    state.tool = AnalyzeTool::Noise;
+    shoot_analyze("analyze-clean", &clean, &mut state, |_, s| {
+        s.noise_span = Some((4.82, 4.98));
+        s.span = Some((6.95, 7.08));
+        s.hover = Some(AnalyzeHit::FadeEnd(true));
+    });
+
+    // Slice: transients previewed, two hand-placed markers, a layout's
+    // keys.
+    let mut slice = view.clone();
+    slice.markers = vec![
+        StudyMarker {
+            id: 1,
+            at: frame(3.0),
+            name: String::new(),
+        },
+        StudyMarker {
+            id: 2,
+            at: frame(7.1),
+            name: String::new(),
+        },
+    ];
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Slice;
+    state.tool = AnalyzeTool::Marker;
+    shoot_analyze("analyze-slice-markers", &slice, &mut state, |_, s| {
+        s.selected_marker = Some(2);
+        s.slice_keys = (0..3)
+            .map(|i| AnalyzeSliceKey {
+                slice: i,
+                low: 48 + i as u8,
+                high: 48 + i as u8,
+                root: 48 + i as u8,
+            })
+            .collect();
+    });
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Slice;
+    state.auto = AutoSlice::Transients { sensitivity: 0.6 };
+    shoot_analyze("analyze-slice", &slice, &mut state, |_, s| {
+        s.slice_keys = (0..9)
+            .map(|i| AnalyzeSliceKey {
+                slice: i,
+                low: 48 + i as u8,
+                high: 48 + i as u8,
+                root: 48 + i as u8,
+            })
+            .collect();
+    });
+
+    // Record: an insert's study with three takes, the second in the lane,
+    // a comp across two of them, armed and recording a fourth.
+    let mut record = view.clone();
+    record.source = AnalyzeSource::Insert {
+        track: "Vox".to_string(),
+    };
+    record.record = Some(AnalyzeRecordView {
+        input: None,
+        inputs: vec!["Built-in Mic".to_string()],
+        armed: true,
+        recording: true,
+        ..AnalyzeRecordView::default()
+    });
+    record.takes = (1..=3)
+        .map(|id| StudyTake {
+            id,
+            asset: fontelle_types::AssetRef {
+                id: Default::default(),
+                path: format!("recordings/Take {id}.wav").into(),
+                content_hash: 0,
+                size: 0,
+                kind: fontelle_types::AssetKind::Sample,
+            },
+            name: if id == 2 {
+                "Keeper".to_string()
+            } else {
+                format!("Take {id}")
+            },
+            song_sample: Some(0),
+            frames: frame(14.0 - id as f64),
+            sample_rate: 48_000,
+            starred: id == 2,
+            dropped_frames: 0,
+        })
+        .collect();
+    record.take_peaks = vec![record.peaks.clone(); 3];
+    record.current_take = Some(2);
+    record.comp = vec![
+        StudyCompSpan {
+            take: 1,
+            start: 0,
+            end: frame(4.9),
+        },
+        StudyCompSpan {
+            take: 2,
+            start: frame(4.9),
+            end: frame(11.0),
+        },
+    ];
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Record;
+    shoot_analyze("analyze-record", &record, &mut state, |_, s| {
+        s.meter = AnalyzeMeter {
+            level: 0.42,
+            recording: true,
+            take_seconds: 7.4,
+            dropped_frames: 0,
+        };
+        s.hover = Some(AnalyzeHit::TakeName(1));
+    });
+
+    // Record, before the first take: the insert opened for the first time.
+    let mut empty = fontelle_ui::canvas::AnalyzeView {
+        name: "Vox".to_string(),
+        source: AnalyzeSource::Insert {
+            track: "Vox".to_string(),
+        },
+        record: Some(AnalyzeRecordView {
+            inputs: vec!["Built-in Mic".to_string()],
+            threshold_db: -40.0,
+            release_ms: 1_000.0,
+            ..AnalyzeRecordView::default()
+        }),
+        rate: 48_000,
+        ..Default::default()
+    };
+    empty.record.as_mut().unwrap().arm = fontelle_types::ArmMode::OnInput;
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Record;
+    shoot_analyze("analyze-record-empty", &empty, &mut state, |_, _| {});
+
+    // The smallest scale: every page's cards still read.
+    for (name, page, view) in [
+        ("analyze-notes-pitch-75", AnalyzePage::Notes, &edited),
+        ("analyze-clean-75", AnalyzePage::Clean, &clean),
+        ("analyze-slice-75", AnalyzePage::Slice, &slice),
+        ("analyze-record-75", AnalyzePage::Record, &record),
+    ] {
+        let mut state = AnalyzeState::default();
+        state.page = page;
+        state.scale = 0.75;
+        shoot_analyze(name, view, &mut state, |_, s| {
+            s.click_note(2, false);
+        });
+    }
 }

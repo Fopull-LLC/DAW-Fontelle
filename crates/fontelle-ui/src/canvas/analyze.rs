@@ -1480,8 +1480,12 @@ pub fn analyze_layout(
                 };
                 l.takes_area = inner;
             } else {
-                // The take in the lane on top, the takes under it.
-                let lane_h = (inner.height * 0.42).round();
+                // The take in the lane on top, the takes under it: as many
+                // rows as there are takes (six before they scroll), the lane
+                // the rest.
+                let rows = view.takes.len().clamp(2, 6) as f32;
+                let takes_h = rows * sc(30.0, s) + sc(8.0, s);
+                let lane_h = (inner.height - takes_h).max(inner.height * 0.42).round();
                 let grid = Rect::new(inner.x, inner.y, inner.width, (lane_h - ruler_h).max(0.0));
                 l.lane = AnalyzeLane {
                     screen,
@@ -2131,6 +2135,9 @@ fn percent(value: f32) -> String {
 
 /// The badge: "Clear 91 %", or what it is doing before there is one.
 pub fn badge_text(view: &AnalyzeView) -> String {
+    if !view.has_audio && view.record.is_some() {
+        return "Nothing recorded yet".to_string();
+    }
     match view.clarity {
         Some((clarity, confidence)) => format!("{} {}", clarity.label(), percent(confidence)),
         None if view.error.is_some() => "Not analysed".to_string(),
@@ -2148,6 +2155,7 @@ pub fn scale_chip_text(view: &AnalyzeView) -> String {
             percent(key.confidence)
         ),
         None if view.analysing.is_some() => "Key: listening\u{2026}".to_string(),
+        None if !view.has_audio && view.record.is_some() => "Key: \u{2014}".to_string(),
         None => "No key heard".to_string(),
     }
 }
@@ -2398,6 +2406,8 @@ pub fn analyze_strings(
         (readout_text(view, state), Value),
         (AnalyzeTool::Select.label().to_string(), Value),
         (AnalyzeTool::Move.label().to_string(), Value),
+        (AnalyzeTool::Noise.label().to_string(), Value),
+        (AnalyzeTool::Marker.label().to_string(), Value),
         (KEEP_BENDS.to_string(), Caption),
         (AnalyzeCard::Note.label().to_string(), Heading),
         (AnalyzeCard::Output.label().to_string(), Heading),

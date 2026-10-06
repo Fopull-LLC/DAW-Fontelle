@@ -688,7 +688,9 @@ pub(super) fn draw_wave_lane(
     if !view.peaks.is_empty() && view.peaks_per_second > 0.0 {
         let middle = grid.y + grid.height / 2.0;
         let half = grid.height * 0.46;
-        let wave = mix(ink, p.text, 0.25);
+        // The page's ink, held back: the wave is what the marks are drawn
+        // on, not the loudest thing on the screen.
+        let wave = mix(ink, p.window, 0.35);
         let mut x = grid.x;
         while x < grid.right() {
             let from = lane.t_of(state, x);
@@ -711,7 +713,7 @@ pub(super) fn draw_wave_lane(
             };
             let top = middle - (high * g).clamp(0.0, 1.0) * half;
             let bottom = middle - (low * g).clamp(-1.0, 0.0) * half;
-            let alpha = if kept { 0xb0 } else { 0x40 };
+            let alpha = if kept { 0x9c } else { 0x34 };
             fill_rect(
                 scene,
                 Rect::new(x, top, 1.0, (bottom - top).max(1.0)),

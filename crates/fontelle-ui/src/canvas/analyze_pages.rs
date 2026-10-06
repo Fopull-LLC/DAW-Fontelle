@@ -636,8 +636,8 @@ impl AnalyzeControl {
             Self::Knob(k) => k.caption(),
             Self::CaptureNoise => "Capture noise",
             Self::ListenRemoved => "Hear what's removed",
-            Self::DenoiseOn => "Denoise",
-            Self::VoiceDenoise => "Voice mode",
+            Self::DenoiseOn => "On",
+            Self::VoiceDenoise => "Voice",
             Self::FadeShape => "Shape",
             Self::TrimToSelection => "Trim to selection",
             Self::ResetClean => "Reset",
@@ -684,7 +684,7 @@ pub fn control_text(
         AnalyzeControl::AutoSlice => state.auto.label().to_string(),
         AnalyzeControl::Source => source_text(view),
         AnalyzeControl::Arm => {
-            if state.meter.recording {
+            if state.meter.recording || view.record.as_ref().is_some_and(|r| r.recording) {
                 "Recording".to_string()
             } else if view.record.as_ref().is_some_and(|r| r.armed) {
                 "Armed".to_string()
@@ -863,6 +863,8 @@ use crate::layout::Rect;
 /// A Flopsynth cell, design size.
 const CELL_W: f32 = 56.0;
 const CELL_H: f32 = 72.0;
+/// The Pitch card's cells: room for "GLIDE OUT" over its knob.
+const PITCH_CELL_W: f32 = 62.0;
 const ROW_H: f32 = 26.0;
 const TAKE_ROW_H: f32 = 30.0;
 const TAKE_HEAD_W: f32 = 190.0;
@@ -884,7 +886,6 @@ pub(super) fn lay_out_cards(
     let sc = |v: f32| (v * s).round();
     let gap = sc(8.0);
     let body = l.body;
-    let cell = |x: f32, y: f32| Rect::new(x, y, sc(CELL_W), sc(CELL_H));
     let button = |text: &str| width_of(text) + sc(8.0);
     let row_h = sc(ROW_H);
     // Three cards: the first and the middle `w0`/`w1` wide, the last the
@@ -913,13 +914,21 @@ pub(super) fn lay_out_cards(
             .map_or(Rect::ZERO, |(_, c)| c.body)
     };
     // Knob cells across a card's body, from the left.
+    // A knob's cell: Flopsynth's, wider where its caption needs it.
+    let cell_w = |knob: AnalyzeKnob| sc(CELL_W).max(width_of(knob.caption()) - sc(14.0));
     let knobs = |l: &mut super::AnalyzeLayout, inner: Rect, list: &[AnalyzeKnob], x: &mut f32| {
         for knob in list {
-            let r = cell(*x, inner.y + ((inner.height - sc(CELL_H)) / 2.0).max(0.0));
+            let w = cell_w(*knob);
+            let r = Rect::new(
+                *x,
+                inner.y + ((inner.height - sc(CELL_H)) / 2.0).max(0.0),
+                w,
+                sc(CELL_H),
+            );
             if r.right() <= inner.right() + 0.5 {
                 l.controls.push((AnalyzeControl::Knob(*knob), r));
             }
-            *x += sc(CELL_W);
+            *x += w;
         }
     };
     match state.page {
@@ -938,7 +947,7 @@ pub(super) fn lay_out_cards(
                     + button(super::REVERT);
                 row1.max(row2) + gap * 2.0 + sc(20.0)
             };
-            let whole = sc(CELL_W) * AnalyzeKnob::PITCH.len() as f32 + sc(20.0);
+            let whole = sc(PITCH_CELL_W) * AnalyzeKnob::PITCH.len() as f32 + sc(20.0);
             let half = sc(CELL_W + 4.0) * 4.0 + sc(20.0);
             let room = body.width - gap * 2.0 - output_w;
             let mut note_w = (body.width * 0.2).clamp(sc(180.0), sc(250.0));
@@ -959,54 +968,70 @@ pub(super) fn lay_out_cards(
                     ));
                 }
             } else {
-                let mut x = inner.x;
-                knobs(l, inner, &AnalyzeKnob::PITCH, &mut x);
+                for (i, knob) in AnalyzeKnob::PITCH.iter().enumerate() {
+                    l.controls.push((
+                        AnalyzeControl::Knob(*knob),
+                        Rect::new(
+                            inner.x + i as f32 * sc(PITCH_CELL_W),
+                            inner.y + ((inner.height - sc(CELL_H)) / 2.0).max(0.0),
+                            sc(PITCH_CELL_W),
+                            sc(CELL_H),
+                        ),
+                    ));
+                }
             }
         }
         super::AnalyzePage::Clean => {
             let noise_w = (body.width * 0.24).clamp(sc(220.0), sc(290.0));
-            let switches = if view.voice_denoise { 5.0 } else { 4.0 };
-            three(
-                l,
-                [C::Noise, C::Denoise, C::Shape],
-                noise_w,
-                sc(CELL_W) * switches + sc(20.0),
-            );
-            // Noise: what was captured on the first line; Capture and
-            // Listen under it.
+            let denoise_w = sc(CELL_W + 20.0)
+                + [
+                    AnalyzeKnob::Reduce,
+                    AnalyzeKnob::Amount,
+                    AnalyzeKnob::Sensitivity,
+                ]
+                .iter()
+                .map(|k| cell_w(*k))
+                .sum::<f32>()
+                + sc(20.0);
+            three(l, [C::Noise, C::Denoise, C::Shape], noise_w, denoise_w);
+            // The Noise card: what was captured and the button on the
+            // first row, hearing what is taken out on the second.
             let inner = body_of(l, C::Noise);
-            l.info = Rect::new(inner.x, inner.y, inner.width, row_h);
-            let y = inner.y + row_h + sc(8.0);
-            let w = button(AnalyzeControl::CaptureNoise.label());
+            let w = button(AnalyzeControl::CaptureNoise.label()).min(inner.width);
             l.controls.push((
                 AnalyzeControl::CaptureNoise,
-                Rect::new(inner.x, y, w.min(inner.width), row_h),
+                Rect::new(inner.right() - w, inner.y + sc(2.0), w, row_h),
             ));
-            let sw = (inner.right() - (inner.x + w + gap)).max(0.0);
+            l.info = Rect::new(
+                inner.x,
+                inner.y + sc(2.0),
+                (inner.width - w - gap).max(0.0),
+                row_h,
+            );
             l.controls.push((
                 AnalyzeControl::ListenRemoved,
-                Rect::new(inner.x + w + gap, y, sw, row_h),
+                Rect::new(inner.x, inner.y + row_h + sc(14.0), inner.width, row_h),
             ));
             // Denoise: its switch over the knobs' column, then the knobs.
             let inner = body_of(l, C::Denoise);
             let mut x = inner.x;
-            let first = cell(x, inner.y + ((inner.height - sc(CELL_H)) / 2.0).max(0.0));
+            let first = Rect::new(
+                x,
+                inner.y + ((inner.height - sc(CELL_H)) / 2.0).max(0.0),
+                sc(CELL_W + 16.0),
+                sc(CELL_H),
+            );
             l.controls.push((
                 AnalyzeControl::DenoiseOn,
-                Rect::new(first.x, first.y + sc(14.0), first.width, row_h),
+                Rect::new(first.x, first.y + sc(10.0), first.width, row_h),
             ));
             if view.voice_denoise {
                 l.controls.push((
                     AnalyzeControl::VoiceDenoise,
-                    Rect::new(
-                        first.x,
-                        first.y + sc(14.0) + row_h + sc(4.0),
-                        first.width,
-                        row_h,
-                    ),
+                    Rect::new(first.x, first.y + sc(14.0) + row_h, first.width, row_h),
                 ));
             }
-            x += sc(CELL_W);
+            x += first.width + sc(4.0);
             knobs(
                 l,
                 inner,
@@ -1370,6 +1395,9 @@ pub(super) fn page_strings(
 ) {
     use super::AnalyzeText::{Caption, Heading, Value};
     out.push((STUDIES.to_string(), Value));
+    out.push((control_text(AnalyzeControl::Arm, view, state), Caption));
+    out.push(("SHAPE".to_string(), Caption));
+    out.push(("FIND".to_string(), Caption));
     for (card, _) in &layout.cards {
         out.push((card.label().to_string(), Heading));
     }
@@ -1401,7 +1429,7 @@ pub(super) fn page_strings(
             }
         }
         super::AnalyzePage::Record => {
-            out.push((record_text(view, state), Value));
+            out.push((record_text(view, state), Caption));
             for line in no_takes_lines(view) {
                 out.push((line, Value));
             }
