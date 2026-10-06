@@ -8,7 +8,9 @@
 use super::*;
 
 use crate::canvas::{
-    AnalyzeAction, AnalyzeEditChange, AnalyzeEditOp, AnalyzeHit, AnalyzeScaleRow, AnalyzeTool,
+    AnalyzeAction, AnalyzeControl, AnalyzeEditChange, AnalyzeEditOp, AnalyzeHit, AnalyzeKnob,
+    AnalyzeKnobChange, AnalyzeLaneChange, AnalyzeLaneEnd, AnalyzePage, AnalyzeScaleRow,
+    AnalyzeTakeOp, AnalyzeTool, AnalyzeTyping, AnalyzeTypingTarget,
 };
 
 impl WindowApp {
@@ -59,6 +61,29 @@ impl WindowApp {
     /// How the analysis is getting on, once a frame: the view follows it
     /// while it runs, and its end is said once.
     pub(super) fn poll_analysis(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        // A render off the window's thread: its progress on the job strip,
+        // and once, where it went.
+        match doc.poll_analysis_render() {
+            crate::document::JobPoll::Idle => {}
+            crate::document::JobPoll::Running(_) => self.refresh_analyze(),
+            crate::document::JobPoll::Finished(result) => {
+                self.after_render(result);
+                return;
+            }
+        }
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if self.analyze.is_some() && self.analyze_state.page == AnalyzePage::Record {
+            let meter = doc.analysis_meter();
+            if meter != self.analyze_state.meter {
+                self.analyze_state.meter = meter;
+                self.redraw_editor(EditorKind::Analyze);
+            }
+        }
         let Some(doc) = &mut self.options.document else {
             return;
         };
@@ -183,6 +208,21 @@ impl WindowApp {
                 None => {}
             }
         }
+        if self.analyze_state.dragging_knob().is_some() {
+            let precision = crate::canvas::Precision::from_modifiers(
+                self.modifiers.shift_key(),
+                self.modifiers.control_key(),
+            );
+            if let Some((knob, value)) = self.analyze_state.drag_knob(y, precision) {
+                self.set_analyze_knob(knob, value, true);
+            }
+        }
+        if self.analyze_state.dragging_lane() {
+            let layout = self.analyze_layout.clone();
+            if let Some(change) = self.analyze_state.drag_lane(&layout, &view, x) {
+                self.send_lane_change(change);
+            }
+        }
         let t = self.analyze_layout.lane.t_of(&self.analyze_state, x);
         if self.analyze_state.drag_ruler(t) {
             self.redraw_editor(EditorKind::Analyze);
@@ -215,6 +255,10 @@ impl WindowApp {
             Some(AnalyzeHit::Badge | AnalyzeHit::Ruler | AnalyzeHit::Later) => Pointer::Default,
             Some(AnalyzeHit::Lane) => Pointer::Default,
             Some(AnalyzeHit::NoteEnd(..)) => Pointer::ResizeX,
+            Some(AnalyzeHit::TrimEnd(_) | AnalyzeHit::FadeEnd(_) | AnalyzeHit::Marker(_)) => {
+                Pointer::ResizeX
+            }
+            Some(AnalyzeHit::Takes | AnalyzeHit::Keyboard) => Pointer::Default,
             Some(AnalyzeHit::Readout) => Pointer::Default,
             Some(_) => Pointer::Hand,
         }
@@ -233,14 +277,25 @@ impl WindowApp {
             return;
         };
         if button == MouseButton::Right {
-            // The key's menu from a right-click on it, as well as from ▾.
-            if matches!(
-                crate::canvas::analyze_hit(&self.analyze_layout, &view, &self.analyze_state, x, y),
-                Some(AnalyzeHit::ScaleName | AnalyzeHit::ScaleMenu | AnalyzeHit::ScaleCopy)
-            ) {
-                self.open_analyze_scale_menu();
+            match crate::canvas::analyze_hit(&self.analyze_layout, &view, &self.analyze_state, x, y)
+            {
+                // The key's menu from a right-click on it, as well as from ▾.
+                Some(AnalyzeHit::ScaleName | AnalyzeHit::ScaleMenu | AnalyzeHit::ScaleCopy) => {
+                    self.open_analyze_scale_menu();
+                }
+                // A knob's: back to its default, or type a value.
+                Some(AnalyzeHit::Control(AnalyzeControl::Knob(knob))) => {
+                    let bounds = self.analyze_bounds();
+                    self.open_menu(MenuTarget::AnalyzeKnob(knob), x, y, bounds);
+                }
+                _ => {}
             }
             return;
+        }
+        // A press anywhere but on what is being typed into ends the typing,
+        // keeping what was typed.
+        if self.analyze_state.typing.is_some() {
+            self.commit_analyze_typing();
         }
         let modifiers = crate::canvas::Modifiers {
             ctrl: self.modifiers.control_key(),
@@ -268,6 +323,14 @@ impl WindowApp {
             }
             AnalyzeAction::Page(page) => {
                 self.analyze_state.page = page;
+                let tools = AnalyzeTool::of(page);
+                if !tools.contains(&self.analyze_state.tool) {
+                    self.analyze_state.tool = match page {
+                        AnalyzePage::Notes => AnalyzeTool::Move,
+                        _ => AnalyzeTool::Select,
+                    };
+                }
+                self.refresh_slice_keys();
                 self.relayout_editors();
             }
             AnalyzeAction::ToggleSpectrogram => self.toggle_analyze_spectrogram(),
@@ -322,6 +385,37 @@ impl WindowApp {
                 };
                 self.after_render(said);
             }
+            AnalyzeAction::Studies => {
+                let chip = self.analyze_layout.studies;
+                let bounds = self.analyze_bounds();
+                self.open_menu(MenuTarget::AnalyzeStudies, chip.x, chip.bottom(), bounds);
+            }
+            AnalyzeAction::Control(control) => self.analyze_control(control),
+            AnalyzeAction::KnobGrab(knob) => {
+                // A double-click types a value (Flopsynth's knobs).
+                if self.double_click.press(x, y, std::time::Instant::now()) {
+                    self.analyze_state.end_knob_drag();
+                    self.begin_analyze_typing(AnalyzeTypingTarget::Knob(knob));
+                }
+            }
+            AnalyzeAction::KnobReset(knob) => {
+                self.set_analyze_knob(knob, knob.default_value(), false);
+            }
+            AnalyzeAction::AddMarker(t) => {
+                let (markers, id) = crate::canvas::with_marker_at(&view, t);
+                self.send_markers(markers, false);
+                self.analyze_state.grab_marker(id);
+            }
+            AnalyzeAction::LaneGrab => {}
+            AnalyzeAction::TakeLoad(id) => {
+                if self.double_click.press(x, y, std::time::Instant::now()) {
+                    self.begin_analyze_typing(AnalyzeTypingTarget::TakeName(id));
+                } else {
+                    self.analyze_take(AnalyzeTakeOp::Load(id));
+                }
+            }
+            AnalyzeAction::TakeStar(id) => self.analyze_take(AnalyzeTakeOp::Star(id)),
+            AnalyzeAction::TakeDiscard(id) => self.analyze_take(AnalyzeTakeOp::Discard(id)),
         }
         self.redraw_editor(EditorKind::Analyze);
     }
@@ -348,6 +442,30 @@ impl WindowApp {
         self.analyze_state.end_marquee();
         self.analyze_state.end_ruler();
         self.end_analyze_audition();
+        // A knob let go is one undo.
+        if self.analyze_state.end_knob_drag().is_some()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.end_gesture();
+            self.refresh_title();
+        }
+        match self.analyze_state.end_lane_drag() {
+            // The Noise tool captures as it lets go.
+            AnalyzeLaneEnd::Span(a, b)
+                if self.analyze_state.page == AnalyzePage::Clean
+                    && self.analyze_state.tool == AnalyzeTool::Noise =>
+            {
+                self.capture_analyze_noise(a, b);
+            }
+            AnalyzeLaneEnd::Changed => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.end_gesture();
+                }
+                self.refresh_slice_keys();
+                self.refresh_title();
+            }
+            _ => {}
+        }
         let dragged = self.analyze_state.dragged_note();
         if self.analyze_state.end_note_drag() {
             if let Some(doc) = &mut self.options.document {
@@ -552,10 +670,19 @@ impl WindowApp {
     pub(super) fn analyze_key(&mut self, event: &winit::event::KeyEvent) -> bool {
         use crate::canvas::Action;
         use winit::keyboard::{Key, NamedKey};
+        // A value or a name being typed has the keyboard.
+        if self.analyze_typing_key(event) {
+            return true;
+        }
         if event.logical_key == Key::Named(NamedKey::Escape)
             && !self.analyze_state.selected().is_empty()
         {
             self.analyze_state.clear_selection();
+            return true;
+        }
+        if event.logical_key == Key::Named(NamedKey::Escape) && self.analyze_state.span.is_some() {
+            self.analyze_state.span = None;
+            self.redraw_editor(EditorKind::Analyze);
             return true;
         }
         // The arrows, the fixed family the keymap leaves alone: the selected
@@ -599,8 +726,45 @@ impl WindowApp {
             Action::AnalyzeFlatten => self.analyze_edit(AnalyzeEditOp::Flatten),
             Action::AnalyzeVibrato => self.analyze_edit(AnalyzeEditOp::Vibrato),
             // Delete in an editor window is "take away the selected thing":
-            // here, the selected notes' edits.
+            // the marker in hand on the Slice page, else the selected notes'
+            // edits.
+            Action::RemoveBand if self.analyze_state.page == AnalyzePage::Slice => {
+                let Some(view) = self.analyze.clone() else {
+                    return true;
+                };
+                match self.analyze_state.without_selected_marker(&view) {
+                    Some(markers) => self.send_markers(markers, false),
+                    None => self.analyze_says("Click a marker first, then Del".to_string()),
+                }
+            }
             Action::RemoveBand => self.analyze_edit(AnalyzeEditOp::Reset),
+            Action::AnalyzeZoomSelection | Action::AnalyzeZoomAll => {
+                let all = action == Action::AnalyzeZoomAll;
+                let Some(view) = self.analyze.clone() else {
+                    return true;
+                };
+                let layout = self.analyze_layout.clone();
+                if crate::canvas::zoom_to(&mut self.analyze_state, &view, &layout, all) {
+                    self.analyze_fitted = true;
+                    self.redraw_editor(EditorKind::Analyze);
+                } else {
+                    self.analyze_says(
+                        "Select notes, or drag out a stretch, then Z (Shift+Z shows it all)"
+                            .to_string(),
+                    );
+                }
+            }
+            Action::AnalyzeNoiseTool => {
+                self.analyze_state.page = AnalyzePage::Clean;
+                self.analyze_state.tool = AnalyzeTool::Noise;
+                self.relayout_editors();
+            }
+            Action::AnalyzeMarkerTool => {
+                self.analyze_state.page = AnalyzePage::Slice;
+                self.analyze_state.tool = AnalyzeTool::Marker;
+                self.refresh_slice_keys();
+                self.relayout_editors();
+            }
             Action::AnalyzeSelectTool => self.analyze_state.tool = AnalyzeTool::Select,
             Action::AnalyzeMoveTool => self.analyze_state.tool = AnalyzeTool::Move,
             _ => return false,
@@ -771,6 +935,586 @@ impl WindowApp {
                 .request_inner_size(winit::dpi::LogicalSize::new(w, h));
         }
         self.relayout_editors();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+}
+
+// ------------------------------------------- the pages, through the host ---
+
+impl WindowApp {
+    /// A knob set to `value`: the notes, the clean, the slice preview or the
+    /// recorder, as the knob is about.
+    fn set_analyze_knob(&mut self, knob: AnalyzeKnob, value: f32, merge: bool) {
+        let Some(view) = self.analyze.clone() else {
+            return;
+        };
+        match crate::canvas::analyze_knob_change(knob, value, &view, &mut self.analyze_state) {
+            AnalyzeKnobChange::Edits(changes) => self.send_analysis_edits(&changes, merge),
+            AnalyzeKnobChange::Clean(clean) => self.send_clean(clean, merge),
+            AnalyzeKnobChange::State => {
+                self.refresh_slice_keys();
+                self.relayout_editors();
+            }
+            AnalyzeKnobChange::Record(op) => {
+                let said = match &mut self.options.document {
+                    Some(doc) => doc.analysis_record(op),
+                    None => return,
+                };
+                if let Err(said) = said {
+                    self.analyze_says(said);
+                }
+                self.refresh_analyze();
+            }
+            AnalyzeKnobChange::Nothing(said) => self.analyze_says(said),
+        }
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn send_clean(&mut self, clean: fontelle_types::StudyClean, merge: bool) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if let Err(said) = doc.set_analysis_clean(clean, merge) {
+            self.analyze_says(said);
+            return;
+        }
+        if !merge {
+            doc.end_gesture();
+            self.refresh_title();
+        }
+        self.refresh_analyze();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn send_markers(&mut self, markers: Vec<fontelle_types::StudyMarker>, merge: bool) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if let Err(said) = doc.set_analysis_markers(markers, merge) {
+            self.analyze_says(said);
+            return;
+        }
+        if !merge {
+            doc.end_gesture();
+            self.refresh_title();
+        }
+        self.refresh_analyze();
+        self.refresh_slice_keys();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn send_lane_change(&mut self, change: AnalyzeLaneChange) {
+        match change {
+            AnalyzeLaneChange::Span => self.redraw_editor(EditorKind::Analyze),
+            AnalyzeLaneChange::Clean(clean) => self.send_clean(clean, true),
+            AnalyzeLaneChange::Markers(markers) => self.send_markers(markers, true),
+            AnalyzeLaneChange::Comp(comp) => {
+                if let Some(doc) = &mut self.options.document
+                    && let Err(said) = doc.set_analysis_comp(comp, true)
+                {
+                    self.analyze_says(said);
+                }
+                self.refresh_analyze();
+                self.redraw_editor(EditorKind::Analyze);
+            }
+        }
+    }
+
+    /// The Slice page's keyboard preview, asked of the host when the cuts or
+    /// the layout change.
+    pub(super) fn refresh_slice_keys(&mut self) {
+        if self.analyze_state.page != AnalyzePage::Slice {
+            return;
+        }
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        let cuts = crate::canvas::analyze_cuts(view, &self.analyze_state);
+        let layout = self.analyze_state.layout;
+        if let Some(doc) = &mut self.options.document {
+            self.analyze_state.slice_keys = doc.analysis_slice_keys(&cuts, layout);
+        }
+    }
+
+    fn capture_analyze_noise(&mut self, a: f64, b: f64) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.capture_analysis_noise(a, b),
+            None => return,
+        };
+        match said {
+            Ok(said) => {
+                self.analyze_state.noise_span = Some((a, b));
+                self.analyze_state.span = None;
+                self.status = said.clone();
+                self.show_toast(said, true);
+                self.tree.invalidate(TRANSPORT);
+            }
+            Err(said) => self.analyze_says(said),
+        }
+        self.refresh_analyze();
+        self.refresh_title();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn analyze_take(&mut self, op: AnalyzeTakeOp) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.analysis_take(op),
+            None => return,
+        };
+        match said {
+            Ok(said) if !said.is_empty() => {
+                self.status = said.clone();
+                self.show_toast(said, true);
+                self.tree.invalidate(TRANSPORT);
+            }
+            Ok(_) => {}
+            Err(said) => self.analyze_says(said),
+        }
+        self.analyze_fitted = false;
+        self.refresh_analyze();
+        self.refresh_studio();
+        self.refresh_title();
+        self.relayout_editors();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// What a card's control does.
+    fn analyze_control(&mut self, control: AnalyzeControl) {
+        let Some(view) = self.analyze.clone() else {
+            return;
+        };
+        let playhead = self.view.position_sample;
+        let anchor = self.analyze_layout.control(control).unwrap_or_default();
+        let bounds = self.analyze_bounds();
+        let mut clean = view.clean.clone();
+        let said: Option<Result<String, String>> = match control {
+            AnalyzeControl::Knob(_) => None,
+            AnalyzeControl::CaptureNoise => {
+                if let Some((a, b)) = self.analyze_state.span {
+                    self.capture_analyze_noise(a, b);
+                }
+                None
+            }
+            AnalyzeControl::ListenRemoved => {
+                self.analyze_state.listen_removed = !self.analyze_state.listen_removed;
+                let on = self.analyze_state.listen_removed;
+                if let Some(doc) = &mut self.options.document {
+                    doc.analysis_listen_removed(on);
+                }
+                Some(Ok(if on {
+                    "Hearing only what the denoiser removes".to_string()
+                } else {
+                    "Hearing the cleaned audio".to_string()
+                }))
+            }
+            AnalyzeControl::DenoiseOn => {
+                clean.denoise.on = !clean.denoise.on;
+                self.send_clean(clean, false);
+                None
+            }
+            AnalyzeControl::VoiceDenoise => {
+                clean.denoise.voice = !clean.denoise.voice;
+                if clean.denoise.voice {
+                    clean.denoise.on = true;
+                }
+                self.send_clean(clean, false);
+                None
+            }
+            AnalyzeControl::TrimToSelection => {
+                if let Some((a, b)) = self.analyze_state.span {
+                    clean.trim = Some((view.frame_of(a), view.frame_of(b)));
+                    self.analyze_state.span = None;
+                    self.send_clean(clean, false);
+                }
+                None
+            }
+            AnalyzeControl::ResetClean => {
+                let noise = clean.denoise.noise.take();
+                let mut fresh = fontelle_types::StudyClean::default();
+                fresh.denoise.noise = noise;
+                self.send_clean(fresh, false);
+                Some(Ok("Clean reset: the audio as recorded".to_string()))
+            }
+            AnalyzeControl::FadeShape => {
+                self.open_menu(
+                    MenuTarget::AnalyzeFadeShape,
+                    anchor.x,
+                    anchor.bottom(),
+                    bounds,
+                );
+                None
+            }
+            AnalyzeControl::AutoSlice => {
+                self.open_menu(
+                    MenuTarget::AnalyzeAutoSlice,
+                    anchor.x,
+                    anchor.bottom(),
+                    bounds,
+                );
+                None
+            }
+            AnalyzeControl::Source => {
+                self.open_menu(MenuTarget::AnalyzeSource, anchor.x, anchor.bottom(), bounds);
+                None
+            }
+            AnalyzeControl::UseAsMarkers => {
+                let cuts = crate::canvas::analyze_cuts(&view, &self.analyze_state);
+                let markers = crate::canvas::markers_from_cuts(&view, &cuts);
+                let n = markers.len();
+                self.analyze_state.auto = crate::canvas::AutoSlice::Off;
+                self.send_markers(markers, false);
+                self.relayout_editors();
+                Some(Ok(format!(
+                    "{n} markers \u{2014} drag one to move it, Del removes it"
+                )))
+            }
+            AnalyzeControl::ClearMarkers => {
+                self.send_markers(Vec::new(), false);
+                None
+            }
+            AnalyzeControl::Layout(layout) => {
+                self.analyze_state.layout = layout;
+                self.refresh_slice_keys();
+                None
+            }
+            AnalyzeControl::Replay => {
+                self.analyze_state.replay = !self.analyze_state.replay;
+                None
+            }
+            AnalyzeControl::SendToSampler => {
+                let cuts = crate::canvas::analyze_cuts(&view, &self.analyze_state);
+                let (layout, replay) = (self.analyze_state.layout, self.analyze_state.replay);
+                self.options
+                    .document
+                    .as_mut()
+                    .map(|doc| doc.send_analysis_to_sampler(&cuts, layout, replay, playhead))
+            }
+            AnalyzeControl::PostFader => {
+                let on = view.record.as_ref().is_some_and(|r| r.post_fader);
+                self.analyze_record(crate::canvas::AnalyzeRecordOp::PostFader(!on))
+            }
+            AnalyzeControl::Arm => {
+                let armed = view.record.as_ref().is_some_and(|r| r.armed);
+                self.analyze_record(crate::canvas::AnalyzeRecordOp::Arm(!armed))
+            }
+            AnalyzeControl::ArmMode(mode) => {
+                let said = self.analyze_record(crate::canvas::AnalyzeRecordOp::Mode(mode));
+                self.relayout_editors();
+                said
+            }
+            AnalyzeControl::SendToArrangement => self
+                .options
+                .document
+                .as_mut()
+                .map(|doc| doc.send_analysis_to_arrangement(playhead)),
+            AnalyzeControl::UseComp => {
+                self.analyze_take(AnalyzeTakeOp::UseComp);
+                None
+            }
+            AnalyzeControl::ClearComp => self
+                .options
+                .document
+                .as_mut()
+                .map(|doc| doc.set_analysis_comp(Vec::new(), false)),
+        };
+        match said {
+            Some(Ok(said)) if !said.is_empty() => {
+                self.status = said.clone();
+                self.show_toast(said, false);
+                self.tree.invalidate(TRANSPORT);
+            }
+            Some(Err(said)) => self.analyze_says(said),
+            _ => {}
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.refresh_analyze();
+        self.refresh_title();
+        self.relayout_editors();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn analyze_record(
+        &mut self,
+        op: crate::canvas::AnalyzeRecordOp,
+    ) -> Option<Result<String, String>> {
+        let said = self
+            .options
+            .document
+            .as_mut()
+            .map(|doc| doc.analysis_record(op));
+        self.refresh_analyze();
+        said
+    }
+
+    // ------------------------------------------------------- typing ---
+
+    fn begin_analyze_typing(&mut self, target: AnalyzeTypingTarget) {
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        let text = match target {
+            AnalyzeTypingTarget::Knob(knob) => {
+                match crate::canvas::analyze_knob_value(knob, view, &self.analyze_state) {
+                    Some(value) => knob.display(value),
+                    None => return,
+                }
+            }
+            AnalyzeTypingTarget::TakeName(id) => match view.takes.iter().find(|t| t.id == id) {
+                Some(take) => take.name.clone(),
+                None => return,
+            },
+        };
+        self.analyze_state.typing = Some(AnalyzeTyping { target, text });
+        self.status = "Type, then Enter (Esc leaves it as it was)".to_string();
+        self.tree.invalidate(TRANSPORT);
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    fn commit_analyze_typing(&mut self) {
+        let Some(typing) = self.analyze_state.typing.take() else {
+            return;
+        };
+        match typing.target {
+            AnalyzeTypingTarget::Knob(knob) => match knob.parse(&typing.text) {
+                Some(value) => self.set_analyze_knob(knob, value, false),
+                None => self.analyze_says(format!(
+                    "\u{201c}{}\u{201d} is not a value for {}",
+                    typing.text,
+                    knob.caption().to_lowercase()
+                )),
+            },
+            AnalyzeTypingTarget::TakeName(id) => {
+                self.analyze_take(AnalyzeTakeOp::Rename(id, typing.text));
+            }
+        }
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// Keys while something is typed into: they are the field's.
+    fn analyze_typing_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        let Some(typing) = &mut self.analyze_state.typing else {
+            return false;
+        };
+        match &event.logical_key {
+            Key::Named(NamedKey::Enter) => self.commit_analyze_typing(),
+            Key::Named(NamedKey::Escape) => self.analyze_state.typing = None,
+            Key::Named(NamedKey::Backspace) => {
+                typing.text.pop();
+            }
+            _ => {
+                if let Some(text) = &event.text {
+                    typing.text.extend(text.chars().filter(|c| !c.is_control()));
+                }
+            }
+        }
+        self.redraw_editor(EditorKind::Analyze);
+        true
+    }
+
+    // ------------------------------------------------------- menus ---
+
+    pub(super) fn analyze_studies_menu(&self) -> Vec<crate::canvas::MenuEntry> {
+        let mut entries = vec![crate::canvas::MenuEntry::disabled("Studies in this song")];
+        let rows = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.analysis_studies())
+            .unwrap_or_default();
+        if rows.is_empty() {
+            entries.push(crate::canvas::MenuEntry::disabled("  none yet"));
+        }
+        for row in &rows {
+            entries.push(crate::canvas::MenuEntry::new(format!(
+                "{} {} \u{2014} {}",
+                if row.open { "\u{2713}" } else { "  " },
+                row.name,
+                row.place
+            )));
+        }
+        entries.push(
+            crate::canvas::MenuEntry::new("Record into Analyze Musically\u{2026}").after_rule(),
+        );
+        entries
+    }
+
+    pub(super) fn choose_analyze_studies(&mut self, index: usize) {
+        let rows = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.analysis_studies())
+            .unwrap_or_default();
+        let first = if rows.is_empty() { 2 } else { 1 };
+        match index.checked_sub(first) {
+            Some(i) if i < rows.len() => self.open_study(rows[i].id),
+            Some(i) if i == rows.len() => self.record_into_analysis(),
+            _ => {}
+        }
+    }
+
+    /// Opens the window on a study, from the menu or the browser.
+    pub(super) fn open_study(&mut self, id: fontelle_types::StudyId) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.open_study_analysis(id),
+            None => return,
+        };
+        self.opened_analyze(said);
+    }
+
+    /// *Record into Analyze Musically…*.
+    pub(super) fn record_into_analysis(&mut self) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.record_into_analysis(),
+            None => return,
+        };
+        let ok = said.is_ok();
+        self.opened_analyze(said);
+        if ok {
+            self.analyze_state.page = AnalyzePage::Record;
+            self.relayout_editors();
+        }
+    }
+
+    /// The Analyze Musically insert's slot: this window, on its study, at
+    /// the Record page (Ty, plan §6.1).
+    pub(super) fn open_analyze_insert(&mut self, strip: usize, slot: usize) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.open_insert_analysis(strip, slot),
+            None => return,
+        };
+        let ok = said.is_ok();
+        let empty = self.analyze.is_none();
+        self.opened_analyze(said);
+        if ok && (empty || self.analyze.as_ref().is_some_and(|v| !v.has_audio)) {
+            self.analyze_state.page = AnalyzePage::Record;
+            self.relayout_editors();
+        }
+    }
+
+    /// After the host opened (or refused) a study: the window on it.
+    fn opened_analyze(&mut self, said: Result<String, String>) {
+        match said {
+            Ok(said) => {
+                self.status = said;
+                self.analyze_state = self.analyze_state.for_another_clip();
+                self.analyze_fitted = false;
+                self.analyze_revision = u64::MAX;
+                self.refresh_analyze();
+                self.open_editor(EditorKind::Analyze);
+                self.refresh_editors();
+            }
+            Err(said) => {
+                self.status = said.clone();
+                self.show_toast(said, false);
+            }
+        }
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    pub(super) fn analyze_choice_menu(&self, target: &MenuTarget) -> Vec<crate::canvas::MenuEntry> {
+        let tick = |on: bool, word: &str| {
+            crate::canvas::MenuEntry::new(format!("{} {word}", if on { "\u{2713}" } else { "  " }))
+        };
+        let Some(view) = &self.analyze else {
+            return Vec::new();
+        };
+        match target {
+            MenuTarget::AnalyzeFadeShape => fontelle_types::StudyFadeShape::ALL
+                .iter()
+                .map(|shape| tick(view.clean.fade_shape == *shape, shape.label()))
+                .collect(),
+            MenuTarget::AnalyzeAutoSlice => crate::canvas::AutoSlice::CHOICES
+                .iter()
+                .enumerate()
+                .map(|(i, word)| tick(self.analyze_state.auto.index() == i, word))
+                .collect(),
+            MenuTarget::AnalyzeSource => {
+                let mut entries = Vec::new();
+                let record = view.record.clone().unwrap_or_default();
+                if let crate::canvas::AnalyzeSource::Insert { track } = &view.source {
+                    entries.push(tick(
+                        record.input.is_none(),
+                        &format!("This track ({track})"),
+                    ));
+                }
+                for input in &record.inputs {
+                    entries.push(tick(record.input.as_deref() == Some(input), input));
+                }
+                if entries.is_empty() {
+                    entries.push(crate::canvas::MenuEntry::disabled("No input devices"));
+                }
+                entries
+            }
+            MenuTarget::AnalyzeKnob(knob) => vec![
+                crate::canvas::MenuEntry::disabled(knob.caption()),
+                crate::canvas::MenuEntry::new(format!(
+                    "Back to {}",
+                    knob.display(knob.default_value())
+                )),
+                crate::canvas::MenuEntry::new("Type a value\u{2026}"),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    pub(super) fn choose_analyze_choice(&mut self, target: MenuTarget, index: usize) {
+        let Some(view) = self.analyze.clone() else {
+            return;
+        };
+        match target {
+            MenuTarget::AnalyzeFadeShape => {
+                if let Some(shape) = fontelle_types::StudyFadeShape::ALL.get(index) {
+                    let mut clean = view.clean.clone();
+                    clean.fade_shape = *shape;
+                    self.send_clean(clean, false);
+                }
+            }
+            MenuTarget::AnalyzeAutoSlice => {
+                use crate::canvas::AutoSlice;
+                self.analyze_state.auto = match index {
+                    1 => AutoSlice::Transients { sensitivity: 0.5 },
+                    2 => AutoSlice::Notes,
+                    3 => AutoSlice::Beats,
+                    4 => AutoSlice::Equal { pieces: 8 },
+                    _ => AutoSlice::Off,
+                };
+                self.refresh_slice_keys();
+                self.relayout_editors();
+            }
+            MenuTarget::AnalyzeSource => {
+                let insert = matches!(view.source, crate::canvas::AnalyzeSource::Insert { .. });
+                let inputs = view.record.map(|r| r.inputs).unwrap_or_default();
+                let choice = if insert {
+                    match index {
+                        0 => Some(None),
+                        i => inputs.get(i - 1).cloned().map(Some),
+                    }
+                } else {
+                    inputs.get(index).cloned().map(Some)
+                };
+                if let Some(input) = choice {
+                    match self.analyze_record(crate::canvas::AnalyzeRecordOp::Source(input)) {
+                        Some(Ok(said)) => {
+                            self.status = said;
+                            self.tree.invalidate(TRANSPORT);
+                        }
+                        Some(Err(said)) => self.analyze_says(said),
+                        None => {}
+                    }
+                    self.relayout_editors();
+                }
+            }
+            MenuTarget::AnalyzeKnob(knob) => match index {
+                1 => self.set_analyze_knob(knob, knob.default_value(), false),
+                2 => self.begin_analyze_typing(AnalyzeTypingTarget::Knob(knob)),
+                _ => {}
+            },
+            _ => {}
+        }
         self.redraw_editor(EditorKind::Analyze);
     }
 }

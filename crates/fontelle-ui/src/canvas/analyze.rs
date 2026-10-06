@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use fontelle_types::KeyScale;
 
-pub use super::analyze_pages::*;
+use super::analyze_pages::*;
 use super::piano_roll::Modifiers;
 use super::roll_scale::{RollScale, RowShade, row_shade};
 use crate::layout::Rect;
@@ -98,6 +98,10 @@ pub struct AnalyzeEdit {
     /// How long the move takes to arrive and to leave (its ends dragged).
     pub glide_in_ms: f32,
     pub glide_out_ms: f32,
+    /// The formants' shift, in cents (the Pitch card's FORMANT).
+    pub formant_cents: f32,
+    /// The note louder or quieter (the Pitch card's GAIN).
+    pub gain_db: f32,
 }
 
 impl Default for AnalyzeEdit {
@@ -108,6 +112,8 @@ impl Default for AnalyzeEdit {
             vibrato: 1.0,
             glide_in_ms: fontelle_types::DEFAULT_GLIDE_MS,
             glide_out_ms: fontelle_types::DEFAULT_GLIDE_MS,
+            formant_cents: 0.0,
+            gain_db: 0.0,
         }
     }
 }
@@ -118,6 +124,8 @@ impl AnalyzeEdit {
         self.shift_cents.abs() < 0.05
             && self.flatten.abs() < 1e-3
             && (self.vibrato - 1.0).abs() < 1e-3
+            && self.formant_cents.abs() < 0.05
+            && self.gain_db.abs() < 1e-3
     }
 }
 
@@ -264,6 +272,8 @@ pub struct AnalyzeView {
     /// There is audio in the lane (a record study before its first take has
     /// none).
     pub has_audio: bool,
+    /// Each take's waveform, `peaks_per_second` a second, with `takes`.
+    pub take_peaks: Vec<Arc<[(f32, f32)]>>,
 }
 
 impl AnalyzeView {
@@ -321,7 +331,7 @@ impl AnalyzePage {
             Self::Slice => {
                 "Markers, slicing at transients or notes, and sending slices to a sampler"
             }
-            Self::Record => "Recording takes straight into this window, and comping them",
+            Self::Record => "Recording takes into this window, comping them, sending them on",
         }
     }
 }
@@ -367,6 +377,70 @@ pub struct AnalyzeState {
     /// A marquee in progress: where it started, where it is, and what was
     /// selected before it (Shift adds to that).
     marquee: Option<Marquee>,
+    /// A stretch of time chosen on the Clean or Slice page's lane (the
+    /// Select or Noise tool), in seconds.
+    pub span: Option<(f64, f64)>,
+    /// Where the noise was last captured from, to show it.
+    pub noise_span: Option<(f64, f64)>,
+    /// The Slice page's choices: how to find the cuts, how the slices land,
+    /// and the replay clip.
+    pub auto: AutoSlice,
+    pub layout: AnalyzeSliceLayout,
+    pub replay: bool,
+    /// "Listen to what's removed".
+    pub listen_removed: bool,
+    /// Where the slices land, from the host, for the keyboard preview.
+    pub slice_keys: Vec<AnalyzeSliceKey>,
+    /// The marker in hand (Del removes it).
+    pub selected_marker: Option<u32>,
+    /// The Record page's meter, read once a frame.
+    pub meter: AnalyzeMeter,
+    /// A knob being dragged: which, its value and the pointer's y when the
+    /// drag began.
+    knob_drag: Option<(AnalyzeKnob, f32, f32)>,
+    /// A drag on a page's lane: a span, a trim end, a fade, a marker, a
+    /// comp span.
+    lane_drag: Option<LaneDrag>,
+    /// Something being typed: a knob's value, a take's name.
+    pub typing: Option<AnalyzeTyping>,
+}
+
+/// The Record page's meter (the host's, read once a frame).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AnalyzeMeter {
+    /// Peak, linear.
+    pub level: f32,
+    pub recording: bool,
+    pub take_seconds: f64,
+    pub dropped_frames: u64,
+}
+
+/// What is being typed, and where it goes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnalyzeTyping {
+    pub target: AnalyzeTypingTarget,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyzeTypingTarget {
+    Knob(AnalyzeKnob),
+    TakeName(u32),
+}
+
+/// A drag on a page's lane.
+#[derive(Debug, Clone, PartialEq)]
+enum LaneDrag {
+    /// A span being dragged out, from here (seconds).
+    Span(f64),
+    /// A trim end, `true` the start.
+    Trim(bool),
+    /// A fade's length, `true` the fade in.
+    Fade(bool),
+    /// A marker being moved, and whether it has.
+    Marker { id: u32, moved: bool },
+    /// A comp span chosen on a take, from here.
+    Comp { take: u32, from: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -402,6 +476,18 @@ impl Default for AnalyzeState {
             ruler_from: None,
             selection: BTreeSet::new(),
             marquee: None,
+            span: None,
+            noise_span: None,
+            auto: AutoSlice::Off,
+            layout: AnalyzeSliceLayout::Chop,
+            replay: true,
+            listen_removed: false,
+            slice_keys: Vec::new(),
+            selected_marker: None,
+            meter: AnalyzeMeter::default(),
+            knob_drag: None,
+            lane_drag: None,
+            typing: None,
         }
     }
 }
@@ -413,15 +499,31 @@ pub enum AnalyzeTool {
     Select,
     #[default]
     Move,
+    /// Clean: drag over a span of noise alone to capture it.
+    Noise,
+    /// Slice: click adds a marker, drag moves one, Del removes it.
+    Marker,
 }
 
 impl AnalyzeTool {
-    pub const ALL: [Self; 2] = [Self::Select, Self::Move];
+    pub const ALL: [Self; 4] = [Self::Select, Self::Move, Self::Noise, Self::Marker];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Select => "Select",
             Self::Move => "Move",
+            Self::Noise => "Noise",
+            Self::Marker => "Marker",
+        }
+    }
+
+    /// The tools a page has on its glass.
+    pub fn of(page: AnalyzePage) -> &'static [Self] {
+        match page {
+            AnalyzePage::Notes => &[Self::Select, Self::Move],
+            AnalyzePage::Clean => &[Self::Select, Self::Noise],
+            AnalyzePage::Slice => &[Self::Select, Self::Marker],
+            AnalyzePage::Record => &[],
         }
     }
 }
@@ -494,6 +596,8 @@ impl AnalyzeState {
             show_scale: self.show_scale,
             keep_bends: self.keep_bends,
             tool: self.tool,
+            layout: self.layout,
+            replay: self.replay,
             ..Self::default()
         }
     }
@@ -1052,28 +1156,62 @@ const CANOPY_INSET: f32 = 14.0;
 const KEYS_W: f32 = 44.0;
 const CHORDS_H: f32 = 22.0;
 const RULER_H: f32 = 18.0;
-const CARDS_H: f32 = 100.0;
-const NOTE_CARD_W: f32 = 300.0;
+const CARDS_H: f32 = 112.0;
 const JOB_H: f32 = 22.0;
 const CHIP_PAD: f32 = 10.0;
 const ICON_W: f32 = 24.0;
 const LAMP_W: f32 = 20.0;
 const BUTTON_H: f32 = 26.0;
 
-/// The two consoles under the canopy.
+/// The consoles under the canopy: three a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnalyzeCard {
     Note,
+    Pitch,
     Output,
+    Noise,
+    Denoise,
+    Shape,
+    Points,
+    Layout,
+    Send,
+    Source,
+    Record,
+    Takes,
 }
 
 impl AnalyzeCard {
     pub fn label(self) -> &'static str {
         match self {
             Self::Note => "Note",
+            Self::Pitch => "Pitch",
             Self::Output => "Output",
+            Self::Noise => "Noise",
+            Self::Denoise => "Denoise",
+            Self::Shape => "Trim & fades",
+            Self::Points => "Slice points",
+            Self::Layout => "Layout",
+            Self::Send => "Send",
+            Self::Source => "Source",
+            Self::Record => "Record",
+            Self::Takes => "Takes",
         }
     }
+
+    pub const ALL: [Self; 12] = [
+        Self::Note,
+        Self::Pitch,
+        Self::Output,
+        Self::Noise,
+        Self::Denoise,
+        Self::Shape,
+        Self::Points,
+        Self::Layout,
+        Self::Send,
+        Self::Source,
+        Self::Record,
+        Self::Takes,
+    ];
 }
 
 /// A console: its frame and its nameplate.
@@ -1131,6 +1269,23 @@ pub struct AnalyzeLayout {
     pub job: Rect,
     /// The popover under the scale chip, while it is hovered.
     pub popover: Rect,
+    /// Every card the page has, in order (the Notes page's Note and Output
+    /// are also `note_card` and `output_card`).
+    pub cards: Vec<(AnalyzeCard, AnalyzeCardLayout)>,
+    /// The page's controls on its cards.
+    pub controls: Vec<(AnalyzeControl, Rect)>,
+    /// A card's line of words: the noise captured, the slices found, the
+    /// take's time and anything lost.
+    pub info: Rect,
+    /// The Slice page's keyboard preview.
+    pub keyboard: Rect,
+    /// The Record page's level meter.
+    pub meter: Rect,
+    /// The Record page's takes, and where they are listed.
+    pub takes: Vec<AnalyzeTakeRow>,
+    pub takes_area: Rect,
+    /// The header's list of every study in the song.
+    pub studies: Rect,
 }
 
 /// What a string is drawn as — the bridge's three styles.
@@ -1194,12 +1349,17 @@ pub fn analyze_layout(
     let mode_w = width_of("Melody").max(width_of("Chords"));
     l.mode_chords = Rect::new(l.header.right() - mode_w, chip_y, mode_w, chip_h);
     l.mode_melody = Rect::new(l.mode_chords.x - mode_w, chip_y, mode_w, chip_h);
+    let studies_w = width_of(STUDIES) + sc(ICON_W, s);
+    let studies_x = l.mode_melody.x - gap - studies_w;
+    if studies_x >= x {
+        l.studies = Rect::new(studies_x, chip_y, studies_w, chip_h);
+    }
 
     // Bottom up: the consoles, the job strip over them while analysing, and
     // the canopy takes what is left.
     let cards_h = sc(CARDS_H, s);
     let cards_y = body.bottom() - cards_h;
-    let job_h = if view.analysing.is_some() {
+    let job_h = if view.analysing.is_some() || view.rendering.is_some() {
         sc(JOB_H, s)
     } else {
         0.0
@@ -1238,13 +1398,15 @@ pub fn analyze_layout(
     };
     l.window_scale = toggle(&window_scale_label(s), &mut rx);
     rx -= sc(8.0, s);
-    l.scale_toggle = toggle(SCALE_TOGGLE, &mut rx);
-    l.chords_toggle = toggle(CHORDS_TOGGLE, &mut rx);
-    l.wave_toggle = toggle(wave_toggle_text(state), &mut rx);
+    if state.page == AnalyzePage::Notes {
+        l.scale_toggle = toggle(SCALE_TOGGLE, &mut rx);
+        l.chords_toggle = toggle(CHORDS_TOGGLE, &mut rx);
+        l.wave_toggle = toggle(wave_toggle_text(state), &mut rx);
+    }
 
     // The tools and the transport, after the tabs.
     let mut gx = tx + sc(12.0, s);
-    for tool in AnalyzeTool::ALL {
+    for tool in AnalyzeTool::of(state.page).iter().copied() {
         let w = width_of(tool.label());
         l.tools.push((tool, Rect::new(gx, toggle_y, w, toggle_h)));
         gx += w + sc(4.0, s);
@@ -1267,42 +1429,80 @@ pub fn analyze_layout(
         l.canopy.width - inset * 2.0,
         (l.canopy.bottom() - inset - (tab_y + tab_h + sc(8.0, s))).max(0.0),
     );
-    if state.page == AnalyzePage::Notes {
-        let chords_h = if state.chords { sc(CHORDS_H, s) } else { 0.0 };
-        let keys_w = sc(KEYS_W, s);
-        let ruler_h = sc(RULER_H, s);
-        let pad = sc(4.0, s);
-        let inner = screen.inset(pad);
-        let grid = Rect::new(
-            inner.x + keys_w,
-            inner.y + chords_h,
-            (inner.width - keys_w).max(0.0),
-            (inner.height - chords_h - ruler_h).max(0.0),
-        );
-        l.lane = AnalyzeLane {
-            screen,
-            chords: if chords_h > 0.0 {
-                Rect::new(grid.x, inner.y, grid.width, chords_h)
+    let pad = sc(4.0, s);
+    let ruler_h = sc(RULER_H, s);
+    match state.page {
+        AnalyzePage::Notes => {
+            let chords_h = if state.chords { sc(CHORDS_H, s) } else { 0.0 };
+            let keys_w = sc(KEYS_W, s);
+            let inner = screen.inset(pad);
+            let grid = Rect::new(
+                inner.x + keys_w,
+                inner.y + chords_h,
+                (inner.width - keys_w).max(0.0),
+                (inner.height - chords_h - ruler_h).max(0.0),
+            );
+            l.lane = AnalyzeLane {
+                screen,
+                chords: if chords_h > 0.0 {
+                    Rect::new(grid.x, inner.y, grid.width, chords_h)
+                } else {
+                    Rect::ZERO
+                },
+                keys: Rect::new(inner.x, grid.y, keys_w, grid.height),
+                grid,
+                ruler: Rect::new(grid.x, grid.bottom(), grid.width, ruler_h),
+            };
+        }
+        AnalyzePage::Clean | AnalyzePage::Slice => {
+            // The waveform, the whole screen wide: no keys, no chords.
+            let inner = screen.inset(pad);
+            let grid = Rect::new(
+                inner.x,
+                inner.y,
+                inner.width,
+                (inner.height - ruler_h).max(0.0),
+            );
+            l.lane = AnalyzeLane {
+                screen,
+                chords: Rect::ZERO,
+                keys: Rect::ZERO,
+                grid,
+                ruler: Rect::new(grid.x, grid.bottom(), grid.width, ruler_h),
+            };
+        }
+        AnalyzePage::Record => {
+            let inner = screen.inset(pad);
+            if view.takes.is_empty() {
+                l.lane = AnalyzeLane {
+                    screen,
+                    ..Default::default()
+                };
+                l.takes_area = inner;
             } else {
-                Rect::ZERO
-            },
-            keys: Rect::new(inner.x, grid.y, keys_w, grid.height),
-            grid,
-            ruler: Rect::new(grid.x, grid.bottom(), grid.width, ruler_h),
-        };
-    } else {
-        l.lane = AnalyzeLane {
-            screen,
-            ..Default::default()
-        };
-        let w = (screen.width * 0.6).min(sc(560.0, s));
-        let h = sc(120.0, s).min(screen.height);
-        l.later = Rect::new(
-            screen.x + (screen.width - w) / 2.0,
-            screen.y + (screen.height - h) / 2.0,
-            w,
-            h,
-        );
+                // The take in the lane on top, the takes under it.
+                let lane_h = (inner.height * 0.42).round();
+                let grid = Rect::new(inner.x, inner.y, inner.width, (lane_h - ruler_h).max(0.0));
+                l.lane = AnalyzeLane {
+                    screen,
+                    chords: Rect::ZERO,
+                    keys: Rect::ZERO,
+                    grid,
+                    ruler: Rect::new(grid.x, grid.bottom(), grid.width, ruler_h),
+                };
+                let below = inner.y + lane_h + sc(8.0, s);
+                super::analyze_pages::lay_out_takes(
+                    &mut l,
+                    view,
+                    Rect::new(
+                        inner.x,
+                        below,
+                        inner.width,
+                        (inner.bottom() - below).max(0.0),
+                    ),
+                );
+            }
+        }
     }
 
     // The consoles.
@@ -1317,39 +1517,45 @@ pub fn analyze_layout(
             (frame.height - header_h - sc(10.0, s)).max(0.0),
         ),
     };
-    let note_w = sc(NOTE_CARD_W, s).min(body.width * 0.4);
-    l.note_card = card(Rect::new(body.x, cards_y, note_w, cards_h));
-    l.output_card = card(Rect::new(
-        body.x + note_w + gap,
-        cards_y,
-        (body.width - note_w - gap).max(0.0),
-        cards_h,
-    ));
-    let ob = l.output_card.body;
-    let button_h = sc(BUTTON_H, s);
-    let row1 = ob.y + sc(2.0, s);
-    let row2 = row1 + button_h + sc(8.0, s);
-    let mut bx = ob.x;
-    let button = |text: &str, y: f32, bx: &mut f32| {
-        let w = width_of(text) + sc(8.0, s);
-        let r = Rect::new(*bx, y, w, button_h);
-        *bx += w + gap;
-        r
+    super::analyze_pages::lay_out_cards(&mut l, view, state, cards_y, cards_h, &card, &width_of);
+    let card_of = |kind: AnalyzeCard| {
+        l.cards
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, c)| *c)
+            .unwrap_or_default()
     };
-    l.copy_notes = button(COPY_NOTES, row1, &mut bx);
-    l.make_clip = button(MAKE_CLIP, row1, &mut bx);
-    l.copy_scale = button(COPY_SCALE, row1, &mut bx);
-    // Render at the right end, its ▾ joined to it; Revert under it.
-    let render_w = width_of(RENDER_TO_CLIP) + sc(8.0, s);
-    let menu_w = sc(ICON_W, s);
-    l.render_menu = Rect::new(ob.right() - menu_w, row1, menu_w, button_h);
-    l.render = Rect::new(l.render_menu.x - render_w, row1, render_w, button_h);
-    if view.rendered {
-        let w = width_of(REVERT) + sc(8.0, s);
-        l.revert = Rect::new(ob.right() - w, row2, w, button_h);
+    if state.page == AnalyzePage::Notes {
+        l.note_card = card_of(AnalyzeCard::Note);
+        l.output_card = card_of(AnalyzeCard::Output);
+        let ob = l.output_card.body;
+        let button_h = sc(BUTTON_H, s);
+        let row1 = ob.y + sc(2.0, s);
+        let row2 = row1 + button_h + sc(8.0, s);
+        let button = |text: &str, y: f32, bx: &mut f32| {
+            let w = width_of(text) + sc(8.0, s);
+            let r = Rect::new(*bx, y, w, button_h);
+            *bx += w + gap;
+            r
+        };
+        let mut bx = ob.x;
+        l.copy_notes = button(COPY_NOTES, row1, &mut bx);
+        l.make_clip = button(MAKE_CLIP, row1, &mut bx);
+        // Render at the right end of the first row, its ▾ joined to it;
+        // Revert under it, when the clip plays a render.
+        let render_w = width_of(RENDER_TO_CLIP) + sc(8.0, s);
+        let menu_w = sc(ICON_W, s);
+        l.render_menu = Rect::new(ob.right() - menu_w, row1, menu_w, button_h);
+        l.render = Rect::new(l.render_menu.x - render_w, row1, render_w, button_h);
+        if view.rendered {
+            let w = width_of(REVERT) + sc(8.0, s);
+            l.revert = Rect::new(ob.right() - w, row2, w, button_h);
+        }
+        let switch_w = sc(40.0, s) + width_of(KEEP_BENDS);
+        l.keep_bends = Rect::new(ob.x, row2, switch_w, button_h);
+        let mut bx = l.keep_bends.right() + gap;
+        l.copy_scale = button(COPY_SCALE, row2, &mut bx);
     }
-    let switch_w = sc(40.0, s) + width_of(KEEP_BENDS);
-    l.keep_bends = Rect::new(ob.x, row2, switch_w, button_h);
 
     // The popover, under the scale chip while it is hovered.
     if matches!(
@@ -1381,13 +1587,22 @@ impl AnalyzeLayout {
         if !self.bpm.is_empty() {
             out.push(("header.bpm".to_string(), self.bpm));
         }
+        if !self.studies.is_empty() {
+            out.push(("header.studies".to_string(), self.studies));
+        }
         for (page, rect) in &self.tabs {
             out.push((format!("tab.{}", page.label().to_lowercase()), *rect));
         }
+        for (name, rect) in [
+            ("toggle.wave", self.wave_toggle),
+            ("toggle.chords", self.chords_toggle),
+            ("toggle.scale", self.scale_toggle),
+        ] {
+            if !rect.is_empty() {
+                out.push((name.to_string(), rect));
+            }
+        }
         out.extend([
-            ("toggle.wave".to_string(), self.wave_toggle),
-            ("toggle.chords".to_string(), self.chords_toggle),
-            ("toggle.scale".to_string(), self.scale_toggle),
             ("toggle.window-scale".to_string(), self.window_scale),
             ("transport.play".to_string(), self.play),
             ("transport.listen".to_string(), self.listen),
@@ -1400,28 +1615,47 @@ impl AnalyzeLayout {
         if !self.readout.is_empty() {
             out.push(("transport.readout".to_string(), self.readout));
         }
-        if self.later.is_empty() {
-            out.extend([
-                ("lane.keys".to_string(), self.lane.keys),
-                ("lane.grid".to_string(), self.lane.grid),
-                ("lane.ruler".to_string(), self.lane.ruler),
-            ]);
-            if !self.lane.chords.is_empty() {
-                out.push(("lane.chords".to_string(), self.lane.chords));
+        for (name, rect) in [
+            ("lane.keys", self.lane.keys),
+            ("lane.grid", self.lane.grid),
+            ("lane.ruler", self.lane.ruler),
+            ("lane.chords", self.lane.chords),
+            ("takes", self.takes_area),
+            ("keyboard", self.keyboard),
+            ("meter", self.meter),
+        ] {
+            if !rect.is_empty() {
+                out.push((name.to_string(), rect));
             }
-        } else {
-            out.push(("later".to_string(), self.later));
         }
-        out.extend([
-            ("card.note".to_string(), self.note_card.frame),
-            ("card.output".to_string(), self.output_card.frame),
-            ("card.output.copy-notes".to_string(), self.copy_notes),
-            ("card.output.make-clip".to_string(), self.make_clip),
-            ("card.output.copy-scale".to_string(), self.copy_scale),
-            ("card.output.keep-bends".to_string(), self.keep_bends),
-            ("card.output.render".to_string(), self.render),
-            ("card.output.render-menu".to_string(), self.render_menu),
-        ]);
+        for (card, layout) in &self.cards {
+            out.push((
+                format!(
+                    "card.{}",
+                    card.label().to_lowercase().replace([' ', '&'], "")
+                ),
+                layout.frame,
+            ));
+        }
+        for (control, rect) in &self.controls {
+            out.push((format!("card.{}", control.id()), *rect));
+        }
+        for take in &self.takes {
+            out.push((format!("take.{}.star", take.id), take.star));
+            out.push((format!("take.{}.name", take.id), take.name));
+            out.push((format!("take.{}.discard", take.id), take.discard));
+            out.push((format!("take.{}.lane", take.id), take.lane));
+        }
+        if !self.copy_notes.is_empty() {
+            out.extend([
+                ("card.output.copy-notes".to_string(), self.copy_notes),
+                ("card.output.make-clip".to_string(), self.make_clip),
+                ("card.output.copy-scale".to_string(), self.copy_scale),
+                ("card.output.keep-bends".to_string(), self.keep_bends),
+                ("card.output.render".to_string(), self.render),
+                ("card.output.render-menu".to_string(), self.render_menu),
+            ]);
+        }
         if !self.revert.is_empty() {
             out.push(("card.output.revert".to_string(), self.revert));
         }
@@ -1429,6 +1663,14 @@ impl AnalyzeLayout {
             out.push(("job".to_string(), self.job));
         }
         out
+    }
+
+    /// Where control `control` is, when the page has it.
+    pub fn control(&self, control: AnalyzeControl) -> Option<Rect> {
+        self.controls
+            .iter()
+            .find(|(c, _)| *c == control)
+            .map(|(_, r)| *r)
     }
 
     /// Note `index`'s blob: across its time, centred on its true pitch, as
@@ -1493,6 +1735,25 @@ pub enum AnalyzeHit {
     Render,
     RenderMenu,
     Revert,
+    /// The header's list of studies.
+    Studies,
+    /// A control on a page's card.
+    Control(AnalyzeControl),
+    /// The trim's start (`true`) or end on a wave lane.
+    TrimEnd(bool),
+    /// The fade in's (`true`) or fade out's handle.
+    FadeEnd(bool),
+    /// A marker on the Slice page.
+    Marker(u32),
+    TakeStar(u32),
+    TakeName(u32),
+    TakeDiscard(u32),
+    /// A take's audio, where a drag chooses a comp span.
+    TakeLane(u32),
+    /// The takes' area with no take under the pointer.
+    Takes,
+    /// The Slice page's keyboard preview.
+    Keyboard,
 }
 
 pub fn analyze_hit(
@@ -1528,16 +1789,40 @@ pub fn analyze_hit(
         (l.render, AnalyzeHit::Render),
         (l.render_menu, AnalyzeHit::RenderMenu),
         (l.revert, AnalyzeHit::Revert),
+        (l.studies, AnalyzeHit::Studies),
+        (l.keyboard, AnalyzeHit::Keyboard),
     ];
     for (rect, hit) in fixed {
         if !rect.is_empty() && rect.contains(x, y) {
             return Some(hit);
         }
     }
+    for (control, rect) in &l.controls {
+        if rect.contains(x, y) {
+            return Some(AnalyzeHit::Control(*control));
+        }
+    }
     for (page, rect) in &l.tabs {
         if rect.contains(x, y) {
             return Some(AnalyzeHit::Tab(*page));
         }
+    }
+    for take in &l.takes {
+        if !take.row.contains(x, y) {
+            continue;
+        }
+        return Some(if take.star.inset(-2.0).contains(x, y) {
+            AnalyzeHit::TakeStar(take.id)
+        } else if take.discard.inset(-2.0).contains(x, y) {
+            AnalyzeHit::TakeDiscard(take.id)
+        } else if take.lane.contains(x, y) {
+            AnalyzeHit::TakeLane(take.id)
+        } else {
+            AnalyzeHit::TakeName(take.id)
+        });
+    }
+    if l.takes_area.contains(x, y) && !l.lane.grid.contains(x, y) && !l.lane.ruler.contains(x, y) {
+        return Some(AnalyzeHit::Takes);
     }
     for (tool, rect) in &l.tools {
         if rect.contains(x, y) {
@@ -1563,6 +1848,9 @@ pub fn analyze_hit(
     }
     if lane.ruler.contains(x, y) {
         return Some(AnalyzeHit::Ruler);
+    }
+    if lane.grid.contains(x, y) && state.page != AnalyzePage::Notes {
+        return Some(wave_lane_hit(l, view, state, x, y));
     }
     if lane.grid.contains(x, y) {
         // Last drawn is on top.
@@ -1627,6 +1915,22 @@ pub enum AnalyzeAction {
     Render,
     RenderMenu,
     Revert,
+    /// Open the list of studies.
+    Studies,
+    /// A card's control pressed (not a knob: those drag).
+    Control(AnalyzeControl),
+    /// A knob taken hold of: drag it with [`AnalyzeState::drag_knob`].
+    KnobGrab(AnalyzeKnob),
+    /// Alt-click: the knob back to its default.
+    KnobReset(AnalyzeKnob),
+    /// The Marker tool's click: a marker here (seconds).
+    AddMarker(f64),
+    /// A drag on a page's lane began: carry it with
+    /// [`AnalyzeState::drag_lane`].
+    LaneGrab,
+    TakeLoad(u32),
+    TakeStar(u32),
+    TakeDiscard(u32),
 }
 
 pub fn analyze_press(
@@ -1697,15 +2001,67 @@ pub fn analyze_press(
             }
             AnalyzeAction::Selected
         }
+        AnalyzeHit::Lane if state.page != AnalyzePage::Notes => {
+            let t = layout
+                .lane
+                .t_of(state, x)
+                .clamp(0.0, view.duration.max(0.0));
+            if state.page == AnalyzePage::Slice && state.tool == AnalyzeTool::Marker {
+                return Some(AnalyzeAction::AddMarker(t));
+            }
+            state.selected_marker = None;
+            state.cursor = t;
+            state.lane_drag = Some(LaneDrag::Span(t));
+            AnalyzeAction::LaneGrab
+        }
         AnalyzeHit::Lane => {
             state.begin_marquee((x, y), modifiers.shift);
             AnalyzeAction::Marquee
+        }
+        AnalyzeHit::Studies => AnalyzeAction::Studies,
+        AnalyzeHit::Control(AnalyzeControl::Knob(knob)) => {
+            let value = analyze_knob_value(knob, view, state)?;
+            if modifiers.alt {
+                return Some(AnalyzeAction::KnobReset(knob));
+            }
+            state.knob_drag = Some((knob, value, y));
+            AnalyzeAction::KnobGrab(knob)
+        }
+        AnalyzeHit::Control(control) => {
+            if !control_enabled(control, view, state) {
+                return None;
+            }
+            AnalyzeAction::Control(control)
+        }
+        AnalyzeHit::TrimEnd(start) => {
+            state.lane_drag = Some(LaneDrag::Trim(start));
+            AnalyzeAction::LaneGrab
+        }
+        AnalyzeHit::FadeEnd(fade_in) => {
+            state.lane_drag = Some(LaneDrag::Fade(fade_in));
+            AnalyzeAction::LaneGrab
+        }
+        AnalyzeHit::Marker(id) => {
+            state.selected_marker = Some(id);
+            state.lane_drag = Some(LaneDrag::Marker { id, moved: false });
+            AnalyzeAction::LaneGrab
+        }
+        AnalyzeHit::TakeStar(id) => AnalyzeAction::TakeStar(id),
+        AnalyzeHit::TakeDiscard(id) => AnalyzeAction::TakeDiscard(id),
+        AnalyzeHit::TakeName(id) => AnalyzeAction::TakeLoad(id),
+        AnalyzeHit::TakeLane(id) => {
+            let lane = layout.takes.iter().find(|t| t.id == id)?.lane;
+            let t = take_seconds_at(view, lane, x);
+            state.lane_drag = Some(LaneDrag::Comp { take: id, from: t });
+            AnalyzeAction::LaneGrab
         }
         AnalyzeHit::Badge
         | AnalyzeHit::Tuning
         | AnalyzeHit::Bpm
         | AnalyzeHit::Readout
         | AnalyzeHit::Job
+        | AnalyzeHit::Takes
+        | AnalyzeHit::Keyboard
         | AnalyzeHit::Later => return None,
     })
 }
@@ -2062,11 +2418,7 @@ pub fn analyze_strings(
     if let Some(error) = &view.error {
         out.push((error.clone(), Value));
     }
-    if state.page != AnalyzePage::Notes {
-        for line in later_lines(state.page) {
-            out.push((line, Value));
-        }
-    }
+    super::analyze_pages::page_strings(view, state, layout, &mut out);
     if !layout.popover.is_empty() {
         out.extend(popover_lines(view).into_iter().map(|l| (l, Value)));
         if let Some(key) = &view.key {
@@ -2113,6 +2465,9 @@ pub fn analyze_strings(
 
 /// What the pointer is over, in a sentence: every hit has one.
 pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -> Option<String> {
+    if let Some(tip) = super::analyze_pages::page_tip(hit, view, state) {
+        return Some(tip);
+    }
     Some(match hit {
         AnalyzeHit::Badge => {
             let reason = if view.clarity_reason.is_empty() {
@@ -2158,11 +2513,7 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
         AnalyzeHit::Tab(AnalyzePage::Notes) => {
             "Notes: what was heard, to copy into a piano roll".to_string()
         }
-        AnalyzeHit::Tab(page) => format!(
-            "{}: {} \u{2014} {LATER}",
-            page.label(),
-            page.promise().to_lowercase()
-        ),
+        AnalyzeHit::Tab(page) => format!("{}: {}", page.label(), page.promise().to_lowercase()),
         AnalyzeHit::WaveToggle => {
             "The waveform or the pitch picture behind the notes (Tab)".to_string()
         }
@@ -2179,6 +2530,12 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
         }
         AnalyzeHit::Tool(AnalyzeTool::Select) => {
             "Select: drag to select notes without moving them (S)".to_string()
+        }
+        AnalyzeHit::Tool(AnalyzeTool::Noise) => {
+            "Noise: drag over a stretch with only noise in it to capture it".to_string()
+        }
+        AnalyzeHit::Tool(AnalyzeTool::Marker) => {
+            "Marker: click to add one, drag to move it, Del removes it".to_string()
         }
         AnalyzeHit::Play => match state.playhead {
             Some(_) => "Stop (Space)".to_string(),
@@ -2246,8 +2603,12 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
         AnalyzeHit::KeepBends => {
             "Off: clean semitones. On: the slides and bends come too".to_string()
         }
-        AnalyzeHit::Job => "Analysing \u{2014} notes appear as they're found".to_string(),
+        AnalyzeHit::Job => match view.rendering {
+            Some(_) => "Rendering \u{2014} it lands as one undo when done".to_string(),
+            None => "Analysing \u{2014} notes appear as they're found".to_string(),
+        },
         AnalyzeHit::Later => format!("This page is {LATER}"),
+        _ => return None,
     })
 }
 
@@ -2325,4 +2686,309 @@ pub fn analyze_scale_menu(
     )));
     rows.push(AnalyzeScaleRow::CopyNotesInScale);
     (entries, rows)
+}
+
+// ------------------------------------------------- the pages' drags ---
+
+/// What is under a point on a wave lane (the Clean, Slice and Record
+/// pages): a trim end, a fade's handle, a marker, or the lane.
+fn wave_lane_hit(
+    layout: &AnalyzeLayout,
+    view: &AnalyzeView,
+    state: &AnalyzeState,
+    x: f32,
+    y: f32,
+) -> AnalyzeHit {
+    let lane = &layout.lane;
+    let grab = (6.0 * layout.scale).max(4.0);
+    if state.page == AnalyzePage::Clean {
+        let (a, b) = view.trim_seconds();
+        let fade_in = view.seconds_of(view.offset + view.clean.fade_in);
+        let fade_out = view.seconds_of(view.offset + view.clean.fade_out);
+        let handle_y = lane.grid.y + grab * 1.5;
+        // The fades' handles, along the top: at the end of each fade.
+        if (y - handle_y).abs() <= grab * 1.5 {
+            if (x - lane.x_of(state, a + fade_in)).abs() <= grab {
+                return AnalyzeHit::FadeEnd(true);
+            }
+            if (x - lane.x_of(state, b - fade_out)).abs() <= grab {
+                return AnalyzeHit::FadeEnd(false);
+            }
+        }
+        if (x - lane.x_of(state, a)).abs() <= grab {
+            return AnalyzeHit::TrimEnd(true);
+        }
+        if (x - lane.x_of(state, b)).abs() <= grab {
+            return AnalyzeHit::TrimEnd(false);
+        }
+    }
+    if state.page == AnalyzePage::Slice {
+        let near = view
+            .markers
+            .iter()
+            .map(|m| (m.id, (lane.x_of(state, view.seconds_of(m.at)) - x).abs()))
+            .filter(|(_, d)| *d <= grab)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((id, _)) = near {
+            return AnalyzeHit::Marker(id);
+        }
+    }
+    AnalyzeHit::Lane
+}
+
+/// What a drag on a page's lane changed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalyzeLaneChange {
+    /// The selection on the lane (the state's own).
+    Span,
+    /// The Clean page, whole.
+    Clean(fontelle_types::StudyClean),
+    Markers(Vec<fontelle_types::StudyMarker>),
+    Comp(Vec<fontelle_types::StudyCompSpan>),
+}
+
+/// What letting go of a lane's drag asks for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnalyzeLaneEnd {
+    /// A span was dragged out (seconds): with the Noise tool, capture it.
+    Span(f64, f64),
+    /// A trim, fade, marker or comp: the gesture is over (one undo).
+    Changed,
+    /// A marker pressed and not moved, or a click: nothing more.
+    Nothing,
+}
+
+impl AnalyzeState {
+    /// A knob held is dragged to `y`: its new value, at `precision`.
+    pub fn drag_knob(&mut self, y: f32, precision: super::Precision) -> Option<(AnalyzeKnob, f32)> {
+        let (knob, start, from) = self.knob_drag?;
+        let unit = super::knob_drag(knob.to_unit(start), y - from, precision);
+        Some((knob, knob.from_unit(unit)))
+    }
+
+    pub fn dragging_knob(&self) -> Option<AnalyzeKnob> {
+        self.knob_drag.map(|(k, _, _)| k)
+    }
+
+    /// The knob let go: which it was.
+    pub fn end_knob_drag(&mut self) -> Option<AnalyzeKnob> {
+        self.knob_drag.take().map(|(k, _, _)| k)
+    }
+
+    pub fn dragging_lane(&self) -> bool {
+        self.lane_drag.is_some()
+    }
+
+    /// A lane's drag carried to `x`: what it changed (`None` while nothing
+    /// has).
+    pub fn drag_lane(
+        &mut self,
+        layout: &AnalyzeLayout,
+        view: &AnalyzeView,
+        x: f32,
+    ) -> Option<AnalyzeLaneChange> {
+        let drag = self.lane_drag.clone()?;
+        let t = layout.lane.t_of(self, x).clamp(0.0, view.duration.max(0.0));
+        let min_frames = (f64::from(view.rate.max(1)) * 0.01) as i64;
+        match drag {
+            LaneDrag::Span(from) => {
+                let (a, b) = (from.min(t), from.max(t));
+                self.span = (b - a > 0.005).then_some((a, b));
+                Some(AnalyzeLaneChange::Span)
+            }
+            LaneDrag::Trim(start) => {
+                let mut clean = view.clean.clone();
+                let (a, b) = clean
+                    .trim
+                    .unwrap_or((view.offset, view.frame_of(view.duration)));
+                let at = view.frame_of(t);
+                clean.trim = Some(if start {
+                    (at.min(b - min_frames), b)
+                } else {
+                    (a, at.max(a + min_frames))
+                });
+                Some(AnalyzeLaneChange::Clean(clean))
+            }
+            LaneDrag::Fade(fade_in) => {
+                let mut clean = view.clean.clone();
+                let (a, b) = view.trim_seconds();
+                let half = ((b - a) / 2.0).max(0.0);
+                let length = if fade_in { t - a } else { b - t }.clamp(0.0, half);
+                let frames = (length * f64::from(view.rate.max(1))).round() as i64;
+                if fade_in {
+                    clean.fade_in = frames;
+                } else {
+                    clean.fade_out = frames;
+                }
+                Some(AnalyzeLaneChange::Clean(clean))
+            }
+            LaneDrag::Marker { id, .. } => {
+                self.lane_drag = Some(LaneDrag::Marker { id, moved: true });
+                let mut markers = view.markers.clone();
+                let marker = markers.iter_mut().find(|m| m.id == id)?;
+                marker.at = view.frame_of(t);
+                Some(AnalyzeLaneChange::Markers(markers))
+            }
+            LaneDrag::Comp { take, from } => {
+                let lane = layout.takes.iter().find(|r| r.id == take)?.lane;
+                let to = take_seconds_at(view, lane, x);
+                let (a, b) = (from.min(to), from.max(to));
+                if b - a < 0.01 {
+                    return None;
+                }
+                let rate = view
+                    .takes
+                    .iter()
+                    .find(|t| t.id == take)
+                    .map_or(view.rate, |t| t.sample_rate);
+                let frame = |s: f64| (s * f64::from(rate.max(1))).round() as i64;
+                Some(AnalyzeLaneChange::Comp(comp_with(
+                    &view.comp,
+                    fontelle_types::StudyCompSpan {
+                        take,
+                        start: frame(a),
+                        end: frame(b),
+                    },
+                )))
+            }
+        }
+    }
+
+    /// The lane's drag let go.
+    pub fn end_lane_drag(&mut self) -> AnalyzeLaneEnd {
+        match self.lane_drag.take() {
+            Some(LaneDrag::Span(_)) => match self.span {
+                Some((a, b)) => AnalyzeLaneEnd::Span(a, b),
+                None => AnalyzeLaneEnd::Nothing,
+            },
+            Some(LaneDrag::Marker { moved: false, .. }) | None => AnalyzeLaneEnd::Nothing,
+            Some(_) => AnalyzeLaneEnd::Changed,
+        }
+    }
+
+    /// Del on the Slice page: the marker in hand gone (the list without it).
+    pub fn without_selected_marker(
+        &mut self,
+        view: &AnalyzeView,
+    ) -> Option<Vec<fontelle_types::StudyMarker>> {
+        let id = self.selected_marker.take()?;
+        let markers: Vec<_> = view
+            .markers
+            .iter()
+            .filter(|m| m.id != id)
+            .cloned()
+            .collect();
+        (markers.len() != view.markers.len()).then_some(markers)
+    }
+}
+
+/// The comp with `span` chosen: whatever it covered before is now this
+/// take's.
+pub fn comp_with(
+    comp: &[fontelle_types::StudyCompSpan],
+    span: fontelle_types::StudyCompSpan,
+) -> Vec<fontelle_types::StudyCompSpan> {
+    let mut out = Vec::new();
+    for s in comp {
+        if s.end <= span.start || s.start >= span.end {
+            out.push(*s);
+            continue;
+        }
+        if s.start < span.start {
+            out.push(fontelle_types::StudyCompSpan {
+                end: span.start,
+                ..*s
+            });
+        }
+        if s.end > span.end {
+            out.push(fontelle_types::StudyCompSpan {
+                start: span.end,
+                ..*s
+            });
+        }
+    }
+    out.push(span);
+    out.sort_by_key(|s| s.start);
+    out
+}
+
+/// The markers with one more at `seconds`, and its id (the next unused).
+pub fn with_marker_at(view: &AnalyzeView, seconds: f64) -> (Vec<fontelle_types::StudyMarker>, u32) {
+    let id = view.markers.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+    let mut markers = view.markers.clone();
+    markers.push(fontelle_types::StudyMarker {
+        id,
+        at: view.frame_of(seconds),
+        name: String::new(),
+    });
+    markers.sort_by_key(|m| m.at);
+    (markers, id)
+}
+
+/// The cuts made markers (Use as markers).
+pub fn markers_from_cuts(view: &AnalyzeView, cuts: &[f64]) -> Vec<fontelle_types::StudyMarker> {
+    cuts.iter()
+        .enumerate()
+        .map(|(i, t)| fontelle_types::StudyMarker {
+            id: i as u32 + 1,
+            at: view.frame_of(*t),
+            name: String::new(),
+        })
+        .collect()
+}
+
+/// Z: the view on the selection (notes, or the lane's span); Shift+Z, all
+/// of it.
+pub fn zoom_to(
+    state: &mut AnalyzeState,
+    view: &AnalyzeView,
+    layout: &AnalyzeLayout,
+    all: bool,
+) -> bool {
+    let grid = layout.lane.grid;
+    if grid.is_empty() {
+        return false;
+    }
+    if all {
+        state.fit(view, layout);
+        return true;
+    }
+    let range = state.span.or_else(|| state.selection_range(view));
+    let Some((a, b)) = range.filter(|(a, b)| b > a) else {
+        return false;
+    };
+    let margin = (b - a) * 0.08;
+    let (a, b) = (
+        (a - margin).max(0.0),
+        (b + margin).min(view.duration.max(b)),
+    );
+    state.pixels_per_second = (grid.width / (b - a) as f32).clamp(2.0, 2000.0);
+    state.start = a;
+    if state.page == AnalyzePage::Notes {
+        let notes = state.notes(view);
+        let picked: Vec<f32> = state
+            .selected()
+            .iter()
+            .filter_map(|i| notes.get(*i))
+            .map(analyze_pitch)
+            .collect();
+        if let (Some(lo), Some(hi)) = (
+            picked.iter().copied().reduce(f32::min),
+            picked.iter().copied().reduce(f32::max),
+        ) {
+            let middle = (lo + hi) / 2.0;
+            let rows = grid.height / state.row_height.max(5.0);
+            state.top = middle + rows / 2.0;
+        }
+    }
+    true
+}
+
+impl AnalyzeState {
+    /// A marker just added by the Marker tool, held so the same press can
+    /// drag it.
+    pub fn grab_marker(&mut self, id: u32) {
+        self.selected_marker = Some(id);
+        self.lane_drag = Some(LaneDrag::Marker { id, moved: false });
+    }
 }

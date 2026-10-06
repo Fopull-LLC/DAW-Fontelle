@@ -502,6 +502,8 @@ pub struct Session {
     /// A second reader of the open input device (§5 R4), for a study
     /// recording from the microphone a track already has open.
     input_tap: Option<fontelle_engine::InputTap>,
+    /// Each take's waveform for the Record page, made once.
+    take_peaks: std::cell::RefCell<HashMap<fontelle_types::AssetId, study::Peaks>>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1561,6 +1563,7 @@ impl Session {
             take_files: Vec::new(),
             slice_keys_memo: None,
             input_tap: None,
+            take_peaks: std::cell::RefCell::new(HashMap::new()),
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -9726,6 +9729,10 @@ impl StudioHost for Session {
 
     fn record_into_analysis(&mut self) -> Result<String, String> {
         self.record_into_study()
+    }
+
+    fn analysis_meter(&self) -> fontelle_ui::canvas::AnalyzeMeter {
+        self.study_meter()
     }
 
     fn close_analysis(&mut self) {

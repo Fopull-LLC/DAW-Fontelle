@@ -49,14 +49,14 @@ pub fn analyze_style(kind: AnalyzeText, scale: f32) -> crate::text::TextStyle {
     }
 }
 
-fn darken(colour: Color, amount: f32) -> Color {
+pub(super) fn darken(colour: Color, amount: f32) -> Color {
     let f = |c: u8| (f32::from(c) * (1.0 - amount)) as u8;
     Color([f(colour.0[0]), f(colour.0[1]), f(colour.0[2]), colour.0[3]])
 }
 
 /// Text at `style`, centred in `rect` (or from its left, `left` in).
 #[allow(clippy::too_many_arguments)]
-fn text_in(
+pub(super) fn text_in(
     scene: &mut Scene,
     labels: &Labels,
     text: &str,
@@ -126,16 +126,37 @@ pub(super) fn draw_analyze(
     );
 
     draw_header(scene, theme, labels, chrome, &t);
+    super::analyze_pages::draw_studies_chip(scene, theme, labels, chrome, &t);
     draw_glass_controls(scene, theme, labels, chrome, &t);
 
-    if chrome.state.page == AnalyzePage::Notes {
-        draw_lane(scene, theme, labels, chrome);
-    } else {
-        bridge::draw_screen(scene, theme, l.lane.screen, p.accent);
-        draw_later(scene, theme, labels, chrome, &t);
+    match chrome.state.page {
+        AnalyzePage::Notes => draw_lane(scene, theme, labels, chrome),
+        page => {
+            let ink = super::analyze_pages::page_ink(page, p);
+            bridge::draw_screen(scene, theme, l.lane.screen, ink);
+            super::analyze_pages::draw_wave_lane(scene, theme, labels, chrome, &t);
+            if page == AnalyzePage::Record {
+                super::analyze_pages::draw_takes(scene, theme, labels, chrome, &t);
+            }
+            if !chrome.view.has_audio && page != AnalyzePage::Record {
+                let said = "Nothing recorded yet \u{2014} the Record page records a take";
+                text_in(
+                    scene,
+                    labels,
+                    said,
+                    t.value,
+                    l.lane.screen,
+                    None,
+                    p.text_muted,
+                );
+            }
+        }
     }
 
-    draw_cards(scene, theme, labels, chrome, &t);
+    super::analyze_pages::draw_page_cards(scene, theme, labels, chrome, &t);
+    if chrome.state.page == AnalyzePage::Notes {
+        draw_cards(scene, theme, labels, chrome, &t);
+    }
     if !l.job.is_empty() {
         draw_job(scene, theme, labels, chrome, &t);
     }
@@ -308,7 +329,7 @@ fn draw_header(
 }
 
 /// A chip's plate on the hull: Flopsynth's button ground.
-fn plate(scene: &mut Scene, theme: &Theme, rect: Rect, hot: bool) {
+pub(super) fn plate(scene: &mut Scene, theme: &Theme, rect: Rect, hot: bool) {
     let p = &theme.palette;
     let m = &theme.metrics;
     if rect.is_empty() {
@@ -331,7 +352,7 @@ fn plate(scene: &mut Scene, theme: &Theme, rect: Rect, hot: bool) {
 }
 
 /// ▾, drawn rather than set in type.
-fn chevron(scene: &mut Scene, rect: Rect, ink: Color, s: f32) {
+pub(super) fn chevron(scene: &mut Scene, rect: Rect, ink: Color, s: f32) {
     let (cx, cy) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     let w = 4.0 * s;
     let mut path = BezPath::new();
@@ -405,9 +426,6 @@ fn draw_glass_controls(
         false,
         t.value,
     );
-    if state.page != AnalyzePage::Notes {
-        return;
-    }
     // The tools, the one in hand lit.
     for (tool, rect) in &l.tools {
         bridge::draw_hud_tab(
@@ -771,7 +789,7 @@ fn hatch(scene: &mut Scene, rect: Rect, ink: Color) {
 }
 
 /// The waveform: the extremes faint, across the middle of the lane.
-fn draw_waveform(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>) {
+pub(super) fn draw_waveform(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>) {
     let p = &theme.palette;
     let lane = &chrome.layout.lane;
     let view = chrome.view;
@@ -1085,7 +1103,12 @@ fn draw_chord_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &A
     }
 }
 
-fn draw_ruler(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &AnalyzeChrome<'_>) {
+pub(super) fn draw_ruler(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    chrome: &AnalyzeChrome<'_>,
+) {
     let p = &theme.palette;
     let l = &chrome.layout;
     let ruler = l.lane.ruler;
@@ -1148,58 +1171,6 @@ fn draw_ruler(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyz
     }
 }
 
-// --------------------------------------------- pages not built yet ---
-
-fn draw_later(
-    scene: &mut Scene,
-    theme: &Theme,
-    labels: &Labels,
-    chrome: &AnalyzeChrome<'_>,
-    t: &BridgeType,
-) {
-    let p = &theme.palette;
-    let l = &chrome.layout;
-    let page = chrome.state.page;
-    let frame = l.later;
-    let header_h = 22.0 * l.scale;
-    let ink = match page {
-        AnalyzePage::Clean => p.mod_lfo,
-        AnalyzePage::Slice => p.mod_macro,
-        AnalyzePage::Record => p.meter_peak,
-        AnalyzePage::Notes => p.note,
-    };
-    bridge::draw_console(
-        scene,
-        theme,
-        labels,
-        frame,
-        Rect::new(frame.x, frame.y, frame.width, header_h),
-        page.label(),
-        ink,
-        false,
-        chrome.skin,
-        t.heading,
-    );
-    let [first, second] = crate::canvas::later_lines(page);
-    let body = Rect::new(
-        frame.x + 18.0,
-        frame.y + header_h + 10.0,
-        frame.width - 36.0,
-        (frame.height - header_h - 20.0) / 2.0,
-    );
-    text_in(scene, labels, &first, t.value, body, Some(0.0), p.text);
-    let below = Rect::new(body.x, body.bottom(), body.width, body.height);
-    text_in(
-        scene,
-        labels,
-        &second,
-        t.value,
-        below,
-        Some(0.0),
-        p.text_muted,
-    );
-}
-
 // ------------------------------------------------------------- consoles ---
 
 fn draw_cards(
@@ -1209,44 +1180,10 @@ fn draw_cards(
     chrome: &AnalyzeChrome<'_>,
     t: &BridgeType,
 ) {
-    use crate::canvas::AnalyzeCard;
     let p = &theme.palette;
     let l = &chrome.layout;
     let state = chrome.state;
     let hover = state.hover;
-    for (card, layout, ink) in [
-        (AnalyzeCard::Note, &l.note_card, p.note),
-        (AnalyzeCard::Output, &l.output_card, p.accent),
-    ] {
-        let hot = match card {
-            AnalyzeCard::Note => matches!(hover, Some(AnalyzeHit::Note(_))),
-            AnalyzeCard::Output => matches!(
-                hover,
-                Some(
-                    AnalyzeHit::CopyNotes
-                        | AnalyzeHit::MakeClip
-                        | AnalyzeHit::CopyScaleButton
-                        | AnalyzeHit::KeepBends
-                        | AnalyzeHit::Render
-                        | AnalyzeHit::RenderMenu
-                        | AnalyzeHit::Revert
-                )
-            ),
-        };
-        bridge::draw_console(
-            scene,
-            theme,
-            labels,
-            layout.frame,
-            layout.header,
-            card.label(),
-            ink,
-            hot,
-            chrome.skin,
-            t.heading,
-        );
-    }
-
     // The note in hand.
     let lines = crate::canvas::note_card_lines(chrome.view, state);
     let focused = crate::canvas::note_card_focus(chrome.view, state).is_some();
@@ -1345,7 +1282,12 @@ fn draw_job(
     let p = &theme.palette;
     let m = &theme.metrics;
     let strip = chrome.layout.job;
-    let fraction = chrome.view.analysing.unwrap_or(0.0).clamp(0.0, 1.0);
+    let fraction = chrome
+        .view
+        .analysing
+        .or(chrome.view.rendering)
+        .unwrap_or(0.0)
+        .clamp(0.0, 1.0);
     fill_rect_rounded(scene, strip, m.corner_radius, darken(p.window, 0.3));
     let bar = Rect::new(strip.x, strip.y, strip.width * fraction, strip.height);
     fill_rect_vertical(
@@ -1365,7 +1307,10 @@ fn draw_job(
     text_in(
         scene,
         labels,
-        &crate::canvas::job_text(chrome.view),
+        &match (chrome.view.analysing, chrome.view.rendering) {
+            (None, Some(at)) => crate::canvas::render_job_text(at),
+            _ => crate::canvas::job_text(chrome.view),
+        },
         t.value,
         strip,
         Some(10.0),

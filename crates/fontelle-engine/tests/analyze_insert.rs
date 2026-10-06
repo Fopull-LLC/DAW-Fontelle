@@ -341,3 +341,28 @@ fn a_take_carries_on_across_a_graph_rebuild() {
     assert_eq!(takes[0].frames.len(), 4 * BLOCK);
     assert_eq!(takes[0].stopped, None, "still recording");
 }
+
+/// The Record page's meter: the capture says how loud the last block was,
+/// armed or not (a meter that only moved while recording could not be set up
+/// by), and how long the take running is.
+#[test]
+fn the_capture_says_its_level_and_the_takes_length() {
+    let capture = Arc::new(AnalyzeCapture::new(48_000));
+    let mut node = insert(config(ArmMode::Now), &capture);
+    let (mut left, mut right) = (vec![0.25f32; BLOCK], vec![-0.5f32; BLOCK]);
+    run(&mut node, &mut left, &mut right, TransportState::Stopped, 0);
+    assert!((capture.level() - 0.5).abs() < 1e-6, "{}", capture.level());
+    assert_eq!(capture.take_frames(), 0, "not armed, no take");
+    capture.arm(true);
+    for _ in 0..3 {
+        let (mut left, mut right) = (vec![0.1f32; BLOCK], vec![0.1f32; BLOCK]);
+        run(&mut node, &mut left, &mut right, TransportState::Stopped, 0);
+    }
+    assert_eq!(capture.take_frames(), 3 * BLOCK as u64);
+    assert!((capture.level() - 0.1).abs() < 1e-6);
+    capture.arm(false);
+    let (mut left, mut right) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    run(&mut node, &mut left, &mut right, TransportState::Stopped, 0);
+    assert_eq!(capture.take_frames(), 0, "the take is over");
+    assert_eq!(capture.level(), 0.0);
+}

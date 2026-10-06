@@ -191,14 +191,15 @@ pub use analyze::{
     time_text, tuning_text, window_scale_label,
 };
 pub use analyze::{
+    AnalyzeLaneChange, AnalyzeLaneEnd, AnalyzeMeter, AnalyzeTyping, AnalyzeTypingTarget, comp_with,
+    markers_from_cuts, with_marker_at, zoom_to,
+};
+pub use analyze::{
     CHORD_CANT_MOVE, CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, EDIT_HINT, KEEP_BENDS, LATER,
     LISTEN_ORIGINAL, MAKE_CLIP, PITCH_TOGGLE, RENDER_TO_CLIP, REVERT, SCALE_TOGGLE, SELECT_FIRST,
     WAVE_TOGGLE,
 };
-pub use analyze_pages::{
-    AnalyzeRecordOp, AnalyzeRecordView, AnalyzeSliceKey, AnalyzeSliceLayout, AnalyzeSource,
-    AnalyzeStudyRow, AnalyzeTakeOp, AutoSlice,
-};
+pub use analyze_pages::*;
 pub use disgusting_beat::{
     DISGUSTING_BEAT_BEND_GRAB, DISGUSTING_BEAT_CANOPY, DISGUSTING_BEAT_GRAB,
     DISGUSTING_BEAT_MENU_ROW, DISGUSTING_BEAT_MENU_ROWS, DISGUSTING_BEAT_MENU_WIDTH,

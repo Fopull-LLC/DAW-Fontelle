@@ -93,6 +93,11 @@ pub struct AnalyzeCapture {
     silent_frames: AtomicU64,
     take_dropped: AtomicU64,
     dropped: AtomicU64,
+    /// The last block's peak at the insert's tap point, `f32` bits: the
+    /// Record page's meter, armed or not.
+    level: AtomicU32,
+    /// `written` when the running take began.
+    take_start: AtomicU64,
 }
 
 impl AnalyzeCapture {
@@ -127,6 +132,8 @@ impl AnalyzeCapture {
             silent_frames: AtomicU64::new(0),
             take_dropped: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            level: AtomicU32::new(0),
+            take_start: AtomicU64::new(0),
         }
     }
 
@@ -144,6 +151,21 @@ impl AnalyzeCapture {
     /// Whether a take is running right now.
     pub fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Relaxed)
+    }
+
+    /// The last block's peak, linear, at the point the insert listens.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    /// Frames in the take running now; 0 with none.
+    pub fn take_frames(&self) -> u64 {
+        if !self.is_recording() {
+            return 0;
+        }
+        self.written
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.take_start.load(Ordering::Relaxed))
     }
 
     /// Frames lost to a full ring since it was made.
@@ -188,6 +210,11 @@ impl AnalyzeCapture {
         };
         let right: &[f32] = block.get(1).map_or(left, |r| r);
         let frames = left.len().min(right.len());
+        let peak = left[..frames]
+            .iter()
+            .chain(&right[..frames])
+            .fold(0.0f32, |p, s| p.max(s.abs()));
+        self.level.store(peak.to_bits(), Ordering::Relaxed);
 
         // A stop that found the event ring full goes first, and nothing is
         // recorded until it has gone: a take's frames must not run into the
@@ -308,6 +335,8 @@ impl AnalyzeCapture {
         }
         self.take_dropped.store(0, Ordering::Relaxed);
         self.silent_frames.store(0, Ordering::Relaxed);
+        self.take_start
+            .store(self.written.load(Ordering::Relaxed), Ordering::Relaxed);
         self.recording.store(true, Ordering::Relaxed);
         true
     }

@@ -129,7 +129,7 @@ pub(crate) fn mono_span(buffer: &fontelle_core::AudioBuffer, from: usize, to: us
         .collect()
 }
 
-fn peaks_of(mono: &[f32], rate: u32) -> Arc<[(f32, f32)]> {
+pub(crate) fn peaks_of(mono: &[f32], rate: u32) -> Arc<[(f32, f32)]> {
     let per = (f64::from(rate) / PEAKS_PER_SECOND).max(1.0) as usize;
     mono.chunks(per)
         .map(|chunk| {
@@ -834,6 +834,8 @@ pub(crate) fn pitch_edit(
         vibrato: edit.vibrato,
         glide_in_ms: edit.glide_in_ms,
         glide_out_ms: edit.glide_out_ms,
+        formant_cents: edit.formant_cents,
+        gain_db: edit.gain_db,
         ..fontelle_types::PitchEdit::none(span)
     }
 }
@@ -860,6 +862,8 @@ pub(crate) fn show_edits(
                 vibrato: e.vibrato,
                 glide_in_ms: e.glide_in_ms,
                 glide_out_ms: e.glide_out_ms,
+                formant_cents: e.formant_cents,
+                gain_db: e.gain_db,
             });
     }
 }

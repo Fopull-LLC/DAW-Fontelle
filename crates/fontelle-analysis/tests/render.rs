@@ -127,3 +127,28 @@ fn the_move_glides_in_and_out() {
     assert!(early < 5700.0 + 60.0, "{early}");
     assert!((middle - 5900.0).abs() < 4.0, "{middle}");
 }
+
+/// The Pitch card's GAIN: a note louder or quieter over its own span, eased
+/// in and out, and the rest untouched — with no pitch move at all.
+#[test]
+fn a_notes_gain_is_heard_over_its_span_only() {
+    let audio = sung_curve(SR, 3.0, 0.1, 2.9, |_| 5700.0);
+    let span = (frames(1.0), frames(2.0));
+    let edits = vec![PitchEdit {
+        gain_db: -6.0206,
+        ..PitchEdit::none(span)
+    }];
+    let rendered = render_edits(&audio, 1, SR, &edits, &Psola);
+    let window = |a: f64, b: f64| (frames(a) as usize, frames(b) as usize);
+    let (a, b) = window(1.2, 1.8);
+    let ratio = rms(&rendered.audio[a..b]) / rms(&audio[a..b]);
+    assert!((ratio - 0.5).abs() < 0.02, "{ratio}");
+    let (a, b) = window(0.2, 0.9);
+    assert_eq!(
+        &rendered.audio[a..b],
+        &audio[a..b],
+        "before it, bit for bit"
+    );
+    let (a, b) = window(2.1, 2.8);
+    assert_eq!(&rendered.audio[a..b], &audio[a..b], "after it too");
+}

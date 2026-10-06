@@ -333,10 +333,18 @@ pub enum Action {
     /// In its window: the Select and Move tools.
     AnalyzeSelectTool,
     AnalyzeMoveTool,
+    /// In its window: the lane on the selection (notes or a span), and on
+    /// all of it.
+    AnalyzeZoomSelection,
+    AnalyzeZoomAll,
+    /// In its window: the Clean page's Noise tool and the Slice page's
+    /// Marker tool.
+    AnalyzeNoiseTool,
+    AnalyzeMarkerTool,
 }
 
 impl Action {
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 62] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -395,6 +403,10 @@ impl Action {
         Self::AnalyzeVibrato,
         Self::AnalyzeSelectTool,
         Self::AnalyzeMoveTool,
+        Self::AnalyzeZoomSelection,
+        Self::AnalyzeZoomAll,
+        Self::AnalyzeNoiseTool,
+        Self::AnalyzeMarkerTool,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -461,6 +473,10 @@ impl Action {
             Self::AnalyzeVibrato => "analyze-vibrato",
             Self::AnalyzeSelectTool => "analyze-select-tool",
             Self::AnalyzeMoveTool => "analyze-move-tool",
+            Self::AnalyzeZoomSelection => "analyze-zoom-selection",
+            Self::AnalyzeZoomAll => "analyze-zoom-all",
+            Self::AnalyzeNoiseTool => "analyze-noise-tool",
+            Self::AnalyzeMarkerTool => "analyze-marker-tool",
         }
     }
 
@@ -540,6 +556,10 @@ impl Action {
             Self::AnalyzeVibrato => "Analyze Musically: vibrato as sung, half, none",
             Self::AnalyzeSelectTool => "Analyze Musically: the Select tool",
             Self::AnalyzeMoveTool => "Analyze Musically: the Move tool",
+            Self::AnalyzeZoomSelection => "Analyze Musically: zoom to the selection",
+            Self::AnalyzeZoomAll => "Analyze Musically: show all of it",
+            Self::AnalyzeNoiseTool => "Analyze Musically: the Noise tool (Clean)",
+            Self::AnalyzeMarkerTool => "Analyze Musically: the Marker tool (Slice)",
         }
     }
 
@@ -569,7 +589,11 @@ impl Action {
             | Self::AnalyzeFlatten
             | Self::AnalyzeVibrato
             | Self::AnalyzeSelectTool
-            | Self::AnalyzeMoveTool => Context::Editor,
+            | Self::AnalyzeMoveTool
+            | Self::AnalyzeZoomSelection
+            | Self::AnalyzeZoomAll
+            | Self::AnalyzeNoiseTool
+            | Self::AnalyzeMarkerTool => Context::Editor,
             Self::PathPoint | Self::PathPointBack => Context::Drawing,
             _ => Context::Studio,
         }
@@ -638,6 +662,10 @@ impl Action {
             Self::AnalyzeVibrato => &["V"],
             Self::AnalyzeSelectTool => &["S"],
             Self::AnalyzeMoveTool => &["M"],
+            Self::AnalyzeZoomSelection => &["Z"],
+            Self::AnalyzeZoomAll => &["Shift+Z"],
+            Self::AnalyzeNoiseTool => &["N"],
+            Self::AnalyzeMarkerTool => &["K"],
         }
     }
 

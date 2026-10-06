@@ -10,11 +10,13 @@
 use std::sync::Arc;
 
 use fontelle_types::KeyScale;
+use fontelle_types::StudyTake;
 use fontelle_ui::canvas::{
-    AnalyzeAction, AnalyzeClarity, AnalyzeHit, AnalyzeKey, AnalyzeLayout, AnalyzeMode, AnalyzePage,
-    AnalyzeState, AnalyzeView, AnalyzedChord, AnalyzedNote, RowShade, SCALES, analyze_cents_tag,
-    analyze_hit, analyze_layout, analyze_press, analyze_row_shade, analyze_strings, analyze_tip,
-    estimated_width, scale_degrees,
+    AnalyzeAction, AnalyzeCard, AnalyzeClarity, AnalyzeControl, AnalyzeHit, AnalyzeKey,
+    AnalyzeKnob, AnalyzeLayout, AnalyzeMode, AnalyzePage, AnalyzeRecordView, AnalyzeSource,
+    AnalyzeState, AnalyzeTool, AnalyzeView, AnalyzedChord, AnalyzedNote, RowShade, SCALES,
+    analyze_cents_tag, analyze_hit, analyze_layout, analyze_press, analyze_row_shade,
+    analyze_strings, analyze_tip, estimated_width, scale_degrees,
 };
 use fontelle_ui::layout::{Rect, analyze_minimum_size, analyze_window_size, editor_window_layout};
 use fontelle_ui::theme::Theme;
@@ -212,24 +214,177 @@ fn the_job_strip_is_there_only_while_analysing() {
     );
 }
 
+/// A view as a recording study has it: two takes, the second in the lane.
+fn a_recording_view() -> AnalyzeView {
+    let mut view = a_view();
+    view.source = AnalyzeSource::Insert {
+        track: "Vox".to_string(),
+    };
+    view.record = Some(AnalyzeRecordView {
+        inputs: vec!["Mic".to_string()],
+        ..AnalyzeRecordView::default()
+    });
+    view.takes = (1..=2)
+        .map(|id| StudyTake {
+            id,
+            asset: fontelle_types::AssetRef {
+                id: Default::default(),
+                path: format!("recordings/Take {id}.wav").into(),
+                content_hash: 0,
+                size: 0,
+                kind: fontelle_types::AssetKind::Sample,
+            },
+            name: format!("Take {id}"),
+            song_sample: None,
+            frames: 48_000 * 6,
+            sample_rate: 48_000,
+            starred: id == 2,
+            dropped_frames: 0,
+        })
+        .collect();
+    view.take_peaks = vec![view.peaks.clone(), view.peaks.clone()];
+    view.current_take = Some(2);
+    view
+}
+
+/// Every page — Notes, Clean, Slice, Record with takes and without — fits
+/// the window at every scale and at its smallest: its cards under the
+/// canopy, its controls inside their cards and apart, and everything the
+/// pointer can be over says what it is.
 #[test]
-fn the_other_pages_say_they_are_coming_rather_than_being_empty() {
-    let view = a_view();
-    let (w, h) = analyze_window_size(1.0);
+fn every_page_fits_and_says_what_everything_is() {
+    let mut views = vec![(AnalyzePage::Notes, a_view())];
     for page in [AnalyzePage::Clean, AnalyzePage::Slice, AnalyzePage::Record] {
+        let mut view = a_view();
+        view.rate = 48_000;
+        view.has_audio = true;
+        views.push((page, view));
+    }
+    views.push((AnalyzePage::Record, a_recording_view()));
+    for (page, view) in &views {
+        for scale in SCALES {
+            for (w, h) in [analyze_window_size(scale), analyze_minimum_size(scale)] {
+                let mut s = state(scale);
+                s.page = *page;
+                let l = laid_out(w as f32, h as f32, view, &mut s);
+                assert_eq!(l.cards.len(), 3, "{page:?}: three cards");
+                for (name, rect) in l.named() {
+                    assert!(
+                        inside(l.body, rect),
+                        "{page:?}: {name} {rect:?} outside {:?} at {scale} {w}x{h}",
+                        l.body
+                    );
+                    if name.starts_with("card.") {
+                        assert!(!overlaps(rect, l.canopy), "{page:?}: {name} over the lane");
+                    }
+                }
+                for (control, rect) in &l.controls {
+                    let card = l
+                        .cards
+                        .iter()
+                        .find(|(_, c)| c.frame.contains(rect.x + 1.0, rect.y + 1.0))
+                        .unwrap_or_else(|| panic!("{page:?}: {control:?} is on no card"));
+                    assert!(
+                        inside(card.1.frame, *rect),
+                        "{page:?}: {control:?} {rect:?} spills out of {:?} at {scale} {w}x{h}",
+                        card.0
+                    );
+                    for (other, r) in &l.controls {
+                        if other != control {
+                            assert!(
+                                !overlaps(*rect, *r),
+                                "{page:?}: {control:?} overlaps {other:?} at {scale} {w}x{h}"
+                            );
+                        }
+                    }
+                    let (x, y) = centre(*rect);
+                    let hit = analyze_hit(&l, view, &s, x, y);
+                    assert_eq!(hit, Some(AnalyzeHit::Control(*control)), "{page:?}");
+                    assert!(analyze_tip(&hit.unwrap(), view, &s).is_some_and(|t| !t.is_empty()));
+                }
+                // Nothing but Notes has the coming-soon card.
+                assert!(l.later.is_empty());
+                let strings = analyze_strings(view, &s, &l);
+                assert!(
+                    !strings.iter().any(|(t, _)| t.contains("later update")),
+                    "{page:?}"
+                );
+            }
+        }
+        // And a sweep: every hit has a tip.
+        let mut s = state(1.0);
+        s.page = *page;
+        let (w, h) = analyze_window_size(1.0);
+        let l = laid_out(w as f32, h as f32, view, &mut s);
+        let mut y = l.body.y;
+        while y < l.body.bottom() {
+            let mut x = l.body.x;
+            while x < l.body.right() {
+                if let Some(hit) = analyze_hit(&l, view, &s, x, y) {
+                    assert!(
+                        analyze_tip(&hit, view, &s).is_some_and(|t| !t.is_empty()),
+                        "{page:?}: {hit:?} at ({x}, {y}) has no tip"
+                    );
+                }
+                x += 9.0;
+            }
+            y += 9.0;
+        }
+    }
+}
+
+/// Each page's cards are its own: Clean is noise, denoise and the trim;
+/// Slice the points, the layout, the send; Record the source, the lamp and
+/// the takes.
+#[test]
+fn each_page_has_its_cards_and_its_tools() {
+    let view = a_recording_view();
+    let (w, h) = analyze_window_size(1.0);
+    let expect = [
+        (
+            AnalyzePage::Notes,
+            [AnalyzeCard::Note, AnalyzeCard::Pitch, AnalyzeCard::Output],
+            vec![AnalyzeTool::Select, AnalyzeTool::Move],
+        ),
+        (
+            AnalyzePage::Clean,
+            [AnalyzeCard::Noise, AnalyzeCard::Denoise, AnalyzeCard::Shape],
+            vec![AnalyzeTool::Select, AnalyzeTool::Noise],
+        ),
+        (
+            AnalyzePage::Slice,
+            [AnalyzeCard::Points, AnalyzeCard::Layout, AnalyzeCard::Send],
+            vec![AnalyzeTool::Select, AnalyzeTool::Marker],
+        ),
+        (
+            AnalyzePage::Record,
+            [AnalyzeCard::Source, AnalyzeCard::Record, AnalyzeCard::Takes],
+            vec![],
+        ),
+    ];
+    for (page, cards, tools) in expect {
         let mut s = state(1.0);
         s.page = page;
         let l = laid_out(w as f32, h as f32, &view, &mut s);
-        assert!(!l.later.is_empty(), "{page:?} shows its card");
-        assert!(l.lane.grid.is_empty(), "and not the lane");
-        let strings = analyze_strings(&view, &s, &l);
-        assert!(
-            strings
-                .iter()
-                .any(|(text, _)| text.contains("coming in a later update")),
-            "{page:?}: {strings:?}"
-        );
+        let have: Vec<AnalyzeCard> = l.cards.iter().map(|(c, _)| *c).collect();
+        assert_eq!(have, cards);
+        let have: Vec<AnalyzeTool> = l.tools.iter().map(|(t, _)| *t).collect();
+        assert_eq!(have, tools, "{page:?}");
     }
+    // The Pitch card has its seven knobs; the Record card its lamp.
+    let mut s = state(1.0);
+    let l = laid_out(w as f32, h as f32, &view, &mut s);
+    for knob in AnalyzeKnob::PITCH {
+        assert!(l.control(AnalyzeControl::Knob(knob)).is_some(), "{knob:?}");
+    }
+    s.page = AnalyzePage::Record;
+    let l = laid_out(w as f32, h as f32, &view, &mut s);
+    assert!(l.control(AnalyzeControl::Arm).is_some());
+    assert_eq!(l.takes.len(), 2);
+    assert!(
+        !l.lane.grid.is_empty(),
+        "the take in the lane, over the takes"
+    );
 }
 
 // ------------------------------------------------------- hits, tips ---
@@ -573,7 +728,7 @@ fn the_pitch_picture_floor_sits_on_the_noise_and_under_the_notes() {
 
 // ------------------------------------------------ P2: hear it, move it ---
 
-use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeEditOp, AnalyzeNotePart, AnalyzeTool, nearest_note};
+use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeEditOp, AnalyzeNotePart, nearest_note};
 
 /// Ty: *"theres no playhead ... so i cant preview what im making"*. A click
 /// on the ruler puts the cursor there; Space plays from it, round a region

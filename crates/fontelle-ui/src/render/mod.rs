@@ -15,6 +15,7 @@
 //! function rather than of the crate.
 
 mod analyze;
+mod analyze_pages;
 mod bridge;
 
 pub use analyze::{AnalyzeChrome, analyze_style, lay_out_analyze, shape_analyze};

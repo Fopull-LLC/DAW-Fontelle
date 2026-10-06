@@ -23,6 +23,9 @@ use fontelle_ui::canvas::{
 
 use super::*;
 
+/// A take's waveform: (min, max) a bucket.
+pub(crate) type Peaks = Arc<[(f32, f32)]>;
+
 /// What the Analyze Musically window is open on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum StudyTarget {
@@ -1861,6 +1864,11 @@ impl Session {
             view.takes = study.takes.clone();
             view.comp = study.comp.clone();
             view.current_take = study.current_take;
+            view.take_peaks = study
+                .takes
+                .iter()
+                .map(|t| self.take_peaks_of(&t.asset))
+                .collect();
         }
         view.rendering = self.render_job.as_ref().map(RenderJob::fraction);
         view.record = self.recorder.as_ref().map(|r| {
@@ -1890,33 +1898,77 @@ impl Session {
                 record.armed = capture.is_armed();
                 record.recording = capture.is_recording();
                 record.dropped_frames = capture.dropped_frames();
-                record.level = self.strip_peak(track);
+                record.level = capture.level();
             }
             record
         });
     }
 
-    /// A mixer track's peak now, linear, for the Record page's meter.
-    fn strip_peak(&self, track: MixerTrackId) -> f32 {
-        let _ = track;
-        0.0
+    /// A take's waveform at the lane's 100 buckets a second, made once.
+    fn take_peaks_of(&self, asset: &AssetRef) -> Arc<[(f32, f32)]> {
+        if let Some(peaks) = self.take_peaks.borrow().get(&asset.id) {
+            return Arc::clone(peaks);
+        }
+        let Some(buffer) = self.library.audio_store().get(asset.id).cloned() else {
+            return Arc::from(Vec::new());
+        };
+        let mono = crate::analyze::mono_span(&buffer, 0, buffer.frames());
+        let peaks = crate::analyze::peaks_of(&mono, buffer.sample_rate);
+        self.take_peaks
+            .borrow_mut()
+            .insert(asset.id, Arc::clone(&peaks));
+        peaks
     }
 
     /// Whether the window's view would read differently: moved by the
-    /// recorder and the render, which change without a command.
+    /// render and the recorder's state, which change without a command (the
+    /// meter is read on its own, [`Session::study_meter`]).
     pub(super) fn study_revision(&self) -> u64 {
-        let render = self
-            .render_job
-            .as_ref()
-            .map_or(0, |j| u64::from(j.progress.load(Ordering::Relaxed)) + 1);
+        let render = self.render_job.as_ref().map_or(0, |j| {
+            u64::from(j.progress.load(Ordering::Relaxed) >> 16) + 1
+        });
         let record = self.recorder.as_ref().map_or(0, |r| {
-            let w = r.input_writer.as_ref();
-            let armed = self.recorder_armed() as u64;
-            let level = w.map_or(0, |w| u64::from(w.control.level().to_bits() >> 16));
-            let recording = w.map_or(0, |w| w.control.take_frames.load(Ordering::Relaxed) / 4800);
-            armed + (level << 1) + (recording << 20) + 7
+            let recording = r
+                .input_writer
+                .as_ref()
+                .is_some_and(|w| w.control.recording.load(Ordering::Relaxed))
+                || self
+                    .target_insert()
+                    .and_then(|(t, s)| self.analyze_capture(t, s))
+                    .is_some_and(|c| c.is_recording());
+            u64::from(self.recorder_armed()) + 2 * u64::from(recording) + 4
         });
         render.wrapping_mul(31).wrapping_add(record)
+    }
+
+    /// The Record page's meter.
+    pub(super) fn study_meter(&self) -> fontelle_ui::canvas::AnalyzeMeter {
+        let Some(recorder) = &self.recorder else {
+            return Default::default();
+        };
+        if let Some(w) = &recorder.input_writer {
+            let c = &w.control;
+            return fontelle_ui::canvas::AnalyzeMeter {
+                level: c.level(),
+                recording: c.recording.load(Ordering::Relaxed),
+                take_seconds: c.take_frames.load(Ordering::Relaxed) as f64
+                    / f64::from(self.input_rate.max(1)),
+                dropped_frames: c.dropped.load(Ordering::Relaxed),
+            };
+        }
+        match self
+            .target_insert()
+            .and_then(|(t, s)| self.analyze_capture(t, s))
+        {
+            Some(capture) => fontelle_ui::canvas::AnalyzeMeter {
+                level: capture.level(),
+                recording: capture.is_recording(),
+                take_seconds: capture.take_frames() as f64
+                    / f64::from(self.options.sample_rate.max(1)),
+                dropped_frames: capture.dropped_frames(),
+            },
+            None => Default::default(),
+        }
     }
 }
 

@@ -541,6 +541,9 @@ enum PluginPurpose {
     Insert(usize),
 }
 
+/// The record menu's last row: a take into a study of its own.
+pub const RECORD_INTO_ANALYZE: &str = "Record into Analyze Musically\u{2026}";
+
 #[derive(Debug, Clone, PartialEq)]
 enum MenuTarget {
     /// A channel in the rack, by row.
@@ -648,6 +651,15 @@ enum MenuTarget {
     AnalyzeWindowScale,
     /// Its Render to clip ▾: replace the clip's audio, or a new clip below.
     AnalyzeRender,
+    /// Its Studies ▾: every study in the song, and Record into….
+    AnalyzeStudies,
+    /// Its pages' choosers: the fades' shape, how auto-slice cuts, what the
+    /// Record page records from.
+    AnalyzeFadeShape,
+    AnalyzeAutoSlice,
+    AnalyzeSource,
+    /// A knob's right-click: back to default, or type a value.
+    AnalyzeKnob(crate::canvas::AnalyzeKnob),
     /// "Rename…" from that menu, asking for the clip's name.
     ClipName(fontelle_types::ClipId),
     /// One point of an automation block: its shape, or its removal.
@@ -852,9 +864,14 @@ impl MenuTarget {
             // header, so it is that window that draws it.
             // The pad's footer is in its own window.
             Self::NotepadPages => Some(EditorKind::Effect),
-            Self::AnalyzeScale | Self::AnalyzeWindowScale | Self::AnalyzeRender => {
-                Some(EditorKind::Analyze)
-            }
+            Self::AnalyzeScale
+            | Self::AnalyzeWindowScale
+            | Self::AnalyzeRender
+            | Self::AnalyzeStudies
+            | Self::AnalyzeFadeShape
+            | Self::AnalyzeAutoSlice
+            | Self::AnalyzeSource
+            | Self::AnalyzeKnob(_) => Some(EditorKind::Analyze),
             // A rename target rather than a menu, but it is typed into the
             // effect window and that is the window that has to redraw.
             Self::DisgustingBeatScene(_) => Some(EditorKind::Effect),
@@ -1920,6 +1937,11 @@ pub struct WindowApp {
     /// The projects in the configured folder, read with the studio's other
     /// lists.
     projects: Vec<LibraryEntry>,
+    /// The Projects tab's study rows (before `project_offset`): which study
+    /// each is.
+    project_studies: Vec<fontelle_types::StudyId>,
+    /// Rows before the first project: the studies and their headings.
+    project_offset: usize,
     /// What Fontelle is set to, as name-and-value rows — read with the
     /// studio's other lists, and a `LibraryEntry` for the reason
     /// [`StudioHost::settings`] gives.
@@ -2540,6 +2562,8 @@ impl WindowApp {
             lane_style: false,
             settings_focus: None,
             projects: Vec::new(),
+            project_studies: Vec::new(),
+            project_offset: 0,
             library_count: 0,
             query: String::new(),
             searching: false,
@@ -4535,7 +4559,7 @@ impl WindowApp {
                 0 => "Presets".to_string(),
                 n => format!("Presets \u{2014} {n} devices"),
             },
-            BrowserMode::Projects => match self.projects.len() {
+            BrowserMode::Projects => match self.projects.len() - self.project_offset {
                 0 => "Projects".to_string(),
                 n => format!("Projects \u{2014} {n}"),
             },
@@ -6963,7 +6987,30 @@ impl WindowApp {
         self.prefabs = doc.prefabs();
         self.files = doc.library_files();
         self.presets = doc.library_presets();
-        self.projects = doc.projects();
+        // The song's studies first, under a heading of their own — Ty's §6
+        // answer 4: a study is found again where the things you made are,
+        // never lost when its window closes.
+        let studies = doc.analysis_studies();
+        let mut projects = Vec::new();
+        if !studies.is_empty() {
+            projects.push(crate::document::LibraryEntry {
+                name: "Analyze Musically \u{2014} this song".to_string(),
+                detail: format!("{}", studies.len()),
+                kind: crate::document::LibraryKind::Group,
+            });
+            projects.extend(studies.iter().map(|s| {
+                crate::document::LibraryEntry::file(format!("\u{2669} {}", s.name), s.place.clone())
+            }));
+            projects.push(crate::document::LibraryEntry {
+                name: "Projects".to_string(),
+                detail: String::new(),
+                kind: crate::document::LibraryKind::Group,
+            });
+        }
+        self.project_studies = studies.iter().map(|s| s.id).collect();
+        self.project_offset = projects.len();
+        projects.extend(doc.projects());
+        self.projects = projects;
         self.settings = doc.settings();
         self.settings_controls = doc.setting_controls();
         self.settings_help = doc.setting_help();
@@ -11523,6 +11570,17 @@ impl WindowApp {
     /// three-letter row in a mixer strip means "show me this" and a click that
     /// selected something out of sight would be a click that did nothing.
     fn open_insert(&mut self, strip: usize, slot: usize) {
+        // Analyze Musically's slot opens its own window on its study, not a
+        // panel of knobs (Ty, `docs/analyze-musically-plan.md` §6.1).
+        if self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.is_analyze_insert(strip, slot))
+        {
+            self.open_analyze_insert(strip, slot);
+            return;
+        }
         let (config, view, tune, notepad) = match &self.options.document {
             // An EQ draws its curve, the corrector draws the note, the pad
             // draws its page, and everything else draws the grid of knobs its
@@ -17342,11 +17400,23 @@ impl WindowApp {
                     (Some(doc), BrowserMode::Sounds | BrowserMode::Presets) => doc.open_file(index),
                     // Opening one leaves what is open behind: asked first
                     // when that has changes not on disk.
-                    (Some(doc), BrowserMode::Projects) if doc.is_dirty() => {
-                        self.leave(Leave::OpenProject(index));
+                    // A study row opens the study; a heading does nothing.
+                    (Some(_), BrowserMode::Projects) if index < self.project_offset => {
+                        if let Some(id) = index
+                            .checked_sub(1)
+                            .and_then(|i| self.project_studies.get(i).copied())
+                        {
+                            self.open_study(id);
+                        }
                         return;
                     }
-                    (Some(doc), BrowserMode::Projects) => doc.open_project(index),
+                    (Some(doc), BrowserMode::Projects) if doc.is_dirty() => {
+                        self.leave(Leave::OpenProject(index - self.project_offset));
+                        return;
+                    }
+                    (Some(doc), BrowserMode::Projects) => {
+                        doc.open_project(index - self.project_offset)
+                    }
                     // A folder row walks in, a file row imports. Which of
                     // those it was is the host's to know — it holds the list.
                     (Some(doc), BrowserMode::Import) => doc.open_import(index),
@@ -18057,6 +18127,11 @@ impl WindowApp {
             MenuTarget::AnalyzeScale => self.analyze_scale_menu().0,
             MenuTarget::AnalyzeWindowScale => self.analyze_window_scale_menu(),
             MenuTarget::AnalyzeRender => self.analyze_render_menu(),
+            MenuTarget::AnalyzeStudies => self.analyze_studies_menu(),
+            target @ (MenuTarget::AnalyzeFadeShape
+            | MenuTarget::AnalyzeAutoSlice
+            | MenuTarget::AnalyzeSource
+            | MenuTarget::AnalyzeKnob(_)) => self.analyze_choice_menu(target),
             MenuTarget::FlopScale => {
                 let current = self.flopsynth.as_ref().map_or(1.0, |view| view.scale);
                 let mut entries = vec![MenuEntry::disabled("Window scale")];
@@ -18158,7 +18233,11 @@ impl WindowApp {
                     .as_ref()
                     .map(|doc| doc.record_mode())
                     .unwrap_or_default();
-                crate::transport::record_menu_entries_for(current)
+                let mut entries = crate::transport::record_menu_entries_for(current);
+                // A take into Analyze Musically rather than the arrangement
+                // (`docs/analyze-musically-plan.md` §6.1).
+                entries.push(MenuEntry::new(RECORD_INTO_ANALYZE).after_rule());
+                entries
             }
             // Every input the machine has, and "none" above them — a track
             // that records nothing is the state every track starts in and the
@@ -19170,6 +19249,14 @@ impl WindowApp {
             (MenuTarget::AnalyzeScale, index) => self.choose_analyze_scale(index),
             (MenuTarget::AnalyzeWindowScale, index) => self.choose_analyze_window_scale(index),
             (MenuTarget::AnalyzeRender, index) => self.render_analysis(index == 1),
+            (MenuTarget::AnalyzeStudies, index) => self.choose_analyze_studies(index),
+            (
+                target @ (MenuTarget::AnalyzeFadeShape
+                | MenuTarget::AnalyzeAutoSlice
+                | MenuTarget::AnalyzeSource
+                | MenuTarget::AnalyzeKnob(_)),
+                index,
+            ) => self.choose_analyze_choice(target.clone(), index),
             (MenuTarget::FlopScale, index) => {
                 let scale = index
                     .checked_sub(1)
@@ -19571,6 +19658,9 @@ impl WindowApp {
                 }
                 None => {}
             },
+            (MenuTarget::RecordMode, index) if index == crate::transport::RecordMode::ALL.len() => {
+                self.record_into_analysis();
+            }
             (MenuTarget::RecordMode, index) => {
                 if let Some(mode) = crate::transport::RecordMode::ALL.get(index).copied() {
                     if let Some(doc) = &mut self.options.document {
@@ -21871,6 +21961,10 @@ impl WindowApp {
             | Action::AnalyzeVibrato
             | Action::AnalyzeSelectTool
             | Action::AnalyzeMoveTool
+            | Action::AnalyzeZoomSelection
+            | Action::AnalyzeZoomAll
+            | Action::AnalyzeNoiseTool
+            | Action::AnalyzeMarkerTool
             // Heard only while a note is being drawn, before the studio asks.
             | Action::PathPoint
             | Action::PathPointBack => {}

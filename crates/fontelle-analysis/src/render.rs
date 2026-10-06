@@ -170,6 +170,26 @@ pub fn render_edits(
         seams.extend(right);
         spans.push(from..to);
     }
+    // Each note's own gain (the Pitch card's GAIN), over its span, eased in
+    // and out over the splice's fade so a level change never clicks.
+    for edit in edits.iter().filter(|e| e.gain_db.abs() >= 1e-3) {
+        let a = edit.span.0.clamp(0, frames as i64) as usize;
+        let b = edit.span.1.clamp(0, frames as i64) as usize;
+        if b <= a {
+            continue;
+        }
+        let g = 10f32.powf(edit.gain_db / 20.0);
+        let half = fade / 2;
+        let (from, to) = (a.saturating_sub(half), (b + half).min(frames));
+        for f in from..to {
+            let w = ramp(f, a, fade).min(1.0 - ramp(f, b, fade));
+            let gain = 1.0 + (g - 1.0) * w;
+            for c in 0..channels {
+                out[f * channels + c] *= gain;
+            }
+        }
+        spans.push(from..to);
+    }
     Rendered {
         audio: out,
         spans,

@@ -1451,6 +1451,11 @@ pub trait StudioHost: DocumentHost {
     fn record_into_analysis(&mut self) -> Result<String, String> {
         Err("this studio cannot record into a study".to_string())
     }
+    /// The Record page's meter, read once a frame: cheap, and not a reason
+    /// to rebuild the view.
+    fn analysis_meter(&self) -> crate::canvas::AnalyzeMeter {
+        crate::canvas::AnalyzeMeter::default()
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///
