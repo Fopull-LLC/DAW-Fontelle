@@ -26,6 +26,7 @@ pub mod relaunch;
 pub mod sampling;
 mod session;
 pub mod settings;
+pub mod slices;
 pub mod themes;
 pub mod tour;
 pub mod tune;
