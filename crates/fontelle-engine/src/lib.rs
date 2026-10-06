@@ -29,7 +29,7 @@ mod tune_tap;
 pub use analyze_capture::{
     AnalyzeCapture, AnalyzeCaptureEvent, AnalyzeCaptureNode, AnalyzeTapPoint,
 };
-pub use audio_input::{InputCapture, InputReader, InputWriter, input_capture_channel};
+pub use audio_input::{InputCapture, InputReader, InputTap, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,

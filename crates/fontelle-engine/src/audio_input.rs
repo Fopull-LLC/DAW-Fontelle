@@ -26,6 +26,30 @@
 pub struct InputWriter {
     producer: rtrb::Producer<f32>,
     dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// A second listener on the same device, when one was asked for — see
+    /// [`InputWriter::with_tap`].
+    tap: Option<TapWriter>,
+}
+
+/// The writer's end of an [`InputTap`].
+struct TapWriter {
+    producer: rtrb::Producer<f32>,
+    open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// A second reader of one input device (`docs/analyze-musically-plan.md`
+/// §5 R4): Analyze Musically's Record page hearing the microphone a mixer
+/// track already has open, because an interface usually cannot be opened
+/// for capture twice.
+///
+/// Its own ring, so it drops its own samples and never the track's: the
+/// track's take is the one that must not have a hole in it. Closed, the
+/// writer skips it entirely — one relaxed load a block.
+pub struct InputTap {
+    consumer: rtrb::Consumer<f32>,
+    open: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// The other thread's half.
@@ -46,12 +70,36 @@ pub fn input_capture_channel(capacity: usize) -> (InputWriter, InputReader) {
         InputWriter {
             producer,
             dropped: dropped.clone(),
+            tap: None,
         },
         InputReader { consumer, dropped },
     )
 }
 
 impl InputWriter {
+    /// This writer with a **tap**: a second ring, `capacity` samples long,
+    /// that hears every block while it is open. Made before the stream is
+    /// started (the writer moves into the device's callback), opened and
+    /// closed afterwards from the reader's side.
+    pub fn with_tap(mut self, capacity: usize) -> (Self, InputTap) {
+        let (producer, consumer) = rtrb::RingBuffer::new(capacity.max(1));
+        let open = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.tap = Some(TapWriter {
+            producer,
+            open: open.clone(),
+            dropped: dropped.clone(),
+        });
+        (
+            self,
+            InputTap {
+                consumer,
+                open,
+                dropped,
+            },
+        )
+    }
+
     /// **RT.** Pushes `block` into the ring and returns how much of it fitted.
     ///
     /// Never blocks, never allocates. What did not fit is counted rather than
@@ -68,6 +116,21 @@ impl InputWriter {
         if lost > 0 {
             self.dropped
                 .fetch_add(lost, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(tap) = &mut self.tap
+            && tap.open.load(std::sync::atomic::Ordering::Acquire)
+        {
+            let mut kept = 0;
+            for sample in block {
+                if tap.producer.push(*sample).is_err() {
+                    break;
+                }
+                kept += 1;
+            }
+            if kept < block.len() {
+                tap.dropped
+                    .fetch_add(block.len() - kept, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         written
     }
@@ -90,6 +153,38 @@ impl InputReader {
 
     /// How many samples the ring had to drop. Not zero is a take with a hole
     /// in it.
+    pub fn dropped(&self) -> usize {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl InputTap {
+    /// Starts hearing the device, from the next block. What an earlier
+    /// opening left unread is thrown away first, so a take does not begin
+    /// with the tail of the last one.
+    pub fn open(&mut self) {
+        while self.consumer.pop().is_ok() {}
+        self.open.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Stops hearing it. What is already in the ring stays to be drained.
+    pub fn close(&self) {
+        self.open.store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Moves everything heard so far into `out`, keeping what is there.
+    /// Interleaved, as the device delivers it.
+    pub fn drain_into(&mut self, out: &mut Vec<f32>) {
+        while let Ok(sample) = self.consumer.pop() {
+            out.push(sample);
+        }
+    }
+
+    /// Samples this tap could not keep. The track's ring has its own count.
     pub fn dropped(&self) -> usize {
         self.dropped.load(std::sync::atomic::Ordering::Relaxed)
     }
