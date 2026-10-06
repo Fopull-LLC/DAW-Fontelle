@@ -1,6 +1,6 @@
 # Analyze Musically: design plan
 
-*Written 2026-10-06 from a read-only design pass over the tree at v0.25.2. Nothing is built yet; P0 is the first step.*
+*Written 2026-10-06 from a read-only design pass over the tree at v0.25.2. **Status (2026-10-06):** P0 done — tract runs `nmp.onnx` whole, matching Python basic-pitch; the analysis half of P1 (pYIN, segmentation, key, chords, extraction confidence, cache) is built in `fontelle-analysis`; the P1 UI is not started. `PROGRESS.md` has the numbers.*
 
 **What Ty asked for, condensed.** An Edison-like tool, but much easier to use. It opens from an audio clip (the clip's name menu → *Analyze Musically*) or as its own instance. It analyses the audio straight away and draws the notes (chords and melodies) over the waveform. You drag notes to repitch them and the result has to sound natural. You can render the edits back to the clip. You can copy the notes into any piano roll as MIDI. It estimates the key/scale with a confidence %, and gives a separate confidence for how well notes could be pulled out at all. Clicking the scale copies it, for pasting into Tune or the roll's scale, and you can view the notes in the scale. The deeper tools are tucked away: noise capture and removal, trim, markers, slicing into a sampler, and recording takes. The look follows Flopsynth. It should be friendly for beginners, have depth for pros, be readable at a glance and be fast from the keyboard.
 
@@ -212,7 +212,7 @@ Combine as `logistic(w·[…])`, calibrated the same way. Show it as a word plus
 | Component | Licence | Status |
 |---|---|---|
 | basic-pitch code | Apache-2.0 | verified (repo) |
-| basic-pitch `nmp.onnx` weights | in-repo, covered by repo Apache-2.0; no separate weights licence | **verify with upstream before release**; ship LICENSE/NOTICE |
+| basic-pitch `nmp.onnx` weights | in-repo, covered by repo Apache-2.0; no separate weights licence (checked 2026-10-06 at `fa5997a`, `licenses/MODELS.md`) | shipped with LICENSE/NOTICE in `licenses/basic-pitch/`; an upstream word on the training data before release stays advisable |
 | tract / tract-onnx | MIT OR Apache-2.0 | verified |
 | ort (not chosen) | MIT/Apache (wraps MIT onnxruntime binaries) | not chosen |
 | WORLD | modified BSD | verified (widely documented) |

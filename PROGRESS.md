@@ -19,6 +19,52 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-06, later — Analyze Musically P1, the analysis half (no
+UI).** Same branch, on top of the P0 entry below.
+
+- **`fontelle_dsp::yin_cmndf`**: the tracker's coarse difference function,
+  pulled out pure. `yin_cmndf_is_the_trackers_own` pins a fingerprint of
+  every frame the tracker reports (three signals, three ranges, two rates)
+  to the value before the move, bit for bit (Linux x86-64 only: it reads
+  the platform's `sinf`/`tanf`).
+- **`mono`: offline pYIN** on it — pYIN's Beta(2,18)-weighted candidates at
+  8 kHz, refined at 22 050 Hz; voicing as its own two-state HMM over the
+  candidates' mass (not pYIN's mirrored states, which call almost anything
+  voiced; the module doc says why); Viterbi pitch over 20-cent bins. A sung
+  glide within 0.9 cents (median 0.24), a saw at its fundamental, noise
+  and silence unvoiced. **`segment`** cuts notes at unvoiced gaps over
+  40 ms, held pitch steps over 70 cents and re-strikes; centre = median of
+  the middle 60 %, drift < 3 Hz and vibrato 3–9 Hz by zero-phase
+  Butterworth. The vibrato melody's onsets within 10 ms, ends within 15 ms.
+  Three minutes in 0.8 s.
+- **`key`**: Krumhansl–Kessler and Temperley profiles averaged; the
+  winning tonic tried against major, minor and church/harmonic modes by
+  scale fit (A minor with F♯ reads A dorian); relative and tonic
+  confidence apart. The confidence is a logistic over correlation, margin
+  to the best non-relative key, ln(1+mass) and the in-scale share, fitted
+  by `examples/fit_key_calibration.rs` on 20 000 synthetic readings
+  (deciles within ~0.07). **A synthetic floor**: refit on real songs.
+- **`chords`**: per step (beat or 0.5 s) cosine against ten templates at
+  twelve roots, a bass bonus, neighbours merged. I–vi–IV–V, sevenths,
+  sus, power chords, a melody over a held chord.
+- **`confidence`**: the extraction badge — notes' peak activation, share
+  of sounding frames a note explains, p95/p10 level, spectral flatness,
+  through a **hand-set** logistic → Clear / Usable / Rough guess. Clean
+  fixtures Clear, a melody in hiss Usable (0.42), drums and noise rough.
+- **`analysis::analyse`**: everything in one `Analysis` (serde). Nothing
+  found in non-silent audio → lower thresholds, `guessed`, capped rough
+  (a drum loop still gets notes). Melody vs chords: ≤ 1 note at a time in
+  90 % of active frames and pYIN voicing ≥ 0.6 → melody notes from pYIN.
+- **`cache`**: `<sha256 of rate+samples>-<ENGINE_VERSION>.json`, written
+  via a `.partial` rename; damaged or other-engine files are misses. The
+  directory is the caller's (INVARIANT 10).
+- Tests: `fontelle-dsp/tests/pitch.rs` (three new), `fontelle-analysis/
+  tests/{mono,key,chords,confidence,analysis}.rs`. Bench adds pYIN.
+- **Next**: the UI half of P1 (`EditorKind::Analyze`, clip title menu,
+  clipboards, the job in `fontelle-app`), which other agents' `fontelle-ui`
+  work touches; a labelled real-song set for the key and extraction
+  calibrations; the classic (no-model) engine for `--no-default-features`.
+
 **As of 2026-10-06 — Analyze Musically P0: basic-pitch runs in pure Rust.**
 Branch `feature/analyze-musically`, not merged; v0.25.2. The spike of
 `docs/analyze-musically-plan.md` §4 P0, no UI.
