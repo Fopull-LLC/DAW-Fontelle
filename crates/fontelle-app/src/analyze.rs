@@ -717,6 +717,8 @@ pub(crate) struct Preview {
     job: Option<(Want, std::thread::JoinHandle<Vec<f32>>)>,
     /// Bumped whenever [`pending`](Self::pending) may have changed.
     pub version: u64,
+    /// Whether the player has had this study's audio at all yet.
+    primed: bool,
 }
 
 /// What the preview plays: the edits, the Clean page, and whether it is
@@ -746,6 +748,7 @@ impl Preview {
             changed_at: std::time::Instant::now(),
             job: None,
             version: 0,
+            primed: false,
         }
     }
 
@@ -766,6 +769,14 @@ impl Preview {
     /// Once a frame: a finished render goes to the player; changes that
     /// have rested start the next.
     pub fn service(&mut self, player: &fontelle_engine::StudyPlayer) {
+        // The player holds whatever study it last played. Until this one's
+        // edits are rendered its original stands in — a Space pressed the
+        // moment the window opens on another study played the last one's
+        // audio — and the edits swap in where it plays when they land.
+        if !self.primed {
+            player.submit(self.audio(Arc::clone(&self.original)));
+            self.primed = true;
+        }
         if self
             .job
             .as_ref()
@@ -1079,4 +1090,76 @@ pub(crate) fn transients(mono: &[f32], rate: u32) -> Vec<(f64, f32)> {
         .into_iter()
         .map(|o| (o.sample as f64 / f64::from(rate.max(1)), o.strength))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fontelle_engine::{
+        AudioNode, PrepareContext, ProcessContext, StudyPlayer, StudyPlayerNode,
+    };
+
+    fn buffer(value: f32) -> fontelle_core::AudioBuffer {
+        fontelle_core::AudioBuffer {
+            data: vec![value; 48_000].into(),
+            sample_rate: 48_000,
+            channels: 1,
+        }
+    }
+
+    /// The window opened on another study whose edits are still being
+    /// rendered: Space at once must not play the *last* study's audio. Until
+    /// the render lands the new study's original stands in, and the edits
+    /// swap in where it plays.
+    #[test]
+    fn a_new_study_never_plays_the_last_ones_audio() {
+        let player = StudyPlayer::new();
+        // The last study, heard.
+        let mut last = Preview::new(&buffer(0.25));
+        last.service(&player);
+        // The new one, with an edit to render.
+        let mut next = Preview::new(&buffer(0.5));
+        next.want(Want {
+            edits: vec![fontelle_types::PitchEdit {
+                span: (1_000, 20_000),
+                shift_cents: 100.0,
+                flatten: 0.0,
+                vibrato: 1.0,
+                glide_in_ms: 40.0,
+                glide_out_ms: 40.0,
+                formant_cents: 0.0,
+                gain_db: 0.0,
+                experimental_poly: None,
+            }],
+            ..Want::default()
+        });
+        next.service(&player);
+        let mut node = StudyPlayerNode::new(std::sync::Arc::clone(&player));
+        node.prepare(&PrepareContext {
+            sample_rate: 48_000.0,
+            max_block_size: 512,
+        });
+        player.play(30_000, None, false);
+        let mut left = vec![0.0f32; 512];
+        let mut right = vec![0.0f32; 512];
+        {
+            let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
+            let mut ctx = ProcessContext {
+                inputs: &[],
+                outputs: &mut outputs,
+                all_events: &[],
+                live_events: &[],
+                audio: &[],
+                node: fontelle_types::NodeId::default(),
+                transport: Default::default(),
+                sample_range: 0..512,
+            };
+            node.process(&mut ctx);
+        }
+        let last_sample = left[511];
+        assert!(
+            (last_sample - 0.5).abs() < 1e-3,
+            "heard {last_sample}: the new study's own audio, not the last one's"
+        );
+    }
 }

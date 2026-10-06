@@ -493,8 +493,10 @@ pub fn analyze_knob_change(
                 K::Reduce => clean.denoise.reduce_db = value,
                 K::Amount => clean.denoise.amount = value / 100.0,
                 K::Sensitivity => clean.denoise.sensitivity = value / 100.0,
-                K::FadeIn => clean.fade_in = frames(value),
-                K::FadeOut => clean.fade_out = frames(value),
+                // Never more than half of what the trim leaves, as the
+                // fades' own handles keep them.
+                K::FadeIn => clean.fade_in = frames(value).min(half_take(view)),
+                K::FadeOut => clean.fade_out = frames(value).min(half_take(view)),
                 _ => clean.gain_db = value,
             }
             // Turning a denoise knob means wanting it on.
@@ -1503,4 +1505,11 @@ pub(super) fn page_tip(
         },
         _ => return None,
     })
+}
+
+/// Half of what the trim leaves of the take, in frames: the longest a fade
+/// can be.
+fn half_take(view: &super::AnalyzeView) -> i64 {
+    let (a, b) = view.trim_seconds();
+    (((b - a) / 2.0).max(0.0) * f64::from(view.rate.max(1))).round() as i64
 }

@@ -200,6 +200,7 @@ pub use analyze::{
     LISTEN_ORIGINAL, MAKE_CLIP, PITCH_TOGGLE, RENDER_TO_CLIP, REVERT, SCALE_TOGGLE, SELECT_FIRST,
     WAVE_TOGGLE,
 };
+pub use analyze::{MAX_SHIFT, analyze_lane_message, ruler_step};
 pub use analyze_pages::*;
 pub use disgusting_beat::{
     DISGUSTING_BEAT_BEND_GRAB, DISGUSTING_BEAT_CANOPY, DISGUSTING_BEAT_GRAB,

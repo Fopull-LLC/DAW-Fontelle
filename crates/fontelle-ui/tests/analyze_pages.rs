@@ -550,3 +550,42 @@ fn z_zooms_to_the_selection_and_shift_z_to_all() {
         name: String::new(),
     };
 }
+
+/// A trim pulled in past where the fades reach takes the fades with it:
+/// neither is ever longer than half of what is left, so the two never
+/// cross into a dip in the middle of a short take.
+#[test]
+fn a_narrowing_trim_takes_the_fades_with_it() {
+    let mut view = a_view();
+    view.clean.fade_in = RATE as i64 * 2;
+    view.clean.fade_out = RATE as i64 * 2;
+    let mut s = on(AnalyzePage::Clean, AnalyzeTool::Select);
+    let l = laid_out(&view, &mut s);
+    let mid = l.lane.grid.y + l.lane.grid.height / 2.0;
+    let start = l.lane.x_of(&s, 0.0);
+    analyze_press(&l, &view, &mut s, start + 1.0, mid, Default::default());
+    let Some(AnalyzeLaneChange::Clean(clean)) = s.drag_lane(&l, &view, l.lane.x_of(&s, 10.0))
+    else {
+        panic!("a trim");
+    };
+    let (a, b) = clean.trim.unwrap();
+    let half = (b - a) / 2;
+    assert!(clean.fade_in <= half && clean.fade_out <= half, "{clean:?}");
+}
+
+/// A fade typed or turned longer than half the take stops at half: the
+/// knob says what will be heard.
+#[test]
+fn a_fade_is_never_longer_than_half_the_take() {
+    let view = a_view();
+    let mut s = on(AnalyzePage::Clean, AnalyzeTool::Select);
+    let (a, b) = view.trim_seconds();
+    let half = ((b - a) / 2.0 * f64::from(RATE)).round() as i64;
+    for knob in [AnalyzeKnob::FadeIn, AnalyzeKnob::FadeOut] {
+        let AnalyzeKnobChange::Clean(clean) = analyze_knob_change(knob, 600_000.0, &view, &mut s)
+        else {
+            panic!("clean");
+        };
+        assert!(clean.fade_in <= half && clean.fade_out <= half, "{clean:?}");
+    }
+}

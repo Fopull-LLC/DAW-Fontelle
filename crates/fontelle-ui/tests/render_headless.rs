@@ -8177,6 +8177,23 @@ fn analyze_musically_dumps_its_other_faces() {
     let mut state = AnalyzeState::default();
     state.scale = 0.75;
     shoot_analyze("analyze-notes-75", &view, &mut state, |_, _| {});
+
+    // A take with nothing pitched in it, analysed: the lane says why it is
+    // empty rather than sitting blank.
+    let mut silent = view.clone();
+    silent.notes.clear();
+    silent.melody.clear();
+    silent.chords.clear();
+    silent.key = None;
+    silent.has_audio = true;
+    let mut state = AnalyzeState::default();
+    shoot_analyze("analyze-no-notes", &silent, &mut state, |_, _| {});
+
+    // An hour-long take, fitted: the ruler in minutes.
+    let mut long = view.clone();
+    long.duration = 3600.0;
+    let mut state = AnalyzeState::default();
+    shoot_analyze("analyze-hour", &long, &mut state, |_, _| {});
 }
 
 /// Ty, on the pitch picture in P1: *"when i had that mode on it made that

@@ -466,3 +466,94 @@ fn the_listen_and_the_song_keep_their_own_time() {
     assert!(!transport.is_attended());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The flatten handle's drag, as the window sends it: every move merged,
+/// the gesture ended once — one undo takes the whole drag back, one redo
+/// brings it again.
+#[test]
+fn a_flatten_drag_is_one_undo() {
+    let (dir, mut session, _) = analysed("flatten-drag");
+    let n = note(&session, 2);
+    for flatten in [0.1, 0.25, 0.5, 0.8] {
+        let change = AnalyzeEditChange {
+            start: n.start,
+            end: n.end,
+            edit: Some(AnalyzeEdit {
+                flatten,
+                ..AnalyzeEdit::default()
+            }),
+        };
+        session.set_analysis_edits(&[change], true).unwrap();
+    }
+    session.end_gesture();
+    let now = note(&session, 2).edit.expect("flattened");
+    assert_eq!(now.flatten, 0.8);
+    session.undo();
+    assert_eq!(note(&session, 2).edit, None, "one undo, the whole drag");
+    session.redo();
+    assert_eq!(note(&session, 2).edit.map(|e| e.flatten), Some(0.8));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A study whose clip is deleted while the window is open on it: nothing
+/// panics, the listen stops or carries on cleanly, and the window can
+/// still be asked for its view, play, edit and close; an undo brings the
+/// clip back under it.
+#[test]
+fn deleting_the_clip_under_an_open_window() {
+    let (dir, mut session, clip) = analysed("deleted-clip");
+    let n = note(&session, 2);
+    session
+        .set_analysis_edits(&[moved(&n, 100.0)], false)
+        .unwrap();
+    session.end_gesture();
+    session.analysis_play(0.0, None, false);
+    session.arrange(fontelle_ui::canvas::ArrangeEdit::Remove(vec![clip]));
+    assert!(session.project().clips.get(clip).is_none());
+    let _ = session.poll_analysis();
+    let _ = session.analyze_view();
+    let _ = session.analysis_playhead();
+    session.analysis_play(1.0, Some(2.0), true);
+    session.analysis_stop();
+    let _ = session.set_analysis_edits(&[moved(&n, 200.0)], false);
+    session.end_gesture();
+    session.undo();
+    session.undo();
+    let _ = session.poll_analysis();
+    assert!(
+        session.project().clips.get(clip).is_some(),
+        "the clip is back"
+    );
+    let view = session
+        .analyze_view()
+        .expect("the window still has its view");
+    assert!(view.has_audio);
+    session.close_analysis();
+    assert!(!session.study_player().playing());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Ctrl+Z in the Analyze window (or the studio) moves the revision the
+/// window reads once a frame, with no job running — so the lane shows the
+/// undone edit at once rather than the next time something else happens.
+#[test]
+fn an_undo_moves_the_windows_revision() {
+    let (dir, mut session, _) = analysed("undo-revision");
+    settle(&mut session);
+    let n = note(&session, 1);
+    session
+        .set_analysis_edits(&[moved(&n, 100.0)], false)
+        .unwrap();
+    session.end_gesture();
+    settle(&mut session);
+    assert!(matches!(session.poll_analysis(), JobPoll::Idle));
+    let before = session.analysis_revision();
+    session.undo();
+    assert!(
+        matches!(session.poll_analysis(), JobPoll::Idle),
+        "no job runs"
+    );
+    assert_ne!(session.analysis_revision(), before);
+    assert_eq!(note(&session, 1).edit, None);
+    std::fs::remove_dir_all(&dir).ok();
+}

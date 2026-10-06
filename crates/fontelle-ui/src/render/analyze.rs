@@ -670,7 +670,10 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
             cents: now.cents - (now.cents / 100.0).round() * 100.0,
             ..now
         };
-        if let Some(tag) = crate::canvas::analyze_cents_tag(&now)
+        // Not under the flatten read-out while that is up on this note.
+        let reading = state.flatten_readout().is_some_and(|(i, _)| i == index);
+        if !reading
+            && let Some(tag) = crate::canvas::analyze_cents_tag(&now)
             && let Some(text) = labels.get_styled(&tag, t.caption)
         {
             let mut x = (blob.right() - text.width).max(blob.x);
@@ -816,14 +819,7 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
     }
 
     // Nothing to show yet, or ever: say so in the middle of the lane.
-    let said = if let Some(error) = &view.error {
-        Some(error.clone())
-    } else if notes.is_empty() && view.analysing.is_some() {
-        Some("Listening\u{2026}".to_string())
-    } else {
-        None
-    };
-    if let Some(said) = said {
+    if let Some(said) = crate::canvas::analyze_lane_message(view) {
         text_in(scene, labels, &said, t.value, grid, None, p.text_muted);
     }
     scene.pop_layer();

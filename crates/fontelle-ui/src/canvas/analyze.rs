@@ -570,6 +570,11 @@ pub enum AnalyzeEditOp {
     Reset,
 }
 
+/// How far a note can be moved from where it was sung, in cents: two
+/// octaves. Past that a voice is not a voice, and the resynthesis has
+/// nothing to make it from.
+pub const MAX_SHIFT: f32 = 2400.0;
+
 /// How far a flatten handle is dragged for the whole of 0..100 %, in
 /// pixels at 100 % scale: about a thumb's sweep, so a percent is a pixel
 /// or so and Shift's tenth is fine enough for anything.
@@ -590,7 +595,9 @@ const FIT_MARGIN: f32 = 2.5;
 /// as three fat bars.
 const FIT_ROWS: f32 = 24.0;
 /// Zoom limits, pixels a second.
-const MIN_PPS: f32 = 2.0;
+/// A quarter of a pixel a second shows an hour's take on a lane a
+/// thousand pixels wide.
+const MIN_PPS: f32 = 0.25;
 const MAX_PPS: f32 = 2000.0;
 const LOWEST: f32 = 12.0;
 const HIGHEST: f32 = 120.0;
@@ -729,6 +736,17 @@ impl AnalyzeState {
         }
     }
 
+    /// A click on the ruler at `t` while the listen plays: round the loop
+    /// from there when it is inside it, else on from there to the end (at
+    /// the very end, from the start).
+    pub fn seek_range(&self, view: &AnalyzeView, t: f64) -> (f64, Option<f64>, bool) {
+        match self.region {
+            Some((a, b)) if b > a && t >= a && t < b => (t, Some(b), true),
+            _ if t >= view.duration - 1e-3 => (0.0, None, false),
+            _ => (t.max(0.0), None, false),
+        }
+    }
+
     /// What Enter plays: the selected notes, first start to last end, once;
     /// with none selected, the region once.
     pub fn selection_range(&self, view: &AnalyzeView) -> Option<(f64, f64)> {
@@ -824,7 +842,7 @@ impl AnalyzeState {
                 let was = note.edit.unwrap_or_default();
                 let edit = match op {
                     AnalyzeEditOp::Nudge(cents) => Some(AnalyzeEdit {
-                        shift_cents: was.shift_cents + cents,
+                        shift_cents: (was.shift_cents + cents).clamp(-MAX_SHIFT, MAX_SHIFT),
                         ..was
                     }),
                     AnalyzeEditOp::Snap => {
@@ -982,6 +1000,8 @@ impl AnalyzeState {
             return None;
         }
         drag.moved = true;
+        // Where the held note lands, to keep it on screen.
+        let mut keep_in_sight: Option<f32> = None;
         let held = notes.get(drag.index)?;
         if held.poly {
             return Some(Err(CHORD_CANT_MOVE.to_string()));
@@ -1026,7 +1046,12 @@ impl AnalyzeState {
                 } else {
                     (landed / 100.0).round() * 100.0
                 };
-                let delta = landed - sung - base;
+                // No further than MAX_SHIFT from where it was sung, for any
+                // note of the selection.
+                let delta = drag.began.iter().fold(landed - sung - base, |d, (_, was)| {
+                    d.clamp(-MAX_SHIFT - was.shift_cents, MAX_SHIFT - was.shift_cents)
+                });
+                keep_in_sight = Some((sung + base + delta) / 100.0);
                 drag.began
                     .iter()
                     .map(|(i, was)| AnalyzeEditChange {
@@ -1060,6 +1085,19 @@ impl AnalyzeState {
                 }]
             }
         };
+        // A note dragged past the lane's top or bottom takes the lane with
+        // it, a row's margin kept, rather than going off the screen.
+        if let Some(midi) = keep_in_sight
+            && !lane.grid.is_empty()
+        {
+            let rows = lane.grid.height / row.max(MIN_ROW_HEIGHT);
+            if midi + 1.0 > self.top {
+                self.top = midi + 1.0;
+            } else if midi - 1.0 < self.top - rows {
+                self.top = midi - 1.0 + rows;
+            }
+            self.top = self.top.clamp(LOWEST + rows.min(HIGHEST - LOWEST), HIGHEST);
+        }
         Some(Ok(changes))
     }
 
@@ -2376,6 +2414,24 @@ fn percent(value: f32) -> String {
     format!("{} %", (value.clamp(0.0, 1.0) * 100.0).round() as i32)
 }
 
+/// What the lane says when it has no notes to show: why. `None` when it
+/// has notes.
+pub fn analyze_lane_message(view: &AnalyzeView) -> Option<String> {
+    if let Some(error) = &view.error {
+        return Some(error.clone());
+    }
+    if !view.notes.is_empty() || !view.melody.is_empty() {
+        return None;
+    }
+    Some(if view.analysing.is_some() {
+        "Listening\u{2026}".to_string()
+    } else if !view.has_audio {
+        "Nothing recorded yet \u{2014} the Record page takes one".to_string()
+    } else {
+        "No notes heard \u{2014} the take is silent, or has no pitch to follow".to_string()
+    })
+}
+
 /// What the flatten handle's read-out says while it is dragged.
 pub fn flatten_readout_text(value: f32) -> String {
     format!("Flatten {}", percent(value))
@@ -2587,11 +2643,14 @@ pub fn later_lines(page: AnalyzePage) -> [String; 2] {
 
 /// The ruler's step, in seconds, for labels about 70 px apart.
 pub fn ruler_step(pixels_per_second: f32) -> f64 {
-    const STEPS: [f64; 11] = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0];
+    const STEPS: [f64; 16] = [
+        0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0,
+        600.0,
+    ];
     STEPS
         .into_iter()
         .find(|step| *step as f32 * pixels_per_second >= 70.0)
-        .unwrap_or(300.0)
+        .unwrap_or(1200.0)
 }
 
 /// The ruler's labels on screen: (x, text).
@@ -2605,7 +2664,13 @@ pub fn ruler_labels(
         return Vec::new();
     }
     let step = ruler_step(state.pixels_per_second);
-    let decimals = if step < 1.0 { 1 } else { 0 };
+    let decimals = if step < 0.1 {
+        2
+    } else if step < 1.0 {
+        1
+    } else {
+        0
+    };
     let first = (state.start / step).ceil() as i64;
     let last_t = lane
         .t_of(state, lane.grid.right())
@@ -2665,6 +2730,7 @@ pub fn analyze_strings(
     if let Some((_, value)) = state.flatten_readout() {
         out.push((flatten_readout_text(value), Caption));
     }
+    out.extend(analyze_lane_message(view).map(|m| (m, Value)));
     for page in AnalyzePage::ALL {
         out.push((page.label().to_string(), Heading));
     }
@@ -2852,7 +2918,9 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
                     " \u{2014} Chord notes can't be moved yet. Copy them to a piano roll.",
                 );
             } else if state.tool == AnalyzeTool::Move {
-                tip.push_str(" \u{2014} click to hear it, drag to move it");
+                tip.push_str(
+                    " \u{2014} click to hear it, drag to move it, drag the tab on top to flatten it",
+                );
             }
             tip
         }
@@ -3072,11 +3140,18 @@ impl AnalyzeState {
                     .trim
                     .unwrap_or((view.offset, view.frame_of(view.duration)));
                 let at = view.frame_of(t);
-                clean.trim = Some(if start {
+                let (a, b) = if start {
                     (at.min(b - min_frames), b)
                 } else {
                     (a, at.max(a + min_frames))
-                });
+                };
+                clean.trim = Some((a, b));
+                // The fades follow a trim pulled in past them: never more
+                // than half of what is left each, as their own drag keeps
+                // them, so they never cross into a dip mid-take.
+                let half = ((b - a) / 2).max(0);
+                clean.fade_in = clean.fade_in.min(half);
+                clean.fade_out = clean.fade_out.min(half);
                 Some(AnalyzeLaneChange::Clean(clean))
             }
             LaneDrag::Fade(fade_in) => {
@@ -3232,7 +3307,7 @@ pub fn zoom_to(
         (a - margin).max(0.0),
         (b + margin).min(view.duration.max(b)),
     );
-    state.pixels_per_second = (grid.width / (b - a) as f32).clamp(2.0, 2000.0);
+    state.pixels_per_second = (grid.width / (b - a) as f32).clamp(MIN_PPS, MAX_PPS);
     state.start = a;
     if state.page == AnalyzePage::Notes {
         let notes = state.notes(view);

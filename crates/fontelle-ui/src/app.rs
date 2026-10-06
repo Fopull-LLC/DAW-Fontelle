@@ -5884,6 +5884,9 @@ impl WindowApp {
                 self.end_edge_scroll();
                 self.knob = None;
                 self.flop_knob = None;
+                if kind == EditorKind::Analyze {
+                    self.analyze_focus_lost();
+                }
                 if let Some(doc) = &mut self.options.document {
                     doc.end_gesture();
                 }

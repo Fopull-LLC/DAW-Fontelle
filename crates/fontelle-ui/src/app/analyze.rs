@@ -99,10 +99,21 @@ impl WindowApp {
                 }
             }
         }
+        // Whatever moved the host's revision with no job running — an undo
+        // or a redo (Ctrl+Z here or in the studio), a collaborator's edit,
+        // a preview landing — is seen this frame. Before, the lane kept
+        // showing an undone edit until something else happened to refresh
+        // it. One compare when nothing has.
+        if self.analyze.is_some() {
+            self.refresh_analyze();
+        }
     }
 
     /// The window closed: the host stops the job and forgets the view.
     pub(super) fn closed_analyze(&mut self) {
+        // Closed mid-drag (Escape, the title bar's ×): the drag ends here,
+        // one undo, rather than in a window that is gone.
+        self.analyze_focus_lost();
         if let Some(doc) = &mut self.options.document {
             doc.close_analysis();
         }
@@ -388,11 +399,13 @@ impl WindowApp {
             AnalyzeAction::PlayStop => self.analyze_play_stop(),
             AnalyzeAction::ToggleOriginal => self.toggle_analyze_original(),
             AnalyzeAction::Seek(t) => {
-                // The cursor is there; playing, it carries on from there.
+                // The cursor is there; playing, it carries on from there —
+                // round the loop when that is inside it, else on to the end.
                 if self.analyze_state.playhead.is_some() {
-                    let (_, to, looped) = self.analyze_state.space_range(&view);
+                    let (from, to, looped) = self.analyze_state.seek_range(&view, t);
                     if let Some(doc) = &mut self.options.document {
-                        doc.analysis_play(t, to, looped);
+                        doc.analysis_play(from, to, looped);
+                        self.analyze_state.playhead = doc.analysis_playhead();
                     }
                 }
             }
@@ -457,6 +470,25 @@ impl WindowApp {
             && let Some(doc) = &mut self.options.document
         {
             doc.audition_off(key);
+        }
+    }
+
+    /// The window lost the pointer and keyboard mid-gesture (the compositor
+    /// took them): every drag in hand ends where it is, as one undo — a
+    /// flatten or a note drag carried on by the next motion would be a
+    /// second gesture nobody made. A Noise span is not captured.
+    pub(super) fn analyze_focus_lost(&mut self) {
+        self.analyze_state.end_marquee();
+        self.analyze_state.end_ruler();
+        self.end_analyze_audition();
+        let knob = self.analyze_state.end_knob_drag().is_some();
+        let lane = matches!(self.analyze_state.end_lane_drag(), AnalyzeLaneEnd::Changed);
+        let note = self.analyze_state.end_note_drag();
+        if (knob || lane || note)
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.end_gesture();
+            self.refresh_title();
         }
     }
 
@@ -525,6 +557,7 @@ impl WindowApp {
             return;
         };
         let (from, to, looped) = self.analyze_state.space_range(view);
+        let has_audio = view.has_audio;
         let Some(doc) = &mut self.options.document else {
             return;
         };
@@ -533,7 +566,15 @@ impl WindowApp {
             self.analyze_state.playhead = None;
         } else {
             doc.analysis_play(from, to, looped);
-            self.analyze_state.playhead = Some(from);
+            // What the player says, not what was asked: a study with
+            // nothing in it yet plays nothing, and a playhead drawn for it
+            // would be a promise.
+            self.analyze_state.playhead = doc.analysis_playhead();
+            if self.analyze_state.playhead.is_none() && !has_audio {
+                self.analyze_says(
+                    "Nothing to play yet \u{2014} record a take on the Record page".to_string(),
+                );
+            }
         }
         self.redraw_editor(EditorKind::Analyze);
     }
@@ -783,6 +824,16 @@ impl WindowApp {
         let Some(action) = self.action_of(event, crate::canvas::Context::Editor) else {
             return false;
         };
+        // A held key's repeats are not more presses: Space held would
+        // stutter the listen on and off, Ctrl+Enter render again and again,
+        // F and Q flip back and forth. Taken, so they reach nothing else
+        // either. (The arrows above nudge on repeat, as everywhere.)
+        if event.repeat
+            && (action.context() == crate::canvas::Context::Editor
+                || crate::canvas::analyze_transport_key(action).is_some())
+        {
+            return true;
+        }
         match action {
             Action::AnalyzeCopyNotes => self.copy_analysis_notes(),
             Action::AnalyzeCopyScale => self.copy_analysis_scale(),
