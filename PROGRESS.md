@@ -19,7 +19,75 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-06, latest — Analyze Musically P3–P5 in the window:
+**As of 2026-10-06, latest — Analyze Musically keeps its own time; a
+flatten handle; a pro's pass over its edges.** Same branch
+(`feature/analyze-musically`), not merged, not bumped. Ty, trying the
+preview build: *"the playhead inside analyze musically only moves when the
+arrangement playhead is moving ... pressing space to pause and play inside
+of the analyze musically window should not play and pause the
+arrangement"*, and *"a handle i could drag from the top of a note to
+flatten it"*.
+
+- **Why the listen rode on the song** (three causes, each fixed):
+  the callback runs no graph on a stopped transport unless the
+  `IdleGate` has a reason, and a listen was none — the study player's
+  node sat unprocessed, silent, its playhead frozen, until the song rolled
+  (`Transport::wake_for_preview`: the player's own `playing` flag is now
+  part of `is_attended`, so a listen runs the graph exactly as long as it
+  plays, and the node lowering the flag at its end lets it sleep); nothing
+  asked the window for frames while only the listen played, so its playhead
+  was polled at the engine's 10 Hz (`AnalyzeState::wants_frames`, an
+  animator on the tree); and Home (Stop) and R (Record) fell through to the
+  studio's transport (`analyze_transport_key`: Space plays/stops the
+  listen, Home stops it and goes to the start, R arms the window's own
+  recording, never the song's). Space was already the window's; the
+  window's own keys no longer repeat when held.
+- **The flatten handle** (`AnalyzeHit::FlattenHandle`,
+  `AnalyzeNotePart::Flatten`, `AnalyzeLayout::flatten_handle`): a tab on
+  top of the hovered and selected notes (Notes page, either tool, never a
+  chord note), dragged up for more and down for less over `FLATTEN_SWEEP`
+  (120 px at 100 %; Shift a tenth), 0..100 %, the selection together and
+  relative, merged into one undo, double-click for none
+  (`reset_flatten`), its hit at least 12 × 10 px at the window's scale
+  whatever the zoom, over the visible part of a note longer than the lane,
+  inside the lane at its top edge; a read-out while held; resize-Y cursor;
+  the Pitch card's FLATTEN follows from the view. The curve through a note
+  is drawn as the render makes it (`analyze_edited_curve`: drift, the
+  slower-than-3 Hz part, flattened; vibrato kept) — it used to halve the
+  whole wobble. The glide ends' zone scales with the window too.
+- **The edges, as a pro finds them**: Space the moment the window opened
+  on another study played the last study's audio until the new edits
+  rendered (the preview now primes the player with the new original);
+  Ctrl+Z left the lane stale until something else refreshed it (the window
+  re-reads the host's view whenever its revision moves, every frame); a
+  ruler click outside a playing loop stopped dead (`seek_range`); Space at
+  the end plays from the start; Space on an empty recording study says so
+  instead of drawing a playhead; the lane says why it is empty
+  (`analyze_lane_message`); notes go no further than two octaves
+  (`MAX_SHIFT`) and a dragged note takes the lane with it; an hour-long
+  take fits (`MIN_PPS` 0.25) and the ruler reads at both ends of the zoom;
+  fades never cross (trim drag and fade knobs stop at half the take);
+  focus lost or the window closed mid-drag ends the drag as one undo.
+- Tests: `fontelle-engine/tests/study_player.rs` (+3: a listen wakes a
+  stopped transport and lets it sleep, stop lets it sleep, the song never
+  moves the study's playhead), `fontelle-app/tests/analyze_render.rs`
+  (+4: own time against the real transport, one undo a flatten drag, the
+  clip deleted under the window, an undo moves the revision),
+  `fontelle-app` `analyze::tests` (the new study's own audio),
+  `fontelle-ui/tests/analyze_own_time.rs` (4), `analyze_flatten_handle.rs`
+  (7), `analyze_edges.rs` (6), `analyze_pages.rs` (+2), headless
+  `analyze-flatten-handle` (and `-75`), `analyze-no-notes`, `analyze-hour`.
+  Tests first and seen failing for all of it except the window's plumbing
+  (the per-frame refresh, focus-lost, repeats), which has no test seam in
+  this crate; the host half of the refresh is tested.
+- **Not done**: a note dragged *to* the lane's edge does not keep
+  scrolling on its own while the pointer rests there (it follows each
+  move); the window's key routing, frame scheduling and focus handling
+  are tested through their pure halves, not through `WindowApp`; none of
+  this has been driven on a real display — headless and synthesized
+  signals only.
+
+**As of 2026-10-06, earlier — Analyze Musically P3–P5 in the window:
 clean it, chop it, record it.** Same branch (`feature/analyze-musically`,
 with `main` and `feature/analyze-engine` merged in), not merged, not
 bumped. `docs/analyze-musically-plan.md` §2.7, §3.1, §3.7–3.8, §6, §6.1,
