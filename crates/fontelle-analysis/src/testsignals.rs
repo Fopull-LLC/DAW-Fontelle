@@ -312,3 +312,73 @@ pub fn key_material(
         })
         .collect()
 }
+
+/// A pure sine melody, C major up and down (C4 to C5), 0.4 s a note with
+/// 0.1 s between, in 4.5 s.
+pub fn sine_melody(sample_rate: u32) -> Fixture {
+    let sine = Voice {
+        partials: 1,
+        rolloff: 1.0,
+        gain: 0.4,
+        vibrato_cents: 0.0,
+        vibrato_hz: 0.0,
+        vibrato_delay: 0.0,
+    };
+    let keys = [60u8, 62, 64, 65, 67, 69, 71, 72, 71];
+    let parts: Vec<(ExpectedNote, Voice)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, &m)| (n(0.1 + 0.5 * i as f64, 0.5 + 0.5 * i as f64, m), sine))
+        .collect();
+    render("sine-melody", sample_rate, 4.6, &parts)
+}
+
+/// Two bars of a rock beat at 100 BPM, synthesised: a kick (a sine falling
+/// from 120 to 45 Hz), a snare (noise and a 190 Hz knock) and closed hats
+/// (high noise, 30 ms), in 4.8 s. No notes to find.
+pub fn drum_loop(sample_rate: u32) -> Vec<f32> {
+    let sr = f64::from(sample_rate);
+    let mut out = vec![0.0f64; (4.8 * sr) as usize];
+    let noise = noise(sample_rate, 4.8, 1.0);
+    let eighth = 60.0 / 100.0 / 2.0;
+    for step in 0..16 {
+        let at = (step as f64 * eighth * sr) as usize;
+        // Hats on every eighth.
+        let mut hp = 0.0f64;
+        let mut last = 0.0f64;
+        for k in 0..(0.03 * sr) as usize {
+            let i = at + k;
+            if i >= out.len() {
+                break;
+            }
+            let x = f64::from(noise[i]);
+            hp = 0.6 * (hp + x - last);
+            last = x;
+            out[i] += 0.15 * hp * (-(k as f64) / (0.008 * sr)).exp();
+        }
+        if step % 4 == 0 {
+            let mut phase = 0.0f64;
+            for k in 0..(0.35 * sr) as usize {
+                let i = at + k;
+                if i >= out.len() {
+                    break;
+                }
+                let t = k as f64 / sr;
+                phase += (45.0 + 75.0 * (-t / 0.04).exp()) / sr;
+                out[i] += 0.6 * (TAU * phase).sin() * (-t / 0.12).exp();
+            }
+        }
+        if step % 4 == 2 {
+            for k in 0..(0.2 * sr) as usize {
+                let i = at + k;
+                if i >= out.len() {
+                    break;
+                }
+                let t = k as f64 / sr;
+                out[i] += 0.35 * f64::from(noise[(i * 7) % noise.len()]) * (-t / 0.06).exp()
+                    + 0.25 * (TAU * 190.0 * t).sin() * (-t / 0.03).exp();
+            }
+        }
+    }
+    out.into_iter().map(|s| s as f32).collect()
+}

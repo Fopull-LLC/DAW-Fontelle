@@ -5,6 +5,7 @@
 //! of it may run on the RT thread (INVARIANT 1) — it allocates freely.
 
 pub mod chords;
+pub mod confidence;
 pub mod key;
 pub mod mono;
 pub mod resample;
