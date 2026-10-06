@@ -14,6 +14,7 @@ pub mod key;
 pub mod mono;
 pub mod onsets;
 pub mod resample;
+pub mod slice;
 pub mod spectrogram;
 pub mod testsignals;
 pub mod transcribe;
