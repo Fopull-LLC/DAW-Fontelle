@@ -6785,6 +6785,19 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     words.push(status.to_string());
     words.extend(lines.iter().cloned());
     words.extend(buttons.iter().cloned());
+    // The offer of Compatible plugin graphics, worded as the session words
+    // it, in the same card.
+    let graphics_lines = vec![
+        "Vital's window needs Compatible plugin graphics on this computer.".to_string(),
+        "Turn it on? Fontelle restarts to apply it.".to_string(),
+    ];
+    let graphics_buttons = vec![
+        "Turn on and restart".to_string(),
+        "Don't ask again".to_string(),
+        "Not now".to_string(),
+    ];
+    words.extend(graphics_lines.iter().cloned());
+    words.extend(graphics_buttons.iter().cloned());
     for word in &words {
         labels.ensure(word, &theme.font, &mut text);
     }
@@ -6924,6 +6937,15 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         ..Default::default()
     });
     dump_sized(&asked, "join-question", W, H);
+    let offered = shoot(Notices {
+        question: Some(QuestionNotice {
+            lines: &graphics_lines,
+            buttons: &graphics_buttons,
+            default: 0,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&offered, "graphics-question", W, H);
     let prompt = choice_prompt_layout(layout.window, &theme.metrics, lines.len(), buttons.len());
     let corner = |r: Rect| at(&asked, r.x + 3.0, r.y + 3.0);
     assert!(

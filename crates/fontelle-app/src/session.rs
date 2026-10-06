@@ -85,6 +85,12 @@ enum BounceEnd {
 }
 
 /// What happens on the session's thread once a bounce's file is written.
+/// The offer of Compatible plugin graphics' three answers, the one Enter
+/// presses first and the one Escape presses last.
+const GRAPHICS_TURN_ON: &str = "Turn on and restart";
+const GRAPHICS_NEVER: &str = "Don't ask again";
+const GRAPHICS_NOT_NOW: &str = "Not now";
+
 enum AfterBounce {
     /// An export: say where it went.
     Export,
@@ -501,6 +507,15 @@ pub struct Session {
     /// Mesa's EGL vendor file, looked for once: without it the Compatible
     /// plugin graphics row says why it cannot be turned on.
     mesa_egl: Option<PathBuf>,
+    /// The plugin whose window was just refused, while the offer to turn on
+    /// Compatible plugin graphics is up (`settings::offer_compatible_graphics`).
+    graphics_offer: Option<String>,
+    /// Whether that offer has been made this session: "Not now" is until
+    /// the next one.
+    graphics_asked: bool,
+    /// "Turn on and restart" was answered, and the window has not yet taken
+    /// it (`StudioHost::take_restart_request`).
+    restart_request: bool,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -1494,6 +1509,9 @@ impl Session {
             theme_revision: 1,
             reduce_motion: false,
             mesa_egl: fontelle_host::gui::mesa_egl_vendor(|path| path.is_file()),
+            graphics_offer: None,
+            graphics_asked: false,
+            restart_request: false,
             settings,
             settings_path: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -2081,6 +2099,40 @@ impl Session {
     /// release.
     pub fn checks_for_updates(&self) -> bool {
         self.settings.check_for_updates
+    }
+
+    /// The offer of Compatible plugin graphics, answered: 0 turns it on and
+    /// asks the window to restart, 1 is "Don't ask again", anything else
+    /// "Not now".
+    fn answer_graphics_offer(&mut self, answer: usize) {
+        match answer {
+            0 => {
+                self.settings.compatible_plugin_graphics = true;
+                self.message = Some(match self.save_settings() {
+                    Err(e) => format!("could not write settings: {e}"),
+                    // Only a binary that knows where it is can start itself
+                    // again; otherwise the person does it.
+                    Ok(()) if std::env::current_exe().is_err() => {
+                        "Compatible plugin graphics is on. Restart Fontelle to finish".to_string()
+                    }
+                    Ok(()) => {
+                        self.restart_request = true;
+                        "Compatible plugin graphics is on \u{2014} restarting".to_string()
+                    }
+                });
+            }
+            1 => {
+                self.settings.never_ask_compatible_graphics = true;
+                self.message = Some(match self.save_settings() {
+                    Ok(()) => "Not asked again \u{2014} it is in Settings \u{2192} Compatible \
+                               plugin graphics"
+                        .to_string(),
+                    Err(e) => format!("could not write settings: {e}"),
+                });
+            }
+            _ => {}
+        }
+        self.touch();
     }
 
     fn save_settings(&self) -> std::io::Result<()> {
@@ -4858,6 +4910,21 @@ impl Session {
                 // opening instead said nothing of why.
                 eprintln!("Fontelle: the plugin's own editor did not open \u{2014} {e}");
                 self.message = Some(e);
+                // Refused by the driver probe, with the setting that fixes it
+                // off and never answered: offer it, there and then, rather
+                // than leave somebody thinking the studio is broken.
+                if let Some(plugin) = self.plugins.take_gate_refusal()
+                    && crate::settings::offer_compatible_graphics(
+                        true,
+                        self.settings.compatible_plugin_graphics,
+                        self.settings.never_ask_compatible_graphics,
+                        self.graphics_asked,
+                        self.mesa_egl.is_some(),
+                    )
+                {
+                    self.graphics_offer = Some(plugin);
+                    self.graphics_asked = true;
+                }
                 self.touch();
                 false
             }
@@ -9403,6 +9470,20 @@ impl StudioHost for Session {
     }
 
     fn session_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        if let Some(plugin) = &self.graphics_offer {
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines: vec![
+                    format!("{plugin}'s window needs Compatible plugin graphics on this computer."),
+                    "Turn it on? Fontelle restarts to apply it.".to_string(),
+                ],
+                buttons: vec![
+                    GRAPHICS_TURN_ON.to_string(),
+                    GRAPHICS_NEVER.to_string(),
+                    GRAPHICS_NOT_NOW.to_string(),
+                ],
+                default: 0,
+            });
+        }
         if let Some(question) = self.routing_question_view() {
             return Some(question);
         }
@@ -9429,6 +9510,10 @@ impl StudioHost for Session {
     }
 
     fn answer_session_question(&mut self, answer: usize) -> Result<(), String> {
+        if self.graphics_offer.take().is_some() {
+            self.answer_graphics_offer(answer);
+            return Ok(());
+        }
         if self.routing_question {
             self.answer_routing_question(answer);
             return Ok(());
@@ -9461,6 +9546,19 @@ impl StudioHost for Session {
         if let Err(why) = Session::remove_peer(self, peer) {
             self.session_notices.push(why);
         }
+    }
+
+    fn take_restart_request(&mut self) -> bool {
+        std::mem::take(&mut self.restart_request)
+    }
+
+    /// Leaves this binary, on this song as it is on disk, for `main` to
+    /// start once the window has gone (`crate::relaunch`).
+    fn prepare_restart(&mut self) -> Result<(), String> {
+        let relaunch = crate::relaunch::this_binary_on(self.bundle.as_deref())
+            .map_err(|_| "Restart Fontelle to finish".to_string())?;
+        crate::relaunch::request(relaunch);
+        Ok(())
     }
 
     fn take_session_notices(&mut self) -> Vec<String> {

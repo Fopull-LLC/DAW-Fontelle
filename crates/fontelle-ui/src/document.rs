@@ -1446,6 +1446,19 @@ pub trait StudioHost: DocumentHost {
     fn remove_peer(&mut self, _peer: u16) {}
     /// What the session has to say — somebody came, an edit was taken back —
     /// taken once, for the toasts.
+    /// Whether an answer just given asks for Fontelle to restart (Compatible
+    /// plugin graphics turned on from its offer), taken once. The window
+    /// then leaves as it would for a quit — asking to save first — and calls
+    /// [`prepare_restart`](Self::prepare_restart) on its way out.
+    fn take_restart_request(&mut self) -> bool {
+        false
+    }
+    /// Arranges for this binary to start again on this song once the window
+    /// has gone. `Err` says what to tell the person instead ("Restart
+    /// Fontelle to finish").
+    fn prepare_restart(&mut self) -> Result<(), String> {
+        Err("Restart Fontelle to finish".to_string())
+    }
     fn take_session_notices(&mut self) -> Vec<String> {
         Vec::new()
     }

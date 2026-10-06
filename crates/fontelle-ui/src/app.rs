@@ -501,6 +501,10 @@ enum Leave {
     JoinSong,
     /// Sharing — after the name a song needs to be a file.
     Share,
+    /// Closing the window and starting Fontelle again on this song — a
+    /// setting that applies from the next start was just turned on from its
+    /// offer (`StudioHost::take_restart_request`).
+    Restart,
 }
 
 /// An answer to the save prompt.
@@ -22179,6 +22183,7 @@ impl WindowApp {
         let name = doc.name().to_string();
         let question = match what {
             Leave::Quit => format!("Save changes to {name} before closing?"),
+            Leave::Restart => format!("Save changes to {name} before restarting?"),
             Leave::OpenProject(_) | Leave::NewProject | Leave::JoinSong | Leave::Share => {
                 format!("Save changes to {name} first?")
             }
@@ -22192,6 +22197,18 @@ impl WindowApp {
     fn go(&mut self, what: Leave) {
         match what {
             Leave::Quit => self.quit = true,
+            // Out the way a quit goes, leaving `main` the restart. Where it
+            // cannot be arranged the window stays, and says what to do.
+            Leave::Restart => match self
+                .options
+                .document
+                .as_mut()
+                .map(|doc| doc.prepare_restart())
+            {
+                Some(Ok(())) => self.quit = true,
+                Some(Err(said)) => self.show_toast(said, false),
+                None => {}
+            },
             Leave::NewProject => self.ask_for_a_name(NameFor::NewProject, String::new()),
             Leave::Share => self.start_share(),
             Leave::JoinSong => {
@@ -22391,6 +22408,16 @@ impl WindowApp {
             && let Err(why) = doc.answer_session_question(answer)
         {
             self.show_toast(why, false);
+        }
+        // An answer that asks for a restart: leave as a quit would — asking
+        // about an unsaved song first — and start again on it.
+        if self
+            .options
+            .document
+            .as_mut()
+            .is_some_and(|doc| doc.take_restart_request())
+        {
+            self.leave(Leave::Restart);
         }
         self.read_session_now();
         self.tree.invalidate_rect(self.layout.window);
