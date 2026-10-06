@@ -1711,6 +1711,17 @@ pub enum ArrangeEdit {
         ids: Vec<ClipId>,
         tick_delta: Tick,
     },
+    /// The first step of a **Shift**-drag on the right-hand edge: every clip
+    /// in `ids` grows by `tick_delta`, and `loops[i]` is the period `ids[i]`
+    /// starts looping at first — its own length — or `None` for a clip that
+    /// already loops and keeps its loop. The steps after it are plain
+    /// [`Resize`](Self::Resize)s of the same `ids`, and the host folds them
+    /// all into one undo.
+    ResizeLooping {
+        ids: Vec<ClipId>,
+        tick_delta: Tick,
+        loops: Vec<Option<Tick>>,
+    },
     Duplicate {
         ids: Vec<ClipId>,
         tick_offset: Tick,
@@ -2001,11 +2012,12 @@ enum Gesture {
         /// halfway through a drag must not turn a loop back into a stretch
         /// under the pointer. The same rule the roll's gestures follow.
         looping: bool,
-        /// The period to set, measured **when the drag started**: the length
-        /// the clip already loops at, or the length it was. Kept for the same
-        /// reason `shortest` is — the drag is changing the clip it would
-        /// otherwise be reading.
-        period: Tick,
+        /// The period each selected clip starts looping at, in the
+        /// selection's order — its length **when the drag started** — or
+        /// `None` for one that already loops and keeps its loop. Kept for the
+        /// same reason `shortest` is: the drag is changing the clips it would
+        /// otherwise be reading. See [`Timeline::loop_periods`].
+        periods: Vec<Option<Tick>>,
         /// The Stretch switch as it was at the press, kept for the reason
         /// `looping` is: flipped halfway through a drag, it must not change
         /// what the drag has been doing.
@@ -2519,7 +2531,7 @@ impl Timeline {
                         // go halfway through a drag must not turn a loop back
                         // into a stretch under the pointer.
                         looping: self.modifiers.shift,
-                        period: self.loop_period(clips),
+                        periods: self.loop_periods(clips),
                         stretch: self.stretch,
                     },
                     ClipPart::Body
@@ -2956,9 +2968,10 @@ impl Timeline {
                 applied_tick,
                 shortest,
                 looping,
-                period,
+                ref periods,
                 stretch,
             } => {
+                let periods = periods.clone();
                 if self.selection.is_empty() {
                     return Vec::new();
                 }
@@ -2982,7 +2995,7 @@ impl Timeline {
                     applied_tick: wanted,
                     shortest,
                     looping,
-                    period,
+                    periods: periods.clone(),
                     stretch,
                 };
                 let mut edits = Vec::new();
@@ -3049,16 +3062,26 @@ impl Timeline {
                         });
                     }
                 }
-                // The loop is set once, on the first step of the drag, and the
-                // clip then simply grows. Setting it every step would work and
-                // would also mean a history entry per pixel that says nothing
-                // new; `SetClipLoop::merge_with` would swallow them, but a
-                // command that is only ever a no-op is a command not to send.
-                if looping && first && period > 0 {
-                    edits.push(ArrangeEdit::SetLoop {
+                // The loops are set once, on the first step of the drag, in
+                // the same edit as that step's growth, and the clips then
+                // simply grow: one command for the whole drag
+                // (`fontelle_model::ResizeClips`), so one undo.
+                //
+                // **Each clip its own period.** Ty: *"it should make any
+                // nonlooping clips loop from their end point and extend from
+                // there looping, any already looping clips just extend like
+                // normal. it would basically be like if you dragged each one
+                // out manually. however whenever i do this, it chops
+                // everything up into the same loop time and then squishes it
+                // weirdly."* One period, the shortest in the selection, used
+                // to be set on every clip.
+                if looping && first {
+                    edits.push(ArrangeEdit::ResizeLooping {
                         ids: self.selection.clone(),
-                        loop_length: Some(period),
+                        tick_delta: delta,
+                        loops: periods,
                     });
+                    return edits;
                 }
                 edits.push(ArrangeEdit::Resize {
                     ids: self.selection.clone(),
@@ -3156,18 +3179,26 @@ impl Timeline {
         self.selected(clips).map(|c| c.length).min().unwrap_or(1)
     }
 
-    /// The period a Shift-drag would set: the one the selection **already**
-    /// loops at, or the length it has.
+    /// The period a Shift-drag gives each selected clip, in the selection's
+    /// order: `None` for one that **already** loops, and its length for one
+    /// that does not.
     ///
     /// Already-looping wins, which is the whole of the rule people get wrong:
     /// dragging a one-bar loop out to eight bars must not make it an eight-bar
     /// loop. The period is the content, and stretching the window does not
-    /// change the content.
-    fn loop_period(&self, clips: &[ClipInfo]) -> Tick {
-        self.selected(clips)
-            .map(|clip| clip.loop_length.unwrap_or(clip.length))
-            .min()
-            .unwrap_or(0)
+    /// change the content. And per clip, not one for the selection — see the
+    /// drag's own note.
+    fn loop_periods(&self, clips: &[ClipInfo]) -> Vec<Option<Tick>> {
+        self.selection
+            .iter()
+            .map(|id| {
+                clips
+                    .iter()
+                    .find(|clip| clip.id == *id)
+                    .filter(|clip| clip.loop_length.is_none() && clip.length > 0)
+                    .map(|clip| clip.length)
+            })
+            .collect()
     }
 
     /// What is held down, from the window.

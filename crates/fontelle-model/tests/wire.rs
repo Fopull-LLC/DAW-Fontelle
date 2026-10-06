@@ -18,14 +18,14 @@ use fontelle_model::{
     NoteData, NoteProperty, NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project,
     RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker,
     RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameLane,
-    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeNotes, RestoreInsert,
-    SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
-    SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
-    SetInsertParam, SetKey, SetLoopRange, SetMixerOrder, SetMixerTrackColor, SetNoteKeys,
-    SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart, load_project, peek_meta, save_project,
+    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes,
+    RestoreInsert, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
+    SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
+    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetMixerOrder,
+    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
+    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
+    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -674,6 +674,12 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("ResizeClip", |s| {
             Box::new(ResizeClip::new(s.notes_clip, PPQN))
+        }),
+        ("ResizeClips", |s| {
+            Box::new(
+                ResizeClips::new(vec![s.notes_clip, s.audio_clip], PPQN)
+                    .with_loops(vec![Some(PPQN * 2), None]),
+            )
         }),
         ("TrimClipStart", |s| {
             Box::new(TrimClipStart::new(s.audio_clip, PPQN / 2))

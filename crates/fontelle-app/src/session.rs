@@ -30,7 +30,7 @@ use fontelle_engine::{GraphPublisher, TimelinePublisher};
 use fontelle_model::{
     AddChannel, AddClip, AddNotes, Arena, Clip, ClipSource, Command, DuplicateClip, FlagTarget,
     History, ImportPart, ImportParts, MoveClip, MoveNotes, Note, NoteData, NumberTarget, Project,
-    RemoveClip, RemoveNotes, ResizeClip, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
+    RemoveClip, RemoveNotes, ResizeNotes, SetFlag, SetNoteProperty, SetNumber,
 };
 use fontelle_types::{
     ChannelId, ClipId, EventPayload, LaneId, MixerTrackId, NodeId, NoteId, PPQN, Sample, Tick,
@@ -13114,9 +13114,25 @@ impl StudioHost for Session {
                     )));
                 }
             }
+            // **One command for the whole selection**, as a move is: a
+            // `ResizeClip` per clip alternated on the history and never
+            // folded, so a drag of three ends was three undo entries a step.
+            // A Shift-drag's first step makes the clips loop, each at its own
+            // period, and the plain steps after it fold into that same entry.
             ArrangeEdit::Resize { ids, tick_delta } => {
-                for id in ids {
-                    self.run(Box::new(ResizeClip::new(id, tick_delta)));
+                if !ids.is_empty() {
+                    self.run(Box::new(fontelle_model::ResizeClips::new(ids, tick_delta)));
+                }
+            }
+            ArrangeEdit::ResizeLooping {
+                ids,
+                tick_delta,
+                loops,
+            } => {
+                if !ids.is_empty() {
+                    self.run(Box::new(
+                        fontelle_model::ResizeClips::new(ids, tick_delta).with_loops(loops),
+                    ));
                 }
             }
             ArrangeEdit::TrimStart { ids, tick_delta } => {

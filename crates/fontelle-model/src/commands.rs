@@ -5653,6 +5653,159 @@ impl Command for ResizeClip {
     }
 }
 
+/// The right-hand edges of **several** clips, dragged together — and, when
+/// the drag is a Shift-drag, each clip made to loop at its own period first.
+///
+/// Ty: *"if you have multiple clips selected, some looping and some not, and
+/// then youre holding shift and drag the end of the clips out ... it would
+/// basically be like if you dragged each one out manually. however whenever i
+/// do this, it chops everything up into the same loop time and then squishes
+/// it weirdly."* One period had been measured for the whole selection and set
+/// on every clip. Here each clip carries its own (`loops`), and a clip that
+/// already loops carries none and keeps the loop it has.
+///
+/// **One command for the drag**, as [`MoveClips`] is for a move: a
+/// [`ResizeClip`] per clip alternated on the history and never folded, so a
+/// drag of three clips was three entries a step. Every later step of the same
+/// selection folds into the first, and one undo puts every clip back as it
+/// was — its length, its loop, and the trim the edge carried
+/// ([`crate::trim::fit_window`]).
+///
+/// The same delta on every end, each clamped on its own at
+/// [`MIN_CLIP_LENGTH`], which is what dragging each one by hand would do.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ResizeClips {
+    clips: Vec<ClipId>,
+    tick_delta: Tick,
+    /// Per clip, the period to start looping at before growing — a
+    /// Shift-drag's first step — or `None` to leave its loop alone.
+    #[serde(default)]
+    loops: Vec<Option<Tick>>,
+    /// Every clip as it was before the first step, for the inverse.
+    #[serde(default)]
+    previous: Vec<Clip>,
+}
+
+impl ResizeClips {
+    pub fn new(clips: Vec<ClipId>, tick_delta: Tick) -> Self {
+        Self {
+            clips,
+            tick_delta,
+            loops: Vec::new(),
+            previous: Vec::new(),
+        }
+    }
+
+    /// Makes the clips loop first: `loops[i]` is the period `clips[i]` loops
+    /// at, `None` for one left as it is.
+    pub fn with_loops(mut self, loops: Vec<Option<Tick>>) -> Self {
+        self.loops = loops;
+        self
+    }
+}
+
+impl Command for ResizeClips {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::ResizeClips(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // All or nothing: checked before anything moves.
+        for (index, clip) in self.clips.iter().enumerate() {
+            if !doc.clips.contains_key(*clip) {
+                return Err(no_clip(*clip));
+            }
+            if self
+                .loops
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|p| p <= 0)
+            {
+                return Err(CommandError(
+                    "a loop has to be some length — a period of zero repeats for ever".into(),
+                ));
+            }
+        }
+        let previous: Vec<Clip> = self.clips.iter().map(|id| doc.clips[*id].clone()).collect();
+        let tempo = doc.tempo_map.clone();
+        for (index, id) in self.clips.iter().enumerate() {
+            let clip = &mut doc.clips[*id];
+            if let Some(period) = self.loops.get(index).copied().flatten() {
+                clip.loop_length = Some(period);
+            }
+            clip.length = (clip.length + self.tick_delta).max(MIN_CLIP_LENGTH);
+            crate::trim::fit_window(&tempo, clip);
+        }
+        if self.previous.is_empty() {
+            self.previous = previous;
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.len() != self.clips.len() {
+            return Box::new(NotApplied::new("resizing clips"));
+        }
+        Box::new(Compound::new(
+            self.label(),
+            self.clips
+                .iter()
+                .zip(&self.previous)
+                .map(|(clip, previous)| {
+                    Box::new(ReplaceClip {
+                        clip: *clip,
+                        previous: previous.clone(),
+                        replaced: None,
+                    }) as Box<dyn Command>
+                })
+                .collect(),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        match (self.loops.iter().any(Option::is_some), self.clips.len()) {
+            (true, 1) => "Loop clip",
+            (true, _) => "Loop clips",
+            (false, 1) => "Resize clip",
+            (false, _) => "Resize clips",
+        }
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<ResizeClips>() else {
+            return false;
+        };
+        if next.clips != self.clips {
+            return false;
+        }
+        self.tick_delta += next.tick_delta;
+        // A later step that set a period (none does today) is still a period
+        // set; one that set none leaves the first step's.
+        if next.loops.iter().any(Option::is_some) {
+            self.loops.resize(self.clips.len(), None);
+            for (mine, theirs) in self.loops.iter_mut().zip(&next.loops) {
+                if theirs.is_some() {
+                    *mine = *theirs;
+                }
+            }
+        }
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.clips.len()
+                * (std::mem::size_of::<ClipId>()
+                    + std::mem::size_of::<Option<Tick>>()
+                    + std::mem::size_of::<Clip>())
+    }
+}
+
 /// An audio clip's **front**, dragged by its left-hand edge.
 ///
 /// > *"i cant even drag in clips from the left too."*
