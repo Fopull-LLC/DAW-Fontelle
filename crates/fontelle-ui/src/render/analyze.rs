@@ -689,13 +689,22 @@ fn draw_spectrogram(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>
     if c1 <= c0 || r1 <= r0 {
         return;
     }
-    let (w, h) = (c1 - c0, r1 - r0);
+    // No more columns than the lane has pixels: zoomed out on a long take,
+    // a pixel takes the strongest of the cells it covers, so a note is not
+    // thinned away and a frame does not build megabytes.
+    let stride = (c1 - c0).div_ceil(grid.width.max(1.0) as usize).max(1);
+    let (w, h) = ((c1 - c0).div_ceil(stride), r1 - r0);
     let cool = p.accent;
     let hot = lighten(p.playhead, 0.2);
     let mut rgba = vec![0u8; w * h * 4];
-    for (ci, column) in (c0..c1).enumerate() {
+    for ci in 0..w {
+        let first = c0 + ci * stride;
+        let last = (first + stride).min(c1);
         for (ri, row) in (r0..r1).enumerate() {
-            let v = image.data[column * image.rows + row];
+            let v = (first..last)
+                .map(|column| image.data[column * image.rows + row])
+                .max()
+                .unwrap_or(0);
             if v < 24 {
                 continue;
             }
@@ -719,7 +728,7 @@ fn draw_spectrogram(scene: &mut Scene, theme: &Theme, chrome: &AnalyzeChrome<'_>
     // Where the image's corners land: columns at their times, rows at their
     // pitches (a row is centred on its pitch).
     let x0 = lane.x_of(state, c0 as f64 / image.columns_per_second);
-    let x1 = lane.x_of(state, c1 as f64 / image.columns_per_second);
+    let x1 = lane.x_of(state, (c0 + w * stride) as f64 / image.columns_per_second);
     let top_midi = image.lowest_midi + (r1 as f32 - 0.5) / image.rows_per_semitone;
     let bottom_midi = image.lowest_midi + (r0 as f32 - 0.5) / image.rows_per_semitone;
     let y0 = lane.y_of(state, top_midi);

@@ -19,6 +19,73 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-06, latest — Analyze Musically P1, the UI half: see it,
+copy it.** Same branch (`feature/analyze-musically`), not merged, not
+bumped. `docs/analyze-musically-plan.md` §3.1–§3.6, §3.10, §4 P1.
+
+- **The window** (`EditorKind::Analyze`, `canvas/analyze.rs` pure,
+  `render/analyze.rs` colour): Flopsynth's bridge — the hull, the canopy
+  whose screen is the **note lane** (time across, pitch up; the waveform,
+  or with Tab the basic-pitch contour as a picture; notes as blobs on their
+  true pitch, as tall as they are loud, as opaque as they are sure, hatched
+  under 40 %, the pitch curve inside, "▲ 23ct" past 15 cents; out-of-scale
+  rows dimmed by the roll's `row_shade`; the chord lane, C; a mini keyboard
+  that auditions), the tabs Notes / Clean / Slice / Record on the glass (the
+  last three a card saying what is coming), the header (the extraction
+  badge, the key chip — a click copies "A minor" to the scale clipboard and
+  the desktop's, a hover shows the octave with the notes and degrees under
+  their keys and the other readings, ▾ has the readings, Show scale on
+  lane, Set as song key, Copy notes in scale — the tuning, Melody | Chords),
+  the job strip while analysing, and the Note and Output consoles. Click,
+  Shift, marquee and Ctrl+A select; the wheel is the roll's. 75–150 %.
+  Bridge palette in both themes, as Flopsynth.
+- **The job** (`fontelle-app/src/analyze.rs`): the clip's span mixed to
+  mono, analysed on its own `fontelle-analyze` worker (never the bounce's
+  slot) with `analyse_progressive` — notes published after the first model
+  window and every ~10 s, so the lane fills left to right; the window's
+  close stops it; cached in `<bundle>/cache/analysis/` (`.json` + `.bin`
+  contour image) or the XDG cache before a save; a reopen reads it at once.
+- **Notes back to the song**: `NoteClipboard` lifted out of the roll (the
+  roll still holds it; its copy/paste unchanged). Copy notes (Ctrl+C) puts
+  the chosen notes there in song ticks through the tempo map at the clip's
+  place — clean semitones, timing as played, velocity from loudness, the
+  "Keep slides and bends" switch for cents and semitone slides (Ty's §6
+  answer 5); Ctrl+V pastes snapped as ever, **Ctrl+Shift+V** where they were
+  heard (`paste_at_origin`). *Notes under the audio* is one `AddClip` on a
+  new row directly under the clip (`on_new_row_at`), one undo. Set as song
+  key is the existing `SetKey`, one undo.
+- **Opening**: the clip name menu's Analyze Musically (the stub is gone) and
+  **Ctrl+Shift+A** on a selected audio clip. Seven new rebindable actions,
+  ids permanent: `analyze-clip`, `analyze-copy-notes`, `analyze-copy-scale`,
+  `analyze-select-all`, `analyze-spectrogram`, `analyze-chord-lane`,
+  `paste-at-original-position`.
+- **Analysis crate**: `analyse_progressive` (cancellable), `ContourImage`
+  on uniform 20 ms columns, `NoteEvent::bend_cents` measured from the key's
+  own contour bin (upstream's bends read +33 cents on an in-tune note; the
+  raw `bends` stay upstream's, the fixtures pin them), pYIN's melody kept
+  in chords mode for the override (`pyin2`).
+- Tests: `fontelle-analysis/tests/progressive.rs`; `fontelle-ui/tests/
+  {analyze_window, note_clipboard}.rs`, `keymap.rs`; `fontelle-app/tests/
+  {analyze_session, analyze_scene}.rs`; headless `analyze-notes`,
+  `analyze-pitch-chords`, `analyze-analysing`, `analyze-popover`,
+  `analyze-clean-later`, `analyze-notes-75`, and from a real analysis of
+  the test signals `analyze-real-{melody,chords,chords-pitch}`. Looked at,
+  and changed after looking: tab and card names in Flopsynth's case, the
+  roll's row inks, a fainter waveform, the popover's names under their
+  keys, the chord notes' bends smoothed over five frames (raw, a held note
+  was a staircase of 33-cent steps), the pitch picture capped at a column a
+  pixel.
+- **Not done / for P2**: no Move tool, preview player or render (P2); the
+  chord lane in melody mode reads every 0.5 s and names single notes as
+  power chords and sus chords — it wants beats or bars; no tempo detection,
+  so no BPM chip; the scale paste rows in Tune/Flopsynth's chooser are the
+  existing text clipboard's (no separate `ScaleClipboard`); no standalone
+  studies, no `Study` in the document (P2's commands); *Paste at original
+  position* is Ctrl+Shift+V (the roll has no paste menu to put it in); the
+  worker is not lowered in priority; the window has not been seen on a
+  real display (no Xvfb on this machine, and Ty's display is not ours) —
+  only headless.
+
 **As of 2026-10-06, later — Analyze Musically P1, the analysis half (no
 UI).** Same branch, on top of the P0 entry below.
 
