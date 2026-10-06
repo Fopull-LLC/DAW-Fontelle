@@ -1840,6 +1840,25 @@ impl Settings {
         )
     }
 
+    /// The cache folder on `platform` — [`config_dir_on`](Self::config_dir_on)'s
+    /// rule with `$XDG_CACHE_HOME` and `~/.cache`, and on Windows
+    /// `%LOCALAPPDATA%\fontelle`, Fontelle's data folder there (Windows has
+    /// no separate place for what can be thrown away).
+    pub fn cache_dir_on(
+        env: &dyn Fn(&str) -> Option<String>,
+        platform: Platform,
+        exists: &dyn Fn(&Path) -> bool,
+    ) -> Option<PathBuf> {
+        Self::own_dir(
+            env,
+            platform,
+            exists,
+            "XDG_CACHE_HOME",
+            ".cache",
+            "LOCALAPPDATA",
+        )
+    }
+
     /// The soundfont bank inside [`data_dir_on`](Self::data_dir_on).
     pub fn default_soundfont_dir_on(
         env: &dyn Fn(&str) -> Option<String>,

@@ -31,29 +31,31 @@ const VELOCITY_DB: f32 = 30.0;
 const CURVE_STEP: f64 = 0.012;
 
 /// Where analyses are kept (INVARIANT 10): the project's own
-/// `cache/analysis/`, or before the project is saved, the XDG cache —
-/// `$XDG_CACHE_HOME/fontelle/analysis`, else `~/.cache/fontelle/analysis`.
-/// `None` when there is nowhere, and then nothing is kept.
+/// `cache/analysis/`, or before the project is saved, Fontelle's cache
+/// folder ([`Settings::cache_dir_on`]) — `$XDG_CACHE_HOME/fontelle/analysis`,
+/// else `~/.cache/fontelle/analysis`, and on Windows, which sets no `HOME`,
+/// `%LOCALAPPDATA%\fontelle\analysis`. `None` when there is nowhere, and
+/// then nothing is kept.
+///
+/// [`Settings::cache_dir_on`]: crate::settings::Settings::cache_dir_on
 pub fn analysis_cache_dir(
     bundle: Option<&Path>,
-    xdg_cache: Option<PathBuf>,
-    home: Option<PathBuf>,
+    env: &dyn Fn(&str) -> Option<String>,
+    platform: crate::settings::Platform,
 ) -> Option<PathBuf> {
     if let Some(bundle) = bundle {
         return Some(bundle.join("cache").join("analysis"));
     }
-    let base = xdg_cache
-        .filter(|p| p.is_absolute())
-        .or_else(|| home.map(|h| h.join(".cache")))?;
-    Some(base.join("fontelle").join("analysis"))
+    crate::settings::Settings::cache_dir_on(env, platform, &|path| path.is_dir())
+        .map(|dir| dir.join("analysis"))
 }
 
 /// [`analysis_cache_dir`] from this process's environment.
 pub(crate) fn cache_dir_here(bundle: Option<&Path>) -> Option<PathBuf> {
     analysis_cache_dir(
         bundle,
-        std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
-        std::env::var_os("HOME").map(PathBuf::from),
+        &|key| std::env::var(key).ok(),
+        crate::settings::Platform::here(),
     )
 }
 

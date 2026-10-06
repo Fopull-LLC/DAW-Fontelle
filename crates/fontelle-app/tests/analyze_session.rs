@@ -174,21 +174,55 @@ fn reopening_reads_the_cache_inside_the_project() {
 
 #[test]
 fn a_project_not_saved_yet_caches_under_the_xdg_cache() {
-    let xdg = PathBuf::from("/home/someone/.cache");
+    use fontelle_app::settings::Platform;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string())
+        }
+    };
+    let cache = |bundle: Option<&Path>, e: &dyn Fn(&str) -> Option<String>, p| {
+        fontelle_app::analysis_cache_dir(bundle, e, p)
+    };
+    let xdg = env(&[("XDG_CACHE_HOME", "/home/someone/.cache")]);
     assert_eq!(
-        fontelle_app::analysis_cache_dir(None, Some(xdg.clone()), None),
-        Some(xdg.join("fontelle").join("analysis"))
+        cache(None, &xdg, Platform::Unix),
+        Some(
+            PathBuf::from("/home/someone/.cache")
+                .join("fontelle")
+                .join("analysis")
+        )
     );
+    let home = env(&[("HOME", "/home/someone")]);
     assert_eq!(
-        fontelle_app::analysis_cache_dir(None, None, Some(PathBuf::from("/home/someone"))),
-        Some(PathBuf::from("/home/someone/.cache/fontelle/analysis"))
+        cache(None, &home, Platform::Unix),
+        Some(
+            PathBuf::from("/home/someone/.cache")
+                .join("fontelle")
+                .join("analysis")
+        )
     );
     let bundle = PathBuf::from("/songs/Song");
     assert_eq!(
-        fontelle_app::analysis_cache_dir(Some(&bundle), Some(xdg), None),
+        cache(Some(&bundle), &xdg, Platform::Unix),
         Some(bundle.join("cache").join("analysis"))
     );
-    assert_eq!(fontelle_app::analysis_cache_dir(None, None, None), None);
+    assert_eq!(cache(None, &env(&[]), Platform::Unix), None);
+
+    // Windows sets no HOME: an unsaved song's analyses go to Fontelle's own
+    // %LOCALAPPDATA% folder, beside its presets and soundfonts.
+    let windows = env(&[("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")]);
+    assert_eq!(
+        cache(None, &windows, Platform::Windows),
+        Some(
+            PathBuf::from(r"C:\Users\someone\AppData\Local")
+                .join("fontelle")
+                .join("analysis")
+        )
+    );
+    assert_eq!(cache(None, &env(&[]), Platform::Windows), None);
 }
 
 #[test]
