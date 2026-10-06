@@ -1393,6 +1393,15 @@ fn main() {
     if let Some(code) = fontelle_host::probe_main(&args[1..]) {
         std::process::exit(code);
     }
+    // `GDK_SCALE=1` where Xwayland has no XSETTINGS manager — what GTK uses
+    // there anyway, and what keeps amsynth 2.0.0's editor from taking the
+    // studio down (`fontelle_host::gui::gdk_scale_for`). Here, because it
+    // changes the environment and no other thread exists yet.
+    #[cfg(target_os = "linux")]
+    // SAFETY: the process has one thread so far.
+    unsafe {
+        fontelle_host::gui::steady_gdk_scale();
+    }
     // The previous binary an upgrade could not delete (`updates::install`)
     // goes now, on the launch after — quietly, because it is housekeeping.
     // Also the moment the binary's path is taken for the updater, before an

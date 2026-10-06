@@ -57,6 +57,18 @@ processor's output parameter changes reach its controller.
 `FONTELLE_PARAM_TRACE=1` logs a VST 3 editor's edits and restarts and what
 went to the processor — ask a Windows user for a log with it.
 
+(g) **A plugin window that crashes the studio** (`PROGRESS.md`'s top
+entry): reproduce it outside the studio first, with
+`cargo run -p fontelle-host --example plugin_editor -- <bundle> "" 4`
+(`PROBE_HEADER=34` for the studio's strip, `PROBE_DUMP=<png>` to see what
+it drew), and run the plugin's standalone app if it has one — Vital's
+dies the same way on its own, which makes it the machine, not us. gdb on
+the example gives the plugin's backtrace; a gdb Python breakpoint on
+`eglCreateWindowSurface` / `XCreateWindow` printing arguments and `$rax`
+is what showed Vital drawing into the root window. The studio sets
+`GDK_SCALE=1` at start on a display with no XSETTINGS manager (amsynth
+2.0.0).
+
 **Updated 2026-10-04 (v0.23.1: a user's instrument plugins).** A user on
 Fedora (Vital, Serum, Surge) reported instruments slipping back to their
 init patch and MIDI renders coming out silent. `PROGRESS.md`'s top entry has

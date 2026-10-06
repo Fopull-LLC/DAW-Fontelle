@@ -330,10 +330,13 @@ pub fn culprit(report: &str) -> Option<fontelle_types::PluginKey> {
     fontelle_types::PluginKey::parse(key.trim())
 }
 
-/// The plugin the faulting thread was inside, or failing that the one the
-/// main thread was — async-signal-safe (`fontelle_host::guard`).
+/// The plugin the faulting thread was inside, failing that the one the main
+/// thread was, and failing that the one whose editor has just opened or
+/// closed — async-signal-safe (`fontelle_host::guard`).
 fn marked_plugin() -> Option<&'static [u8]> {
-    fontelle_host::guard::current().or_else(fontelle_host::guard::main)
+    fontelle_host::guard::current()
+        .or_else(fontelle_host::guard::main)
+        .or_else(|| fontelle_host::guard::editor(fontelle_host::guard::EDITOR_GRACE))
 }
 
 /// How a report's line naming the plugin begins — the name and the key

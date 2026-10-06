@@ -371,6 +371,42 @@ fn a_plugin_whose_show_says_no_still_has_its_editor() {
     assert!(!plugin.editor_is_open());
 }
 
+/// An editor just opened is what a crash on a thread nobody marked is put
+/// down to.
+///
+/// Reported: Vital's VST 3 editor aborted the studio and the report named no
+/// plugin. Its renderer is a thread of Vital's own — never marked — and the
+/// abort came after `open_editor` had returned, so the main thread was not
+/// inside it either. The CLAP build's report named it only because the same
+/// abort happened to land while the main thread was still in a call.
+#[test]
+fn an_editor_that_has_just_opened_is_marked_for_a_while() {
+    let mut host = host();
+    let mut plugin = host
+        .open(
+            &common::bundle(),
+            &PluginKey::clap("com.fopull.fontelle.testface"),
+        )
+        .expect("the test face opens");
+    let window = fontelle_host::PluginWindow::headless(320, 200);
+    plugin.open_editor(&window, 1.0).expect("it opens");
+    let marked = fontelle_host::guard::editor(std::time::Duration::from_secs(3600))
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+    assert!(
+        marked
+            .as_deref()
+            .is_some_and(|label| label.ends_with("\tclap:com.fopull.fontelle.testface")),
+        "the editor's plugin: {marked:?}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(
+        fontelle_host::guard::editor(std::time::Duration::from_millis(1)),
+        None,
+        "and only for a while"
+    );
+    plugin.close_editor();
+}
+
 // ------------------------------------ every port, not just the main one (2026-09-05)
 
 /// A plugin that declares more ports than the bus is handed **every one of

@@ -19,6 +19,42 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-05, latest — two plugin windows that took the studio down
+(Ty's machine: KDE Plasma on Wayland, Xwayland, NVIDIA 615 with egl-x11).**
+Still v0.25.1 (not bumped). Neither is Fontelle's bug, and neither came from
+v0.25.1's key-press masks: both happen with the plain window (no strip),
+and one happens with no host at all.
+
+- **amsynth 2.0.0 (LV2): SIGSEGV at 0x38 in `amsynth_lv2ui.so`.** Inside
+  its `instantiate`, before it touches our window: it reads its scale off
+  JUCE's XSETTINGS object, which is null when nobody owns `_XSETTINGS_S0` —
+  as on Plasma's Xwayland with no `xsettingsd`. Fixed upstream after 2.0.0
+  (amsynth `67ebdaa`, *"Fix crash if there are no XSETTINGS"*, issue #244).
+  amsynth reads `GDK_SCALE` first, so the studio now sets `GDK_SCALE=1` at
+  start when it is unset and the display has no XSETTINGS manager — the
+  scale GTK takes there anyway (`gui::gdk_scale_for`, `steady_gdk_scale`,
+  first thing in `main` while there is one thread). amsynth's editor opens
+  and draws (`tests/gui_xsettings.rs`; seen through the example).
+- **Vital (CLAP and VST 3): black window, then SIGABRT on Vital's "Render
+  Thread"** — `BGFX FATAL ... Failed to create surface`. Vital's bgfx makes
+  its EGL window surface on the **root** window (0x397 on `:1`, under gdb),
+  whichever host it is in; NVIDIA's EGL offers Vital's config (8-bit alpha)
+  only with a depth-32 visual, the root is depth 24, and
+  `eglCreateWindowSurface` says `EGL_BAD_CONFIG`. Vital's own standalone app
+  dies the same way. Mesa's EGL works (llvmpipe; zink too where VRAM
+  allows): `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`,
+  and Vital's sign-in screen draws in Fontelle's window. In the README.
+- **A crash on an editor's own thread names the plugin.** The VST 3 Vital
+  report named nobody (the renderer is Vital's thread, and the main thread
+  had come back out of `open_editor`), so nothing was held back next time.
+  `guard::editor` marks the plugin whose editor opened or closed in the last
+  15 s, the crash handler's third fallback. Editors are not reopened at
+  start, so a named plugin is held back once and not crashed into again.
+- **`plugin_editor` example**: `PROBE_HEADER=<px>` opens the studio's window
+  (strip and child); it sets `GDK_SCALE` as the studio does.
+- **Open**: a plugin's abort still ends the process — only hosting editors
+  out of process would change that.
+
 **As of 2026-10-05, latest — Lore's logs: a knob in a plugin's own window,
 and the shared song that drifted.** Still v0.25.1 (not bumped). Lore, through
 Ty: *"in serum moving knobs that should affect the graph often just aren't

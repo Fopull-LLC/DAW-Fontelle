@@ -117,6 +117,20 @@ Delay, Reverb and Tune, an autotune.
 **Plugins.** CLAP and LV2 instruments and effects, with their own editor
 windows and their state in the project.
 
+*Vital's window on NVIDIA (Linux).* Vital draws with EGL into the X
+server's root window, and NVIDIA's EGL offers what Vital asks for (an
+alpha channel) only with a 32-bit visual, which the root window does not
+have — so Vital's window comes up black and
+Vital aborts (`BGFX FATAL ... Failed to create surface`) — in any host,
+and in Vital's own standalone app. Until Vital changes that, start
+Fontelle with Mesa's EGL, which Vital draws with on the CPU:
+
+    __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json fontelle
+
+Adding `MESA_LOADER_DRIVER_OVERRIDE=zink` puts Mesa on the GPU instead,
+through Vulkan. Fontelle's own window draws with Vulkan and is not
+affected; another plugin that draws with EGL draws through Mesa too.
+
 **Not built.** VST2/VST3 hosting (a bridge is designed, out of tree), plugin
 *export*, sample streaming (a soundfont is fully resident), and the later
 milestones of the design. Windows and macOS builds come off the same release

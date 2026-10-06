@@ -192,6 +192,56 @@ fn a_crash_inside_a_plugin_call_names_the_plugin_whatever_module_it_was_in() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A plugin's own thread that aborts just after its editor opened is put down
+/// to that plugin.
+///
+/// Reported: Vital's editor aborted the studio from Vital's own "Render
+/// Thread" (bgfx: *"Failed to create surface"*). The CLAP build's report
+/// named Vital; the VST 3 build's named nobody, because by the time the
+/// renderer gave up the main thread had come back out of the editor's
+/// calls — and a report naming nobody holds nothing back next time.
+#[cfg(unix)]
+#[test]
+fn a_plugin_thread_that_aborts_as_its_editor_opens_names_the_plugin() {
+    const EDITOR_CHILD: &str = "FONTELLE_CRASH_EDITOR_CHILD";
+    let key = fontelle_types::PluginKey::new(
+        fontelle_types::PluginFormat::Vst3,
+        "56535449-6e76-6974-616c-000000000000",
+    );
+    if let Some(dir) = std::env::var_os(EDITOR_CHILD) {
+        crashlog::begin(&PathBuf::from(dir), Some("Faulty Project"));
+        let label = fontelle_host::guard::Label::new("Vital", &key);
+        fontelle_host::guard::editor_opened(label);
+        // The plugin's renderer: a thread the host never marks.
+        std::thread::spawn(|| std::process::abort())
+            .join()
+            .expect("it aborts");
+        unreachable!("the renderer aborts the process");
+    }
+
+    let dir = std::env::temp_dir().join(format!("fontelle-crash-editor-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let status = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([
+            "--exact",
+            "a_plugin_thread_that_aborts_as_its_editor_opens_names_the_plugin",
+            "--nocapture",
+        ])
+        .env(EDITOR_CHILD, &dir)
+        .status()
+        .expect("the child runs");
+    assert!(!status.success(), "the child should have aborted");
+
+    let text = newest_report(&dir);
+    assert_eq!(
+        crashlog::culprit(&text),
+        Some(key),
+        "the report names the plugin:\n{text}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A report with no plugin in it names none — Fontelle's own crash is not a
 /// reason to hold a plugin back.
 #[test]

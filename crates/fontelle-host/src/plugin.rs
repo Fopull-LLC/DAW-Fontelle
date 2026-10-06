@@ -1349,6 +1349,11 @@ impl HostedPlugin {
         scale: f64,
     ) -> Result<crate::gui::GuiSize, crate::gui::GuiError> {
         let _inside = self.inside();
+        // A crash on a thread of the editor's own, for a while from here, is
+        // put down to this plugin — see `guard::editor`.
+        if let Some(label) = self.label {
+            crate::guard::editor_opened(label);
+        }
         use crate::gui::GuiError;
         if let Inner::Lv2(plugin) = &self.inner {
             let editor = plugin.open_editor(
@@ -1523,6 +1528,11 @@ impl HostedPlugin {
         let _inside = self.inside();
         if !self.editor_open {
             return;
+        }
+        // An editor's own threads wind down after this returns, and are as
+        // much this plugin's as they were opening — see `guard::editor`.
+        if let Some(label) = self.label {
+            crate::guard::editor_opened(label);
         }
         self.editor_open = false;
         // Dropping it is the LV2 `cleanup` — see `Lv2Ui::drop`, which is where

@@ -12,11 +12,20 @@
 //! the window itself rather than off the screen, so it works on a desktop with
 //! no screenshot tool and under a compositor that will not give one up.
 //!
+//! `PROBE_HEADER=<pixels>` opens the window the studio does: a strip across
+//! the top, and the plugin in a window of its own under it.
+//!
 //! `PROBE_THREADED=1` runs the processor on a thread of its own, at roughly
 //! real-time pace, the way the studio does — so a plugin whose editor and
 //! audio half disagree only when they are on different threads can be caught
 //! here rather than in the window.
 fn main() {
+    // As the studio does, first thing (`fontelle_host::gui::gdk_scale_for`).
+    #[cfg(target_os = "linux")]
+    // SAFETY: one thread so far.
+    unsafe {
+        fontelle_host::gui::steady_gdk_scale();
+    }
     let path = std::path::PathBuf::from(std::env::args().nth(1).expect("bundle"));
     let seconds: u64 = std::env::args()
         .nth(3)
@@ -38,9 +47,18 @@ fn main() {
         return;
     }
     let mut _processor = Some(plugin.activate(48_000.0, 512).expect("activate"));
-    let mut window =
-        fontelle_host::PluginWindow::open(&info.name, fontelle_host::GuiSize::FALLBACK)
-            .expect("window");
+    // `PROBE_HEADER=<pixels>`: a strip across the top and the plugin in a
+    // window under it, as the studio opens one.
+    let header = std::env::var("PROBE_HEADER")
+        .ok()
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(0);
+    let mut window = fontelle_host::PluginWindow::open_with_header(
+        &info.name,
+        fontelle_host::GuiSize::FALLBACK,
+        header,
+    )
+    .expect("window");
     let wanted = plugin.open_editor(&window, window.scale()).expect("editor");
     println!(
         "plugin wants {wanted:?}, resizable {}",

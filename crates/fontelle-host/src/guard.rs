@@ -18,6 +18,9 @@
 //! padthv1's destructor; for that, calls made on the main thread
 //! ([`calling_main`]) also leave a process-wide mark ([`main`]), which the
 //! handler falls back on when the faulting thread has none of its own.
+//! And an editor that has just opened or closed is a third ([`editor`]): a
+//! plugin's editor often draws from a thread of its own, which can give up
+//! after the main thread has come back out of the call that started it.
 //!
 //! **Async-signal-safe to read.** [`current`] and [`main`] read a pointer to
 //! a [`Label`]'s bytes, which are made once per plugin and never freed. No
@@ -25,8 +28,9 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use fontelle_types::PluginKey;
 
@@ -143,6 +147,52 @@ pub fn current() -> Option<&'static [u8]> {
 pub fn main() -> Option<&'static [u8]> {
     // SAFETY: see `current`.
     unsafe { MAIN.load(Ordering::Acquire).as_ref() }.map(|bytes| &*bytes.0)
+}
+
+/// The plugin whose editor was opened or closed last, and when — see
+/// [`editor`].
+static EDITOR: AtomicPtr<Bytes> = AtomicPtr::new(std::ptr::null_mut());
+
+/// When [`EDITOR`] was marked, in nanoseconds since [`EPOCH`].
+static EDITOR_AT: AtomicU64 = AtomicU64::new(0);
+
+/// What [`EDITOR_AT`] counts from: the first editor this process opened.
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// How long after its editor opened or closed a crash on a thread nobody
+/// marked is put down to a plugin — see [`editor`].
+pub const EDITOR_GRACE: Duration = Duration::from_secs(15);
+
+/// Marks `label`'s editor as just opened (or just closed): what a crash on a
+/// thread the host never marks is put down to, for a while — see [`editor`].
+pub fn editor_opened(label: Label) {
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    let at = Instant::now().saturating_duration_since(epoch).as_nanos() as u64;
+    EDITOR_AT.store(at, Ordering::Release);
+    EDITOR.store(label.ptr().cast_mut(), Ordering::Release);
+}
+
+/// The plugin whose editor opened or closed less than `within` ago, as
+/// `name\tkey` bytes — async-signal-safe, like [`current`].
+///
+/// Reported: Vital's VST 3 editor aborted the studio and the report named
+/// nobody. A plugin's editor often draws from a thread of its own (Vital's
+/// "Render Thread", bgfx's), which the host never marks, and it may fail
+/// after `open_editor` has returned — so neither the thread nor the main
+/// thread was inside a call. The editor that has just come up is the
+/// likeliest culprit by far, and naming it is what holds it back next time.
+pub fn editor(within: Duration) -> Option<&'static [u8]> {
+    let epoch = EPOCH.get()?;
+    let ptr = EDITOR.load(Ordering::Acquire);
+    // `Instant::now` is `clock_gettime`, which POSIX lists as
+    // async-signal-safe.
+    let now = Instant::now().saturating_duration_since(*epoch).as_nanos() as u64;
+    let at = EDITOR_AT.load(Ordering::Acquire);
+    if now.saturating_sub(at) > within.as_nanos() as u64 {
+        return None;
+    }
+    // SAFETY: see `current`.
+    unsafe { ptr.as_ref() }.map(|bytes| &*bytes.0)
 }
 
 /// The **first** field of a struct that owns a plugin: dropped before the

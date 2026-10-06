@@ -127,6 +127,65 @@ pub fn scale_from_resources(resources: &str) -> f64 {
         .map_or(1.0, |dpi| (dpi / 96.0).clamp(1.0, 4.0))
 }
 
+/// The `GDK_SCALE` the studio sets for itself, and so for every plugin editor
+/// in it, before anything else runs: `already_set` is whether the
+/// environment has one, `xsettings` whether the X display has an XSETTINGS
+/// manager ([`xsettings_owner`]; `None` for no display).
+///
+/// Reported: amsynth 2.0.0's editor took the studio down — SIGSEGV in
+/// `amsynth_lv2ui.so` at 0x38, on the main thread. On KDE Plasma under
+/// Wayland nobody owns `_XSETTINGS_S0` on Xwayland, and amsynth 2.0.0 reads
+/// its scale off JUCE's XSETTINGS object without asking whether there is one
+/// (fixed after 2.0.0: *"Fix crash if there are no XSETTINGS"*, amsynth
+/// issue #244). It reads `GDK_SCALE` first and stops there when it is set.
+///
+/// **1, and only where there are no XSETTINGS**, because that is the scale
+/// GTK takes on X11 anyway when there are none to say otherwise: a GTK
+/// editor is drawn as it was. Qt and JUCE do not read it. A value somebody
+/// set is theirs.
+pub fn gdk_scale_for(already_set: bool, xsettings: Option<bool>) -> Option<&'static str> {
+    (!already_set && xsettings == Some(false)).then_some("1")
+}
+
+/// Whether the X display `display` (`None`: `$DISPLAY`) has an XSETTINGS
+/// manager — somebody owning `_XSETTINGS_S<screen>`. `None` when there is no
+/// display to ask.
+#[cfg(target_os = "linux")]
+pub fn xsettings_owner(display: Option<&str>) -> Option<bool> {
+    let (connection, screen) = x11rb::connect(display).ok()?;
+    let name = format!("_XSETTINGS_S{screen}");
+    let atom = connection
+        .intern_atom(false, name.as_bytes())
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let owner = connection.get_selection_owner(atom).ok()?.reply().ok()?;
+    Some(owner.owner != 0)
+}
+
+/// Sets [`gdk_scale_for`]'s `GDK_SCALE` for this process, if there is one to
+/// set.
+///
+/// # Safety
+///
+/// Changes the environment: call it before the process has a second thread,
+/// as `std::env::set_var` asks.
+#[cfg(target_os = "linux")]
+pub unsafe fn steady_gdk_scale() {
+    let already_set = std::env::var_os("GDK_SCALE").is_some();
+    // No display at all is asked about only when there is one to ask.
+    let xsettings = if already_set || std::env::var_os("DISPLAY").is_none() {
+        None
+    } else {
+        xsettings_owner(None)
+    };
+    if let Some(scale) = gdk_scale_for(already_set, xsettings) {
+        // SAFETY: the caller's — no other thread yet.
+        unsafe { std::env::set_var("GDK_SCALE", scale) };
+    }
+}
+
 /// Why a plugin's editor could not be opened.
 #[derive(Debug)]
 pub enum GuiError {
