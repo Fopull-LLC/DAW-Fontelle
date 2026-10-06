@@ -7,7 +7,9 @@
 
 use super::*;
 
-use crate::canvas::{AnalyzeAction, AnalyzeHit, AnalyzeScaleRow};
+use crate::canvas::{
+    AnalyzeAction, AnalyzeEditChange, AnalyzeEditOp, AnalyzeHit, AnalyzeScaleRow, AnalyzeTool,
+};
 
 impl WindowApp {
     /// **Analyze Musically**, on one audio clip: the host starts (or finds)
@@ -79,6 +81,10 @@ impl WindowApp {
         if let Some(doc) = &mut self.options.document {
             doc.close_analysis();
         }
+        if let Some(doc) = &mut self.options.document {
+            doc.analysis_stop();
+        }
+        self.analyze_state.playhead = None;
         self.analyze = None;
         self.analyze_revision = u64::MAX;
         self.analyze_tip = None;
@@ -168,6 +174,19 @@ impl WindowApp {
             self.analyze_state
                 .drag_marquee(&self.analyze_layout, &view, (x, y));
         }
+        if self.analyze_state.dragging_note() {
+            let free = self.modifiers.alt_key();
+            let lane = self.analyze_layout.lane.clone();
+            match self.analyze_state.drag_note(&lane, &view, (x, y), free) {
+                Some(Ok(changes)) => self.send_analysis_edits(&changes, true),
+                Some(Err(said)) => self.analyze_says(said),
+                None => {}
+            }
+        }
+        let t = self.analyze_layout.lane.t_of(&self.analyze_state, x);
+        if self.analyze_state.drag_ruler(t) {
+            self.redraw_editor(EditorKind::Analyze);
+        }
         let hit =
             crate::canvas::analyze_hit(&self.analyze_layout, &view, &self.analyze_state, x, y);
         let popover = |hit: Option<AnalyzeHit>| {
@@ -195,6 +214,8 @@ impl WindowApp {
             None | Some(AnalyzeHit::Tuning | AnalyzeHit::Bpm | AnalyzeHit::Job) => Pointer::Default,
             Some(AnalyzeHit::Badge | AnalyzeHit::Ruler | AnalyzeHit::Later) => Pointer::Default,
             Some(AnalyzeHit::Lane) => Pointer::Default,
+            Some(AnalyzeHit::NoteEnd(..)) => Pointer::ResizeX,
+            Some(AnalyzeHit::Readout) => Pointer::Default,
             Some(_) => Pointer::Hand,
         }
     }
@@ -270,17 +291,37 @@ impl WindowApp {
             AnalyzeAction::ToggleKeepBends => {
                 self.analyze_state.keep_bends = !self.analyze_state.keep_bends;
             }
-            AnalyzeAction::Selected => {
-                // A note clicked is heard, through the selected channel (the
-                // plan's "auditioned as MIDI").
-                if let Some(AnalyzeHit::Note(index)) = self.analyze_state.hover
-                    && let Some(note) = self.analyze_state.notes(&view).get(index)
-                {
-                    let key = note.midi;
-                    self.analyze_audition(key);
+            AnalyzeAction::Selected | AnalyzeAction::Marquee => {}
+            // Ty: *"when i preview a note its not playing that section
+            // repitched to the new note, its just playing like a synth
+            // wave"* — a note clicked plays its own span of the audio, as
+            // edited.
+            AnalyzeAction::PlayNote(index) => self.play_analysis_note(index),
+            AnalyzeAction::Tool(tool) => self.analyze_state.tool = tool,
+            AnalyzeAction::PlayStop => self.analyze_play_stop(),
+            AnalyzeAction::ToggleOriginal => self.toggle_analyze_original(),
+            AnalyzeAction::Seek(t) => {
+                // The cursor is there; playing, it carries on from there.
+                if self.analyze_state.playhead.is_some() {
+                    let (_, to, looped) = self.analyze_state.space_range(&view);
+                    if let Some(doc) = &mut self.options.document {
+                        doc.analysis_play(t, to, looped);
+                    }
                 }
             }
-            AnalyzeAction::Marquee => {}
+            AnalyzeAction::Render => self.render_analysis(false),
+            AnalyzeAction::RenderMenu => {
+                let chip = self.analyze_layout.render_menu;
+                let bounds = self.analyze_bounds();
+                self.open_menu(MenuTarget::AnalyzeRender, chip.x, chip.bottom(), bounds);
+            }
+            AnalyzeAction::Revert => {
+                let said = match &mut self.options.document {
+                    Some(doc) => doc.revert_analysis(),
+                    None => return,
+                };
+                self.after_render(said);
+            }
         }
         self.redraw_editor(EditorKind::Analyze);
     }
@@ -301,10 +342,181 @@ impl WindowApp {
         }
     }
 
-    /// The button let go: the marquee ends and a sounding key stops.
+    /// The button let go: the marquee ends and a sounding key stops; a
+    /// note drag is one undo, and the note is heard where it went.
     pub(super) fn release_analyze(&mut self) {
         self.analyze_state.end_marquee();
+        self.analyze_state.end_ruler();
         self.end_analyze_audition();
+        let dragged = self.analyze_state.dragged_note();
+        if self.analyze_state.end_note_drag() {
+            if let Some(doc) = &mut self.options.document {
+                doc.end_gesture();
+            }
+            if let Some(index) = dragged {
+                self.play_analysis_note(index);
+            }
+            self.refresh_studio();
+            self.refresh_title();
+        }
+    }
+
+    /// Note `index`'s own span of the audio, as edited, through the preview.
+    fn play_analysis_note(&mut self, index: usize) {
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        let Some(note) = self.analyze_state.notes(view).get(index) else {
+            return;
+        };
+        let (start, end) = (note.start, note.end);
+        if let Some(doc) = &mut self.options.document {
+            doc.analysis_play(start, Some(end), false);
+        }
+        self.analyze_state.playhead = Some(start);
+    }
+
+    /// Space: play from the cursor (round the region when one is set), or
+    /// stop.
+    fn analyze_play_stop(&mut self) {
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        let (from, to, looped) = self.analyze_state.space_range(view);
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if doc.analysis_playhead().is_some() {
+            doc.analysis_stop();
+            self.analyze_state.playhead = None;
+        } else {
+            doc.analysis_play(from, to, looped);
+            self.analyze_state.playhead = Some(from);
+        }
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// Enter: the selected notes (or the region), once.
+    fn analyze_play_selection(&mut self) {
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        let Some((from, to)) = self.analyze_state.selection_range(view) else {
+            self.analyze_says(
+                "Select notes (or drag out a region on the ruler) to play them".to_string(),
+            );
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            doc.analysis_play(from, Some(to), false);
+        }
+        self.analyze_state.playhead = Some(from);
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// B.
+    fn toggle_analyze_original(&mut self) {
+        self.analyze_state.listen_original = !self.analyze_state.listen_original;
+        let original = self.analyze_state.listen_original;
+        if let Some(doc) = &mut self.options.document {
+            doc.analysis_set_original(original);
+        }
+        self.status = if original {
+            "A/B: the original".to_string()
+        } else {
+            "A/B: your edits".to_string()
+        };
+        self.tree.invalidate(TRANSPORT);
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// The preview's playhead, once a frame: the lane follows it.
+    pub(super) fn tick_analyze_playhead(&mut self) {
+        if self.analyze.is_none() {
+            return;
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let now = doc.analysis_playhead();
+        if now == self.analyze_state.playhead {
+            return;
+        }
+        self.analyze_state.playhead = now;
+        if let Some(view) = &self.analyze {
+            let lane = self.analyze_layout.lane.clone();
+            self.analyze_state.follow(&lane, view);
+        }
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// Edits to the host; what it refuses is said.
+    fn send_analysis_edits(&mut self, changes: &[AnalyzeEditChange], merge: bool) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        if let Err(said) = doc.set_analysis_edits(changes, merge) {
+            self.analyze_says(said);
+            return;
+        }
+        if !merge {
+            doc.end_gesture();
+        }
+        self.refresh_analyze();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// A key's edit of the selected notes.
+    fn analyze_edit(&mut self, op: AnalyzeEditOp) {
+        let Some(view) = &self.analyze else {
+            return;
+        };
+        match self.analyze_state.edit(view, op) {
+            Ok(changes) => {
+                self.send_analysis_edits(&changes, false);
+                self.refresh_title();
+            }
+            Err(said) => self.analyze_says(said),
+        }
+    }
+
+    fn analyze_says(&mut self, said: String) {
+        if self.status != said {
+            self.status = said.clone();
+            self.show_toast(said, false);
+            self.tree.invalidate(TRANSPORT);
+        }
+    }
+
+    /// Render to clip (Ctrl+Enter), or as a new clip below.
+    pub(super) fn render_analysis(&mut self, below: bool) {
+        let said = match &mut self.options.document {
+            Some(doc) => doc.render_analysis(below),
+            None => return,
+        };
+        self.after_render(said);
+    }
+
+    fn after_render(&mut self, said: Result<String, String>) {
+        let ok = said.is_ok();
+        let said = said.unwrap_or_else(|e| e);
+        self.status = said.clone();
+        self.show_toast(said, ok);
+        self.analyze_revision = u64::MAX;
+        self.refresh_analyze();
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(TRANSPORT);
+        self.relayout_editors();
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    pub(super) fn analyze_render_menu(&self) -> Vec<crate::canvas::MenuEntry> {
+        vec![
+            crate::canvas::MenuEntry::new("Render to clip (replaces its audio, original kept)"),
+            crate::canvas::MenuEntry::new("Render as a new clip below"),
+        ]
     }
 
     pub(super) fn wheel_analyze(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
@@ -346,6 +558,24 @@ impl WindowApp {
             self.analyze_state.clear_selection();
             return true;
         }
+        // The arrows, the fixed family the keymap leaves alone: the selected
+        // notes a semitone, with Shift an octave, with Alt ten cents.
+        if let Key::Named(arrow @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) = &event.logical_key {
+            let step = if self.modifiers.shift_key() {
+                1200.0
+            } else if self.modifiers.alt_key() {
+                10.0
+            } else {
+                100.0
+            };
+            let sign = if *arrow == NamedKey::ArrowUp {
+                1.0
+            } else {
+                -1.0
+            };
+            self.analyze_edit(AnalyzeEditOp::Nudge(sign * step));
+            return true;
+        }
         let Some(action) = self.action_of(event, crate::canvas::Context::Editor) else {
             return false;
         };
@@ -359,6 +589,20 @@ impl WindowApp {
             }
             Action::AnalyzeSpectrogram => self.toggle_analyze_spectrogram(),
             Action::AnalyzeChordLane => self.toggle_analyze_chords(),
+            // In this window the transport's key is this window's player
+            // (plan §3.5): Space plays the audio here, from the cursor.
+            Action::Play => self.analyze_play_stop(),
+            Action::AnalyzePlaySelection => self.analyze_play_selection(),
+            Action::AnalyzeAb => self.toggle_analyze_original(),
+            Action::AnalyzeRender => self.render_analysis(false),
+            Action::AnalyzeSnap => self.analyze_edit(AnalyzeEditOp::Snap),
+            Action::AnalyzeFlatten => self.analyze_edit(AnalyzeEditOp::Flatten),
+            Action::AnalyzeVibrato => self.analyze_edit(AnalyzeEditOp::Vibrato),
+            // Delete in an editor window is "take away the selected thing":
+            // here, the selected notes' edits.
+            Action::RemoveBand => self.analyze_edit(AnalyzeEditOp::Reset),
+            Action::AnalyzeSelectTool => self.analyze_state.tool = AnalyzeTool::Select,
+            Action::AnalyzeMoveTool => self.analyze_state.tool = AnalyzeTool::Move,
             _ => return false,
         }
         true

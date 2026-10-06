@@ -61,11 +61,21 @@ impl Command for AddStudy {
     }
 
     fn label(&self) -> &str {
-        "Analyze audio"
+        "Move notes"
     }
 
-    fn merge_with(&mut self, _next: &dyn Command) -> bool {
-        false
+    /// The first edit of a clip starts its study, and a drag that began it
+    /// carries on as edits of it: one entry, whose redo makes the study with
+    /// the drag's last edits.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetStudyEdits>() else {
+            return false;
+        };
+        if Some(next.study) != self.made {
+            return false;
+        }
+        self.study.pitch_edits = next.edits.clone();
+        true
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -405,6 +405,69 @@ fn draw_glass_controls(
         false,
         t.value,
     );
+    if state.page != AnalyzePage::Notes {
+        return;
+    }
+    // The tools, the one in hand lit.
+    for (tool, rect) in &l.tools {
+        bridge::draw_hud_tab(
+            scene,
+            theme,
+            labels,
+            *rect,
+            tool.label(),
+            *tool == state.tool,
+            t.value,
+        );
+    }
+    // ▶ / ■, drawn; lit while it plays.
+    let p = &theme.palette;
+    let playing = state.playhead.is_some();
+    bridge::draw_hud_tab(scene, theme, labels, l.play, "", playing, t.value);
+    let ink = if playing || state.hover == Some(AnalyzeHit::Play) {
+        lighten(p.accent, 0.45)
+    } else {
+        p.text
+    };
+    let (cx, cy) = (
+        l.play.x + l.play.width / 2.0,
+        l.play.y + l.play.height / 2.0,
+    );
+    let r = l.play.height * 0.24;
+    if playing {
+        fill_rect(scene, Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), ink);
+    } else {
+        let mut path = BezPath::new();
+        path.move_to((f64::from(cx - r * 0.8), f64::from(cy - r)));
+        path.line_to((f64::from(cx + r), f64::from(cy)));
+        path.line_to((f64::from(cx - r * 0.8), f64::from(cy + r)));
+        path.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &path,
+        );
+    }
+    bridge::draw_hud_tab(
+        scene,
+        theme,
+        labels,
+        l.listen,
+        crate::canvas::LISTEN_ORIGINAL,
+        state.listen_original,
+        t.value,
+    );
+    text_in(
+        scene,
+        labels,
+        &crate::canvas::readout_text(chrome.view, state),
+        t.value,
+        l.readout,
+        Some(4.0),
+        if playing { p.text } else { p.text_muted },
+    );
 }
 
 // ------------------------------------------------------------- the lane ---
@@ -535,15 +598,47 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
         } else if hot {
             stroke_rect_rounded(scene, blob, radius, 1.0, lighten(base, 0.5));
         }
-        // The pitch through it.
+        // The pitch through it; a moved note's sung line ghosted where it
+        // was, and its new one through the blob (plan §3.3).
         if note.curve.len() >= 2 {
+            let shift = note.edit.map_or(0.0, |e| e.shift_cents);
+            if note.edit.is_some() {
+                let ghost: Vec<(f32, f32)> = note
+                    .curve
+                    .iter()
+                    .map(|(time, cents)| {
+                        (
+                            lane.x_of(state, *time),
+                            lane.y_of(state, f32::from(note.midi) + cents / 100.0),
+                        )
+                    })
+                    .collect();
+                stroke_polyline(scene, &ghost, grid, 1.0, p.text.with_alpha(0x55));
+            }
+            let edit = note.edit.unwrap_or_default();
+            let length = (note.end - note.start).max(1e-3);
             let points: Vec<(f32, f32)> = note
                 .curve
                 .iter()
                 .map(|(time, cents)| {
+                    // The move eased in and out over the glides, the drift
+                    // and vibrato roughly as the render treats them.
+                    let ms = ((time - note.start) * 1000.0) as f32;
+                    let to_end = ((length - (time - note.start)) * 1000.0) as f32;
+                    let ease = |x: f32, g: f32| {
+                        if g <= 0.0 {
+                            1.0
+                        } else {
+                            0.5 - 0.5 * (std::f32::consts::PI * (x / g).clamp(0.0, 1.0)).cos()
+                        }
+                    };
+                    let e = ease(ms, edit.glide_in_ms).min(ease(to_end, edit.glide_out_ms));
+                    let wobble = cents - note.cents;
+                    let kept = 1.0 - edit.flatten * 0.5 - (1.0 - edit.vibrato) * 0.5;
+                    let moved = cents + e * (shift + (kept - 1.0) * wobble);
                     (
                         lane.x_of(state, *time),
-                        lane.y_of(state, f32::from(note.midi) + cents / 100.0),
+                        lane.y_of(state, f32::from(note.midi) + moved / 100.0),
                     )
                 })
                 .collect();
@@ -559,8 +654,19 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
                 },
             );
         }
-        // How far off it sits, when it is enough to hear.
-        if let Some(tag) = crate::canvas::analyze_cents_tag(note)
+        // How far off it sits, when it is enough to hear (once moved, where
+        // it sits now).
+        let now = crate::canvas::AnalyzedNote {
+            cents: note.cents + note.edit.map_or(0.0, |e| e.shift_cents),
+            curve: Vec::new(),
+            ..note.clone()
+        };
+        let now = crate::canvas::AnalyzedNote {
+            midi: (f32::from(now.midi) + (now.cents / 100.0).round()).clamp(0.0, 127.0) as u8,
+            cents: now.cents - (now.cents / 100.0).round() * 100.0,
+            ..now
+        };
+        if let Some(tag) = crate::canvas::analyze_cents_tag(&now)
             && let Some(text) = labels.get_styled(&tag, t.caption)
         {
             let x = (blob.right() - text.width).max(blob.x);
@@ -571,6 +677,41 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
                 lighten(p.accent, 0.3)
             };
             draw_text_clipped(scene, text, grid, x, y.max(grid.y), ink);
+        }
+    }
+
+    // The region Space loops, the cursor it plays from, and the playhead.
+    if let Some((a, b)) = state.region {
+        let (x0, x1) = (lane.x_of(state, a), lane.x_of(state, b));
+        fill_rect(
+            scene,
+            Rect::new(x0, grid.y, (x1 - x0).max(1.0), grid.height),
+            p.accent.with_alpha(0x14),
+        );
+    }
+    let cursor = lane.x_of(state, state.cursor);
+    if cursor >= grid.x && cursor <= grid.right() {
+        fill_rect(
+            scene,
+            Rect::new(cursor.round(), grid.y, 1.0, grid.height),
+            p.text.with_alpha(0x50),
+        );
+    }
+    if let Some(at) = state.playhead {
+        let x = lane.x_of(state, at);
+        if x >= grid.x && x <= grid.right() {
+            fill_glow(
+                scene,
+                (x, grid.y + grid.height / 2.0),
+                6.0,
+                p.playhead,
+                0x30,
+            );
+            fill_rect(
+                scene,
+                Rect::new(x.round() - 0.5, grid.y, 2.0, grid.height),
+                p.playhead,
+            );
         }
     }
 
@@ -958,6 +1099,20 @@ fn draw_ruler(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyz
         Rect::new(ruler.x, ruler.y, ruler.width, 1.0),
         p.border,
     );
+    let state = chrome.state;
+    if let Some((a, b)) = state.region {
+        let (x0, x1) = (
+            l.lane.x_of(state, a).max(ruler.x),
+            l.lane.x_of(state, b).min(ruler.right()),
+        );
+        if x1 > x0 {
+            fill_rect(
+                scene,
+                Rect::new(x0, ruler.y + 1.0, x1 - x0, ruler.height - 1.0),
+                p.accent.with_alpha(0x50),
+            );
+        }
+    }
     for (x, label) in crate::canvas::ruler_labels(l, chrome.view, chrome.state) {
         fill_rect(scene, Rect::new(x.round(), ruler.y, 1.0, 4.0), p.text_muted);
         if let Some(text) = labels.get_styled(&label, t.caption) {
@@ -970,6 +1125,26 @@ fn draw_ruler(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyz
                 p.text_muted,
             );
         }
+    }
+    // The cursor's flag on the ruler, and the playhead's.
+    for (at, ink) in [(Some(state.cursor), p.text), (state.playhead, p.playhead)] {
+        let Some(at) = at else { continue };
+        let x = l.lane.x_of(state, at);
+        if x < ruler.x || x > ruler.right() {
+            continue;
+        }
+        let mut flag = BezPath::new();
+        flag.move_to((f64::from(x - 5.0), f64::from(ruler.y + 1.0)));
+        flag.line_to((f64::from(x + 5.0), f64::from(ruler.y + 1.0)));
+        flag.line_to((f64::from(x), f64::from(ruler.y + 8.0)));
+        flag.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            ink.to_peniko(),
+            None,
+            &flag,
+        );
     }
 }
 
@@ -1052,6 +1227,9 @@ fn draw_cards(
                         | AnalyzeHit::MakeClip
                         | AnalyzeHit::CopyScaleButton
                         | AnalyzeHit::KeepBends
+                        | AnalyzeHit::Render
+                        | AnalyzeHit::RenderMenu
+                        | AnalyzeHit::Revert
                 )
             ),
         };
@@ -1073,7 +1251,7 @@ fn draw_cards(
     let lines = crate::canvas::note_card_lines(chrome.view, state);
     let focused = crate::canvas::note_card_focus(chrome.view, state).is_some();
     let body = l.note_card.body;
-    let line_h = (body.height / 3.0).min(20.0 * l.scale);
+    let line_h = (body.height / 4.0).min(18.0 * l.scale);
     for (i, line) in lines.iter().enumerate() {
         let rect = Rect::new(body.x, body.y + i as f32 * line_h, body.width, line_h);
         if rect.bottom() > body.bottom() + 1.0 {
@@ -1095,12 +1273,18 @@ fn draw_cards(
     }
 
     // What to do with the notes.
-    use crate::canvas::{COPY_NOTES, COPY_SCALE, KEEP_BENDS, MAKE_CLIP};
-    for (rect, word, hit) in [
+    use crate::canvas::{COPY_NOTES, COPY_SCALE, KEEP_BENDS, MAKE_CLIP, RENDER_TO_CLIP, REVERT};
+    let mut buttons = vec![
         (l.copy_notes, COPY_NOTES, AnalyzeHit::CopyNotes),
         (l.make_clip, MAKE_CLIP, AnalyzeHit::MakeClip),
         (l.copy_scale, COPY_SCALE, AnalyzeHit::CopyScaleButton),
-    ] {
+        (l.render, RENDER_TO_CLIP, AnalyzeHit::Render),
+        (l.render_menu, "", AnalyzeHit::RenderMenu),
+    ];
+    if !l.revert.is_empty() {
+        buttons.push((l.revert, REVERT, AnalyzeHit::Revert));
+    }
+    for (rect, word, hit) in buttons {
         draw_flop_button(
             scene,
             theme,
@@ -1111,6 +1295,16 @@ fn draw_cards(
             Some(t.value),
         );
     }
+    chevron(
+        scene,
+        l.render_menu,
+        if hover == Some(AnalyzeHit::RenderMenu) {
+            lighten(p.accent, 0.4)
+        } else {
+            p.text
+        },
+        l.scale,
+    );
     let keep = l.keep_bends;
     let switch_w = 40.0 * l.scale;
     draw_flop_switch(

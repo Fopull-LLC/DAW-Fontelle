@@ -79,6 +79,54 @@ pub struct AnalyzedNote {
     pub poly: bool,
     /// The pitch through it: (seconds, cents from `midi`).
     pub curve: Vec<(f64, f32)>,
+    /// What has been done to it, if anything (from the song's study).
+    pub edit: Option<AnalyzeEdit>,
+}
+
+/// A note's pitch edit as the window sees it (`docs/analyze-musically-plan.md`
+/// §2.4, §3.5): the host keeps it in the song as a `PitchEdit` over the
+/// note's span of samples.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyzeEdit {
+    /// How far the note moves, in cents.
+    pub shift_cents: f32,
+    /// How much of its drift is taken out, 0..1 (F).
+    pub flatten: f32,
+    /// Its vibrato's depth as a factor of the sung one (V).
+    pub vibrato: f32,
+    /// How long the move takes to arrive and to leave (its ends dragged).
+    pub glide_in_ms: f32,
+    pub glide_out_ms: f32,
+}
+
+impl Default for AnalyzeEdit {
+    fn default() -> Self {
+        Self {
+            shift_cents: 0.0,
+            flatten: 0.0,
+            vibrato: 1.0,
+            glide_in_ms: fontelle_types::DEFAULT_GLIDE_MS,
+            glide_out_ms: fontelle_types::DEFAULT_GLIDE_MS,
+        }
+    }
+}
+
+impl AnalyzeEdit {
+    /// Whether it changes nothing that can be heard.
+    pub fn is_identity(&self) -> bool {
+        self.shift_cents.abs() < 0.05
+            && self.flatten.abs() < 1e-3
+            && (self.vibrato - 1.0).abs() < 1e-3
+    }
+}
+
+/// One note's edit on its way to the host: the note's time and what it is
+/// now (`None` takes the edit off: Del).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalyzeEditChange {
+    pub start: f64,
+    pub end: f64,
+    pub edit: Option<AnalyzeEdit>,
 }
 
 /// One chord of the chord lane.
@@ -178,6 +226,10 @@ pub struct AnalyzeView {
     pub peaks: Arc<[(f32, f32)]>,
     pub peaks_per_second: f64,
     pub spectrogram: Option<AnalyzeImage>,
+    /// The clip plays a render of the edits (Revert to original).
+    pub rendered: bool,
+    /// Edits made that the preview has not caught up with yet.
+    pub preview_pending: bool,
 }
 
 // ------------------------------------------------------------ the state ---
@@ -243,6 +295,20 @@ pub struct AnalyzeState {
     pub row_height: f32,
     /// What is under the pointer, for the popover and the lit chips.
     pub hover: Option<AnalyzeHit>,
+    /// Move (drag notes to repitch them) or Select (drag to select).
+    pub tool: AnalyzeTool,
+    /// Where Space plays from, in seconds: a click on the ruler puts it.
+    pub cursor: f64,
+    /// Where the preview is, while it plays.
+    pub playhead: Option<f64>,
+    /// A stretch of the ruler dragged out: Space loops it.
+    pub region: Option<(f64, f64)>,
+    /// B: hearing the original rather than the edits.
+    pub listen_original: bool,
+    /// A note being dragged: its pitch, or one of its ends (the glide).
+    drag: Option<NoteDrag>,
+    /// A region being dragged out on the ruler, from here.
+    ruler_from: Option<f64>,
     selection: BTreeSet<usize>,
     /// A marquee in progress: where it started, where it is, and what was
     /// selected before it (Shift adds to that).
@@ -273,11 +339,80 @@ impl Default for AnalyzeState {
             top: 84.0,
             row_height: 14.0,
             hover: None,
+            tool: AnalyzeTool::Move,
+            cursor: 0.0,
+            playhead: None,
+            region: None,
+            listen_original: false,
+            drag: None,
+            ruler_from: None,
             selection: BTreeSet::new(),
             marquee: None,
         }
     }
 }
+
+/// The lane's tools (plan §3.5): Move is what opens — Ty, on P1: *"i dont
+/// have the ability to drag notes around in here"*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnalyzeTool {
+    Select,
+    #[default]
+    Move,
+}
+
+impl AnalyzeTool {
+    pub const ALL: [Self; 2] = [Self::Select, Self::Move];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Select => "Select",
+            Self::Move => "Move",
+        }
+    }
+}
+
+/// Which part of a note a press took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyzeNotePart {
+    /// The body: up and down is its pitch.
+    Body,
+    /// Its left or right end: how long the move takes to arrive or leave.
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NoteDrag {
+    index: usize,
+    part: AnalyzeNotePart,
+    from: (f32, f32),
+    /// Each dragged note's edit when the drag began.
+    began: Vec<(usize, AnalyzeEdit)>,
+    moved: bool,
+}
+
+/// What [`AnalyzeState::edit`] does to the selected notes (plan §3.5).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AnalyzeEditOp {
+    /// ↑ ↓ (a semitone), with Shift an octave, with Alt ten cents.
+    Nudge(f32),
+    /// Q: to the nearest note, in the scale when it is shown; half way the
+    /// first press, the whole way the next.
+    Snap,
+    /// F: the drift taken out, 70 %, or put back.
+    Flatten,
+    /// V: the vibrato as sung, half, none, round again.
+    Vibrato,
+    /// Del: as recorded.
+    Reset,
+}
+
+/// What a chord note says when somebody tries to move it (P6 moves them).
+pub const CHORD_CANT_MOVE: &str =
+    "Chord notes can't be moved yet \u{2014} copy them to a piano roll";
+/// What an edit key says with nothing selected.
+pub const SELECT_FIRST: &str = "Select a note first (click it, or Ctrl+A for all)";
 
 /// And the most, before a row is too thin to read.
 const MIN_ROW_HEIGHT: f32 = 5.0;
@@ -304,6 +439,7 @@ impl AnalyzeState {
             chords: self.chords,
             show_scale: self.show_scale,
             keep_bends: self.keep_bends,
+            tool: self.tool,
             ..Self::default()
         }
     }
@@ -394,6 +530,285 @@ impl AnalyzeState {
         self.marquee.is_some()
     }
 
+    // --------------------------------------------------- the transport ---
+
+    /// What Space plays: from the cursor to the end — or, with a region,
+    /// round the region (from the cursor when it is inside it).
+    pub fn space_range(&self, view: &AnalyzeView) -> (f64, Option<f64>, bool) {
+        match self.region {
+            Some((a, b)) if b > a => {
+                let from = if self.cursor >= a && self.cursor < b {
+                    self.cursor
+                } else {
+                    a
+                };
+                (from, Some(b), true)
+            }
+            _ => (self.cursor.clamp(0.0, view.duration.max(0.0)), None, false),
+        }
+    }
+
+    /// What Enter plays: the selected notes, first start to last end, once;
+    /// with none selected, the region once.
+    pub fn selection_range(&self, view: &AnalyzeView) -> Option<(f64, f64)> {
+        let notes = self.notes(view);
+        let picked: Vec<&AnalyzedNote> = self
+            .selection
+            .iter()
+            .filter_map(|i| notes.get(*i))
+            .collect();
+        if picked.is_empty() {
+            return self.region.filter(|(a, b)| b > a);
+        }
+        let start = picked.iter().map(|n| n.start).fold(f64::MAX, f64::min);
+        let end = picked.iter().map(|n| n.end).fold(f64::MIN, f64::max);
+        Some((start, end))
+    }
+
+    /// The playhead kept on screen while it plays: past the right edge (or
+    /// before the left), the lane pages on so it sits a tenth in.
+    pub fn follow(&mut self, lane: &AnalyzeLane, view: &AnalyzeView) {
+        let Some(at) = self.playhead else {
+            return;
+        };
+        let grid = lane.grid;
+        if grid.is_empty() {
+            return;
+        }
+        let x = lane.x_of(self, at);
+        if x > grid.right() - 2.0 || x < grid.x {
+            self.start = at - f64::from(grid.width * 0.1 / self.pixels_per_second.max(MIN_PPS));
+            self.clamp(view, grid);
+        }
+    }
+
+    /// A press on the ruler: the cursor there, and a region begun.
+    pub fn press_ruler(&mut self, t: f64) {
+        self.cursor = t.max(0.0);
+        self.ruler_from = Some(self.cursor);
+    }
+
+    /// The ruler dragged: the region from where it was pressed (none until
+    /// it is wider than a sliver).
+    pub fn drag_ruler(&mut self, t: f64) -> bool {
+        let Some(from) = self.ruler_from else {
+            return false;
+        };
+        let (a, b) = (from.min(t.max(0.0)), from.max(t.max(0.0)));
+        self.region = (b - a > 0.02).then_some((a, b));
+        true
+    }
+
+    pub fn end_ruler(&mut self) {
+        self.ruler_from = None;
+    }
+
+    // ------------------------------------------------------ the edits ---
+
+    /// The selected notes' indices, refused if any is a chord note.
+    fn editable(&self, view: &AnalyzeView) -> Result<Vec<usize>, String> {
+        let notes = self.notes(view);
+        let picked: Vec<usize> = self
+            .selection
+            .iter()
+            .copied()
+            .filter(|i| *i < notes.len())
+            .collect();
+        if picked.is_empty() {
+            return Err(SELECT_FIRST.to_string());
+        }
+        if picked.iter().any(|i| notes[*i].poly) {
+            return Err(CHORD_CANT_MOVE.to_string());
+        }
+        Ok(picked)
+    }
+
+    /// A key's edit of the selected notes (plan §3.5), as changes for the
+    /// host; `Err` says why nothing changed.
+    pub fn edit(
+        &self,
+        view: &AnalyzeView,
+        op: AnalyzeEditOp,
+    ) -> Result<Vec<AnalyzeEditChange>, String> {
+        let notes = self.notes(view);
+        let scale = self
+            .show_scale
+            .then(|| view.key.as_ref().and_then(|k| k.key.mask()))
+            .flatten();
+        let picked = self.editable(view)?;
+        Ok(picked
+            .into_iter()
+            .map(|i| {
+                let note = &notes[i];
+                let was = note.edit.unwrap_or_default();
+                let edit = match op {
+                    AnalyzeEditOp::Nudge(cents) => Some(AnalyzeEdit {
+                        shift_cents: was.shift_cents + cents,
+                        ..was
+                    }),
+                    AnalyzeEditOp::Snap => {
+                        let sung = f32::from(note.midi) * 100.0 + note.cents;
+                        let target = nearest_note(sung + was.shift_cents, scale);
+                        let full = target - sung;
+                        let shift = if (was.shift_cents - full).abs() < 0.5
+                            || (was.shift_cents - full * 0.5).abs() < 0.5
+                        {
+                            full
+                        } else {
+                            full * 0.5
+                        };
+                        Some(AnalyzeEdit {
+                            shift_cents: shift,
+                            ..was
+                        })
+                    }
+                    AnalyzeEditOp::Flatten => Some(AnalyzeEdit {
+                        flatten: if was.flatten > 0.0 { 0.0 } else { 0.7 },
+                        ..was
+                    }),
+                    AnalyzeEditOp::Vibrato => Some(AnalyzeEdit {
+                        vibrato: if was.vibrato > 0.75 {
+                            0.5
+                        } else if was.vibrato > 0.25 {
+                            0.0
+                        } else {
+                            1.0
+                        },
+                        ..was
+                    }),
+                    AnalyzeEditOp::Reset => None,
+                };
+                AnalyzeEditChange {
+                    start: note.start,
+                    end: note.end,
+                    edit: edit.filter(|e| !e.is_identity()),
+                }
+            })
+            .collect())
+    }
+
+    /// A press on note `index` in the Move tool: it is selected (the
+    /// selection kept when it is already in it) and a drag of `part`
+    /// begins.
+    pub fn begin_note_drag(
+        &mut self,
+        view: &AnalyzeView,
+        index: usize,
+        part: AnalyzeNotePart,
+        at: (f32, f32),
+    ) {
+        if !self.selection.contains(&index) {
+            self.selection = std::iter::once(index).collect();
+        }
+        let notes = self.notes(view);
+        let indices: Vec<usize> = match part {
+            AnalyzeNotePart::Body => self.selection.iter().copied().collect(),
+            _ => vec![index],
+        };
+        let began = indices
+            .into_iter()
+            .filter(|i| notes.get(*i).is_some_and(|n| !n.poly))
+            .map(|i| (i, notes[i].edit.unwrap_or_default()))
+            .collect();
+        self.drag = Some(NoteDrag {
+            index,
+            part,
+            from: at,
+            began,
+            moved: false,
+        });
+    }
+
+    pub fn dragging_note(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// The note a drag holds.
+    pub fn dragged_note(&self) -> Option<usize> {
+        self.drag.as_ref().map(|d| d.index)
+    }
+
+    /// The note drag carried to `to`: the dragged notes' edits now, for the
+    /// host (`None` until it has moved). Up and down snaps the dragged
+    /// note's pitch to semitones (`free`, Alt: to the cent) and moves the
+    /// rest of the selection as far; an end sets that glide.
+    pub fn drag_note(
+        &mut self,
+        lane: &AnalyzeLane,
+        view: &AnalyzeView,
+        to: (f32, f32),
+        free: bool,
+    ) -> Option<Result<Vec<AnalyzeEditChange>, String>> {
+        let notes = self.notes(view).to_vec();
+        let row = self.row_height;
+        let t_at = lane.t_of(self, to.0);
+        let drag = self.drag.as_mut()?;
+        if !drag.moved && (to.0 - drag.from.0).abs() < 3.0 && (to.1 - drag.from.1).abs() < 3.0 {
+            return None;
+        }
+        drag.moved = true;
+        let held = notes.get(drag.index)?;
+        if held.poly {
+            return Some(Err(CHORD_CANT_MOVE.to_string()));
+        }
+        let changes = match drag.part {
+            AnalyzeNotePart::Body => {
+                let raw = (drag.from.1 - to.1) / row.max(MIN_ROW_HEIGHT) * 100.0;
+                let base = drag
+                    .began
+                    .iter()
+                    .find(|(i, _)| *i == drag.index)
+                    .map_or(0.0, |(_, e)| e.shift_cents);
+                let sung = f32::from(held.midi) * 100.0 + held.cents;
+                let landed = sung + base + raw;
+                let landed = if free {
+                    landed
+                } else {
+                    (landed / 100.0).round() * 100.0
+                };
+                let delta = landed - sung - base;
+                drag.began
+                    .iter()
+                    .map(|(i, was)| AnalyzeEditChange {
+                        start: notes[*i].start,
+                        end: notes[*i].end,
+                        edit: Some(AnalyzeEdit {
+                            shift_cents: was.shift_cents + delta,
+                            ..*was
+                        }),
+                    })
+                    .collect()
+            }
+            part => {
+                let (_, was) = drag.began.first().copied()?;
+                let length = ((held.end - held.start) * 1000.0) as f32;
+                let mut edit = was;
+                match part {
+                    AnalyzeNotePart::Start => {
+                        edit.glide_in_ms = (((t_at - held.start) * 1000.0) as f32)
+                            .clamp(0.0, (length - edit.glide_out_ms).max(0.0));
+                    }
+                    _ => {
+                        edit.glide_out_ms = (((held.end - t_at) * 1000.0) as f32)
+                            .clamp(0.0, (length - edit.glide_in_ms).max(0.0));
+                    }
+                }
+                vec![AnalyzeEditChange {
+                    start: held.start,
+                    end: held.end,
+                    edit: Some(edit),
+                }]
+            }
+        };
+        Some(Ok(changes))
+    }
+
+    /// The drag let go: whether it moved anything (a press that did not is
+    /// a click).
+    pub fn end_note_drag(&mut self) -> bool {
+        self.drag.take().is_some_and(|d| d.moved)
+    }
+
     /// Every note on screen: the whole length across, the notes' range (two
     /// octaves at least) up the side. With no notes yet, around middle C.
     pub fn fit(&mut self, view: &AnalyzeView, layout: &AnalyzeLayout) {
@@ -473,6 +888,22 @@ impl AnalyzeState {
         let rows = grid.height / self.row_height.max(MIN_ROW_HEIGHT);
         self.top = self.top.clamp(LOWEST + rows.min(HIGHEST - LOWEST), HIGHEST);
     }
+}
+
+/// The nearest key to `cents` (MIDI cents), in cents — among the scale's
+/// pitch classes when `scale` (a twelve-bit mask) is given.
+pub fn nearest_note(cents: f32, scale: Option<u16>) -> f32 {
+    let key = (cents / 100.0).round() as i32;
+    let allowed = |k: i32| scale.is_none_or(|m| m & (1 << k.rem_euclid(12)) != 0);
+    (0..=6)
+        .flat_map(|d| [key - d, key + d])
+        .filter(|k| allowed(*k))
+        .min_by(|a, b| {
+            ((*a * 100) as f32 - cents)
+                .abs()
+                .total_cmp(&((*b * 100) as f32 - cents).abs())
+        })
+        .map_or(key as f32 * 100.0, |k| k as f32 * 100.0)
 }
 
 fn marquee_rect(a: (f32, f32), b: (f32, f32)) -> Rect {
@@ -613,6 +1044,12 @@ pub struct AnalyzeLayout {
     pub chords_toggle: Rect,
     pub scale_toggle: Rect,
     pub window_scale: Rect,
+    /// The tools and the transport, on the glass between the tabs and the
+    /// switches.
+    pub tools: Vec<(AnalyzeTool, Rect)>,
+    pub play: Rect,
+    pub listen: Rect,
+    pub readout: Rect,
     pub lane: AnalyzeLane,
     /// The card a page that is not built yet shows, instead of the lane.
     pub later: Rect,
@@ -622,6 +1059,11 @@ pub struct AnalyzeLayout {
     pub keep_bends: Rect,
     pub make_clip: Rect,
     pub copy_scale: Rect,
+    /// Render to clip, its ▾ (a new clip below), and Revert when the clip
+    /// plays a render.
+    pub render: Rect,
+    pub render_menu: Rect,
+    pub revert: Rect,
     /// The job strip, only while analysing.
     pub job: Rect,
     /// The popover under the scale chip, while it is hovered.
@@ -737,6 +1179,25 @@ pub fn analyze_layout(
     l.chords_toggle = toggle(CHORDS_TOGGLE, &mut rx);
     l.wave_toggle = toggle(wave_toggle_text(state), &mut rx);
 
+    // The tools and the transport, after the tabs.
+    let mut gx = tx + sc(12.0, s);
+    for tool in AnalyzeTool::ALL {
+        let w = width_of(tool.label());
+        l.tools.push((tool, Rect::new(gx, toggle_y, w, toggle_h)));
+        gx += w + sc(4.0, s);
+    }
+    gx += sc(8.0, s);
+    l.play = Rect::new(gx, toggle_y, sc(30.0, s), toggle_h);
+    gx += l.play.width + sc(4.0, s);
+    let listen_w = width_of(LISTEN_ORIGINAL);
+    l.listen = Rect::new(gx, toggle_y, listen_w, toggle_h);
+    gx += listen_w + sc(8.0, s);
+    let readout_w = (measure(&readout_text(view, state)) * s).ceil() + sc(8.0, s);
+    let room = rx - sc(8.0, s) - gx;
+    if room >= readout_w {
+        l.readout = Rect::new(gx, toggle_y, readout_w, toggle_h);
+    }
+
     let screen = Rect::new(
         l.canopy.x + inset,
         tab_y + tab_h + sc(8.0, s),
@@ -815,6 +1276,15 @@ pub fn analyze_layout(
     l.copy_notes = button(COPY_NOTES, row1, &mut bx);
     l.make_clip = button(MAKE_CLIP, row1, &mut bx);
     l.copy_scale = button(COPY_SCALE, row1, &mut bx);
+    // Render at the right end, its ▾ joined to it; Revert under it.
+    let render_w = width_of(RENDER_TO_CLIP) + sc(8.0, s);
+    let menu_w = sc(ICON_W, s);
+    l.render_menu = Rect::new(ob.right() - menu_w, row1, menu_w, button_h);
+    l.render = Rect::new(l.render_menu.x - render_w, row1, render_w, button_h);
+    if view.rendered {
+        let w = width_of(REVERT) + sc(8.0, s);
+        l.revert = Rect::new(ob.right() - w, row2, w, button_h);
+    }
     let switch_w = sc(40.0, s) + width_of(KEEP_BENDS);
     l.keep_bends = Rect::new(ob.x, row2, switch_w, button_h);
 
@@ -856,8 +1326,17 @@ impl AnalyzeLayout {
             ("toggle.chords".to_string(), self.chords_toggle),
             ("toggle.scale".to_string(), self.scale_toggle),
             ("toggle.window-scale".to_string(), self.window_scale),
+            ("transport.play".to_string(), self.play),
+            ("transport.listen".to_string(), self.listen),
             ("canopy".to_string(), self.canopy),
         ]);
+        for (tool, rect) in &self.tools {
+            out.push((format!("tool.{}", tool.label().to_lowercase()), *rect));
+        }
+        // Left out when a small window has no room for it.
+        if !self.readout.is_empty() {
+            out.push(("transport.readout".to_string(), self.readout));
+        }
         if self.later.is_empty() {
             out.extend([
                 ("lane.keys".to_string(), self.lane.keys),
@@ -877,7 +1356,12 @@ impl AnalyzeLayout {
             ("card.output.make-clip".to_string(), self.make_clip),
             ("card.output.copy-scale".to_string(), self.copy_scale),
             ("card.output.keep-bends".to_string(), self.keep_bends),
+            ("card.output.render".to_string(), self.render),
+            ("card.output.render-menu".to_string(), self.render_menu),
         ]);
+        if !self.revert.is_empty() {
+            out.push(("card.output.revert".to_string(), self.revert));
+        }
         if !self.job.is_empty() {
             out.push(("job".to_string(), self.job));
         }
@@ -894,7 +1378,7 @@ impl AnalyzeLayout {
         }
         let x0 = lane.x_of(state, note.start);
         let x1 = lane.x_of(state, note.end).max(x0 + 2.0);
-        let centre = lane.y_of(state, f32::from(note.midi) + note.cents / 100.0);
+        let centre = lane.y_of(state, analyze_pitch(note));
         let h = state.row_height * (0.45 + 0.55 * note.amplitude.clamp(0.0, 1.0)).min(1.0);
         let rect = Rect::new(x0, centre - h / 2.0, x1 - x0, h);
         rect.intersects(&lane.grid).then_some(rect)
@@ -902,6 +1386,12 @@ impl AnalyzeLayout {
 }
 
 // --------------------------------------------------------------- hits ---
+
+/// Where a note is heard now, in MIDI (fractional): its sung centre and
+/// its edit's move.
+pub fn analyze_pitch(note: &AnalyzedNote) -> f32 {
+    f32::from(note.midi) + (note.cents + note.edit.map_or(0.0, |e| e.shift_cents)) / 100.0
+}
 
 /// What is under a point.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -931,6 +1421,15 @@ pub enum AnalyzeHit {
     KeepBends,
     Job,
     Later,
+    Tool(AnalyzeTool),
+    Play,
+    Listen,
+    Readout,
+    /// An end of a note that can be moved: dragging it sets that glide.
+    NoteEnd(usize, AnalyzeNotePart),
+    Render,
+    RenderMenu,
+    Revert,
 }
 
 pub fn analyze_hit(
@@ -960,6 +1459,12 @@ pub fn analyze_hit(
         (l.keep_bends, AnalyzeHit::KeepBends),
         (l.job, AnalyzeHit::Job),
         (l.later, AnalyzeHit::Later),
+        (l.play, AnalyzeHit::Play),
+        (l.listen, AnalyzeHit::Listen),
+        (l.readout, AnalyzeHit::Readout),
+        (l.render, AnalyzeHit::Render),
+        (l.render_menu, AnalyzeHit::RenderMenu),
+        (l.revert, AnalyzeHit::Revert),
     ];
     for (rect, hit) in fixed {
         if !rect.is_empty() && rect.contains(x, y) {
@@ -969,6 +1474,11 @@ pub fn analyze_hit(
     for (page, rect) in &l.tabs {
         if rect.contains(x, y) {
             return Some(AnalyzeHit::Tab(*page));
+        }
+    }
+    for (tool, rect) in &l.tools {
+        if rect.contains(x, y) {
+            return Some(AnalyzeHit::Tool(*tool));
         }
     }
     let lane = &l.lane;
@@ -997,6 +1507,17 @@ pub fn analyze_hit(
             if let Some(blob) = l.blob(view, state, index)
                 && blob.inset(-1.0).contains(x, y)
             {
+                // A moved note's ends, in the Move tool, are its glides.
+                let note = &state.notes(view)[index];
+                let edge = (5.0f32).min(blob.width / 4.0);
+                if state.tool == AnalyzeTool::Move && !note.poly && note.edit.is_some() {
+                    if x < blob.x + edge {
+                        return Some(AnalyzeHit::NoteEnd(index, AnalyzeNotePart::Start));
+                    }
+                    if x > blob.right() - edge {
+                        return Some(AnalyzeHit::NoteEnd(index, AnalyzeNotePart::End));
+                    }
+                }
                 return Some(AnalyzeHit::Note(index));
             }
         }
@@ -1030,6 +1551,19 @@ pub enum AnalyzeAction {
     Selected,
     /// A marquee started; drag it with [`AnalyzeState::drag_marquee`].
     Marquee,
+    Tool(AnalyzeTool),
+    /// Play or stop, from the cursor (Space).
+    PlayStop,
+    /// A/B (B).
+    ToggleOriginal,
+    /// The cursor put here by a click on the ruler (a drag makes a region).
+    Seek(f64),
+    /// Hear note `index`'s own span of the audio, as edited; and in the
+    /// Move tool, a drag of it has begun.
+    PlayNote(usize),
+    Render,
+    RenderMenu,
+    Revert,
 }
 
 pub fn analyze_press(
@@ -1057,8 +1591,30 @@ pub fn analyze_press(
         AnalyzeHit::MakeClip => AnalyzeAction::MakeNoteClip,
         AnalyzeHit::KeepBends => AnalyzeAction::ToggleKeepBends,
         AnalyzeHit::Note(index) => {
-            state.click_note(index, modifiers.shift);
+            if state.tool == AnalyzeTool::Move && !modifiers.shift {
+                state.begin_note_drag(view, index, AnalyzeNotePart::Body, (x, y));
+            } else {
+                state.click_note(index, modifiers.shift);
+            }
+            AnalyzeAction::PlayNote(index)
+        }
+        AnalyzeHit::NoteEnd(index, part) => {
+            state.begin_note_drag(view, index, part, (x, y));
             AnalyzeAction::Selected
+        }
+        AnalyzeHit::Tool(tool) => AnalyzeAction::Tool(tool),
+        AnalyzeHit::Play => AnalyzeAction::PlayStop,
+        AnalyzeHit::Listen => AnalyzeAction::ToggleOriginal,
+        AnalyzeHit::Render => AnalyzeAction::Render,
+        AnalyzeHit::RenderMenu => AnalyzeAction::RenderMenu,
+        AnalyzeHit::Revert => AnalyzeAction::Revert,
+        AnalyzeHit::Ruler => {
+            let t = layout
+                .lane
+                .t_of(state, x)
+                .clamp(0.0, view.duration.max(0.0));
+            state.press_ruler(t);
+            AnalyzeAction::Seek(t)
         }
         AnalyzeHit::Chord(index) => {
             // A chord's notes: everything sounding inside it.
@@ -1085,7 +1641,7 @@ pub fn analyze_press(
         AnalyzeHit::Badge
         | AnalyzeHit::Tuning
         | AnalyzeHit::Bpm
-        | AnalyzeHit::Ruler
+        | AnalyzeHit::Readout
         | AnalyzeHit::Job
         | AnalyzeHit::Later => return None,
     })
@@ -1103,8 +1659,38 @@ pub const COPY_NOTES: &str = "Copy notes";
 pub const MAKE_CLIP: &str = "Notes under the audio";
 pub const COPY_SCALE: &str = "Copy scale";
 pub const KEEP_BENDS: &str = "Keep slides and bends";
+pub const RENDER_TO_CLIP: &str = "Render to clip";
+pub const REVERT: &str = "Revert to original";
+/// The A/B switch on the glass.
+pub const LISTEN_ORIGINAL: &str = "A/B";
 /// The page cards' line.
 pub const LATER: &str = "coming in a later update";
+
+/// The transport's read-out: where it is (the playhead while it plays,
+/// else the cursor) of how long.
+pub fn readout_text(view: &AnalyzeView, state: &AnalyzeState) -> String {
+    format!(
+        "{} / {}",
+        time_text(state.playhead.unwrap_or(state.cursor), 1),
+        time_text(view.duration, 1)
+    )
+}
+
+/// A note's edit in words, for the note card: "moved +30 ct · drift
+/// flattened 70 % · vibrato 50 %".
+pub fn edit_text(edit: &AnalyzeEdit) -> String {
+    let mut parts = vec![format!("moved {:+} ct", edit.shift_cents.round() as i32)];
+    if edit.flatten > 0.0 {
+        parts.push(format!("drift flattened {}", percent(edit.flatten)));
+    }
+    if (edit.vibrato - 1.0).abs() > 1e-3 {
+        parts.push(format!("vibrato {}", percent(edit.vibrato)));
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// The keys that edit a note, said on the note card under a sung one.
+pub const EDIT_HINT: &str = "Drag or \u{2191}\u{2193} to move \u{b7} Q snap \u{b7} F flatten \u{b7} V vibrato \u{b7} Del reset";
 
 /// What the window-size chip says: "100 %" — the words Flopsynth's chooser
 /// uses (`render::scale_label`).
@@ -1260,11 +1846,14 @@ pub fn note_card_lines(view: &AnalyzeView, state: &AnalyzeState) -> Vec<String> 
     let notes = state.notes(view);
     let selected = state.selected();
     if let Some(note) = note_card_focus(view, state).and_then(|i| notes.get(i)) {
+        // Where it is heard now: a moved note says where it went.
+        let now = analyze_pitch(note) * 100.0;
+        let key = (now / 100.0).round().clamp(0.0, 127.0);
         let mut out = vec![
             format!(
                 "{}  {:+} ct",
-                key_name(note.midi),
-                note.cents.round() as i32
+                key_name(key as u8),
+                (now - key * 100.0).round() as i32
             ),
             format!(
                 "{} \u{2013} {}",
@@ -1274,7 +1863,16 @@ pub fn note_card_lines(view: &AnalyzeView, state: &AnalyzeState) -> Vec<String> 
             format!("confidence {}", percent(note.confidence)),
         ];
         if note.poly {
-            out.push("A chord note: copy it, moving comes later".to_string());
+            out.push("Chord notes can't be moved yet \u{2014} copy them".to_string());
+        } else if let Some(edit) = &note.edit {
+            out.push(format!(
+                "{}, sung {} {:+} ct",
+                edit_text(edit),
+                key_name(note.midi),
+                note.cents.round() as i32
+            ));
+        } else {
+            out.push(EDIT_HINT.to_string());
         }
         return out;
     }
@@ -1375,6 +1973,12 @@ pub fn analyze_strings(
         (COPY_NOTES.to_string(), Value),
         (MAKE_CLIP.to_string(), Value),
         (COPY_SCALE.to_string(), Value),
+        (RENDER_TO_CLIP.to_string(), Value),
+        (REVERT.to_string(), Value),
+        (LISTEN_ORIGINAL.to_string(), Value),
+        (readout_text(view, state), Value),
+        (AnalyzeTool::Select.label().to_string(), Value),
+        (AnalyzeTool::Move.label().to_string(), Value),
         (KEEP_BENDS.to_string(), Caption),
         (AnalyzeCard::Note.label().to_string(), Heading),
         (AnalyzeCard::Output.label().to_string(), Heading),
@@ -1497,7 +2101,38 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
         AnalyzeHit::ChordsToggle => "Show or hide the chord lane (C)".to_string(),
         AnalyzeHit::ScaleToggle => "Dim the rows outside the scale".to_string(),
         AnalyzeHit::WindowScale => "The window's size".to_string(),
-        AnalyzeHit::Key(key) => format!("{} \u{2014} click to hear it", key_name(*key)),
+        AnalyzeHit::Key(key) => format!(
+            "{} \u{2014} click for a reference tone (the selected instrument)",
+            key_name(*key)
+        ),
+        AnalyzeHit::Tool(AnalyzeTool::Move) => {
+            "Move: drag a note up or down to repitch it (Alt: by the cent), its ends for the glide (M)"
+                .to_string()
+        }
+        AnalyzeHit::Tool(AnalyzeTool::Select) => {
+            "Select: drag to select notes without moving them (S)".to_string()
+        }
+        AnalyzeHit::Play => match state.playhead {
+            Some(_) => "Stop (Space)".to_string(),
+            None => "Play from the cursor (Space) \u{b7} Enter plays the selection".to_string(),
+        },
+        AnalyzeHit::Listen => {
+            if state.listen_original {
+                "Hearing the original \u{2014} click for your edits (B)".to_string()
+            } else {
+                "Hearing your edits \u{2014} click for the original (B)".to_string()
+            }
+        }
+        AnalyzeHit::Readout => "Where it plays from, of how long".to_string(),
+        AnalyzeHit::NoteEnd(_, AnalyzeNotePart::Start) => {
+            "Drag: how long the move takes to arrive".to_string()
+        }
+        AnalyzeHit::NoteEnd(_, _) => "Drag: how long the move takes to leave".to_string(),
+        AnalyzeHit::Render => {
+            "Render the edits into the clip (Ctrl+Enter) \u{2014} the original is kept".to_string()
+        }
+        AnalyzeHit::RenderMenu => "Render as a new clip below".to_string(),
+        AnalyzeHit::Revert => "Play the original audio again (your edits are kept)".to_string(),
         AnalyzeHit::Chord(index) => {
             let chord = view.chords.get(*index)?;
             format!(
@@ -1521,6 +2156,8 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
                 tip.push_str(
                     " \u{2014} Chord notes can't be moved yet. Copy them to a piano roll.",
                 );
+            } else if state.tool == AnalyzeTool::Move {
+                tip.push_str(" \u{2014} click to hear it, drag to move it");
             }
             tip
         }
@@ -1528,7 +2165,9 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
             "Drag to select notes \u{b7} wheel scrolls, Ctrl+wheel zooms, Shift+wheel moves in time"
                 .to_string()
         }
-        AnalyzeHit::Ruler => "Time from the start of the clip".to_string(),
+        AnalyzeHit::Ruler => {
+            "Click to put the cursor here; drag out a region to loop".to_string()
+        }
         AnalyzeHit::CopyNotes => {
             "Copy the selected notes (all, with none selected) for any piano roll (Ctrl+C)"
                 .to_string()

@@ -7662,6 +7662,7 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
                 confidence,
                 poly: false,
                 curve: curve(start, end, cents),
+                edit: None,
             },
         )
         .collect();
@@ -7687,6 +7688,7 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
             confidence: 0.7,
             poly: true,
             curve: Vec::new(),
+            edit: None,
         });
     }
     notes.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -7768,6 +7770,8 @@ fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
             floor: fontelle_ui::canvas::pitch_picture_floor(&data),
             data: data.into(),
         }),
+        rendered: false,
+        preview_pending: false,
     }
 }
 
@@ -7999,4 +8003,49 @@ fn the_pitch_picture_is_dark_where_nothing_sounds_and_lit_where_a_partial_is() {
         beside - ground < (partial - ground) * 0.4,
         "a semitone under the partial is {beside}: the line is thin, not a cloud"
     );
+}
+
+/// P2's face: a note moved up (its sung line ghosted under the new one), one
+/// flattened, the cursor, a region dragged on the ruler, the playhead in it,
+/// the Move tool lit, the clip playing its render (Revert offered). **Look
+/// at it**: `analyze-edited`.
+#[test]
+fn analyze_musically_draws_its_edits_and_its_transport() {
+    use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeState};
+    let mut view = an_analyzed_take();
+    view.melody[2].edit = Some(AnalyzeEdit {
+        shift_cents: -23.0 + 100.0,
+        ..AnalyzeEdit::default()
+    });
+    view.melody[4].edit = Some(AnalyzeEdit {
+        shift_cents: 18.0,
+        flatten: 0.7,
+        vibrato: 0.5,
+        ..AnalyzeEdit::default()
+    });
+    view.rendered = true;
+    let mut state = AnalyzeState::default();
+    let Some((pixels, theme, l, w, _)) =
+        shoot_analyze("analyze-edited", &view, &mut state, |_, s| {
+            s.click_note(2, false);
+            s.cursor = 3.2;
+            s.region = Some((3.2, 7.0));
+            s.playhead = Some(4.1);
+        })
+    else {
+        return;
+    };
+    let p = &theme.for_bridge().palette;
+    // The playhead is drawn in its ink, across the lane.
+    let x = l.lane.x_of(&state, 4.1);
+    let mut found = false;
+    for dy in 0..40 {
+        let px = analyze_pixel(&pixels, w, x, l.lane.grid.y + 30.0 + dy as f32 * 5.0);
+        let d: i32 = (0..3)
+            .map(|i| (i32::from(px.0[i]) - i32::from(p.playhead.0[i])).abs())
+            .sum();
+        found |= d < 90;
+    }
+    assert!(found, "the playhead is drawn at {x}");
+    assert!(!l.revert.is_empty());
 }

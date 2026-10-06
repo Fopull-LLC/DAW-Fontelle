@@ -1316,6 +1316,38 @@ pub trait StudioHost: DocumentHost {
     ) -> Result<String, String> {
         Err("this studio cannot make a clip from an analysis".to_string())
     }
+    /// **The preview player** (plan §3.10): plays the analysed audio — with
+    /// the edits — from `from` seconds into it, to `to` (or the end), round
+    /// and round when `looped`. While it plays, a seek.
+    fn analysis_play(&mut self, _from: f64, _to: Option<f64>, _looped: bool) {}
+    fn analysis_stop(&mut self) {}
+    /// Where the preview is, in seconds into the analysed audio, while it
+    /// plays.
+    fn analysis_playhead(&self) -> Option<f64> {
+        None
+    }
+    /// A/B: the original rather than the edits, in place.
+    fn analysis_set_original(&mut self, _original: bool) {}
+    /// Notes edited (or reset): the song's study of the clip changes, one
+    /// command. With `merge`, part of a gesture still in the hand (a drag),
+    /// which `end_gesture` closes into one undo.
+    fn set_analysis_edits(
+        &mut self,
+        _changes: &[crate::canvas::AnalyzeEditChange],
+        _merge: bool,
+    ) -> Result<String, String> {
+        Err("this studio cannot edit audio".to_string())
+    }
+    /// **Render to clip** (plan §3.7): the edits rendered from the original,
+    /// whole-file length, into `<bundle>/renders/`, and the clip swapped to
+    /// it — or, `new_clip_below`, a new clip of it on a row under. One undo.
+    fn render_analysis(&mut self, _new_clip_below: bool) -> Result<String, String> {
+        Err("this studio cannot render edits".to_string())
+    }
+    /// The clip back on the original audio, one undo.
+    fn revert_analysis(&mut self) -> Result<String, String> {
+        Err("this studio cannot render edits".to_string())
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///

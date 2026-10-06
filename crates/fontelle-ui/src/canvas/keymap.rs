@@ -318,10 +318,25 @@ pub enum Action {
     /// Paste notes where they were heard in the song — what Analyze copied
     /// lines up under its audio.
     PasteAtOrigin,
+    /// In its window: play the selected notes (or the region), once.
+    AnalyzePlaySelection,
+    /// In its window: hear the original or the edits (A/B).
+    AnalyzeAb,
+    /// In its window: render the edits into the clip.
+    AnalyzeRender,
+    /// In its window: snap the selected notes to the nearest note.
+    AnalyzeSnap,
+    /// In its window: flatten the selected notes' drift, or put it back.
+    AnalyzeFlatten,
+    /// In its window: the selected notes' vibrato, as sung, half, none.
+    AnalyzeVibrato,
+    /// In its window: the Select and Move tools.
+    AnalyzeSelectTool,
+    AnalyzeMoveTool,
 }
 
 impl Action {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 58] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -372,6 +387,14 @@ impl Action {
         Self::AnalyzeSpectrogram,
         Self::AnalyzeChordLane,
         Self::PasteAtOrigin,
+        Self::AnalyzePlaySelection,
+        Self::AnalyzeAb,
+        Self::AnalyzeRender,
+        Self::AnalyzeSnap,
+        Self::AnalyzeFlatten,
+        Self::AnalyzeVibrato,
+        Self::AnalyzeSelectTool,
+        Self::AnalyzeMoveTool,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -430,6 +453,14 @@ impl Action {
             Self::AnalyzeSpectrogram => "analyze-spectrogram",
             Self::AnalyzeChordLane => "analyze-chord-lane",
             Self::PasteAtOrigin => "paste-at-original-position",
+            Self::AnalyzePlaySelection => "analyze-play-selection",
+            Self::AnalyzeAb => "analyze-ab",
+            Self::AnalyzeRender => "analyze-render",
+            Self::AnalyzeSnap => "analyze-snap",
+            Self::AnalyzeFlatten => "analyze-flatten",
+            Self::AnalyzeVibrato => "analyze-vibrato",
+            Self::AnalyzeSelectTool => "analyze-select-tool",
+            Self::AnalyzeMoveTool => "analyze-move-tool",
         }
     }
 
@@ -499,6 +530,16 @@ impl Action {
             Self::PasteAtOrigin => {
                 "Paste notes where they were heard (under the audio they came from)"
             }
+            Self::AnalyzePlaySelection => {
+                "Analyze Musically: play the selected notes (or the region)"
+            }
+            Self::AnalyzeAb => "Analyze Musically: hear the original or your edits (A/B)",
+            Self::AnalyzeRender => "Analyze Musically: render the edits into the clip",
+            Self::AnalyzeSnap => "Analyze Musically: snap the selected notes to the nearest note",
+            Self::AnalyzeFlatten => "Analyze Musically: flatten the selected notes' drift",
+            Self::AnalyzeVibrato => "Analyze Musically: vibrato as sung, half, none",
+            Self::AnalyzeSelectTool => "Analyze Musically: the Select tool",
+            Self::AnalyzeMoveTool => "Analyze Musically: the Move tool",
         }
     }
 
@@ -520,7 +561,15 @@ impl Action {
             | Self::AnalyzeCopyScale
             | Self::AnalyzeSelectAll
             | Self::AnalyzeSpectrogram
-            | Self::AnalyzeChordLane => Context::Editor,
+            | Self::AnalyzeChordLane
+            | Self::AnalyzePlaySelection
+            | Self::AnalyzeAb
+            | Self::AnalyzeRender
+            | Self::AnalyzeSnap
+            | Self::AnalyzeFlatten
+            | Self::AnalyzeVibrato
+            | Self::AnalyzeSelectTool
+            | Self::AnalyzeMoveTool => Context::Editor,
             Self::PathPoint | Self::PathPointBack => Context::Drawing,
             _ => Context::Studio,
         }
@@ -581,6 +630,14 @@ impl Action {
             Self::AnalyzeSpectrogram => &["Tab"],
             Self::AnalyzeChordLane => &["C"],
             Self::PasteAtOrigin => &["Ctrl+Shift+V"],
+            Self::AnalyzePlaySelection => &["Enter"],
+            Self::AnalyzeAb => &["B"],
+            Self::AnalyzeRender => &["Ctrl+Enter"],
+            Self::AnalyzeSnap => &["Q"],
+            Self::AnalyzeFlatten => &["F"],
+            Self::AnalyzeVibrato => &["V"],
+            Self::AnalyzeSelectTool => &["S"],
+            Self::AnalyzeMoveTool => &["M"],
         }
     }
 

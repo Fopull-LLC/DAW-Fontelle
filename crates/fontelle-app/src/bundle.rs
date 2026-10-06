@@ -257,6 +257,11 @@ fn open_document_at(
             takes.entry(data.asset.clone()).or_default();
         }
     }
+    // A study's original: what a clip playing its render is studied as,
+    // and what every re-render starts from.
+    for study in project.studies.values() {
+        takes.entry(study.original.clone()).or_default();
+    }
     for (file, clips) in takes {
         let Some(from) = resolve(Some(path), &file, banks) else {
             missing.push(MissingAsset {

@@ -174,16 +174,19 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
 
 pub use analyze::{
     ANALYZE_DESIGN, ANALYZE_DESIGN_MINIMUM, AnalyzeAction, AnalyzeCard, AnalyzeCardLayout,
-    AnalyzeClarity, AnalyzeHit, AnalyzeImage, AnalyzeKey, AnalyzeLane, AnalyzeLayout, AnalyzeMode,
-    AnalyzePage, AnalyzeScaleRow, AnalyzeState, AnalyzeText, AnalyzeView, AnalyzedChord,
-    AnalyzedNote, analyze_cents_tag, analyze_hit, analyze_layout, analyze_press, analyze_row_shade,
-    analyze_scale_menu, analyze_strings, analyze_tip, badge_text, bpm_text, job_text, key_name,
-    later_lines, note_card_focus, note_card_lines, pitch_picture_floor, popover_lines,
-    ruler_labels, scale_chip_text, scale_degrees, time_text, tuning_text, window_scale_label,
+    AnalyzeClarity, AnalyzeEdit, AnalyzeEditChange, AnalyzeEditOp, AnalyzeHit, AnalyzeImage,
+    AnalyzeKey, AnalyzeLane, AnalyzeLayout, AnalyzeMode, AnalyzeNotePart, AnalyzePage,
+    AnalyzeScaleRow, AnalyzeState, AnalyzeText, AnalyzeTool, AnalyzeView, AnalyzedChord,
+    AnalyzedNote, analyze_cents_tag, analyze_hit, analyze_layout, analyze_pitch, analyze_press,
+    analyze_row_shade, analyze_scale_menu, analyze_strings, analyze_tip, badge_text, bpm_text,
+    edit_text, job_text, key_name, later_lines, nearest_note, note_card_focus, note_card_lines,
+    pitch_picture_floor, popover_lines, readout_text, ruler_labels, scale_chip_text, scale_degrees,
+    time_text, tuning_text, window_scale_label,
 };
 pub use analyze::{
-    CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, KEEP_BENDS, LATER, MAKE_CLIP, PITCH_TOGGLE,
-    SCALE_TOGGLE, WAVE_TOGGLE,
+    CHORD_CANT_MOVE, CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, EDIT_HINT, KEEP_BENDS, LATER,
+    LISTEN_ORIGINAL, MAKE_CLIP, PITCH_TOGGLE, RENDER_TO_CLIP, REVERT, SCALE_TOGGLE, SELECT_FIRST,
+    WAVE_TOGGLE,
 };
 pub use disgusting_beat::{
     DISGUSTING_BEAT_BEND_GRAB, DISGUSTING_BEAT_CANOPY, DISGUSTING_BEAT_GRAB,

@@ -801,7 +801,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("RemoveMarker", |s| Box::new(RemoveMarker::new(s.marker))),
         // --- Analyze Musically's studies
-        ("AddStudy", |s| {
+        ("AddStudy", |_| {
             Box::new(fontelle_model::AddStudy::new(fontelle_types::Study::new(
                 "Take 2",
                 fontelle_types::StudySource::Standalone,

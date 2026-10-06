@@ -212,3 +212,34 @@ fn studies_are_saved_with_the_song_and_older_songs_open() {
     let older: Project = serde_json::from_value(json).unwrap();
     assert!(older.studies.is_empty());
 }
+
+/// The first move of a clip's note starts its study; the rest of that drag
+/// merges into it, and one undo takes the study and the move back.
+#[test]
+fn a_drag_that_starts_a_study_is_one_undo() {
+    let (mut project, clip, _) = a_song();
+    let mut history = History::new();
+    let mut first = Study::new("Vox 2", StudySource::Clip(clip), an_asset("Vox.wav"));
+    first.pitch_edits = vec![moved((0, 9_600), 10.0)];
+    history
+        .apply(Box::new(AddStudy::new(first)), &mut project)
+        .unwrap();
+    let id = history
+        .last_applied()
+        .and_then(|c| c.as_any().downcast_ref::<AddStudy>())
+        .and_then(AddStudy::id)
+        .unwrap();
+    for cents in [50.0, 90.0] {
+        history
+            .apply(
+                Box::new(SetStudyEdits::new(id, vec![moved((0, 9_600), cents)])),
+                &mut project,
+            )
+            .unwrap();
+    }
+    assert_eq!(history.depth(), 1);
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(!project.studies.contains_key(id));
+    history.redo(&mut project).unwrap().unwrap();
+    assert_eq!(project.studies[id].pitch_edits[0].shift_cents, 90.0);
+}

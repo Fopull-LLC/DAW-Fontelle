@@ -646,6 +646,8 @@ enum MenuTarget {
     AnalyzeScale,
     /// And its window-size chip.
     AnalyzeWindowScale,
+    /// Its Render to clip ▾: replace the clip's audio, or a new clip below.
+    AnalyzeRender,
     /// "Rename…" from that menu, asking for the clip's name.
     ClipName(fontelle_types::ClipId),
     /// One point of an automation block: its shape, or its removal.
@@ -850,7 +852,9 @@ impl MenuTarget {
             // header, so it is that window that draws it.
             // The pad's footer is in its own window.
             Self::NotepadPages => Some(EditorKind::Effect),
-            Self::AnalyzeScale | Self::AnalyzeWindowScale => Some(EditorKind::Analyze),
+            Self::AnalyzeScale | Self::AnalyzeWindowScale | Self::AnalyzeRender => {
+                Some(EditorKind::Analyze)
+            }
             // A rename target rather than a menu, but it is typed into the
             // effect window and that is the window that has to redraw.
             Self::DisgustingBeatScene(_) => Some(EditorKind::Effect),
@@ -3599,6 +3603,7 @@ impl WindowApp {
         self.poll_welcome();
         self.poll_job();
         self.poll_analysis();
+        self.tick_analyze_playhead();
         // A shared song: somebody else's edits come in, this studio's go
         // out, once a pass — and while one is open the loop keeps looking.
         self.session_open = self
@@ -17754,6 +17759,7 @@ impl WindowApp {
             }
             MenuTarget::AnalyzeScale => self.analyze_scale_menu().0,
             MenuTarget::AnalyzeWindowScale => self.analyze_window_scale_menu(),
+            MenuTarget::AnalyzeRender => self.analyze_render_menu(),
             MenuTarget::FlopScale => {
                 let current = self.flopsynth.as_ref().map_or(1.0, |view| view.scale);
                 let mut entries = vec![MenuEntry::disabled("Window scale")];
@@ -18866,6 +18872,7 @@ impl WindowApp {
             }
             (MenuTarget::AnalyzeScale, index) => self.choose_analyze_scale(index),
             (MenuTarget::AnalyzeWindowScale, index) => self.choose_analyze_window_scale(index),
+            (MenuTarget::AnalyzeRender, index) => self.render_analysis(index == 1),
             (MenuTarget::FlopScale, index) => {
                 let scale = index
                     .checked_sub(1)
@@ -21559,6 +21566,14 @@ impl WindowApp {
             | Action::AnalyzeSelectAll
             | Action::AnalyzeSpectrogram
             | Action::AnalyzeChordLane
+            | Action::AnalyzePlaySelection
+            | Action::AnalyzeAb
+            | Action::AnalyzeRender
+            | Action::AnalyzeSnap
+            | Action::AnalyzeFlatten
+            | Action::AnalyzeVibrato
+            | Action::AnalyzeSelectTool
+            | Action::AnalyzeMoveTool
             // Heard only while a note is being drawn, before the studio asks.
             | Action::PathPoint
             | Action::PathPointBack => {}

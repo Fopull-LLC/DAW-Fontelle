@@ -404,6 +404,7 @@ fn poly_view(n: &NoteEvent, loudness: f32) -> AnalyzedNote {
         confidence: ((n.amplitude - 0.25) / 0.45).clamp(0.05, 1.0),
         poly: true,
         curve,
+        edit: None,
     }
 }
 
@@ -443,6 +444,7 @@ fn melody_view(
         confidence,
         poly: false,
         curve,
+        edit: None,
     }
 }
 
@@ -654,4 +656,163 @@ fn bend_path(
         }
     }
     path
+}
+
+// ------------------------------------------------------- the preview ---
+
+/// How long edits rest before the preview re-renders them (plan §3.10): a
+/// drag is many edits, and only where it stops is worth hearing.
+const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// What the window's preview plays: the study's original audio, and that
+/// audio with the edits, re-rendered on a worker of its own whenever they
+/// change and handed to the player (`fontelle_engine::StudyPlayer`).
+///
+/// Ty: *"when i preview a note its not playing that section repitched to
+/// the new note"* — this is that section, repitched.
+pub(crate) struct Preview {
+    /// The audio studied, interleaved, as the library holds it (shared,
+    /// not copied).
+    pub original: Arc<[f32]>,
+    pub channels: usize,
+    pub rate: u32,
+    /// The edits the player's audio has, once it has any.
+    heard: Option<Vec<fontelle_types::PitchEdit>>,
+    /// The edits the song has now, and when they last changed.
+    wanted: Vec<fontelle_types::PitchEdit>,
+    changed_at: std::time::Instant,
+    job: Option<(
+        Vec<fontelle_types::PitchEdit>,
+        std::thread::JoinHandle<Vec<f32>>,
+    )>,
+    /// Bumped whenever [`pending`](Self::pending) may have changed.
+    pub version: u64,
+}
+
+impl Preview {
+    pub fn new(buffer: &fontelle_core::AudioBuffer) -> Self {
+        Self {
+            original: Arc::clone(&buffer.data),
+            channels: usize::from(buffer.channels.max(1)),
+            rate: buffer.sample_rate,
+            heard: None,
+            wanted: Vec::new(),
+            changed_at: std::time::Instant::now(),
+            job: None,
+            version: 0,
+        }
+    }
+
+    /// The song's edits now: a change starts the debounce.
+    pub fn want(&mut self, edits: &[fontelle_types::PitchEdit]) {
+        if self.wanted != edits {
+            self.wanted = edits.to_vec();
+            self.changed_at = std::time::Instant::now();
+            self.version += 1;
+        }
+    }
+
+    /// Edits made that the player has not got yet.
+    pub fn pending(&self) -> bool {
+        self.heard.as_deref() != Some(self.wanted.as_slice())
+    }
+
+    /// Once a frame: a finished render goes to the player; edits that have
+    /// rested start the next.
+    pub fn service(&mut self, player: &fontelle_engine::StudyPlayer) {
+        if self
+            .job
+            .as_ref()
+            .is_some_and(|(_, worker)| worker.is_finished())
+            && let Some((edits, worker)) = self.job.take()
+            && let Ok(edited) = worker.join()
+        {
+            player.submit(self.audio(edited.into()));
+            self.heard = Some(edits);
+            self.version += 1;
+        }
+        if self.job.is_some() || !self.pending() {
+            player.reclaim();
+            return;
+        }
+        // Nothing edited: the original is the edited audio, at once.
+        if self.wanted.is_empty() {
+            player.submit(self.audio(Arc::clone(&self.original)));
+            self.heard = Some(Vec::new());
+            self.version += 1;
+            return;
+        }
+        if self.changed_at.elapsed() < PREVIEW_DEBOUNCE && self.heard.is_some() {
+            return;
+        }
+        let edits = self.wanted.clone();
+        let (original, channels, rate) = (Arc::clone(&self.original), self.channels, self.rate);
+        let job_edits = edits.clone();
+        if let Ok(worker) = std::thread::Builder::new()
+            .name("fontelle-study-preview".to_string())
+            .spawn(move || {
+                fontelle_analysis::render::render_edits(
+                    &original,
+                    channels,
+                    rate,
+                    &job_edits,
+                    &fontelle_analysis::resynth::Psola,
+                )
+                .audio
+            })
+        {
+            self.job = Some((edits, worker));
+        }
+    }
+
+    fn audio(&self, edited: Arc<[f32]>) -> fontelle_engine::StudyAudio {
+        fontelle_engine::StudyAudio {
+            channels: self.channels,
+            sample_rate: self.rate,
+            original: Arc::clone(&self.original),
+            edited,
+        }
+    }
+}
+
+/// The window's edit of a note, as the song keeps it over `span` (frames of
+/// the original file).
+pub(crate) fn pitch_edit(
+    span: (i64, i64),
+    edit: &fontelle_ui::canvas::AnalyzeEdit,
+) -> fontelle_types::PitchEdit {
+    fontelle_types::PitchEdit {
+        shift_cents: edit.shift_cents,
+        flatten: edit.flatten,
+        vibrato: edit.vibrato,
+        glide_in_ms: edit.glide_in_ms,
+        glide_out_ms: edit.glide_out_ms,
+        ..fontelle_types::PitchEdit::none(span)
+    }
+}
+
+/// The song's edits shown on the window's notes: each note takes the edit
+/// that covers most of it (more than half). `frame_of` turns a note's
+/// seconds into frames of the original file.
+pub(crate) fn show_edits(
+    notes: &mut [AnalyzedNote],
+    edits: &[fontelle_types::PitchEdit],
+    frame_of: impl Fn(f64) -> i64,
+) {
+    for note in notes {
+        let (a, b) = (frame_of(note.start), frame_of(note.end));
+        let length = (b - a).max(1);
+        note.edit = edits
+            .iter()
+            .map(|e| (e, (e.span.1.min(b) - e.span.0.max(a)).max(0)))
+            .filter(|(_, overlap)| *overlap * 2 > length)
+            .max_by_key(|(_, overlap)| *overlap)
+            .map(|(e, _)| fontelle_ui::canvas::AnalyzeEdit {
+                shift_cents: e.shift_cents,
+                flatten: e.flatten,
+                vibrato: e.vibrato,
+                glide_in_ms: e.glide_in_ms,
+                glide_out_ms: e.glide_out_ms,
+            });
+    }
 }

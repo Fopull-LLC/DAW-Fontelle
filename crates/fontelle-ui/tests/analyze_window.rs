@@ -34,6 +34,7 @@ fn a_note(start: f64, end: f64, midi: u8, cents: f32, poly: bool) -> AnalyzedNot
                 (t, cents + 8.0 * (f64::from(i) * 0.9).sin() as f32)
             })
             .collect(),
+        edit: None,
     }
 }
 
@@ -93,6 +94,8 @@ fn a_view() -> AnalyzeView {
             .into(),
         peaks_per_second: 100.0,
         spectrogram: None,
+        rendered: false,
+        preview_pending: false,
     }
 }
 
@@ -533,4 +536,289 @@ fn the_pitch_picture_floor_sits_on_the_noise_and_under_the_notes() {
     // Nothing but silence: no floor to speak of, nothing to draw.
     assert!(pitch_picture_floor(&[0u8; 100]) < 10);
     assert_eq!(pitch_picture_floor(&[]), 0);
+}
+
+// ------------------------------------------------ P2: hear it, move it ---
+
+use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeEditOp, AnalyzeNotePart, AnalyzeTool, nearest_note};
+
+/// Ty: *"theres no playhead ... so i cant preview what im making"*. A click
+/// on the ruler puts the cursor there; Space plays from it, round a region
+/// dragged out on the ruler when there is one; Enter plays the selection.
+#[test]
+fn the_ruler_puts_the_cursor_and_drags_out_a_region() {
+    let view = a_view();
+    let mut state = state(1.0);
+    let l = laid_out(1180.0, 740.0, &view, &mut state);
+    let ruler = l.lane.ruler;
+    let x = l.lane.x_of(&state, 3.0);
+    let action = analyze_press(
+        &l,
+        &view,
+        &mut state,
+        x,
+        ruler.y + ruler.height / 2.0,
+        Default::default(),
+    );
+    match action {
+        Some(AnalyzeAction::Seek(t)) => assert!((t - 3.0).abs() < 0.02, "{t}"),
+        other => panic!("{other:?}"),
+    }
+    assert!((state.cursor - 3.0).abs() < 0.02);
+    assert_eq!(state.space_range(&view).1, None, "no region: to the end");
+    // Dragged on to 5 s: a region, which Space loops.
+    assert!(state.drag_ruler(5.0));
+    state.end_ruler();
+    let (from, to, looped) = state.space_range(&view);
+    assert!((from - 3.0).abs() < 0.02 && to.is_some_and(|b| (b - 5.0).abs() < 1e-9) && looped);
+    // Enter: the selected notes, first start to last end.
+    state.click_note(1, false);
+    state.click_note(2, true);
+    assert_eq!(state.selection_range(&view), Some((1.5, 3.6)));
+}
+
+/// The playhead stays on screen while it plays: past the right edge, the
+/// lane pages on.
+#[test]
+fn the_lane_follows_the_playhead() {
+    let view = a_view();
+    let mut state = state(1.0);
+    let l = laid_out(1180.0, 740.0, &view, &mut state);
+    state.pixels_per_second = 300.0;
+    state.start = 0.0;
+    state.playhead = Some(9.0);
+    state.follow(&l.lane, &view);
+    let x = l.lane.x_of(&state, 9.0);
+    assert!(x > l.lane.grid.x && x < l.lane.grid.right(), "{x}");
+}
+
+/// A click on a note, in either tool, asks to hear **that note's audio**
+/// (Ty: *"its just playing like a synth wave"*); the key column is the
+/// reference tone, and says so.
+#[test]
+fn a_click_on_a_note_plays_its_audio_and_the_keys_are_a_reference_tone() {
+    let view = a_view();
+    for tool in AnalyzeTool::ALL {
+        let mut state = state(1.0);
+        state.tool = tool;
+        let l = laid_out(1180.0, 740.0, &view, &mut state);
+        let blob = l.blob(&view, &state, 2).unwrap();
+        let (x, y) = centre(blob);
+        let action = analyze_press(&l, &view, &mut state, x, y, Default::default());
+        assert_eq!(action, Some(AnalyzeAction::PlayNote(2)), "{tool:?}");
+        assert!(state.is_selected(2));
+        assert_eq!(state.dragging_note(), tool == AnalyzeTool::Move);
+    }
+    let mut state = state(1.0);
+    let l = laid_out(1180.0, 740.0, &view, &mut state);
+    let key = l.lane.row(&state, 64);
+    let tip = analyze_tip(
+        &analyze_hit(
+            &l,
+            &view,
+            &state,
+            l.lane.keys.x + 4.0,
+            key.y + key.height / 2.0,
+        )
+        .unwrap(),
+        &view,
+        &state,
+    )
+    .unwrap();
+    assert!(tip.contains("reference tone"), "{tip}");
+}
+
+/// Ty: *"i dont have the ability to drag notes around in here"*. Dragged up
+/// a row and a bit, a note lands a semitone up (snapped, from its sung
+/// centre); with Alt, to the cent; the rest of the selection moves as far.
+#[test]
+fn dragging_a_note_repitches_it_by_semitones() {
+    let view = a_view();
+    let mut state = state(1.0);
+    let l = laid_out(1180.0, 740.0, &view, &mut state);
+    state.click_note(0, false);
+    state.click_note(3, true);
+    let blob = l.blob(&view, &state, 3).unwrap();
+    let (x, y) = centre(blob);
+    analyze_press(&l, &view, &mut state, x, y, Default::default());
+    let up = y - state.row_height * 1.3;
+    let changes = state
+        .drag_note(&l.lane, &view, (x, up), false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(changes.len(), 2, "the whole selection");
+    // Note 3 was sung 18 cents flat of A4: snapped, it lands on A#4 exactly.
+    let moved = changes
+        .iter()
+        .find(|c| c.start == 3.8)
+        .unwrap()
+        .edit
+        .unwrap();
+    assert!((moved.shift_cents - 118.0).abs() < 0.01, "{moved:?}");
+    let other = changes
+        .iter()
+        .find(|c| c.start == 0.5)
+        .unwrap()
+        .edit
+        .unwrap();
+    assert!((other.shift_cents - 118.0).abs() < 0.01);
+    let free = state
+        .drag_note(&l.lane, &view, (x, up), true)
+        .unwrap()
+        .unwrap();
+    let free = free.iter().find(|c| c.start == 3.8).unwrap().edit.unwrap();
+    assert!((free.shift_cents - 130.0).abs() < 0.5, "{free:?}");
+    assert!(state.end_note_drag(), "it moved");
+}
+
+/// A moved note's ends are its glides, in the Move tool.
+#[test]
+fn a_moved_notes_ends_set_its_glides() {
+    let mut view = a_view();
+    view.melody[2].edit = Some(AnalyzeEdit {
+        shift_cents: 100.0,
+        ..AnalyzeEdit::default()
+    });
+    let mut state = state(1.0);
+    let l = laid_out(1180.0, 740.0, &view, &mut state);
+    let blob = l.blob(&view, &state, 2).unwrap();
+    let y = blob.y + blob.height / 2.0;
+    assert_eq!(
+        analyze_hit(&l, &view, &state, blob.x + 1.0, y),
+        Some(AnalyzeHit::NoteEnd(2, AnalyzeNotePart::Start))
+    );
+    analyze_press(&l, &view, &mut state, blob.x + 1.0, y, Default::default());
+    let to = l.lane.x_of(&state, 2.4 + 0.2);
+    let changes = state
+        .drag_note(&l.lane, &view, (to, y), false)
+        .unwrap()
+        .unwrap();
+    let glide = changes[0].edit.unwrap().glide_in_ms;
+    assert!((glide - 200.0).abs() < 15.0, "{glide}");
+}
+
+/// ↑ ↓, Q (half way, then the whole way; in the scale when it is shown), F,
+/// V and Del, on the selected notes; nothing selected, or a chord note,
+/// says why.
+#[test]
+fn the_edit_keys() {
+    let view = a_view();
+    let mut state = state(1.0);
+    assert!(
+        state.edit(&view, AnalyzeEditOp::Snap).is_err(),
+        "nothing selected"
+    );
+    state.click_note(3, false); // A4, 18 cents flat
+    let shift =
+        |state: &AnalyzeState, view: &AnalyzeView, op| state.edit(view, op).unwrap()[0].edit;
+    assert_eq!(
+        shift(&state, &view, AnalyzeEditOp::Nudge(100.0))
+            .unwrap()
+            .shift_cents,
+        100.0
+    );
+    let half = shift(&state, &view, AnalyzeEditOp::Snap).unwrap();
+    assert!((half.shift_cents - 9.0).abs() < 0.01, "{half:?}");
+    let mut halfway = view.clone();
+    halfway.melody[3].edit = Some(half);
+    let full = shift(&state, &halfway, AnalyzeEditOp::Snap).unwrap();
+    assert!((full.shift_cents - 18.0).abs() < 0.01, "{full:?}");
+    let mut there = view.clone();
+    there.melody[3].edit = Some(full);
+    assert!(
+        (shift(&state, &there, AnalyzeEditOp::Snap)
+            .unwrap()
+            .shift_cents
+            - 18.0)
+            .abs()
+            < 0.01
+    );
+    assert_eq!(
+        shift(&state, &view, AnalyzeEditOp::Flatten)
+            .unwrap()
+            .flatten,
+        0.7
+    );
+    assert_eq!(
+        shift(&state, &view, AnalyzeEditOp::Vibrato)
+            .unwrap()
+            .vibrato,
+        0.5
+    );
+    assert_eq!(shift(&state, &view, AnalyzeEditOp::Reset), None);
+    // In A minor, G#4 (68) is out: 67.6 snaps to G4, not G#4.
+    assert_eq!(nearest_note(6_780.0, None), 6_800.0);
+    assert_eq!(
+        nearest_note(6_780.0, KeyScale::new(9, "natural-minor").mask()),
+        6_700.0
+    );
+    // A chord note cannot be moved yet, and says so.
+    let mut chords = state.clone();
+    chords.mode = Some(AnalyzeMode::Chords);
+    chords.click_note(0, false);
+    let said = chords.edit(&view, AnalyzeEditOp::Nudge(100.0)).unwrap_err();
+    assert!(said.contains("Chord notes can't be moved yet"), "{said}");
+}
+
+/// The glass has the tools and the transport, and the Output card Render
+/// to clip and its ▾; Revert only when the clip plays a render. Every one
+/// fits, overlaps nothing, and says what it is.
+#[test]
+fn the_transport_and_render_are_there_and_fit() {
+    let mut view = a_view();
+    for rendered in [false, true] {
+        view.rendered = rendered;
+        for scale in SCALES {
+            let mut state = state(scale);
+            let (w, h) = analyze_window_size(scale);
+            let l = laid_out(w as f32, h as f32, &view, &mut state);
+            let named = l.named();
+            for name in [
+                "transport.play",
+                "transport.listen",
+                "tool.move",
+                "tool.select",
+                "card.output.render",
+                "card.output.render-menu",
+            ] {
+                let rect = named
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+                    .1;
+                assert!(!rect.is_empty(), "{name} at {scale}");
+                let hit = analyze_hit(&l, &view, &state, centre(rect).0, centre(rect).1).unwrap();
+                assert!(analyze_tip(&hit, &view, &state).is_some());
+            }
+            assert_eq!(
+                named.iter().any(|(n, _)| n == "card.output.revert"),
+                rendered
+            );
+            // The glass row: tabs, tools, transport, switches, apart.
+            let glass: Vec<Rect> = l
+                .tabs
+                .iter()
+                .map(|(_, r)| *r)
+                .chain(l.tools.iter().map(|(_, r)| *r))
+                .chain([
+                    l.play,
+                    l.listen,
+                    l.wave_toggle,
+                    l.chords_toggle,
+                    l.scale_toggle,
+                    l.window_scale,
+                ])
+                .collect();
+            for (i, a) in glass.iter().enumerate() {
+                for b in glass.iter().skip(i + 1) {
+                    assert!(!overlaps(*a, *b), "{a:?} and {b:?} at {scale}");
+                }
+            }
+            assert!(
+                l.readout.right() <= l.wave_toggle.x + 0.5,
+                "the read-out fits at {scale}"
+            );
+            assert!(!overlaps(l.render, l.copy_scale), "at {scale}");
+        }
+    }
 }
