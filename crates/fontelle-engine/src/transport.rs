@@ -80,6 +80,10 @@ pub struct Transport {
     /// Frames of count-in still to run before the song rolls. Written by the
     /// window before it starts the transport, counted down by the reader.
     count_in: AtomicI64,
+    /// Analyze Musically's preview, whose listen is a reason to run the
+    /// graph — see [`wake_for_preview`](Self::wake_for_preview). Set once,
+    /// read lock-free by the callback.
+    preview: std::sync::OnceLock<std::sync::Arc<crate::StudyPlayer>>,
 }
 
 impl Transport {
@@ -98,7 +102,27 @@ impl Transport {
             summoned: std::sync::atomic::AtomicU32::new(0),
             held: std::sync::atomic::AtomicU32::new(0),
             count_in: AtomicI64::new(0),
+            preview: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Lets Analyze Musically's preview keep the graph running while the
+    /// song is stopped, for exactly as long as it plays.
+    ///
+    /// > *"the playhead inside analyze musically only moves when the
+    /// > arrangement playhead is moving ... they should have no
+    /// > correlation"*
+    ///
+    /// The callback runs no graph on a stopped transport unless the
+    /// [`IdleGate`](crate::IdleGate) has a reason, and a listen started in
+    /// the window was none of its reasons: the player's node sat
+    /// unprocessed, silent, its playhead frozen, until the song rolled and
+    /// carried it along. Read straight off the player's own flag, which the
+    /// window raises on play and the node lowers when it runs out, so there
+    /// is nothing to keep in step. A transport takes one player for its
+    /// life; a second call is ignored.
+    pub fn wake_for_preview(&self, player: std::sync::Arc<crate::StudyPlayer>) {
+        let _ = self.preview.set(player);
     }
 
     /// Counts in for `frames` before the song rolls, the next time it rolls.
@@ -120,10 +144,13 @@ impl Transport {
     }
 
     /// Whether the graph has to run although the transport is stopped and
-    /// nothing sounds: a plugin's own editor is open, or the main thread has
-    /// [summoned](Self::summon) it.
+    /// nothing sounds: a plugin's own editor is open, the main thread has
+    /// [summoned](Self::summon) it, or Analyze Musically is playing its
+    /// preview ([`wake_for_preview`](Self::wake_for_preview)).
     pub fn is_attended(&self) -> bool {
-        self.attended.load(Ordering::Relaxed) || self.summoned.load(Ordering::Acquire) > 0
+        self.attended.load(Ordering::Relaxed)
+            || self.summoned.load(Ordering::Acquire) > 0
+            || self.preview.get().is_some_and(|p| p.playing())
     }
 
     /// Asks the audio thread to run the graph until [`dismiss`](Self::dismiss),

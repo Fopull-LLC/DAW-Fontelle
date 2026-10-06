@@ -571,7 +571,10 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
             continue;
         };
         let selected = state.is_selected(index);
-        let hot = state.hover == Some(AnalyzeHit::Note(index));
+        let hot = matches!(
+            state.hover,
+            Some(AnalyzeHit::Note(i) | AnalyzeHit::FlattenHandle(i)) if i == index
+        );
         let base = if selected { p.note_selected } else { p.note };
         let sure = note.confidence.clamp(0.0, 1.0);
         let radius = (blob.height / 2.0).min(6.0);
@@ -619,7 +622,6 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
         // The pitch through it; a moved note's sung line ghosted where it
         // was, and its new one through the blob (plan §3.3).
         if note.curve.len() >= 2 {
-            let shift = note.edit.map_or(0.0, |e| e.shift_cents);
             if note.edit.is_some() {
                 let ghost: Vec<(f32, f32)> = note
                     .curve
@@ -633,30 +635,14 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
                     .collect();
                 stroke_polyline(scene, &ghost, grid, 1.0, p.text.with_alpha(0x55));
             }
-            let edit = note.edit.unwrap_or_default();
-            let length = (note.end - note.start).max(1e-3);
-            let points: Vec<(f32, f32)> = note
-                .curve
-                .iter()
+            // As the render will make it, so a flatten handle's drag is
+            // seen as it will be heard.
+            let points: Vec<(f32, f32)> = crate::canvas::analyze_edited_curve(note)
+                .into_iter()
                 .map(|(time, cents)| {
-                    // The move eased in and out over the glides, the drift
-                    // and vibrato roughly as the render treats them.
-                    let ms = ((time - note.start) * 1000.0) as f32;
-                    let to_end = ((length - (time - note.start)) * 1000.0) as f32;
-                    let ease = |x: f32, g: f32| {
-                        if g <= 0.0 {
-                            1.0
-                        } else {
-                            0.5 - 0.5 * (std::f32::consts::PI * (x / g).clamp(0.0, 1.0)).cos()
-                        }
-                    };
-                    let e = ease(ms, edit.glide_in_ms).min(ease(to_end, edit.glide_out_ms));
-                    let wobble = cents - note.cents;
-                    let kept = 1.0 - edit.flatten * 0.5 - (1.0 - edit.vibrato) * 0.5;
-                    let moved = cents + e * (shift + (kept - 1.0) * wobble);
                     (
-                        lane.x_of(state, *time),
-                        lane.y_of(state, f32::from(note.midi) + moved / 100.0),
+                        lane.x_of(state, time),
+                        lane.y_of(state, f32::from(note.midi) + cents / 100.0),
                     )
                 })
                 .collect();
@@ -687,7 +673,16 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
         if let Some(tag) = crate::canvas::analyze_cents_tag(&now)
             && let Some(text) = labels.get_styled(&tag, t.caption)
         {
-            let x = (blob.right() - text.width).max(blob.x);
+            let mut x = (blob.right() - text.width).max(blob.x);
+            // Clear of the flatten handle, when it is up on this note.
+            if let Some(mark) = l
+                .flatten_handle(view, state, index)
+                .map(|hit| flatten_mark(hit, state.scale))
+                && x < mark.right() + 2.0
+                && x + text.width > mark.x - 2.0
+            {
+                x = mark.right() + 3.0;
+            }
             let y = blob.y - text.height - 1.0;
             let ink = if note.cents > 0.0 {
                 p.param_automated
@@ -695,6 +690,87 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
                 lighten(p.accent, 0.3)
             };
             draw_text_clipped(scene, text, grid, x, y.max(grid.y), ink);
+        }
+    }
+
+    // The flatten handles, over every note: on the hovered and selected
+    // ones, filled as far as each is flattened, and the one in hand says
+    // how much.
+    let s = state.scale.max(0.25);
+    for (index, note) in notes.iter().enumerate() {
+        let Some(hit) = l.flatten_handle(view, state, index) else {
+            continue;
+        };
+        let held = state.flatten_readout().filter(|(i, _)| *i == index);
+        // The value in hand while it is dragged (the host's view follows a
+        // moment later), else the note's own.
+        let amount = held
+            .map(|(_, v)| v)
+            .unwrap_or_else(|| note.edit.map_or(0.0, |e| e.flatten))
+            .clamp(0.0, 1.0);
+        let hot = held.is_some() || state.hover == Some(AnalyzeHit::FlattenHandle(index));
+        let mark = flatten_mark(hit, s);
+        let height = mark.height;
+        // A short stem down to the note, so it reads as the note's handle.
+        if let Some(blob) = l.blob(view, state, index) {
+            let stem = Rect::new(
+                mark.x + mark.width / 2.0 - 0.5 * s,
+                mark.bottom(),
+                1.0 * s,
+                (blob.y - mark.bottom()).max(0.0),
+            );
+            fill_rect(scene, stem, lighten(p.note, 0.4).with_alpha(0xa0));
+        }
+        fill_rect_rounded(scene, mark, height / 2.0, p.window.with_alpha(0xd0));
+        if amount > 0.0 {
+            fill_rect_rounded(
+                scene,
+                Rect::new(
+                    mark.x,
+                    mark.y,
+                    (mark.width * amount).max(height),
+                    mark.height,
+                ),
+                height / 2.0,
+                p.accent.with_alpha(if hot { 0xff } else { 0xc0 }),
+            );
+        }
+        stroke_rect_rounded(
+            scene,
+            mark,
+            height / 2.0,
+            1.0,
+            if hot {
+                lighten(p.note_selected, 0.6)
+            } else {
+                lighten(p.note, 0.4).with_alpha(0xc0)
+            },
+        );
+        if let Some((_, value)) = held
+            && let Some(text) =
+                labels.get_styled(&crate::canvas::flatten_readout_text(value), t.caption)
+        {
+            let pad = 4.0 * s;
+            let (cw, ch) = (text.width + 2.0 * pad, text.height + 2.0 * pad);
+            let above = mark.y - ch - 2.0 * s;
+            // Over the handle; beside it for a note at the lane's top.
+            let (cx, cy) = if above >= grid.y {
+                (mark.x + mark.width / 2.0 - cw / 2.0, above)
+            } else {
+                (
+                    mark.right() + 4.0 * s,
+                    mark.y + mark.height / 2.0 - ch / 2.0,
+                )
+            };
+            let chip = Rect::new(
+                cx.clamp(grid.x, (grid.right() - cw).max(grid.x)),
+                cy.max(grid.y),
+                cw,
+                ch,
+            );
+            fill_rect_rounded(scene, chip, 4.0 * s, p.window.with_alpha(0xe8));
+            stroke_rect_rounded(scene, chip, 4.0 * s, 1.0, p.accent.with_alpha(0xa0));
+            draw_text_clipped(scene, text, grid, chip.x + pad, chip.y + pad, p.text);
         }
     }
 
@@ -1511,4 +1587,19 @@ pub fn lay_out_analyze(
             .unwrap_or_else(|| crate::canvas::estimated_width(s))
     };
     crate::canvas::analyze_layout(body, view, state, &measure)
+}
+
+/// The flatten handle's drawn pill inside its hit: a tab over the note's
+/// top, wider and brighter than a line so it reads as something to take
+/// hold of.
+fn flatten_mark(hit: Rect, scale: f32) -> Rect {
+    let s = scale.max(0.25);
+    let width = hit.width * 0.8;
+    let height = 6.0 * s;
+    Rect::new(
+        hit.x + (hit.width - width) / 2.0,
+        hit.y + hit.height * 0.45 - height / 2.0,
+        width,
+        height,
+    )
 }

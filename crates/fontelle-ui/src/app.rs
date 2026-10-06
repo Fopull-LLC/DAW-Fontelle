@@ -1610,6 +1610,9 @@ pub struct WindowApp {
     analyze_tip: Option<String>,
     analyze_tip_since: std::time::Instant,
     analyze_tip_drawn: bool,
+    /// Whether the Analyze window's listen holds an animator on the tree —
+    /// see `tick_analyze_playhead`.
+    analyze_animating: bool,
     /// **The notepad's window**, when the open insert is one
     /// (`docs/effects-catalogue.md` §2.8). The fourth of the effect windows,
     /// told apart from the other three the same way: exactly one of `eq`,
@@ -2431,6 +2434,7 @@ impl WindowApp {
             analyze_tip: None,
             analyze_tip_since: std::time::Instant::now(),
             analyze_tip_drawn: false,
+            analyze_animating: false,
             notepad: None,
             notepad_layout: crate::canvas::NotepadLayout::default(),
             disgusting_beat: None,

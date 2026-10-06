@@ -536,6 +536,9 @@ pub enum AnalyzeNotePart {
     /// Its left or right end: how long the move takes to arrive or leave.
     Start,
     End,
+    /// The handle on its top: up and down is how much of its drift is
+    /// taken out (the Pitch card's FLATTEN, without going to the card).
+    Flatten,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -546,6 +549,9 @@ struct NoteDrag {
     /// Each dragged note's edit when the drag began.
     began: Vec<(usize, AnalyzeEdit)>,
     moved: bool,
+    /// The held note's flatten now, while the handle is dragged: the
+    /// read-out beside it.
+    flatten: Option<f32>,
 }
 
 /// What [`AnalyzeState::edit`] does to the selected notes (plan §3.5).
@@ -563,6 +569,11 @@ pub enum AnalyzeEditOp {
     /// Del: as recorded.
     Reset,
 }
+
+/// How far a flatten handle is dragged for the whole of 0..100 %, in
+/// pixels at 100 % scale: about a thumb's sweep, so a percent is a pixel
+/// or so and Shift's tenth is fine enough for anything.
+pub const FLATTEN_SWEEP: f32 = 120.0;
 
 /// What a chord note says when somebody tries to move it (P6 moves them).
 pub const CHORD_CANT_MOVE: &str =
@@ -711,6 +722,9 @@ impl AnalyzeState {
                 };
                 (from, Some(b), true)
             }
+            // At (or past) the end, from the start, as every transport
+            // does, rather than a listen that ends before it is heard.
+            _ if self.cursor >= view.duration - 1e-3 => (0.0, None, false),
             _ => (self.cursor.clamp(0.0, view.duration.max(0.0)), None, false),
         }
     }
@@ -869,25 +883,79 @@ impl AnalyzeState {
         }
         let notes = self.notes(view);
         let indices: Vec<usize> = match part {
-            AnalyzeNotePart::Body => self.selection.iter().copied().collect(),
+            AnalyzeNotePart::Body | AnalyzeNotePart::Flatten => {
+                self.selection.iter().copied().collect()
+            }
             _ => vec![index],
         };
-        let began = indices
+        let began: Vec<(usize, AnalyzeEdit)> = indices
             .into_iter()
             .filter(|i| notes.get(*i).is_some_and(|n| !n.poly))
             .map(|i| (i, notes[i].edit.unwrap_or_default()))
             .collect();
+        let flatten = (part == AnalyzeNotePart::Flatten).then(|| {
+            began
+                .iter()
+                .find(|(i, _)| *i == index)
+                .map_or(0.0, |(_, e)| e.flatten)
+        });
         self.drag = Some(NoteDrag {
             index,
             part,
             from: at,
             began,
             moved: false,
+            flatten,
         });
     }
 
     pub fn dragging_note(&self) -> bool {
         self.drag.is_some()
+    }
+
+    /// Whether the drag in hand is a flatten handle's.
+    pub fn dragging_flatten(&self) -> bool {
+        self.drag
+            .as_ref()
+            .is_some_and(|d| d.part == AnalyzeNotePart::Flatten)
+    }
+
+    /// While a flatten handle is dragged: its note, and that note's flatten
+    /// now (0..1), for the read-out beside the handle.
+    pub fn flatten_readout(&self) -> Option<(usize, f32)> {
+        let drag = self.drag.as_ref()?;
+        Some((drag.index, drag.flatten?))
+    }
+
+    /// The flatten handle double-clicked: none again on note `index`, and
+    /// on the rest of the selection when it is part of it. Each note's
+    /// other edits are kept; a note with nothing else done is as sung.
+    pub fn reset_flatten(&self, view: &AnalyzeView, index: usize) -> Vec<AnalyzeEditChange> {
+        let notes = self.notes(view);
+        let picked: Vec<usize> = if self.selection.contains(&index) {
+            self.selection.iter().copied().collect()
+        } else {
+            vec![index]
+        };
+        picked
+            .into_iter()
+            .filter_map(|i| notes.get(i).filter(|n| !n.poly))
+            .map(|note| AnalyzeEditChange {
+                start: note.start,
+                end: note.end,
+                edit: Some(AnalyzeEdit {
+                    flatten: 0.0,
+                    ..note.edit.unwrap_or_default()
+                })
+                .filter(|e| !e.is_identity()),
+            })
+            .collect()
+    }
+
+    /// Whether the window has to be drawn every frame for this: a listen
+    /// playing. Its own reason, not the song's — the song may be stopped.
+    pub fn wants_frames(&self) -> bool {
+        self.playhead.is_some()
     }
 
     /// The note a drag holds.
@@ -919,6 +987,31 @@ impl AnalyzeState {
             return Some(Err(CHORD_CANT_MOVE.to_string()));
         }
         let changes = match drag.part {
+            AnalyzeNotePart::Flatten => {
+                // Up is more. A whole sweep is FLATTEN_SWEEP on screen at
+                // the window's scale, whatever the zoom; `free` (Shift) a
+                // tenth as far, for the last few percent.
+                let sweep = FLATTEN_SWEEP * self.scale.max(0.25);
+                let by = (drag.from.1 - to.1) / sweep * if free { 0.1 } else { 1.0 };
+                let held_from = drag
+                    .began
+                    .iter()
+                    .find(|(i, _)| *i == drag.index)
+                    .map_or(0.0, |(_, e)| e.flatten);
+                drag.flatten = Some((held_from + by).clamp(0.0, 1.0));
+                drag.began
+                    .iter()
+                    .map(|(i, was)| AnalyzeEditChange {
+                        start: notes[*i].start,
+                        end: notes[*i].end,
+                        edit: Some(AnalyzeEdit {
+                            flatten: (was.flatten + by).clamp(0.0, 1.0),
+                            ..*was
+                        })
+                        .filter(|e| !e.is_identity()),
+                    })
+                    .collect()
+            }
             AnalyzeNotePart::Body => {
                 let raw = (drag.from.1 - to.1) / row.max(MIN_ROW_HEIGHT) * 100.0;
                 let base = drag
@@ -1692,6 +1785,138 @@ impl AnalyzeLayout {
         let rect = Rect::new(x0, centre - h / 2.0, x1 - x0, h);
         rect.intersects(&lane.grid).then_some(rect)
     }
+
+    /// Where note `index`'s flatten handle can be taken hold of, when it is
+    /// shown: on the Notes page, on a note that can be edited, while it is
+    /// hovered (its body, its ends or the handle itself), selected or the
+    /// one whose handle is in hand. A size on screen at the window's scale
+    /// — at least 12 by 10 px at 100 % — whatever the zoom, centred on the
+    /// note's top (the part of it on screen) and reaching only a sliver
+    /// into it, so the body below stays the body and the ends stay the
+    /// ends; kept inside the lane for a note at its top edge.
+    pub fn flatten_handle(
+        &self,
+        view: &AnalyzeView,
+        state: &AnalyzeState,
+        index: usize,
+    ) -> Option<Rect> {
+        if state.page != AnalyzePage::Notes {
+            return None;
+        }
+        let note = state.notes(view).get(index)?;
+        if note.poly {
+            return None;
+        }
+        let held = state
+            .drag
+            .as_ref()
+            .is_some_and(|d| d.index == index && d.part == AnalyzeNotePart::Flatten);
+        let hovered = matches!(
+            state.hover,
+            Some(AnalyzeHit::Note(i) | AnalyzeHit::NoteEnd(i, _) | AnalyzeHit::FlattenHandle(i))
+                if i == index
+        );
+        if !(held || hovered || state.is_selected(index)) {
+            return None;
+        }
+        let blob = self.blob(view, state, index)?;
+        let s = state.scale.max(0.25);
+        let width = (blob.width * 0.5).clamp(12.0 * s, 24.0 * s);
+        let height = 10.0 * s;
+        let bottom = blob.y + (2.0 * s).min(blob.height * 0.25);
+        let grid = self.lane.grid;
+        let y = (bottom - height).max(grid.y);
+        // Over the part of the note on screen: a note longer than the lane
+        // at this zoom still has its handle in sight.
+        let (left, right) = (blob.x.max(grid.x), blob.right().min(grid.right()));
+        let centre = (left + right) / 2.0;
+        Some(Rect::new(centre - width / 2.0, y, width, height))
+    }
+}
+
+/// The pitch through a note as the render will make it (`fontelle-analysis`
+/// `render`): `cents + e(t)·(shift − flatten·drift(t) + (vibrato − 1)·vib(t))`,
+/// in cents from the note's `midi`, at the curve's own times. The drift is
+/// what moves slower than 3 Hz about the note's centre and the vibrato the
+/// rest, split the way the analysis splits them (here a third of a second's
+/// moving average, whose first null is at 3 Hz); `e(t)` eases in over the
+/// glide in and out over the glide out.
+///
+/// What a flatten handle's drag is seen as, so it has to be the truth: the
+/// drawing it replaces halved the whole wobble at full flatten, and showed a
+/// note that would still drift as one that would not.
+pub fn analyze_edited_curve(note: &AnalyzedNote) -> Vec<(f64, f32)> {
+    let Some(edit) = note.edit else {
+        return note.curve.clone();
+    };
+    let curve = &note.curve;
+    let n = curve.len();
+    // A centred moving average a third of a second wide, shortened at the
+    // ends; two pointers over the times, which need not be even.
+    const HALF: f64 = 1.0 / 6.0;
+    let mut slow = Vec::with_capacity(n);
+    let (mut lo, mut hi, mut sum) = (0usize, 0usize, 0.0f64);
+    for &(t, _) in curve {
+        while hi < n && curve[hi].0 <= t + HALF {
+            sum += f64::from(curve[hi].1);
+            hi += 1;
+        }
+        while lo < hi && curve[lo].0 < t - HALF {
+            sum -= f64::from(curve[lo].1);
+            lo += 1;
+        }
+        slow.push((sum / (hi - lo).max(1) as f64) as f32);
+    }
+    let length = (note.end - note.start).max(1e-3);
+    let ease = |x: f32, g: f32| {
+        if g <= 0.0 {
+            1.0
+        } else {
+            0.5 - 0.5 * (std::f32::consts::PI * (x / g).clamp(0.0, 1.0)).cos()
+        }
+    };
+    curve
+        .iter()
+        .zip(&slow)
+        .map(|(&(time, cents), &slow)| {
+            let ms = ((time - note.start) * 1000.0) as f32;
+            let to_end = ((length - (time - note.start)) * 1000.0) as f32;
+            let e = ease(ms, edit.glide_in_ms).min(ease(to_end, edit.glide_out_ms));
+            let drift = slow - note.cents;
+            let vib = cents - slow;
+            let change = edit.shift_cents - edit.flatten.clamp(0.0, 1.0) * drift
+                + (edit.vibrato.max(0.0) - 1.0) * vib;
+            (time, cents + e * change)
+        })
+        .collect()
+}
+
+/// The studio's transport keys, as the Analyze window answers them.
+///
+/// Ty, trying the preview build: *"pressing space to pause and play inside
+/// of the analyze musically window should not play and pause the
+/// arrangement"*. The window is asked for a key before the studio is, and
+/// everything that would start, stop, move or arm the song is its own here,
+/// on its own listen and its own recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyzeTransportKey {
+    /// Space: the listen from the cursor, or stopped.
+    PlayStop,
+    /// Home (the studio's Stop): the listen stopped, the cursor at the
+    /// start.
+    ToStart,
+    /// R: this window's record arm, where it records.
+    Record,
+}
+
+pub fn analyze_transport_key(action: super::Action) -> Option<AnalyzeTransportKey> {
+    use super::Action;
+    match action {
+        Action::Play => Some(AnalyzeTransportKey::PlayStop),
+        Action::Stop => Some(AnalyzeTransportKey::ToStart),
+        Action::Record => Some(AnalyzeTransportKey::Record),
+        _ => None,
+    }
 }
 
 // --------------------------------------------------------------- hits ---
@@ -1736,6 +1961,8 @@ pub enum AnalyzeHit {
     Readout,
     /// An end of a note that can be moved: dragging it sets that glide.
     NoteEnd(usize, AnalyzeNotePart),
+    /// The handle on a note's top: dragging it up and down flattens it.
+    FlattenHandle(usize),
     Render,
     RenderMenu,
     Revert,
@@ -1857,14 +2084,24 @@ pub fn analyze_hit(
         return Some(wave_lane_hit(l, view, state, x, y));
     }
     if lane.grid.contains(x, y) {
+        // The flatten handles are drawn over every note, so asked first.
+        for index in (0..state.notes(view).len()).rev() {
+            if l.flatten_handle(view, state, index)
+                .is_some_and(|h| h.contains(x, y))
+            {
+                return Some(AnalyzeHit::FlattenHandle(index));
+            }
+        }
         // Last drawn is on top.
         for index in (0..state.notes(view).len()).rev() {
             if let Some(blob) = l.blob(view, state, index)
                 && blob.inset(-1.0).contains(x, y)
             {
-                // A moved note's ends, in the Move tool, are its glides.
+                // A moved note's ends, in the Move tool, are its glides: a
+                // few pixels on screen at the window's scale, whatever the
+                // zoom, and never more than a quarter of the note.
                 let note = &state.notes(view)[index];
-                let edge = (5.0f32).min(blob.width / 4.0);
+                let edge = (5.0 * state.scale.max(0.25)).min(blob.width / 4.0);
                 if state.tool == AnalyzeTool::Move && !note.poly && note.edit.is_some() {
                     if x < blob.x + edge {
                         return Some(AnalyzeHit::NoteEnd(index, AnalyzeNotePart::Start));
@@ -1971,6 +2208,12 @@ pub fn analyze_press(
         }
         AnalyzeHit::NoteEnd(index, part) => {
             state.begin_note_drag(view, index, part, (x, y));
+            AnalyzeAction::Selected
+        }
+        // Not heard: the handle is for the hand, and the listen follows
+        // the edit 120 ms after it rests anyway.
+        AnalyzeHit::FlattenHandle(index) => {
+            state.begin_note_drag(view, index, AnalyzeNotePart::Flatten, (x, y));
             AnalyzeAction::Selected
         }
         AnalyzeHit::Tool(tool) => AnalyzeAction::Tool(tool),
@@ -2131,6 +2374,11 @@ fn wave_toggle_text(state: &AnalyzeState) -> &'static str {
 
 fn percent(value: f32) -> String {
     format!("{} %", (value.clamp(0.0, 1.0) * 100.0).round() as i32)
+}
+
+/// What the flatten handle's read-out says while it is dragged.
+pub fn flatten_readout_text(value: f32) -> String {
+    format!("Flatten {}", percent(value))
 }
 
 /// The badge: "Clear 91 %", or what it is doing before there is one.
@@ -2414,6 +2662,9 @@ pub fn analyze_strings(
         (time_text(view.duration, 1), Caption),
     ];
     out.extend(bpm_text(view).map(|t| (t, Value)));
+    if let Some((_, value)) = state.flatten_readout() {
+        out.push((flatten_readout_text(value), Caption));
+    }
     for page in AnalyzePage::ALL {
         out.push((page.label().to_string(), Heading));
     }
@@ -2563,6 +2814,15 @@ pub fn analyze_tip(hit: &AnalyzeHit, view: &AnalyzeView, state: &AnalyzeState) -
             "Drag: how long the move takes to arrive".to_string()
         }
         AnalyzeHit::NoteEnd(_, _) => "Drag: how long the move takes to leave".to_string(),
+        AnalyzeHit::FlattenHandle(index) => {
+            let note = state.notes(view).get(*index)?;
+            let now = note.edit.map_or(0.0, |e| e.flatten);
+            format!(
+                "Flatten {}: drag up to take out more of the drift, down for less \
+                 (Shift: fine) \u{b7} double-click for none",
+                percent(now)
+            )
+        }
         AnalyzeHit::Render => {
             "Render the edits into the clip (Ctrl+Enter) \u{2014} the original is kept".to_string()
         }

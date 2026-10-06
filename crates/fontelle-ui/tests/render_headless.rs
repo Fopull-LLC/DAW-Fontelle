@@ -8289,6 +8289,59 @@ fn analyze_musically_draws_its_edits_and_its_transport() {
     assert!(!l.revert.is_empty());
 }
 
+/// The flatten handle (Ty: *"a handle i could drag from the top of a note to
+/// flatten it"*): in hand on a selected note, dragged most of the way up, the
+/// read-out over it and the curve drawn flat as it will be heard; a hovered
+/// note beside it shows its own, empty. **Look at it**:
+/// `analyze-flatten-handle`, and `-75` at the smallest scale.
+#[test]
+fn analyze_musically_draws_its_flatten_handle() {
+    use fontelle_ui::canvas::{AnalyzeEdit, AnalyzeHit, AnalyzeState, analyze_press};
+    let mut view = an_analyzed_take();
+    view.melody[2].edit = Some(AnalyzeEdit {
+        flatten: 0.8,
+        ..AnalyzeEdit::default()
+    });
+    for (name, scale) in [
+        ("analyze-flatten-handle", 1.0f32),
+        ("analyze-flatten-handle-75", 0.75),
+    ] {
+        let mut state = AnalyzeState::default();
+        state.scale = scale;
+        let shot = shoot_analyze(name, &view, &mut state, |l, s| {
+            s.click_note(2, false);
+            let h = l
+                .flatten_handle(&view, s, 2)
+                .expect("the selected note's handle");
+            let (x, y) = (h.x + h.width / 2.0, h.y + h.height / 2.0);
+            analyze_press(l, &view, s, x, y, Default::default());
+            s.drag_note(&l.lane, &view, (x, y - 96.0 * s.scale), false);
+            // The note after it hovered: its handle shows, empty.
+            s.hover = Some(AnalyzeHit::Note(3));
+        });
+        let Some((pixels, theme, l, w, _)) = shot else {
+            return;
+        };
+        assert_eq!(state.flatten_readout().map(|(i, _)| i), Some(2));
+        let p = &theme.for_bridge().palette;
+        let h = l.flatten_handle(&view, &state, 2).unwrap();
+        let fill = analyze_pixel(&pixels, w, h.x + h.width * 0.3, h.y + h.height / 2.0);
+        let d = |a: Color, b: Color| -> i32 {
+            (0..3)
+                .map(|i| (i32::from(a.0[i]) - i32::from(b.0[i])).abs())
+                .sum()
+        };
+        assert!(
+            d(fill, p.accent) < d(fill, p.window),
+            "{fill:?} is the accent's fill"
+        );
+        assert!(
+            l.flatten_handle(&view, &state, 3).is_some(),
+            "the hovered note's"
+        );
+    }
+}
+
 /// Analyze Musically's pages, each as somebody would leave it mid-task.
 /// **Look at them**: `FONTELLE_UI_DUMP=… cargo test -p fontelle-ui --test
 /// render_headless analyze_musically_dumps_its_pages`.

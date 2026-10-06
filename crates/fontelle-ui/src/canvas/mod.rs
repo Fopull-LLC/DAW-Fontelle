@@ -191,8 +191,9 @@ pub use analyze::{
     time_text, tuning_text, window_scale_label,
 };
 pub use analyze::{
-    AnalyzeLaneChange, AnalyzeLaneEnd, AnalyzeMeter, AnalyzeTyping, AnalyzeTypingTarget, comp_with,
-    markers_from_cuts, with_marker_at, zoom_to,
+    AnalyzeLaneChange, AnalyzeLaneEnd, AnalyzeMeter, AnalyzeTransportKey, AnalyzeTyping,
+    AnalyzeTypingTarget, FLATTEN_SWEEP, analyze_edited_curve, analyze_transport_key, comp_with,
+    flatten_readout_text, markers_from_cuts, with_marker_at, zoom_to,
 };
 pub use analyze::{
     CHORD_CANT_MOVE, CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, EDIT_HINT, KEEP_BENDS, LATER,

@@ -200,7 +200,10 @@ impl WindowApp {
                 .drag_marquee(&self.analyze_layout, &view, (x, y));
         }
         if self.analyze_state.dragging_note() {
-            let free = self.modifiers.alt_key();
+            // Alt frees a note's pitch from the semitones; on a flatten
+            // handle Shift (or Alt) is the fine drag, as on every knob.
+            let free = self.modifiers.alt_key()
+                || (self.analyze_state.dragging_flatten() && self.modifiers.shift_key());
             let lane = self.analyze_layout.lane.clone();
             match self.analyze_state.drag_note(&lane, &view, (x, y), free) {
                 Some(Ok(changes)) => self.send_analysis_edits(&changes, true),
@@ -239,6 +242,8 @@ impl WindowApp {
         }
         let tip = match hit {
             _ if self.analyze_state.dragging_marquee() => None,
+            // The handle's own read-out says it while it is in hand.
+            _ if self.analyze_state.dragging_flatten() => None,
             Some(hit) => crate::canvas::analyze_tip(&hit, &view, &self.analyze_state),
             None => None,
         };
@@ -250,7 +255,12 @@ impl WindowApp {
     }
 
     pub(super) fn analyze_pointer(&self) -> Pointer {
+        // Up and down, wherever the pointer has wandered while it is held.
+        if self.analyze_state.dragging_flatten() {
+            return Pointer::ResizeY;
+        }
         match self.analyze_state.hover {
+            Some(AnalyzeHit::FlattenHandle(_)) => Pointer::ResizeY,
             None | Some(AnalyzeHit::Tuning | AnalyzeHit::Bpm | AnalyzeHit::Job) => Pointer::Default,
             Some(AnalyzeHit::Badge | AnalyzeHit::Ruler | AnalyzeHit::Later) => Pointer::Default,
             Some(AnalyzeHit::Lane) => Pointer::Default,
@@ -353,6 +363,20 @@ impl WindowApp {
             AnalyzeAction::MakeNoteClip => self.make_analysis_clip(),
             AnalyzeAction::ToggleKeepBends => {
                 self.analyze_state.keep_bends = !self.analyze_state.keep_bends;
+            }
+            // The flatten handle: double-click is none again, one undo.
+            AnalyzeAction::Selected if self.analyze_state.dragging_flatten() => {
+                let held = self.analyze_state.flatten_readout().map(|(i, _)| i);
+                if self.double_click.press(x, y, std::time::Instant::now())
+                    && let Some(index) = held
+                {
+                    self.analyze_state.end_note_drag();
+                    let changes = self.analyze_state.reset_flatten(&view, index);
+                    if !changes.is_empty() {
+                        self.send_analysis_edits(&changes, false);
+                        self.refresh_title();
+                    }
+                }
             }
             AnalyzeAction::Selected | AnalyzeAction::Marquee => {}
             // Ty: *"when i preview a note its not playing that section
@@ -514,6 +538,42 @@ impl WindowApp {
         self.redraw_editor(EditorKind::Analyze);
     }
 
+    /// Home: the listen stopped, the cursor at the start, the lane there.
+    fn analyze_to_start(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.analysis_stop();
+        }
+        self.analyze_state.playhead = None;
+        self.analyze_state.cursor = 0.0;
+        self.analyze_state.start = 0.0;
+        self.redraw_editor(EditorKind::Analyze);
+    }
+
+    /// R in this window: its own record arm, where it records; never the
+    /// song's.
+    fn analyze_record_key(&mut self) {
+        let Some(view) = self.analyze.clone() else {
+            return;
+        };
+        let Some(record) = &view.record else {
+            self.analyze_says(
+                "Recording is for a mixer insert or a microphone \u{2014} add Analyze Musically \
+                 to a mixer track, or Record \u{25b8} Record into Analyze Musically\u{2026}"
+                    .to_string(),
+            );
+            return;
+        };
+        let armed = record.armed;
+        if self.analyze_state.page != AnalyzePage::Record {
+            self.analyze_state.page = AnalyzePage::Record;
+            self.analyze_state.tool = AnalyzeTool::Select;
+        }
+        if let Some(Err(said)) = self.analyze_record(crate::canvas::AnalyzeRecordOp::Arm(!armed)) {
+            self.analyze_says(said);
+        }
+        self.relayout_editors();
+    }
+
     /// Enter: the selected notes (or the region), once.
     fn analyze_play_selection(&mut self) {
         let Some(view) = &self.analyze else {
@@ -549,7 +609,24 @@ impl WindowApp {
     }
 
     /// The preview's playhead, once a frame: the lane follows it.
+    ///
+    /// A listen holds the loop awake at the frame rate on its own account
+    /// (`AnalyzeState::wants_frames`). It used to ride on the song's:
+    /// nothing else asked for frames while only the listen played, so its
+    /// playhead crept at the engine poll's ten a second, and — with the
+    /// graph asleep under a stopped song as well — not at all (Ty: *"the
+    /// playhead inside analyze musically only moves when the arrangement
+    /// playhead is moving"*).
     pub(super) fn tick_analyze_playhead(&mut self) {
+        let wants = self.analyze.is_some() && self.analyze_state.wants_frames();
+        if wants != self.analyze_animating {
+            if wants {
+                self.tree.redraw_mut().begin_animating();
+            } else {
+                self.tree.redraw_mut().end_animating();
+            }
+            self.analyze_animating = wants;
+        }
         if self.analyze.is_none() {
             return;
         }
@@ -716,9 +793,20 @@ impl WindowApp {
             }
             Action::AnalyzeSpectrogram => self.toggle_analyze_spectrogram(),
             Action::AnalyzeChordLane => self.toggle_analyze_chords(),
-            // In this window the transport's key is this window's player
-            // (plan §3.5): Space plays the audio here, from the cursor.
-            Action::Play => self.analyze_play_stop(),
+            // In this window the transport's keys are this window's own
+            // (plan §3.5; Ty: *"pressing space to pause and play inside of
+            // the analyze musically window should not play and pause the
+            // arrangement"*): Space plays the audio here, from the cursor;
+            // Home stops it and goes back to the start; R arms this
+            // window's recording. None of them ever reaches the song.
+            action if crate::canvas::analyze_transport_key(action).is_some() => {
+                match crate::canvas::analyze_transport_key(action) {
+                    Some(crate::canvas::AnalyzeTransportKey::PlayStop) => self.analyze_play_stop(),
+                    Some(crate::canvas::AnalyzeTransportKey::ToStart) => self.analyze_to_start(),
+                    Some(crate::canvas::AnalyzeTransportKey::Record) => self.analyze_record_key(),
+                    None => {}
+                }
+            }
             Action::AnalyzePlaySelection => self.analyze_play_selection(),
             Action::AnalyzeAb => self.toggle_analyze_original(),
             Action::AnalyzeRender => self.render_analysis(false),

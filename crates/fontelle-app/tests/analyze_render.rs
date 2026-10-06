@@ -415,3 +415,54 @@ fn edits_survive_a_save_and_a_reopen() {
     assert_eq!(view.melody[3].edit.map(|e| e.shift_cents), Some(-50.0));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Ty, trying the preview build: *"analyze musically should be like its own
+/// separate things their time markers should not be relying on eachother
+/// for anything"*. The studio's transport and the window's listen: a listen
+/// wakes the stopped graph (the callback's `IdleGate` reads it off the
+/// transport) and puts it back to sleep when it stops; the song playing,
+/// seeking, looping and stopping never starts, stops or moves the listen;
+/// and closing the window ends it.
+#[test]
+fn the_listen_and_the_song_keep_their_own_time() {
+    let (dir, session, _) = analysed("own-time");
+    let transport = Arc::new(fontelle_engine::Transport::new());
+    let mut session = session.with_transport(Arc::clone(&transport));
+    settle(&mut session);
+    assert!(!transport.is_attended(), "an idle studio sleeps");
+
+    session.analysis_play(0.5, None, false);
+    assert!(
+        transport.is_attended(),
+        "a listen with the song stopped runs the graph"
+    );
+    assert!(!transport.is_playing(), "and does not start the song");
+    let at = session.analysis_playhead().expect("playing");
+
+    // The song rolls, seeks, loops and stops under it.
+    transport.play();
+    transport.seek(i64::from(SR) * 3);
+    transport.set_loop_range((0, 960), (0, i64::from(SR)));
+    transport.set_looping(true);
+    transport.stop();
+    assert!(
+        session.study_player().playing(),
+        "the song's stop is not the listen's"
+    );
+    assert_eq!(session.analysis_playhead(), Some(at), "nor is its seek");
+
+    session.analysis_stop();
+    assert!(
+        !transport.is_attended(),
+        "stopped, the graph may sleep again"
+    );
+    assert!(session.analysis_playhead().is_none());
+
+    // Closing the window mid-listen ends it.
+    session.analysis_play(0.0, None, true);
+    assert!(transport.is_attended());
+    session.close_analysis();
+    assert!(!session.study_player().playing());
+    assert!(!transport.is_attended());
+    std::fs::remove_dir_all(&dir).ok();
+}

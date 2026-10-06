@@ -206,3 +206,123 @@ fn new_audio_is_swapped_in_where_it_plays() {
     let at = player.position() - BLOCK as u64;
     assert!((l[250] - (at + 250) as f32 * 2e-5).abs() < 1e-6);
 }
+
+// ------------------------------------------ its own transport (Ty, P5 try)
+
+/// Ty, trying the preview build: *"the playhead inside analyze musically
+/// only moves when the arrangement playhead is moving ... they should have
+/// no correlation"*. A stopped transport runs no graph unless something
+/// says it must (`IdleGate`), and a listen in the window said nothing: the
+/// node sat unprocessed, its playhead frozen, until the song rolled. The
+/// transport the callback reads now asks the player too.
+#[test]
+fn a_listen_keeps_a_stopped_transport_awake_until_it_ends() {
+    let transport = fontelle_engine::Transport::new();
+    let player = StudyPlayer::new();
+    transport.wake_for_preview(Arc::clone(&player));
+    player.submit(audio(BLOCK * 4));
+    let mut node = node(&player);
+    let mut gate = fontelle_engine::IdleGate::new();
+    assert!(!transport.is_playing());
+    assert!(!transport.is_attended(), "nothing to listen to yet");
+    gate.set_attended(transport.is_attended());
+    assert!(!gate.is_awake(0), "an idle studio costs nothing");
+
+    player.play(0, None, false);
+    assert!(transport.is_attended(), "a listen wakes the graph");
+    gate.set_attended(transport.is_attended());
+    assert!(gate.is_awake(0));
+    // The node, run as the callback runs it with the song stopped, sounds
+    // and moves its playhead.
+    let mut heard = false;
+    for _ in 0..8 {
+        let (l, _) = stopped_block(&mut node, 0);
+        heard |= l.iter().any(|v| *v != 0.0);
+    }
+    assert!(heard, "it played with the transport stopped");
+    assert!(!player.playing(), "it ran to its end");
+    assert!(
+        !transport.is_attended(),
+        "and once it has ended the graph may sleep again"
+    );
+}
+
+#[test]
+fn stopping_a_listen_lets_the_graph_sleep() {
+    let transport = fontelle_engine::Transport::new();
+    let player = StudyPlayer::new();
+    transport.wake_for_preview(Arc::clone(&player));
+    player.submit(audio(96_000));
+    player.play(0, None, true);
+    assert!(transport.is_attended());
+    player.stop();
+    assert!(!transport.is_attended());
+    // A plugin editor's own flag is still its own.
+    transport.set_attended(true);
+    assert!(transport.is_attended());
+}
+
+/// The song's clock is not the study's: a stopped, a rolling and a seeking
+/// transport all leave the listen exactly where it would have been.
+#[test]
+fn the_song_never_moves_the_study_playhead() {
+    let player = StudyPlayer::new();
+    player.submit(audio(96_000));
+    let mut node = node(&player);
+    player.play(1_000, None, false);
+    let mut positions = Vec::new();
+    for (i, song_at) in [0i64, 0, 480_000, 7, 96_000_000, 0].into_iter().enumerate() {
+        let (l, _) = if i % 2 == 0 {
+            stopped_block(&mut node, song_at)
+        } else {
+            rolling_block(&mut node, song_at)
+        };
+        assert!(i == 0 || l.iter().any(|v| *v != 0.0));
+        positions.push(player.position());
+    }
+    for (i, at) in positions.iter().enumerate() {
+        assert_eq!(*at, 1_000 + (i as u64 + 1) * BLOCK as u64, "{positions:?}");
+    }
+    // A transport stop or a seek resets the graph's nodes: the listen goes on.
+    node.reset();
+    let before = player.position();
+    stopped_block(&mut node, 0);
+    assert_eq!(player.position(), before + BLOCK as u64);
+    assert!(player.playing());
+}
+
+fn stopped_block(node: &mut StudyPlayerNode, song_at: i64) -> (Vec<f32>, Vec<f32>) {
+    block_with(node, fontelle_engine::TransportState::Stopped, song_at)
+}
+
+fn rolling_block(node: &mut StudyPlayerNode, song_at: i64) -> (Vec<f32>, Vec<f32>) {
+    block_with(node, fontelle_engine::TransportState::Playing, song_at)
+}
+
+fn block_with(
+    node: &mut StudyPlayerNode,
+    state: fontelle_engine::TransportState,
+    song_at: i64,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK];
+    {
+        let mut outputs: [&mut [f32]; 2] = [&mut left, &mut right];
+        let mut ctx = fontelle_engine::ProcessContext {
+            inputs: &[],
+            outputs: &mut outputs,
+            all_events: &[],
+            live_events: &[],
+            audio: &[],
+            node: fontelle_types::NodeId::default(),
+            transport: fontelle_engine::TransportSnapshot {
+                state,
+                position_sample: song_at,
+                ..Default::default()
+            },
+            sample_range: song_at..song_at + BLOCK as i64,
+        };
+        node.process(&mut ctx);
+    }
+    (left, right)
+}

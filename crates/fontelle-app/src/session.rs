@@ -1639,6 +1639,9 @@ impl Session {
     pub fn with_transport(mut self, transport: std::sync::Arc<fontelle_engine::Transport>) -> Self {
         self.plugins
             .set_transport(std::sync::Arc::clone(&transport));
+        // Analyze Musically's listen runs the graph with the song stopped;
+        // without this its playhead moved only while the song did.
+        transport.wake_for_preview(std::sync::Arc::clone(&self.study_player));
         self.transport = Some(transport);
         self.publish_loop();
         self
