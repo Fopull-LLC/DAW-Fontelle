@@ -134,6 +134,13 @@ pub struct Realised {
     /// (`docs/disgusting-beat-plan.md` §7.2).
     pub disgusting_beat_taps:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// One capture per Analyze Musically insert in a live graph, keyed the
+    /// same way and carried across a rebuild so a take in progress carries
+    /// on (`docs/analyze-musically-plan.md` §6.1). The insert records into
+    /// it pre-fader, and an `AnalyzeCaptureNode` after the track's fader
+    /// post-fader; the app's take writer drains it. Empty in a render.
+    pub analyze_captures:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
     /// The writing end of every DisgustingBeat's **curves**.
     ///
     /// Beside [`effect_controls`](Self::effect_controls) rather than in it,
@@ -486,6 +493,14 @@ pub struct KeptTaps {
     /// every graph after it: the bar keeps the first, so a rebuild that
     /// minted its own left the bar reading a meter nothing wrote to.
     pub master: Option<std::sync::Arc<MasterMeter>>,
+    /// One capture per Analyze Musically insert — see
+    /// [`Realised::analyze_captures`]. **`None` builds a graph that records
+    /// nothing**, which is what a render wants: a bounce's graph runs on
+    /// another thread, and two graphs writing one ring would break the
+    /// ring's one-writer rule. `Some` (the studio's live graph, even empty)
+    /// gives every Analyze insert one, kept or minted.
+    pub analyze:
+        Option<HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>>,
 }
 
 /// A live input, and the mixer track it is heard through (TDD §15.4).
@@ -984,6 +999,13 @@ pub fn realise_hosting(
     > = HashMap::new();
     let mut tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>> =
         HashMap::new();
+    let mut analyze_captures: HashMap<
+        (MixerTrackId, usize),
+        std::sync::Arc<fontelle_engine::AnalyzeCapture>,
+    > = HashMap::new();
+    // Ten seconds between drains: the take writer drains every 20 ms, so
+    // this is a disk stall of ten seconds before a take loses a frame.
+    let analyze_frames = options.sample_rate as usize * 10;
     let mut send_controls: HashMap<(MixerTrackId, usize), std::sync::Arc<SendControls>> =
         HashMap::new();
     for id in tracks {
@@ -999,6 +1021,7 @@ pub fn realise_hosting(
             &mut tune_taps,
             &mut disgusting_beat_taps,
             &mut disgusting_beat_controls,
+            (&mut analyze_captures, analyze_frames),
             &channel_nodes,
             &mut param_nodes,
             &mut next_id,
@@ -1040,6 +1063,8 @@ pub fn realise_hosting(
             input_buffers: bus.clone(),
             output_buffers: bus.clone(),
         });
+        // Analyze Musically's post-fader point, right after the fader.
+        schedule_post_fader_captures(&mut schedule, &analyze_captures, id, &bus);
         // Post-fader sends: after it, so pulling the part down takes its
         // reverb with it. Before the bus sum only because that is where the
         // bus stops being this track's — the sum leaves its source untouched,
@@ -1113,6 +1138,7 @@ pub fn realise_hosting(
         &mut tune_taps,
         &mut disgusting_beat_taps,
         &mut disgusting_beat_controls,
+        (&mut analyze_captures, analyze_frames),
         &channel_nodes,
         &mut param_nodes,
         &mut next_id,
@@ -1141,6 +1167,7 @@ pub fn realise_hosting(
         input_buffers: vec![0, 1],
         output_buffers: vec![0, 1],
     });
+    schedule_post_fader_captures(&mut schedule, &analyze_captures, master, &[0, 1]);
     // The click, into the master pair — after the master fader so the fader
     // does not move it, and before the limiter so it cannot clip. It is not
     // music: it is not saved, it does not bounce, and it belongs to no channel.
@@ -1198,6 +1225,7 @@ pub fn realise_hosting(
         spectrum_taps,
         tune_taps,
         disgusting_beat_taps,
+        analyze_captures,
         disgusting_beat_controls,
         send_controls,
         metronome,
@@ -1354,6 +1382,10 @@ fn schedule_inserts(
         (MixerTrackId, usize),
         fontelle_engine::DisgustingBeatControls,
     >,
+    (analyze_captures, analyze_frames): (
+        &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
+        usize,
+    ),
     channel_nodes: &HashMap<ChannelId, NodeId>,
     param_nodes: &mut HashMap<fontelle_types::ParamAddress, NodeId>,
     next_id: &mut u64,
@@ -1483,6 +1515,22 @@ fn schedule_inserts(
             disgusting_beat_taps.insert((id, index), tap);
         }
 
+        // Analyze Musically's capture: kept across a rebuild so a take in
+        // progress carries on, and only in a live graph (`KeptTaps::analyze`)
+        // — a render's graph runs on another thread and records nothing.
+        if slot.kind() == Some(fontelle_types::EffectKind::Analyze)
+            && let Some(kept) = &existing_taps.analyze
+        {
+            let capture = kept
+                .get(&(id, index))
+                .map(std::sync::Arc::clone)
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(fontelle_engine::AnalyzeCapture::new(analyze_frames))
+                });
+            node = node.with_analyze_capture(std::sync::Arc::clone(&capture));
+            analyze_captures.insert((id, index), capture);
+        }
+
         // A real id, not the default: an automation event has to be addressed
         // to *this* insert, and a node with the default id would receive every
         // other defaulted node's traffic.
@@ -1501,6 +1549,36 @@ fn schedule_inserts(
         schedule.push(ScheduledNode {
             id: node_id,
             node: Box::new(node),
+            input_buffers: bus.to_vec(),
+            output_buffers: bus.to_vec(),
+        });
+    }
+}
+
+/// The post-fader capture points of `track`'s Analyze Musically inserts,
+/// one each, in place on its bus. Each records only when its insert is set
+/// to post-fader; the insert itself records pre-fader otherwise
+/// (`fontelle_engine::AnalyzeCapture`). Scheduled for every Analyze insert
+/// rather than only the post-fader ones, because the switch moves without a
+/// rebuild.
+fn schedule_post_fader_captures(
+    schedule: &mut Vec<ScheduledNode>,
+    captures: &HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
+    track: MixerTrackId,
+    bus: &[usize],
+) {
+    let mut slots: Vec<usize> = captures
+        .keys()
+        .filter(|(on, _)| *on == track)
+        .map(|(_, slot)| *slot)
+        .collect();
+    slots.sort_unstable();
+    for slot in slots {
+        schedule.push(ScheduledNode {
+            id: NodeId::default(),
+            node: Box::new(fontelle_engine::AnalyzeCaptureNode::new(
+                std::sync::Arc::clone(&captures[&(track, slot)]),
+            )),
             input_buffers: bus.to_vec(),
             output_buffers: bus.to_vec(),
         });

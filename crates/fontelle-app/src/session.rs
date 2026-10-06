@@ -309,6 +309,10 @@ pub struct Session {
     /// `docs/disgusting-beat-plan.md` §7.2.
     disgusting_beat_taps:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// Every Analyze Musically insert's capture, kept across rebuilds — see
+    /// [`Session::analyze_capture`].
+    analyze_captures:
+        HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
     /// And the writing end of each one's curves, which is what an edit
     /// publishes down so that a drag is heard before the next rebuild.
     disgusting_beat_controls:
@@ -1462,6 +1466,7 @@ impl Session {
             disgusting_beat_zoom: 1.0,
             disgusting_beat_menu: None,
             disgusting_beat_taps: HashMap::new(),
+            analyze_captures: HashMap::new(),
             disgusting_beat_controls: HashMap::new(),
             plugins: {
                 let mut rack = crate::PluginRack::new();
@@ -5090,6 +5095,7 @@ impl Session {
                 tune: self.tune_taps.clone(),
                 disgusting_beat: self.disgusting_beat_taps.clone(),
                 master: self.master_meter.clone(),
+                analyze: Some(self.analyze_captures.clone()),
             },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
@@ -5113,6 +5119,7 @@ impl Session {
                 self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
                 self.disgusting_beat_taps = realised.disgusting_beat_taps;
+                self.analyze_captures = realised.analyze_captures;
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
@@ -6312,6 +6319,20 @@ impl Session {
             name,
             unmapped: laid.unmapped.len(),
         })
+    }
+
+    /// The capture of the Analyze Musically insert in `slot` on `track`
+    /// (`docs/analyze-musically-plan.md` §6.1): arm it, read whether it is
+    /// recording and what it lost, and hand it to an
+    /// [`InsertTakeWriter`](crate::insert_takes::InsertTakeWriter). The same
+    /// one across graph rebuilds; `None` for a slot that holds something
+    /// else.
+    pub fn analyze_capture(
+        &self,
+        track: MixerTrackId,
+        slot: usize,
+    ) -> Option<std::sync::Arc<fontelle_engine::AnalyzeCapture>> {
+        self.analyze_captures.get(&(track, slot)).cloned()
     }
 
     /// The instrument a channel of `kind` arrives with.

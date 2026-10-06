@@ -12,6 +12,7 @@ pub mod daw_folders;
 pub mod desktop;
 pub mod extensions;
 pub mod flopsynth;
+pub mod insert_takes;
 pub mod instrument;
 mod keymap;
 mod library;
