@@ -318,3 +318,86 @@ fn the_tracker_adds_no_latency_only_reaction_time() {
         first_voiced - onset_hop
     );
 }
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// Every frame the tracker reports over a sung-ish glide, a saw and a chord,
+/// in three ranges at two rates, folded into one number (FNV-1a over the
+/// bits). Pinned at the value the tracker gave *before* its difference
+/// function moved out into `yin_cmndf`: the refactor may not change a bit.
+fn tracker_fingerprint() -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut eat = |bits: u32| {
+        for byte in bits.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for sample_rate in [44_100.0f32, 48_000.0] {
+        let n = (1.5 * sample_rate) as usize;
+        let mut phase = 0.0f32;
+        let glide: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / sample_rate;
+                let hz = 180.0
+                    * (t / 1.5 * 0.6).exp2()
+                    * (1.0 + 0.01 * (std::f32::consts::TAU * 5.5 * t).sin());
+                phase += hz / sample_rate;
+                (std::f32::consts::TAU * phase).sin() * 0.4
+                    + (2.0 * std::f32::consts::TAU * phase).sin() * 0.2
+            })
+            .collect();
+        let chord: Vec<f32> = sine(261.6, 0.6, sample_rate)
+            .iter()
+            .zip(sine(329.6, 0.6, sample_rate))
+            .map(|(a, b)| a + b)
+            .collect();
+        for signal in [glide, saw(110.0, 0.8, sample_rate), chord] {
+            for range in [RANGES[0], RANGES[1], RANGES[3]] {
+                let mut t = tracker(range, sample_rate, 64);
+                for frame in run(&mut t, &signal) {
+                    match frame {
+                        None => eat(u32::MAX),
+                        Some(f) => {
+                            for v in [f.hz, f.cents, f.confidence, f.rms] {
+                                eat(v.to_bits());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    hash
+}
+
+/// Linux on x86-64 only: the signals and the tracker's filters read the
+/// platform's `sinf` and `tanf`, and another libm may round one of them an
+/// ulp apart, which is not what this pins.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn yin_cmndf_is_the_trackers_own() {
+    assert_eq!(tracker_fingerprint(), 2_437_469_259_228_565_252);
+}
+
+#[test]
+fn yin_cmndf_finds_a_period() {
+    // A 200 Hz saw at 16 kHz: a period of 80 samples, its octave at 160.
+    let signal = saw(200.0, 0.1, 16_000.0);
+    let mut out = vec![0.0f32; 201];
+    fontelle_dsp::yin_cmndf(&signal, 200, 24, 400, &mut out);
+    assert_eq!(out[0], 1.0);
+    let best = (40..=200)
+        .min_by(|a, b| out[*a].total_cmp(&out[*b]))
+        .unwrap();
+    assert!(best == 80 || best == 160, "minimum at {best}");
+    assert!(out[80] < 0.05, "{}", out[80]);
+    // Nowhere near a period, it is near one or above.
+    assert!(out[40] > 0.5, "{}", out[40]);
+}
+
+#[test]
+fn yin_cmndf_of_silence_is_unvoiced_everywhere() {
+    let mut out = vec![0.0f32; 101];
+    fontelle_dsp::yin_cmndf(&[0.0; 400], 100, 24, 200, &mut out);
+    assert!(out.iter().all(|&v| v == 1.0), "{out:?}");
+}

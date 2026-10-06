@@ -41,7 +41,7 @@ pub use oversample::{
 };
 pub use pitch::{
     DEFAULT_TRACKING_THRESHOLD, PitchFrame, PitchTracker, RELAXED_TRACKING_THRESHOLD,
-    STRICT_TRACKING_THRESHOLD, cents_to_hz, hz_to_cents,
+    STRICT_TRACKING_THRESHOLD, cents_to_hz, hz_to_cents, yin_cmndf,
 };
 pub use psola::{GrainEngine, MAX_GRAIN_MS, MIN_GRAIN_MS, PsolaShifter};
 pub use spectrum::{

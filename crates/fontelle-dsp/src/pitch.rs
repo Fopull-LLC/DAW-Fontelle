@@ -449,43 +449,8 @@ impl PitchTracker {
         // which makes a short lag have to be *better than average* rather than
         // merely good — which is what stops the octave-up error a
         // lag-proportional window would otherwise invite.
-        let mut running = 0.0f32;
-        for tau in 1..=high {
-            // Two periods of the candidate, floored so the shortest lags are
-            // still measured over enough samples to mean anything.
-            let w = (2 * tau).clamp(MIN_COARSE_WINDOW, 2 * self.p_max4);
-            // One slice for both halves, oldest first: `later` is the newest
-            // `w` samples and `earlier` is the `w` a lag before them.
-            let window = self.deci_window(w + tau);
-            if window.len() < w + tau {
-                continue;
-            }
-            let earlier = &window[..w];
-            let later = &window[tau..tau + w];
-            let mut difference = 0.0f32;
-            let mut here = 0.0f32;
-            let mut there = 0.0f32;
-            for n in 0..w {
-                let a = later[n];
-                let b = earlier[n];
-                let diff = a - b;
-                difference += diff * diff;
-                here += a * a;
-                there += b * b;
-            }
-            let energy = here + there;
-            let normalised = if energy > 1e-12 {
-                difference / energy
-            } else {
-                1.0
-            };
-            running += normalised;
-            d4[tau] = if running > 1e-12 {
-                normalised * tau as f32 / running
-            } else {
-                1.0
-            };
-        }
+        let window = self.deci_window(2 * self.p_max4 + high);
+        yin_cmndf(window, high, MIN_COARSE_WINDOW, 2 * self.p_max4, d4);
 
         let mut best = low;
         for tau in low..=high {
@@ -588,6 +553,70 @@ impl PitchTracker {
             difference += diff * diff;
         }
         Some(periodicity(window, lag, w, lag, difference))
+    }
+}
+
+/// The coarse pass's difference function, pure: what the tracker runs on
+/// its decimated ring every hop, and what offline analysis (pYIN, in
+/// `fontelle-analysis`) runs on whole frames.
+///
+/// `signal` is oldest first; the newest sample is its last. For each lag
+/// `τ` in `1..=max_tau`, the newest `w = clamp(2τ, min_window, max_window)`
+/// samples are compared with the `w` a lag before them, the squared
+/// difference normalised by the two halves' energy (0 a perfect period, 1
+/// unrelated), and that divided by its running mean over the shorter lags —
+/// YIN's cumulative-mean normalisation, which makes a short lag have to be
+/// better than average rather than merely good. `out[τ]` gets it; `out[0]`
+/// is 1. A lag the signal is too short for, or silence, is 1.
+///
+/// `out` must hold `max_tau + 1` values. Allocates nothing.
+pub fn yin_cmndf(
+    signal: &[f32],
+    max_tau: usize,
+    min_window: usize,
+    max_window: usize,
+    out: &mut [f32],
+) {
+    if let Some(first) = out.first_mut() {
+        *first = 1.0;
+    }
+    let mut running = 0.0f32;
+    for tau in 1..=max_tau.min(out.len().saturating_sub(1)) {
+        // Two periods of the candidate, floored so the shortest lags are
+        // still measured over enough samples to mean anything.
+        let w = (2 * tau).max(min_window).min(max_window);
+        if signal.len() < w + tau {
+            out[tau] = 1.0;
+            continue;
+        }
+        // One slice for both halves, oldest first: `later` is the newest
+        // `w` samples and `earlier` is the `w` a lag before them.
+        let window = &signal[signal.len() - (w + tau)..];
+        let earlier = &window[..w];
+        let later = &window[tau..tau + w];
+        let mut difference = 0.0f32;
+        let mut here = 0.0f32;
+        let mut there = 0.0f32;
+        for n in 0..w {
+            let a = later[n];
+            let b = earlier[n];
+            let diff = a - b;
+            difference += diff * diff;
+            here += a * a;
+            there += b * b;
+        }
+        let energy = here + there;
+        let normalised = if energy > 1e-12 {
+            difference / energy
+        } else {
+            1.0
+        };
+        running += normalised;
+        out[tau] = if running > 1e-12 {
+            normalised * tau as f32 / running
+        } else {
+            1.0
+        };
     }
 }
 
