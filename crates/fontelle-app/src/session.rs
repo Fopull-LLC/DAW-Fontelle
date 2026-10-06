@@ -11097,6 +11097,17 @@ impl StudioHost for Session {
     }
 
     fn preview_preset(&mut self, preset: usize) -> Result<(), String> {
+        // > *"i could see them inside of that folder but when i click one it
+        // > says os error [No such file or directory (os error 2)]. that was
+        // > testing with cardinal synth."*
+        //
+        // A row of the Presets tab is no soundfont's: hearing one is loading
+        // it onto what it is for, as the preset bar does — one undo. A
+        // plugin's own preset has no file at all, and this went on to read
+        // its empty path as a soundfont.
+        if self.browser_mode == fontelle_ui::canvas::BrowserMode::Presets {
+            return self.install_bank_preset(preset);
+        }
         // Which row was clicked, the same way `install_preset` reads it: a
         // search lists hits from the whole collection, so the row is not
         // always a preset of the open file.
@@ -15338,9 +15349,11 @@ impl Session {
         let mut rows = Vec::new();
         let mut heading: Option<String> = None;
         for (index, entry) in entries.iter().enumerate() {
+            // A preset with no category — Cardinal's patches at the top of
+            // its folder — is under the plugin's name, not a blank heading.
             let group = match searching {
-                true => self.device_label(&entry.device),
-                false => entry.category.clone(),
+                false if !entry.category.trim().is_empty() => entry.category.clone(),
+                _ => self.device_label(&entry.device),
             };
             if heading.as_deref() != Some(group.as_str()) {
                 rows.push(PresetRow::Group {

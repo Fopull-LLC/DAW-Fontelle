@@ -17034,6 +17034,12 @@ impl WindowApp {
                     self.tree.invalidate(BROWSER);
                     return;
                 }
+                // In the Presets tab the first press already loaded it, onto
+                // what it is for (`StudioHost::preview_preset`); the second
+                // would only load it again, one more undo of nothing.
+                if self.browser_mode == BrowserMode::Presets && !self.modifiers.control_key() {
+                    return;
+                }
                 // A preset click puts it on the **selected** channel, which is
                 // what "try this sound on this part" means. The add button —
                 // and Ctrl+click — make a new one instead.

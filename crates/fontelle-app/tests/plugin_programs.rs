@@ -373,6 +373,80 @@ fn the_browser_lists_the_programs_and_marks_the_one_playing() {
     assert_eq!(marked, vec!["3 Loud"]);
 }
 
+/// > *"i could see them inside of that folder but when i click one it says
+/// > os error [No such file or directory (os error 2)]. that was testing
+/// > with cardinal synth."*
+///
+/// A press on a row of the Presets tab is a listen in the Sounds tab — it
+/// loaded the row's file as a soundfont, and a plugin's own preset has no
+/// file. Here a press loads it into the plugin, the way the preset bar
+/// does: one undo, the bar naming it.
+#[test]
+fn a_press_on_a_plugins_own_preset_in_the_browser_loads_it() {
+    let dir = scratch("browser-click");
+    let (mut session, device) = with_programs(&dir);
+    session.open_presets_for(device);
+    let rows = session.library_presets();
+    let row = rows
+        .iter()
+        .position(|row| row.name == "3 Loud")
+        .expect("listed");
+    session
+        .preview_preset(row)
+        .expect("a press on a plugin's own preset loads it");
+    assert_eq!(live_program(&mut session), (2, 0, 0.7));
+    assert_eq!(session.preset_bar(device).name.as_deref(), Some("3 Loud"));
+    session.undo();
+    assert_eq!(live_program(&mut session), (0, 0, 0.1), "one undo");
+}
+
+/// Cardinal's patches at the top of its folder have no category, and the
+/// tab's heading over them was a blank line. It names the plugin — the LV2
+/// gain's "Half", in no bank, is the same shape.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plugins_presets_with_no_category_are_under_its_name_in_the_browser() {
+    let dir = scratch("browser-heading");
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    let master = project.mixer.master.expect("a project has a master track");
+    project.mixer.tracks[master]
+        .inserts
+        .push(fontelle_model::EffectSlot::hosting(PluginState::new(
+            PluginKey::new(
+                fontelle_types::PluginFormat::Lv2,
+                fontelle_testlv2::GAIN_URI,
+            ),
+            "Fontelle Test Gain LV2",
+        )));
+    let mut session = a_session_on(&dir, project);
+    let strip = (0..session.mixer_strips().len())
+        .find(|&strip| {
+            !session
+                .preset_choices(PresetDevice::Insert { strip, slot: 0 })
+                .is_empty()
+        })
+        .expect("the gain's preset is offered on a strip");
+    let device = PresetDevice::Insert { strip, slot: 0 };
+    let half = choice(&session, device, "Half");
+    assert_eq!(
+        session.preset_choices(device)[half].category,
+        "",
+        "in no bank"
+    );
+    session.open_presets_for(device);
+    let rows = session.library_presets();
+    let at = rows.iter().position(|row| row.name == "Half").unwrap();
+    let over = rows[..at]
+        .iter()
+        .rev()
+        .find(|row| row.kind == LibraryKind::Group)
+        .expect("a heading over it");
+    assert_eq!(over.name, "Fontelle Test Gain LV2");
+    // And a press on it loads it.
+    session.preview_preset(at).expect("loads");
+    assert_eq!(session.preset_bar(device).name.as_deref(), Some("Half"));
+}
+
 /// An LV2 plugin whose presets are compiled into it and offered through the
 /// KXStudio programs extension — Dexed's LV2 — has them in the menu, read
 /// off the instance the studio is running, and one chosen is played.
