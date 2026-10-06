@@ -3356,29 +3356,87 @@ pub fn plugin_menu_pixels(
             labels.ensure(&entry.label, &theme.font, text);
         }
     }
+    let search = menu.search();
+    let typed = !menu.query().is_empty();
+    let search_text = if typed {
+        format!("{}{}", menu.query(), crate::canvas::NAME_CARET)
+    } else {
+        "Type to search presets".to_string()
+    };
+    labels.ensure(&search_text, &theme.font, text);
+    let p = theme.palette.solid();
+    let m = &theme.metrics;
+    let frame = menu.frame();
     let mut inner = Scene::new();
+    // The ground under the search line and the list both.
+    fill_rect_rounded(&mut inner, frame, m.corner_radius, p.border);
+    fill_rect_rounded(
+        &mut inner,
+        frame.inset(1.0),
+        m.corner_radius,
+        p.panel_header,
+    );
     draw_context_menu(&mut inner, theme, labels, Some(laid), None);
+    // **The headings, legible.** The studio's menu draws a greyed row in
+    // the border's ink — "there, and not for you" — which over a dark
+    // ground read as nothing at all: *"the section headings are nearly
+    // invisible"*. Here a heading is a caption, so it is drawn again in
+    // the secondary text colour, over its own row.
+    for ((row, entry), what) in laid.rows.iter().zip(&laid.entries).zip(&menu.rows) {
+        if row.is_empty() || *what != crate::canvas::PluginMenuRow::Heading {
+            continue;
+        }
+        let Some(caption) = labels_get(labels, &entry.label) else {
+            continue;
+        };
+        let band = Rect::new(row.x, row.y + 1.0, row.width, row.height - 1.0);
+        fill_rect(&mut inner, band, p.panel_header);
+        draw_text_clipped(
+            &mut inner,
+            caption,
+            band,
+            row.x + crate::canvas::MENU_TEXT_INSET,
+            row.y + (row.height - caption.height) / 2.0,
+            p.text_muted,
+        );
+    }
+    // The search line, pinned over the list: a field, so it reads as
+    // somewhere typing goes.
+    if !search.is_empty() {
+        let field = search.inset(3.0);
+        fill_rect_rounded(&mut inner, field, m.corner_radius, p.window);
+        stroke_rect_rounded(
+            &mut inner,
+            field,
+            m.corner_radius,
+            1.0,
+            if typed { p.accent } else { p.border },
+        );
+        if let Some(caption) = labels_get(labels, &search_text) {
+            draw_text_clipped(
+                &mut inner,
+                caption,
+                field,
+                field.x + 6.0,
+                field.y + (field.height - caption.height) / 2.0,
+                if typed { p.text } else { p.text_muted },
+            );
+        }
+    }
     if let Some(row) = menu.hover().and_then(|index| laid.rows.get(index))
         && !row.is_empty()
     {
-        let p = theme.palette.solid();
-        fill_rect_rounded(
-            &mut inner,
-            *row,
-            theme.metrics.corner_radius,
-            p.accent.with_alpha(0x38),
-        );
-        stroke_rect_rounded(&mut inner, *row, theme.metrics.corner_radius, 1.0, p.accent);
+        fill_rect_rounded(&mut inner, *row, m.corner_radius, p.accent.with_alpha(0x38));
+        stroke_rect_rounded(&mut inner, *row, m.corner_radius, 1.0, p.accent);
     }
     let (_, _, width, height) = menu.pixel_rect();
     let s = f64::from(menu.scale());
-    let frame = laid.frame;
     let mut scene = Scene::new();
     scene.append(
         &inner,
         Some(Affine::scale(s) * Affine::translate((-f64::from(frame.x), -f64::from(frame.y)))),
     );
-    headless.render(&scene, width, height, theme.palette.solid().border)
+    headless.render(&scene, width, height, p.border)
 }
 
 /// The preset bar, across the right-hand end of an editor window's header

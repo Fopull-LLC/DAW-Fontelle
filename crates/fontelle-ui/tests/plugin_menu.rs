@@ -165,7 +165,7 @@ fn it_drops_from_the_name_on_the_strip_into_the_plugins_area() {
         let menu = open(scale, None);
         let theme = Theme::dark_default();
         let bar = plugin_header_layout(640.0, &header(scale).bar, &theme.metrics);
-        let frame = menu.menu.frame;
+        let frame = menu.frame();
         assert!(
             (frame.y - PLUGIN_HEADER_HEIGHT).abs() < 1.0,
             "under the strip at {scale}x: {frame:?}"
@@ -328,9 +328,9 @@ fn typing_narrows_it_and_enter_takes_the_first_hit() {
         .collect();
     assert_eq!(presets, vec![PluginMenuRow::Preset(5)], "DRMR_-_Bells only");
     assert!(
-        menu.menu.entries[0].label.contains("bel"),
-        "the heading says what was typed: {:?}",
-        menu.menu.entries[0].label
+        menu.search_label().contains("bel"),
+        "the search line says what was typed: {:?}",
+        menu.search_label()
     );
     assert_eq!(
         input(&mut menu, PluginMenuInput::Key(PluginMenuKey::Enter), None),
@@ -618,4 +618,111 @@ fn a_long_library_is_drawn_into_the_plugins_window() {
     .unwrap();
     assert_eq!(pixels.len(), (width * height * 4) as usize);
     dump(&pixels, "plugin-preset-menu-long", width, height);
+}
+
+/// The search line is pinned above the list: scrolled to the far end of a
+/// long bank, it is still there at the top, and it is not a row of the list.
+#[test]
+fn the_search_line_stays_at_the_top_while_the_list_scrolls() {
+    let theme = Theme::dark_default();
+    let mut many = choices();
+    for n in 0..400 {
+        many.push(choice(
+            &format!("Patch {n:03}"),
+            "bank",
+            PresetOrigin::Plugin,
+        ));
+    }
+    let mut narrow = header(1.0);
+    narrow.width = 300;
+    let mut menu =
+        PluginPresetMenu::open(&narrow, &many, None, &theme.metrics, theme.font.size).unwrap();
+    let search = menu.search();
+    assert!(!search.is_empty());
+    assert!((search.y - PLUGIN_HEADER_HEIGHT).abs() < 1.0, "{search:?}");
+    assert!(
+        menu.menu.frame.y >= search.bottom() - 0.5,
+        "the list is under it"
+    );
+    assert!(menu.search_label().contains("type to filter"));
+    assert_ne!(
+        menu.rows[0],
+        PluginMenuRow::Heading,
+        "not a row of the list"
+    );
+    menu.input(
+        PluginMenuInput::Key(PluginMenuKey::End),
+        &narrow,
+        &many,
+        None,
+        &theme.metrics,
+        theme.font.size,
+        0,
+    );
+    assert!(menu.menu.scroll() > 0.0);
+    assert_eq!(menu.search(), search, "pinned");
+    // A press on it is nothing, not a close.
+    let outcome = menu.input(
+        PluginMenuInput::Press(search.x + 20.0, search.y + 5.0),
+        &narrow,
+        &many,
+        None,
+        &theme.metrics,
+        theme.font.size,
+        0,
+    );
+    assert_eq!(outcome, PluginMenuOutcome::Nothing);
+}
+
+/// The section headings are legible: their ink stands well off the
+/// menu's ground, in both themes.
+#[test]
+fn the_headings_are_legible_in_both_themes() {
+    let Some(headless) = headless() else {
+        return;
+    };
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let mut labels = fontelle_ui::text::Labels::new();
+        let mut text = fontelle_ui::TextContext::new();
+        let menu = PluginPresetMenu::open(
+            &header(1.0),
+            &choices(),
+            None,
+            &theme.metrics,
+            theme.font.size,
+        )
+        .unwrap();
+        let (mx, my, width, _) = menu.pixel_rect();
+        let pixels = fontelle_ui::render::plugin_menu_pixels(
+            &mut headless.lock().unwrap(),
+            &theme,
+            &mut labels,
+            &mut text,
+            &menu,
+        )
+        .unwrap();
+        let heading = menu
+            .rows
+            .iter()
+            .position(|row| *row == PluginMenuRow::Heading)
+            .unwrap();
+        let row = menu.menu.rows[heading];
+        let ground = theme.palette.solid().panel_header.0;
+        let contrast = (row.y as i32 - my..(row.bottom() as i32 - my))
+            .flat_map(|y| (row.x as i32 - mx..row.right() as i32 - mx).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let i = ((y as u32 * width + x as u32) * 4) as usize;
+                (0..3)
+                    .map(|c| pixels[i + c].abs_diff(ground[c]) as u32)
+                    .max()
+                    .unwrap()
+            })
+            .max()
+            .unwrap();
+        assert!(
+            contrast > 90,
+            "{}: the heading's ink is {contrast} off the ground",
+            theme.name
+        );
+    }
 }

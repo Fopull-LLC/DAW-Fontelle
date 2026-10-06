@@ -23,8 +23,8 @@ use super::menu::{
     ContextMenu, MenuEntry, context_menu_hit, context_menu_layout, context_menu_star_hit,
 };
 use super::preset_bar::{
-    PluginHeaderView, PresetBarHit, PresetChoice, PresetDevice, PresetMenuRow, plugin_header_hit,
-    plugin_header_layout, preset_menu_marking, random_preset_row,
+    PRESET_MENU_HEADING, PluginHeaderView, PresetBarHit, PresetChoice, PresetDevice, PresetMenuRow,
+    plugin_header_hit, plugin_header_layout, preset_menu_marking, random_preset_row,
 };
 use crate::layout::Rect;
 use crate::theme::Metrics;
@@ -143,6 +143,10 @@ pub struct PluginPresetMenu {
     scale: f32,
     /// The window it was laid out in: `(width, strip, area)`, its pixels.
     window: (u32, u32, u32),
+    /// The search line, pinned above the list, and what it says — the
+    /// list's own first row once, which scrolled away with the rest.
+    search: Rect,
+    search_label: String,
 }
 
 impl PluginPresetMenu {
@@ -163,6 +167,8 @@ impl PluginPresetMenu {
             hover: None,
             scale: header.scale.max(0.25),
             window: (0, 0, 0),
+            search: Rect::ZERO,
+            search_label: String::new(),
         };
         this.lay_out(header, choices, current, metrics, font_size, None);
         if this.menu.is_empty() {
@@ -201,9 +207,35 @@ impl PluginPresetMenu {
             || (self.scale - header.scale.max(0.25)).abs() > f32::EPSILON
     }
 
+    /// The search line over the list, in logical units: empty when the
+    /// device has no presets to search.
+    pub fn search(&self) -> Rect {
+        self.search
+    }
+
+    /// What the search line says: what has been typed, or how to.
+    pub fn search_label(&self) -> &str {
+        &self.search_label
+    }
+
+    /// The whole of it — the search line and the list under it — in
+    /// logical units.
+    pub fn frame(&self) -> Rect {
+        if self.search.is_empty() {
+            return self.menu.frame;
+        }
+        let top = self.search.y;
+        Rect::new(
+            self.menu.frame.x,
+            top,
+            self.menu.frame.width,
+            self.menu.frame.bottom() - top,
+        )
+    }
+
     /// Where it goes in the window: `(x, y, width, height)` in its pixels.
     pub fn pixel_rect(&self) -> (i32, i32, u32, u32) {
-        let frame = self.menu.frame;
+        let frame = self.frame();
         let s = self.scale;
         (
             (frame.x * s).round() as i32,
@@ -245,9 +277,30 @@ impl PluginPresetMenu {
             header.area as f32 / s,
         );
         let name = plugin_header_layout(width, &header.bar, metrics).name;
-        let (entries, rows) = plugin_preset_menu(choices, &self.query, current);
-        let bounds = Rect::new(0.0, strip, width, area);
-        self.menu = context_menu_layout((name.x, strip), bounds, metrics, font_size, entries);
+        let (mut entries, mut rows) = plugin_preset_menu(choices, &self.query, current);
+        // The search line comes out of the list and is pinned over it, so
+        // it is there however far down a bank of hundreds is scrolled.
+        let row = metrics.row_height.max(1.0);
+        let searchable = rows.first() == Some(&PluginMenuRow::Heading)
+            && entries
+                .first()
+                .is_some_and(|entry| entry.label.starts_with(PRESET_MENU_HEADING));
+        let top = if searchable {
+            let heading = entries.remove(0);
+            rows.remove(0);
+            self.search_label = heading.label;
+            strip + row
+        } else {
+            self.search_label.clear();
+            strip
+        };
+        let bounds = Rect::new(0.0, top, width, (area - (top - strip)).max(0.0));
+        self.menu = context_menu_layout((name.x, top), bounds, metrics, font_size, entries);
+        self.search = if searchable && !self.menu.is_empty() {
+            Rect::new(self.menu.frame.x, strip, self.menu.frame.width, row)
+        } else {
+            Rect::ZERO
+        };
         self.rows = rows;
         if let Some(scroll) = scroll {
             self.menu.scroll_by(scroll);
@@ -314,6 +367,9 @@ impl PluginPresetMenu {
             PluginMenuInput::Lost => PluginMenuOutcome::Close,
             PluginMenuInput::Press(px, py) => {
                 let (x, y) = (px / s, py / s);
+                if self.search.contains(x, y) {
+                    return PluginMenuOutcome::Nothing;
+                }
                 if self.menu.frame.contains(x, y) {
                     if let Some(star) = context_menu_star_hit(&self.menu, x, y)
                         && let Some(PluginMenuRow::Preset(which)) = self.rows.get(star)
