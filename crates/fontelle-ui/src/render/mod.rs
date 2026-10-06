@@ -8192,8 +8192,10 @@ fn draw_timeline(
         // rather than at the left where the front grip and the fade-in live:
         // Ty, *"there should be a name on each clip that is in the center of
         // the clip so its not overlapping any of the end of clip controls"*.
-        // Cut to fit with an ellipsis, and left off a block too narrow for a
-        // word. Clicking it opens the clip's menu.
+        // Across the top, a title — *"make them anchored closer to the top"*
+        // — on a plate of the block's own colour, so it reads over the notes
+        // or the wave under it. Cut to fit with an ellipsis, and left off a
+        // block too narrow for a word. Clicking it opens the clip's menu.
         let caption = chrome
             .captions
             .get(&clip.id)
@@ -8210,6 +8212,11 @@ fn draw_timeline(
             } else {
                 p.panel
             };
+            let plate =
+                Rect::new(name.x - 4.0, name.y, name.width + 8.0, name.height).intersection(&block);
+            if !plate.is_empty() && !automation {
+                fill_rect_rounded(scene, plate, 3.0, body.with_alpha(0xe0));
+            }
             let y = name.y + (name.height - text.height) / 2.0;
             draw_text_clipped(scene, text, block, name.x, y, ink);
         }
