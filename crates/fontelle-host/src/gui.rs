@@ -109,6 +109,66 @@ pub struct GuiPoll {
     /// into its preset name is still a space; and only a window the keyboard
     /// is in hears a key, so this is no hotkey.
     pub play_pause: u32,
+    /// What the pointer and the keyboard did to the menu over the window
+    /// ([`PluginWindow::show_overlay`]), in order. Empty while none is up.
+    pub overlay: Vec<OverlayEvent>,
+}
+
+/// Something done to the menu Fontelle draws over a plugin's window.
+///
+/// While the menu is up it has the pointer and the keyboard — the way a
+/// drop-down has them anywhere — so a press **anywhere** in the frame is
+/// reported here, in the frame's pixels: one off the menu is how it is
+/// dismissed, and it is not the plugin's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayEvent {
+    /// A press of the main (or the other) button at `(x, y)` of the frame.
+    Press(i32, i32),
+    /// The pointer moved to `(x, y)` of the frame.
+    Pointer(i32, i32),
+    /// The wheel, in notches: positive is down the list.
+    Scroll(i32),
+    Key(OverlayKey),
+    /// Something else took the pointer — another program's window was
+    /// clicked. The menu is as good as dismissed.
+    Lost,
+}
+
+/// A key typed while the menu is up: text for its search, or one of the keys
+/// that walk and close a list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OverlayKey {
+    Text(String),
+    Backspace,
+    Enter,
+    Escape,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+/// `(x, y, width, height)` moved and cut to fit a frame `frame` big, and the
+/// pixels cut to match — a menu hanging off the window would be a menu with
+/// rows nobody can press.
+fn fit_overlay(
+    frame: (u32, u32),
+    (x, y, width, height): (i32, i32, u32, u32),
+    rgba: &[u8],
+) -> ((i32, i32, u32, u32), Vec<u8>) {
+    let (fit_w, fit_h) = (width.min(frame.0), height.min(frame.1));
+    let x = x.clamp(0, (frame.0 - fit_w) as i32);
+    let y = y.clamp(0, (frame.1 - fit_h) as i32);
+    let mut pixels = Vec::with_capacity((fit_w * fit_h * 4) as usize);
+    for row in 0..fit_h as usize {
+        let start = row * width as usize * 4;
+        let end = start + fit_w as usize * 4;
+        pixels.extend_from_slice(rgba.get(start..end).unwrap_or(&[]));
+    }
+    pixels.resize((fit_w * fit_h * 4) as usize, 0);
+    ((x, y, fit_w, fit_h), pixels)
 }
 
 /// The scale a desktop asks X11 programs to draw at, from the X server's
@@ -327,6 +387,12 @@ pub struct PluginWindow {
     /// Spaces a headless window was told of — see
     /// [`press_space`](Self::press_space).
     spaces: u32,
+    /// Where the menu over the window is, in the frame's pixels, while one
+    /// is up.
+    overlay: Option<(i32, i32, u32, u32)>,
+    /// What a headless window's menu was told of — see
+    /// [`overlay_event`](Self::overlay_event).
+    overlay_events: Vec<OverlayEvent>,
 }
 
 impl PluginWindow {
@@ -338,6 +404,54 @@ impl PluginWindow {
             pressed: Vec::new(),
             hover: None,
             spaces: 0,
+            overlay: None,
+            overlay_events: Vec::new(),
+        }
+    }
+
+    /// Where the menu over the window is — `(x, y, width, height)` of the
+    /// frame — while one is up.
+    pub fn overlay(&self) -> Option<(i32, i32, u32, u32)> {
+        self.overlay
+    }
+
+    /// Shows `rgba` (`width` × `height`, top row first) at `(x, y)` of the
+    /// frame, over the strip and the plugin both, and gives it the pointer
+    /// and the keyboard until [`hide_overlay`](Self::hide_overlay); what is
+    /// done to it comes back in [`GuiPoll::overlay`]. Called again while up,
+    /// it is moved and redrawn. Kept inside the frame.
+    pub fn show_overlay(&mut self, x: i32, y: i32, rgba: &[u8], width: u32, height: u32) {
+        let frame = (self.size.width, self.size.height + self.header);
+        if width == 0 || height == 0 || rgba.len() < (width * height * 4) as usize {
+            return;
+        }
+        let (rect, pixels) = fit_overlay(frame, (x, y, width, height), rgba);
+        if rect.2 == 0 || rect.3 == 0 {
+            return;
+        }
+        self.overlay = Some(rect);
+        if let Some(server) = &mut self.server {
+            overlay_on_screen(server, rect, &pixels);
+        }
+    }
+
+    /// Takes the menu down and gives the pointer and the keyboard back.
+    pub fn hide_overlay(&mut self) {
+        if self.overlay.take().is_none() {
+            return;
+        }
+        self.overlay_events.clear();
+        if let Some(server) = &mut self.server {
+            overlay_off_screen(server);
+        }
+    }
+
+    /// **A headless window only**: what the menu over it would report on a
+    /// screen — the next [`poll`](Self::poll) says so. Nothing while no menu
+    /// is up.
+    pub fn overlay_event(&mut self, event: OverlayEvent) {
+        if self.server.is_none() && self.overlay.is_some() {
+            self.overlay_events.push(event);
         }
     }
 
@@ -408,6 +522,15 @@ struct OnScreen {
     /// second press.
     space_down: bool,
     space_released_at: Option<u32>,
+    /// The keyboard's map, for typing into the menu: the first keycode,
+    /// how many keysyms each has, and them.
+    keymap: (u8, usize, Vec<u32>),
+    /// The menu's window, a child of the frame over the strip and the
+    /// plugin's window both; zero until a menu is first shown.
+    menu: u32,
+    /// Where it is in the frame, and its pixels as the server takes them.
+    menu_at: (i32, i32),
+    menu_pixels: Option<(Vec<u8>, u32, u32)>,
 }
 
 /// The same on Windows: the window's handle and what its window procedure
@@ -427,6 +550,8 @@ struct OnScreen {
     window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
     embed: objc2::rc::Retained<cocoa::AreaView>,
     strip: Option<objc2::rc::Retained<cocoa::StripView>>,
+    /// The menu over the window, made the first time one is shown.
+    menu: Option<objc2::rc::Retained<cocoa::MenuView>>,
     /// The close button has been reported.
     closed: bool,
 }
@@ -435,6 +560,16 @@ struct OnScreen {
 /// `server` below is a branch the compiler knows is not taken.
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 enum OnScreen {}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+fn overlay_on_screen(server: &mut OnScreen, _rect: (i32, i32, u32, u32), _rgba: &[u8]) {
+    match *server {}
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+fn overlay_off_screen(server: &mut OnScreen) {
+    match *server {}
+}
 
 #[cfg(target_os = "linux")]
 impl PluginWindow {
@@ -561,7 +696,8 @@ impl PluginWindow {
         .map_or(1.0, |reply| {
             scale_from_resources(&String::from_utf8_lossy(&reply.value))
         });
-        let space = space_keycode(&connection);
+        let keymap = keyboard_map(&connection);
+        let space = space_keycode(&keymap);
         let mut screen_window = Self::offscreen(size, header);
         screen_window.server = Some(OnScreen {
             connection,
@@ -575,6 +711,10 @@ impl PluginWindow {
             space,
             space_down: false,
             space_released_at: None,
+            keymap,
+            menu: 0,
+            menu_at: (0, 0),
+            menu_pixels: None,
         });
         screen_window.set_title(title);
         if let Some(server) = &screen_window.server {
@@ -740,14 +880,49 @@ impl PluginWindow {
         let Some(server) = &mut self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
             result.play_pause = std::mem::take(&mut self.spaces);
+            result.overlay = std::mem::take(&mut self.overlay_events);
             return result;
         };
         let delete_window = server.delete_window;
         let mut seen = None;
         let mut expose = false;
         let mut pointer = None;
+        let menu = if self.overlay.is_some() {
+            server.menu
+        } else {
+            0
+        };
+        let (mx, my) = server.menu_at;
+        let mut menu_expose = false;
         while let Ok(Some(event)) = server.connection.poll_for_event() {
             match event {
+                // The menu's, first: while it is up it has the pointer and
+                // the keyboard (`overlay_on_screen`), so every press and key
+                // comes to its window — a space among them is a letter of
+                // the search, not play.
+                X11Event::Expose(exposed) if menu != 0 && exposed.window == menu => {
+                    menu_expose = true;
+                }
+                X11Event::ButtonPress(press) if menu != 0 && press.event == menu => {
+                    let (x, y) = (i32::from(press.event_x) + mx, i32::from(press.event_y) + my);
+                    match press.detail {
+                        1 | 3 => result.overlay.push(OverlayEvent::Press(x, y)),
+                        4 => result.overlay.push(OverlayEvent::Scroll(-1)),
+                        5 => result.overlay.push(OverlayEvent::Scroll(1)),
+                        _ => {}
+                    }
+                }
+                X11Event::MotionNotify(motion) if menu != 0 && motion.event == menu => {
+                    result.overlay.push(OverlayEvent::Pointer(
+                        i32::from(motion.event_x) + mx,
+                        i32::from(motion.event_y) + my,
+                    ));
+                }
+                X11Event::KeyPress(press) if menu != 0 && press.event == menu => {
+                    if let Some(key) = overlay_key(&server.keymap, press.detail, press.state) {
+                        result.overlay.push(OverlayEvent::Key(key));
+                    }
+                }
                 X11Event::ConfigureNotify(configure) if configure.window == server.window => {
                     // The frame: the plugin's area is what is left under the
                     // strip.
@@ -824,6 +999,9 @@ impl PluginWindow {
         if expose {
             paint_strip(server);
         }
+        if menu_expose {
+            paint_menu(server);
+        }
         if let Some(at) = pointer {
             self.hovered(at, &mut result);
         }
@@ -870,35 +1048,217 @@ impl PluginWindow {
     }
 }
 
-/// Puts the strip's pixels on the frame, in bands a request can hold.
-/// The keycode the space bar sends on the X server's keyboard, or zero.
+/// The X server's keyboard map: the first keycode, keysyms per keycode, and
+/// the keysyms. Empty when the server would not say.
 #[cfg(target_os = "linux")]
-fn space_keycode(connection: &RustConnection) -> u8 {
-    const SPACE: u32 = 0x20;
+fn keyboard_map(connection: &RustConnection) -> (u8, usize, Vec<u32>) {
     let setup = connection.setup();
     let (min, max) = (setup.min_keycode, setup.max_keycode);
-    let Some(map) = x11rb::protocol::xproto::ConnectionExt::get_keyboard_mapping(
+    x11rb::protocol::xproto::ConnectionExt::get_keyboard_mapping(
         connection,
         min,
         max.saturating_sub(min).saturating_add(1),
     )
     .ok()
-    .and_then(|cookie| cookie.reply().ok()) else {
-        return 0;
-    };
-    let per = usize::from(map.keysyms_per_keycode).max(1);
-    map.keysyms
-        .chunks(per)
+    .and_then(|cookie| cookie.reply().ok())
+    .map_or((min, 1, Vec::new()), |map| {
+        (
+            min,
+            usize::from(map.keysyms_per_keycode).max(1),
+            map.keysyms,
+        )
+    })
+}
+
+/// The keycode the space bar sends on the X server's keyboard, or zero.
+#[cfg(target_os = "linux")]
+fn space_keycode((min, per, keysyms): &(u8, usize, Vec<u32>)) -> u8 {
+    const SPACE: u32 = 0x20;
+    keysyms
+        .chunks(*per)
         .position(|syms| syms.first() == Some(&SPACE))
         .map_or(0, |at| min.saturating_add(at as u8))
 }
 
+/// What a key pressed on the menu is: its search's next letter, or a key
+/// that walks or closes it. Nothing with Ctrl or Alt held, and nothing for a
+/// key that is neither.
+#[cfg(target_os = "linux")]
+fn overlay_key(
+    (min, per, keysyms): &(u8, usize, Vec<u32>),
+    code: u8,
+    state: KeyButMask,
+) -> Option<OverlayKey> {
+    let at = usize::from(code.checked_sub(*min)?) * per;
+    let plain = *keysyms.get(at)?;
+    let named = match plain {
+        0xff08 => Some(OverlayKey::Backspace),
+        0xff0d | 0xff8d => Some(OverlayKey::Enter),
+        0xff1b => Some(OverlayKey::Escape),
+        0xff52 => Some(OverlayKey::Up),
+        0xff54 => Some(OverlayKey::Down),
+        0xff55 => Some(OverlayKey::PageUp),
+        0xff56 => Some(OverlayKey::PageDown),
+        0xff50 => Some(OverlayKey::Home),
+        0xff57 => Some(OverlayKey::End),
+        _ => None,
+    };
+    if named.is_some() {
+        return named;
+    }
+    let state = u16::from(state);
+    if state & u16::from(KeyButMask::CONTROL | KeyButMask::MOD1) != 0 {
+        return None;
+    }
+    let shifted = keysyms
+        .get(at + 1)
+        .copied()
+        .filter(|sym| *per > 1 && *sym != 0)
+        .unwrap_or(plain);
+    let mut sym = if state & u16::from(KeyButMask::SHIFT) != 0 {
+        shifted
+    } else {
+        plain
+    };
+    // Caps Lock, on a letter.
+    if state & u16::from(KeyButMask::LOCK) != 0 && (0x61..=0x7a).contains(&sym) {
+        sym -= 0x20;
+    }
+    let letter = match sym {
+        0x20..=0x7e | 0xa0..=0xff => char::from_u32(sym),
+        0x0100_0000..=0x0110_ffff => char::from_u32(sym - 0x0100_0000),
+        _ => None,
+    }?;
+    Some(OverlayKey::Text(letter.to_string()))
+}
+
+/// Puts the menu up: made the first time, moved over everything in the
+/// frame, painted, and handed the pointer and the keyboard.
+///
+/// **Grabbed**, not merely focused: a press on the plugin's own window goes
+/// to the plugin's connection, not this one, and a drop-down that stayed
+/// open while the plugin under it took the click would be one that cannot
+/// be dismissed by clicking away. The grabs are this connection's, so they
+/// end with the window (`Drop`) or the menu (`overlay_off_screen`) — or the
+/// process — whatever happens.
+#[cfg(target_os = "linux")]
+fn overlay_on_screen(
+    server: &mut OnScreen,
+    (x, y, width, height): (i32, i32, u32, u32),
+    rgba: &[u8],
+) {
+    use x11rb::protocol::xproto::{ConfigureWindowAux, GrabMode, InputFocus, StackMode};
+    let first = server.menu == 0;
+    if first {
+        let Ok(menu) = server.connection.generate_id() else {
+            return;
+        };
+        let made = server.connection.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            menu,
+            server.window,
+            x as i16,
+            y as i16,
+            width as u16,
+            height as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new().event_mask(
+                EventMask::EXPOSURE
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::POINTER_MOTION
+                    | EventMask::KEY_PRESS,
+            ),
+        );
+        if made.is_err() {
+            return;
+        }
+        server.menu = menu;
+    }
+    server.menu_at = (x, y);
+    server.menu_pixels = Some((
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], 0])
+            .collect(),
+        width,
+        height,
+    ));
+    let connection = &server.connection;
+    let _ = connection.configure_window(
+        server.menu,
+        &ConfigureWindowAux::new()
+            .x(x)
+            .y(y)
+            .width(width)
+            .height(height)
+            .stack_mode(StackMode::ABOVE),
+    );
+    let _ = connection.map_window(server.menu);
+    paint_menu(server);
+    let connection = &server.connection;
+    let pointer = EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+    let _ = connection.grab_pointer(
+        false,
+        server.menu,
+        pointer,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+        x11rb::NONE,
+        x11rb::NONE,
+        x11rb::CURRENT_TIME,
+    );
+    let _ = connection.grab_keyboard(
+        false,
+        server.menu,
+        x11rb::CURRENT_TIME,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+    );
+    let _ = connection.set_input_focus(InputFocus::PARENT, server.menu, x11rb::CURRENT_TIME);
+    let _ = connection.flush();
+}
+
+/// Takes the menu down and lets go of the pointer and the keyboard.
+#[cfg(target_os = "linux")]
+fn overlay_off_screen(server: &mut OnScreen) {
+    if server.menu == 0 {
+        return;
+    }
+    let connection = &server.connection;
+    let _ = connection.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = connection.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = connection.unmap_window(server.menu);
+    server.menu_pixels = None;
+    let _ = connection.flush();
+}
+
+/// Puts the menu's pixels on its window.
+#[cfg(target_os = "linux")]
+fn paint_menu(server: &OnScreen) {
+    if let Some((pixels, width, height)) = &server.menu_pixels {
+        put_pixels(server, server.menu, pixels, *width, *height);
+    }
+}
+
+/// Puts the strip's pixels on the frame.
 #[cfg(target_os = "linux")]
 fn paint_strip(server: &OnScreen) {
-    let Some((pixels, width, height)) = &server.strip else {
+    if let Some((pixels, width, height)) = &server.strip {
+        put_pixels(server, server.window, pixels, *width, *height);
+    }
+}
+
+/// Puts `pixels` (BGRX, `width` × `height`) on `window` at its corner, in
+/// bands a request can hold.
+#[cfg(target_os = "linux")]
+fn put_pixels(server: &OnScreen, window: u32, pixels: &[u8], width: u32, height: u32) {
+    let stride = width as usize * 4;
+    if stride == 0 {
         return;
-    };
-    let stride = *width as usize * 4;
+    }
     // What one request may carry, less its own header.
     use x11rb::connection::RequestConnection;
     let room = server
@@ -908,13 +1268,13 @@ fn paint_strip(server: &OnScreen) {
         .max(stride);
     let rows = (room / stride).max(1);
     let mut y = 0usize;
-    while y < *height as usize {
-        let band = rows.min(*height as usize - y);
+    while y < height as usize {
+        let band = rows.min(height as usize - y);
         let _ = server.connection.put_image(
             x11rb::protocol::xproto::ImageFormat::Z_PIXMAP,
-            server.window,
+            window,
             server.gc,
-            *width as u16,
+            width as u16,
             band as u16,
             0,
             y as i16,
@@ -1037,23 +1397,26 @@ mod win32 {
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetKeyState, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_LWIN, VK_MENU,
-        VK_RWIN, VK_SHIFT, VK_SPACE,
+        GetCapture, GetKeyState, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
+        TrackMouseEvent, VK_BACK, VK_CONTROL, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LWIN,
+        VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RWIN, VK_SHIFT, VK_SPACE, VK_UP,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-        GetClientRect, GetParent, GetWindowLongPtrW, IDC_ARROW, IsIconic, LoadCursorW, MSG,
-        PM_REMOVE, PeekMessageW, RegisterClassExW, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW,
-        ShowWindow, TranslateMessage, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT,
-        WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        GetClientRect, GetParent, GetWindowLongPtrW, HWND_TOP, IDC_ARROW, IsIconic, LoadCursorW,
+        MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_HIDE, SW_RESTORE, SW_SHOW,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
+        SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
+        WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
+        WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     /// `WM_MOUSELEAVE`, which `windows-sys` files under the common controls.
     const WM_MOUSELEAVE: u32 = 0x02A3;
 
-    use super::GuiSize;
+    use super::{GuiSize, OverlayEvent, OverlayKey};
 
     /// What the window procedure has seen since the host last asked.
     #[derive(Default)]
@@ -1074,6 +1437,15 @@ mod win32 {
         pub(super) tracking: Cell<bool>,
         /// Spaces the plugin did not take — see `GuiPoll::play_pause`.
         pub(super) play_pause: Cell<u32>,
+        /// The menu over the window (`PluginWindow::show_overlay`): its
+        /// child window, null until first shown; whether it is up; where it
+        /// is in the frame; its pixels, BGRA top-down; and what was done to
+        /// it.
+        pub(super) menu: Cell<HWND>,
+        pub(super) menu_up: Cell<bool>,
+        pub(super) menu_at: Cell<(i32, i32)>,
+        pub(super) menu_pixels: RefCell<Option<(Vec<u8>, u32, u32)>>,
+        pub(super) overlay: RefCell<Vec<OverlayEvent>>,
     }
 
     const STYLE: u32 = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
@@ -1189,7 +1561,8 @@ mod win32 {
                     0,
                     embed_class().as_ptr(),
                     std::ptr::null(),
-                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+                    // Clipped by its siblings: the menu is one, over it.
+                    WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
                     0,
                     header as i32,
                     size.width as i32,
@@ -1205,6 +1578,228 @@ mod win32 {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
             Ok((hwnd, seen))
+        }
+    }
+
+    /// The class the menu over the window is made of.
+    fn menu_class() -> &'static [u16] {
+        static CLASS: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+        CLASS.get_or_init(|| {
+            let name = wide("FontellePluginMenu");
+            // SAFETY: as `class`, with the menu's own procedure.
+            unsafe {
+                let class = WNDCLASSEXW {
+                    cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                    lpfnWndProc: Some(menu_procedure),
+                    hInstance: GetModuleHandleW(std::ptr::null()),
+                    hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
+                    hbrBackground: GetStockObject(BLACK_BRUSH) as HBRUSH,
+                    lpszClassName: name.as_ptr(),
+                    ..std::mem::zeroed()
+                };
+                RegisterClassExW(&class);
+            }
+            name
+        })
+    }
+
+    /// Puts the menu up over everything in the frame and gives it the mouse
+    /// (`SetCapture`: a press anywhere on this thread's windows — the
+    /// plugin's are — comes to it) and the keyboard.
+    pub(super) fn show_menu(
+        hwnd: HWND,
+        seen: &Seen,
+        (x, y, width, height): (i32, i32, u32, u32),
+        rgba: &[u8],
+    ) {
+        *seen.menu_pixels.borrow_mut() = Some((
+            rgba.as_chunks::<4>()
+                .0
+                .iter()
+                .flat_map(|p| [p[2], p[1], p[0], 255])
+                .collect(),
+            width,
+            height,
+        ));
+        seen.menu_at.set((x, y));
+        // SAFETY: a child of a live window of this thread, whose user data
+        // is the frame's `Seen`, which outlives it (the frame's `close`
+        // destroys it with the frame).
+        unsafe {
+            if seen.menu.get().is_null() {
+                let menu = CreateWindowExW(
+                    0,
+                    menu_class().as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | WS_CLIPSIBLINGS,
+                    x,
+                    y,
+                    width as i32,
+                    height as i32,
+                    hwnd,
+                    std::ptr::null_mut(),
+                    GetModuleHandleW(std::ptr::null()),
+                    std::ptr::null(),
+                );
+                if menu.is_null() {
+                    return;
+                }
+                SetWindowLongPtrW(menu, GWLP_USERDATA, seen as *const Seen as isize);
+                seen.menu.set(menu);
+            }
+            let menu = seen.menu.get();
+            SetWindowPos(
+                menu,
+                HWND_TOP,
+                x,
+                y,
+                width as i32,
+                height as i32,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            );
+            InvalidateRect(menu, std::ptr::null(), 0);
+            seen.menu_up.set(true);
+            if GetCapture() != menu {
+                SetCapture(menu);
+            }
+            SetFocus(menu);
+        }
+    }
+
+    /// Takes the menu down and lets go of the mouse.
+    pub(super) fn hide_menu(hwnd: HWND, seen: &Seen) {
+        let menu = seen.menu.get();
+        // Down first, so the capture let go below is not reported as lost.
+        seen.menu_up.set(false);
+        seen.menu_pixels.borrow_mut().take();
+        if menu.is_null() {
+            return;
+        }
+        // SAFETY: live windows of this thread.
+        unsafe {
+            if GetCapture() == menu {
+                ReleaseCapture();
+            }
+            ShowWindow(menu, SW_HIDE);
+            SetFocus(hwnd);
+        }
+    }
+
+    unsafe extern "system" fn menu_procedure(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // SAFETY: the user data is the frame's `Seen`, set by `show_menu`;
+        // the frame's `close` clears its own before either goes.
+        let Some(seen) =
+            (unsafe { (GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Seen).as_ref() })
+        else {
+            // SAFETY: the default handling of a message this window got.
+            return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
+        };
+        let (mx, my) = seen.menu_at.get();
+        let report = |event: OverlayEvent| {
+            if seen.menu_up.get() {
+                seen.overlay.borrow_mut().push(event);
+            }
+        };
+        match message {
+            WM_PAINT => {
+                // SAFETY: as the strip's paint, of this window.
+                unsafe {
+                    let mut paint: PAINTSTRUCT = std::mem::zeroed();
+                    let dc = BeginPaint(hwnd, &mut paint);
+                    if let Some((bits, width, height)) = &*seen.menu_pixels.borrow() {
+                        let mut info: BITMAPINFO = std::mem::zeroed();
+                        info.bmiHeader = BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: *width as i32,
+                            biHeight: -(*height as i32),
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB,
+                            ..std::mem::zeroed()
+                        };
+                        SetDIBitsToDevice(
+                            dc,
+                            0,
+                            0,
+                            *width,
+                            *height,
+                            0,
+                            0,
+                            0,
+                            *height,
+                            bits.as_ptr().cast(),
+                            &info,
+                            DIB_RGB_COLORS,
+                        );
+                    }
+                    EndPaint(hwnd, &paint);
+                }
+                0
+            }
+            // Under the capture, in this window's client pixels wherever
+            // the press was — off it is negative or past its size.
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN => {
+                let (x, y) = point(lparam);
+                report(OverlayEvent::Press(x + mx, y + my));
+                0
+            }
+            WM_MOUSEMOVE => {
+                let (x, y) = point(lparam);
+                report(OverlayEvent::Pointer(x + mx, y + my));
+                0
+            }
+            WM_MOUSEWHEEL => {
+                // A notch is 120, up is positive; a list scrolls down.
+                let delta = i32::from(((wparam >> 16) & 0xFFFF) as u16 as i16);
+                let notches = (delta.abs() / 120).max(1);
+                report(OverlayEvent::Scroll(if delta > 0 {
+                    -notches
+                } else {
+                    notches
+                }));
+                0
+            }
+            WM_KEYDOWN => {
+                let key = match wparam as u16 {
+                    VK_BACK => Some(OverlayKey::Backspace),
+                    VK_RETURN => Some(OverlayKey::Enter),
+                    VK_ESCAPE => Some(OverlayKey::Escape),
+                    VK_UP => Some(OverlayKey::Up),
+                    VK_DOWN => Some(OverlayKey::Down),
+                    VK_PRIOR => Some(OverlayKey::PageUp),
+                    VK_NEXT => Some(OverlayKey::PageDown),
+                    VK_HOME => Some(OverlayKey::Home),
+                    VK_END => Some(OverlayKey::End),
+                    _ => None,
+                };
+                match key {
+                    Some(key) => {
+                        report(OverlayEvent::Key(key));
+                        0
+                    }
+                    // A letter comes back as `WM_CHAR`.
+                    // SAFETY: as above.
+                    None => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+                }
+            }
+            WM_CHAR => {
+                // A control character is the key `WM_KEYDOWN` named already.
+                if let Some(letter) = char::from_u32(wparam as u32).filter(|c| !c.is_control()) {
+                    report(OverlayEvent::Key(OverlayKey::Text(letter.to_string())));
+                }
+                0
+            }
+            WM_CAPTURECHANGED => {
+                report(OverlayEvent::Lost);
+                0
+            }
+            // SAFETY: as above.
+            _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
         }
     }
 
@@ -1558,11 +2153,13 @@ impl PluginWindow {
         let Some(server) = &self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
             result.play_pause = std::mem::take(&mut self.spaces);
+            result.overlay = std::mem::take(&mut self.overlay_events);
             return result;
         };
         result.closed = server.seen.closed.replace(false);
         result.play_pause = server.seen.play_pause.replace(0);
         result.header_presses = std::mem::take(&mut *server.seen.presses.borrow_mut());
+        result.overlay = std::mem::take(&mut *server.seen.overlay.borrow_mut());
         let pointer = server.seen.pointer.take();
         if let Some(size) = server.seen.client.take()
             && size != self.size
@@ -1581,6 +2178,16 @@ impl PluginWindow {
     pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
         None
     }
+}
+
+#[cfg(windows)]
+fn overlay_on_screen(server: &mut OnScreen, rect: (i32, i32, u32, u32), rgba: &[u8]) {
+    win32::show_menu(server.hwnd, &server.seen, rect, rgba);
+}
+
+#[cfg(windows)]
+fn overlay_off_screen(server: &mut OnScreen) {
+    win32::hide_menu(server.hwnd, &server.seen);
 }
 
 #[cfg(windows)]
@@ -1755,7 +2362,220 @@ mod cocoa {
     };
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 
-    use super::{GuiError, GuiSize};
+    use super::{GuiError, GuiSize, OverlayEvent, OverlayKey};
+
+    /// What the menu's view keeps: its picture, where in the frame it goes,
+    /// and what was done to it.
+    #[derive(Default)]
+    pub(super) struct MenuIvars {
+        image: RefCell<Option<Retained<NSImage>>>,
+        rect: std::cell::Cell<(f64, f64, f64, f64)>,
+        events: RefCell<Vec<OverlayEvent>>,
+    }
+
+    define_class!(
+        /// The menu over a plugin's window: a view over the **whole** of
+        /// it, drawn only where the menu is, so a press anywhere in the
+        /// window is the menu's — one off it is how it is dismissed — and
+        /// not the plugin's. Top-down, so its points are the frame's.
+        #[unsafe(super(NSView))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "FontellePluginMenu"]
+        #[ivars = MenuIvars]
+        pub(super) struct MenuView;
+
+        impl MenuView {
+            #[unsafe(method(isFlipped))]
+            fn is_flipped(&self) -> bool {
+                true
+            }
+
+            #[unsafe(method(acceptsFirstMouse:))]
+            fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+                true
+            }
+
+            #[unsafe(method(acceptsFirstResponder))]
+            fn accepts_first_responder(&self) -> bool {
+                true
+            }
+
+            #[unsafe(method(mouseDown:))]
+            fn mouse_down(&self, event: &NSEvent) {
+                self.press(event);
+            }
+
+            #[unsafe(method(rightMouseDown:))]
+            fn right_mouse_down(&self, event: &NSEvent) {
+                self.press(event);
+            }
+
+            #[unsafe(method(mouseMoved:))]
+            fn mouse_moved(&self, event: &NSEvent) {
+                let at = self.convertPoint_fromView(event.locationInWindow(), None);
+                self.report(OverlayEvent::Pointer(
+                    at.x.round() as i32,
+                    at.y.round() as i32,
+                ));
+            }
+
+            #[unsafe(method(scrollWheel:))]
+            fn scroll_wheel(&self, event: &NSEvent) {
+                let delta = event.scrollingDeltaY();
+                if delta != 0.0 {
+                    // Up the page is a positive delta; a list scrolls down.
+                    self.report(OverlayEvent::Scroll(if delta > 0.0 { -1 } else { 1 }));
+                }
+            }
+
+            #[unsafe(method(keyDown:))]
+            fn key_down(&self, event: &NSEvent) {
+                let named = match event.keyCode() {
+                    51 => Some(OverlayKey::Backspace),
+                    36 | 76 => Some(OverlayKey::Enter),
+                    53 => Some(OverlayKey::Escape),
+                    126 => Some(OverlayKey::Up),
+                    125 => Some(OverlayKey::Down),
+                    116 => Some(OverlayKey::PageUp),
+                    121 => Some(OverlayKey::PageDown),
+                    115 => Some(OverlayKey::Home),
+                    119 => Some(OverlayKey::End),
+                    _ => None,
+                };
+                if let Some(key) = named {
+                    self.report(OverlayEvent::Key(key));
+                    return;
+                }
+                let held = NSEventModifierFlags::Control | NSEventModifierFlags::Command;
+                if event.modifierFlags().intersects(held) {
+                    return;
+                }
+                let text: String = event
+                    .characters()
+                    .map(|keys| keys.to_string())
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect();
+                if !text.is_empty() {
+                    self.report(OverlayEvent::Key(OverlayKey::Text(text)));
+                }
+            }
+
+            #[unsafe(method(drawRect:))]
+            fn draw_rect(&self, _dirty: NSRect) {
+                let (x, y, width, height) = self.ivars().rect.get();
+                if let Some(image) = self.ivars().image.borrow().as_ref() {
+                    image.drawInRect(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
+                }
+            }
+        }
+    );
+
+    impl MenuView {
+        fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(MenuIvars::default());
+            unsafe { msg_send![super(this), initWithFrame: frame] }
+        }
+
+        fn press(&self, event: &NSEvent) {
+            let at = self.convertPoint_fromView(event.locationInWindow(), None);
+            self.report(OverlayEvent::Press(
+                at.x.round() as i32,
+                at.y.round() as i32,
+            ));
+        }
+
+        fn report(&self, event: OverlayEvent) {
+            if !self.isHidden() {
+                self.ivars().events.borrow_mut().push(event);
+            }
+        }
+
+        pub(super) fn take_events(&self) -> Vec<OverlayEvent> {
+            std::mem::take(&mut *self.ivars().events.borrow_mut())
+        }
+    }
+
+    /// Puts the menu up: over the whole window, its picture at `rect`, with
+    /// the keyboard.
+    pub(super) fn show_menu(
+        server: &mut super::OnScreen,
+        (x, y, width, height): (i32, i32, u32, u32),
+        rgba: &[u8],
+    ) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(content) = server.window.contentView() else {
+            return;
+        };
+        let menu = server.menu.get_or_insert_with(|| {
+            let menu = MenuView::new(mtm, content.bounds());
+            menu.setAutoresizingMask(
+                NSAutoresizingMaskOptions::ViewWidthSizable
+                    | NSAutoresizingMaskOptions::ViewHeightSizable,
+            );
+            // Last, so over the strip and the plugin's view both.
+            content.addSubview(&menu);
+            menu
+        });
+        menu.setFrame(content.bounds());
+        menu.ivars().rect.set((
+            f64::from(x),
+            f64::from(y),
+            f64::from(width),
+            f64::from(height),
+        ));
+        *menu.ivars().image.borrow_mut() = image_from(rgba, width, height);
+        menu.setHidden(false);
+        menu.setNeedsDisplay(true);
+        server.window.setAcceptsMouseMovedEvents(true);
+        server.window.makeFirstResponder(Some(menu));
+    }
+
+    /// Takes the menu down and gives the keyboard back to the plugin's area.
+    pub(super) fn hide_menu(server: &mut super::OnScreen) {
+        if let Some(menu) = &server.menu {
+            menu.setHidden(true);
+            menu.ivars().image.borrow_mut().take();
+            menu.take_events();
+            server.window.makeFirstResponder(Some(&server.embed));
+        }
+    }
+
+    /// `rgba` (`width` × `height`, top row first) as an image AppKit draws.
+    fn image_from(rgba: &[u8], width: u32, height: u32) -> Option<Retained<NSImage>> {
+        let rep = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(),
+                std::ptr::null_mut(),
+                width as isize,
+                height as isize,
+                8,
+                4,
+                true,
+                false,
+                NSDeviceRGBColorSpace,
+                (width * 4) as isize,
+                32,
+            )
+        }?;
+        let data = rep.bitmapData();
+        let len = (width * height * 4) as usize;
+        if data.is_null() || rgba.len() < len {
+            return None;
+        }
+        // SAFETY: the rep allocated `bytesPerRow × height` bytes, which is
+        // `len`; `rgba` was checked to hold at least that many.
+        unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len) };
+        let image = NSImage::initWithSize(
+            NSImage::alloc(),
+            NSSize::new(f64::from(width), f64::from(height)),
+        );
+        image.addRepresentation(&rep);
+        Some(image)
+    }
 
     /// What the strip view keeps: the image it draws and the presses on it.
     #[derive(Default)]
@@ -1869,36 +2689,9 @@ mod cocoa {
 
         /// Shows `rgba` (`width` × `height`, top row first) as the strip.
         pub(super) fn show(&self, rgba: &[u8], width: u32, height: u32) {
-            let Some(rep) = (unsafe {
-                NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-                    NSBitmapImageRep::alloc(),
-                    std::ptr::null_mut(),
-                    width as isize,
-                    height as isize,
-                    8,
-                    4,
-                    true,
-                    false,
-                    NSDeviceRGBColorSpace,
-                    (width * 4) as isize,
-                    32,
-                )
-            }) else {
+            let Some(image) = image_from(rgba, width, height) else {
                 return;
             };
-            let data = rep.bitmapData();
-            if data.is_null() {
-                return;
-            }
-            let len = (width * height * 4) as usize;
-            // SAFETY: the rep allocated `bytesPerRow × height` bytes, which
-            // is `len`; `rgba` was checked to hold at least that many.
-            unsafe { std::ptr::copy_nonoverlapping(rgba.as_ptr(), data, len) };
-            let image = NSImage::initWithSize(
-                NSImage::alloc(),
-                NSSize::new(f64::from(width), f64::from(height)),
-            );
-            image.addRepresentation(&rep);
             *self.ivars().image.borrow_mut() = Some(image);
             self.setNeedsDisplay(true);
         }
@@ -1974,6 +2767,7 @@ mod cocoa {
             window,
             embed,
             strip,
+            menu: None,
             closed: false,
         })
     }
@@ -2130,6 +2924,7 @@ impl PluginWindow {
         let Some(server) = &mut self.server else {
             result.header_presses = std::mem::take(&mut self.pressed);
             result.play_pause = std::mem::take(&mut self.spaces);
+            result.overlay = std::mem::take(&mut self.overlay_events);
             return result;
         };
         result.play_pause = server.embed.take_spaces();
@@ -2140,6 +2935,9 @@ impl PluginWindow {
         }
         if let Some(strip) = &server.strip {
             result.header_presses = strip.take_presses();
+        }
+        if let Some(menu) = &server.menu {
+            result.overlay = menu.take_events();
         }
         let size = cocoa::embed_size(server);
         if size != self.size {
@@ -2153,6 +2951,16 @@ impl PluginWindow {
     pub fn grab(&self) -> Option<(u16, u16, Vec<u8>)> {
         None
     }
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_on_screen(server: &mut OnScreen, rect: (i32, i32, u32, u32), rgba: &[u8]) {
+    cocoa::show_menu(server, rect, rgba);
+}
+
+#[cfg(target_os = "macos")]
+fn overlay_off_screen(server: &mut OnScreen) {
+    cocoa::hide_menu(server);
 }
 
 #[cfg(target_os = "macos")]

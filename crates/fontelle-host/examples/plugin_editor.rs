@@ -22,6 +22,10 @@
 //! (`fontelle_host::alpha_egl`), with `helper` — a `fontelle` or
 //! `fontelle-scan-probe` binary — as the probe, and opens nothing if refused.
 //!
+//! `PROBE_MENU=<file.png>` puts that picture up over the window a second
+//! in, under the strip, as the studio puts its preset drop-down up
+//! (`PluginWindow::show_overlay`), and prints what is done to it.
+//!
 //! `PROBE_THREADED=1` runs the processor on a thread of its own, at roughly
 //! real-time pace, the way the studio does — so a plugin whose editor and
 //! audio half disagree only when they are on different threads can be caught
@@ -109,8 +113,25 @@ fn main() {
             processor
         })
     });
+    let menu = std::env::var_os("PROBE_MENU").map(|path| {
+        let decoder = png::Decoder::new(std::io::BufReader::new(
+            std::fs::File::open(&path).expect("the menu's picture"),
+        ));
+        let mut reader = decoder.read_info().expect("a PNG");
+        let mut rgba = vec![0; reader.output_buffer_size().expect("a size")];
+        let info = reader.next_frame(&mut rgba).expect("its pixels");
+        (rgba, info.width, info.height)
+    });
+    let mut menu_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
     let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
     while std::time::Instant::now() < until {
+        if let Some((rgba, width, height)) = &menu
+            && menu_at.is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            menu_at = None;
+            window.show_overlay(40, header as i32, rgba, *width, *height);
+            println!("menu up at {:?}", window.overlay());
+        }
         if let Some(processor) = _processor.as_mut() {
             processor.process_instrument(&mut scratch, 512);
         }
@@ -118,6 +139,12 @@ fn main() {
         // The studio's event loop does this; the probe has none.
         fontelle_host::pump_gui_messages();
         let polled = window.poll();
+        for event in &polled.overlay {
+            println!("menu: {event:?}");
+        }
+        for press in &polled.header_presses {
+            println!("strip: {press:?}");
+        }
         if let Some(size) = polled.resized {
             plugin.resize_editor(size);
         }
