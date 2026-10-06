@@ -27,7 +27,7 @@ fn a_new_insert_records_on_play_into_no_study_yet() {
 }
 
 #[test]
-fn its_controls_are_parameters_and_the_mix_stays_fully_wet() {
+fn its_controls_are_parameters_and_read_back() {
     let mut config = EffectConfig::new(EffectKind::Analyze);
     config.set("arm", 2.0);
     config.set("threshold", -30.0);
@@ -41,8 +41,10 @@ fn its_controls_are_parameters_and_the_mix_stays_fully_wet() {
     assert_eq!(analyze.threshold_db, -30.0);
     assert_eq!(analyze.release_ms, 500.0);
     assert!(analyze.post_fader);
-    // A wire blended with itself is itself only at a gain of exactly one.
-    assert_eq!(config.mix(), 1.0);
+    // The mix is a parameter like every effect's (an automation lane naming
+    // it must find one); the engine never blends a wire with itself, so it
+    // changes nothing — `fontelle-engine/tests/analyze_insert.rs`.
+    assert_eq!(config.mix(), 0.4);
     assert_eq!(config.get("arm"), Some(2.0));
 }
 

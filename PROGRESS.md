@@ -47,8 +47,8 @@ no analysis code in `session.rs`. `docs/analyze-musically-plan.md` §2.7,
   (`slices.rs` builds the patch: attack 0, release 2 ms, filter off).
 - **Record**: `comp` (crossfaded spans of takes). **The insert** (§6.1):
   `EffectKind::Analyze` / `AnalyzeConfig` (arm On play / On input / Now,
-  threshold, release, post-fader, `study: Option<PersistentId>`, mix pinned
-  wet) with a seven-preset bank; `fontelle_engine::AnalyzeCapture` — an
+  threshold, release, post-fader, `study: Option<PersistentId>`; its mix
+  is a parameter the engine never blends, so the wire is bit-exact) with a seven-preset bank; `fontelle_engine::AnalyzeCapture` — an
   atomics ring (no unsafe, no lock) the insert writes pre-fader and an
   `AnalyzeCaptureNode` after the fader writes post-fader, take state in
   atomics so a rebuild carries a take on, full ring drops and counts.

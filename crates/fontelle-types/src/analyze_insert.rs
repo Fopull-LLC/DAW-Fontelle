@@ -65,9 +65,10 @@ pub struct AnalyzeConfig {
     #[serde(default)]
     pub study: Option<crate::PersistentId>,
     /// The control every effect carries, and one this effect ignores: it is
-    /// a wire, so the blend of it with itself is itself, and pinning it at
-    /// fully wet is what makes the pass-through bit-identical rather than
-    /// within a rounding of it.
+    /// here because an automation lane naming `mix` must find one whatever
+    /// the slot holds (`tests/effect_mix.rs`), and the engine never blends
+    /// this insert — a wire with itself is itself, and `x·m + x·(1 − m)` is
+    /// not `x` to the bit, which the pass-through promises.
     #[serde(default = "all_wet")]
     pub mix: f32,
 }
@@ -113,8 +114,7 @@ impl AnalyzeConfig {
 
     pub(crate) fn set(&mut self, id: &str, value: f32) {
         match id {
-            // Pinned: see the field.
-            MIX => {}
+            MIX => self.mix = value / 100.0,
             "arm" => {
                 if let Some(mode) = ArmMode::ALL.get(value.round().max(0.0) as usize) {
                     self.arm = *mode;
@@ -128,7 +128,7 @@ impl AnalyzeConfig {
     }
 }
 
-/// Fully wet, like every processor; and pinned there (see `mix`).
+/// Fully wet, like every processor (see `mix`).
 const ALL_WET: f32 = 100.0;
 
 pub(crate) static ANALYZE_PARAMS: [crate::ParamSpec; 5] = with_mix(&ANALYZE_OWN_PARAMS, ALL_WET);

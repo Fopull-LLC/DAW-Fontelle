@@ -94,15 +94,18 @@ fn config(arm: ArmMode) -> AnalyzeConfig {
 
 #[test]
 fn audio_passes_through_bit_identical() {
-    for (arm, armed, bypassed) in [
-        (ArmMode::Now, true, false),
-        (ArmMode::Now, false, false),
-        (ArmMode::OnInput, true, false),
-        (ArmMode::Now, true, true),
+    for (arm, armed, bypassed, mix) in [
+        (ArmMode::Now, true, false, 1.0),
+        (ArmMode::Now, false, false, 1.0),
+        (ArmMode::OnInput, true, false, 1.0),
+        (ArmMode::Now, true, true, 1.0),
+        // A mix turned down blends nothing: a wire with itself is itself,
+        // and x * m + x * (1 - m) is not x to the bit.
+        (ArmMode::Now, true, false, 0.37),
     ] {
         let capture = Arc::new(AnalyzeCapture::new(48_000));
         capture.arm(armed);
-        let mut node = insert(config(arm), &capture);
+        let mut node = insert(AnalyzeConfig { mix, ..config(arm) }, &capture);
         node.set_bypassed(bypassed);
         let mut seed = 7;
         for block in 0..50 {

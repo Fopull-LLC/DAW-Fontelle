@@ -1558,7 +1558,11 @@ impl AudioNode for EffectNode {
         // until somebody turns the knob — must cost exactly what it did before
         // this control existed.
         let mix = self.config.mix().clamp(0.0, 1.0);
-        let blending = mix < 1.0 && self.dry_fits(ctx);
+        // Analyze Musically's insert is a wire, and a wire blended with
+        // itself is itself — except to the bit, which its pass-through
+        // promises (`tests/analyze_insert.rs`). So it is never blended.
+        let blending =
+            mix < 1.0 && self.dry_fits(ctx) && !matches!(self.state, EffectState::Analyze);
         if blending {
             for (channel, buffer) in ctx.outputs.iter().enumerate().take(DRY_CHANNELS) {
                 self.dry[channel][..buffer.len()].copy_from_slice(buffer);
