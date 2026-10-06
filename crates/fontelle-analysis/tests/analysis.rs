@@ -41,6 +41,8 @@ fn chords_are_chords() {
     let fixture = testsignals::melody_and_chords(44_100);
     let a = run(&fixture.samples, 44_100);
     assert_eq!(a.mode, Mode::Chords);
+    // The pitch tracker hears no single voice in a chord, so the window's
+    // Melody override has nothing to show here — and says so.
     assert!(a.melody.is_empty());
     assert_eq!(a.notes.len(), fixture.notes.len());
     let first = a.chords.iter().find(|c| c.chord.is_some()).unwrap();

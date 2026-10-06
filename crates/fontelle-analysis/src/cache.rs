@@ -40,3 +40,25 @@ pub fn load(dir: &Path, key: &str) -> Option<Analysis> {
     let analysis: Analysis = serde_json::from_slice(&bytes).ok()?;
     (analysis.engine == crate::analysis::ENGINE_VERSION).then_some(analysis)
 }
+
+fn image_path(dir: &Path, key: &str) -> std::path::PathBuf {
+    dir.join(format!("{key}.bin"))
+}
+
+/// Writes the contour image kept beside the analysis under `key` (plan
+/// §3.10: the `.bin` beside the `.json`), the same way [`store`] does.
+pub fn store_image(
+    dir: &Path,
+    key: &str,
+    image: &crate::spectrogram::ContourImage,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let partial = dir.join(format!("{key}.bin.partial"));
+    std::fs::write(&partial, image.to_bytes())?;
+    std::fs::rename(&partial, image_path(dir, key))
+}
+
+/// The contour image kept under `key`, or `None`.
+pub fn load_image(dir: &Path, key: &str) -> Option<crate::spectrogram::ContourImage> {
+    crate::spectrogram::ContourImage::from_bytes(&std::fs::read(image_path(dir, key)).ok()?)
+}

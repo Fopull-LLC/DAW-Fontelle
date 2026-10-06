@@ -11,5 +11,6 @@ pub mod confidence;
 pub mod key;
 pub mod mono;
 pub mod resample;
+pub mod spectrogram;
 pub mod testsignals;
 pub mod transcribe;

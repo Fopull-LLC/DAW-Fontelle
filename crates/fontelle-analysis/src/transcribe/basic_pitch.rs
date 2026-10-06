@@ -87,6 +87,19 @@ impl BasicPitch {
     /// Posteriorgrams for mono audio already at [`SAMPLE_RATE`]: the
     /// windows of `inference.py`'s `run_inference`, unwrapped the same way.
     pub fn posteriorgrams(&self, audio: &[f32]) -> Result<Posteriorgrams, ModelError> {
+        self.posteriorgrams_with(audio, &mut |_, _, _| true)
+            .map(|post| post.unwrap_or_default())
+    }
+
+    /// [`posteriorgrams`](Self::posteriorgrams), saying after every window
+    /// how far it has got: the frames so far (`frames` counts only those),
+    /// the windows done and how many there are. `false` from `on_window`
+    /// stops it, and then the answer is `None`.
+    pub fn posteriorgrams_with(
+        &self,
+        audio: &[f32],
+        on_window: &mut dyn FnMut(&Posteriorgrams, usize, usize) -> bool,
+    ) -> Result<Option<Posteriorgrams>, ModelError> {
         use super::notes::{N_CONTOUR_BINS, N_KEYS};
         use tract_onnx::prelude::*;
         let half_overlap = OVERLAP_FRAMES / 2;
@@ -139,11 +152,20 @@ impl BasicPitch {
                         .copied(),
                 );
             }
+            if w + 1 < windows {
+                // What is there so far, as a posteriorgram of its own length.
+                post.frames = (post.onset.len() / N_KEYS).min(frames);
+                let go_on = on_window(&post, w + 1, windows);
+                post.frames = frames;
+                if !go_on {
+                    return Ok(None);
+                }
+            }
         }
         post.onset.truncate(frames * N_KEYS);
         post.note.truncate(frames * N_KEYS);
         post.contour.truncate(frames * N_CONTOUR_BINS);
-        Ok(post)
+        Ok(Some(post))
     }
 
     /// Notes for mono audio at any rate: resampled, decoded with `params`

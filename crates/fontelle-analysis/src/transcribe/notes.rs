@@ -85,6 +85,29 @@ pub struct NoteEvent {
     pub bends: Option<Vec<i8>>,
 }
 
+/// The contour bin a key's own pitch falls in, counted from `3 * key`: the
+/// middle of its three. Upstream measures bends from `3 * key`, so a note
+/// sung dead in tune reads +1 there (33 cents sharp); kept as upstream has it
+/// in [`NoteEvent::bends`] (the reference fixtures pin it) and corrected in
+/// [`NoteEvent::bend_cents`].
+pub const BEND_CENTRE_BIN: i8 = 1;
+
+/// Cents in one contour bin.
+pub const CENTS_PER_BIN: f32 = 100.0 / 3.0;
+
+impl NoteEvent {
+    /// The bends, per frame, in cents from the key's own pitch. Empty when
+    /// none were estimated.
+    pub fn bend_cents(&self) -> Vec<f32> {
+        self.bends.as_deref().map_or_else(Vec::new, |bends| {
+            bends
+                .iter()
+                .map(|b| f32::from(i16::from(*b) - i16::from(BEND_CENTRE_BIN)) * CENTS_PER_BIN)
+                .collect()
+        })
+    }
+}
+
 /// Never further than this many frames below the threshold inside a note
 /// (`ENERGY_TOLERANCE`).
 const ENERGY_TOLERANCE: usize = 11;
