@@ -606,6 +606,27 @@ fn restrikes(rms: &[f32], recover: usize) -> Vec<usize> {
     cuts
 }
 
+/// The note frames `[first, end)` of `track` make, read as [`segment`] reads
+/// one — its centre, its drift and its vibrato — without cutting anything:
+/// what a pitch edit needs of the span it was made over. `None` when none
+/// of those frames is voiced.
+pub fn note_over(track: &F0Track, first: usize, end: usize) -> Option<MonoNote> {
+    let end = end.min(track.len());
+    if first >= end || (first..end).all(|i| track.cents(i).is_none()) {
+        return None;
+    }
+    let mut contour = filled_contour(track, first, end);
+    // Unvoiced at either end: held at the first and last pitch heard.
+    let voiced: Vec<usize> = (0..contour.len())
+        .filter(|k| track.cents(first + k).is_some())
+        .collect();
+    let (head, tail) = (voiced[0], voiced[voiced.len() - 1]);
+    let (a, b) = (contour[head], contour[tail]);
+    contour[..head].fill(a);
+    contour[tail + 1..].fill(b);
+    Some(note(track, first, end, &contour))
+}
+
 fn note(track: &F0Track, first: usize, end: usize, contour: &[f32]) -> MonoNote {
     let n = contour.len();
     let middle = &contour[n / 5..(n - n / 5).max(n / 5 + 1)];
