@@ -237,6 +237,21 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             ),
         ],
     },
+    // Analyze Musically (`docs/analyze-musically-plan.md` §3.5): the key in
+    // the studio that opens it, the window's own, and the roll's paste of
+    // what it copied.
+    KeybindSection {
+        title: "Analyze Musically",
+        binds: &[
+            act(Action::AnalyzeClip),
+            act(Action::AnalyzeCopyNotes),
+            act(Action::AnalyzeCopyScale),
+            act(Action::AnalyzeSelectAll),
+            act(Action::AnalyzeSpectrogram),
+            act(Action::AnalyzeChordLane),
+            act(Action::PasteAtOrigin),
+        ],
+    },
     KeybindSection {
         title: "Mouse: held keys",
         binds: &[
