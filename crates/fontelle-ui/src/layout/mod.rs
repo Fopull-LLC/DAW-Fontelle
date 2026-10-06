@@ -23,6 +23,12 @@ pub struct Rect {
     pub height: f32,
 }
 
+impl Default for Rect {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 impl Rect {
     /// A rectangle with nothing in it. The identity of [`union`](Rect::union).
     pub const ZERO: Rect = Rect {
@@ -599,6 +605,10 @@ pub enum EditorKind {
     /// shortened, which a panel that covered the arrangement could not let you
     /// do.
     AudioClip,
+    /// **Analyze Musically** on one audio clip (`docs/analyze-musically-plan.md`
+    /// §3.1): the notes heard in it, its key and chords, to copy. Built from
+    /// Flopsynth's parts, at [`analyze_window_size`].
+    Analyze,
 }
 
 impl EditorKind {
@@ -608,6 +618,7 @@ impl EditorKind {
             Self::Instrument => "Instrument",
             Self::Effect => "Effect",
             Self::AudioClip => "Audio clip",
+            Self::Analyze => "Analyze Musically",
         }
     }
 
@@ -632,6 +643,7 @@ impl EditorKind {
             // A column of rows with a waveform over it. Narrow, so it sits
             // beside the arrangement rather than over it.
             Self::AudioClip => (400, 560),
+            Self::Analyze => analyze_window_size(1.0),
         }
     }
 
@@ -662,6 +674,30 @@ impl EditorKind {
 /// hundred and ten tall. Ty decided 740 for the first build (plan §14); this
 /// is the experiment's number, for him to keep or send back.
 pub const FLOPSYNTH_SIZE: (u32, u32) = (1180, 840);
+
+/// What Analyze Musically opens at, at `scale` (one of `canvas::SCALES`):
+/// Flopsynth's design size (plan §3.1), times the scale.
+pub fn analyze_window_size(scale: f32) -> (u32, u32) {
+    scaled(crate::canvas::ANALYZE_DESIGN, scale)
+}
+
+/// And the smallest it may be dragged to, at `scale`: the lane still has
+/// two octaves and the header still fits.
+pub fn analyze_minimum_size(scale: f32) -> (u32, u32) {
+    scaled(crate::canvas::ANALYZE_DESIGN_MINIMUM, scale)
+}
+
+fn scaled((w, h): (u32, u32), scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    (
+        (w as f32 * scale).round() as u32,
+        (h as f32 * scale).round() as u32,
+    )
+}
 
 /// The size Flopsynth's window opens at — and the smallest it may be — at
 /// `scale`, one of `canvas::SCALES` (`docs/flopsynth-next.md` §3.2).

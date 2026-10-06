@@ -1274,6 +1274,48 @@ pub trait StudioHost: DocumentHost {
     fn analyze_musically(&mut self, _clip: fontelle_types::ClipId) -> Result<String, String> {
         Err("this studio cannot analyse audio".to_string())
     }
+    /// How the analysis the window is open on is getting on — its own job,
+    /// beside the bounce's (`docs/analyze-musically-plan.md` §3.10): the
+    /// fraction while it runs, and once, when it ends, how it went.
+    fn poll_analysis(&mut self) -> JobPoll {
+        JobPoll::Idle
+    }
+    /// Bumped whenever [`analyze_view`](Self::analyze_view) would answer
+    /// differently: the window rebuilds its copy only then.
+    fn analysis_revision(&self) -> u64 {
+        0
+    }
+    /// What the Analyze Musically window shows, or `None` when it is open on
+    /// nothing.
+    fn analyze_view(&self) -> Option<crate::canvas::AnalyzeView> {
+        None
+    }
+    /// The window closed: the analysis stops if it is still running.
+    fn close_analysis(&mut self) {}
+    /// The analysed notes `selection` picks (indices into the mode's list;
+    /// all of them when empty) as notes for a piano roll, in **song ticks**
+    /// through the tempo map at the clip's place (INVARIANT 5), and the song
+    /// tick the earliest was heard at. Clean semitones, timing as played,
+    /// velocity from loudness; slides and bends only with `keep_bends` (Ty,
+    /// plan §6 answer 5).
+    fn analysis_notes(
+        &self,
+        _mode: crate::canvas::AnalyzeMode,
+        _selection: &[usize],
+        _keep_bends: bool,
+    ) -> Option<(Vec<fontelle_model::Note>, Tick)> {
+        None
+    }
+    /// *Notes under the audio*: those notes as a note clip on a new row
+    /// directly under the analysed clip, on the selected channel. One undo.
+    fn make_analysis_clip(
+        &mut self,
+        _mode: crate::canvas::AnalyzeMode,
+        _selection: &[usize],
+        _keep_bends: bool,
+    ) -> Result<String, String> {
+        Err("this studio cannot make a clip from an analysis".to_string())
+    }
     /// Deletes lane `index` **and the clips on it** — a clip on no lane is one
     /// nothing can draw and nothing can reach.
     ///

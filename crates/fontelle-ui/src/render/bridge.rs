@@ -293,7 +293,8 @@ fn canopy_path(rect: Rect) -> BezPath {
 }
 
 /// The canopy: the sky through the bridge's window, in `opening`, with its
-/// frame around it.
+/// frame around it. The instrument's eyes are drawn in `canopy`; an empty
+/// `canopy` draws none.
 ///
 /// The sky is clipped to the windshield's shape and drawn in layers — the
 /// nebula image, the planets, the star field, the stars in flight, and the
@@ -432,9 +433,12 @@ pub(super) fn draw_canopy(
         }
     }
     // The eyes are there whether or not the sky is moving: a still window
-    // shows an empty scope, a silent spectrum and its lamps unlit.
-    let still = SkyFrame::default();
-    draw_eyes(scene, theme, canopy, sky.unwrap_or(&still), scale);
+    // shows an empty scope, a silent spectrum and its lamps unlit. Only on a
+    // canopy that has them — Analyze Musically's holds its lane instead.
+    if !canopy.is_empty() {
+        let still = SkyFrame::default();
+        draw_eyes(scene, theme, canopy, sky.unwrap_or(&still), scale);
+    }
     // The windshield's own surface from the skin folder — scratches, grime,
     // a flare — stretched over the opening, alpha and all.
     if let Some(glass) = skin.and_then(|s| s.glass.as_ref()) {

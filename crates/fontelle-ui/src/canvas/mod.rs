@@ -1,3 +1,4 @@
+mod analyze;
 mod audio_clip;
 mod automation;
 mod browser;
@@ -13,6 +14,7 @@ mod keybinds;
 mod keymap;
 mod menu;
 mod mixer;
+mod note_clipboard;
 mod notepad;
 mod overlays;
 mod piano_roll;
@@ -170,6 +172,19 @@ pub fn zoom_anchor(grid: crate::layout::Rect, cursor: (f32, f32)) -> f32 {
     }
 }
 
+pub use analyze::{
+    ANALYZE_DESIGN, ANALYZE_DESIGN_MINIMUM, AnalyzeAction, AnalyzeCard, AnalyzeCardLayout,
+    AnalyzeClarity, AnalyzeHit, AnalyzeImage, AnalyzeKey, AnalyzeLane, AnalyzeLayout, AnalyzeMode,
+    AnalyzePage, AnalyzeScaleRow, AnalyzeState, AnalyzeText, AnalyzeView, AnalyzedChord,
+    AnalyzedNote, analyze_cents_tag, analyze_hit, analyze_layout, analyze_press, analyze_row_shade,
+    analyze_scale_menu, analyze_strings, analyze_tip, badge_text, bpm_text, job_text, key_name,
+    later_lines, note_card_focus, note_card_lines, popover_lines, ruler_labels, scale_chip_text,
+    scale_degrees, time_text, tuning_text, window_scale_label,
+};
+pub use analyze::{
+    CHORDS_TOGGLE, COPY_NOTES, COPY_SCALE, KEEP_BENDS, LATER, MAKE_CLIP, PITCH_TOGGLE,
+    SCALE_TOGGLE, WAVE_TOGGLE,
+};
 pub use disgusting_beat::{
     DISGUSTING_BEAT_BEND_GRAB, DISGUSTING_BEAT_CANOPY, DISGUSTING_BEAT_GRAB,
     DISGUSTING_BEAT_MENU_ROW, DISGUSTING_BEAT_MENU_ROWS, DISGUSTING_BEAT_MENU_WIDTH,
@@ -194,6 +209,7 @@ pub use mixer::{
     pan_x_of, patch_height_at, route_strip, send_knob_db, send_level_at, send_x_of_level,
     strip_drop_index, strip_sources, track_menu_rows, unity_fraction,
 };
+pub use note_clipboard::NoteClipboard;
 pub use notepad::{
     NOTEPAD_BLANK, NOTEPAD_HINT, NOTEPAD_LEADING, NotepadHit, NotepadLayout, NotepadRow,
     NotepadView, notepad_column_of, notepad_columns, notepad_hit, notepad_index_at,

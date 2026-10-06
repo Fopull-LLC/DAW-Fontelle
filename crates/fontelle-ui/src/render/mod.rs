@@ -14,8 +14,10 @@
 //! separate from the device is also what would make that swap a rewrite of one
 //! function rather than of the crate.
 
+mod analyze;
 mod bridge;
 
+pub use analyze::{AnalyzeChrome, analyze_style, lay_out_analyze, shape_analyze};
 pub use bridge::SkyFrame;
 
 use vello::kurbo::{Affine, BezPath, Point, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
@@ -2880,7 +2882,7 @@ pub fn draw_editor_window(
     let bridge;
     let paper;
     let theme = match chrome {
-        EditorWindowChrome::Flopsynth(_) => {
+        EditorWindowChrome::Flopsynth(_) | EditorWindowChrome::Analyze(_) => {
             bridge = theme.for_bridge();
             &bridge
         }
@@ -2940,6 +2942,9 @@ pub fn draw_editor_window(
         EditorWindowChrome::Notepad(notepad) => draw_notepad(scene, theme, labels, notepad),
         EditorWindowChrome::DisgustingBeat(disgusting_beat) => {
             draw_disgusting_beat(scene, theme, labels, disgusting_beat)
+        }
+        EditorWindowChrome::Analyze(analyze) => {
+            analyze::draw_analyze(scene, theme, labels, analyze)
         }
     }
 
@@ -3548,6 +3553,9 @@ pub enum EditorWindowChrome<'a> {
     /// reason the corrector's is: a canopy of waveform over four grids with a
     /// column of scene chips beside them is not a grid of knobs.
     DisgustingBeat(DisgustingBeatChrome<'a>),
+    /// **Analyze Musically** (`docs/analyze-musically-plan.md` §3.1):
+    /// Flopsynth's bridge with the note lane as the instrument on its canopy.
+    Analyze(AnalyzeChrome<'a>),
 }
 
 /// What DisgustingBeat's window draws.

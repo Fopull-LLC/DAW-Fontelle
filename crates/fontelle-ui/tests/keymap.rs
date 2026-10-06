@@ -634,3 +634,64 @@ fn s_is_the_slides_and_g_is_the_rolls_snap() {
         Some(Action::RollSnap)
     );
 }
+
+// ------------------------------------------------- Analyze Musically ---
+
+/// The window's keys (`docs/analyze-musically-plan.md` §3.5) and the two
+/// in the studio that reach it: rebindable like every other, under ids that
+/// are permanent once shipped (§6, answer 1: `analyze-*`).
+#[test]
+fn analyze_musically_has_its_keys_under_permanent_ids() {
+    let map = Keymap::default();
+    let cases = [
+        (
+            Action::AnalyzeClip,
+            "analyze-clip",
+            "Ctrl+Shift+A",
+            Context::Studio,
+        ),
+        (
+            Action::AnalyzeCopyNotes,
+            "analyze-copy-notes",
+            "Ctrl+C",
+            Context::Editor,
+        ),
+        (
+            Action::AnalyzeCopyScale,
+            "analyze-copy-scale",
+            "Ctrl+Shift+C",
+            Context::Editor,
+        ),
+        (
+            Action::AnalyzeSelectAll,
+            "analyze-select-all",
+            "Ctrl+A",
+            Context::Editor,
+        ),
+        (
+            Action::AnalyzeSpectrogram,
+            "analyze-spectrogram",
+            "Tab",
+            Context::Editor,
+        ),
+        (
+            Action::AnalyzeChordLane,
+            "analyze-chord-lane",
+            "C",
+            Context::Editor,
+        ),
+        (
+            Action::PasteAtOrigin,
+            "paste-at-original-position",
+            "Ctrl+Shift+V",
+            Context::Studio,
+        ),
+    ];
+    for (action, id, keys, context) in cases {
+        assert_eq!(action.id(), id);
+        assert_eq!(map.label(action), keys, "{action:?}");
+        assert_eq!(action.context(), context, "{action:?}");
+        assert!(Action::ALL.contains(&action));
+        assert_eq!(map.action(&chord(keys), context), Some(action));
+    }
+}

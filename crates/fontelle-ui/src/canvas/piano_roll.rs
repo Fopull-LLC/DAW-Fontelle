@@ -2012,7 +2012,8 @@ pub struct PianoRoll {
     pressed_at: (f32, f32),
     /// The phrase Ctrl+C put there, normalised so its earliest note starts at
     /// tick zero — which is what lets a paste land anywhere.
-    clipboard: Vec<Note>,
+    /// The window's clipboard of notes — see [`super::NoteClipboard`].
+    clipboard: super::NoteClipboard,
     /// The note this press drew, while its drag lasts: the one note the
     /// path-point key may give a path to mid-move (see
     /// [`takes_path_points`](Self::takes_path_points)).
@@ -2052,7 +2053,7 @@ impl PianoRoll {
             audition: None,
             click: None,
             pressed_at: (0.0, 0.0),
-            clipboard: Vec::new(),
+            clipboard: super::NoteClipboard::new(),
             drawn: None,
             pointer: (0, 0),
             beats_per_bar: 4,
@@ -3308,7 +3309,7 @@ impl PianoRoll {
         if phrase.is_empty() {
             return 0;
         }
-        self.clipboard = phrase;
+        self.clipboard.put(phrase, None);
         self.clipboard.len()
     }
 
@@ -3338,6 +3339,7 @@ impl PianoRoll {
         let at = snap_tick(at.max(0), self.live_snap(), beats_per_bar).max(0);
         let notes: Vec<Note> = self
             .clipboard
+            .notes()
             .iter()
             .map(|note| Note {
                 start: note.start + at,
@@ -3387,6 +3389,43 @@ impl PianoRoll {
 
     pub fn clipboard_len(&self) -> usize {
         self.clipboard.len()
+    }
+
+    /// The window's clipboard of notes, which the roll holds because it is
+    /// where notes are pasted; Analyze Musically fills it through
+    /// [`clipboard_mut`](Self::clipboard_mut).
+    pub fn clipboard(&self) -> &super::NoteClipboard {
+        &self.clipboard
+    }
+
+    pub fn clipboard_mut(&mut self) -> &mut super::NoteClipboard {
+        &mut self.clipboard
+    }
+
+    /// *Paste at original position*: the clipboard's phrase where it was
+    /// heard in the song — its origin, counted from `clip_start` (the open
+    /// clip's start, in song ticks) — **not** snapped, because lining up
+    /// under the audio it came from is the point. Nothing for a phrase with
+    /// no origin; a note that would land before the clip starts is left out.
+    pub fn paste_at_origin(&mut self, clip_start: Tick) -> Vec<RollEdit> {
+        let Some(origin) = self.clipboard.origin() else {
+            return Vec::new();
+        };
+        let at = origin - clip_start;
+        let notes: Vec<Note> = self
+            .clipboard
+            .notes()
+            .iter()
+            .filter(|note| note.start + at >= 0)
+            .map(|note| Note {
+                start: note.start + at,
+                ..note.clone()
+            })
+            .collect();
+        if notes.is_empty() {
+            return Vec::new();
+        }
+        vec![RollEdit::Insert(notes)]
     }
 
     /// The selection as notes, sorted and moved so the earliest starts at zero.

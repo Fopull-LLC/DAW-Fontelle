@@ -7602,3 +7602,331 @@ fn an_audio_clips_name_opens_its_menu() {
         dump_sized(&shot.pixels, "clip-menu-audio", W, H);
     }
 }
+
+// ------------------------------------------ Analyze Musically's window ---
+
+/// A sung line over 14 s as Analyze would hand it over: notes with vibrato
+/// in their curves, one of them 23 cents sharp and one doubtful, a chord
+/// reading, the waveform and a pitch picture made from the same notes.
+fn an_analyzed_take() -> fontelle_ui::canvas::AnalyzeView {
+    use fontelle_types::KeyScale;
+    use fontelle_ui::canvas::{
+        AnalyzeClarity, AnalyzeImage, AnalyzeKey, AnalyzeMode, AnalyzeView, AnalyzedChord,
+        AnalyzedNote,
+    };
+    // (start, end, key, cents, loudness, confidence)
+    let line: [(f64, f64, u8, f32, f32, f32); 14] = [
+        (0.40, 1.10, 69, 4.0, 0.8, 0.95),
+        (1.20, 1.70, 72, -6.0, 0.7, 0.92),
+        (1.80, 2.90, 71, 23.0, 0.85, 0.9),
+        (3.00, 3.50, 69, -3.0, 0.6, 0.88),
+        (3.60, 4.80, 67, -18.0, 0.75, 0.9),
+        (5.00, 5.40, 64, 2.0, 0.5, 0.8),
+        (5.50, 6.90, 65, 7.0, 0.8, 0.93),
+        (7.10, 7.60, 67, 0.0, 0.6, 0.9),
+        (7.70, 8.20, 69, 12.0, 0.65, 0.35),
+        (8.40, 9.80, 72, -9.0, 0.9, 0.96),
+        (10.0, 10.5, 71, 3.0, 0.55, 0.85),
+        (10.6, 11.1, 69, -4.0, 0.6, 0.9),
+        (11.2, 12.9, 64, 19.0, 0.8, 0.9),
+        (13.1, 13.7, 69, 0.0, 0.5, 0.7),
+    ];
+    let curve = |start: f64, end: f64, cents: f32| -> Vec<(f64, f32)> {
+        let steps = ((end - start) / 0.02).max(2.0) as usize;
+        (0..=steps)
+            .map(|i| {
+                let t = start + (end - start) * i as f64 / steps as f64;
+                let into = (t - start) as f32;
+                // A scoop in, vibrato after 0.25 s.
+                let scoop = -40.0 * (-into / 0.06).exp();
+                let vib = if into > 0.25 {
+                    ((into - 0.25) / 0.15).min(1.0)
+                        * 22.0
+                        * (into * 5.5 * std::f32::consts::TAU).sin()
+                } else {
+                    0.0
+                };
+                (t, cents + scoop + vib)
+            })
+            .collect()
+    };
+    let melody: Vec<AnalyzedNote> = line
+        .iter()
+        .map(
+            |&(start, end, midi, cents, amplitude, confidence)| AnalyzedNote {
+                start,
+                end,
+                midi,
+                cents,
+                amplitude,
+                confidence,
+                poly: false,
+                curve: curve(start, end, cents),
+            },
+        )
+        .collect();
+    let mut notes: Vec<AnalyzedNote> = melody
+        .iter()
+        .map(|n| AnalyzedNote {
+            poly: true,
+            ..n.clone()
+        })
+        .collect();
+    for (start, end, midi) in [
+        (0.3, 3.0, 57u8),
+        (3.0, 6.0, 53),
+        (6.0, 9.0, 48),
+        (9.0, 13.0, 52),
+    ] {
+        notes.push(AnalyzedNote {
+            start,
+            end,
+            midi,
+            cents: 0.0,
+            amplitude: 0.5,
+            confidence: 0.7,
+            poly: true,
+            curve: Vec::new(),
+        });
+    }
+    notes.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let duration = 14.0;
+    // The waveform: a voice's envelope under each note.
+    let peaks: Vec<(f32, f32)> = (0..(duration * 100.0) as usize)
+        .map(|i| {
+            let t = i as f64 / 100.0;
+            let level = line
+                .iter()
+                .filter(|n| t >= n.0 && t < n.1)
+                .map(|n| n.4 * (1.0 - ((t - n.0) / (n.1 - n.0)) as f32 * 0.4))
+                .fold(0.04f32, f32::max);
+            // A voice's ragged edge, not a pattern.
+            let hash = (i as u32).wrapping_mul(2_654_435_761) >> 16;
+            let wobble = 0.8 + 0.2 * (hash & 0xff) as f32 / 255.0;
+            (-level * wobble, level * wobble)
+        })
+        .collect();
+    // The pitch picture: each note's row and its first partials, softly.
+    let rows = 264usize;
+    let cps = 50.0;
+    let columns = (duration * cps) as usize;
+    let mut data = vec![0u8; columns * rows];
+    for n in &melody {
+        for c in (n.start * cps) as usize..((n.end * cps) as usize).min(columns) {
+            for (partial, gain) in [(0.0f32, 1.0f32), (12.0, 0.45), (19.02, 0.3)] {
+                let midi = f32::from(n.midi) + n.cents / 100.0 + partial;
+                let centre = (midi - 21.0) * 3.0 + 1.0;
+                for r in 0..rows {
+                    let d = r as f32 - centre;
+                    let v = gain * n.amplitude * (-0.5 * (d / 1.2).powi(2)).exp();
+                    let cell = &mut data[c * rows + r];
+                    *cell = (*cell).max((v.sqrt() * 255.0) as u8);
+                }
+            }
+        }
+    }
+    AnalyzeView {
+        name: "Vox take 3".to_string(),
+        duration,
+        analysing: None,
+        error: None,
+        detected: Some(AnalyzeMode::Melody),
+        melody,
+        notes,
+        chords: ["Am", "F", "C", "Em"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| AnalyzedChord {
+                start: 3.0 * i as f64 + if i == 0 { 0.3 } else { 0.0 },
+                end: 3.0 * (i + 1) as f64 + if i == 3 { 1.0 } else { 0.0 },
+                label: label.to_string(),
+            })
+            .collect(),
+        key: Some(AnalyzeKey {
+            key: KeyScale::new(9, "natural-minor"),
+            confidence: 0.82,
+            relative: KeyScale::new(0, "major"),
+            tonic_confidence: 0.74,
+            alternatives: vec![KeyScale::new(0, "major"), KeyScale::new(9, "dorian")],
+        }),
+        clarity: Some((AnalyzeClarity::Clear, 0.91)),
+        clarity_reason: "clean, pitched audio".to_string(),
+        tuning_cents: Some(6.0),
+        bpm: None,
+        peaks: peaks.into(),
+        peaks_per_second: 100.0,
+        spectrogram: Some(AnalyzeImage {
+            columns,
+            rows,
+            columns_per_second: cps,
+            lowest_midi: 21.0 - 1.0 / 3.0,
+            rows_per_semitone: 3.0,
+            data: data.into(),
+        }),
+    }
+}
+
+type AnalyzeShot = (Vec<u8>, Theme, fontelle_ui::canvas::AnalyzeLayout, u32, u32);
+
+/// Renders Analyze Musically's window as the app does — laid out and
+/// shaped by the same two functions (`render::lay_out_analyze`,
+/// `render::shape_analyze`) — and dumps it as `name`.
+fn shoot_analyze(
+    name: &str,
+    view: &fontelle_ui::canvas::AnalyzeView,
+    state: &mut fontelle_ui::canvas::AnalyzeState,
+    prepare: impl Fn(&fontelle_ui::canvas::AnalyzeLayout, &mut fontelle_ui::canvas::AnalyzeState),
+) -> Option<AnalyzeShot> {
+    use fontelle_ui::render::{AnalyzeChrome, EditorWindowChrome, lay_out_analyze, shape_analyze};
+    let theme = Theme::dark_default();
+    let shared = headless()?;
+    let (w, h) = fontelle_ui::layout::analyze_window_size(state.scale);
+    let panel = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics);
+    let mut text = TextContext::new();
+    let mut labels = Labels::new();
+    let font = theme.font.clone();
+    let bridge = theme.for_bridge();
+    let title = text.layout(
+        &format!("Analyze Musically \u{b7} {}", view.name),
+        &bridge.font,
+        None,
+    );
+    let first = lay_out_analyze(&mut labels, &mut text, &font, panel.body, view, state);
+    state.fit(view, &first);
+    let layout = lay_out_analyze(&mut labels, &mut text, &font, panel.body, view, state);
+    prepare(&layout, state);
+    let layout = lay_out_analyze(&mut labels, &mut text, &font, panel.body, view, state);
+    shape_analyze(&mut labels, &mut text, &font, view, state, &layout);
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &EditorWindowChrome::Analyze(AnalyzeChrome {
+            layout: layout.clone(),
+            view,
+            state,
+            tooltip: None,
+            skin: None,
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, w, h, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(&pixels, name, w, h);
+    Some((pixels, theme, layout, w, h))
+}
+
+fn analyze_pixel(pixels: &[u8], width: u32, x: f32, y: f32) -> Color {
+    let i = ((y as u32 * width + x as u32) * 4) as usize;
+    Color::rgb(pixels[i], pixels[i + 1], pixels[i + 2])
+}
+
+/// The window everybody sees first: a sung take, the notes on the lane,
+/// one selected. **Look at it**: `FONTELLE_UI_DUMP=… cargo test -p
+/// fontelle-ui --test render_headless analyze`.
+#[test]
+fn analyze_musically_draws_the_lane_the_notes_and_the_header() {
+    let view = an_analyzed_take();
+    let mut state = fontelle_ui::canvas::AnalyzeState::default();
+    let Some((pixels, theme, l, w, _)) =
+        shoot_analyze("analyze-notes", &view, &mut state, |_, s| {
+            s.click_note(2, false);
+        })
+    else {
+        return;
+    };
+    let bridge = theme.for_bridge();
+    let p = &bridge.palette;
+    // The selected note is drawn, and in the selected ink rather than the
+    // lane's ground.
+    let blob = l.blob(&view, &state, 2).expect("on screen");
+    let inside = analyze_pixel(
+        &pixels,
+        w,
+        blob.x + blob.width * 0.15,
+        blob.y + blob.height / 2.0,
+    );
+    let ground = analyze_pixel(
+        &pixels,
+        w,
+        blob.x + blob.width * 0.15,
+        blob.bottom() + state.row_height * 1.5,
+    );
+    assert_ne!(inside, ground, "the note is drawn over the lane");
+    let distance = |a: Color, b: Color| {
+        (0..3)
+            .map(|i| (i32::from(a.0[i]) - i32::from(b.0[i])).abs())
+            .sum::<i32>()
+    };
+    assert!(
+        distance(inside, p.note_selected) < distance(inside, p.window),
+        "{inside:?} reads as the selected ink {:?}",
+        p.note_selected
+    );
+    // The badge's lamp is lit in the meter's green: Clear.
+    let lamp = analyze_pixel(
+        &pixels,
+        w,
+        l.badge.x + 12.0,
+        l.badge.y + l.badge.height / 2.0,
+    );
+    assert!(distance(lamp, p.meter) < 120, "{lamp:?} vs {:?}", p.meter);
+}
+
+#[test]
+fn analyze_musically_dumps_its_other_faces() {
+    use fontelle_ui::canvas::{AnalyzeHit, AnalyzeMode, AnalyzePage, AnalyzeState};
+    let view = an_analyzed_take();
+    // The pitch picture, in chords mode.
+    let mut state = AnalyzeState::default();
+    state.spectrogram = true;
+    state.mode = Some(AnalyzeMode::Chords);
+    let Some((pixels, _, l, w, _)) =
+        shoot_analyze("analyze-pitch-chords", &view, &mut state, |_, _| {})
+    else {
+        return;
+    };
+    // Something of the picture is drawn behind the first note.
+    let note = l.blob(&view, &state, 0).unwrap();
+    let _ = analyze_pixel(&pixels, w, note.x, note.y);
+
+    // Analysing: half the notes in, the job strip.
+    let mut busy = view.clone();
+    busy.analysing = Some(0.46);
+    busy.detected = None;
+    busy.key = None;
+    busy.clarity = None;
+    busy.chords.clear();
+    busy.spectrogram = None;
+    busy.notes.retain(|n| n.end < 6.5);
+    let mut state = AnalyzeState::default();
+    let shot = shoot_analyze("analyze-analysing", &busy, &mut state, |_, _| {});
+    if let Some((_, _, l, _, _)) = shot {
+        assert!(!l.job.is_empty());
+    }
+
+    // The scale's popover.
+    let mut state = AnalyzeState::default();
+    shoot_analyze("analyze-popover", &view, &mut state, |_, s| {
+        s.hover = Some(AnalyzeHit::ScaleName);
+    });
+
+    // A page still to come.
+    let mut state = AnalyzeState::default();
+    state.page = AnalyzePage::Clean;
+    shoot_analyze("analyze-clean-later", &view, &mut state, |_, _| {});
+
+    // The smallest scale, so its header is seen to fit.
+    let mut state = AnalyzeState::default();
+    state.scale = 0.75;
+    shoot_analyze("analyze-notes-75", &view, &mut state, |_, _| {});
+}

@@ -301,10 +301,27 @@ pub enum Action {
     PathPoint,
     /// Take the last point of the path back.
     PathPointBack,
+    // --- Analyze Musically (docs/analyze-musically-plan.md §3.5) ---
+    /// Open Analyze Musically on the selected audio clip.
+    AnalyzeClip,
+    /// In its window: copy the selected notes (all, with none selected) for
+    /// any piano roll.
+    AnalyzeCopyNotes,
+    /// In its window: copy the scale, as words.
+    AnalyzeCopyScale,
+    /// In its window: select every note.
+    AnalyzeSelectAll,
+    /// In its window: the waveform or the pitch picture behind the notes.
+    AnalyzeSpectrogram,
+    /// In its window: the chord lane shown or hidden.
+    AnalyzeChordLane,
+    /// Paste notes where they were heard in the song — what Analyze copied
+    /// lines up under its audio.
+    PasteAtOrigin,
 }
 
 impl Action {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 50] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -348,6 +365,13 @@ impl Action {
         Self::RemoveBand,
         Self::PathPoint,
         Self::PathPointBack,
+        Self::AnalyzeClip,
+        Self::AnalyzeCopyNotes,
+        Self::AnalyzeCopyScale,
+        Self::AnalyzeSelectAll,
+        Self::AnalyzeSpectrogram,
+        Self::AnalyzeChordLane,
+        Self::PasteAtOrigin,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -399,6 +423,13 @@ impl Action {
             Self::RemoveBand => "remove-band",
             Self::PathPoint => "path-point",
             Self::PathPointBack => "path-point-back",
+            Self::AnalyzeClip => "analyze-clip",
+            Self::AnalyzeCopyNotes => "analyze-copy-notes",
+            Self::AnalyzeCopyScale => "analyze-copy-scale",
+            Self::AnalyzeSelectAll => "analyze-select-all",
+            Self::AnalyzeSpectrogram => "analyze-spectrogram",
+            Self::AnalyzeChordLane => "analyze-chord-lane",
+            Self::PasteAtOrigin => "paste-at-original-position",
         }
     }
 
@@ -455,6 +486,19 @@ impl Action {
             Self::RemoveBand => "Remove the selected EQ band",
             Self::PathPoint => "While drawing a note: a point here — then hold or slide on",
             Self::PathPointBack => "While drawing a note: take the last point back",
+            Self::AnalyzeClip => {
+                "Analyze Musically: the selected audio clip's notes, key and chords"
+            }
+            Self::AnalyzeCopyNotes => {
+                "Analyze Musically: copy the selected notes (or all) for a piano roll"
+            }
+            Self::AnalyzeCopyScale => "Analyze Musically: copy the scale",
+            Self::AnalyzeSelectAll => "Analyze Musically: select every note",
+            Self::AnalyzeSpectrogram => "Analyze Musically: waveform or pitch picture",
+            Self::AnalyzeChordLane => "Analyze Musically: show or hide the chord lane",
+            Self::PasteAtOrigin => {
+                "Paste notes where they were heard (under the audio they came from)"
+            }
         }
     }
 
@@ -471,7 +515,12 @@ impl Action {
             | Self::ExportWav
             | Self::ExportMidi
             | Self::Help => Context::Global,
-            Self::RemoveBand => Context::Editor,
+            Self::RemoveBand
+            | Self::AnalyzeCopyNotes
+            | Self::AnalyzeCopyScale
+            | Self::AnalyzeSelectAll
+            | Self::AnalyzeSpectrogram
+            | Self::AnalyzeChordLane => Context::Editor,
             Self::PathPoint | Self::PathPointBack => Context::Drawing,
             _ => Context::Studio,
         }
@@ -525,6 +574,13 @@ impl Action {
             Self::RemoveBand => &["Delete", "Backspace"],
             Self::PathPoint => &["S"],
             Self::PathPointBack => &["Backspace"],
+            Self::AnalyzeClip => &["Ctrl+Shift+A"],
+            Self::AnalyzeCopyNotes => &["Ctrl+C"],
+            Self::AnalyzeCopyScale => &["Ctrl+Shift+C"],
+            Self::AnalyzeSelectAll => &["Ctrl+A"],
+            Self::AnalyzeSpectrogram => &["Tab"],
+            Self::AnalyzeChordLane => &["C"],
+            Self::PasteAtOrigin => &["Ctrl+Shift+V"],
         }
     }
 

@@ -73,6 +73,8 @@ use crate::transport::{
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
+mod analyze;
+
 /// What can be on its way on the synth window (`motion.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FlopMotion {
@@ -640,6 +642,10 @@ enum MenuTarget {
     /// just it, duplicate, mute, loop or delete it — and, for audio, Analyze
     /// Musically. See `canvas::clip_menu`.
     Clip(fontelle_types::ClipId),
+    /// Analyze Musically's key ▾ menu (`docs/analyze-musically-plan.md` §3.4).
+    AnalyzeScale,
+    /// And its window-size chip.
+    AnalyzeWindowScale,
     /// "Rename…" from that menu, asking for the clip's name.
     ClipName(fontelle_types::ClipId),
     /// One point of an automation block: its shape, or its removal.
@@ -844,6 +850,7 @@ impl MenuTarget {
             // header, so it is that window that draws it.
             // The pad's footer is in its own window.
             Self::NotepadPages => Some(EditorKind::Effect),
+            Self::AnalyzeScale | Self::AnalyzeWindowScale => Some(EditorKind::Analyze),
             // A rename target rather than a menu, but it is typed into the
             // effect window and that is the window that has to redraw.
             Self::DisgustingBeatScene(_) => Some(EditorKind::Effect),
@@ -1567,6 +1574,21 @@ pub struct WindowApp {
     /// other: exactly one of `eq`, `tune` and `insert_view` is `Some`.
     tune: Option<crate::canvas::TuneView>,
     tune_layout: crate::canvas::TuneLayout,
+    /// **Analyze Musically** (`docs/analyze-musically-plan.md`): what the host
+    /// says about the clip it is open on, the revision that copy is of, how
+    /// the window is looking at it, and where everything is.
+    analyze: Option<crate::canvas::AnalyzeView>,
+    analyze_revision: u64,
+    analyze_state: crate::canvas::AnalyzeState,
+    analyze_layout: crate::canvas::AnalyzeLayout,
+    /// Whether the lane has been fitted to the finished analysis yet.
+    analyze_fitted: bool,
+    /// The key a press on the lane is sounding, until the release.
+    analyze_held: Option<u8>,
+    /// The tip under the pointer, and since when (the studio's dwell).
+    analyze_tip: Option<String>,
+    analyze_tip_since: std::time::Instant,
+    analyze_tip_drawn: bool,
     /// **The notepad's window**, when the open insert is one
     /// (`docs/effects-catalogue.md` §2.8). The fourth of the effect windows,
     /// told apart from the other three the same way: exactly one of `eq`,
@@ -2369,6 +2391,15 @@ impl WindowApp {
             insert_knob: None,
             tune: None,
             tune_layout: crate::canvas::TuneLayout::default(),
+            analyze: None,
+            analyze_revision: u64::MAX,
+            analyze_state: crate::canvas::AnalyzeState::default(),
+            analyze_layout: crate::canvas::AnalyzeLayout::default(),
+            analyze_fitted: false,
+            analyze_held: None,
+            analyze_tip: None,
+            analyze_tip_since: std::time::Instant::now(),
+            analyze_tip_drawn: false,
             notepad: None,
             notepad_layout: crate::canvas::NotepadLayout::default(),
             disgusting_beat: None,
@@ -3567,6 +3598,7 @@ impl WindowApp {
     fn tick(&mut self) {
         self.poll_welcome();
         self.poll_job();
+        self.poll_analysis();
         // A shared song: somebody else's edits come in, this studio's go
         // out, once a pass — and while one is open the loop keeps looking.
         self.session_open = self
@@ -3681,6 +3713,7 @@ impl WindowApp {
             self.flop_tip_drawn = false;
             self.redraw_editor(EditorKind::Instrument);
         }
+        self.tick_analyze_tip();
         if self.due_tip().is_some() && self.tip_rect.is_empty() {
             self.tree.invalidate_rect(self.tooltip_region());
         }
@@ -5222,7 +5255,7 @@ impl WindowApp {
                 Some((strip, slot)) => doc.open_plugin_editor_for_insert(strip, slot),
                 None => false,
             },
-            EditorKind::AudioClip => false,
+            EditorKind::AudioClip | EditorKind::Analyze => false,
         };
         if opened {
             // Its own window, on the desktop, drawn by the plugin — so there
@@ -5351,6 +5384,10 @@ impl WindowApp {
         if kind == EditorKind::Instrument {
             self.flop_searching = false;
         }
+        // Analyze Musically's job stops with its window.
+        if kind == EditorKind::Analyze {
+            self.closed_analyze();
+        }
         if self.pointer_window == Some(kind) {
             self.pointer_window = None;
             // A gesture cannot be continued in a window that has gone.
@@ -5427,6 +5464,17 @@ impl WindowApp {
             _ => kind.minimum_size(),
         };
         let _ = flopsynth;
+        // Analyze Musically opens at its design size times its scale, like
+        // Flopsynth, and has a floor of its own.
+        let ((w, h), (min_w, min_h)) = if kind == EditorKind::Analyze {
+            let scale = self.analyze_state.scale;
+            (
+                crate::layout::analyze_window_size(scale),
+                crate::layout::analyze_minimum_size(scale),
+            )
+        } else {
+            ((w, h), (min_w, min_h))
+        };
         let attributes = Window::default_attributes()
             .with_title(self.editor_title(kind))
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
@@ -5533,6 +5581,13 @@ impl WindowApp {
             EditorKind::AudioClip => match &self.audio_clip {
                 Some(open) => format!("{} \u{2014} {}", kind.title(), open.name),
                 None => kind.title().to_string(),
+            },
+            // "Analyze Musically · Vox take 3" (plan §3.1).
+            EditorKind::Analyze => match &self.analyze {
+                Some(view) if !view.name.is_empty() => {
+                    format!("{} \u{b7} {}", kind.title(), view.name)
+                }
+                _ => kind.title().to_string(),
             },
         }
     }
@@ -5671,6 +5726,7 @@ impl WindowApp {
                         crate::canvas::AUDIO_ROWS.len(),
                     );
                 }
+                EditorKind::Analyze => self.relayout_analyze(body),
             }
         }
     }
@@ -5818,10 +5874,26 @@ impl WindowApp {
                 state: winit::event::ElementState::Released,
                 ..
             } => {
+                if kind == EditorKind::Analyze {
+                    self.release_analyze();
+                }
                 self.release_controls();
                 self.redraw_editor(kind);
             }
 
+            WindowEvent::MouseWheel { delta, .. } if kind == EditorKind::Analyze => {
+                let (dx, dy) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::PixelDelta(position) => {
+                        (position.x as f32 / 40.0, position.y as f32 / 40.0)
+                    }
+                };
+                let (x, y) = self.cursor;
+                if !self.wheel_menu(x, y, dy) {
+                    self.wheel_analyze(x, y, dx, dy);
+                }
+                self.redraw_editor(kind);
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 // The wheel only navigates — it never changes a value. Over an
                 // open menu it scrolls the menu; in the instrument window it
@@ -6028,6 +6100,7 @@ impl WindowApp {
                 self.nudge_focused_flop_control(steps);
                 true
             }
+            EditorKind::Analyze => self.analyze_key(event),
             EditorKind::Instrument | EditorKind::AudioClip => false,
         }
     }
@@ -6093,6 +6166,7 @@ impl WindowApp {
                         Some(AudioControl::Switch | AudioControl::Choice) => Pointer::Hand,
                     }
                 }
+                EditorKind::Analyze => self.analyze_pointer(),
             },
         };
         if self.pointer == wanted {
@@ -6154,6 +6228,7 @@ impl WindowApp {
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
             EditorKind::AudioClip => self.press_audio_editor(button, x, y),
+            EditorKind::Analyze => self.press_analyze(button, x, y),
         }
     }
 
@@ -6254,6 +6329,7 @@ impl WindowApp {
             EditorKind::AudioClip => {
                 self.hover_audio = crate::canvas::audio_editor_hit(&self.audio_layout, x, y);
             }
+            EditorKind::Analyze => self.hover_analyze(x, y),
         }
     }
 
@@ -6639,6 +6715,32 @@ impl WindowApp {
                     sample_rate: open.sample_rate,
                     route_label: &self.audio_route,
                     hover: self.hover_audio,
+                })
+            }
+            EditorKind::Analyze => {
+                let Some(view) = self.analyze.as_ref() else {
+                    return;
+                };
+                EditorWindowChrome::Analyze(crate::render::AnalyzeChrome {
+                    layout: self.analyze_layout.clone(),
+                    view,
+                    state: &self.analyze_state,
+                    tooltip: self.due_analyze_tip().and_then(|tip| {
+                        let text = self.labels.get(tip)?;
+                        let bounds = self
+                            .editors
+                            .iter()
+                            .find(|e| e.kind == EditorKind::Analyze)
+                            .map(|e| e.panel.frame)
+                            .unwrap_or(self.analyze_layout.body);
+                        let rect = crate::tooltip::tooltip_layout(
+                            (text.width, text.height),
+                            self.cursor,
+                            bounds,
+                        );
+                        (!rect.is_empty()).then(|| (tip.to_string(), rect))
+                    }),
+                    skin: Some(&self.skin),
                 })
             }
         };
@@ -8079,6 +8181,9 @@ impl WindowApp {
         if let Some(tip) = self.hover_tip.clone() {
             want(&mut self.labels, &mut self.text, &tip);
         }
+        // Analyze Musically's window: its strings, in the styles they are
+        // drawn in, and its tip.
+        self.shape_analyze_labels();
 
         // The panel's tab captions and the prefab list's, whichever tab is
         // showing: the strip is drawn either way.
@@ -11566,7 +11671,7 @@ impl WindowApp {
             EditorKind::Effect => self
                 .open_insert
                 .map(|(strip, slot)| crate::canvas::PresetDevice::Insert { strip, slot }),
-            EditorKind::AudioClip => None,
+            EditorKind::AudioClip | EditorKind::Analyze => None,
         }
     }
 
@@ -11576,7 +11681,7 @@ impl WindowApp {
         match kind {
             EditorKind::Instrument => Some(0),
             EditorKind::Effect => Some(1),
-            EditorKind::AudioClip => None,
+            EditorKind::AudioClip | EditorKind::Analyze => None,
         }
     }
 
@@ -14487,7 +14592,7 @@ impl WindowApp {
         match editor {
             EditorKind::Instrument => self.instrument.as_ref(),
             EditorKind::Effect => self.insert_view.as_ref(),
-            EditorKind::AudioClip => None,
+            EditorKind::AudioClip | EditorKind::Analyze => None,
         }
     }
 
@@ -17647,6 +17752,8 @@ impl WindowApp {
                 }
                 entries
             }
+            MenuTarget::AnalyzeScale => self.analyze_scale_menu().0,
+            MenuTarget::AnalyzeWindowScale => self.analyze_window_scale_menu(),
             MenuTarget::FlopScale => {
                 let current = self.flopsynth.as_ref().map_or(1.0, |view| view.scale);
                 let mut entries = vec![MenuEntry::disabled("Window scale")];
@@ -18757,6 +18864,8 @@ impl WindowApp {
                     }
                 }
             }
+            (MenuTarget::AnalyzeScale, index) => self.choose_analyze_scale(index),
+            (MenuTarget::AnalyzeWindowScale, index) => self.choose_analyze_window_scale(index),
             (MenuTarget::FlopScale, index) => {
                 let scale = index
                     .checked_sub(1)
@@ -21428,6 +21537,10 @@ impl WindowApp {
             // being larger or smaller than the arrangement section."* See
             // `layout::toggled_timeline_height` for the rule.
             Action::SwapSplit => self.toggle_split(),
+            // Analyze Musically on the selected audio clip — the clip name
+            // menu's row, from the keyboard.
+            Action::AnalyzeClip => self.analyze_selected_clip(),
+            Action::PasteAtOrigin => self.paste_at_origin(),
             // The global ones are `global_key`'s and the editor window's is
             // `editor_own_key`'s; neither reaches here.
             Action::Play
@@ -21441,6 +21554,11 @@ impl WindowApp {
             | Action::ExportMidi
             | Action::Help
             | Action::RemoveBand
+            | Action::AnalyzeCopyNotes
+            | Action::AnalyzeCopyScale
+            | Action::AnalyzeSelectAll
+            | Action::AnalyzeSpectrogram
+            | Action::AnalyzeChordLane
             // Heard only while a note is being drawn, before the studio asks.
             | Action::PathPoint
             | Action::PathPointBack => {}
@@ -21537,6 +21655,62 @@ impl WindowApp {
         self.apply_roll_edits(edits);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
+        }
+    }
+
+    /// *Paste at original position*: what Analyze Musically copied, where it
+    /// was heard — under the audio it came from — in the open clip, not
+    /// snapped (`PianoRoll::paste_at_origin`).
+    fn paste_at_origin(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        if self.roll.clipboard().origin().is_none() {
+            self.status = if self.roll.clipboard().is_empty() {
+                "There are no notes on the clipboard".to_string()
+            } else {
+                "These notes have no place in the song \u{2014} Ctrl+V pastes them".to_string()
+            };
+            self.tree.invalidate(TRANSPORT);
+            return;
+        }
+        let clip_start = doc.song_tick_of_clip_tick(0);
+        let edits = self.roll.paste_at_origin(clip_start);
+        let pasted = match edits.first() {
+            Some(crate::canvas::RollEdit::Insert(notes)) => notes.len(),
+            _ => 0,
+        };
+        self.apply_roll_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.status = match pasted {
+            0 => "Those notes were heard before this clip starts".to_string(),
+            n => format!("{n} note(s) pasted where they were heard"),
+        };
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(TRANSPORT);
+    }
+
+    /// Ctrl+Shift+A: Analyze Musically on the audio clip selected on the
+    /// arrangement (the first, with several).
+    fn analyze_selected_clip(&mut self) {
+        let audio = self
+            .timeline
+            .selection()
+            .iter()
+            .find(|id| {
+                self.clips
+                    .iter()
+                    .any(|clip| clip.id == **id && clip.kind == crate::document::ClipKind::Audio)
+            })
+            .copied();
+        match audio {
+            Some(id) => self.analyze_musically(id),
+            None => {
+                self.status = "Select an audio clip to analyse it musically".to_string();
+                self.tree.invalidate(TRANSPORT);
+            }
         }
     }
 
@@ -21675,18 +21849,6 @@ impl WindowApp {
             doc.end_gesture();
         }
         self.tree.invalidate(TIMELINE);
-    }
-
-    /// **Analyze Musically**, on one audio clip: the hook the analysis fills
-    /// (`StudioHost::analyze_musically`). Takes nothing but the clip, and
-    /// says what came back on the status line.
-    fn analyze_musically(&mut self, clip: fontelle_types::ClipId) {
-        if let Some(doc) = &mut self.options.document {
-            self.status = match doc.analyze_musically(clip) {
-                Ok(said) | Err(said) => said,
-            };
-        }
-        self.tree.invalidate(TRANSPORT);
     }
 
     /// A name prompt for `target`, seeded with `seed` and all of it
