@@ -580,3 +580,13 @@ Each phase ships something usable. Write the tests first and confirm they fail.
 - `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-model/src/commands.rs` and `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-model/src/wire.rs` (Study commands, `SetAudioClip` swap, wire variants)
 - `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-dsp/src/pitch.rs` and `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-dsp/src/psola.rs` (YIN refactor for pYIN, offline PSOLA)
 - Also: `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-ui/src/canvas/piano_roll.rs` (clipboard lift, line ≈2015/3301), `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-ui/src/canvas/timeline.rs` (`ClipPart::Title`, line 1491), `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-types/src/scale.rs`, `/mnt/disks/6tb/Repos/DAW-Fontelle/crates/fontelle-types/src/effect.rs` (`TuneScale`/`TuneConfig`, ≈4520/4808), `/mnt/disks/6tb/Repos/DAW-Fontelle/deny.toml`
+
+---
+
+## 6. Ty's answers (2026-10-06)
+
+1. **Name:** "Analyze Musically", as named; action ids `analyze-*` and `StudyId` are permanent once shipped.
+2. **Render default:** *Replace the clip's audio* (undoable, the original kept in the study). *Render as a new clip below* is offered beside it.
+3. **Shipping:** basic-pitch's weights (Spotify's, Apache-2.0) are embedded, hash-pinned. The standard engine is offline PSOLA; the WORLD "High quality" engine waits for a later release. Ty's general rule for what crosses from closed work into this public tree: generic capability that shows what Fontelle can do is welcome, but never enough pieces that someone could rebuild a closed product by stitching them together; the `Resynth` trait stays a plain seam.
+4. **Standalone instances** (an Analyze Musically opened on a file or a recording rather than an arrangement clip): they are listed where the user already looks for things they made, in the browser under the project, as well as in the window's own menu, so one is never "lost" after its window closes.
+5. **Copied notes**, chosen the way a working musician would want MIDI from audio (as Melodyne's and Ableton's audio-to-MIDI default): **clean semitones**, **timing as played** (not snapped; the roll's quantize is one key away), **velocity from loudness**. Pitch bends and cents are an opt-in "Keep slides and bends" switch on the Output card, off by default, because a bend baked into MIDI is rarely what one wants when replaying the part on another instrument.
