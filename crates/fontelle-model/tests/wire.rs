@@ -827,6 +827,56 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 Some(an_asset("renders/take (edited 1).wav")),
             ))
         }),
+        ("SetStudyMarkers", |s| {
+            Box::new(fontelle_model::SetStudyMarkers::new(
+                s.study,
+                vec![fontelle_types::StudyMarker {
+                    id: 1,
+                    at: 4_800,
+                    name: "Verse".to_string(),
+                }],
+            ))
+        }),
+        ("SetStudyClean", |s| {
+            let mut clean = fontelle_types::StudyClean::default();
+            clean.trim = Some((480, 40_000));
+            clean.fade_in = 480;
+            clean.gain_db = -3.0;
+            clean.denoise.on = true;
+            clean.denoise.noise = Some(fontelle_types::StudyNoise {
+                magnitudes: vec![0.002, 0.004],
+                sample_rate: 48_000,
+                level_db: -60.0,
+            });
+            Box::new(fontelle_model::SetStudyClean::new(s.study, clean))
+        }),
+        ("SetStudyTakes", |s| {
+            Box::new(fontelle_model::SetStudyTakes::new(
+                s.study,
+                vec![fontelle_types::StudyTake {
+                    id: 1,
+                    asset: an_asset("recordings/Take 1.wav"),
+                    name: "Take 1".to_string(),
+                    song_sample: Some(96_000),
+                    frames: 48_000,
+                    sample_rate: 48_000,
+                    starred: true,
+                    dropped_frames: 0,
+                }],
+                vec![fontelle_types::StudyCompSpan {
+                    take: 1,
+                    start: 0,
+                    end: 48_000,
+                }],
+            ))
+        }),
+        ("SetStudyOriginal", |s| {
+            Box::new(fontelle_model::SetStudyOriginal::new(
+                s.study,
+                an_asset("recordings/Take 1.wav"),
+                Some(1),
+            ))
+        }),
         ("Compound", |s| {
             Box::new(Compound::new(
                 "two at once",

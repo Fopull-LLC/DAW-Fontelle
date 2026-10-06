@@ -306,6 +306,29 @@ impl History {
         self.undo_stack.last().map(|entry| entry.command.as_ref())
     }
 
+    /// Whether any entry the history could still undo or redo names `text`
+    /// — a file's path, as the edit carries it on the wire.
+    ///
+    /// For Analyze Musically's takes (plan P5): a take discarded keeps its
+    /// file while an undo could bring it back, and the file goes once
+    /// nothing here names it. Reads every entry's wire form, so it is for a
+    /// press, not a frame.
+    pub fn references(&self, text: &str) -> bool {
+        let quoted = serde_json::to_string(text).unwrap_or_default();
+        let needle = quoted.trim_matches('"').as_bytes();
+        if needle.is_empty() {
+            return false;
+        }
+        self.undo_stack.iter().chain(&self.redo_stack).any(|entry| {
+            entry
+                .command
+                .to_edit()
+                .to_bytes()
+                .windows(needle.len())
+                .any(|w| w == needle)
+        })
+    }
+
     /// How many entries `undo` could walk back through.
     pub fn depth(&self) -> usize {
         self.undo_stack.len()

@@ -510,6 +510,7 @@ impl Project {
         for study in self.studies.values() {
             files.push(study.original.clone());
             files.extend(study.rendered.clone());
+            files.extend(study.takes.iter().map(|take| take.asset.clone()));
         }
         files
     }
@@ -537,6 +538,9 @@ impl Project {
             f(&mut study.original);
             if let Some(rendered) = &mut study.rendered {
                 f(rendered);
+            }
+            for take in &mut study.takes {
+                f(&mut take.asset);
             }
         }
     }

@@ -7,7 +7,9 @@
 //! study travels and undoes like every other edit (INVARIANT 9). The
 //! analysis is never here: it is derived, and cached beside the song.
 
-use fontelle_types::{AssetRef, PitchEdit, Study, StudyId};
+use fontelle_types::{
+    AssetRef, PitchEdit, Study, StudyClean, StudyCompSpan, StudyId, StudyMarker, StudyTake,
+};
 
 use crate::command::{Command, CommandError};
 use crate::commands::NotApplied;
@@ -68,14 +70,27 @@ impl Command for AddStudy {
     /// carries on as edits of it: one entry, whose redo makes the study with
     /// the drag's last edits.
     fn merge_with(&mut self, next: &dyn Command) -> bool {
-        let Some(next) = next.as_any().downcast_ref::<SetStudyEdits>() else {
-            return false;
-        };
-        if Some(next.study) != self.made {
-            return false;
+        let any = next.as_any();
+        if let Some(next) = any.downcast_ref::<SetStudyEdits>()
+            && Some(next.study) == self.made
+        {
+            self.study.pitch_edits = next.edits.clone();
+            return true;
         }
-        self.study.pitch_edits = next.edits.clone();
-        true
+        // The Clean and Slice pages start a study the same way.
+        if let Some(next) = any.downcast_ref::<SetStudyClean>()
+            && Some(next.study) == self.made
+        {
+            self.study.clean = next.clean.clone();
+            return true;
+        }
+        if let Some(next) = any.downcast_ref::<SetStudyMarkers>()
+            && Some(next.study) == self.made
+        {
+            self.study.markers = next.markers.clone();
+            return true;
+        }
+        false
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -300,6 +315,276 @@ impl Command for SetStudyRender {
 
     fn label(&self) -> &str {
         "Render edits"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Every marker of one study at once (plan §3.9): the window hands back the
+/// list, and the inverse is the list that was there. A drag of one merges.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetStudyMarkers {
+    study: StudyId,
+    markers: Vec<StudyMarker>,
+    before: Option<Vec<StudyMarker>>,
+}
+
+impl SetStudyMarkers {
+    pub fn new(study: StudyId, markers: Vec<StudyMarker>) -> Self {
+        Self {
+            study,
+            markers,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetStudyMarkers {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetStudyMarkers(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let study = doc.studies.get_mut(self.study).ok_or_else(no_study)?;
+        if self.before.is_none() {
+            self.before = Some(study.markers.clone());
+        }
+        study.markers = self.markers.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(markers) => Box::new(SetStudyMarkers::new(self.study, markers.clone())),
+            None => Box::new(NotApplied::new("setting markers")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Markers"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetStudyMarkers>() else {
+            return false;
+        };
+        if next.study != self.study {
+            return false;
+        }
+        self.markers = next.markers.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.markers.len() + self.before.as_ref().map_or(0, Vec::len))
+                * std::mem::size_of::<StudyMarker>()
+    }
+}
+
+/// The Clean page's settings, whole (plan §3.9): trim, fades, gain and the
+/// denoiser. A knob's drag merges into one entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetStudyClean {
+    study: StudyId,
+    clean: StudyClean,
+    before: Option<StudyClean>,
+}
+
+impl SetStudyClean {
+    pub fn new(study: StudyId, clean: StudyClean) -> Self {
+        Self {
+            study,
+            clean,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetStudyClean {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetStudyClean(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let study = doc.studies.get_mut(self.study).ok_or_else(no_study)?;
+        if self.before.is_none() {
+            self.before = Some(study.clean.clone());
+        }
+        study.clean = self.clean.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(clean) => Box::new(SetStudyClean::new(self.study, clean.clone())),
+            None => Box::new(NotApplied::new("cleaning")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Clean"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetStudyClean>() else {
+            return false;
+        };
+        if next.study != self.study {
+            return false;
+        }
+        self.clean = next.clean.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        let profile = |c: &StudyClean| {
+            c.denoise
+                .noise
+                .as_ref()
+                .map_or(0, |n| n.magnitudes.len() * 4)
+        };
+        std::mem::size_of::<Self>() + profile(&self.clean) + self.before.as_ref().map_or(0, profile)
+    }
+}
+
+/// The Record page's takes and the comp built from them, whole (plan P5):
+/// a take arriving, starred, renamed or discarded, and a comp span chosen.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetStudyTakes {
+    study: StudyId,
+    takes: Vec<StudyTake>,
+    comp: Vec<StudyCompSpan>,
+    before: Option<(Vec<StudyTake>, Vec<StudyCompSpan>)>,
+}
+
+impl SetStudyTakes {
+    pub fn new(study: StudyId, takes: Vec<StudyTake>, comp: Vec<StudyCompSpan>) -> Self {
+        Self {
+            study,
+            takes,
+            comp,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetStudyTakes {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetStudyTakes(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let study = doc.studies.get_mut(self.study).ok_or_else(no_study)?;
+        if self.before.is_none() {
+            self.before = Some((study.takes.clone(), study.comp.clone()));
+        }
+        study.takes = self.takes.clone();
+        study.comp = self.comp.clone();
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some((takes, comp)) => {
+                Box::new(SetStudyTakes::new(self.study, takes.clone(), comp.clone()))
+            }
+            None => Box::new(NotApplied::new("changing takes")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Takes"
+    }
+
+    /// A comp span dragged out is a run of these: one entry.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetStudyTakes>() else {
+            return false;
+        };
+        if next.study != self.study || next.takes != self.takes {
+            return false;
+        }
+        self.comp = next.comp.clone();
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        let takes = self.takes.len() + self.before.as_ref().map_or(0, |b| b.0.len());
+        std::mem::size_of::<Self>() + takes * std::mem::size_of::<StudyTake>()
+    }
+}
+
+/// What the study studies: a take loaded into the lane, or the comp made
+/// into one. The edits name spans of whatever is there; the window clears
+/// them in the same compound when the audio changes under them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetStudyOriginal {
+    study: StudyId,
+    original: AssetRef,
+    take: Option<u32>,
+    before: Option<(AssetRef, Option<u32>)>,
+}
+
+impl SetStudyOriginal {
+    pub fn new(study: StudyId, original: AssetRef, take: Option<u32>) -> Self {
+        Self {
+            study,
+            original,
+            take,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetStudyOriginal {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetStudyOriginal(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let study = doc.studies.get_mut(self.study).ok_or_else(no_study)?;
+        if self.before.is_none() {
+            self.before = Some((study.original.clone(), study.current_take));
+        }
+        study.original = self.original.clone();
+        study.current_take = self.take;
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some((original, take)) => {
+                Box::new(SetStudyOriginal::new(self.study, original.clone(), *take))
+            }
+            None => Box::new(NotApplied::new("loading a take")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Load take"
     }
 
     fn merge_with(&mut self, _next: &dyn Command) -> bool {

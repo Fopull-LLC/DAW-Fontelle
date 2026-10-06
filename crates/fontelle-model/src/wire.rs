@@ -27,7 +27,10 @@
 use crate::command::Command;
 use crate::commands::*;
 use crate::lane_routing::{LaneUpkeep, SetClipChannel, SetRoutingMode};
-use crate::study::{AddStudy, RemoveStudy, RestoreStudy, SetStudyEdits, SetStudyRender};
+use crate::study::{
+    AddStudy, RemoveStudy, RestoreStudy, SetStudyClean, SetStudyEdits, SetStudyMarkers,
+    SetStudyOriginal, SetStudyRender, SetStudyTakes,
+};
 
 /// An edit that could not be read off the wire.
 #[derive(Debug)]
@@ -211,6 +214,10 @@ edits!(
     RestoreStudy,
     SetStudyEdits,
     SetStudyRender,
+    SetStudyMarkers,
+    SetStudyClean,
+    SetStudyTakes,
+    SetStudyOriginal,
 );
 
 impl Edit {

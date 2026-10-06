@@ -5,9 +5,13 @@
 
 use fontelle_model::{
     AddAudioClip, AddStudy, ClipSource, Command, History, Project, RemoveClip, RemoveStudy,
-    SetAudioClip, SetStudyEdits, SetStudyRender,
+    SetAudioClip, SetStudyClean, SetStudyEdits, SetStudyMarkers, SetStudyOriginal, SetStudyRender,
+    SetStudyTakes,
 };
-use fontelle_types::{AssetKind, AssetRef, AudioClipData, PPQN, PitchEdit, Study, StudySource};
+use fontelle_types::{
+    AssetKind, AssetRef, AudioClipData, PPQN, PitchEdit, Study, StudyClean, StudyCompSpan,
+    StudyFadeShape, StudyMarker, StudyNoise, StudySource, StudyTake,
+};
 
 fn an_asset(name: &str) -> AssetRef {
     AssetRef {
@@ -242,4 +246,260 @@ fn a_drag_that_starts_a_study_is_one_undo() {
     assert!(!project.studies.contains_key(id));
     history.redo(&mut project).unwrap().unwrap();
     assert_eq!(project.studies[id].pitch_edits[0].shift_cents, 90.0);
+}
+
+// ------------------------------------------------- P3–P5: clean, slice, takes
+
+fn marker(id: u32, at: i64) -> StudyMarker {
+    StudyMarker {
+        id,
+        at,
+        name: String::new(),
+    }
+}
+
+/// The Slice page's markers (plan §3.9 `SetStudyMarkers`): the whole list at
+/// once, a drag of one merged into one entry, and an undo the list before.
+#[test]
+fn markers_are_one_undo_a_gesture() {
+    let (mut project, _, id) = a_song();
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(SetStudyMarkers::new(id, vec![marker(1, 4_800)])),
+            &mut project,
+        )
+        .unwrap();
+    history.break_gesture();
+    // A drag: three steps, one entry.
+    for at in [5_000, 6_000, 7_000] {
+        history
+            .apply(
+                Box::new(SetStudyMarkers::new(id, vec![marker(1, at)])),
+                &mut project,
+            )
+            .unwrap();
+    }
+    assert_eq!(history.depth(), 2);
+    assert_eq!(project.studies[id].markers, vec![marker(1, 7_000)]);
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(project.studies[id].markers, vec![marker(1, 4_800)]);
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(project.studies[id].markers.is_empty());
+}
+
+/// The Clean page's settings (`SetStudyClean`): trim, fades, gain and the
+/// denoiser in one value, a knob's drag one entry, an undo what was there.
+#[test]
+fn clean_is_one_undo_a_gesture() {
+    let (mut project, _, id) = a_song();
+    assert_eq!(project.studies[id].clean, StudyClean::default());
+    assert!(project.studies[id].clean.is_identity());
+    let mut history = History::new();
+    for db in [-1.0, -3.0, -6.0] {
+        let clean = StudyClean {
+            gain_db: db,
+            ..StudyClean::default()
+        };
+        history
+            .apply(Box::new(SetStudyClean::new(id, clean)), &mut project)
+            .unwrap();
+    }
+    assert_eq!(history.depth(), 1);
+    assert_eq!(project.studies[id].clean.gain_db, -6.0);
+    history.break_gesture();
+    let mut trimmed = project.studies[id].clean.clone();
+    trimmed.trim = Some((4_800, 90_000));
+    trimmed.fade_in = 480;
+    trimmed.fade_shape = StudyFadeShape::Linear;
+    trimmed.denoise.on = true;
+    trimmed.denoise.noise = Some(StudyNoise {
+        magnitudes: vec![0.01; 1025],
+        sample_rate: 48_000,
+        level_db: -52.0,
+    });
+    history
+        .apply(
+            Box::new(SetStudyClean::new(id, trimmed.clone())),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(project.studies[id].clean, trimmed);
+    assert!(!trimmed.is_identity());
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(project.studies[id].clean.trim, None);
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(project.studies[id].clean.is_identity());
+}
+
+/// The first thing done to a clip on the Clean page starts its study, and
+/// the drag that did it carries on in the same entry, as a note drag does.
+#[test]
+fn a_clean_drag_that_starts_a_study_is_one_undo() {
+    let (mut project, clip, _) = a_song();
+    let mut history = History::new();
+    let mut first = Study::new("Vox 2", StudySource::Clip(clip), an_asset("Vox.wav"));
+    first.clean.gain_db = -1.0;
+    history
+        .apply(Box::new(AddStudy::new(first)), &mut project)
+        .unwrap();
+    let id = history
+        .last_applied()
+        .and_then(|c| c.as_any().downcast_ref::<AddStudy>())
+        .and_then(AddStudy::id)
+        .unwrap();
+    for db in [-2.0, -4.0] {
+        let clean = StudyClean {
+            gain_db: db,
+            ..StudyClean::default()
+        };
+        history
+            .apply(Box::new(SetStudyClean::new(id, clean)), &mut project)
+            .unwrap();
+    }
+    history
+        .apply(
+            Box::new(SetStudyMarkers::new(id, vec![marker(1, 10)])),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(history.depth(), 1);
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(!project.studies.contains_key(id));
+    history.redo(&mut project).unwrap().unwrap();
+    assert_eq!(project.studies[id].clean.gain_db, -4.0);
+    assert_eq!(project.studies[id].markers, vec![marker(1, 10)]);
+}
+
+fn take(id: u32, file: &str, at: Option<i64>) -> StudyTake {
+    StudyTake {
+        id,
+        asset: an_asset(file),
+        name: format!("Take {id}"),
+        song_sample: at,
+        frames: 48_000,
+        sample_rate: 48_000,
+        starred: false,
+        dropped_frames: 0,
+    }
+}
+
+/// The Record page's takes and comp (`SetStudyTakes`): they are the song's
+/// files, a take loaded into the lane swaps what the study studies (one
+/// undo), and the whole list is put back by an undo.
+#[test]
+fn takes_comp_and_the_take_in_the_lane() {
+    let mut project = Project::new("takes");
+    let mut add = AddStudy::new(Study::new(
+        "Mic",
+        StudySource::Standalone,
+        an_asset("recordings/Take 1.wav"),
+    ));
+    add.apply(&mut project).unwrap();
+    let id = add.id().unwrap();
+    let mut history = History::new();
+    let takes = vec![
+        take(1, "recordings/Take 1.wav", Some(96_000)),
+        take(2, "recordings/Take 2.wav", None),
+    ];
+    let comp = vec![
+        StudyCompSpan {
+            take: 1,
+            start: 0,
+            end: 24_000,
+        },
+        StudyCompSpan {
+            take: 2,
+            start: 24_000,
+            end: 48_000,
+        },
+    ];
+    history
+        .apply(
+            Box::new(SetStudyTakes::new(id, takes.clone(), comp.clone())),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(project.studies[id].takes, takes);
+    assert_eq!(project.studies[id].comp, comp);
+    let files: Vec<_> = project.files().into_iter().map(|f| f.path).collect();
+    assert!(files.contains(&"recordings/Take 2.wav".into()), "{files:?}");
+    history.break_gesture();
+    history
+        .apply(
+            Box::new(SetStudyOriginal::new(
+                id,
+                an_asset("recordings/Take 2.wav"),
+                Some(2),
+            )),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(
+        project.studies[id].original.path,
+        std::path::PathBuf::from("recordings/Take 2.wav")
+    );
+    assert_eq!(project.studies[id].current_take, Some(2));
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(
+        project.studies[id].original.path,
+        std::path::PathBuf::from("recordings/Take 1.wav")
+    );
+    assert_eq!(project.studies[id].current_take, None);
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(project.studies[id].takes.is_empty());
+}
+
+/// A study written before P3–P5 opens with no markers, a clean that does
+/// nothing and no takes; one written now reads back the same.
+#[test]
+fn a_study_from_before_clean_and_takes_opens() {
+    let (mut project, _, id) = a_song();
+    let mut clean = StudyClean::default();
+    clean.trim = Some((10, 20));
+    SetStudyClean::new(id, clean).apply(&mut project).unwrap();
+    SetStudyMarkers::new(id, vec![marker(3, 99)])
+        .apply(&mut project)
+        .unwrap();
+    let json = serde_json::to_value(&project).unwrap();
+    let back: Project = serde_json::from_value(json).unwrap();
+    assert_eq!(back.studies[id], project.studies[id]);
+    let old = r#"{"name":"Old","source":"Standalone","original":{"id":{"idx":1,"version":1},"path":"a.wav","content_hash":1,"size":2,"kind":"Sample"},"pitch_edits":[]}"#;
+    let study: Study = serde_json::from_str(old).expect("an older study reads");
+    assert!(study.markers.is_empty());
+    assert!(study.clean.is_identity());
+    assert!(study.takes.is_empty() && study.comp.is_empty());
+    assert_eq!(study.insert, None);
+    assert_eq!(study.current_take, None);
+}
+
+/// What the takes list's Discard needs to know: whether anything the
+/// history could still bring back names a file.
+#[test]
+fn the_history_says_whether_it_still_names_a_file() {
+    let (mut project, _, id) = a_song();
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(SetStudyTakes::new(
+                id,
+                vec![take(1, "recordings/Take 7.wav", None)],
+                Vec::new(),
+            )),
+            &mut project,
+        )
+        .unwrap();
+    assert!(history.references("recordings/Take 7.wav"));
+    assert!(!history.references("recordings/Take 8.wav"));
+    // Undone, the take is in the redo stack: still named.
+    history.undo(&mut project).unwrap().unwrap();
+    assert!(history.references("recordings/Take 7.wav"));
+    // A new edit cuts the redo stack: nothing names it any more.
+    history
+        .apply(
+            Box::new(SetStudyMarkers::new(id, vec![marker(1, 1)])),
+            &mut project,
+        )
+        .unwrap();
+    assert!(!history.references("recordings/Take 7.wav"));
 }

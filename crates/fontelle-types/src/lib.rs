@@ -113,6 +113,9 @@ pub use scale::{
     KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, parse_scale, scale,
     scale_matches, scale_notes, scale_text,
 };
-pub use study::{DEFAULT_GLIDE_MS, PitchEdit, Study, StudyEngines, StudyMode, StudySource};
+pub use study::{
+    DEFAULT_GLIDE_MS, PitchEdit, Study, StudyClean, StudyCompSpan, StudyDenoise, StudyEngines,
+    StudyFadeShape, StudyMarker, StudyMode, StudyNoise, StudySource, StudyTake,
+};
 pub use time::{PPQN, Sample, Tick};
 pub use wavetable_edit::{WaveTool, WavetableEdit};
