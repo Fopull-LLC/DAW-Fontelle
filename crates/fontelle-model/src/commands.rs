@@ -5053,6 +5053,10 @@ pub struct AddClip {
     row: Option<(String, [u8; 4])>,
     /// The row it made, so a redo makes the same one.
     made_row: Option<LaneId>,
+    /// Where in the stack that row goes; `None` is the bottom. See
+    /// [`AddClip::on_new_row_at`].
+    #[serde(default)]
+    row_at: Option<usize>,
 }
 
 impl AddClip {
@@ -5062,6 +5066,22 @@ impl AddClip {
             created: None,
             row: None,
             made_row: None,
+            row_at: None,
+        }
+    }
+
+    /// [`on_new_row`](Self::on_new_row), with the row at `index` in the
+    /// stack: what Analyze Musically's *Notes under the audio* makes, one row
+    /// under the clip it listened to, as one command and one undo.
+    pub fn on_new_row_at(
+        clip: Clip,
+        name: impl Into<String>,
+        color: [u8; 4],
+        index: usize,
+    ) -> Self {
+        Self {
+            row_at: Some(index),
+            ..Self::on_new_row(clip, name, color)
         }
     }
 
@@ -5095,7 +5115,7 @@ impl Command for AddClip {
         if let Some((name, color)) = &self.row {
             let mut lane = a_lane(name.clone());
             lane.color = *color;
-            lane.order = open_rows(doc, None, 1);
+            lane.order = open_rows(doc, self.row_at, 1);
             let row = match self.made_row {
                 Some(id) => {
                     if !doc.lanes.insert_at(id, lane) {

@@ -464,6 +464,13 @@ pub struct Session {
     /// The bounce running beside the window, if one is — see
     /// [`Session::poll_job`].
     job: Option<RunningJob>,
+    /// **Analyze Musically**'s job (`docs/analyze-musically-plan.md`
+    /// §3.10): its own slot, so an analysis never waits on a bounce or holds
+    /// one up.
+    analysis: Option<crate::analyze::OpenAnalysis>,
+    /// The cache key of each span analysed this session, so a reopen reads
+    /// the cache without hashing the audio again.
+    analysis_keys: HashMap<(fontelle_types::AssetId, i64, i64), String>,
     /// Bumped whenever anything the window's panels draw has changed. The
     /// window re-reads its lists on a change and not once a frame.
     revision: u64,
@@ -1499,6 +1506,8 @@ impl Session {
             told_end: false,
             session_notices: Vec::new(),
             job: None,
+            analysis: None,
+            analysis_keys: HashMap::new(),
             revision: 1,
             preset_bank: crate::preset_bank::PresetBank::new(settings.user_preset_dir()),
             preset_device_open: None,
@@ -4155,6 +4164,122 @@ impl Session {
             worker,
         });
         Ok(format!("{label}\u{2026}"))
+    }
+
+    /// Opens Analyze Musically on `clip`: refused for anything but audio,
+    /// and for audio still loading. The span the clip plays is what is
+    /// analysed, so its notes line up with the block.
+    fn open_analysis(&mut self, id: ClipId) -> Result<String, String> {
+        let clip = self.project.clips.get(id).ok_or("that clip is not there")?;
+        let ClipSource::Audio(data) = &clip.source else {
+            return Err("only an audio clip can be analysed musically".to_string());
+        };
+        let data = data.clone();
+        let buffer = self
+            .library
+            .audio_store()
+            .get(data.asset.id)
+            .cloned()
+            .ok_or("that clip's audio is still loading \u{2014} try again in a moment")?;
+        let name = self
+            .clips()
+            .into_iter()
+            .find(|info| info.id == id)
+            .map_or_else(|| "Audio".to_string(), |info| info.name);
+        let from = data.source_start.max(0) as usize;
+        let to = (data.source_end.max(0) as usize).min(buffer.frames());
+        if to <= from {
+            return Err(format!("there is no sound in \u{201c}{name}\u{201d}"));
+        }
+        let mono = crate::analyze::mono_span(&buffer, from, to);
+        let span = (data.asset.id, from as i64, to as i64);
+        let cache = crate::analyze::cache_dir_here(self.bundle.as_deref());
+        let known = self.analysis_keys.get(&span).cloned();
+        // The one open before goes: its job stops.
+        self.close_analysis();
+        let open = crate::analyze::OpenAnalysis::start(
+            id,
+            name.clone(),
+            span,
+            mono,
+            buffer.sample_rate,
+            cache,
+            known,
+        );
+        let said = if open.finished().is_some() {
+            format!("Analyze Musically \u{2014} \u{201c}{name}\u{201d}")
+        } else {
+            format!("Analyze Musically: analysing \u{201c}{name}\u{201d}\u{2026}")
+        };
+        self.analysis = Some(open);
+        Ok(said)
+    }
+
+    /// *Notes under the audio*: the analysed notes as a note clip on a new
+    /// row directly under the clip, playing the selected channel, as long as
+    /// the clip. One command, so one undo.
+    fn analysis_clip(
+        &mut self,
+        mode: fontelle_ui::canvas::AnalyzeMode,
+        selection: &[usize],
+        keep_bends: bool,
+    ) -> Result<String, String> {
+        let open = self.analysis.as_ref().ok_or("nothing is being analysed")?;
+        let audio = self
+            .project
+            .clips
+            .get(open.clip)
+            .cloned()
+            .ok_or("the analysed clip is not there any more")?;
+        let (notes, _) = StudioHost::analysis_notes(self, mode, selection, keep_bends)
+            .ok_or("there are no notes to put under it yet")?;
+        let channel = self
+            .selected_channel_id()
+            .ok_or("there is no instrument to play the notes \u{2014} add one first")?;
+        let row = self
+            .lane_ids()
+            .iter()
+            .position(|lane| *lane == audio.lane)
+            .ok_or("the analysed clip is on no row")?;
+        let name = format!("{} notes", open.name);
+        let mut arena = Arena::default();
+        for note in notes {
+            // The clip starts where the audio does; a note heard before that
+            // has nowhere to go.
+            let start = note.start - audio.start;
+            if start >= 0 {
+                arena.insert(fontelle_model::Note { start, ..note });
+            }
+        }
+        let count = arena.len();
+        let clip = fontelle_model::Clip {
+            name: None,
+            lane: audio.lane,
+            start: audio.start,
+            length: audio.length,
+            source: ClipSource::Notes(fontelle_model::NoteData {
+                channel,
+                notes: arena,
+            }),
+            prefab_link: None,
+            color: None,
+            muted: false,
+            loop_length: None,
+        };
+        let command = fontelle_model::AddClip::on_new_row_at(
+            clip,
+            name.clone(),
+            [0x8a, 0xa4, 0xe8, 0xff],
+            row + 1,
+        );
+        self.apply_for::<fontelle_model::AddClip>(Box::new(command))?;
+        self.let_go();
+        self.dirty = true;
+        self.republish();
+        self.touch();
+        Ok(format!(
+            "{count} note(s) on \u{201c}{name}\u{201d}, under the audio"
+        ))
     }
 
     /// [`StudioHost::poll_job`]'s answer: how far the running bounce has got,
@@ -9197,18 +9322,78 @@ impl StudioHost for Session {
         Session::rename_clip(self, clip, name);
     }
 
-    /// The hook the next phase fills: an audio clip's key, tempo and chords.
-    /// Until then it says so, and only of audio — the menu offers it on
-    /// nothing else.
+    /// **Analyze Musically** on an audio clip: its span of audio, mixed to
+    /// mono, analysed on a worker of its own (or read from the cache).
     fn analyze_musically(&mut self, clip: ClipId) -> Result<String, String> {
-        match self.project.clips.get(clip).map(|clip| &clip.source) {
-            Some(ClipSource::Audio(_)) => {
-                eprintln!("Fontelle: Analyze Musically asked of clip {clip:?} (not yet built)");
-                Ok("Analyze Musically is coming soon".to_string())
-            }
-            Some(_) => Err("only an audio clip can be analysed musically".to_string()),
-            None => Err("that clip is not there".to_string()),
+        Session::open_analysis(self, clip)
+    }
+
+    fn poll_analysis(&mut self) -> JobPoll {
+        let Some(open) = &mut self.analysis else {
+            return JobPoll::Idle;
+        };
+        if open.running() {
+            return JobPoll::Running(JobProgress {
+                label: format!("Analysing \u{201c}{}\u{201d}", open.name),
+                fraction: Some(open.fraction()),
+            });
         }
+        match open.take_ending() {
+            Some(result) => {
+                if let Some(key) = open.key() {
+                    self.analysis_keys.insert(open.span, key);
+                }
+                JobPoll::Finished(result)
+            }
+            None => JobPoll::Idle,
+        }
+    }
+
+    fn analysis_revision(&self) -> u64 {
+        self.analysis.as_ref().map_or(0, |open| open.revision())
+    }
+
+    fn analyze_view(&self) -> Option<fontelle_ui::canvas::AnalyzeView> {
+        self.analysis.as_ref().map(|open| open.view())
+    }
+
+    fn close_analysis(&mut self) {
+        if let Some(open) = self.analysis.take()
+            && let Some(key) = open.key()
+            && open.finished().is_some()
+        {
+            self.analysis_keys.insert(open.span, key);
+        }
+    }
+
+    fn analysis_notes(
+        &self,
+        mode: fontelle_ui::canvas::AnalyzeMode,
+        selection: &[usize],
+        keep_bends: bool,
+    ) -> Option<(Vec<fontelle_model::Note>, Tick)> {
+        let open = self.analysis.as_ref()?;
+        let clip = self.project.clips.get(open.clip)?;
+        let ClipSource::Audio(data) = &clip.source else {
+            return None;
+        };
+        let placement = crate::analyze::Placement {
+            tempo: &self.effective_tempo,
+            start_sample: self.effective_tempo.tick_to_sample(clip.start),
+            sample_rate: self.options.sample_rate,
+            speed: data.speed,
+            semitones: data.pitch_semitones,
+        };
+        crate::analyze::notes_for_roll(&open.view(), mode, selection, keep_bends, &placement)
+    }
+
+    fn make_analysis_clip(
+        &mut self,
+        mode: fontelle_ui::canvas::AnalyzeMode,
+        selection: &[usize],
+        keep_bends: bool,
+    ) -> Result<String, String> {
+        Session::analysis_clip(self, mode, selection, keep_bends)
     }
 
     fn add_lane_at(&mut self, index: usize) {

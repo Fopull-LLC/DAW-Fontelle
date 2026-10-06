@@ -25,6 +25,8 @@ fontelle-host = { path = "../fontelle-host" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
+# Analyze Musically: the notes, key and chords of an audio clip.
+fontelle-analysis = { path = "../fontelle-analysis" }
 fontelle-ui = { path = "../fontelle-ui" }
 fontelle-net = { path = "../fontelle-net" }
 serde = { version = "1.0.229", features = ["derive"] }

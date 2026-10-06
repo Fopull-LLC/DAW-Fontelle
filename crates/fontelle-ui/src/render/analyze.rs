@@ -443,7 +443,7 @@ fn draw_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Analyze
         let row = lane.row(state, key);
         match crate::canvas::analyze_row_shade(view, state, key) {
             RowShade::OutOfScale => fill_rect(scene, row, p.row_out_of_scale),
-            RowShade::Root => fill_rect(scene, row, p.row_scale_root),
+            RowShade::Root => fill_rect(scene, row, p.row_scale_root.with_alpha(0x90)),
             RowShade::Accidental => fill_rect(scene, row, p.row_accidental),
             _ => {}
         }
