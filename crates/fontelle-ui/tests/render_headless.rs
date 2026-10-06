@@ -7555,6 +7555,73 @@ fn a_starred_preset_is_lit_listed_first_and_stays_put() {
     }
 }
 
+/// A menu's section headings ("Favorites", a category, "Plugin effects")
+/// are captions to read, not greyed rows: their ink stands well off the
+/// menu's ground in both themes. They were drawn in the border's colour,
+/// which on a dark ground read as nothing.
+#[test]
+fn a_menus_headings_are_legible_in_both_themes() {
+    use fontelle_ui::canvas::{FAVORITES_HEADING, context_menu_layout, effect_menu_rows};
+    let rows = effect_menu_rows(
+        &[fontelle_types::Favorite::Effect(
+            fontelle_types::EffectKind::Reverb,
+        )],
+        &[],
+    );
+    let entries: Vec<_> = rows.into_iter().map(|(entry, _)| entry).collect();
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+        let menu = context_menu_layout(
+            (60.0, 40.0),
+            layout.window,
+            &theme.metrics,
+            theme.font.size,
+            entries.clone(),
+        );
+        let heading = menu
+            .entries
+            .iter()
+            .position(|e| e.label == FAVORITES_HEADING)
+            .expect("a Favorites heading");
+        let row = menu.rows[heading];
+        MENU.with(|slot| *slot.borrow_mut() = Some(menu.clone()));
+        let shot = shoot_sized(
+            theme.clone(),
+            TransportView::default(),
+            [Meter::default(), Meter::default()],
+            false,
+            W,
+        );
+        MENU.with(|slot| *slot.borrow_mut() = None);
+        let Some(shot) = shot else {
+            return;
+        };
+        let name = if theme.name == Theme::dark_default().name {
+            "menu-headings-dark"
+        } else {
+            "menu-headings-light"
+        };
+        dump_sized(&shot.pixels, name, W, H);
+        let ground = theme.palette.solid().panel_header.0;
+        let contrast = (row.x as u32 + 4..row.right() as u32 - 4)
+            .flat_map(|x| (row.y as u32 + 2..row.bottom() as u32 - 2).map(move |y| (x, y)))
+            .map(|(x, y)| {
+                let c = pixel(&shot.pixels, W, x, y);
+                (0..3)
+                    .map(|i| c.0[i].abs_diff(ground[i]) as u32)
+                    .max()
+                    .unwrap()
+            })
+            .max()
+            .unwrap();
+        assert!(
+            contrast > 90,
+            "{}: heading ink {contrast} off the ground",
+            theme.name
+        );
+    }
+}
+
 /// The piano roll's scale chooser with a key on and a scale on the clipboard:
 /// Copy, Paste by name, and the notes of the key, above the catalogue.
 #[test]

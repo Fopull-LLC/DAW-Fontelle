@@ -3377,29 +3377,6 @@ pub fn plugin_menu_pixels(
         p.panel_header,
     );
     draw_context_menu(&mut inner, theme, labels, Some(laid), None);
-    // **The headings, legible.** The studio's menu draws a greyed row in
-    // the border's ink — "there, and not for you" — which over a dark
-    // ground read as nothing at all: *"the section headings are nearly
-    // invisible"*. Here a heading is a caption, so it is drawn again in
-    // the secondary text colour, over its own row.
-    for ((row, entry), what) in laid.rows.iter().zip(&laid.entries).zip(&menu.rows) {
-        if row.is_empty() || *what != crate::canvas::PluginMenuRow::Heading {
-            continue;
-        }
-        let Some(caption) = labels_get(labels, &entry.label) else {
-            continue;
-        };
-        let band = Rect::new(row.x, row.y + 1.0, row.width, row.height - 1.0);
-        fill_rect(&mut inner, band, p.panel_header);
-        draw_text_clipped(
-            &mut inner,
-            caption,
-            band,
-            row.x + crate::canvas::MENU_TEXT_INSET,
-            row.y + (row.height - caption.height) / 2.0,
-            p.text_muted,
-        );
-    }
     // The search line, pinned over the list: a field, so it reads as
     // somewhere typing goes.
     if !search.is_empty() {
@@ -3835,9 +3812,12 @@ pub fn draw_context_menu(
             caption,
             menu.label_x(index),
             row.y + (row.height - text.height) / 2.0,
-            // A greyed entry is drawn in the same ink as a panel's border,
-            // which is this theme's "there, and not for you".
-            if entry.enabled { p.text } else { p.border },
+            // A greyed entry — a section's heading, or a row that says why
+            // something is not there — in the secondary text colour: there,
+            // not for pressing, and **readable**. It was the border's ink,
+            // which on a dark ground read as nothing at all (*"the section
+            // headings are nearly invisible"*).
+            if entry.enabled { p.text } else { p.text_muted },
         );
     }
 }
