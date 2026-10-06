@@ -7,6 +7,7 @@
 pub mod analysis;
 pub mod cache;
 pub mod chords;
+pub mod comp;
 pub mod confidence;
 pub mod denoise;
 pub mod edit;
