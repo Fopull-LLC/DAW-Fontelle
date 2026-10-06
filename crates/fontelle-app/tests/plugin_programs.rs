@@ -130,6 +130,15 @@ fn settings(dir: &Path) -> PathBuf {
 }
 
 fn a_session_on(dir: &Path, project: fontelle_model::Project) -> Session {
+    a_session_with_roots(dir, project, None)
+}
+
+/// [`a_session_on`], with plugins' libraries looked for under `roots` too.
+fn a_session_with_roots(
+    dir: &Path,
+    project: fontelle_model::Project,
+    roots: Option<fontelle_host::PresetRoots>,
+) -> Session {
     let clip = Session::first_clip(&project).unwrap_or_default();
     let channel_nodes = fontelle_app::channel_nodes(&project);
     let (publisher, _timeline) = timeline_channel(CompiledTimeline::empty());
@@ -155,6 +164,9 @@ fn a_session_on(dir: &Path, project: fontelle_model::Project) -> Session {
     .with_param_nodes(realised.param_nodes)
     .with_settings_path(settings(dir))
     .with_plugin_folders(plugin_folders());
+    if let Some(roots) = roots {
+        session.plugin_rack_mut().set_preset_roots(roots);
+    }
     session.set_projects_dir(Some(dir.join("projects")));
     session.pump();
     session.settle_plugin_presets();
@@ -404,4 +416,72 @@ fn an_lv2_plugins_programs_are_offered_and_load() {
     session.undo();
     let state = session.plugin_rack_mut().snapshot(slot).unwrap();
     assert_eq!(state.param(2), Some(1.0));
+}
+
+/// > *"i tried a bunch of different instruments including obxf, amsynth,
+/// > and cardinal synth. all of these have built in presets but our daws
+/// > preset system did not detect them and let you swap between them with
+/// > our preset bar."*
+///
+/// amsynth's LV2 lists nothing through LV2: its presets are banks of
+/// parameters by name, which is its ports' symbols. They are in the menu,
+/// filed under the bank, and one chosen sets the ports.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_plugins_banks_are_offered_and_load() {
+    let dir = scratch("lv2-bank");
+    let library = dir.join("library");
+    let banks = library.join("Fontelle Test Plain LV2").join("banks");
+    std::fs::create_dir_all(&banks).unwrap();
+    std::fs::write(
+        banks.join("Factory.bank"),
+        "amSynth\n<preset> <name> Quieter\n<parameter> gain 0.25\n<preset> <name> Flipped\n<parameter> invert 1\n",
+    )
+    .unwrap();
+    let mut project = common::a_project_with_a_clip(8, 120.0, SR);
+    let master = project.mixer.master.expect("a project has a master track");
+    project.mixer.tracks[master]
+        .inserts
+        .push(fontelle_model::EffectSlot::hosting(PluginState::new(
+            PluginKey::new(
+                fontelle_types::PluginFormat::Lv2,
+                fontelle_testlv2::PLAIN_URI,
+            ),
+            "Fontelle Test Plain LV2",
+        )));
+    let mut session = a_session_with_roots(
+        &dir,
+        project,
+        Some(fontelle_host::PresetRoots {
+            data: vec![library],
+            vst3: Vec::new(),
+        }),
+    );
+    let strip = (0..session.mixer_strips().len())
+        .find(|&strip| {
+            !session
+                .preset_choices(PresetDevice::Insert { strip, slot: 0 })
+                .is_empty()
+        })
+        .expect("the bank is offered on a strip");
+    let device = PresetDevice::Insert { strip, slot: 0 };
+    let listed: Vec<(String, String)> = session
+        .preset_choices(device)
+        .into_iter()
+        .map(|c| (c.category, c.name))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("Factory".to_string(), "Flipped".to_string()),
+            ("Factory".to_string(), "Quieter".to_string())
+        ]
+    );
+    let at = choice(&session, device, "Quieter");
+    session.apply_preset(device, at);
+    let slot = slot(&session);
+    let state = session.plugin_rack_mut().snapshot(slot).unwrap();
+    // The gain port is index 2.
+    assert_eq!(state.param(2), Some(0.25));
+    assert_eq!(session.preset_bar(device).name.as_deref(), Some("Quieter"));
 }

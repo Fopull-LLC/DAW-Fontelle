@@ -217,6 +217,10 @@ impl Lv2Processor {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lv2Preset;
 
+pub(crate) fn control_ports(_world: &World, _uri: &str) -> Vec<crate::Lv2ControlPort> {
+    Vec::new()
+}
+
 pub(crate) fn presets(
     _world: &World,
     _features: &Arc<Features>,

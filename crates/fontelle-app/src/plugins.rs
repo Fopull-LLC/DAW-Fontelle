@@ -301,8 +301,19 @@ pub struct EditorHeader {
 
 /// One plugin's own library: still being listed, or listed.
 enum Library {
-    Listing(std::sync::mpsc::Receiver<Vec<OwnPreset>>),
+    /// What is already known (an LV2 plugin's Turtle presets), and the
+    /// thread listing the rest.
+    Listing(Vec<OwnPreset>, std::sync::mpsc::Receiver<Vec<OwnPreset>>),
     Ready(Vec<OwnPreset>),
+}
+
+impl Library {
+    /// The listing finished: what was known, and what the thread found.
+    fn finished(known: &mut Vec<OwnPreset>, listed: Vec<OwnPreset>) -> Self {
+        let mut all = std::mem::take(known);
+        all.extend(listed);
+        Library::Ready(fontelle_host::sorted_presets(all))
+    }
 }
 
 /// The session's plugins.
@@ -879,6 +890,7 @@ impl PluginRack {
             // The presets compiled into it, read while its processor is in
             // hand — which an LV2 plugin's need — the first time it opens.
             let mut programs = Vec::new();
+            let mut lv2_state = None;
             match plugin.activate(sample_rate, max_block) {
                 Ok(mut processor) => {
                     // What the restore left for the plugin's worker thread,
@@ -890,6 +902,11 @@ impl PluginRack {
                     }
                     if !self.libraries.contains_key(&state.key) {
                         programs = plugin.programs_with(&mut processor);
+                        // What an LV2 plugin's library files are fitted
+                        // into, which only its running instance can say.
+                        if state.key.format == fontelle_types::PluginFormat::Lv2 {
+                            lv2_state = plugin.save_state_with(&mut processor);
+                        }
                     }
                     bay.park(processor)
                 }
@@ -912,7 +929,7 @@ impl PluginRack {
                 play_pause: 0,
             };
             live.refresh_displays();
-            self.list_library(&found_info, &mut live, programs);
+            self.list_library(&found_info, &mut live, programs, lv2_state);
             self.live.insert(slot, live);
         } else if self.state_is_new(slot, state) {
             // > *"non native plugins are not integrated with the presets
@@ -1009,14 +1026,17 @@ impl PluginRack {
     /// Starts listing `live`'s own library, the first time this plugin is
     /// opened.
     ///
-    /// **Off the main thread**, but for LV2: Surge XT describes each of its
-    /// three thousand files through its own provider, most of a second the
-    /// studio would otherwise stand still for, the first time Surge is put
-    /// on a channel. The thread is handed the state of the instance this rack
+    /// **Off the main thread**: Surge XT describes each of its three
+    /// thousand files through its own provider, most of a second the studio
+    /// would otherwise stand still for, the first time Surge is put on a
+    /// channel. The thread is handed the state of the instance this rack
     /// already has, and never makes one of its own — see
-    /// [`fontelle_host::list_own_presets`]. An LV2 plugin's is listed here
-    /// and now, by the host its instances come from: its presets' state is
-    /// in that host's URIDs, and a library of Turtle is a millisecond.
+    /// [`fontelle_host::list_own_presets`]. An LV2 plugin's Turtle presets
+    /// are listed here and now, by the host its instances come from: their
+    /// state is in that host's URIDs, and a library of Turtle is a
+    /// millisecond. `lv2_state` is the state an LV2 instance was running
+    /// with, read with its processor in hand, which its library files are
+    /// fitted into.
     ///
     /// `programs` are the presets compiled into it, read off this instance
     /// as it was activated (`HostedPlugin::programs_with`) — a few dozen
@@ -1027,6 +1047,7 @@ impl PluginRack {
         info: &fontelle_host::PluginInfo,
         live: &mut Live,
         programs: Vec<OwnPreset>,
+        lv2_state: Option<Vec<u8>>,
     ) {
         if self.libraries.contains_key(&info.key) {
             return;
@@ -1034,17 +1055,24 @@ impl PluginRack {
         if !programs.is_empty() {
             self.programs.insert(info.key.clone(), programs);
         }
-        if info.key.format == fontelle_types::PluginFormat::Lv2 {
+        // > *"i tried a bunch of different instruments including obxf,
+        // > amsynth, and cardinal synth. all of these have built in presets
+        // > but our daws preset system did not detect them"*
+        //
+        // An LV2 plugin's Turtle presets here, by the host its instances come
+        // from; its library files on the thread with the rest — OB-Xf's
+        // `.fxp`s, Cardinal's patches and amsynth's banks are none of them
+        // in its Turtle. The banks name ports by symbol, which the host
+        // knows; the files fit the state it was running with.
+        let (known, own, ports) = if info.key.format == fontelle_types::PluginFormat::Lv2 {
             let listed = self.host.own_lv2_presets(info);
             if !listed.is_empty() {
                 self.programs.remove(&info.key);
             }
-            self.libraries
-                .insert(info.key.clone(), Library::Ready(listed));
-            self.fresh.push(info.key.clone());
-            return;
-        }
-        let own = live.plugin.save_state();
+            (listed, lv2_state, self.host.lv2_control_ports(info))
+        } else {
+            (Vec::new(), live.plugin.save_state(), Vec::new())
+        };
         let roots = self.preset_roots.clone();
         let info = info.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -1056,11 +1084,12 @@ impl PluginRack {
                     &info,
                     &roots,
                     own.as_deref(),
+                    &ports,
                 ));
             });
         let library = match spawned {
-            Ok(_) => Library::Listing(receiver),
-            Err(_) => Library::Ready(Vec::new()),
+            Ok(_) => Library::Listing(known, receiver),
+            Err(_) => Library::Ready(known),
         };
         self.libraries.insert(key, library);
     }
@@ -1092,15 +1121,16 @@ impl PluginRack {
             }
         }
         for (key, library) in &mut self.libraries {
-            if let Library::Listing(receiver) = library {
+            if let Library::Listing(known, receiver) = library {
                 match receiver.try_recv() {
                     Ok(listed) => {
-                        *library = Library::Ready(listed);
+                        *library = Library::finished(known, listed);
                         self.fresh.push(key.clone());
                     }
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        *library = Library::Ready(Vec::new());
+                        *library = Library::finished(known, Vec::new());
+                        self.fresh.push(key.clone());
                     }
                 }
             }
@@ -1125,8 +1155,9 @@ impl PluginRack {
     /// test, which have no next frame to pick one up in.
     pub fn wait_for_libraries(&mut self) {
         for (key, library) in &mut self.libraries {
-            if let Library::Listing(receiver) = library {
-                *library = Library::Ready(receiver.recv().unwrap_or_default());
+            if let Library::Listing(known, receiver) = library {
+                let listed = receiver.recv().unwrap_or_default();
+                *library = Library::finished(known, listed);
                 self.fresh.push(key.clone());
             }
         }
@@ -1136,7 +1167,7 @@ impl PluginRack {
     pub fn own_preset(&self, key: &PluginKey, name: &str, category: &str) -> Option<OwnPreset> {
         let listed = match self.libraries.get(key)? {
             Library::Ready(listed) => listed.as_slice(),
-            Library::Listing(_) => &[],
+            Library::Listing(..) => &[],
         };
         listed
             .iter()

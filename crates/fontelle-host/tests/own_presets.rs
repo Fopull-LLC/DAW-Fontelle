@@ -738,3 +738,167 @@ fn a_folder_for_another_plugin_is_not_taken_for_this_ones() {
     let presets = host.own_presets(&info, &roots);
     assert!(!presets.iter().any(|p| p.name == "Half"), "{presets:?}");
 }
+
+// ----------------------------------------------------- library files
+//
+// > *"i tried a bunch of different instruments including obxf, amsynth, and
+// > cardinal synth. all of these have built in presets but our daws preset
+// > system did not detect them and let you swap between them with our preset
+// > bar."*
+
+fn roots_at(root: &Path) -> PresetRoots {
+    PresetRoots {
+        data: vec![root.to_path_buf()],
+        vst3: Vec::new(),
+    }
+}
+
+/// The presets listed from library files, as `(name, category)`.
+fn files_of(presets: &[fontelle_host::OwnPreset]) -> Vec<(&str, &str)> {
+    presets
+        .iter()
+        .filter(|p| matches!(p.source, OwnPresetSource::StateFile(_)))
+        .map(|p| (p.name.as_str(), p.category.as_str()))
+        .collect()
+}
+
+/// Vital's `.vital` files are its state: listed for a plugin whose state is
+/// JSON opening with the same two keys, and nothing else in the folder is.
+#[test]
+fn a_json_states_library_files_are_listed_when_they_begin_as_its_state_does() {
+    let (_, info) = clap_gain();
+    let root = scratch("json-library");
+    let folder = root
+        .join("fontelle-test-gain")
+        .join("Presets")
+        .join("Leads");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("Wob.vital"),
+        br#"{"author":"Mr. Bill","settings":{}}"#,
+    )
+    .unwrap();
+    std::fs::write(folder.join("notes.txt"), b"hello").unwrap();
+    std::fs::write(folder.join("Foreign.json"), br#"{"name":"x"}"#).unwrap();
+    // Vital's wavetables are JSON by the same author, and not presets.
+    std::fs::write(
+        folder.join("Didg.vitaltable"),
+        br#"{"author":"Matt Tytel","full_normalize":true}"#,
+    )
+    .unwrap();
+    let own = br#"{"author":"","settings":{"volume":0.5}}"#;
+    let presets = fontelle_host::list_own_presets(&info, &roots_at(&root), Some(own), &[]);
+    // Beside the two its discovery factory lists.
+    let listed: Vec<(&str, &str)> = files_of(&presets);
+    assert_eq!(listed, vec![("Wob", "Leads")]);
+}
+
+/// Cardinal Synth's patches are in `/usr/share/cardinal/patches`, a folder
+/// named for the family rather than for "Cardinal Synth" — and listed only
+/// because its state carries a patch.
+#[test]
+fn a_rack_patch_library_is_listed_for_a_plugin_whose_state_carries_one() {
+    let (_, info) = clap_gain();
+    let root = scratch("rack-library");
+    let folder = root.join("fontelle").join("patches").join("examples");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("Pluck.vcv"), br#"{"version":"2.0"}"#).unwrap();
+    std::fs::write(folder.join("Broken.vcv"), b"MThd").unwrap();
+    let own = b"__dpf_state_begin__\0patch\0KLUv\0__dpf_state_end__\0";
+    let presets = fontelle_host::list_own_presets(&info, &roots_at(&root), Some(own), &[]);
+    assert_eq!(files_of(&presets), vec![("Pluck", "examples")]);
+
+    // A plugin whose state carries no patch is not offered them.
+    let presets = fontelle_host::list_own_presets(&info, &roots_at(&root), Some(b"plain"), &[]);
+    assert!(files_of(&presets).is_empty(), "{presets:?}");
+}
+
+/// amsynth's LV2 has no preset its host can list: its banks are text files
+/// of parameters by name, and the name is its port's symbol.
+#[cfg(target_os = "linux")]
+fn bank_root(name: &str) -> PathBuf {
+    let root = scratch(name);
+    let folder = root.join("Fontelle Test Plain LV2").join("banks");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("Mine.amSynth.bank"),
+        "amSynth\n<preset> <name> Half\n<parameter> gain 0.5\n<preset> <name> Stranger\n<parameter> gain 0.5\n<parameter> wobble 1\n<preset> <name> Flipped\n<parameter> invert 1\n<preset> <name> Half\n<parameter> gain 0.75\n",
+    )
+    .unwrap();
+    std::fs::write(folder.join("readme"), "not a bank\n").unwrap();
+    root
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_lv2_plugins_bank_is_mapped_onto_its_ports_by_symbol() {
+    let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PLAIN_URI);
+    let info = info_of(&common::lv2_bundle(), &key);
+    let mut host = PluginHost::new();
+    let ports = host.lv2_control_ports(&info);
+    let symbols: Vec<(&str, u32, f32)> = ports
+        .iter()
+        .map(|p| (p.symbol.as_str(), p.index, p.default))
+        .collect();
+    assert_eq!(symbols, vec![("gain", 2, 1.0), ("invert", 3, 0.0)]);
+
+    let root = bank_root("bank-listed");
+    let presets = host.own_presets(&info, &roots_at(&root));
+    let listed: Vec<(&str, &str)> = presets
+        .iter()
+        .map(|p| (p.name.as_str(), p.category.as_str()))
+        .collect();
+    // A preset naming a parameter the plugin has no port for is some other
+    // plugin's, and is left out.
+    // Two of one name in a bank (amsynth's have dozens) are both offered.
+    assert_eq!(
+        listed,
+        vec![("Flipped", "Mine"), ("Half", "Mine"), ("Half (2)", "Mine")]
+    );
+    let OwnPresetSource::Lv2 { ports, state, .. } = &presets[1].source else {
+        panic!("a bank preset is a set of port values: {:?}", presets[1]);
+    };
+    // Every port, the ones it does not name at their defaults — what amsynth
+    // does with a preset older than a parameter.
+    assert_eq!(ports, &vec![(2, 0.5), (3, 0.0)]);
+    assert!(state.is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_bank_preset_is_loaded_into_the_running_instance() {
+    let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PLAIN_URI);
+    let info = info_of(&common::lv2_bundle(), &key);
+    let mut host = PluginHost::new();
+    let presets = host.own_presets(&info, &roots_at(&bank_root("bank-loaded")));
+    let half = presets.iter().find(|p| p.name == "Half").unwrap();
+    let mut plugin = host.open(&common::lv2_bundle(), &key).unwrap();
+    let mut processor = plugin.activate(48_000.0, 64).unwrap();
+    plugin.load_own_preset_with(&mut processor, half).unwrap();
+    assert_eq!(plugin.values().get(2), Some(0.5));
+}
+
+/// Vital keeps each pack as `<pack>/Presets/…`: the pack is the category,
+/// and the folder every pack has is not.
+#[test]
+fn a_packs_presets_folder_is_not_part_of_its_category() {
+    let (_, info) = clap_gain();
+    let root = scratch("packs");
+    let library = root.join("fontelle-test-gain");
+    for folder in [
+        library.join("Mr Bill").join("Presets"),
+        library
+            .join("Billain")
+            .join("Presets")
+            .join("Factory Presets"),
+    ] {
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Wob.vital"), br#"{"author":"x","settings":{}}"#).unwrap();
+    }
+    let own = br#"{"author":"","settings":{}}"#;
+    let presets = fontelle_host::list_own_presets(&info, &roots_at(&root), Some(own), &[]);
+    assert_eq!(
+        files_of(&presets),
+        vec![("Wob", "Billain / Factory Presets"), ("Wob", "Mr Bill")]
+    );
+}

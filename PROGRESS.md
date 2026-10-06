@@ -19,7 +19,66 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-05, latest — Vital's window refused instead of crashing,
+**As of 2026-10-06, latest — the presets OB-Xf, amsynth, Cardinal and
+Vital ship, in the preset menu.** v0.25.2 (not bumped). Ty, on v0.25.2:
+*"i tried a bunch of different instruments including obxf, amsynth, and
+cardinal synth. all of these have built in presets but our daws preset
+system did not detect them and let you swap between them with our preset
+bar."* Branch `fix/presets-detect`.
+
+- **Why nothing showed.** None of the three (nor Vital, in his screenshot)
+  offers its library through its format: amsynth's LV2 has no `pset` and no
+  programs (its banks are text files), Cardinal's patches are `.vcv` files
+  its state carries, Vital's presets are `.vital` files. And the `.fxp`
+  files OB-Xf ships were listed for its CLAP only: an LV2 plugin's library
+  was its Turtle and nothing else, so OB-Xf's LV2 offered "Init" alone. The
+  menu, the bank and the strip were not at fault — OB-Xf's CLAP did list its
+  488 through the session in v0.25.2 (checked by the new walk).
+- **Library files fitted into the plugin's own state** (`own_presets.rs`,
+  `state_from_file`): a file is offered only when the plugin's state, read
+  off the instance the rack already has, has the shape it fits — and fitted
+  into that state when chosen, the rest of the state kept. Each checked on
+  this machine by loading one and reading the state back:
+  - `.fxp` (OB-Xf): CLAP and VST 3 as before; **LV2** too — JUCE's LV2 keeps
+    the CLAP's bytes in its own base64 under `StateString`.
+  - `.vital` (Vital): its state *is* the JSON. CLAP whole; VST 3 inside the
+    VST 2 bank JUCE wraps it in (`VstW`/`FBCh`), and Vital takes the JSON
+    alone back; Vitalium's LV2 `urn:juce:stateBinary`. A file must open with
+    the state's own first two keys (`author`, `comments`): Vital's
+    wavetables, JSON by the same author, are not presets.
+  - `.vcv` (Cardinal): the `patch` DPF keeps in base64 — in DPF's CLAP state
+    and as `urn:distrho:patch` in LV2. JSON or Rack 2's zstd archive.
+    Looked for under the family's folder (`/usr/share/cardinal/patches` for
+    "Cardinal Synth"), for a patch only.
+- **amsynth's banks** (`.bank`, `amSynth` on the first line, under
+  `/usr/share/amsynth/banks` and `~/.local/share/amsynth/banks`) as the
+  values of the ports their parameter names are the symbols of
+  (`PluginHost::lv2_control_ports`); every port, the ones a preset leaves out
+  at their defaults. A preset naming a parameter with no such port is left
+  out. Filed under the bank; a name a bank repeats is "Name (2)".
+- **The rack lists an LV2 plugin's files on the listing thread** beside its
+  Turtle presets, with the state the instance was activated with
+  (`save_state_with`) and its control ports. A category no longer keeps a
+  `Presets`/`Patches` folder anywhere in its path (Vital: `Mr Bill`, not
+  `Mr Bill / Presets`).
+- **On this machine** (`what_each_real_instruments_preset_menu_lists`,
+  first and last of each loaded): OB-Xf CLAP 488, LV2 489 (Init + 488);
+  amsynth LV2 3508 (its 27 banks and the user's `default`); Cardinal, Cardinal Synth (CLAP) and Cardinal Synth (LV2)
+  24; Vital CLAP and VST 3 75. `a_real_instruments_patch_survives_…` passes
+  for OB-Xf (both), amsynth LV2 and Vital CLAP/VST 3.
+- **Left out**: VST 2 (Vital's, through the bridge, reported a parameter a
+  moment late and the document kept it wrong); amsynth's VST 2 (its
+  parameters are names, not symbols); Vitalium has nothing to list here (it
+  looks in `~/.local/share/vitalium`, which is empty — Vital's presets do
+  load into it). A test binary that loaded a Cardinal patch crashes in
+  Cardinal's static destructors at exit; the studio ends with `exit_now`,
+  which skips them.
+- Tests: the library-file sections of `fontelle-host/src/own_presets.rs`
+  (JUCE base64 against OB-Xf's real string, each carrier, banks) and
+  `fontelle-host/tests/own_presets.rs`, `fontelle-app/tests/plugin_programs.rs`
+  (`an_lv2_plugins_banks_are_offered_and_load`), and the walk above.
+
+**As of 2026-10-05 — Vital's window refused instead of crashing,
 and Compatible plugin graphics.** Still v0.25.1 (not bumped; for v0.25.2).
 The entry below found the cause; this makes the studio survive it.
 
