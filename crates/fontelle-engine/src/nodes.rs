@@ -178,6 +178,176 @@ impl SamplerNode {
     }
 }
 
+impl SamplerNode {
+    /// What one event does to the instrument, at the sample it is applied
+    /// on — see `process`, which cuts the block at each.
+    fn apply(&mut self, origin: fontelle_types::VoiceOrigin, event: &fontelle_types::TimedEvent) {
+        match &event.payload {
+            fontelle_types::EventPayload::NoteOn {
+                key,
+                velocity,
+                pan,
+                fine_pitch,
+                release,
+                mod_x,
+                mod_y,
+                voice_context,
+            } => {
+                // The origin is recorded on the voice, so a transport stop
+                // can cut what the song started without cutting what the
+                // player is holding.
+                //
+                // And this is the seam §16.5's five per-note properties
+                // cross. Only pan changes units on the way: the wire
+                // counts it in the document's bytes and everything below
+                // here in unit intervals, and `pan_unit` is the one
+                // conversion. The other four mean the same on both sides.
+                self.sampler.trigger(
+                    fontelle_core::NoteTrigger::new(*key, *velocity)
+                        .with_pan(fontelle_types::pan_unit(*pan))
+                        .with_fine_pitch(*fine_pitch)
+                        .with_release(*release)
+                        .with_mod_x(*mod_x)
+                        .with_mod_y(*mod_y)
+                        .in_context(*voice_context)
+                        .from_origin(origin),
+                );
+            }
+            fontelle_types::EventPayload::NoteOff { key, voice_context } => {
+                self.sampler.note_off(*key, *voice_context);
+            }
+            // A slide note: bend what is sounding, start nothing. The
+            // wire carries samples because that is the only clock the RT
+            // side has; the sampler wants seconds, and this is the one
+            // place that conversion happens.
+            fontelle_types::EventPayload::NoteSlide {
+                key,
+                glide_samples,
+                voice_context,
+            } => {
+                let seconds = if self.sample_rate > 0.0 {
+                    *glide_samples as f32 / self.sample_rate
+                } else {
+                    0.0
+                };
+                self.sampler.slide(*key, seconds, *voice_context);
+            }
+            // One slide of a note's path: bend the one note it names,
+            // the same seconds-from-samples conversion as above.
+            fontelle_types::EventPayload::NoteGlide {
+                key,
+                voice_context,
+                semitones,
+                glide_samples,
+            } => {
+                let seconds = if self.sample_rate > 0.0 {
+                    *glide_samples as f32 / self.sample_rate
+                } else {
+                    0.0
+                };
+                self.sampler
+                    .glide_note(*key, *voice_context, *semitones, seconds);
+            }
+            // The wheels (TDD §7.4). **Performance, not automation**: a
+            // `ParamValue` names one of this patch's own controls by its
+            // §8.2 address, while these three are the fact that a hand
+            // moved — so they go to the channel's controller state, and
+            // where they *land* is the patch's decision through the mod
+            // matrix. The mod wheel is CC 1 and nothing else is given a
+            // meaning here: a controller the matrix has no source for is
+            // dropped rather than invented onto something, which is the
+            // same rule the plugin host follows for a CLAP-only plugin.
+            fontelle_types::EventPayload::Controller { controller, value } => {
+                if *controller == MOD_WHEEL_CC {
+                    self.sampler.set_mod_wheel(f32::from(*value) / 127.0);
+                }
+            }
+            fontelle_types::EventPayload::PitchBend { value } => {
+                // MIDI's own asymmetry, undone: a full bend down is
+                // 8192 steps and a full bend up is 8191, and both are
+                // meant to reach the same interval.
+                let span = if *value < 0 { 8192.0 } else { 8191.0 };
+                self.sampler.set_pitch_bend(f32::from(*value) / span);
+            }
+            fontelle_types::EventPayload::ChannelPressure { value } => {
+                self.sampler.set_aftertouch(f32::from(*value) / 127.0);
+            }
+            // One note's own pressure, bend, slide (MPE, §4.2): to the
+            // voice sounding that key in that context, and nowhere if
+            // there is none — like a slide.
+            fontelle_types::EventPayload::NoteMod {
+                key,
+                voice_context,
+                pressure,
+                bend,
+                slide,
+                mod_x,
+            } => {
+                self.sampler.note_mod(
+                    *key,
+                    *voice_context,
+                    fontelle_core::NoteMod {
+                        pressure: *pressure,
+                        bend: *bend,
+                        slide: *slide,
+                        mod_x: *mod_x,
+                    },
+                );
+            }
+            // A channel's own level and placement, under automation
+            // (§12.2). Block-rate, like the mixer track's and for the same
+            // reason: the last value in the block wins, which is finer
+            // than a hand moves and a fraction of the cost of applying one
+            // per sample.
+            //
+            // Matching on the tail of the address is not a search: the
+            // compiler already resolved it to *this* node, so the only
+            // question left is which of this channel's two controls it
+            // names.
+            // NaN is the window's "back to the knob" (a chase before the
+            // first clip). A channel's knob is not held here to go back
+            // to, so it is left where automation last put it — never
+            // turned into a NaN gain.
+            fontelle_types::EventPayload::ParamValue { value, .. } if !value.is_finite() => {}
+            fontelle_types::EventPayload::ParamValue { target, value } => {
+                let value = *value as f32;
+                let address = target.as_str();
+                // A knob **inside** the instrument, addressed as
+                // `channel:<id>/patch/...` — the panel's own address for
+                // it, kept whole. Everything from `patch/` onward is what
+                // `patch_params` reads, and taking a subslice of the
+                // address rather than building a string is what keeps this
+                // allocation-free (INVARIANT 1).
+                if let Some(at) = address.find("/patch/") {
+                    self.sampler.set_patch_param(&address[at + 1..], value);
+                } else if address.ends_with("/gain") {
+                    self.sampler.set_gain_db(
+                        CHANNEL_GAIN_MIN_DB + value * (CHANNEL_GAIN_MAX_DB - CHANNEL_GAIN_MIN_DB),
+                    );
+                } else if address.ends_with("/pan") {
+                    self.sampler.set_pan(value * 2.0 - 1.0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Renders frames `from..to` of the block into the scratch pair, with
+    /// the transport's position at `from` — one stretch between two events.
+    fn render_span(&mut self, from: usize, to: usize, channels: usize, clock: (f32, i64)) {
+        if to <= from {
+            return;
+        }
+        self.sampler.set_clock(fontelle_core::RenderClock {
+            bpm: clock.0,
+            position_sample: (clock.1 + from as i64).max(0) as u64,
+        });
+        let (first, second) = self.scratch.split_at_mut(self.scratch_frames);
+        let mut span: [&mut [f32]; MAX_CHANNELS] = [&mut first[from..to], &mut second[from..to]];
+        self.sampler.render(&self.store, &mut span[..channels]);
+    }
+}
+
 impl AudioNode for SamplerNode {
     fn prepare(&mut self, ctx: &PrepareContext) {
         self.sample_rate = ctx.sample_rate;
@@ -209,166 +379,16 @@ impl AudioNode for SamplerNode {
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
-        for (origin, event) in ctx.events_with_origin() {
-            match &event.payload {
-                fontelle_types::EventPayload::NoteOn {
-                    key,
-                    velocity,
-                    pan,
-                    fine_pitch,
-                    release,
-                    mod_x,
-                    mod_y,
-                    voice_context,
-                } => {
-                    // The origin is recorded on the voice, so a transport stop
-                    // can cut what the song started without cutting what the
-                    // player is holding.
-                    //
-                    // And this is the seam §16.5's five per-note properties
-                    // cross. Only pan changes units on the way: the wire
-                    // counts it in the document's bytes and everything below
-                    // here in unit intervals, and `pan_unit` is the one
-                    // conversion. The other four mean the same on both sides.
-                    self.sampler.trigger(
-                        fontelle_core::NoteTrigger::new(*key, *velocity)
-                            .with_pan(fontelle_types::pan_unit(*pan))
-                            .with_fine_pitch(*fine_pitch)
-                            .with_release(*release)
-                            .with_mod_x(*mod_x)
-                            .with_mod_y(*mod_y)
-                            .in_context(*voice_context)
-                            .from_origin(origin),
-                    );
-                }
-                fontelle_types::EventPayload::NoteOff { key, voice_context } => {
-                    self.sampler.note_off(*key, *voice_context);
-                }
-                // A slide note: bend what is sounding, start nothing. The
-                // wire carries samples because that is the only clock the RT
-                // side has; the sampler wants seconds, and this is the one
-                // place that conversion happens.
-                fontelle_types::EventPayload::NoteSlide {
-                    key,
-                    glide_samples,
-                    voice_context,
-                } => {
-                    let seconds = if self.sample_rate > 0.0 {
-                        *glide_samples as f32 / self.sample_rate
-                    } else {
-                        0.0
-                    };
-                    self.sampler.slide(*key, seconds, *voice_context);
-                }
-                // One slide of a note's path: bend the one note it names,
-                // the same seconds-from-samples conversion as above.
-                fontelle_types::EventPayload::NoteGlide {
-                    key,
-                    voice_context,
-                    semitones,
-                    glide_samples,
-                } => {
-                    let seconds = if self.sample_rate > 0.0 {
-                        *glide_samples as f32 / self.sample_rate
-                    } else {
-                        0.0
-                    };
-                    self.sampler
-                        .glide_note(*key, *voice_context, *semitones, seconds);
-                }
-                // The wheels (TDD §7.4). **Performance, not automation**: a
-                // `ParamValue` names one of this patch's own controls by its
-                // §8.2 address, while these three are the fact that a hand
-                // moved — so they go to the channel's controller state, and
-                // where they *land* is the patch's decision through the mod
-                // matrix. The mod wheel is CC 1 and nothing else is given a
-                // meaning here: a controller the matrix has no source for is
-                // dropped rather than invented onto something, which is the
-                // same rule the plugin host follows for a CLAP-only plugin.
-                fontelle_types::EventPayload::Controller { controller, value } => {
-                    if *controller == MOD_WHEEL_CC {
-                        self.sampler.set_mod_wheel(f32::from(*value) / 127.0);
-                    }
-                }
-                fontelle_types::EventPayload::PitchBend { value } => {
-                    // MIDI's own asymmetry, undone: a full bend down is
-                    // 8192 steps and a full bend up is 8191, and both are
-                    // meant to reach the same interval.
-                    let span = if *value < 0 { 8192.0 } else { 8191.0 };
-                    self.sampler.set_pitch_bend(f32::from(*value) / span);
-                }
-                fontelle_types::EventPayload::ChannelPressure { value } => {
-                    self.sampler.set_aftertouch(f32::from(*value) / 127.0);
-                }
-                // One note's own pressure, bend, slide (MPE, §4.2): to the
-                // voice sounding that key in that context, and nowhere if
-                // there is none — like a slide.
-                fontelle_types::EventPayload::NoteMod {
-                    key,
-                    voice_context,
-                    pressure,
-                    bend,
-                    slide,
-                    mod_x,
-                } => {
-                    self.sampler.note_mod(
-                        *key,
-                        *voice_context,
-                        fontelle_core::NoteMod {
-                            pressure: *pressure,
-                            bend: *bend,
-                            slide: *slide,
-                            mod_x: *mod_x,
-                        },
-                    );
-                }
-                // A channel's own level and placement, under automation
-                // (§12.2). Block-rate, like the mixer track's and for the same
-                // reason: the last value in the block wins, which is finer
-                // than a hand moves and a fraction of the cost of applying one
-                // per sample.
-                //
-                // Matching on the tail of the address is not a search: the
-                // compiler already resolved it to *this* node, so the only
-                // question left is which of this channel's two controls it
-                // names.
-                // NaN is the window's "back to the knob" (a chase before the
-                // first clip). A channel's knob is not held here to go back
-                // to, so it is left where automation last put it — never
-                // turned into a NaN gain.
-                fontelle_types::EventPayload::ParamValue { value, .. } if !value.is_finite() => {}
-                fontelle_types::EventPayload::ParamValue { target, value } => {
-                    let value = *value as f32;
-                    let address = target.as_str();
-                    // A knob **inside** the instrument, addressed as
-                    // `channel:<id>/patch/...` — the panel's own address for
-                    // it, kept whole. Everything from `patch/` onward is what
-                    // `patch_params` reads, and taking a subslice of the
-                    // address rather than building a string is what keeps this
-                    // allocation-free (INVARIANT 1).
-                    if let Some(at) = address.find("/patch/") {
-                        self.sampler.set_patch_param(&address[at + 1..], value);
-                    } else if address.ends_with("/gain") {
-                        self.sampler.set_gain_db(
-                            CHANNEL_GAIN_MIN_DB
-                                + value * (CHANNEL_GAIN_MAX_DB - CHANNEL_GAIN_MIN_DB),
-                        );
-                    } else if address.ends_with("/pan") {
-                        self.sampler.set_pan(value * 2.0 - 1.0);
-                    }
-                }
-                _ => {}
-            }
-        }
-        // Where the transport is, handed down before the render so that a
-        // synced LFO's rate follows a tempo change and a free-running one's
-        // phase follows the position (§3.5). Both numbers are already on the
-        // context; this is only carrying them one level further in.
-        self.sampler.set_clock(fontelle_core::RenderClock {
-            bpm: ctx.transport.bpm,
-            position_sample: ctx.transport.position_sample.max(0) as u64,
-        });
-
+        // **Each event on its own sample.** The block is rendered in
+        // stretches cut at the events' offsets, so a note whose event sits
+        // at offset `k` starts at `k` — it used to start at the top of the
+        // block, up to a block early, which smeared tight drums. Every
+        // built-in instrument is a `Sampler` in this node, so this is all of
+        // them. No allocation: the two event lists are walked together in
+        // place, merged by offset, the timeline's first at a tie (the order
+        // `ProcessContext::events` gives, and why: the live player plays
+        // *over* the arrangement).
+        //
         // Rendered into scratch and added, not written straight to the bus:
         // several instruments share one output, and `Sampler::render` clears
         // what it is given because that is the contract a plugin host expects
@@ -383,10 +403,50 @@ impl AudioNode for SamplerNode {
         let frames = ctx.outputs.first().map_or(0, |o| o.len());
         let frames = frames.min(self.scratch_frames);
         let channels = ctx.outputs.len().min(MAX_CHANNELS);
+        // Where the transport is, handed down before each stretch so that a
+        // synced LFO's rate follows a tempo change and a free-running one's
+        // phase follows the position (§3.5).
+        let clock = (ctx.transport.bpm, ctx.transport.position_sample);
+        let start = ctx.sample_range.start;
+        let offset = |event: &fontelle_types::TimedEvent| {
+            usize::try_from(event.sample - start)
+                .unwrap_or(0)
+                .min(frames)
+        };
+        let node = ctx.node;
+        let mut timeline = ctx
+            .all_events
+            .iter()
+            .filter(|e| e.target == node)
+            .peekable();
+        let mut live = ctx
+            .live_events
+            .iter()
+            .filter(|e| e.target == node)
+            .peekable();
+        let mut at = 0;
+        loop {
+            let take_live = match (timeline.peek(), live.peek()) {
+                (None, None) => break,
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                (Some(t), Some(l)) => offset(l) < offset(t),
+            };
+            let (origin, event) = if take_live {
+                (fontelle_types::VoiceOrigin::Live, live.next())
+            } else {
+                (fontelle_types::VoiceOrigin::Timeline, timeline.next())
+            };
+            let Some(event) = event else { break };
+            let here = offset(event).max(at);
+            self.render_span(at, here, channels, clock);
+            at = here;
+            self.apply(origin, event);
+        }
+        self.render_span(at, frames, channels, clock);
         let (first, second) = self.scratch.split_at_mut(self.scratch_frames);
         let mut rendered: [&mut [f32]; MAX_CHANNELS] =
             [&mut first[..frames], &mut second[..frames]];
-        self.sampler.render(&self.store, &mut rendered[..channels]);
         // After the render, so the count is what actually sounded in this
         // block rather than what was asked for before it: a note-on that ran
         // out of voices is not a voice.
