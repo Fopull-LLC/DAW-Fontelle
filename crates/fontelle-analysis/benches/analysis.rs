@@ -4,7 +4,8 @@
 //! `cargo bench -p fontelle-analysis --bench analysis`
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use fontelle_analysis::testsignals::melody_and_chords;
+use fontelle_analysis::mono::{PyinParams, pyin, segment};
+use fontelle_analysis::testsignals::{melody_and_chords, vibrato_melody};
 use fontelle_analysis::transcribe::NoteParams;
 use fontelle_analysis::transcribe::basic_pitch::BasicPitch;
 use std::hint::black_box;
@@ -28,6 +29,16 @@ fn bench(c: &mut Criterion) {
     let at_44k = three_minutes(44_100);
     group.bench_function("44100_with_resampling", |b| {
         b.iter(|| black_box(model.transcribe(&at_44k, 44_100, &params).unwrap()))
+    });
+    group.finish();
+
+    // The monophonic path (plan §3.10: a 3-minute vocal under 3 s).
+    let mut group = c.benchmark_group("pyin_3_minutes");
+    group.sample_size(10);
+    let piece = vibrato_melody(44_100).samples;
+    let vocal: Vec<f32> = piece.iter().copied().cycle().take(180 * 44_100).collect();
+    group.bench_function("44100_with_segmentation", |b| {
+        b.iter(|| black_box(segment(&pyin(&vocal, 44_100, &PyinParams::default()))))
     });
     group.finish();
 }

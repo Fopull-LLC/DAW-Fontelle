@@ -17,6 +17,7 @@ default = ["model"]
 model = ["dep:tract-onnx"]
 
 [dependencies]
+fontelle-dsp = { path = "../fontelle-dsp" }
 # Resampling to basic-pitch's 22 050 Hz.
 rubato = "5.0.0"
 audioadapter-buffers = "5.2.0"

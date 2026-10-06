@@ -1265,6 +1265,7 @@ version = "0.25.2"
 dependencies = [
  "audioadapter-buffers",
  "criterion",
+ "fontelle-dsp",
  "rubato",
  "serde_json",
  "sha2",

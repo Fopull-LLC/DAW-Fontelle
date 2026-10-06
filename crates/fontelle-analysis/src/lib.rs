@@ -4,6 +4,7 @@
 //! confidences. Nothing here touches the UI, the engine or the disk, and none
 //! of it may run on the RT thread (INVARIANT 1) — it allocates freely.
 
+pub mod mono;
 pub mod resample;
 pub mod testsignals;
 pub mod transcribe;

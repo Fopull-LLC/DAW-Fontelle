@@ -180,3 +180,86 @@ pub fn reference_fixtures() -> Vec<Fixture> {
         melody_and_chords(22_050),
     ]
 }
+
+/// A voice whose pitch is any curve: twelve partials falling as `1/k`,
+/// 10 ms in and 30 ms out, `cents(t)` (MIDI cents, 6900 = A4) for `t` in
+/// seconds from `start`, sounding until `end`, in `seconds` of audio.
+pub fn sung_curve(
+    sample_rate: u32,
+    seconds: f64,
+    start: f64,
+    end: f64,
+    cents: impl Fn(f64) -> f64,
+) -> Vec<f32> {
+    let sr = f64::from(sample_rate);
+    let mut out = vec![0.0f32; (seconds * sr).round() as usize];
+    let first = (start * sr).round() as usize;
+    let last = ((end * sr).round() as usize).min(out.len());
+    let length = end - start;
+    let mut phase = 0.0f64;
+    for (i, sample) in out.iter_mut().enumerate().take(last).skip(first) {
+        let t = (i - first) as f64 / sr;
+        let f0 = 440.0 * 2f64.powf((cents(t) - 6900.0) / 1200.0);
+        phase += f0 / sr;
+        let env = if t < 0.010 {
+            0.5 - 0.5 * (std::f64::consts::PI * t / 0.010).cos()
+        } else if t > length - 0.030 {
+            let r = ((length - t) / 0.030).max(0.0);
+            0.5 - 0.5 * (std::f64::consts::PI * r).cos()
+        } else {
+            1.0
+        };
+        let mut s = 0.0;
+        for k in 1..=12 {
+            if f0 * f64::from(k) >= sr * 0.45 {
+                break;
+            }
+            s += (TAU * phase * f64::from(k)).sin() / f64::from(k);
+        }
+        *sample = (0.2 * env * s) as f32;
+    }
+    out
+}
+
+/// The pitch of [`sung_glide`] `t` seconds into it: G3 up a fifth to D4,
+/// exponentially, over 1.5 s.
+pub fn sung_glide_cents(t: f64) -> f64 {
+    5500.0 + 700.0 * (t / 1.5).clamp(0.0, 1.0)
+}
+
+/// A sung glissando, [`sung_glide_cents`], from 0.3 s to 1.8 s of 2.1 s.
+pub fn sung_glide(sample_rate: u32) -> Vec<f32> {
+    sung_curve(sample_rate, 2.1, 0.3, 1.8, sung_glide_cents)
+}
+
+/// The slow part of [`drifting_vibrato_note`] `t` seconds in: A3, rising
+/// 60 cents across its 2 s.
+pub fn drift_cents(t: f64) -> f64 {
+    5700.0 + 30.0 * t
+}
+
+/// The vibrato of [`drifting_vibrato_note`]: ±30 cents at 5.5 Hz.
+pub fn vibrato_cents(t: f64) -> f64 {
+    30.0 * (TAU * 5.5 * t).sin()
+}
+
+/// One sung A3, drifting sharp ([`drift_cents`]) with a steady vibrato
+/// ([`vibrato_cents`]), from 0.25 s to 2.25 s of 2.5 s.
+pub fn drifting_vibrato_note(sample_rate: u32) -> Vec<f32> {
+    sung_curve(sample_rate, 2.5, 0.25, 2.25, |t| {
+        drift_cents(t) + vibrato_cents(t)
+    })
+}
+
+/// White noise, uniform, deterministic (a xorshift), at `level` peak.
+pub fn noise(sample_rate: u32, seconds: f64, level: f32) -> Vec<f32> {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    (0..(seconds * f64::from(sample_rate)).round() as usize)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * level
+        })
+        .collect()
+}
