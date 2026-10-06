@@ -110,11 +110,16 @@ fn the_writer_thread_drains_and_stopping_it_closes_an_open_take() {
         ..AnalyzeConfig::new()
     };
     capture.arm(true);
-    // Far more than the ring holds, a ring's worth at a time with time
-    // between for the thread to drain: nothing is lost.
+    // Far more than the ring holds, most of a ring at a time, each fed once
+    // the thread has drained the last: nothing is lost. (It waits on the
+    // drain rather than for a fixed time, which a busy CI runner outran.)
     for _ in 0..4 {
         feed(&capture, &now, 300, 0.3, 0, false);
-        std::thread::sleep(InsertTakeWriter::PERIOD * 5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while capture.unread_frames() > 0 {
+            assert!(std::time::Instant::now() < deadline, "the thread drains");
+            std::thread::sleep(InsertTakeWriter::PERIOD);
+        }
     }
     assert!(writer.poll().is_empty(), "the take is still running");
     let takes: Vec<_> = writer
@@ -123,9 +128,9 @@ fn the_writer_thread_drains_and_stopping_it_closes_an_open_take() {
         .map(|t| t.expect("written"))
         .collect();
     assert_eq!(takes.len(), 1);
-    assert_eq!(takes[0].frames, 4 * 300 * 128);
-    assert_eq!(takes[0].dropped_frames, 0);
     assert_eq!(capture.dropped_frames(), 0);
+    assert_eq!(takes[0].dropped_frames, 0);
+    assert_eq!(takes[0].frames, 4 * 300 * 128);
     let audio = fontelle_assets::import_audio(&takes[0].path).expect("reads back");
     assert_eq!(audio.frames, takes[0].frames);
     std::fs::remove_dir_all(&dir).ok();

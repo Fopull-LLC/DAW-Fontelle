@@ -168,6 +168,13 @@ impl AnalyzeCapture {
             .saturating_sub(self.take_start.load(Ordering::Relaxed))
     }
 
+    /// Frames pushed and not yet drained: how far behind the writer is.
+    pub fn unread_frames(&self) -> u64 {
+        self.written
+            .load(Ordering::Acquire)
+            .saturating_sub(self.read.load(Ordering::Acquire))
+    }
+
     /// Frames lost to a full ring since it was made.
     pub fn dropped_frames(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
