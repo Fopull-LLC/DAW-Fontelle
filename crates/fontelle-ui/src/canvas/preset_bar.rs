@@ -306,6 +306,9 @@ pub struct PluginHeaderView {
     /// The strip's size in the plugin window's own pixels.
     pub width: u32,
     pub height: u32,
+    /// How tall the plugin's area under the strip is, in the same pixels —
+    /// the room the preset drop-down has to drop into.
+    pub area: u32,
     /// The window's scale: its pixels per logical one.
     pub scale: f32,
     /// Where the pointer is over the strip, in its pixels.

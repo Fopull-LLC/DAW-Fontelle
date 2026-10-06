@@ -16,6 +16,7 @@ mod mixer;
 mod notepad;
 mod overlays;
 mod piano_roll;
+mod plugin_menu;
 mod prefabs;
 mod preset_bar;
 mod rack;
@@ -129,6 +130,10 @@ pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
     job_card_layout, project_caption, save_prompt_layout, saved_flash, toast_layout,
+};
+pub use plugin_menu::{
+    NEXT_PRESET, PREVIOUS_PRESET, PluginMenuInput, PluginMenuKey, PluginMenuOutcome, PluginMenuRow,
+    PluginPresetMenu, SHOW_IN_BROWSER, plugin_preset_menu,
 };
 pub use preset_bar::{
     NO_PRESET, PLUGIN_HEADER_HEIGHT, PLUGIN_PRESETS_HEADING, PRESET_MENU_HEADING, PluginHeaderView,

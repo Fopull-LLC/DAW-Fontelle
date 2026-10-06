@@ -485,6 +485,47 @@ fn a_press_on_the_strip_comes_back_naming_its_device() {
     );
 }
 
+/// > *"when clicking the preset dropdown on the top of the plugin window it
+/// > didnt drop down any of those presets for me to select there"*
+///
+/// The drop-down is put up in the plugin's own window, over its area, and
+/// what is done to it there comes back naming the device.
+#[test]
+fn the_strips_drop_down_is_put_up_in_the_plugins_window_and_answers_from_there() {
+    use fontelle_host::OverlayEvent;
+    use fontelle_ui::canvas::PluginMenuInput;
+    let dir = scratch("header-menu");
+    let (mut session, face) = with_face_open(&dir);
+    let slot = fontelle_app::plugin_slots(session.project())[0];
+    let header = session.plugin_headers().remove(0);
+    assert!(header.area > 0, "the room under the strip: {header:?}");
+
+    let pixels = vec![128u8; 100 * 80 * 4];
+    session.show_plugin_menu(face, 10, header.height as i32, &pixels, 100, 80);
+    assert_eq!(
+        session.plugin_rack_mut().overlay(slot),
+        Some((10, header.height as i32, 100, 80))
+    );
+    session
+        .plugin_rack_mut()
+        .overlay_event(slot, OverlayEvent::Press(20, 40));
+    session
+        .plugin_rack_mut()
+        .overlay_event(slot, OverlayEvent::Scroll(1));
+    session.tick_plugin_editors();
+    assert_eq!(
+        session.take_plugin_menu_input(),
+        vec![
+            (face, PluginMenuInput::Press(20.0, 40.0)),
+            (face, PluginMenuInput::Scroll(1)),
+        ]
+    );
+    assert!(session.take_plugin_menu_input().is_empty(), "taken once");
+
+    session.hide_plugin_menu(face);
+    assert_eq!(session.plugin_rack_mut().overlay(slot), None);
+}
+
 /// A closed editor has no strip.
 #[test]
 fn a_closed_editor_has_no_strip() {

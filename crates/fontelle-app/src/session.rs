@@ -8811,6 +8811,7 @@ impl StudioHost for Session {
                     bar: self.preset_bar(device),
                     width: header.width,
                     height: header.height,
+                    area: header.area,
                     scale: header.scale,
                     hover: header.hover.map(|(x, y)| (x as f32, y as f32)),
                 })
@@ -8840,6 +8841,58 @@ impl StudioHost for Session {
             .into_iter()
             .filter_map(|(slot, x, y)| Some((self.device_of_slot(slot)?, x as f32, y as f32)))
             .collect()
+    }
+
+    fn take_plugin_menu_input(
+        &mut self,
+    ) -> Vec<(PresetDevice, fontelle_ui::canvas::PluginMenuInput)> {
+        use fontelle_host::{OverlayEvent, OverlayKey};
+        use fontelle_ui::canvas::{PluginMenuInput, PluginMenuKey};
+        self.plugins
+            .take_overlay_events()
+            .into_iter()
+            .filter_map(|(slot, event)| {
+                let input = match event {
+                    OverlayEvent::Press(x, y) => PluginMenuInput::Press(x as f32, y as f32),
+                    OverlayEvent::Pointer(x, y) => PluginMenuInput::Pointer(x as f32, y as f32),
+                    OverlayEvent::Scroll(notches) => PluginMenuInput::Scroll(notches),
+                    OverlayEvent::Lost => PluginMenuInput::Lost,
+                    OverlayEvent::Key(key) => PluginMenuInput::Key(match key {
+                        OverlayKey::Text(text) => PluginMenuKey::Text(text),
+                        OverlayKey::Backspace => PluginMenuKey::Backspace,
+                        OverlayKey::Enter => PluginMenuKey::Enter,
+                        OverlayKey::Escape => PluginMenuKey::Escape,
+                        OverlayKey::Up => PluginMenuKey::Up,
+                        OverlayKey::Down => PluginMenuKey::Down,
+                        OverlayKey::PageUp => PluginMenuKey::PageUp,
+                        OverlayKey::PageDown => PluginMenuKey::PageDown,
+                        OverlayKey::Home => PluginMenuKey::Home,
+                        OverlayKey::End => PluginMenuKey::End,
+                    }),
+                };
+                Some((self.device_of_slot(slot)?, input))
+            })
+            .collect()
+    }
+
+    fn show_plugin_menu(
+        &mut self,
+        device: PresetDevice,
+        x: i32,
+        y: i32,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) {
+        if let Some(slot) = self.plugin_slot_of(device) {
+            self.plugins.show_overlay(slot, (x, y), rgba, width, height);
+        }
+    }
+
+    fn hide_plugin_menu(&mut self, device: PresetDevice) {
+        if let Some(slot) = self.plugin_slot_of(device) {
+            self.plugins.hide_overlay(slot);
+        }
     }
 
     fn open_presets_for(&mut self, device: PresetDevice) {

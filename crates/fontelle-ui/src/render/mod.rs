@@ -3332,6 +3332,55 @@ pub fn plugin_header_pixels(
     headless.render(&scene, width, height, theme.palette.panel_header)
 }
 
+/// The preset drop-down a plugin window's strip drops, as pixels the size of
+/// its place in that window ([`PluginPresetMenu::pixel_rect`]) — RGBA, row
+/// after row — for the window to put up over the plugin
+/// (`fontelle_host::PluginWindow::show_overlay`). The studio's own menu,
+/// drawn by the same code, with the row the pointer or the arrows are on
+/// lit.
+///
+/// Shapes the captions of the rows on screen only: a bank of three thousand
+/// patches is a menu of thirty rows at a time.
+///
+/// [`PluginPresetMenu::pixel_rect`]: crate::canvas::PluginPresetMenu::pixel_rect
+pub fn plugin_menu_pixels(
+    headless: &mut Headless,
+    theme: &Theme,
+    labels: &mut Labels,
+    text: &mut crate::text::TextContext,
+    menu: &crate::canvas::PluginPresetMenu,
+) -> Result<Vec<u8>, RenderError> {
+    let laid = &menu.menu;
+    for (row, entry) in laid.rows.iter().zip(&laid.entries) {
+        if !row.is_empty() {
+            labels.ensure(&entry.label, &theme.font, text);
+        }
+    }
+    let mut inner = Scene::new();
+    draw_context_menu(&mut inner, theme, labels, Some(laid), None);
+    if let Some(row) = menu.hover().and_then(|index| laid.rows.get(index))
+        && !row.is_empty()
+    {
+        let p = theme.palette.solid();
+        fill_rect_rounded(
+            &mut inner,
+            *row,
+            theme.metrics.corner_radius,
+            p.accent.with_alpha(0x38),
+        );
+        stroke_rect_rounded(&mut inner, *row, theme.metrics.corner_radius, 1.0, p.accent);
+    }
+    let (_, _, width, height) = menu.pixel_rect();
+    let s = f64::from(menu.scale());
+    let frame = laid.frame;
+    let mut scene = Scene::new();
+    scene.append(
+        &inner,
+        Some(Affine::scale(s) * Affine::translate((-f64::from(frame.x), -f64::from(frame.y)))),
+    );
+    headless.render(&scene, width, height, theme.palette.solid().border)
+}
+
 /// The preset bar, across the right-hand end of an editor window's header
 /// (`docs/flopsynth-plan.md` §P.7).
 ///
