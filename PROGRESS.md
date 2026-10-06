@@ -19,7 +19,79 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-06, latest — five arrangement and studio requests from Ty.**
+**As of 2026-10-06, latest — the plugin window's preset drop-down, the
+browser's own-preset press, and clip names at the top.** Still v0.25.2 (not
+bumped). Branch `fix/strip-presets-clip-names`. Ty, on Fontelle Preview:
+*"when clicking the preset dropdown on the top of the plugin window it didnt
+drop down any of those presets for me to select there or hit random preset
+to get a random one, it just opened the preset tab on the left"*; Cardinal's
+patches in that tab said *"No such file or directory (os error 2)"*; and
+*"the names of the arrangement clips also are slightly too low"*.
+
+- **A drop-down in the plugin's own window.** The strip's name (or
+  category) drops a list under it, over the plugin's area: the user's
+  presets, the plugin's library by category, the one playing marked
+  (opened scrolled to it), Random, Previous and Next (those three leave it
+  up and move the mark), stars, typing to search (Backspace, Enter takes the
+  lit row or the first hit, arrows, Page/Home/End, the wheel), and *Show in
+  browser* at the foot for the old behaviour. A press off it shuts it; one
+  on the name again shuts it; one on the strip's other controls shuts it and
+  is theirs (`canvas::PluginPresetMenu`, `PluginMenuOutcome`). A window too
+  small for a row gets the browser, as before.
+- **How it gets into the plugin's window**: a picture the studio renders
+  (`render::plugin_menu_pixels`, the studio's own menu drawing plus a lit
+  row) and puts up with `fontelle_host::PluginWindow::show_overlay`, which
+  also hands it the pointer and the keyboard until `hide_overlay`; what is
+  done comes back as `GuiPoll::overlay` (`OverlayEvent`, `OverlayKey`) in
+  the frame's pixels. **X11**: a child window of the frame stacked over the
+  strip and the plugin's window, with a pointer and keyboard grab (a press
+  on the plugin's window is another client's otherwise, and the menu could
+  not be clicked away); keys through the server's keymap (a space is a
+  letter there, not play). **Win32**: a child `HWND` over the others (the
+  plugin's area is `WS_CLIPSIBLINGS` now), `SetCapture`/`SetFocus`,
+  `WM_CHAR` for text, `WM_CAPTURECHANGED` is `Lost`. **macOS**: a flipped
+  view over the whole content view drawing the picture at the menu's
+  place, so a press anywhere in the window is its; first responder for
+  keys. Plumbing: `PluginRack::{show_overlay, hide_overlay,
+  take_overlay_events}`, `StudioHost::{show_plugin_menu, hide_plugin_menu,
+  take_plugin_menu_input}`, `PluginHeaderView::area`.
+- **The browser's press on a plugin's own preset loads it.** A press on a
+  Presets-tab row went to `preview_preset`, the Sounds tab's listen, which
+  read the row's path as a soundfont — empty for a plugin's own preset,
+  hence *": No such file or directory"*. In the Presets tab a press now
+  loads the preset onto what it is for (`install_bank_preset`, one undo) and
+  the double-click's second press does nothing more. A preset with no
+  category (Cardinal's top-level patches) is under the plugin's name, not a
+  blank heading.
+- **A clip's name across its top**, 2 px down, one line, still centred
+  between the grips, on a plate of the block's colour so it reads over notes
+  and waves (not on an automation block, whose curve is the content). The
+  press on it is the same rectangle (`clip_name_slot`, `clip_name_rect`).
+- **Checked**: `fontelle-host/tests/gui_overlay.rs` on a private Xvfb (a
+  downloaded `xorg-server-xvfb`, never Ty's display): drawn over the
+  plugin's window, presses and keys back in frame pixels, a space typed is
+  not play; `plugin_editor` with `PROBE_MENU=<png>` put the real menu over
+  Dragonfly Room's OpenGL editor and reported pointer, keys, wheel and
+  presses on and off it (OB-Xf's JUCE editor dies on a bare Xvfb with
+  `BadAtom`, with or without the menu). Real-plugin walk
+  `each_real_instruments_own_presets_load_from_the_browser`: Cardinal Synth
+  (CLAP, LV2), OB-Xf (CLAP, LV2), amsynth LV2 and Vital (CLAP, VST 3) each
+  load their first and last own preset by a browser press, no blank
+  heading. Windows and macOS are lint-checked only.
+- Tests: `fontelle-ui/tests/plugin_menu.rs`, `clip_names.rs`
+  (`the_name_is_anchored_near_the_top…`), `render_headless.rs`
+  (`clip-names-top-{dark,light}`), `fontelle-app/tests/plugin_presets.rs`
+  (`the_strips_drop_down_is_put_up…`), `plugin_programs.rs` (the browser
+  press, the heading); headless shots `plugin-preset-menu-{dark,light}`,
+  `plugin-preset-menu-long`.
+- **Not done**: the whole studio was not run with a plugin window open (no
+  display allowed here; the studio's wgpu found no adapter on Xvfb), so the
+  drop-down has been seen in a real plugin window only through the probe.
+  Under a Wayland session the X grab does not see a click on the studio's
+  own (Wayland) window, so the drop-down stays up until Escape or a click in
+  the plugin's window.
+
+**As of 2026-10-06 — five arrangement and studio requests from Ty.**
 Still v0.25.2 (not bumped). Branch `feature/arrangement-ux`.
 
 - **Shift-dragging several clips' ends** loops each at its own length. One
