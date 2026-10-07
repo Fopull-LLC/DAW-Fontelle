@@ -1515,6 +1515,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontelle-testsinger"
+version = "0.26.1"
+dependencies = [
+ "fontelle-singer-abi",
+]
+
+[[package]]
 name = "fontelle-testvst3"
 version = "0.26.1"
 dependencies = [

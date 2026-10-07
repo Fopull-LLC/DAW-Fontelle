@@ -133,6 +133,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         soloed: false,
         named_keys: false,
         ab: Default::default(),
+        vocal: None,
     });
     let mut notes = Arena::default();
     notes.insert(Note {
@@ -148,6 +149,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     });
     project.clips.insert(Clip {
         name: None,
@@ -1147,6 +1149,7 @@ fn an_empty_slot_has_no_editor_and_says_so() {
             soloed: false,
             named_keys: false,
             ab: Default::default(),
+            vocal: None,
         },
     ));
     assert!(!rack.has_editor(slot));

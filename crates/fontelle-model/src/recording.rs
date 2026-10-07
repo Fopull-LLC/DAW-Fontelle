@@ -149,6 +149,7 @@ pub fn notes_from_looped_capture(
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         });
     }
 

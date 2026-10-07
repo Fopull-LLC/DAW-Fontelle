@@ -87,13 +87,18 @@ fn saving_over_an_existing_project_leaves_no_temporary_behind() {
 #[test]
 fn the_saved_document_stamps_the_format_version() {
     let bundle = scratch("version");
-    save_project(&a_project(), &bundle).expect("save");
+    let project = a_project();
+    save_project(&project, &bundle).expect("save");
     let text = std::fs::read_to_string(bundle.join("project.json")).unwrap();
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // The oldest format that holds the song (`Project::format_needed`):
+    // a song with no voice in it is still the format-1 song every earlier
+    // build opens (`tests/vocal.rs` has the one that sings).
     assert_eq!(
         json["meta"]["format_version"],
-        serde_json::json!(PROJECT_FORMAT_VERSION)
+        serde_json::json!(project.format_needed())
     );
+    assert!(project.format_needed() <= PROJECT_FORMAT_VERSION);
     std::fs::remove_dir_all(&bundle).ok();
 }
 

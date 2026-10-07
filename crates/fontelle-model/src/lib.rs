@@ -12,6 +12,7 @@ mod command;
 mod commands;
 mod lane;
 mod lane_routing;
+pub mod lyrics;
 mod mixer;
 mod note;
 mod prefab;
@@ -22,6 +23,7 @@ mod stretch;
 mod study;
 mod tools;
 pub mod trim;
+mod vocal;
 pub mod wire;
 
 pub use arena::{Arena, minting_in};
@@ -77,6 +79,7 @@ pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
     RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
 };
+pub use vocal::{SetLyrics, SetSinger, VocalVoice};
 pub use wire::{Edit, WireError};
 
 /// What `target` is automated to at `tick` in song time, or `None` if nothing

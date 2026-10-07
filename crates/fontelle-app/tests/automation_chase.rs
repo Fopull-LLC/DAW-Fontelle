@@ -47,6 +47,7 @@ fn a_note(start: Tick, length: Tick) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 

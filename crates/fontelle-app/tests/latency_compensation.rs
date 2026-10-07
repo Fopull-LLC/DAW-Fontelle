@@ -161,6 +161,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
         });
         fontelle_app::set_channel_patch(&mut project, channel, &patch, &library)
             .expect("the patch serialises");
@@ -178,6 +179,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         });
         project.clips.insert(Clip {
             name: None,

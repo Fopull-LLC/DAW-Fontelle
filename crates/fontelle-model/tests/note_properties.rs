@@ -23,6 +23,7 @@ fn blank() -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 

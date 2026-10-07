@@ -313,6 +313,7 @@ fn adding_a_channel_selects_it_and_the_roll_writes_it_into_the_open_clip() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert_eq!(session.notes().len(), 1);
@@ -355,6 +356,7 @@ fn selecting_a_channel_opens_that_channels_clip() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     session.select_channel(0);
@@ -496,6 +498,7 @@ fn drawing_a_note_hands_back_the_id_the_drag_needs() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert_eq!(
@@ -532,6 +535,7 @@ fn a_velocity_edit_reaches_the_document() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
 
@@ -825,6 +829,7 @@ fn dragging_a_clip_on_the_arrangement_is_a_command_and_reaches_the_audio_thread(
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     let was = timeline
@@ -931,6 +936,7 @@ fn muting_a_lane_silences_it_without_touching_its_clips() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert!(!timeline.current().events.is_empty());
@@ -1184,6 +1190,7 @@ fn the_onion_skin_shows_other_channels_notes_lined_up_in_time() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     };
     session.edit(a_note(PPQN * 2, 60));
@@ -1240,6 +1247,7 @@ fn the_onion_skin_can_be_filtered_to_one_instrument() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     };
     for (channel, key) in [(0usize, 60u8), (1, 64), (2, 67)] {
@@ -1286,6 +1294,7 @@ fn a_ghost_carries_the_colour_of_the_instrument_it_came_from() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     session.add_channel_with(0).unwrap();
@@ -1639,6 +1648,7 @@ fn cutting_a_note_makes_two_that_meet_where_it_was_cut() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert_eq!(ids.len(), 1);
@@ -2025,6 +2035,7 @@ fn a_clips_block_carries_the_notes_that_are_in_it() {
                 slide: false,
                 path: Vec::new(),
                 channel: None,
+                lyric: String::new(),
             },
         });
         session.end_gesture();
@@ -2114,6 +2125,7 @@ fn writing_a_note_tells_the_window_its_lists_have_changed() {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     };
 
     let before = session.revision();
@@ -2160,6 +2172,7 @@ fn soloing_a_lane_silences_the_others_until_it_is_let_go() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert!(!timeline.current().events.is_empty());

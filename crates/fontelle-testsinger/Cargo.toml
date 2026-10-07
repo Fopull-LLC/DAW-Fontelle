@@ -1,0 +1,16 @@
+[package]
+name = "fontelle-testsinger"
+description = "A singer engine that hums each note as a soft vowel, built only so the vocal track's loader, scheduler and playback have something real to load."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fontelle-singer-abi = { path = "../fontelle-singer-abi" }

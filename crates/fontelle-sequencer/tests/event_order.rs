@@ -39,6 +39,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -61,6 +62,7 @@ fn compile_notes(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),

@@ -149,7 +149,7 @@ fn no_clip(clip: ClipId) -> CommandError {
 /// for writing, which is why every note command goes through it: a second
 /// reading of `NoteHome` is a second chance to get "editing an instance edits
 /// the prefab" wrong.
-fn notes_of(
+pub(crate) fn notes_of(
     doc: &mut Project,
     home: crate::note::NoteHome,
 ) -> Result<&mut crate::note::NoteData, CommandError> {
@@ -266,6 +266,7 @@ impl Command for AddChannel {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
         };
 
         match self.created {
@@ -4886,6 +4887,7 @@ impl Command for ImportParts {
                 named_keys: false,
                 ab: Default::default(),
                 gain_db: 0.0,
+                vocal: None,
             };
             let channel_id = match previous {
                 Some(ids) => {

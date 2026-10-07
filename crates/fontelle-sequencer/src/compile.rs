@@ -789,6 +789,7 @@ mod tests {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
         });
 
         let lane_id = project.lanes.insert(Lane {
@@ -815,6 +816,7 @@ mod tests {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         });
 
         project.clips.insert(Clip {

@@ -90,6 +90,7 @@ fn render_notes(
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         });
     }
     AddClip::new(Clip {

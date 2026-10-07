@@ -339,6 +339,7 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     });
     project.clips.insert(Clip {
         name: None,

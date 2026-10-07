@@ -308,6 +308,7 @@ fn peak_of_channel(
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     });
     project.clips.insert(Clip {
         name: None,

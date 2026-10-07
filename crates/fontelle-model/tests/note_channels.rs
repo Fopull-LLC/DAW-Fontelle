@@ -44,6 +44,7 @@ fn a_note(key: u8, channel: Option<ChannelId>) -> Note {
         slide: false,
         path: Vec::new(),
         channel,
+        lyric: String::new(),
     }
 }
 

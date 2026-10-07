@@ -33,6 +33,7 @@ fn a_note(start: Tick, length: Tick, key: u8, velocity: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -51,6 +52,7 @@ fn add_channel(project: &mut Project, name: &str) -> ChannelId {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     })
 }
 

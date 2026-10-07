@@ -21,6 +21,7 @@ members = [
     "crates/fontelle-bridge-abi",
     "crates/fontelle-singer-abi",
     "crates/fontelle-testbridge",
+    "crates/fontelle-testsinger",
     "crates/fontelle-app",
     "xtask",
 ]

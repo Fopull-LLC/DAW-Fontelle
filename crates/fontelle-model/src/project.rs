@@ -342,6 +342,30 @@ pub struct Project {
 }
 
 impl Project {
+    /// The oldest project format that can hold this song: **2** once it has
+    /// a voice or a lyric in it, **1** otherwise.
+    ///
+    /// What a save stamps, rather than always the newest: a song with no
+    /// vocal track in it is exactly what a format-1 build reads, and stamping
+    /// it 2 would lock everybody who tried this build out of their own songs
+    /// in the one they came from. A song that does sing is refused by such a
+    /// build by version ("upgrade Fontelle") rather than half-read.
+    pub fn format_needed(&self) -> u32 {
+        let sings = self.channels.values().any(|c| {
+            c.vocal.is_some() || c.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+        });
+        let sources = self
+            .clips
+            .values()
+            .map(|c| &c.source)
+            .chain(self.prefabs.values().map(|p| &p.source));
+        let words = sources.into_iter().any(|source| match source {
+            crate::ClipSource::Notes(data) => data.notes.values().any(|n| !n.lyric.is_empty()),
+            _ => false,
+        });
+        if sings || words { 2 } else { 1 }
+    }
+
     /// The lanes, **in the order the arrangement stacks them**.
     ///
     /// One answer to "what is row 3", here rather than in whatever draws the

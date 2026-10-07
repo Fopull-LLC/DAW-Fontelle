@@ -44,6 +44,7 @@ fn a_note(start: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -89,6 +90,7 @@ impl Rig {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
         });
         self.channels.insert(channel, node(node_number));
         let mut notes = Arena::default();

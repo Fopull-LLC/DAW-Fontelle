@@ -33,8 +33,9 @@ fn a_session() -> fontelle_app::Session {
 }
 
 #[test]
-fn there_are_six_and_each_says_what_it_is() {
-    assert_eq!(InstrumentKind::ALL.len(), 6);
+fn there_are_seven_and_each_says_what_it_is() {
+    // Seven since the vocal track (2026-10-06).
+    assert_eq!(InstrumentKind::ALL.len(), 7);
     for kind in InstrumentKind::ALL {
         assert!(!kind.label().is_empty(), "{kind:?} has no name");
     }
@@ -42,7 +43,7 @@ fn there_are_six_and_each_says_what_it_is() {
     let mut names: Vec<&str> = InstrumentKind::ALL.iter().map(|k| k.label()).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 7);
 }
 
 /// The three that need nothing configured, and the three that are waiting for

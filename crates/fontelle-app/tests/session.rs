@@ -83,6 +83,7 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
                 slide: false,
                 path: Vec::new(),
                 channel: None,
+                lyric: String::new(),
             },
         });
         source.current().events.len()
@@ -121,6 +122,7 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     let with_note = source.current().events.len();
@@ -159,6 +161,7 @@ fn redo_puts_it_back() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     let with_note = source.current().events.len();
@@ -259,6 +262,7 @@ fn a_fresh_session_is_clean_and_an_edit_makes_it_dirty() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     assert!(session.is_dirty(), "an edited project did not go dirty");
@@ -291,6 +295,7 @@ fn removing_a_note_takes_its_events_with_it() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     let before = source.current().events.len();

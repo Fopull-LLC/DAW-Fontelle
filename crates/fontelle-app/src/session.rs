@@ -6380,7 +6380,10 @@ impl Session {
             // A plugin is not a patch and never becomes one: what a channel
             // playing one holds is a `PluginState` beside its patch, and the
             // browser is what fills it in.
-            InstrumentKind::SoundFont | InstrumentKind::Sampler | InstrumentKind::Plugin => None,
+            InstrumentKind::SoundFont
+            | InstrumentKind::Sampler
+            | InstrumentKind::Plugin
+            | InstrumentKind::Vocal => None,
         }
     }
 

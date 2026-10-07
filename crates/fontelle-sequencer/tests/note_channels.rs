@@ -29,6 +29,7 @@ fn a_note(start: Tick, key: u8, channel: Option<ChannelId>) -> Note {
         slide: false,
         path: Vec::new(),
         channel,
+        lyric: String::new(),
     }
 }
 
@@ -47,6 +48,7 @@ fn a_channel(name: &str) -> fontelle_model::Channel {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     }
 }
 

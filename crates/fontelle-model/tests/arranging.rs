@@ -37,6 +37,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -57,6 +58,7 @@ fn a_project() -> (Project, ChannelId, LaneId) {
         named_keys: true,
         ab: Default::default(),
         gain_db: -3.0,
+        vocal: None,
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane 1".into(),

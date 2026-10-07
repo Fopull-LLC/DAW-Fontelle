@@ -7327,6 +7327,9 @@ pub fn no_instrument_text(kind: Option<fontelle_types::InstrumentKind>) -> &'sta
             "this sampler has no sound yet \u{2014} drag one onto it from the Import tab"
         }
         Some(K::Plugin) => "this channel has no plugin yet \u{2014} choose one from its menu",
+        Some(K::Vocal) => {
+            "a vocal track has no instrument panel \u{2014} write notes and lyrics in the piano roll"
+        }
         Some(K::Flopsynth) | Some(K::Osc3) | Some(K::DrumMachine) => {
             "this instrument could not be read \u{2014} choose Change instrument to start again"
         }

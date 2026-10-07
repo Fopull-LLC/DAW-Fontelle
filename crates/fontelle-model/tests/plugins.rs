@@ -210,6 +210,7 @@ fn a_channel_can_play_a_plugin() {
         soloed: false,
         named_keys: false,
         ab: Default::default(),
+        vocal: None,
     });
     let mut history = History::new();
     history
@@ -249,6 +250,7 @@ fn a_channels_plugin_parameter_is_written_and_undone() {
         soloed: false,
         named_keys: false,
         ab: Default::default(),
+        vocal: None,
     });
     let mut history = History::new();
     history

@@ -21,11 +21,12 @@ use fontelle_model::{
     RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes,
     RestoreInsert, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
     SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
-    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetMixerOrder,
+    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetLyrics, SetMixerOrder,
     SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
     SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
-    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
-    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput,
+    SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart, VocalVoice, load_project, peek_meta,
+    save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -63,6 +64,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -558,6 +560,16 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("SetNoteVelocity", |s| {
             Box::new(SetNoteVelocity::new(s.notes_clip, s.notes.clone(), 64))
         }),
+        ("SetLyrics", |s| {
+            let words = vec!["a-".to_string(); s.notes.len()];
+            Box::new(SetLyrics::new(s.notes_clip, s.notes.clone(), words))
+        }),
+        ("SetSinger", |s| {
+            Box::new(SetSinger::new(
+                s.keys,
+                Some(VocalVoice::new("Engine", "alto", "en")),
+            ))
+        }),
         ("SetNoteSlide", |s| {
             Box::new(SetNoteSlide::new(s.notes_clip, vec![s.notes[0]], true))
         }),
@@ -987,6 +999,14 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"SetStudyEdits":{"study":{"idx":1,"version":1},"edits":[],"before":null}}"#,
             "SetStudyEdits",
+        ),
+        (
+            r#"{"SetLyrics":{"home":{"Clip":{"idx":1,"version":1}},"ids":[{"idx":1,"version":1}],"lyrics":["la"],"previous":null,"label":"Set a note's lyric"}}"#,
+            "SetLyrics",
+        ),
+        (
+            r#"{"SetSinger":{"channel":{"idx":1,"version":1},"voice":{"engine":"E","singer":"s","language":"ja"},"previous":null}}"#,
+            "SetSinger",
         ),
     ];
     for (json, tag) in pinned {

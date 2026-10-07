@@ -72,6 +72,7 @@ fn a_project() -> (
         named_keys: true,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     });
     (project, channel, master)
 }

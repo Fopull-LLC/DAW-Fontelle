@@ -129,6 +129,7 @@ fn a_note_drawn_with_no_clip_open_is_refused_with_a_sentence() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         },
     });
     session.end_gesture();

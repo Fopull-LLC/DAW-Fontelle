@@ -85,6 +85,7 @@ impl PlacedNote {
             slide: false,
             path: self.path.clone(),
             channel: None,
+            lyric: String::new(),
         };
         note.pitch_at(at)
     }

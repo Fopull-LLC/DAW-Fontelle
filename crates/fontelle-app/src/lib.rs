@@ -192,6 +192,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
         });
     };
 

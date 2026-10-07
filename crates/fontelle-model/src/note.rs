@@ -66,6 +66,17 @@ pub struct Note {
     /// caption all go through it rather than three readings of `None`.
     #[serde(default)]
     pub channel: Option<ChannelId>,
+    /// The words this note sings, on a vocal channel: a syllable, `"-"` to
+    /// carry the last one on, phonemes in brackets — the rules are
+    /// `fontelle_singer_abi`'s, and [`crate::lyrics`] spreads a typed line
+    /// over notes by them. Empty is the singer language's own syllable.
+    ///
+    /// On the note rather than beside it so that copying, moving, splitting
+    /// and pasting a phrase carry its words without one command having to
+    /// know lyrics exist. Defaulted and left out of the file when empty, so a
+    /// song written before lyrics existed reads and writes unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lyric: String,
 }
 
 /// One point on a note's [path](Note::path).

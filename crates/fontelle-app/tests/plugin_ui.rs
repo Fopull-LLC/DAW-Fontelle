@@ -83,6 +83,7 @@ fn session() -> Session {
         soloed: false,
         named_keys: false,
         ab: Default::default(),
+        vocal: None,
     });
     let mut notes = Arena::default();
     notes.insert(Note {
@@ -98,6 +99,7 @@ fn session() -> Session {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     });
     project.clips.insert(Clip {
         name: None,

@@ -44,6 +44,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
     }
 }
 
@@ -71,6 +72,7 @@ fn a_rig() -> Rig {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     });
     let lane = project.lanes.insert(a_lane(0));
     let other = project.lanes.insert(a_lane(1));

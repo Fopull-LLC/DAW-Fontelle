@@ -220,6 +220,7 @@ fn a_note_clip_on_the_same_row_is_not_something_to_fade_against() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
     });
     r.project.clips.insert(Clip {
         name: None,
