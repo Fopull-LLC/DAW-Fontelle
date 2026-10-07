@@ -34,6 +34,7 @@ use crate::study::{
 use crate::vocal::{
     SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
 };
+use crate::vocal_files::{FreezeVocal, ImportVocal, UnfreezeVocal, UnimportVocal};
 
 /// An edit that could not be read off the wire.
 #[derive(Debug)]
@@ -227,6 +228,10 @@ edits!(
     SetVocalLane,
     SetVocalSettings,
     SetVocalState,
+    ImportVocal,
+    UnimportVocal,
+    FreezeVocal,
+    UnfreezeVocal,
 );
 
 impl Edit {

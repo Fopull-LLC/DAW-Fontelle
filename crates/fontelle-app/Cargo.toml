@@ -30,6 +30,7 @@ fontelle-host = { path = "../fontelle-host" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 fontelle-singer-abi = { path = "../fontelle-singer-abi" }
 fontelle-vocal = { path = "../fontelle-vocal" }
+fontelle-vocal-files = { path = "../fontelle-vocal-files" }
 fontelle-sing = { path = "../fontelle-sing" }
 twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
 fontelle-midi = { path = "../fontelle-midi" }

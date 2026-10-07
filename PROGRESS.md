@@ -19,6 +19,67 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07, latest — vocal song files in and out, freeze, and
+render to clip.** Branch `feature/vocal-import` (from `feature/vocal-track`
+d942434), not merged, not bumped. `docs/vocal-plan.md` §3.1 says what maps
+to what.
+
+- **`fontelle-vocal-files`** (new crate, pure): `ust::read` (Shift-JIS or
+  UTF-8; Mode2 and Mode1 pitch → the pitch-bend lane over the notes, VBR,
+  Velocity, Intensity, g/B flags), `ustx::read`/`write` (tracks, tempos,
+  glides, vibrato, VEL, phoneme overrides, curves → lanes, unknown curves
+  kept and written back), `vsqx::read` (v3 and v4 names, pre-measure,
+  locked phonemes, PIT×PBS/DYN/BRE/BRI/GEN), `midi::read`/`write`/
+  `has_lyrics` (lyric or karaoke text events on their notes, bends at the
+  RPN range), `musicxml::read`/`read_mxl` (sung parts, first voice, ties,
+  syllabic hyphens, slurs/extend → `-`, tempo, metre; our own small zip
+  reader). `VocalSong::unmapped` names what did not come. `clip_of` places a
+  part by beats from its first bar; `song_of_channel` reads a vocal track
+  back. New deps here: `roxmltree`, `serde_yaml_ng`, `midly` (all in the
+  tree already).
+- **Model**: `ImportVocal`/`UnimportVocal` (a vocal track per part, or onto
+  a vocal row; the file's tempo and bar inside the same command when asked),
+  `FreezeVocal`/`UnfreezeVocal`, `Project::frozen` (`FrozenVocal`; format 3,
+  left out when empty), `is_frozen`. Four wire variants appended and pinned.
+  `phrases_with` sings nothing for a frozen track.
+- **App** (`session/vocal_files.rs`): a vocal song dropped on the window is
+  imported before the MIDI path (a `.mid` only when it has words); on a
+  vocal row it goes into that track; an empty song takes the file's tempo,
+  otherwise the song's is kept — the toast says which and what was left
+  out. Export to MIDI with lyrics and USTX. Freeze/render run as a job
+  (`start_vocal_bounce`, the export's progress card: phrases sung, then
+  frames) through a `VocalNode` of their own with the channel's level and
+  pan; the render is routed to the track's own strip. *Render to audio* of a
+  row or clip now sings only the vocal tracks on it
+  (`VocalRenderPrep::retain_channels` — it used to sing every vocal track).
+- **Window**: a vocal track's rack menu has *Import vocal file…*, *Export
+  MIDI with lyrics…*, *Export USTX…*, *Freeze/Unfreeze track*, *Render
+  selection to clip*; the new instrument menu ends with *Vocal track from a
+  song file…*. Looked at on the real binary (nested Xwayland): an imported
+  Shift-JIS UST — its track, row, lyrics, tempo, the roll's vibrato waves,
+  glides and pitch lane.
+- Tests (all first, seen failing): `fontelle-vocal-files` ust (10), ustx
+  (7), vsqx (5), midi (5), musicxml (7), project (2); `fontelle-model`
+  `vocal_files.rs` (9) and `wire.rs` (+3 commands, +4 pinned);
+  `fontelle-vocal` `frozen.rs` (1); `fontelle-app` `vocal_files.rs` (10);
+  `fontelle-ui` `vocal_files_menu.rs` (2). Whole workspace: 6334 passed,
+  6 failed (570 binaries) — all six in `fontelle-app/tests/vocal_track.rs`,
+  which reads the real voicebanks folder: this machine has Japanese banks
+  installed, so the default singer sings `ら`, not `la` (not this branch's;
+  that test wants its own voicebanks folder). Preflight all clear
+  (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: `.vpr` (Vocaloid 5), `.svp` (Synthesizer V), `.7z`/`.uar`;
+  a UST is read, not written; OpenUtau's phoneme timing deltas and voice
+  colours (`clr`), Vocaloid's CLE/OPE/POR, UTAU's resampler flags other than
+  g/B are named, not mapped; MusicXML brings one voice per part and the
+  first time signature only (the model has one bar length), with no way yet
+  to choose the voice; a `.mid` with words brings only its sung tracks;
+  imported OpenUtau curves map to Fontelle's ranges by best guess (gen
+  ±100 → ±600 cents; Vocaloid DYN 0/64/127 → −24/0/+6 dB); a frozen track's
+  part can still be edited (it is not sung until unfrozen) and the roll
+  does not say it is frozen; channel automation of level/pan is not in a
+  freeze; render to clip renders whole phrases cut to the selection.
+
 **As of 2026-10-07, latest — the Fontelle Singer's integration: the part
 sings through `fontelle_sing`, voicebanks install, and an engine's own
 window edits the part.** Same branch (`feature/vocal-track`), not merged,

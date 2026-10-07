@@ -23,6 +23,7 @@
 //! channel no longer needs the audio device restarted.
 
 mod study;
+mod vocal_files;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -110,6 +111,8 @@ enum AfterBounce {
         name: String,
         before: Vec<LaneId>,
     },
+    /// A vocal track's render: a freeze, or a selection onto its row.
+    Vocal(vocal_files::VocalAfter),
 }
 
 impl Bounce {
@@ -3935,6 +3938,15 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Clip(id),
         );
+        // Only this clip's track sings in it.
+        if let ClipSource::Notes(data) = &clip.source
+            && let Some(prep) = &mut self.render_vocals
+        {
+            let sings = data.channel;
+            prep.retain_channels(|c| c == sings);
+        } else if let Some(prep) = &mut self.render_vocals {
+            prep.retain_channels(|_| false);
+        }
         // From the song's zero and cut to the clip, for the reason a row's
         // bounce gives; cut where the drawn tempo puts it.
         let tempo = fontelle_model::effective_tempo_map(&self.project);
@@ -4043,6 +4055,20 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Lane(lane),
         );
+        // Only the vocal tracks with clips on this row sing in it.
+        let on_row: Vec<ChannelId> = self
+            .project
+            .clips
+            .values()
+            .filter(|c| c.lane == lane)
+            .filter_map(|c| match &c.source {
+                ClipSource::Notes(data) => Some(data.channel),
+                _ => None,
+            })
+            .collect();
+        if let Some(prep) = &mut self.render_vocals {
+            prep.retain_channels(|c| on_row.contains(&c));
+        }
         // Rendered from the song's zero and then cut to the range asked for:
         // a note that starts before the selection is still ringing inside it,
         // and starting the render at the selection would drop its front.
@@ -4220,6 +4246,7 @@ impl Session {
                     n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
                 })
             }
+            AfterBounce::Vocal(after) => self.finish_vocal(after, path),
             AfterBounce::Row {
                 index,
                 at,
@@ -9728,6 +9755,37 @@ impl StudioHost for Session {
         Ok(said)
     }
 
+    fn choose_and_import_vocal(
+        &mut self,
+        channel: Option<usize>,
+    ) -> Result<Option<String>, String> {
+        self.choose_vocal_file(channel)
+    }
+
+    fn export_vocal(
+        &mut self,
+        index: usize,
+        format: fontelle_ui::document::VocalFileFormat,
+    ) -> Result<String, String> {
+        self.export_vocal_chosen(index, format)
+    }
+
+    fn vocal_frozen(&self, index: usize) -> bool {
+        self.vocal_is_frozen(index)
+    }
+
+    fn freeze_vocal(&mut self, index: usize) -> Result<String, String> {
+        self.start_vocal_bounce(|s| s.prepare_freeze(index), "Freezing")
+    }
+
+    fn unfreeze_vocal(&mut self, index: usize) -> Result<String, String> {
+        self.unfreeze_vocal_now(index)
+    }
+
+    fn render_vocal_selection(&mut self) -> Result<String, String> {
+        self.start_vocal_bounce(|s| s.prepare_render_selection(), "Rendering")
+    }
+
     fn add_channel_of(&mut self, kind: fontelle_types::InstrumentKind) -> Result<(), String> {
         // Named for what it is rather than "Channel N": a rack of "Sampler",
         // "3OSC", "SoundFont" tells you what you are looking at, and a rack of
@@ -11673,6 +11731,12 @@ impl StudioHost for Session {
         // By extension, which is the only thing a drop carries. Each kind is
         // asked whether it is *its* file rather than the extension being
         // matched here, so adding one is a variant and nothing else.
+        // A vocal song — a UST, USTX, VSQX, MusicXML, or a MIDI file with
+        // lyrics — is sung: before the MIDI import, which would take a
+        // `.mid` with words as plain notes.
+        if fontelle_vocal_files::is_vocal_song(path) {
+            return self.import_vocal_file(path, at, row, None);
+        }
         if fontelle_types::FolderKind::Midi.accepts(path) {
             return self.import_midi_file(path, None);
         }
@@ -11705,7 +11769,7 @@ impl StudioHost for Session {
         }
         Err(format!(
             "{name} is not something Fontelle can open \u{2014} it reads .wav, .flac, .mp3, \
-             .ogg, .mid, .fsc and .sf2 files"
+             .ogg, .mid, .fsc, .sf2, and the vocal songs .ust, .ustx, .vsqx and .musicxml"
         ))
     }
 

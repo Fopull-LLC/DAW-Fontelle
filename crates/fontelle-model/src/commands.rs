@@ -791,7 +791,7 @@ fn a_lane(name: String) -> Lane {
 /// One function for the three commands that make rows (`AddLane`,
 /// `AddAudioClip`, `ImportParts`), because *"it always goes on a new lane at
 /// the very bottom"* was three copies of the bottom and none of the position.
-fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
+pub(crate) fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
     match at {
         Some(index) => {
             let mut order: Vec<(LaneId, u32)> = doc
