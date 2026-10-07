@@ -21,6 +21,9 @@ doc = false
 fontelle-types = { path = "../fontelle-types" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 fontelle-singer-abi = { path = "../fontelle-singer-abi" }
+# What a singer is asked and answers: an engine is a `fontelle_sing::Backend`.
+fontelle-sing = { path = "../fontelle-sing" }
+serde = { version = "1.0.229", features = ["derive"] }
 # dlopen for bridges. clack does its own for CLAP and lilv for LV2.
 libloading = "0.8"
 clack-host = "0.1.1"

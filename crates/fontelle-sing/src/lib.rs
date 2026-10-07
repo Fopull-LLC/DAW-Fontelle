@@ -358,6 +358,23 @@ pub trait Session: Send {
         seed: u64,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Sung, SingError>;
+
+    /// [`sing`](Self::sing) with the cancel flag a host's scheduler raises
+    /// from another thread, as the flag itself — so a backend that hands
+    /// rendering to something else (an external engine's `cancel` pointer)
+    /// can pass it straight on and be stopped mid-render. The default polls
+    /// it through `sing`; nobody has to override it.
+    fn sing_flagged(
+        &mut self,
+        phrase: &Phrase,
+        quality: Quality,
+        seed: u64,
+        cancel: &std::sync::atomic::AtomicU32,
+    ) -> Result<Sung, SingError> {
+        self.sing(phrase, quality, seed, &|| {
+            cancel.load(std::sync::atomic::Ordering::Relaxed) != 0
+        })
+    }
 }
 
 /// How good a take to make.

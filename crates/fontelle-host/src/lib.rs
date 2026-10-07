@@ -78,6 +78,7 @@ mod processor;
 mod resident;
 mod scan;
 mod singer;
+mod singer_editor;
 pub mod vst3;
 
 pub use alpha_egl::{
@@ -106,3 +107,4 @@ pub use singer::{
     SingerFailure, SingerInstance, SpecNote, Sung, SungPhonemes, abi_verdict, singer_search_paths,
     singer_search_paths_from,
 };
+pub use singer_editor::{EditorTake, SingerEditor, SingerEditorRequests, part_edits_valid};

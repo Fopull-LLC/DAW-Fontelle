@@ -14,3 +14,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 fontelle-singer-abi = { path = "../fontelle-singer-abi" }
+# Its ABI 2 self reads and writes the contract's JSON.
+fontelle-sing = { path = "../fontelle-sing" }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+
+# Which engine it is depends on the file it was loaded from (`v2::mode`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+
+# Its window paints a colour into the X11 window a host gives it.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13.2"

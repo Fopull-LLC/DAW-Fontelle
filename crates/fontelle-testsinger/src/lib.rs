@@ -15,6 +15,11 @@
 //! Two lyrics are levers for tests: [`SLOW_LYRIC`] makes a render take a
 //! while (checking the cancel flag as it waits) and [`FAIL_LYRIC`] makes it
 //! fail with a message.
+//!
+//! **Two engines in one library.** Copied to a file whose name has `abi2` in
+//! it (`libfontelle_testsinger_abi2.so`), it is a version-2 engine of
+//! another name, [`ENGINE2_NAME`] — see [`v2`] — so a host's tests load
+//! both ABI versions side by side from one build.
 
 use std::ffi::{CStr, CString, c_char};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -24,8 +29,29 @@ use fontelle_singer_abi::{
     QUALITY_FINAL, SINGER_RESEARCH_ONLY, STATUS_CANCELLED, STATUS_ERROR, STATUS_OK, SingerInfo,
 };
 
+mod v2;
+
+pub use v2::{EDITOR_COLOUR, capabilities};
+
 pub const ENGINE_NAME: &str = "Fontelle Test Singer";
 pub const ENGINE_VERSION: &str = "1.0.0";
+/// Its ABI 2 self's name and version.
+pub const ENGINE2_NAME: &str = "Fontelle Test Singer 2";
+pub const ENGINE2_VERSION: &str = "2.0.0";
+/// The ABI 2 engine's own lane, setting and per-note option.
+pub const GROWL_LANE: &str = "growl";
+pub const BRIGHTNESS_SETTING: &str = "brightness";
+pub const COLOUR_OPTION: &str = "colour";
+/// The size its window asks for.
+pub const EDITOR_SIZE: (u32, u32) = (480, 320);
+/// Levers for the ABI 2 window, as a note's lyric: apply an edit batch
+/// (`poked`, a setting, a growl curve, a glide); try an edit naming no note
+/// and, refused, say so (`refused`); press play; read the take under the
+/// note and write its length (`take N`).
+pub const POKE_LYRIC: &str = "!poke";
+pub const BAD_LYRIC: &str = "!bad";
+pub const PLAY_LYRIC: &str = "!play";
+pub const TAKE_LYRIC: &str = "!take";
 pub const ALTO_ID: &str = "test.alto";
 pub const ALTO_NAME: &str = "Test Alto";
 pub const RESEARCH_ID: &str = "test.research";
@@ -48,17 +74,19 @@ pub const FAIL_LYRIC: &str = "!fail";
 
 const NAME: &CStr = c"Fontelle Test Singer";
 const VERSION: &CStr = c"1.0.0";
+const NAME2: &CStr = c"Fontelle Test Singer 2";
+const VERSION2: &CStr = c"2.0.0";
 
-struct Voice {
-    id: &'static CStr,
-    name: &'static CStr,
-    languages: &'static CStr,
+pub(crate) struct Voice {
+    pub(crate) id: &'static CStr,
+    pub(crate) name: &'static CStr,
+    pub(crate) languages: &'static CStr,
     lowest: u8,
     highest: u8,
     flags: u32,
 }
 
-const VOICES: [Voice; 2] = [
+pub(crate) const VOICES: [Voice; 2] = [
     Voice {
         id: c"test.alto",
         name: c"Test Alto",
@@ -77,18 +105,23 @@ const VOICES: [Voice; 2] = [
     },
 ];
 
-struct Instance {
-    last_error: Option<CString>,
+pub(crate) struct Instance {
+    pub(crate) last_error: Option<CString>,
+    /// The ABI 2 window, while open.
+    pub(crate) editor: Option<v2::Editor>,
 }
 
-fn instance<'a>(p: *mut EngineInstance) -> &'a mut Instance {
+pub(crate) fn instance<'a>(p: *mut EngineInstance) -> &'a mut Instance {
     // SAFETY: every instance pointer handed out is a `Box<Instance>`, and
     // the ABI promises one call at a time per instance.
     unsafe { &mut *(p as *mut Instance) }
 }
 
 unsafe extern "C" fn create() -> *mut EngineInstance {
-    Box::into_raw(Box::new(Instance { last_error: None })) as *mut EngineInstance
+    Box::into_raw(Box::new(Instance {
+        last_error: None,
+        editor: None,
+    })) as *mut EngineInstance
 }
 
 unsafe extern "C" fn destroy(p: *mut EngineInstance) {
@@ -166,7 +199,7 @@ fn cancelled(flag: *const AtomicU32) -> bool {
 
 /// The phonemes a lyric is shown as: brackets as given, a word split into
 /// its leading consonants and the rest, a slur nothing.
-fn phonemes(lyric: &str) -> Option<Vec<String>> {
+pub(crate) fn phonemes(lyric: &str) -> Option<Vec<String>> {
     if lyric.trim() == LYRIC_SLUR {
         return None;
     }
@@ -189,7 +222,7 @@ fn phonemes(lyric: &str) -> Option<Vec<String>> {
 }
 
 /// How much of harmonic `k` a vowel lets through: a crude formant.
-fn vowel_weight(lyric: &str, k: usize) -> f32 {
+pub(crate) fn vowel_weight(lyric: &str, k: usize) -> f32 {
     let vowel = lyric
         .chars()
         .rev()
@@ -204,10 +237,10 @@ fn vowel_weight(lyric: &str, k: usize) -> f32 {
     (1.0 / (1.0 + d * d * 0.6)) / k as f32
 }
 
-struct Noise(u64);
+pub(crate) struct Noise(pub(crate) u64);
 
 impl Noise {
-    fn next(&mut self) -> f32 {
+    pub(crate) fn next(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -435,8 +468,8 @@ struct Table(FontelleSingerEngine);
 unsafe impl Sync for Table {}
 
 static ENGINE: Table = Table(FontelleSingerEngine {
-    // A version-1 engine, so the host's support for those stays tested; the
-    // version-2 table is the integration's to add.
+    // The version-1 engine, so the host's support for those stays tested;
+    // its ABI 2 self is `ENGINE2`, chosen by the library's file name.
     abi_version: 1,
     name: NAME.as_ptr(),
     version: VERSION.as_ptr(),
@@ -457,5 +490,25 @@ static ENGINE: Table = Table(FontelleSingerEngine {
 /// None to uphold: it returns a pointer to a static table.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fontelle_singer_entry() -> *const FontelleSingerEngine {
-    &ENGINE.0
+    table(if v2::mode_is_v2() { 2 } else { 1 })
 }
+
+/// The engine's table as version `abi` — what the entry point answers in a
+/// library of that name; for this crate's own tests.
+pub fn table(abi: u32) -> *const FontelleSingerEngine {
+    if abi >= 2 { &ENGINE2.0 } else { &ENGINE.0 }
+}
+
+static ENGINE2: Table = Table(FontelleSingerEngine {
+    abi_version: 2,
+    name: NAME2.as_ptr(),
+    version: VERSION2.as_ptr(),
+    create,
+    destroy,
+    singer_count,
+    singer_info,
+    render,
+    free_result,
+    last_error,
+    v2: &v2::V2.0,
+});

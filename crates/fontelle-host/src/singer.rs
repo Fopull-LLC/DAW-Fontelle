@@ -20,9 +20,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
+use std::collections::HashMap;
+
 use fontelle_singer_abi::{
     ABI_VERSION, EngineInstance, EntryFn, FontelleSingerEngine, PhraseNote, PhraseRequest,
-    PhraseResult, SINGER_RESEARCH_ONLY, STATUS_CANCELLED, STATUS_OK, SingerInfo,
+    PhraseResult, QUALITY_FINAL, QUALITY_PREVIEW, SINGER_RESEARCH_ONLY, STATUS_CANCELLED,
+    STATUS_OK, SingerEngineV2, SingerInfo,
 };
 
 /// An engine library that would not load, and why — shown where singers are
@@ -96,6 +99,16 @@ pub struct SingerEngine {
     version: std::sync::Mutex<String>,
     path: PathBuf,
     singers: Vec<SingerDescription>,
+    /// The ABI it was built for (1 or 2).
+    abi: u32,
+    /// What each singer answers to, asked once at load (ABI 2; nothing
+    /// beyond notes and words for a version-1 engine).
+    capabilities: HashMap<String, fontelle_sing::Capabilities>,
+    /// Whether it draws a window of its own (ABI 2).
+    has_editor: bool,
+    /// The `Arc` it lives in, so a session (which keeps the library loaded)
+    /// can be made from `&self` (`fontelle_sing::Backend::session`).
+    me: std::sync::OnceLock<std::sync::Weak<SingerEngine>>,
     /// Declared last so it is dropped last: the table points into it.
     _library: libloading::Library,
 }
@@ -144,6 +157,53 @@ impl SingerEngine {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The singer ABI it was built for.
+    pub fn abi_version(&self) -> u32 {
+        self.abi
+    }
+
+    /// Whether it has a window of its own to open ([`SingerEditor`]).
+    pub fn has_editor(&self) -> bool {
+        self.has_editor
+    }
+
+    /// What `singer` answers to: an ABI 2 engine's own answer, asked once at
+    /// load; a version-1 engine's is nothing beyond notes and words.
+    pub fn singer_capabilities(&self, singer: &str) -> fontelle_sing::Capabilities {
+        self.capabilities.get(singer).cloned().unwrap_or_default()
+    }
+
+    /// The version-2 table, when the engine has a window.
+    pub(crate) fn editor_table(&self) -> Option<&SingerEngineV2> {
+        self.v2().filter(|_| self.has_editor)
+    }
+
+    /// A bare instance, for a window (which never shares one with a render
+    /// worker).
+    pub(crate) fn raw_instance(&self) -> Result<*mut EngineInstance, String> {
+        // SAFETY: `create` is required; null means no instance.
+        let instance = unsafe { (self.table().create)() };
+        if instance.is_null() {
+            return Err(format!("{} would not start", self.name));
+        }
+        self.refresh_version();
+        Ok(instance)
+    }
+
+    pub(crate) fn destroy_raw(&self, instance: *mut EngineInstance) {
+        // SAFETY: made by `raw_instance`, destroyed once.
+        unsafe { (self.table().destroy)(instance) };
+    }
+
+    fn v2(&self) -> Option<&SingerEngineV2> {
+        if self.abi < 2 {
+            return None;
+        }
+        let v2 = self.table().v2;
+        // SAFETY: an ABI 2 table's `v2` is null or points at a static table.
+        (!v2.is_null()).then(|| unsafe { &*v2 })
     }
 
     pub fn singers(&self) -> &[SingerDescription] {
@@ -204,7 +264,9 @@ impl SingerEngines {
                                 why: format!("another engine called {} is loaded", engine.name),
                             });
                         } else {
-                            out.engines.push(Arc::new(engine));
+                            let engine = Arc::new(engine);
+                            let _ = engine.me.set(Arc::downgrade(&engine));
+                            out.engines.push(engine);
                         }
                     }
                     Err(why) => out.failures.push(SingerFailure { path, why }),
@@ -340,6 +402,32 @@ fn load_one(path: &Path) -> Result<SingerEngine, String> {
             research_only: info.flags & SINGER_RESEARCH_ONLY != 0,
         });
     }
+    // Version 2: what each singer answers to, and whether there is a window
+    // — asked here, on the thread that loads, as the ABI wants.
+    let mut capabilities = HashMap::new();
+    let mut has_editor = false;
+    if theirs >= 2 && !t.v2.is_null() {
+        let v2 = unsafe { &*t.v2 };
+        for singer in &singers {
+            let id = CString::new(singer.id.replace('\0', "")).unwrap_or_default();
+            let raw = unsafe { (v2.capabilities)(instance, id.as_ptr()) };
+            if raw.is_null() {
+                continue;
+            }
+            let json = text(raw);
+            unsafe { (v2.free_string)(instance, raw) };
+            match serde_json::from_str::<fontelle_sing::Capabilities>(&json) {
+                Ok(caps) => {
+                    capabilities.insert(singer.id.clone(), caps);
+                }
+                Err(e) => eprintln!(
+                    "Fontelle: {name}'s capabilities for {} did not read: {e}",
+                    singer.id
+                ),
+            }
+        }
+        has_editor = unsafe { (v2.has_editor)(instance) };
+    }
     unsafe { (t.destroy)(instance) };
     Ok(SingerEngine {
         table,
@@ -347,6 +435,10 @@ fn load_one(path: &Path) -> Result<SingerEngine, String> {
         version: std::sync::Mutex::new(version),
         path: path.to_path_buf(),
         singers,
+        abi: theirs,
+        capabilities,
+        has_editor,
+        me: std::sync::OnceLock::new(),
         _library: library,
     })
 }
@@ -396,13 +488,17 @@ pub struct Sung {
 }
 
 /// One entry of the engine's phonemes report.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SungPhonemes {
     /// Index into the phrase's notes.
     pub note: usize,
     pub phonemes: Vec<String>,
     /// The engine did not know the word and guessed how to say it.
     pub guessed: bool,
+    /// Where each phoneme starts, seconds from the note's start, where the
+    /// engine said (the report's optional `offsets`); may be shorter than
+    /// `phonemes`.
+    pub offsets: Vec<Option<f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,13 +570,54 @@ impl SingerInstance {
         // SAFETY: every pointer in `request` outlives the call; `result` is
         // ours to fill.
         let status = unsafe { (table.render)(self.instance, &request, &mut result) };
+        self.take_result(status, result)
+    }
+}
+
+impl SingerInstance {
+    /// Sings `phrase` (ABI 2: the whole of it as JSON) with `cancel` handed
+    /// to the engine as its cancel flag.
+    fn render_phrase(
+        &mut self,
+        phrase: &fontelle_sing::Phrase,
+        quality: u32,
+        seed: u64,
+        cancel: &AtomicU32,
+    ) -> Result<Sung, RenderFailure> {
+        let Some(v2) = self.engine.v2() else {
+            return self.render(&spec_of(phrase), quality, seed, cancel);
+        };
+        let json = serde_json::to_string(phrase)
+            .map_err(|e| RenderFailure::Failed(format!("the phrase would not write: {e}")))?;
+        let json = CString::new(json).unwrap_or_default();
+        let mut result = PhraseResult::EMPTY;
+        // SAFETY: the JSON and the flag outlive the call; `result` is ours.
+        let status = unsafe {
+            (v2.render_phrase)(
+                self.instance,
+                json.as_ptr(),
+                quality,
+                seed,
+                cancel as *const AtomicU32,
+                &mut result,
+            )
+        };
+        self.take_result(status, result)
+    }
+
+    /// What `status` and `result` say, copied out and the result freed.
+    fn take_result(
+        &mut self,
+        status: i32,
+        mut result: PhraseResult,
+    ) -> Result<Sung, RenderFailure> {
+        let table = self.engine.table();
         if status == STATUS_CANCELLED {
             return Err(RenderFailure::Cancelled);
         }
         if status != STATUS_OK {
-            // On this thread, straight after the failing call and before
-            // anything else touches the instance — the ABI's rule, which lets
-            // an engine keep the message without locks.
+            // On this thread, straight after the failing call (the ABI's
+            // rule).
             let why = text(unsafe { (table.last_error)(self.instance) });
             return Err(RenderFailure::Failed(if why.is_empty() {
                 format!("{} could not sing this phrase", self.engine.name)
@@ -520,6 +657,158 @@ impl SingerInstance {
     }
 }
 
+/// A phrase as a version-1 engine reads it: notes and words. Phonemes set
+/// by hand reach it the one way it understands them, as a bracketed lyric.
+fn spec_of(phrase: &fontelle_sing::Phrase) -> PhraseSpec {
+    PhraseSpec {
+        singer: phrase.voice.clone(),
+        language: phrase.language.clone(),
+        notes: phrase
+            .notes
+            .iter()
+            .map(|n| SpecNote {
+                start: n.start,
+                duration: n.duration,
+                pitch: n.pitch,
+                lyric: match &n.phonemes {
+                    Some(p) if !p.is_empty() => format!(
+                        "[{}]",
+                        p.iter()
+                            .map(|e| e.symbol.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ),
+                    _ => n.lyric.clone(),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn quality_code(quality: fontelle_sing::Quality) -> u32 {
+    match quality {
+        fontelle_sing::Quality::Preview => QUALITY_PREVIEW,
+        fontelle_sing::Quality::Final => QUALITY_FINAL,
+    }
+}
+
+impl From<Sung> for fontelle_sing::Sung {
+    fn from(sung: Sung) -> Self {
+        fontelle_sing::Sung {
+            sample_rate: sung.sample_rate,
+            samples: sung.samples,
+            start: sung.start,
+            pitch: sung.pitch,
+            pitch_step: sung.pitch_step,
+            phonemes: sung
+                .phonemes
+                .into_iter()
+                .map(|p| fontelle_sing::SungNote {
+                    note: p.note,
+                    phonemes: p
+                        .phonemes
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, symbol)| fontelle_sing::SungPhoneme {
+                            symbol,
+                            offset: p.offsets.get(i).copied().flatten(),
+                        })
+                        .collect(),
+                    guessed: p.guessed,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<RenderFailure> for fontelle_sing::SingError {
+    fn from(failure: RenderFailure) -> Self {
+        match failure {
+            RenderFailure::Cancelled => Self::Cancelled,
+            RenderFailure::Failed(why) => Self::Failed(why),
+        }
+    }
+}
+
+/// An external engine is a backend like any other: the scheduler, the cache
+/// and the roll never know it is a library. Version 1 is sung notes and
+/// words; version 2 the whole phrase.
+impl fontelle_sing::Backend for SingerEngine {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn version(&self) -> String {
+        SingerEngine::version(self)
+    }
+
+    fn voices(&self) -> Vec<fontelle_sing::VoiceInfo> {
+        self.singers
+            .iter()
+            .map(|s| fontelle_sing::VoiceInfo {
+                id: s.id.clone(),
+                name: s.name.clone(),
+                languages: s.languages.clone(),
+                lowest: s.lowest,
+                highest: s.highest,
+                research_only: s.research_only,
+                terms: None,
+                image: None,
+            })
+            .collect()
+    }
+
+    fn capabilities(&self, voice: &str) -> fontelle_sing::Capabilities {
+        self.singer_capabilities(voice)
+    }
+
+    fn session(&self) -> Result<Box<dyn fontelle_sing::Session>, String> {
+        // Every loaded engine lives in an `Arc` (`SingerEngines::load`), and
+        // an instance holds one so the library outlives it.
+        let me = self
+            .me
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| format!("{} is being unloaded", self.name))?;
+        Ok(Box::new(me.instance()?))
+    }
+}
+
+impl fontelle_sing::Session for SingerInstance {
+    fn sing(
+        &mut self,
+        phrase: &fontelle_sing::Phrase,
+        quality: fontelle_sing::Quality,
+        seed: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<fontelle_sing::Sung, fontelle_sing::SingError> {
+        // The engine polls a flag, and a closure cannot be handed across the
+        // ABI: asked before and after. A scheduler that can be quicker calls
+        // `sing_flagged`.
+        if cancelled() {
+            return Err(fontelle_sing::SingError::Cancelled);
+        }
+        let flag = AtomicU32::new(0);
+        let sung = self.sing_flagged(phrase, quality, seed, &flag)?;
+        if cancelled() {
+            return Err(fontelle_sing::SingError::Cancelled);
+        }
+        Ok(sung)
+    }
+
+    fn sing_flagged(
+        &mut self,
+        phrase: &fontelle_sing::Phrase,
+        quality: fontelle_sing::Quality,
+        seed: u64,
+        cancel: &AtomicU32,
+    ) -> Result<fontelle_sing::Sung, fontelle_sing::SingError> {
+        self.render_phrase(phrase, quality_code(quality), seed, cancel)
+            .map(Into::into)
+            .map_err(Into::into)
+    }
+}
+
 impl Drop for SingerInstance {
     fn drop(&mut self) {
         // SAFETY: made by `create`, destroyed once.
@@ -548,11 +837,19 @@ fn parse_phonemes(json: &str) -> Vec<SungPhonemes> {
                 .get("guessed")
                 .and_then(|g| g.as_bool())
                 .unwrap_or(false);
+            // Where each phoneme starts, seconds from its note, when the
+            // engine says (`null` for one it does not).
+            let offsets = item
+                .get("offsets")
+                .and_then(|o| o.as_array())
+                .map(|o| o.iter().map(serde_json::Value::as_f64).collect())
+                .unwrap_or_default();
             // Any other key is the engine's to add and ours to ignore.
             Some(SungPhonemes {
                 note,
                 phonemes,
                 guessed,
+                offsets,
             })
         })
         .collect()

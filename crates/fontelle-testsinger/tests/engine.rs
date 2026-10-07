@@ -245,3 +245,75 @@ fn bracketed_phonemes_are_used_as_given() {
     let phonemes = sung.phonemes.unwrap();
     assert!(phonemes.contains("\"ə\""), "{phonemes}");
 }
+
+// ----------------------------------------------------------- its ABI 2 self
+
+/// The version-2 table, as a library named `*abi2*` hands it out.
+fn table2() -> &'static FontelleSingerEngine {
+    unsafe { &*fontelle_testsinger::table(2) }
+}
+
+#[test]
+fn its_abi_2_self_is_another_engine_with_a_second_table() {
+    assert_eq!(table().abi_version, 1, "as itself it is a version-1 engine");
+    assert!(table().v2.is_null());
+    let t = table2();
+    assert_eq!(t.abi_version, 2);
+    assert_eq!(text(t.name), fontelle_testsinger::ENGINE2_NAME);
+    assert!(!t.v2.is_null());
+}
+
+#[test]
+fn its_abi_2_self_answers_capabilities_and_sings_a_phrase_from_json() {
+    let t = table2();
+    let v2 = unsafe { &*t.v2 };
+    let instance = unsafe { (t.create)() };
+    let alto = CString::new(fontelle_testsinger::ALTO_ID).unwrap();
+    let raw = unsafe { (v2.capabilities)(instance, alto.as_ptr()) };
+    let caps: fontelle_sing::Capabilities = serde_json::from_str(&text(raw)).unwrap();
+    unsafe { (v2.free_string)(instance, raw) };
+    assert_eq!(caps, fontelle_testsinger::capabilities());
+    let nobody = CString::new("nobody").unwrap();
+    assert!(unsafe { (v2.capabilities)(instance, nobody.as_ptr()) }.is_null());
+
+    let phrase = fontelle_sing::Phrase {
+        voice: fontelle_testsinger::ALTO_ID.into(),
+        language: "en".into(),
+        notes: vec![fontelle_sing::PhraseNote::new(0.0, 0.3, 64.0, "la")],
+        curves: Default::default(),
+        extra_curves: Default::default(),
+        settings: Default::default(),
+        state: None,
+    };
+    let json = CString::new(serde_json::to_string(&phrase).unwrap()).unwrap();
+    let mut result = PhraseResult::EMPTY;
+    let status = unsafe {
+        (v2.render_phrase)(
+            instance,
+            json.as_ptr(),
+            QUALITY_PREVIEW,
+            3,
+            std::ptr::null(),
+            &mut result,
+        )
+    };
+    assert_eq!(status, STATUS_OK);
+    assert!(result.frame_count > 0);
+    assert!(text(result.phonemes).contains("\"offsets\""));
+    unsafe { (t.free_result)(instance, &mut result) };
+    // Not a phrase is an error, said.
+    let junk = CString::new("{").unwrap();
+    let status = unsafe {
+        (v2.render_phrase)(
+            instance,
+            junk.as_ptr(),
+            QUALITY_PREVIEW,
+            3,
+            std::ptr::null(),
+            &mut result,
+        )
+    };
+    assert_eq!(status, STATUS_ERROR);
+    assert!(text(unsafe { (t.last_error)(instance) }).contains("not a phrase"));
+    unsafe { (t.destroy)(instance) };
+}

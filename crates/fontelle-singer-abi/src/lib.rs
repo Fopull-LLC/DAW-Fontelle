@@ -351,6 +351,10 @@ pub struct PhraseResult {
     /// - `"guessed": true` — the engine did not know the word and guessed
     ///   its pronunciation; the host marks the lyric so the writer can give
     ///   the phonemes in brackets;
+    /// - `"offsets"` (array of number or `null`, one per phoneme) — where
+    ///   each phoneme starts, seconds from its note's start (negative before
+    ///   it), for the roll's phoneme row; `null` where the engine does not
+    ///   say;
     /// - `"word"` (string), `"source"` (string), `"slur"` (bool) —
     ///   informative; shown or ignored as the host likes.
     pub phonemes: *mut c_char,

@@ -1412,6 +1412,7 @@ dependencies = [
  "clack-extensions",
  "clack-host",
  "fontelle-bridge-abi",
+ "fontelle-sing",
  "fontelle-singer-abi",
  "fontelle-testbridge",
  "fontelle-testlv2",
@@ -1426,6 +1427,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "png",
+ "serde",
  "serde_json",
  "vst3",
  "windows-sys 0.61.2",
@@ -1532,7 +1534,11 @@ dependencies = [
 name = "fontelle-testsinger"
 version = "0.26.1"
 dependencies = [
+ "fontelle-sing",
  "fontelle-singer-abi",
+ "libc",
+ "serde_json",
+ "x11rb",
 ]
 
 [[package]]
