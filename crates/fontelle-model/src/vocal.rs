@@ -200,3 +200,864 @@ impl Command for SetSinger {
         std::mem::size_of::<Self>() + 64
     }
 }
+
+// ------------------------------------------------------------ expression
+//
+// Everything below is how a part is sung beyond its notes and words: what
+// `fontelle_sing::Phrase` carries to a backend. The types a phrase uses
+// (vibrato, glide, phoneme edits, the standard lanes) are the contract's
+// own, so the document stores exactly what a singer is handed.
+//
+// **Lanes are in ticks**, from the start of the notes' clip (or prefab):
+// they belong to the music, so a tempo change keeps a swell on the note it
+// was drawn under, and a clip moved or copied carries its curves the way it
+// carries its notes. `fontelle-vocal` samples them into a phrase's seconds.
+
+use std::collections::BTreeMap;
+
+use fontelle_sing::{Lane as SungLane, PhonemeEdit, Portamento, Vibrato};
+use fontelle_types::Tick;
+
+/// How a note is sung beyond its lyric. Every field is optional; an empty
+/// voice is stored as none at all.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NoteVoice {
+    /// Phonemes placed by hand, replacing the backend's reading of the
+    /// lyric; offsets are seconds from the note's start (a consonant does
+    /// not get longer because the song is slower).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phonemes: Option<Vec<PhonemeEdit>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrato: Option<Vibrato>,
+    /// The glide in from the note before; `None` is the backend's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portamento: Option<Portamento>,
+    /// Per-note options a backend declared, by backend then option id —
+    /// kept when another backend sings, which never sees them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+// Every number in a voice is finite (`SetNoteVoices` refuses anything else),
+// so equality is an equivalence and `Note` stays `Eq`.
+impl Eq for NoteVoice {}
+
+impl NoteVoice {
+    pub fn is_empty(&self) -> bool {
+        self.phonemes.is_none()
+            && self.vibrato.is_none()
+            && self.portamento.is_none()
+            && self.options.values().all(BTreeMap::is_empty)
+    }
+
+    /// Whether every number in it is a number.
+    pub fn is_finite(&self) -> bool {
+        let vibrato = self.vibrato.is_none_or(|v| {
+            [v.depth, v.rate, v.delay, v.fade_in, v.fade_out]
+                .iter()
+                .all(|x| x.is_finite())
+        });
+        let glide = self
+            .portamento
+            .is_none_or(|p| p.length.is_finite() && p.position.is_finite());
+        let phonemes = self
+            .phonemes
+            .iter()
+            .flatten()
+            .all(|p| p.offset.is_none_or(f64::is_finite));
+        vibrato && glide && phonemes
+    }
+
+    /// The options `backend` sees.
+    pub fn options_for(&self, backend: &str) -> BTreeMap<String, String> {
+        self.options.get(backend).cloned().unwrap_or_default()
+    }
+}
+
+/// A vocal note's velocity read as **consonant speed** — OpenUtau's VEL, on
+/// the note's own MIDI velocity so the roll's velocity lane edits it: 100 is
+/// the voice's own speed, and every 27 either way doubles or halves it (127
+/// is twice as quick, 73 half).
+pub fn consonant_speed(velocity: u8) -> f32 {
+    2f32.powf((f32::from(velocity) - 100.0) / 27.0)
+}
+
+/// The velocity that sings at consonant speed `speed`, within 1..=127; a
+/// speed that is not a number is the voice's own (100).
+pub fn velocity_for_speed(speed: f32) -> u8 {
+    if speed.is_nan() {
+        return 100;
+    }
+    let v = 100.0 + 27.0 * speed.max(0.0).log2();
+    v.round().clamp(1.0, 127.0) as u8
+}
+
+/// What the roll shows a standard lane as.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LaneSpec {
+    pub name: &'static str,
+    /// Short, for a tab.
+    pub short: &'static str,
+    pub min: f32,
+    pub max: f32,
+    pub unit: &'static str,
+}
+
+/// A standard lane's name, range and unit (`fontelle_sing::Lane`'s own
+/// meanings).
+pub fn lane_spec(lane: SungLane) -> LaneSpec {
+    let spec = |name, short, min, max, unit| LaneSpec {
+        name,
+        short,
+        min,
+        max,
+        unit,
+    };
+    match lane {
+        SungLane::PitchBend => spec("Pitch bend", "pitch", -1200.0, 1200.0, "cents"),
+        SungLane::Dynamics => spec("Dynamics", "dyn", -24.0, 12.0, "dB"),
+        SungLane::Breathiness => spec("Breathiness", "breath", -1.0, 1.0, ""),
+        SungLane::Voicing => spec("Voicing", "voice", -1.0, 1.0, ""),
+        SungLane::Tension => spec("Tension", "tension", -1.0, 1.0, ""),
+        SungLane::Gender => spec("Gender", "gender", -600.0, 600.0, "cents"),
+    }
+}
+
+/// A lane drawn under the roll: points `(tick from the clip's start,
+/// value)`, in time order, straight lines between them, the first and last
+/// values held beyond the ends. Empty is the lane's neutral everywhere.
+///
+/// Drawing never leaves a ramp across what was not drawn: [`write`] puts
+/// the old values back right beside a stroke, and simplifies straight runs
+/// to their ends, so a lane is a handful of points per gesture.
+///
+/// [`write`]: LaneCurve::write
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct LaneCurve {
+    points: Vec<(Tick, f32)>,
+}
+
+impl LaneCurve {
+    pub fn from_points(mut points: Vec<(Tick, f32)>) -> Self {
+        points.retain(|(_, v)| v.is_finite());
+        points.sort_by_key(|(t, _)| *t);
+        points.dedup_by_key(|(t, _)| *t);
+        Self { points }
+    }
+
+    pub fn points(&self) -> &[(Tick, f32)] {
+        &self.points
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty()
+    }
+
+    /// The value at `tick`.
+    pub fn at(&self, tick: Tick, neutral: f32) -> f32 {
+        let (Some(first), Some(last)) = (self.points.first(), self.points.last()) else {
+            return neutral;
+        };
+        if tick <= first.0 {
+            return first.1;
+        }
+        if tick >= last.0 {
+            return last.1;
+        }
+        let i = self.points.partition_point(|(t, _)| *t <= tick);
+        let (t0, v0) = self.points[i - 1];
+        let (t1, v1) = self.points[i];
+        if t1 == t0 {
+            return v1;
+        }
+        v0 + (v1 - v0) * ((tick - t0) as f32 / (t1 - t0) as f32)
+    }
+
+    /// Replaces `from..=to` with `value(tick)` sampled every `step` ticks
+    /// (and at `to`), leaving everything outside as it was.
+    pub fn write(
+        &mut self,
+        from: Tick,
+        to: Tick,
+        step: Tick,
+        value: impl Fn(Tick) -> f32,
+        neutral: f32,
+    ) {
+        let (from, to) = (from.min(to), from.max(to));
+        let step = step.max(1);
+        let before = self.at(from - 1, neutral);
+        let after = self.at(to + 1, neutral);
+        let mut out: Vec<(Tick, f32)> = self
+            .points
+            .iter()
+            .copied()
+            .filter(|(t, _)| *t < from - 1)
+            .collect();
+        out.push((from - 1, before));
+        let mut t = from;
+        while t < to {
+            out.push((t, value(t)));
+            t += step;
+        }
+        out.push((to, value(to)));
+        out.push((to + 1, after));
+        out.extend(self.points.iter().copied().filter(|(t, _)| *t > to + 1));
+        out.retain(|(_, v)| v.is_finite());
+        self.points = out;
+        self.simplify(neutral);
+    }
+
+    /// Returns `from..=to` to the lane's neutral.
+    pub fn erase(&mut self, from: Tick, to: Tick, neutral: f32) {
+        self.write(from, to, Tick::MAX / 4, |_| neutral, neutral);
+    }
+
+    /// The same curve `delta` ticks later.
+    pub fn shifted(&self, delta: Tick) -> Self {
+        Self {
+            points: self.points.iter().map(|(t, v)| (t + delta, *v)).collect(),
+        }
+    }
+
+    fn simplify(&mut self, neutral: f32) {
+        const EPS: f32 = 1e-5;
+        let p = &mut self.points;
+        p.sort_by_key(|(t, _)| *t);
+        // Of two points at one tick, the later written wins.
+        let mut dedup: Vec<(Tick, f32)> = Vec::with_capacity(p.len());
+        for point in p.drain(..) {
+            match dedup.last_mut() {
+                Some(last) if last.0 == point.0 => *last = point,
+                _ => dedup.push(point),
+            }
+        }
+        // Straight runs to their ends.
+        let mut kept: Vec<(Tick, f32)> = Vec::with_capacity(dedup.len());
+        for i in 0..dedup.len() {
+            if i == 0 || i + 1 == dedup.len() {
+                kept.push(dedup[i]);
+                continue;
+            }
+            let (t0, v0) = *kept.last().expect("the first is kept");
+            let (t1, v1) = dedup[i];
+            let (t2, v2) = dedup[i + 1];
+            let on_line = v0 + (v2 - v0) * ((t1 - t0) as f32 / (t2 - t0).max(1) as f32);
+            let scale = v0.abs().max(v1.abs()).max(v2.abs()).max(1.0);
+            if (on_line - v1).abs() > EPS * scale {
+                kept.push(dedup[i]);
+            }
+        }
+        // Held ends need no second point saying the same thing.
+        while kept.len() >= 2 && (kept[0].1 - kept[1].1).abs() <= EPS {
+            kept.remove(0);
+        }
+        while kept.len() >= 2 && (kept[kept.len() - 1].1 - kept[kept.len() - 2].1).abs() <= EPS {
+            kept.pop();
+        }
+        if kept.iter().all(|(_, v)| (v - neutral).abs() <= EPS) {
+            kept.clear();
+        }
+        *p = kept;
+    }
+}
+
+/// Which lane: one of the standard ones, or one a backend declared.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum LaneKey {
+    Standard(SungLane),
+    Extra { backend: String, id: String },
+}
+
+/// A vocal part's lanes, each backend's own lanes and settings, and the
+/// state blob a backend (an external engine's window) keeps in the song.
+///
+/// Keyed by backend — the key a song names a singer's backend by
+/// (`VocalVoice::engine`) — and **never pruned when the singer changes**:
+/// switching to another voice and back finds every curve where it was.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VocalPart {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<SungLane, LaneCurve>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, BTreeMap<String, LaneCurve>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, BTreeMap<String, f32>>,
+    /// Written as base64 text, not a list of numbers.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "blob::map"
+    )]
+    pub state: BTreeMap<String, Vec<u8>>,
+}
+
+impl VocalPart {
+    pub fn is_empty(&self) -> bool {
+        self.lanes.is_empty()
+            && self.extra.values().all(BTreeMap::is_empty)
+            && self.settings.values().all(BTreeMap::is_empty)
+            && self.state.is_empty()
+    }
+
+    pub fn curve(&self, key: &LaneKey) -> Option<&LaneCurve> {
+        match key {
+            LaneKey::Standard(lane) => self.lanes.get(lane),
+            LaneKey::Extra { backend, id } => self.extra.get(backend)?.get(id),
+        }
+    }
+
+    pub fn set_curve(&mut self, key: &LaneKey, curve: Option<LaneCurve>) {
+        let curve = curve.filter(|c| !c.is_empty());
+        match key {
+            LaneKey::Standard(lane) => match curve {
+                Some(c) => {
+                    self.lanes.insert(*lane, c);
+                }
+                None => {
+                    self.lanes.remove(lane);
+                }
+            },
+            LaneKey::Extra { backend, id } => {
+                let lanes = self.extra.entry(backend.clone()).or_default();
+                match curve {
+                    Some(c) => {
+                        lanes.insert(id.clone(), c);
+                    }
+                    None => {
+                        lanes.remove(id);
+                    }
+                }
+                if lanes.is_empty() {
+                    self.extra.remove(backend);
+                }
+            }
+        }
+    }
+
+    /// Every curve `delta` ticks later — the second half of a cut clip.
+    pub fn shifted(&self, delta: Tick) -> Self {
+        let mut out = self.clone();
+        for c in out.lanes.values_mut() {
+            *c = c.shifted(delta);
+        }
+        for lanes in out.extra.values_mut() {
+            for c in lanes.values_mut() {
+                *c = c.shifted(delta);
+            }
+        }
+        out
+    }
+}
+
+/// Byte blobs as base64 text, in files and on the wire.
+pub(crate) mod blob {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b = [
+                chunk[0],
+                chunk.get(1).copied().unwrap_or(0),
+                chunk.get(2).copied().unwrap_or(0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    pub fn decode(text: &str) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(text.len() / 4 * 3);
+        let mut acc = 0u32;
+        let mut bits = 0;
+        for c in text.bytes() {
+            if c == b'=' {
+                break;
+            }
+            let v = ALPHABET
+                .iter()
+                .position(|a| *a == c)
+                .ok_or_else(|| format!("{:?} is not base64", c as char))?;
+            acc = (acc << 6) | v as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((acc >> bits) as u8);
+                acc &= (1 << bits) - 1;
+            }
+        }
+        Ok(out)
+    }
+
+    pub mod map {
+        use std::collections::BTreeMap;
+
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        pub fn serialize<S: Serializer>(
+            value: &BTreeMap<String, Vec<u8>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value
+                .iter()
+                .map(|(k, v)| (k.clone(), super::encode(v)))
+                .collect::<BTreeMap<String, String>>()
+                .serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<BTreeMap<String, Vec<u8>>, D::Error> {
+            BTreeMap::<String, String>::deserialize(deserializer)?
+                .into_iter()
+                .map(|(k, v)| {
+                    super::decode(&v)
+                        .map(|b| (k, b))
+                        .map_err(serde::de::Error::custom)
+                })
+                .collect()
+        }
+    }
+
+    pub mod option {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        pub fn serialize<S: Serializer>(
+            value: &Option<Vec<u8>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value.as_deref().map(super::encode).serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Vec<u8>>, D::Error> {
+            Option::<String>::deserialize(deserializer)?
+                .map(|s| super::decode(&s).map_err(serde::de::Error::custom))
+                .transpose()
+        }
+    }
+
+    /// `Option<Option<bytes>>` with its two `None`s told apart, as
+    /// `crate::wire::nested` does.
+    pub mod nested {
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        pub fn serialize<S: Serializer>(
+            value: &Option<Option<Vec<u8>>>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            value
+                .as_ref()
+                .map(|inner| (inner.as_deref().map(super::encode),))
+                .serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Option<Vec<u8>>>, D::Error> {
+            Option::<(Option<String>,)>::deserialize(deserializer)?
+                .map(|(inner,)| {
+                    inner
+                        .map(|s| super::decode(&s).map_err(serde::de::Error::custom))
+                        .transpose()
+                })
+                .transpose()
+        }
+    }
+}
+
+/// The part `home`'s notes carry, made if there is none.
+fn part_mut(data: &mut crate::note::NoteData) -> &mut VocalPart {
+    data.vocal.get_or_insert_with(Default::default)
+}
+
+/// Drops a part left with nothing in it, so an undone first stroke leaves
+/// the clip exactly as it was (and the song in the format it was).
+fn tidy(data: &mut crate::note::NoteData) {
+    if data.vocal.as_ref().is_some_and(|p| p.is_empty()) {
+        data.vocal = None;
+    }
+}
+
+/// Each of a set of notes gets a whole new [`NoteVoice`] (or none) — a
+/// vibrato added, a handle dragged, phonemes typed, an option chosen — in
+/// one undo step; a drag's moves merge into one.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetNoteVoices {
+    home: NoteHome,
+    ids: Vec<NoteId>,
+    voices: Vec<Option<NoteVoice>>,
+    previous: Option<Vec<Option<NoteVoice>>>,
+    label: String,
+}
+
+impl SetNoteVoices {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        ids: Vec<NoteId>,
+        voices: Vec<Option<NoteVoice>>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            home: home.into(),
+            ids,
+            voices,
+            previous: None,
+            label: label.into(),
+        }
+    }
+}
+
+impl Command for SetNoteVoices {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteVoices(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.ids.len() != self.voices.len() {
+            return Err(CommandError(format!(
+                "{} voices for {} notes",
+                self.voices.len(),
+                self.ids.len()
+            )));
+        }
+        if self.voices.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(CommandError("a note's voice is not a number".into()));
+        }
+        let data = notes_of(doc, self.home)?;
+        for id in &self.ids {
+            if data.notes.get(*id).is_none() {
+                return Err(CommandError(format!("no note {id:?} here")));
+            }
+        }
+        if self.previous.is_none() {
+            self.previous = Some(
+                self.ids
+                    .iter()
+                    .map(|id| data.notes[*id].voice.as_deref().cloned())
+                    .collect(),
+            );
+        }
+        for (id, voice) in self.ids.iter().zip(&self.voices) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                note.voice = voice.clone().filter(|v| !v.is_empty()).map(Box::new);
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetNoteVoices::new(
+                self.home,
+                self.ids.clone(),
+                previous.clone(),
+                self.label.clone(),
+            )),
+            None => Box::new(NotApplied::new("changing how notes are sung")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// A handle dragged over the same notes is one step.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if next.home != self.home || next.ids != self.ids || next.label != self.label {
+            return false;
+        }
+        self.voices.clone_from(&next.voices);
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.ids.len() * 2) * (std::mem::size_of::<NoteVoice>() + 64)
+            + self.label.len()
+    }
+}
+
+/// Draws (or clears, with `None`) one lane of a part. A stroke's moves merge
+/// into one step.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetVocalLane {
+    home: NoteHome,
+    key: LaneKey,
+    curve: Option<LaneCurve>,
+    #[serde(with = "crate::wire::nested")]
+    previous: Option<Option<LaneCurve>>,
+    label: String,
+}
+
+impl SetVocalLane {
+    pub fn new(home: impl Into<NoteHome>, key: LaneKey, curve: Option<LaneCurve>) -> Self {
+        let label = match &key {
+            LaneKey::Standard(lane) => format!("Draw {}", lane_spec(*lane).name.to_lowercase()),
+            LaneKey::Extra { id, .. } => format!("Draw {id}"),
+        };
+        Self {
+            home: home.into(),
+            key,
+            curve,
+            previous: None,
+            label,
+        }
+    }
+}
+
+impl Command for SetVocalLane {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetVocalLane(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self
+            .curve
+            .as_ref()
+            .is_some_and(|c| c.points.iter().any(|(_, v)| !v.is_finite()))
+        {
+            return Err(CommandError("a lane value is not a number".into()));
+        }
+        let data = notes_of(doc, self.home)?;
+        let part = part_mut(data);
+        let before = part.curve(&self.key).cloned();
+        self.previous.get_or_insert(before);
+        part.set_curve(&self.key, self.curve.clone());
+        tidy(data);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => {
+                let mut back = SetVocalLane::new(self.home, self.key.clone(), previous.clone());
+                back.label.clone_from(&self.label);
+                Box::new(back)
+            }
+            None => Box::new(NotApplied::new("drawing a lane")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if next.home != self.home || next.key != self.key {
+            return false;
+        }
+        self.curve.clone_from(&next.curve);
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        let points = |c: &Option<LaneCurve>| c.as_ref().map_or(0, |c| c.points.len());
+        std::mem::size_of::<Self>()
+            + 12 * (points(&self.curve) + self.previous.as_ref().map_or(0, points))
+            + self.label.len()
+    }
+}
+
+/// A backend's whole-part settings, as a whole: every value it has for that
+/// backend (an empty map clears them). A knob's drag merges into one step.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetVocalSettings {
+    home: NoteHome,
+    backend: String,
+    settings: BTreeMap<String, f32>,
+    previous: Option<BTreeMap<String, f32>>,
+}
+
+impl SetVocalSettings {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        backend: impl Into<String>,
+        settings: BTreeMap<String, f32>,
+    ) -> Self {
+        Self {
+            home: home.into(),
+            backend: backend.into(),
+            settings,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetVocalSettings {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetVocalSettings(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.settings.values().any(|v| !v.is_finite()) {
+            return Err(CommandError("a setting is not a number".into()));
+        }
+        let data = notes_of(doc, self.home)?;
+        let part = part_mut(data);
+        let before = part
+            .settings
+            .get(&self.backend)
+            .cloned()
+            .unwrap_or_default();
+        self.previous.get_or_insert(before);
+        if self.settings.is_empty() {
+            part.settings.remove(&self.backend);
+        } else {
+            part.settings
+                .insert(self.backend.clone(), self.settings.clone());
+        }
+        tidy(data);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetVocalSettings::new(
+                self.home,
+                self.backend.clone(),
+                previous.clone(),
+            )),
+            None => Box::new(NotApplied::new("changing a singer's settings")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Change the singer's settings"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if next.home != self.home || next.backend != self.backend {
+            return false;
+        }
+        self.settings.clone_from(&next.settings);
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + 40 * (self.settings.len() + self.previous.as_ref().map_or(0, BTreeMap::len))
+    }
+}
+
+/// The state blob a backend keeps in the part (an external engine's window
+/// stores whatever it likes here). Successive writes merge into one step.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetVocalState {
+    home: NoteHome,
+    backend: String,
+    #[serde(with = "blob::option")]
+    state: Option<Vec<u8>>,
+    #[serde(with = "blob::nested")]
+    previous: Option<Option<Vec<u8>>>,
+}
+
+impl SetVocalState {
+    pub fn new(
+        home: impl Into<NoteHome>,
+        backend: impl Into<String>,
+        state: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            home: home.into(),
+            backend: backend.into(),
+            state,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetVocalState {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetVocalState(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let data = notes_of(doc, self.home)?;
+        let part = part_mut(data);
+        let before = part.state.get(&self.backend).cloned();
+        self.previous.get_or_insert(before);
+        match &self.state {
+            Some(state) => {
+                part.state.insert(self.backend.clone(), state.clone());
+            }
+            None => {
+                part.state.remove(&self.backend);
+            }
+        }
+        tidy(data);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetVocalState::new(
+                self.home,
+                self.backend.clone(),
+                previous.clone(),
+            )),
+            None => Box::new(NotApplied::new("changing a singer's state")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Change the singer's state"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if next.home != self.home || next.backend != self.backend {
+            return false;
+        }
+        self.state.clone_from(&next.state);
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.state.as_ref().map_or(0, Vec::len)
+            + self
+                .previous
+                .as_ref()
+                .and_then(Option::as_ref)
+                .map_or(0, Vec::len)
+    }
+}

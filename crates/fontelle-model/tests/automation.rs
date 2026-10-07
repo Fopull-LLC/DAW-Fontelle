@@ -349,6 +349,7 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         source: ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

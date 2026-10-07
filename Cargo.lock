@@ -1447,6 +1447,7 @@ dependencies = [
 name = "fontelle-model"
 version = "0.26.1"
 dependencies = [
+ "fontelle-sing",
  "fontelle-types",
  "postcard",
  "serde",

@@ -237,6 +237,7 @@ fn keep(take: &mut Take) -> fontelle_types::ClipId {
         source: ClipSource::Notes(NoteData {
             channel: take.channel,
             notes: data.notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

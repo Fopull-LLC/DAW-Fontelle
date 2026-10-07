@@ -45,6 +45,7 @@ fn a_note(key: u8, channel: Option<ChannelId>) -> Note {
         path: Vec::new(),
         channel,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn a_clip_lists_the_channels_its_notes_are_on_with_its_own_first() {
     let data = NoteData {
         channel: ch[0],
         notes,
+        vocal: None,
     };
     assert_eq!(data.channels(), vec![ch[0], ch[2], ch[1]]);
 }
@@ -103,12 +105,14 @@ fn a_clip_with_notes_on_one_channel_lists_just_that_one() {
     let data = NoteData {
         channel: ch[0],
         notes,
+        vocal: None,
     };
     assert_eq!(data.channels(), vec![ch[0]]);
     // And an empty clip is still on its own channel.
     let empty = NoteData {
         channel: ch[1],
         notes: Arena::default(),
+        vocal: None,
     };
     assert_eq!(empty.channels(), vec![ch[1]]);
 }
@@ -123,6 +127,7 @@ fn the_notes_on_one_channel_can_be_asked_for() {
     let data = NoteData {
         channel: ch[0],
         notes,
+        vocal: None,
     };
     let mut on_home: Vec<_> = data.notes_on(ch[0]).map(|(id, _)| id).collect();
     on_home.sort();

@@ -41,6 +41,7 @@ fn a_note(start: i64, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -81,7 +82,11 @@ fn fixture() -> (Project, ClipId, LaneId) {
         lane,
         start: 0,
         length: PPQN * 4,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,
@@ -213,6 +218,7 @@ fn another(project: &mut Project, lane: LaneId, length: i64, loop_length: Option
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

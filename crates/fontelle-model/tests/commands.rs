@@ -36,6 +36,7 @@ fn a_note(start: i64, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -93,7 +94,11 @@ fn fixture() -> Fixture {
         lane,
         start: 0,
         length: PPQN * 4,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,
@@ -208,6 +213,7 @@ fn every_clip_command_inverts_exactly() {
         source: ClipSource::Notes(NoteData {
             channel: f.channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
@@ -1331,6 +1337,7 @@ fn a_clip_on_a_new_row_is_one_command_and_one_undo() {
         source: ClipSource::Notes(NoteData {
             channel: f.channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

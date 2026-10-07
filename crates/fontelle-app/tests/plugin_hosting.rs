@@ -150,13 +150,18 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     project.clips.insert(Clip {
         name: None,
         lane,
         start: 0,
         length: PPQN * 8,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,

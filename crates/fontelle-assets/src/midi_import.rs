@@ -665,7 +665,11 @@ pub fn read_midi(
             lane,
             start: 0,
             length,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,
@@ -741,6 +745,7 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         path: path_from_bends(start.start, (end - start.start).max(1), &start.bends),
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
 }
 

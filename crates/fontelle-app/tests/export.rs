@@ -174,6 +174,7 @@ fn a_looping_note_clip_counts_to_its_end_and_a_place_for_a_prefab_counts_its_not
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         }],
     )
     .apply(&mut project)

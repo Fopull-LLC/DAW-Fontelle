@@ -282,6 +282,7 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
                 path: Vec::new(),
                 channel: None,
                 lyric: String::new(),
+                voice: None,
             },
         });
         s.end_gesture();
@@ -461,6 +462,7 @@ fn undoing_the_whole_session_gets_back_to_where_it_started() {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         },
     });
     s.end_gesture();
@@ -562,6 +564,7 @@ fn the_piece_you_made_is_audible_in_the_file_you_rendered() {
                 path: Vec::new(),
                 channel: None,
                 lyric: String::new(),
+                voice: None,
             },
         });
         s.end_gesture();

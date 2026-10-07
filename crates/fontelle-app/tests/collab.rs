@@ -356,6 +356,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 

@@ -13,20 +13,21 @@ use fontelle_model::{
     AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,
     ApplyTrackChain, Arena, AutomationData, AutomationPoint, Clip, ClipSource, Command, Compound,
     CopyChannelAb, CurveShape, DetachPrefab, DuplicateChannel, DuplicateClip, DuplicateMixerTrack,
-    Edit, EditLapse, EditNotepad, FlagTarget, History, ImportPart, ImportParts, MakePrefabFromClip,
-    MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane, MoveMixerTrack, MoveNotes,
-    NoteData, NoteProperty, NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project,
-    RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker,
-    RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameClip, RenameLane,
-    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes,
-    RestoreInsert, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
-    SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
-    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetLyrics, SetMixerOrder,
-    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
-    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
-    SetPresetRef, SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput,
-    SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart, VocalVoice, load_project, peek_meta,
-    save_project,
+    Edit, EditLapse, EditNotepad, FlagTarget, History, ImportPart, ImportParts, LaneCurve, LaneKey,
+    MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane,
+    MoveMixerTrack, MoveNotes, NoteData, NoteProperty, NoteVoice, NudgeNoteProperty, NumberTarget,
+    PROJECT_FILE, PresetTarget, Project, RemoveAutomationPoints, RemoveChannel, RemoveClip,
+    RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab,
+    RemoveSend, RenameChannel, RenameClip, RenameLane, RenameMixerTrack, RenamePrefab,
+    RenameProject, ResizeClip, ResizeClips, ResizeNotes, RestoreInsert, SetAudioClip,
+    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
+    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
+    SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor, SetNoteKeys, SetNoteLengths,
+    SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
+    SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
+    SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput, SetVocalLane, SetVocalSettings,
+    SetVocalState, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart, VocalVoice, load_project,
+    peek_meta, save_project,
 };
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
@@ -65,6 +66,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -202,6 +204,7 @@ fn a_studio() -> Studio {
             source: ClipSource::Notes(NoteData {
                 channel: keys,
                 notes: Arena::default(),
+                vocal: None,
             }),
             prefab_link: None,
             color: None,
@@ -274,6 +277,7 @@ fn a_studio() -> Studio {
             ClipSource::Notes(NoteData {
                 channel: keys,
                 notes: [a_note(0, 48)].into_iter().collect(),
+                vocal: None,
             }),
         ),
         &mut project,
@@ -570,6 +574,40 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 Some(VocalVoice::new("Engine", "alto", "en")),
             ))
         }),
+        ("SetNoteVoices", |s| {
+            Box::new(SetNoteVoices::new(
+                s.notes_clip,
+                vec![s.notes[0]],
+                vec![Some(NoteVoice {
+                    vibrato: Some(fontelle_sing::Vibrato::default()),
+                    ..NoteVoice::default()
+                })],
+                "Vibrato",
+            ))
+        }),
+        ("SetVocalLane", |s| {
+            let mut curve = LaneCurve::default();
+            curve.write(0, PPQN, 10, |_| 0.5, 0.0);
+            Box::new(SetVocalLane::new(
+                s.notes_clip,
+                LaneKey::Standard(fontelle_sing::Lane::Breathiness),
+                Some(curve),
+            ))
+        }),
+        ("SetVocalSettings", |s| {
+            Box::new(SetVocalSettings::new(
+                s.notes_clip,
+                "Engine",
+                std::collections::BTreeMap::from([("steps".to_string(), 4.0)]),
+            ))
+        }),
+        ("SetVocalState", |s| {
+            Box::new(SetVocalState::new(
+                s.notes_clip,
+                "Engine",
+                Some(vec![1, 2, 3]),
+            ))
+        }),
         ("SetNoteSlide", |s| {
             Box::new(SetNoteSlide::new(s.notes_clip, vec![s.notes[0]], true))
         }),
@@ -659,6 +697,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 source: ClipSource::Notes(NoteData {
                     channel: s.drums,
                     notes: Arena::default(),
+                    vocal: None,
                 }),
                 prefab_link: None,
                 color: None,
@@ -779,6 +818,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 ClipSource::Notes(NoteData {
                     channel: s.drums,
                     notes: [a_note(0, 36)].into_iter().collect(),
+                    vocal: None,
                 }),
             ))
         }),
@@ -1007,6 +1047,22 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"SetSinger":{"channel":{"idx":1,"version":1},"voice":{"engine":"E","singer":"s","language":"ja"},"previous":null}}"#,
             "SetSinger",
+        ),
+        (
+            r#"{"SetNoteVoices":{"home":{"Clip":{"idx":1,"version":1}},"ids":[{"idx":1,"version":1}],"voices":[{"vibrato":{"depth":25.0,"rate":5.5,"delay":0.4,"fade_in":0.3,"fade_out":0.2}}],"previous":null,"label":"Vibrato"}}"#,
+            "SetNoteVoices",
+        ),
+        (
+            r#"{"SetVocalLane":{"home":{"Clip":{"idx":1,"version":1}},"key":{"Standard":"Breathiness"},"curve":[[0,0.5],[960,0.5]],"previous":null,"label":"Draw breathiness"}}"#,
+            "SetVocalLane",
+        ),
+        (
+            r#"{"SetVocalSettings":{"home":{"Clip":{"idx":1,"version":1}},"backend":"E","settings":{"steps":4.0},"previous":null}}"#,
+            "SetVocalSettings",
+        ),
+        (
+            r#"{"SetVocalState":{"home":{"Clip":{"idx":1,"version":1}},"backend":"E","state":"AQID","previous":null}}"#,
+            "SetVocalState",
         ),
     ];
     for (json, tag) in pinned {

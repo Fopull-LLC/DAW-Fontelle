@@ -86,6 +86,7 @@ impl PlacedNote {
             path: self.path.clone(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         };
         note.pitch_at(at)
     }

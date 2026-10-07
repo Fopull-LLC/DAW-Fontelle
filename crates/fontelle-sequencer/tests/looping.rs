@@ -35,6 +35,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -83,6 +84,7 @@ fn compile_clip(
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

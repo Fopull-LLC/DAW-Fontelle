@@ -93,6 +93,7 @@ fn draw(session: &mut Session, beat: i64, key: u8) -> NoteId {
             // What the roll's template carried from the last note clicked:
             // a drawn note sings the language's syllable, not that.
             lyric: "hel-".into(),
+            voice: None,
         },
     })[0]
 }

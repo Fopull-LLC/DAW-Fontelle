@@ -130,6 +130,7 @@ fn a_note_drawn_with_no_clip_open_is_refused_with_a_sentence() {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         },
     });
     session.end_gesture();

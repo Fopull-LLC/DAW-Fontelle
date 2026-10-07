@@ -77,6 +77,17 @@ pub struct Note {
     /// song written before lyrics existed reads and writes unchanged.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lyric: String,
+    /// How this note is sung beyond its lyric, on a vocal channel: phonemes
+    /// placed by hand, vibrato, the glide in, a backend's own options
+    /// ([`crate::NoteVoice`]). Its velocity is read as consonant speed
+    /// ([`crate::consonant_speed`]).
+    ///
+    /// Boxed and `None` for every note that has none, so a note costs one
+    /// pointer more than it did; left out of the file when `None`, so a song
+    /// that does not use it is written as before (format 3,
+    /// `Project::format_needed`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Box<crate::NoteVoice>>,
 }
 
 /// One point on a note's [path](Note::path).
@@ -205,6 +216,12 @@ pub struct NoteData {
     /// never has. A note may name another — see [`Note::channel`].
     pub channel: ChannelId,
     pub notes: Arena<NoteId, Note>,
+    /// The vocal part's lanes, settings and state, when these notes are
+    /// sung ([`crate::VocalPart`]): with the notes, so a clip moved, copied
+    /// or made a prefab carries its curves the way it carries its words.
+    /// Left out of the file when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal: Option<Box<crate::VocalPart>>,
 }
 
 impl NoteData {

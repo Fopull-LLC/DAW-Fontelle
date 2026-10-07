@@ -51,6 +51,7 @@ fn a_note(start: i64, length: i64, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 

@@ -45,6 +45,7 @@ fn notes_clip(project: &mut Project, lane: LaneId, channel: ChannelId, start: i6
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Default::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

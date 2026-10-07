@@ -25,6 +25,7 @@ pub fn note(start: Tick, length: Tick, key: u8, lyric: &str) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: lyric.to_string(),
+        voice: None,
     }
 }
 
@@ -97,6 +98,7 @@ pub fn song(language: &str, notes: Vec<Note>) -> Song {
         source: ClipSource::Notes(NoteData {
             channel: voice,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

@@ -63,6 +63,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -203,6 +204,7 @@ fn a_new_note_is_a_copy_of_the_template() {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
 
     let (x, y) = at(&roll.view, PPQN, 64);

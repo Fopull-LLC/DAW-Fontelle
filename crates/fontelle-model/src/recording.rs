@@ -150,6 +150,7 @@ pub fn notes_from_looped_capture(
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
     }
 
@@ -158,5 +159,6 @@ pub fn notes_from_looped_capture(
         // record-arm, not anything the events carry.
         channel: fontelle_types::ChannelId::default(),
         notes,
+        vocal: None,
     })
 }

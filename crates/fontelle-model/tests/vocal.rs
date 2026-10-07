@@ -29,6 +29,7 @@ fn a_note(start: i64, key: u8, lyric: &str) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: lyric.to_string(),
+        voice: None,
     }
 }
 
@@ -83,7 +84,11 @@ fn fixture(vocal: bool) -> Fixture {
         lane,
         start: 0,
         length: PPQN * 4,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,
@@ -136,7 +141,7 @@ fn a_vocal_song_saves_and_opens_with_its_singer_and_words() {
 /// instead of failing on whichever field it met first.
 #[test]
 fn a_vocal_song_is_stamped_with_the_format_that_has_voices() {
-    assert_eq!(PROJECT_FORMAT_VERSION, 2);
+    assert_eq!(PROJECT_FORMAT_VERSION, 3);
     let f = fixture(true);
     assert_eq!(f.project.format_needed(), 2);
     let dir = scratch("stamp");

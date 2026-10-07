@@ -194,6 +194,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
     };
 
@@ -230,7 +231,11 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         lane,
         start: 0,
         length: chord_start + chord_length,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,

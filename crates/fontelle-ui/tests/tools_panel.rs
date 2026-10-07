@@ -49,6 +49,7 @@ fn a_note(key: u8, velocity: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -725,6 +726,7 @@ fn the_menus_legato_and_the_keyboards_are_the_same_edit() {
                 path: Vec::new(),
                 channel: None,
                 lyric: String::new(),
+                voice: None,
             })
         })
         .collect();

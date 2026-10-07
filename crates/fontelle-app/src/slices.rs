@@ -96,6 +96,7 @@ pub fn replay_notes(
                 path: Vec::new(),
                 channel: None,
                 lyric: String::new(),
+                voice: None,
             }
         })
         .collect()

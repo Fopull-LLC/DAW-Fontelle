@@ -29,6 +29,7 @@ fn note(start: Tick, key: u8, slide: bool) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 

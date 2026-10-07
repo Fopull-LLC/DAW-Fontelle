@@ -230,6 +230,7 @@ fn a_note_clip_on_the_same_row_is_not_something_to_fade_against() {
         source: ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: fontelle_model::Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

@@ -29,6 +29,7 @@ fn note(beat: i64, lyric: &str) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: lyric.to_string(),
+        voice: None,
     }
 }
 

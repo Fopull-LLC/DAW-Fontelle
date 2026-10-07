@@ -31,7 +31,9 @@ use crate::study::{
     AddStudy, RemoveStudy, RestoreStudy, SetStudyClean, SetStudyEdits, SetStudyMarkers,
     SetStudyOriginal, SetStudyRender, SetStudyTakes,
 };
-use crate::vocal::{SetLyrics, SetSinger};
+use crate::vocal::{
+    SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
+};
 
 /// An edit that could not be read off the wire.
 #[derive(Debug)]
@@ -221,6 +223,10 @@ edits!(
     SetStudyOriginal,
     SetLyrics,
     SetSinger,
+    SetNoteVoices,
+    SetVocalLane,
+    SetVocalSettings,
+    SetVocalState,
 );
 
 impl Edit {

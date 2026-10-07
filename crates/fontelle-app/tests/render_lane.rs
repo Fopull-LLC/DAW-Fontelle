@@ -221,6 +221,7 @@ fn a_note_on_row_zero(session: &mut Session) {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         },
     });
 }

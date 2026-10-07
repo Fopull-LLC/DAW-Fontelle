@@ -146,6 +146,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     project.clips.insert(Clip {
         name: None,
@@ -155,6 +156,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         source: ClipSource::Notes(NoteData {
             channel: channel_id,
             notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

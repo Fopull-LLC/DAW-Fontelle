@@ -989,6 +989,7 @@ fn keep_the_take(
         source: ClipSource::Notes(NoteData {
             channel,
             notes: data.notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

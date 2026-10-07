@@ -299,6 +299,7 @@ fn s_while_moving_an_existing_note_does_nothing() {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         };
         n.start = 0;
         n
@@ -324,6 +325,7 @@ fn a_path_note_is_hit_along_its_slide_and_not_on_the_row_it_left() {
         path: vec![point(PPQN, 0), point(PPQN * 2, 8)],
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     let view = view();
     let hit = |tick, key| {
@@ -362,6 +364,7 @@ fn shaped() -> Host {
         path: vec![point(PPQN, 0), point(PPQN * 2, 7)],
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     host.roll.select(vec![id]);
     host
@@ -426,6 +429,7 @@ fn double_clicking_a_note_puts_a_point_there() {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     host.roll.select(vec![id]);
     host.double(PPQN * 2, 60);
@@ -449,6 +453,7 @@ fn sliding() -> (Arena<NoteId, Note>, NoteId) {
         path: vec![point(PPQN, 0), point(PPQN * 2, 8)],
         channel: None,
         lyric: String::new(),
+        voice: None,
     });
     (notes, id)
 }

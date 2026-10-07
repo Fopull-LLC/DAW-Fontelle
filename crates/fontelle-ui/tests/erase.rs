@@ -66,6 +66,7 @@ fn note(start: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 

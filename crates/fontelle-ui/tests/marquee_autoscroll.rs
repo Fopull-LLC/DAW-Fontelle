@@ -59,6 +59,7 @@ fn notes(items: &[(Tick, Tick, u8)]) -> Arena<NoteId, Note> {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
     }
     arena

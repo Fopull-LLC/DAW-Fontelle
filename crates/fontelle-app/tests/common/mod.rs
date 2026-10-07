@@ -156,6 +156,7 @@ pub fn a_project_with_a_clip(bars: i64, bpm: f64, sample_rate: u32) -> Project {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

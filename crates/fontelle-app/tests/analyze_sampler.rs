@@ -91,6 +91,7 @@ fn render_notes(
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
     }
     AddClip::new(Clip {
@@ -101,6 +102,7 @@ fn render_notes(
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

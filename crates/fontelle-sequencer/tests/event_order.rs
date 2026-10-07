@@ -40,6 +40,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -85,6 +86,7 @@ fn compile_notes(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

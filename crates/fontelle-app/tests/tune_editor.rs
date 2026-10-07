@@ -177,6 +177,7 @@ fn the_trace_reads_back_what_the_node_wrote() {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         }],
     )
     .apply(&mut project)

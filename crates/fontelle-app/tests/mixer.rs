@@ -273,6 +273,7 @@ fn a_muted_channel_is_dropped_by_the_compiler_rather_than_by_a_fader() {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         },
     });
     assert!(

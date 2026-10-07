@@ -4933,6 +4933,7 @@ impl Command for ImportParts {
                 source: ClipSource::Notes(NoteData {
                     channel: channel_id,
                     notes,
+                    vocal: None,
                 }),
                 prefab_link: None,
                 color: None,
@@ -6290,6 +6291,17 @@ impl Command for SplitClip {
                 let (front, back) = split_notes(source, offset, original.loop_length);
                 head.notes = front;
                 tail.notes = back;
+                // A vocal part's lanes are in the clip's own ticks: the second
+                // half's start where its notes now start (a loop's by the
+                // phase the cut fell on, as its notes are rotated).
+                let shift = original
+                    .loop_length
+                    .filter(|p| *p > 0)
+                    .map_or(offset, |p| offset.rem_euclid(p));
+                tail.vocal = source
+                    .vocal
+                    .as_ref()
+                    .map(|part| Box::new(part.shifted(-shift)));
                 // **The piece you cut off stops being a loop.** Reported from
                 // using the window: *"we should do more of what garage band
                 // does where you split the cut section from the rest of the
@@ -10085,6 +10097,7 @@ impl Command for AddPrefabInstance {
             ClipSource::Notes(data) => ClipSource::Notes(NoteData {
                 channel: data.channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
             ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
                 target: data.target.clone(),
@@ -10459,6 +10472,7 @@ impl Command for RestorePrefab {
                 ClipSource::Notes(data) => ClipSource::Notes(NoteData {
                     channel: data.channel,
                     notes: Arena::default(),
+                    vocal: None,
                 }),
                 ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
                     target: data.target.clone(),
@@ -10554,6 +10568,7 @@ impl Command for MakePrefabFromClip {
         let emptied = ClipSource::Notes(NoteData {
             channel: data.channel,
             notes: Arena::default(),
+            vocal: None,
         });
 
         let prefab = Prefab {

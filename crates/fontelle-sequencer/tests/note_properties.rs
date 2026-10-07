@@ -28,6 +28,7 @@ fn a_note(start: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -71,6 +72,7 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
@@ -193,6 +195,7 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

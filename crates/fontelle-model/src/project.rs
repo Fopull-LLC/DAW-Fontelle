@@ -352,8 +352,10 @@ pub struct Project {
 }
 
 impl Project {
-    /// The oldest project format that can hold this song: **2** once it has
-    /// a voice or a lyric in it, **1** otherwise.
+    /// The oldest project format that can hold this song: **3** once a
+    /// vocal part has expression (a note's voice, a lane, a singer's
+    /// settings or state), **2** once it has a voice or a lyric in it, **1**
+    /// otherwise.
     ///
     /// What a save stamps, rather than always the newest: a song with no
     /// vocal track in it is exactly what a format-1 build reads, and stamping
@@ -373,7 +375,24 @@ impl Project {
             crate::ClipSource::Notes(data) => data.notes.values().any(|n| !n.lyric.is_empty()),
             _ => false,
         });
-        if sings || words { 2 } else { 1 }
+        let sources = self
+            .clips
+            .values()
+            .map(|c| &c.source)
+            .chain(self.prefabs.values().map(|p| &p.source));
+        let expression = sources.into_iter().any(|source| match source {
+            crate::ClipSource::Notes(data) => {
+                data.vocal.is_some() || data.notes.values().any(|n| n.voice.is_some())
+            }
+            _ => false,
+        });
+        if expression {
+            3
+        } else if sings || words {
+            2
+        } else {
+            1
+        }
     }
 
     /// The lanes, **in the order the arrangement stacks them**.

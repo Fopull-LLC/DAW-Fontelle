@@ -715,6 +715,7 @@ fn the_roll_says_a_take_holds_no_notes_rather_than_refusing_each_one() {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     };
     assert!(session.edit(RollEdit::Add { note }).is_empty());
     let said = session.take_message().expect("it says why");

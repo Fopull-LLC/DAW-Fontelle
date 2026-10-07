@@ -45,6 +45,7 @@ fn a_note(start: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -100,7 +101,11 @@ impl Rig {
             lane: self.lane,
             start,
             length: BAR,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,

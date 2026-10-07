@@ -817,6 +817,7 @@ mod tests {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
 
         project.clips.insert(Clip {
@@ -827,6 +828,7 @@ mod tests {
             source: ClipSource::Notes(NoteData {
                 channel: channel_id,
                 notes,
+                vocal: None,
             }),
             prefab_link: None,
             color: None,

@@ -79,7 +79,11 @@ pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
     RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
 };
-pub use vocal::{SetLyrics, SetSinger, VocalVoice};
+pub use vocal::{
+    LaneCurve, LaneKey, LaneSpec, NoteVoice, SetLyrics, SetNoteVoices, SetSinger, SetVocalLane,
+    SetVocalSettings, SetVocalState, VocalPart, VocalVoice, consonant_speed, lane_spec,
+    velocity_for_speed,
+};
 pub use wire::{Edit, WireError};
 
 /// What `target` is automated to at `tick` in song time, or `None` if nothing

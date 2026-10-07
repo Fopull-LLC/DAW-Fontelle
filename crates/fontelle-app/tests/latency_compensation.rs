@@ -180,13 +180,18 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             path: Vec::new(),
             channel: None,
             lyric: String::new(),
+            voice: None,
         });
         project.clips.insert(Clip {
             name: None,
             lane,
             start: 0,
             length: PPQN * 4,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,

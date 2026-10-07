@@ -45,6 +45,7 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         path: Vec::new(),
         channel: None,
         lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -104,6 +105,7 @@ impl Rig {
             ClipSource::Notes(NoteData {
                 channel: self.channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
         );
         add.apply(&mut self.project).unwrap();
@@ -279,6 +281,7 @@ fn an_ordinary_clip_is_untouched_by_any_of_this() {
         source: ClipSource::Notes(NoteData {
             channel: rig.channel,
             notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

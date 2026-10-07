@@ -6367,6 +6367,7 @@ impl Session {
                     source: ClipSource::Notes(fontelle_model::NoteData {
                         channel,
                         notes: arena,
+                        vocal: None,
                     }),
                     prefab_link: None,
                     color: None,
@@ -7745,6 +7746,7 @@ impl Session {
             source: ClipSource::Notes(NoteData {
                 channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
             prefab_link: None,
             color: None,
@@ -8496,6 +8498,7 @@ impl StudioHost for Session {
         let source = ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         });
         let made = match self.apply_for::<fontelle_model::AddPrefab>(Box::new(
             fontelle_model::AddPrefab::new(name, source),
@@ -14264,6 +14267,7 @@ impl StudioHost for Session {
                     source: ClipSource::Notes(NoteData {
                         channel,
                         notes: Arena::default(),
+                        vocal: None,
                     }),
                     prefab_link: None,
                     color: None,
