@@ -496,13 +496,13 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
             help: None,
             tour: None,
             settings_page: None,
-            vocal_overlay: (page.is_some() || picker.is_some()).then(|| {
+            vocal_overlay: (page.is_some() || picker.is_some()).then_some(
                 fontelle_ui::render::vocal::VocalOverlay {
                     page,
                     picker,
                     portraits: &portraits,
-                }
-            }),
+                },
+            ),
         },
     );
     let pixels = shared

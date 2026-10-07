@@ -5859,6 +5859,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
                 focus: None,
                 dragging: None,
             }),
+            vocal_overlay: None,
         },
     );
     let pixels = shared

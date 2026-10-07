@@ -136,7 +136,7 @@ fn the_arrow_keys_move_between_cards_as_they_are_laid_out() {
         .iter()
         .take_while(|c| (c.frame.y - l.cards[0].frame.y).abs() < 1.0)
         .count();
-    assert!(per_row >= 3 && per_row < 9, "{per_row} a row");
+    assert!((3..9).contains(&per_row), "{per_row} a row");
     assert_eq!(picker_move(&l, None, PickerMove::Right), Some(0));
     assert_eq!(picker_move(&l, Some(0), PickerMove::Right), Some(1));
     assert_eq!(picker_move(&l, Some(0), PickerMove::Left), Some(0));

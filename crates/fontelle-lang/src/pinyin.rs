@@ -133,10 +133,13 @@ fn normalise(typed: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+/// A character and the reading written after it, if one was.
+type Written = (char, Option<String>);
+
 /// A lyric's characters and the reading written after any of them, or
 /// `None` when it is not Chinese throughout.
-fn characters(lyric: &str) -> Option<Vec<(char, Option<String>)>> {
-    let mut out: Vec<(char, Option<String>)> = Vec::new();
+fn characters(lyric: &str) -> Option<Vec<Written>> {
+    let mut out: Vec<Written> = Vec::new();
     let mut rest = lyric.trim_matches(|c: char| is_punctuation(c));
     while let Some(c) = rest.chars().next() {
         if c == '[' {
@@ -159,8 +162,7 @@ fn characters(lyric: &str) -> Option<Vec<(char, Option<String>)>> {
 /// What each lyric of a run of notes says, read together so a word sung
 /// a character a note (`银` `行`) is still found as the word.
 pub fn read_run(lyrics: &[&str]) -> Vec<Option<Vec<String>>> {
-    let parsed: Vec<Option<Vec<(char, Option<String>)>>> =
-        lyrics.iter().map(|l| characters(l)).collect();
+    let parsed: Vec<Option<Vec<Written>>> = lyrics.iter().map(|l| characters(l)).collect();
     let t = tables();
     let mut out: Vec<Option<Vec<String>>> = Vec::with_capacity(lyrics.len());
     let mut i = 0;
@@ -174,7 +176,7 @@ pub fn read_run(lyrics: &[&str]) -> Vec<Option<Vec<String>>> {
         while j < parsed.len() && parsed[j].is_some() {
             j += 1;
         }
-        let flat: Vec<&(char, Option<String>)> = parsed[i..j].iter().flatten().flatten().collect();
+        let flat: Vec<&Written> = parsed[i..j].iter().flatten().flatten().collect();
         let chars: Vec<char> = flat.iter().map(|(c, _)| *c).collect();
         // Each character's reading: the word's, the longest first.
         let mut read: Vec<Option<&str>> = vec![None; chars.len()];

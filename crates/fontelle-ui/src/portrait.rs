@@ -152,7 +152,7 @@ pub fn decode_bmp(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     }
     // A 32-bit BMP whose alpha byte is 0 throughout has no alpha at all.
     if !any_alpha {
-        for p in rgba.chunks_exact_mut(4) {
+        for p in rgba.as_chunks_mut::<4>().0 {
             p[3] = 255;
         }
     }
@@ -213,7 +213,9 @@ pub fn decode_webp(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let rgba = if alpha {
         buf
     } else {
-        buf.chunks_exact(3)
+        buf.as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect()
     };
