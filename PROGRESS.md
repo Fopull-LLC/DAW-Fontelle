@@ -119,8 +119,16 @@ the way bridges are. Nothing in this tree knows any particular engine.
   takes (memory only — a reopened song sings again); the IME's preedit
   is not drawn (only its commits); clip play mode (pattern) plays vocals
   at song time only; a collaborator without the engine keeps the words
-  and is silent (takes are not shared); not driven on a real display —
-  headless dumps and the session tests only.
+  and is silent (takes are not shared); the CLI's `--render-wav` path
+  (`fontelle_app::bounce`, no session) does not sing — export from the
+  window; the roll does not scroll to frame a vocal part when it opens, nor
+  follow the lyric field when Tab moves it off screen.
+- Driven once on `Xwayland :99` with the real engine installed: the song
+  opened singing (pitch and phonemes drawn from its takes), the
+  arrangement hatched the phrases being re-sung after an edit, a drawn
+  note sang `la`, Enter and a double-click opened the field, typing and
+  Enter wrote the word, Esc left it, and the singer chip opened the
+  picker with both research-only voices badged.
 
 **As of 2026-10-06, latest — Analyze Musically keeps its own time; a
 flatten handle; a pro's pass over its edges.** Same branch
