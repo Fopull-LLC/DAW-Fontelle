@@ -164,7 +164,7 @@ fn song() -> Song {
         let steps = (len * 40.0) as usize;
         for s in 0..steps {
             let b = start + s as f64 / 40.0;
-            let mut k = f32::from(*key as u8);
+            let mut k = f32::from(*key);
             if i == 2 && s as f64 / 40.0 > 0.9 {
                 k += 0.6 * ((b * 15.0).sin() as f32);
             }

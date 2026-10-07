@@ -567,6 +567,7 @@ pub fn draw_vocal_tabs(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal:
 
 /// The chosen lane: its neutral line, the curve filled down to it, its
 /// range at the side, and greyed with why when the voice ignores it.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_vocal_lane(
     scene: &mut Scene,
     theme: &Theme,

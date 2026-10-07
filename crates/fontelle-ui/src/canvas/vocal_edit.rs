@@ -629,7 +629,7 @@ pub fn phoneme_cells(
     view: &RollView,
     grid: Rect,
     notes: &Arena<NoteId, Note>,
-    timed: &[(NoteId, Vec<(String, Option<f64>)>)],
+    timed: &[(NoteId, crate::document::TimedPhonemes)],
     ticks_per_second: f64,
 ) -> Vec<PhonemeCell> {
     let mut out = Vec::new();

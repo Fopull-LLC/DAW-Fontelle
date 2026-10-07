@@ -317,7 +317,7 @@ impl DownloadWatch {
             .filter_map(|e| {
                 let path = e.path();
                 let meta = e.metadata().ok()?;
-                meta.is_file().then(|| (path, meta.len()))
+                meta.is_file().then_some((path, meta.len()))
             })
             .collect()
     }

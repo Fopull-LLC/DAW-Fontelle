@@ -91,6 +91,10 @@ pub struct SingerChoice {
     pub terms_agreed: bool,
 }
 
+/// A note's sung phonemes, each with where it starts (seconds from the
+/// note's start) when the singer said.
+pub type TimedPhonemes = Vec<(String, Option<f64>)>;
+
 /// What kind of singer a [`SingerChoice`] is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SingerKind {
@@ -210,7 +214,7 @@ pub struct VocalView {
     pub pitch_line: Vec<Vec<(Tick, f32)>>,
     /// What each sung note was sung as, phoneme by phoneme with where each
     /// starts (seconds from the note's start) when the singer said.
-    pub timed: Vec<(NoteId, Vec<(String, Option<f64>)>)>,
+    pub timed: Vec<(NoteId, TimedPhonemes)>,
     /// Ticks a second around the open clip, to place phoneme times.
     pub ticks_per_second: f64,
     /// The engine's name when it has a window of its own: "Open <engine>".
