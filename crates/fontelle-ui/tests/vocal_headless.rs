@@ -112,10 +112,7 @@ fn song() -> Song {
             let t = start + i as f64 / 24.0;
             let scoop = (-(i as f32) / 3.0).exp() * -0.6;
             let vib = ((t * 11.0).sin() as f32) * 0.12 * (i as f32 / steps as f32);
-            pitch.push((
-                (t * PPQN as f64) as Tick,
-                f32::from(*key) + scoop + vib,
-            ));
+            pitch.push(((t * PPQN as f64) as Tick, f32::from(*key) + scoop + vib));
         }
     }
     let view = VocalView {
