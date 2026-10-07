@@ -162,6 +162,31 @@ pub struct CatalogueRow {
     pub waiting: bool,
 }
 
+/// A vocal song file a vocal track is written out as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VocalFileFormat {
+    /// A Standard MIDI file with a lyric event on every note.
+    Midi,
+    /// An OpenUtau project.
+    Ustx,
+}
+
+impl VocalFileFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            VocalFileFormat::Midi => "MIDI with lyrics",
+            VocalFileFormat::Ustx => "USTX",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            VocalFileFormat::Midi => "mid",
+            VocalFileFormat::Ustx => "ustx",
+        }
+    }
+}
+
 /// Where a phrase of a vocal track stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VocalRenderState {
@@ -3761,6 +3786,46 @@ pub trait StudioHost: DocumentHost {
     /// Install (a checked direct download) or Get it (the author's page,
     /// and Downloads watched for the file). Says what it started.
     fn catalogue_get(&mut self, _id: &str) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    // --- vocal song files and renders (`docs/vocal-plan.md` §3)
+
+    /// Asks for a UST, USTX, VSQX, MIDI or MusicXML file and brings it in —
+    /// into vocal track `channel` when given, else as vocal tracks of its
+    /// own. `Ok(None)` when nothing was chosen.
+    fn choose_and_import_vocal(
+        &mut self,
+        _channel: Option<usize>,
+    ) -> Result<Option<String>, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Writes vocal track `index` out as `format`, where the desktop's
+    /// picker says.
+    fn export_vocal(&mut self, _index: usize, _format: VocalFileFormat) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Whether vocal track `index` is frozen to audio.
+    fn vocal_frozen(&self, _index: usize) -> bool {
+        false
+    }
+
+    /// Freezes vocal track `index`: its final takes rendered (a job, with
+    /// progress) and swapped in as audio, its part kept. One undo step.
+    fn freeze_vocal(&mut self, _index: usize) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Unfreezes vocal track `index`. One undo step.
+    fn unfreeze_vocal(&mut self, _index: usize) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Renders the roll's selected vocal notes (the open clip's, all of
+    /// them when none is selected) to an audio clip on a row below (a job).
+    fn render_vocal_selection(&mut self) -> Result<String, String> {
         Err("this studio has no vocal tracks".to_string())
     }
 }

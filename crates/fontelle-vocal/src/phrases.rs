@@ -256,7 +256,8 @@ pub fn phrases_with(
         return Vec::new();
     };
     let any_channel_soloed = project.channels.values().any(|c| c.soloed);
-    if this.muted || (any_channel_soloed && !this.soloed) {
+    // A frozen track plays its render instead (`fontelle_model::FreezeVocal`).
+    if this.muted || (any_channel_soloed && !this.soloed) || project.is_frozen(channel) {
         return Vec::new();
     }
     let any_lane_soloed = project.lanes.values().any(|l| l.soloed);

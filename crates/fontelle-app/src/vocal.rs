@@ -138,6 +138,8 @@ pub(crate) struct VocalSession {
 pub(crate) struct VocalRenderPrep {
     renderer: Arc<Mutex<VocalRenderer>>,
     jobs: Vec<(Arc<VocalPlayer>, Vec<Wanted>)>,
+    /// Parallel to `jobs`: whose each is.
+    channels: Vec<ChannelId>,
 }
 
 impl VocalRenderPrep {
@@ -188,6 +190,18 @@ impl VocalRenderPrep {
 
     pub fn is_empty(&self) -> bool {
         self.jobs.iter().all(|(_, w)| w.is_empty())
+    }
+
+    /// Keeps only the vocal tracks `keep` says: a render of one row or one
+    /// clip is that, not every vocal track singing at the same time. The
+    /// others' players stay silent.
+    pub fn retain_channels(&mut self, keep: impl Fn(ChannelId) -> bool) {
+        let kept: Vec<bool> = self.channels.iter().map(|c| keep(*c)).collect();
+        let mut flags = kept.iter();
+        self.jobs.retain(|_| flags.next().copied().unwrap_or(false));
+        let mut flags = kept.iter();
+        self.channels
+            .retain(|_| flags.next().copied().unwrap_or(false));
     }
 }
 
@@ -863,6 +877,7 @@ impl VocalSession {
         self.flush();
         let mut players = HashMap::new();
         let mut jobs = Vec::new();
+        let mut channels = Vec::new();
         for (id, part) in &self.parts {
             if !is_vocal(project, *id) {
                 continue;
@@ -870,11 +885,13 @@ impl VocalSession {
             let player = VocalPlayer::new();
             players.insert(*id, Arc::clone(&player));
             jobs.push((player, part.wanted.iter().flatten().cloned().collect()));
+            channels.push(*id);
         }
-        let prep = self
-            .renderer
-            .clone()
-            .map(|renderer| VocalRenderPrep { renderer, jobs });
+        let prep = self.renderer.clone().map(|renderer| VocalRenderPrep {
+            renderer,
+            jobs,
+            channels,
+        });
         (players, prep)
     }
 }
@@ -1279,5 +1296,50 @@ impl VocalSession {
             };
             self.messages.push(said);
         }
+    }
+}
+
+impl VocalSession {
+    /// For a freeze or a selection's render: a player of its own for
+    /// `channel`, what fills it (the final takes of the phrases with a note
+    /// `keep` accepts), and the song seconds those phrases span. `None`
+    /// when nothing there can be sung.
+    pub fn render_prep_for(
+        &mut self,
+        channel: ChannelId,
+        keep: &dyn Fn(&fontelle_vocal::NoteRef) -> bool,
+    ) -> Option<(Arc<VocalPlayer>, VocalRenderPrep, f64, f64)> {
+        // A render does not wait out the debounce.
+        self.flush();
+        let part = self.parts.get(&channel)?;
+        let renderer = self.renderer.clone()?;
+        let mut wanted = Vec::new();
+        let (mut from, mut to) = (f64::MAX, f64::MIN);
+        for (phrase, w) in part.phrases.iter().zip(&part.wanted) {
+            let Some(w) = w else {
+                continue;
+            };
+            if !phrase.notes.iter().any(keep) {
+                continue;
+            }
+            from = from.min(phrase.start);
+            to = to.max(phrase.end);
+            wanted.push(w.clone());
+        }
+        if wanted.is_empty() {
+            return None;
+        }
+        let player = VocalPlayer::new();
+        let prep = VocalRenderPrep {
+            renderer,
+            jobs: vec![(Arc::clone(&player), wanted)],
+            channels: vec![channel],
+        };
+        Some((player, prep, from, to))
+    }
+
+    /// Why `channel` cannot sing, when it cannot.
+    pub fn problem_of(&self, channel: ChannelId) -> Option<String> {
+        self.parts.get(&channel).and_then(|p| p.problem.clone())
     }
 }

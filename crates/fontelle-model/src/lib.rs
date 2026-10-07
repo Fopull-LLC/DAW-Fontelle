@@ -24,6 +24,7 @@ mod study;
 mod tools;
 pub mod trim;
 mod vocal;
+mod vocal_files;
 pub mod wire;
 
 pub use arena::{Arena, minting_in};
@@ -83,6 +84,10 @@ pub use vocal::{
     LaneCurve, LaneKey, LaneSpec, NoteVoice, SetLyrics, SetNoteVoices, SetSinger, SetVocalLane,
     SetVocalSettings, SetVocalState, VocalPart, VocalVoice, consonant_speed, lane_spec,
     velocity_for_speed,
+};
+pub use vocal_files::{
+    FreezeVocal, FrozenVocal, ImportVocal, MadeVocal, UnfreezeVocal, UnimportVocal,
+    VocalClipImport, VocalLanding,
 };
 pub use wire::{Edit, WireError};
 

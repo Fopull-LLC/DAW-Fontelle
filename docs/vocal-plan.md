@@ -221,6 +221,62 @@ nothing missing in daily work.
   part is never silent while something better renders.
 - Freeze a vocal track to audio; render a selection to a clip.
 
+### 3.1 Song files, freezing and rendering (as built, 2026-10-07)
+
+**Reading and writing** (`fontelle-vocal-files`): every reader makes a
+`VocalSong` — tempo, bar, and one `SongPart` per sung line (notes with
+lyric, `Note::voice`, velocity as consonant speed; `VocalPart` lanes), all
+in project ticks from the song's 0. What a file carries that has no place
+is named in `VocalSong::unmapped` and said in the toast.
+
+| file | maps | does not map (named) |
+|---|---|---|
+| `.ust` (UTAU, Shift-JIS/UTF-8) | notes, lyrics (VCV context dropped), tempo (song and per note), Velocity → consonant speed, Intensity → dynamics, Mode2 PBS/PBW/PBY/PBM and Mode1 PitchBend → pitch-bend lane over the notes (the curved note's own glide set to none), VBR → vibrato, flags g → gender, B → breathiness | other resampler flags, Modulation, envelopes, per-note oto overrides |
+| `.ustx` (OpenUtau) | tracks' voice parts → a part per track, tempos, first time signature, lyric (`+` → `-`), tone, vibrato, `vel`, pitch points (a flat snapped pair → portamento, OpenUtau's default → the backend's own, anything else → pitch-bend lane), phoneme overrides naming every phoneme → hand phonemes, curves pitd/dyn/bre(c)/voic/ten(c)/gen(c) → lanes, any other curve kept as `extra["openutau"]` and written back | override timing deltas, `clr` and other expressions, later time signatures |
+| `.vsqx` (Vocaloid 3/4) | pre-measure removed, notes, lyrics, velocity, **locked** phonemes, vibLen/vibType/vibDep/vibRate → vibrato, tempo, first time signature, PIT×PBS → pitch bend, DYN → dynamics, BRE → breathiness, BRI → tension, GEN → gender (held values) | CLE, OPE, POR; unlocked phonemes (Vocaloid's own guess) |
+| `.mid` with lyric events (or karaoke text) | the tracks with words → parts, lyrics on the note at their tick, tempo, first time signature, pitch bend at the RPN 0 range → pitch-bend lane | velocity (loudness, not consonant speed), tracks without words (left to the MIDI import) |
+| `.musicxml`/`.xml`/`.mxl` | every part with words (else the first), its first sung voice, pitch, rests, ties joined, syllabic begin/middle → `"Hap-"`, a wordless note under a slur or after `<extend/>` → `-`, `<sound tempo>` or metronome, first time signature (6/8 → 3 quarters a bar) | other voices, chord tones after the first, grace notes, time-wise scores |
+
+Written: **MIDI with lyrics** (a conductor track; per part a lyric event
+before each note, the pitch-bend lane as bends at a 12-semitone range, 960
+a quarter) and **USTX** (a track and voice part per part; glides as
+OpenUtau pitch points, vibrato, `vel`, phoneme overrides, every standard
+lane as its curve, kept OpenUtau curves). A vocal track reads out as a song
+by `song_of_channel`: every clip on it (prefab instances, every pass of a
+loop), notes and lanes on the song's ticks.
+
+**Bringing one in** (`ImportVocal`, one command and undo step, wire form
+appended): dropped anywhere, each part is a **vocal track of its own**
+(named after it, the first free voicebank singing, rows where the window
+is looking); dropped on a vocal track's row, or asked for from that track's
+menu, the first part goes **into that track**. The clip starts at the bar
+of its first note, and the file is placed **by beats** from the bar it was
+let go in. Into an **empty song** the file's tempo map and bar come too (in
+the same command); otherwise the song's are kept, and the toast says which.
+A `.mid` is a vocal song only when it has words; `.xml` only when it is
+MusicXML. Entry points: a drop on the window or a row; the rack menu of a
+vocal track (*Import vocal file…*); the new instrument menu (*Vocal track
+from a song file…*).
+
+**Freezing** (`FreezeVocal` / `UnfreezeVocal`, one step each way):
+the track's final takes, waited for with the export's progress card, played
+through a `VocalNode` of its own with the channel's level and pan — what the
+track hands its mixer strip — from half a second before its first phrase to
+a second after its last, written to `renders/<track> (frozen).wav`, and put
+on a row of its own under the track's last row as an audio clip **routed to
+the track's own strip** (inserts, fader and sends go on applying, so the
+song sounds the same). `Project::frozen` records it (format 3, left out of
+the file when empty); a frozen track's part is kept whole and not sung
+(`phrases_with`). Unfreezing takes the clip (and its row, when nothing else
+is on it) away; the file stays in `renders/`.
+
+**Render selection to clip**: the roll's selected notes (all the open
+clip's when none is), the phrases they are in, rendered the same way from
+0.15 s before the first to half a second after the last, onto a new row
+under the clip's (`<clip> (rendered)`, `AddAudioClip`, one undo), routed to
+the track's strip. A row or clip *Render to audio* now sings only the vocal
+tracks on that row or clip (`VocalRenderPrep::retain_channels`).
+
 ## 4. Find singers
 
 A **catalogue of free singers** inside Fontelle, like the extension
@@ -351,4 +407,5 @@ is written from the published format, not from any closed engine's code.
    Fontelle Singer instrument, voicebank install and the picker, ABI 2 host
    side, Find singers). **The integration is built** (§2.1, §4.1, §5.1);
    the two runtimes are wired by one `builtin_backends()` entry each.
-3. Imports (UST/USTX/VSQX/MIDI/MusicXML), freeze, phoneme row retiming.
+3. Imports (UST/USTX/VSQX/MIDI/MusicXML), exports (MIDI, USTX), freeze and
+   render to clip — **built** (§3.1). Phoneme row retiming.

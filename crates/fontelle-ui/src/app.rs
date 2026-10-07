@@ -75,6 +75,8 @@ use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
 mod analyze;
 mod vocal;
+mod vocal_files;
+use vocal_files::{CHANNEL_MENU_ROWS, VOCAL_FROM_FILE};
 
 /// What can be on its way on the synth window (`motion.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18039,6 +18041,17 @@ impl WindowApp {
                         MenuEntry::disabled("Delete instrument")
                     },
                 ];
+                // A vocal track's own rows: its song files in and out, freeze,
+                // render (`app/vocal_files.rs`). A plugin channel is never a
+                // vocal track, so these and the MPE switch never meet.
+                if sings {
+                    let frozen = self
+                        .options
+                        .document
+                        .as_ref()
+                        .is_some_and(|doc| doc.vocal_frozen(*index));
+                    entries.extend(crate::canvas::vocal_track_menu_entries(frozen));
+                }
                 // A plugin that hears raw MIDI gets the MPE switch, last and
                 // ruled off: how a slide bends one note of a chord on a synth
                 // in its MPE mode (`docs/note-paths-plan.md` §6).
@@ -18125,6 +18138,8 @@ impl WindowApp {
                     .map(|(entry, _)| entry)
                     .collect();
                 entries[0] = MenuEntry::disabled("New instrument");
+                // Last: a vocal track made from a song file.
+                entries.push(MenuEntry::new(VOCAL_FROM_FILE).after_rule());
                 entries
             }
             MenuTarget::PluginPicker(purpose) => self
@@ -19381,6 +19396,12 @@ impl WindowApp {
                     doc.remove_channel(*channel);
                 }
             }
+            (MenuTarget::Channel(channel), row)
+                if row >= CHANNEL_MENU_ROWS && self.is_vocal_channel(*channel) =>
+            {
+                let channel = *channel;
+                self.choose_vocal_track_row(channel, row - CHANNEL_MENU_ROWS);
+            }
             // The MPE switch, offered after Delete for a plugin that hears
             // raw MIDI (`menu_entries`).
             (MenuTarget::Channel(channel), _) => {
@@ -20026,6 +20047,9 @@ impl WindowApp {
                     return;
                 }
                 self.finish_save_as(kind, &category);
+            }
+            (MenuTarget::NewInstrument, index) if index == self.instrument_rows(None).len() => {
+                self.import_vocal_file_as_track();
             }
             (MenuTarget::NewInstrument, index) => {
                 use crate::canvas::InstrumentRow;

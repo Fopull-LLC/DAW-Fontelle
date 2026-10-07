@@ -349,6 +349,11 @@ pub struct Project {
     /// before studies has none, and needs no format bump to open.
     #[serde(default)]
     pub studies: Arena<fontelle_types::StudyId, fontelle_types::Study>,
+    /// The vocal tracks frozen to audio, and their renders
+    /// (`crate::FreezeVocal`). Defaulted and left out of the file when none
+    /// is, so a song that never froze is written as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen: Vec<crate::FrozenVocal>,
 }
 
 impl Project {
@@ -386,7 +391,7 @@ impl Project {
             }
             _ => false,
         });
-        if expression {
+        if expression || !self.frozen.is_empty() {
             3
         } else if sings || words {
             2
@@ -656,6 +661,7 @@ impl Project {
             view_state: ViewState::default(),
             lane_routing: crate::LaneRouting::default(),
             studies: Arena::default(),
+            frozen: Vec::new(),
         }
     }
 }

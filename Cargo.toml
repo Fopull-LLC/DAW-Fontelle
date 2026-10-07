@@ -24,6 +24,7 @@ members = [
     "crates/fontelle-lang",
     "crates/fontelle-utau",
     "crates/fontelle-vocal",
+    "crates/fontelle-vocal-files",
     "crates/fontelle-diffsinger",
     "crates/fontelle-testbridge",
     "crates/fontelle-testsinger",

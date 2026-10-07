@@ -1362,6 +1362,7 @@ dependencies = [
  "fontelle-types",
  "fontelle-ui",
  "fontelle-vocal",
+ "fontelle-vocal-files",
  "libc",
  "png",
  "serde",
@@ -1680,6 +1681,21 @@ dependencies = [
  "sha2",
  "slotmap",
  "twox-hash",
+]
+
+[[package]]
+name = "fontelle-vocal-files"
+version = "0.26.1"
+dependencies = [
+ "encoding_rs",
+ "fontelle-model",
+ "fontelle-sing",
+ "fontelle-types",
+ "midly",
+ "miniz_oxide",
+ "roxmltree",
+ "serde",
+ "serde_yaml_ng",
 ]
 
 [[package]]

@@ -133,6 +133,7 @@ pub use menu::{
     input_menu_entries, instrument_menu_entries, keep_starred_row_in_place, menu_matches,
     name_prompt_entries, thumbnail_points,
 };
+pub use menu::{VocalTrackChoice, vocal_track_menu_choice, vocal_track_menu_entries};
 pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
