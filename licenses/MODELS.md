@@ -38,3 +38,9 @@ The note decoding in `crates/fontelle-analysis/src/transcribe/notes.rs` is a
 port of basic-pitch's `note_creation.py` and the windowing in
 `transcribe/basic_pitch.rs` of `inference.py`, both Apache-2.0, credited in
 those files.
+
+## Data files
+
+| File | Upstream | Licence |
+|---|---|---|
+| `crates/fontelle-utau/data/cmudict.tsv.gz` (English pronunciations for UTAU ARPAsing banks) | [CMUdict](https://github.com/cmusphinx/cmudict) | BSD-2-Clause-style, Carnegie Mellon University; copied to [`cmudict/LICENSE`](cmudict/LICENSE), which binary redistributions must carry |

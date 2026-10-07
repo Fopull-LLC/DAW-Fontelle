@@ -1647,6 +1647,7 @@ name = "fontelle-vocal"
 version = "0.26.1"
 dependencies = [
  "encoding_rs",
+ "fontelle-diffsinger",
  "fontelle-engine",
  "fontelle-host",
  "fontelle-model",
@@ -1654,6 +1655,7 @@ dependencies = [
  "fontelle-singer-abi",
  "fontelle-testsinger",
  "fontelle-types",
+ "fontelle-utau",
  "miniz_oxide",
  "serde",
  "serde_json",

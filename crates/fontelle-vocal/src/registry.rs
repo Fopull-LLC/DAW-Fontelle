@@ -68,7 +68,27 @@ pub struct BuiltinBackend {
 /// lists their banks. **Each built-in runtime is wired here** — see the
 /// module doc.
 pub fn builtin_backends() -> Vec<BuiltinBackend> {
-    Vec::new()
+    vec![
+        BuiltinBackend {
+            key: "fontelle-diffsinger",
+            kind: SingerKind::DiffSinger,
+            make: |voicebanks| {
+                Arc::new(fontelle_diffsinger::DiffSinger::new(
+                    fontelle_diffsinger::Options::new(vec![voicebanks.to_path_buf()]),
+                ))
+            },
+        },
+        BuiltinBackend {
+            key: "fontelle-utau",
+            kind: SingerKind::Utau,
+            make: |voicebanks| {
+                Arc::new(fontelle_utau::UtauBackend::new(
+                    vec![voicebanks.to_path_buf()],
+                    fontelle_utau::cache::default_cache_dir(),
+                ))
+            },
+        },
+    ]
 }
 
 /// One voice anybody could choose.

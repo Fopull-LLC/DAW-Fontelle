@@ -16,6 +16,8 @@ fontelle-host = { path = "../fontelle-host" }
 fontelle-engine = { path = "../fontelle-engine" }
 fontelle-singer-abi = { path = "../fontelle-singer-abi" }
 fontelle-sing = { path = "../fontelle-sing" }
+fontelle-utau = { path = "../fontelle-utau" }
+fontelle-diffsinger = { path = "../fontelle-diffsinger" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 # Voicebank archives: zips read here (names in Shift-JIS, GBK or UTF-8, so a

@@ -256,8 +256,21 @@ fn an_engine_named_like_a_built_in_backend_is_not_let_in() {
 fn the_built_in_list_is_where_the_two_runtimes_are_wired() {
     // Every entry the release wires in has a key a song can store and a kind
     // the picker can badge.
-    for b in fontelle_vocal::builtin_backends() {
+    let built_in = fontelle_vocal::builtin_backends();
+    for b in &built_in {
         assert!(b.key.starts_with("fontelle-"), "{}", b.key);
         assert_ne!(b.kind, SingerKind::Engine);
     }
+    let keys: Vec<_> = built_in.iter().map(|b| b.key).collect();
+    assert_eq!(keys, ["fontelle-diffsinger", "fontelle-utau"]);
+}
+
+#[test]
+fn the_built_in_runtimes_find_nothing_in_an_empty_folder() {
+    let dir = std::env::temp_dir().join(format!("fontelle-builtin-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for b in fontelle_vocal::builtin_backends() {
+        assert!((b.make)(&dir).voices().is_empty(), "{}", b.key);
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }
