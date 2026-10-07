@@ -170,3 +170,25 @@ fn the_key_names_engine_version_singer_language_and_quality() {
     assert_eq!(base.seed, render_key("Engine", "1", &p.spec, 1).seed);
     assert_eq!(base, render_key("Engine", "1", &p.spec.clone(), 0));
 }
+
+/// A voice sings one note at a time: where notes overlap the later one wins
+/// and the earlier is cut at its start; of two starting together, the
+/// higher is sung.
+#[test]
+fn overlapping_notes_are_sung_one_at_a_time() {
+    let notes = vec![
+        note(0, BEAT * 2, 60, "a"),
+        note(BEAT, BEAT, 64, "b"),
+        note(BEAT, BEAT, 62, "low"),
+    ];
+    let s = song("en", notes);
+    let phrases = phrases_of(&s.project, s.voice, &s.tempo());
+    assert_eq!(phrases.len(), 1);
+    let spec = &phrases[0].spec;
+    assert_eq!(spec.notes.len(), 2);
+    assert!(
+        (spec.notes[0].duration - 0.5).abs() < 1e-9,
+        "cut at the next start"
+    );
+    assert_eq!(spec.notes[1].lyric, "b");
+}

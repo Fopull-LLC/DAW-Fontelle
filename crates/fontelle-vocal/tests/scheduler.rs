@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fontelle_host::{PhraseSpec, RenderFailure, SpecNote, Sung};
+use fontelle_host::{PhraseSpec, RenderFailure, SpecNote, Sung, SungPhonemes};
 use fontelle_singer_abi::{QUALITY_FINAL, QUALITY_PREVIEW};
 use fontelle_vocal::{PhraseState, Singer, SingerVoice, VocalRenderer, Wanted};
 
@@ -39,8 +39,8 @@ impl Singer for Fake {
     fn name(&self) -> &str {
         "Fake"
     }
-    fn version(&self) -> &str {
-        "1"
+    fn version(&self) -> String {
+        "1".into()
     }
     fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String> {
         Ok(Box::new(FakeVoice(self)))
@@ -75,7 +75,11 @@ impl SingerVoice for FakeVoice {
             start: -0.05,
             pitch: vec![440.0; 10],
             pitch_step: 0.01,
-            phonemes: vec![(0, vec!["l".into(), "a".into()])],
+            phonemes: vec![SungPhonemes {
+                note: 0,
+                phonemes: vec!["l".into(), "a".into()],
+                guessed: false,
+            }],
         })
     }
 }
@@ -149,7 +153,7 @@ fn the_best_take_is_the_final_once_it_lands() {
     assert_eq!(best.quality, QUALITY_FINAL);
     assert_eq!(best.samples[0], QUALITY_FINAL as f32);
     assert_eq!(best.sample_rate, 24_000);
-    assert_eq!(best.phonemes[0].1, vec!["l", "a"]);
+    assert_eq!(best.phonemes[0].phonemes, vec!["l", "a"]);
 }
 
 #[test]

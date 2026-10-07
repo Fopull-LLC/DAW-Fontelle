@@ -149,14 +149,11 @@ fn a_phrase_is_sung_through_the_abi() {
     assert!(sung.pitch_step > 0.0 && !sung.pitch.is_empty());
     // What it sang, per note, for the roll.
     assert_eq!(sung.phonemes.len(), 2, "{:?}", sung.phonemes);
-    assert_eq!(
-        sung.phonemes[0],
-        (0, vec!["l".to_string(), "a".to_string()])
-    );
-    assert_eq!(
-        sung.phonemes[1],
-        (2, vec!["s".to_string(), "a".to_string()])
-    );
+    assert_eq!(sung.phonemes[0].note, 0);
+    assert_eq!(sung.phonemes[0].phonemes, vec!["l", "a"]);
+    assert!(!sung.phonemes[0].guessed);
+    assert_eq!(sung.phonemes[1].note, 2);
+    assert_eq!(sung.phonemes[1].phonemes, vec!["s", "a"]);
     // Final is a different take of the same phrase.
     let fine = singer.render(&spec, QUALITY_FINAL, 9, &cancel).unwrap();
     assert_eq!(fine.samples.len(), sung.samples.len());
@@ -257,5 +254,59 @@ fn singers_are_looked_for_in_fontelles_data_folder_and_the_environment() {
                 .join("fontelle")
                 .join("singers")
         ]
+    );
+}
+
+/// A word the engine did not know comes back marked as guessed, and the
+/// keys a host does not know are ignored rather than refused.
+#[test]
+fn a_guessed_pronunciation_is_said_so() {
+    let engines = engines();
+    let mut singer = engines.engines()[0].instance().unwrap();
+    let spec = PhraseSpec {
+        singer: fontelle_testsinger::ALTO_ID.into(),
+        language: "en".into(),
+        notes: vec![la(0.0, 60.0, "la"), la(0.4, 62.0, "xylophone")],
+    };
+    let sung = singer
+        .render(&spec, QUALITY_PREVIEW, 1, &AtomicU32::new(0))
+        .unwrap();
+    assert!(!sung.phonemes[0].guessed);
+    assert!(sung.phonemes[1].guessed, "{:?}", sung.phonemes);
+}
+
+/// An engine with helper libraries lives in a folder of its own: only the
+/// library named after the folder is opened, never the helpers beside it.
+#[test]
+fn an_engine_in_a_folder_of_its_own_is_loaded_and_its_helpers_are_not() {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop();
+    path.pop();
+    let root = path.join(format!("fontelle-test-singer-dirs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let engine_dir = root.join("toy");
+    std::fs::create_dir_all(&engine_dir).unwrap();
+    std::fs::copy(
+        path.join(library_name("fontelle_testsinger")),
+        engine_dir.join(library_name("toy")),
+    )
+    .unwrap();
+    // A helper that is not an engine: opened, it would be a failure.
+    let helper = path.join(library_name("fontelle_testbridge"));
+    if helper.exists() {
+        std::fs::copy(&helper, engine_dir.join(library_name("onnxruntime_helper"))).unwrap();
+    }
+    // A folder whose library is not named after it is left alone too.
+    let stray = root.join("stray");
+    std::fs::create_dir_all(&stray).unwrap();
+    if helper.exists() {
+        std::fs::copy(&helper, stray.join(library_name("something_else"))).unwrap();
+    }
+    let engines = SingerEngines::load(&[root]);
+    assert!(engines.failures.is_empty(), "{:?}", engines.failures);
+    assert_eq!(engines.engines().len(), 1);
+    assert_eq!(
+        engines.engines()[0].name(),
+        fontelle_testsinger::ENGINE_NAME
     );
 }

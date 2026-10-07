@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use fontelle_host::{PhraseSpec, RenderFailure, SingerEngine, SingerInstance, Sung};
+use fontelle_host::{PhraseSpec, RenderFailure, SingerEngine, SingerInstance, Sung, SungPhonemes};
 use fontelle_singer_abi::{QUALITY_FINAL, QUALITY_PREVIEW};
 
 use crate::phrases::{RenderKey, render_key};
@@ -25,8 +25,9 @@ use crate::phrases::{RenderKey, render_key};
 /// An engine: something that can make voices to sing with.
 pub trait Singer: Send + Sync {
     fn name(&self) -> &str;
-    /// Part of every key: a new version sings again.
-    fn version(&self) -> &str;
+    /// Part of every key: a new version sings again. Asked each time,
+    /// because an engine may only know it once an instance exists.
+    fn version(&self) -> String;
     /// A voice for one worker thread to sing with.
     fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String>;
 }
@@ -46,7 +47,7 @@ impl Singer for SingerEngine {
     fn name(&self) -> &str {
         SingerEngine::name(self)
     }
-    fn version(&self) -> &str {
+    fn version(&self) -> String {
         SingerEngine::version(self)
     }
     fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String> {
@@ -80,7 +81,7 @@ impl Wanted {
     fn key(&self, quality: u32) -> RenderKey {
         render_key(
             self.singer.name(),
-            self.singer.version(),
+            &self.singer.version(),
             &self.spec,
             quality,
         )
@@ -108,8 +109,8 @@ pub struct Rendered {
     /// Hz every `pitch_step` seconds from `start`; 0 unvoiced.
     pub pitch: Arc<[f32]>,
     pub pitch_step: f64,
-    /// `(note index in the phrase, phonemes)`.
-    pub phonemes: Vec<(usize, Vec<String>)>,
+    /// What each note was sung as (index into the phrase's notes).
+    pub phonemes: Vec<SungPhonemes>,
 }
 
 impl From<(u32, Sung)> for Rendered {

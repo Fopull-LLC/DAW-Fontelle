@@ -88,7 +88,10 @@ pub struct SingerDescription {
 pub struct SingerEngine {
     table: *const FontelleSingerEngine,
     name: String,
-    version: String,
+    /// Read after an instance exists, and again whenever one is made while
+    /// it is still unknown: an engine may fingerprint the voice it loaded
+    /// and fill this in late (the ABI's note on `version`).
+    version: std::sync::Mutex<String>,
     path: PathBuf,
     singers: Vec<SingerDescription>,
     /// Declared last so it is dropped last: the table points into it.
@@ -105,7 +108,7 @@ impl std::fmt::Debug for SingerEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SingerEngine")
             .field("name", &self.name)
-            .field("version", &self.version)
+            .field("version", &self.version())
             .field("path", &self.path)
             .finish()
     }
@@ -123,8 +126,18 @@ impl SingerEngine {
     }
 
     /// Part of every cache key: a new version sings again.
-    pub fn version(&self) -> &str {
-        &self.version
+    pub fn version(&self) -> String {
+        self.version.lock().map(|v| v.clone()).unwrap_or_default()
+    }
+
+    fn refresh_version(&self) {
+        let now = text(self.table().version);
+        if let Ok(mut version) = self.version.lock()
+            && version.is_empty()
+            && !now.is_empty()
+        {
+            *version = now;
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -146,6 +159,7 @@ impl SingerEngine {
         if instance.is_null() {
             return Err(format!("{} would not start", self.name));
         }
+        self.refresh_version();
         Ok(SingerInstance {
             engine: Arc::clone(self),
             instance,
@@ -175,15 +189,7 @@ impl SingerEngines {
         let mut out = Self::none();
         out.folders = folders.to_vec();
         for folder in folders {
-            let Ok(entries) = std::fs::read_dir(folder) else {
-                continue;
-            };
-            let mut paths: Vec<PathBuf> = entries
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_file() && is_library(p))
-                .collect();
-            paths.sort();
+            let paths = candidates(folder);
             for path in paths {
                 match load_one(&path) {
                     Ok(engine) => {
@@ -224,15 +230,50 @@ impl SingerEngines {
     }
 }
 
-fn is_library(path: &Path) -> bool {
-    let expected = if cfg!(target_os = "windows") {
+/// The libraries in `folder` that are engines by the ABI's rule: every
+/// library directly in it, and in each subfolder only the one named after
+/// it (`<name>/<name>.so` or `<name>/lib<name>.so`) — so an engine's helper
+/// libraries, installed beside it in its own folder, are never opened.
+fn candidates(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let ext = library_extension();
+    let mut paths = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && is_library(&path) {
+            paths.push(path);
+        } else if path.is_dir() {
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            for file in [format!("{name}.{ext}"), format!("lib{name}.{ext}")] {
+                let inside = path.join(file);
+                if inside.is_file() {
+                    paths.push(inside);
+                    break;
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn library_extension() -> &'static str {
+    if cfg!(target_os = "windows") {
         "dll"
     } else if cfg!(target_os = "macos") {
         "dylib"
     } else {
         "so"
-    };
-    path.extension().is_some_and(|ext| ext == expected)
+    }
+}
+
+fn is_library(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == library_extension())
 }
 
 fn load_one(path: &Path) -> Result<SingerEngine, String> {
@@ -258,12 +299,13 @@ fn load_one(path: &Path) -> Result<SingerEngine, String> {
     if name.is_empty() {
         return Err("the engine has no name".to_string());
     }
-    let version = text(t.version);
-    // Who it has, read once through a throwaway instance.
+    // Who it has, read once through a throwaway instance — and its
+    // version after that, which an engine may only know once it has one.
     let instance = unsafe { (t.create)() };
     if instance.is_null() {
         return Err(format!("{name} would not start"));
     }
+    let version = text(t.version);
     let count = unsafe { (t.singer_count)(instance) }.min(4096);
     let mut singers = Vec::new();
     for index in 0..count {
@@ -300,7 +342,7 @@ fn load_one(path: &Path) -> Result<SingerEngine, String> {
     Ok(SingerEngine {
         table,
         name,
-        version,
+        version: std::sync::Mutex::new(version),
         path: path.to_path_buf(),
         singers,
         _library: library,
@@ -347,8 +389,18 @@ pub struct Sung {
     /// Hz every `pitch_step` seconds from `start`, 0 where unvoiced.
     pub pitch: Vec<f32>,
     pub pitch_step: f64,
-    /// `(note index in the phrase, phonemes)`, for the roll.
-    pub phonemes: Vec<(usize, Vec<String>)>,
+    /// What each note was sung as, for the roll.
+    pub phonemes: Vec<SungPhonemes>,
+}
+
+/// One entry of the engine's phonemes report.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SungPhonemes {
+    /// Index into the phrase's notes.
+    pub note: usize,
+    pub phonemes: Vec<String>,
+    /// The engine did not know the word and guessed how to say it.
+    pub guessed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,6 +476,9 @@ impl SingerInstance {
             return Err(RenderFailure::Cancelled);
         }
         if status != STATUS_OK {
+            // On this thread, straight after the failing call and before
+            // anything else touches the instance — the ABI's rule, which lets
+            // an engine keep the message without locks.
             let why = text(unsafe { (table.last_error)(self.instance) });
             return Err(RenderFailure::Failed(if why.is_empty() {
                 format!("{} could not sing this phrase", self.engine.name)
@@ -472,7 +527,7 @@ impl Drop for SingerInstance {
 
 /// The ABI's phonemes JSON — `[{"note": i, "phonemes": ["s", "a"]}]` — read
 /// leniently: anything malformed is shown as nothing rather than refused.
-fn parse_phonemes(json: &str) -> Vec<(usize, Vec<String>)> {
+fn parse_phonemes(json: &str) -> Vec<SungPhonemes> {
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json)
     else {
         return Vec::new();
@@ -487,7 +542,16 @@ fn parse_phonemes(json: &str) -> Vec<(usize, Vec<String>)> {
                 .iter()
                 .filter_map(|p| p.as_str().map(str::to_string))
                 .collect();
-            Some((note, phonemes))
+            let guessed = item
+                .get("guessed")
+                .and_then(|g| g.as_bool())
+                .unwrap_or(false);
+            // Any other key is the engine's to add and ours to ignore.
+            Some(SungPhonemes {
+                note,
+                phonemes,
+                guessed,
+            })
         })
         .collect()
 }

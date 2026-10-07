@@ -112,6 +112,9 @@ pub struct VocalView {
     pub phrases: Vec<VocalPhraseView>,
     /// What each sung note was sung as, phonemes separated by spaces.
     pub phonemes: Vec<(NoteId, String)>,
+    /// Notes whose word the engine did not know and guessed how to say —
+    /// marked on the lyric, with a hint to give phonemes in brackets.
+    pub guessed: Vec<NoteId>,
     /// The pitch the singer sang, one line per phrase: `(tick in the clip,
     /// MIDI key with cents as the fraction)`, unvoiced stretches left out.
     pub pitch: Vec<Vec<(Tick, f32)>>,

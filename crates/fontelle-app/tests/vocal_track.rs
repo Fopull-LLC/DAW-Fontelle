@@ -285,3 +285,22 @@ fn an_export_waits_for_the_final_takes_and_sings() {
         .sum();
     assert!(sung > 200.0, "the phrase is in the export: {sung}");
 }
+
+/// A word the engine did not know is marked on its note, so the writer can
+/// give its phonemes in brackets.
+#[test]
+fn a_guessed_word_is_marked_on_its_note() {
+    let (mut session, _) = vocal_session("guessed", true);
+    let known = draw(&mut session, 0, 60);
+    let odd = draw(&mut session, 1, 62);
+    session
+        .set_lyrics(&[odd], vec!["xylophone".into()])
+        .unwrap();
+    pump_until(&mut session, |s| {
+        s.vocal_view()
+            .is_some_and(|v| v.phrases.iter().all(|p| p.state == VocalRenderState::Final))
+    });
+    let view = session.vocal_view().unwrap();
+    assert!(view.guessed.contains(&odd), "{:?}", view.guessed);
+    assert!(!view.guessed.contains(&known));
+}

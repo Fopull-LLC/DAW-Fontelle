@@ -11,6 +11,23 @@
 //!
 //! # The shape
 //!
+//! # Where an engine is installed
+//!
+//! Loading a library runs its initialisers, so the host loads only what is
+//! plainly an engine. In each singers folder it loads:
+//!
+//! - every library directly in the folder (`singers/*.so`, `*.dll`,
+//!   `*.dylib`), and
+//! - in each subfolder `singers/<name>/`, only the library named after the
+//!   folder: `<name>.so` or `lib<name>.so` (`<name>.dll` on Windows,
+//!   `<name>.dylib` / `lib<name>.dylib` on macOS).
+//!
+//! An engine that ships helper libraries (an inference runtime, its
+//! providers) installs as a subfolder, engine and helpers together; the host
+//! never opens the helpers itself, and nothing in a subfolder is looked at
+//! below that one level. A library that does not export [`ENTRY_SYMBOL`] is
+//! reported as not an engine and not used.
+//!
 //! The library exports one symbol, [`ENTRY_SYMBOL`], returning a
 //! [`FontelleSingerEngine`]: a table of function pointers. The host makes an
 //! instance, asks it which singers it has, and asks it to sing **phrases**:
@@ -34,6 +51,13 @@
 //! when convenient (between stages is enough) and returns
 //! [`STATUS_CANCELLED`].
 //!
+//! [`last_error`](FontelleSingerEngine::last_error) describes the last
+//! failing call **on that instance**, and the host reads it on the thread
+//! that made the failing call, immediately after it returned and before
+//! anything else is called on the instance: a render's error is read by the
+//! render's worker right after `render` answers [`STATUS_ERROR`]. An engine
+//! may therefore keep the message per instance, without locks.
+//!
 //! # Lyrics
 //!
 //! Each note carries its lyric as UTF-8 text, in the phrase's language:
@@ -53,6 +77,17 @@
 //!
 //! The engine reports back what it sang ([`PhraseResult::phonemes`]) so the
 //! piano roll can show it.
+//!
+//! Recommended semantics, which hosts and engines both assume:
+//!
+//! - a [`LYRIC_SLUR`] after a rest (the first note of a phrase, or one
+//!   that does not touch the note before it) sings the previous syllable's
+//!   vowel again;
+//! - a voice sings one note at a time. The host sends a phrase's notes in
+//!   time order without overlaps — where two notes overlap, the later one
+//!   wins and the earlier one is cut at its start, and of two starting
+//!   together the higher is kept — and an engine handed overlapping notes
+//!   anyway clips each at the next one's start.
 
 use core::ffi::c_char;
 use core::sync::atomic::AtomicU32;
@@ -102,6 +137,13 @@ pub struct FontelleSingerEngine {
     pub name: *const c_char,
     /// The engine's version, UTF-8, NUL-terminated, static. Part of the
     /// host's cache key: a new version re-renders.
+    ///
+    /// It may be filled in late — an engine that fingerprints the voice it
+    /// loaded computes it once its first instance exists — so the host reads
+    /// it **after** [`create`](Self::create) has returned an instance, never
+    /// only from the bare table, and treats a null or empty string as "not
+    /// known yet". Once non-empty it must not change for the life of the
+    /// library.
     pub version: *const c_char,
     /// A new instance, or null (then nothing else may be called).
     pub create: unsafe extern "C" fn() -> *mut EngineInstance,
@@ -197,6 +239,16 @@ pub struct PhraseResult {
     pub pitch_step: f64,
     /// What it sang, for display: UTF-8 JSON, NUL-terminated, an array of
     /// `{"note": i, "phonemes": ["s", "a"]}`, one per sung note; may be null.
+    ///
+    /// `note` is the index into [`PhraseRequest::notes`]. Objects may carry
+    /// more keys; a host **ignores keys it does not know**, so an engine can
+    /// add them without a new ABI version. Keys hosts understand today:
+    ///
+    /// - `"guessed": true` — the engine did not know the word and guessed
+    ///   its pronunciation; the host marks the lyric so the writer can give
+    ///   the phonemes in brackets;
+    /// - `"word"` (string), `"source"` (string), `"slur"` (bool) —
+    ///   informative; shown or ignored as the host likes.
     pub phonemes: *mut c_char,
 }
 

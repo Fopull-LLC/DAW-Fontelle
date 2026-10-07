@@ -103,6 +103,6 @@ pub use scan::{
 };
 pub use singer::{
     AbiVerdict, PhraseSpec, RenderFailure, SingerDescription, SingerEngine, SingerEngines,
-    SingerFailure, SingerInstance, SpecNote, Sung, abi_verdict, singer_search_paths,
+    SingerFailure, SingerInstance, SpecNote, Sung, SungPhonemes, abi_verdict, singer_search_paths,
     singer_search_paths_from,
 };

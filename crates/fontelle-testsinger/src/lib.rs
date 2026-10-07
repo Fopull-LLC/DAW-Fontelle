@@ -42,6 +42,8 @@ pub const PITCH_STEP: f64 = 0.01;
 /// A lyric that makes the render take [`SLOW_SECONDS`], polling cancel.
 pub const SLOW_LYRIC: &str = "slowly";
 pub const SLOW_SECONDS: f64 = 0.3;
+/// A plain word longer than this many letters comes back `guessed`.
+pub const GUESS_AFTER: usize = 5;
 /// A lyric that makes the render fail.
 pub const FAIL_LYRIC: &str = "!fail";
 
@@ -351,7 +353,15 @@ fn sing(request: &PhraseRequest) -> Result<Sung, Failed> {
             }
             json.push('"');
         }
-        json.push_str("]}");
+        // "Knows" only short syllables: a longer word is guessed, as a real
+        // engine guesses a word missing from its dictionary. Extra keys a
+        // host must ignore ride along.
+        let word = note.lyric.trim().trim_end_matches('-');
+        let guessed =
+            !word.starts_with('[') && word.is_ascii() && word.chars().count() > GUESS_AFTER;
+        json.push_str(&format!(
+            "],\"guessed\":{guessed},\"source\":\"test\",\"slur\":false}}"
+        ));
     }
     json.push(']');
     Ok(Sung {

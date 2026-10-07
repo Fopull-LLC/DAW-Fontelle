@@ -23,6 +23,12 @@ use fontelle_vocal::{Phrase, PhraseState, Singer, VocalRenderer, Wanted, phrases
 /// The longest an export waits for the last final take before giving up.
 const EXPORT_WAIT: Duration = Duration::from_secs(600);
 
+/// How long after the last edit the engines are asked: a drag, or typing
+/// through a line, is many edits, and a phrase cancelled on every one of
+/// them is never sung. Engines take a second or two a phrase, so a fifth of
+/// a second of patience costs nothing anybody hears.
+const DEBOUNCE: Duration = Duration::from_millis(200);
+
 /// One vocal channel's part, as last worked out.
 struct Part {
     phrases: Vec<Phrase>,
@@ -40,6 +46,8 @@ pub(crate) struct VocalSession {
     pub players: HashMap<ChannelId, Arc<VocalPlayer>>,
     parts: HashMap<ChannelId, Part>,
     revision: u64,
+    /// What to ask of the renderer once the edits stop — see [`DEBOUNCE`].
+    pending: Option<(Vec<Wanted>, Instant)>,
 }
 
 /// Everything an export needs to wait for the final takes and hand them to
@@ -116,6 +124,7 @@ impl VocalSession {
             players: HashMap::new(),
             parts: HashMap::new(),
             revision: 0,
+            pending: None,
         }
     }
 
@@ -206,9 +215,11 @@ impl VocalSession {
     fn renderer(&mut self) -> Arc<Mutex<VocalRenderer>> {
         Arc::clone(self.renderer.get_or_insert_with(|| {
             // Leave room for the audio thread and the window.
+            // Two at most: each worker holds an engine instance of its own,
+            // and an engine's voice can be large.
             let workers = std::thread::available_parallelism()
-                .map_or(2, |n| n.get().saturating_sub(2))
-                .clamp(1, 4);
+                .map_or(1, |n| n.get().saturating_sub(2))
+                .clamp(1, 2);
             Arc::new(Mutex::new(VocalRenderer::new(workers)))
         }))
     }
@@ -282,10 +293,10 @@ impl VocalSession {
             .flat_map(|p| p.wanted.iter().flatten().cloned())
             .collect();
         if !all.is_empty() || self.renderer.is_some() {
-            let renderer = self.renderer();
-            if let Ok(mut r) = renderer.lock() {
-                r.want(all);
-            }
+            // Asked once the edits settle (`pump`); what is already sung
+            // plays straight away from the tables published below.
+            self.renderer();
+            self.pending = Some((all, Instant::now()));
         }
         self.publish();
         self.revision += 1;
@@ -317,6 +328,13 @@ impl VocalSession {
         for player in self.players.values() {
             player.reclaim();
         }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= DEBOUNCE)
+        {
+            self.flush();
+        }
         let Some(renderer) = &self.renderer else {
             return false;
         };
@@ -337,7 +355,22 @@ impl VocalSession {
         false
     }
 
+    /// Asks the renderer for what the last edit wants, now.
+    fn flush(&mut self) {
+        let Some((all, _)) = self.pending.take() else {
+            return;
+        };
+        if let Some(renderer) = &self.renderer
+            && let Ok(mut r) = renderer.lock()
+        {
+            r.want(all);
+        }
+    }
+
     pub fn busy(&self) -> bool {
+        if self.pending.is_some() {
+            return true;
+        }
         self.renderer
             .as_ref()
             .is_some_and(|r| r.lock().is_ok_and(|r| r.busy()))
@@ -430,9 +463,12 @@ impl VocalSession {
             let Some(take) = take else {
                 continue;
             };
-            for (index, phonemes) in &take.phonemes {
-                if let Some((_, n)) = mine.iter().find(|(i, _)| i == index) {
-                    view.phonemes.push((n.note, phonemes.join(" ")));
+            for sung in &take.phonemes {
+                if let Some((_, n)) = mine.iter().find(|(i, _)| *i == sung.note) {
+                    view.phonemes.push((n.note, sung.phonemes.join(" ")));
+                    if sung.guessed {
+                        view.guessed.push(n.note);
+                    }
                 }
             }
             let mut line: Vec<(Tick, f32)> = Vec::new();
@@ -550,6 +586,8 @@ impl VocalSession {
         HashMap<ChannelId, Arc<VocalPlayer>>,
         Option<VocalRenderPrep>,
     ) {
+        // An export does not wait out the debounce.
+        self.flush();
         let mut players = HashMap::new();
         let mut jobs = Vec::new();
         for (id, part) in &self.parts {
