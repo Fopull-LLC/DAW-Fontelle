@@ -69,9 +69,10 @@ fn tail(alias: &str, note: usize, anchor_ms: i64) -> (String, usize, i64, bool) 
 #[test]
 fn chinese_and_korean_banks_are_told_by_their_aliases() {
     let pinyin = [
-        "a", "ai", "ba", "bi", "zhi", "chi", "shi", "ri", "zi", "ci", "si", "xi", "qi", "ji", "zha",
-        "cha", "sha", "xia", "qia", "jia", "zhang", "chang", "shang", "xiang", "qiang", "jiang",
-        "zhong", "chong", "xiong", "qiong", "jiong", "nv", "lv", "xue", "que", "jue", "ni", "hao",
+        "a", "ai", "ba", "bi", "zhi", "chi", "shi", "ri", "zi", "ci", "si", "xi", "qi", "ji",
+        "zha", "cha", "sha", "xia", "qia", "jia", "zhang", "chang", "shang", "xiang", "qiang",
+        "jiang", "zhong", "chong", "xiong", "qiong", "jiong", "nv", "lv", "xue", "que", "jue",
+        "ni", "hao",
     ];
     assert_eq!(phonemize::detect(&bank(&pinyin)), Phonemizer::ZhCvvc);
     let hangul = [
@@ -105,7 +106,9 @@ fn chinese_characters_sing_on_pinyin_aliases() {
 
 #[test]
 fn a_chinese_cvvc_bank_adds_vowel_to_consonant_and_endings() {
-    let b = bank(&["- ni", "ni", "hao", "i h", "ao R", "xing", "hang", "yin", "in h"]);
+    let b = bank(&[
+        "- ni", "ni", "hao", "i h", "ao R", "xing", "hang", "yin", "in h",
+    ]);
     let p = phrase("zh", &[(0.0, 0.5, "你"), (0.5, 0.5, "好")]);
     let plan = phonemize::plan(&b, &p, Phonemizer::ZhCvvc);
     assert_eq!(
@@ -131,7 +134,10 @@ fn hangul_sings_open_syllables_codas_and_vowel_to_consonant() {
     let b = bank(&[
         "- 사", "사", "라", "해", "a r", "a ng", "ae R", "으", "마", "a k",
     ]);
-    let p = phrase("ko", &[(0.0, 0.5, "사"), (0.5, 0.5, "랑"), (1.0, 0.5, "해")]);
+    let p = phrase(
+        "ko",
+        &[(0.0, 0.5, "사"), (0.5, 0.5, "랑"), (1.0, 0.5, "해")],
+    );
     let plan = phonemize::plan(&b, &p, Phonemizer::KoCvvc);
     assert_eq!(
         units(&plan.units),

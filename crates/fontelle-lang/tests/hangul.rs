@@ -2,7 +2,9 @@
 //! romanised as Korean voicebanks name their sounds, with the sound changes
 //! a sung line needs.
 
-use fontelle_lang::hangul::{Syllable, compose, decompose, has_hangul, is_syllable, read, read_run};
+use fontelle_lang::hangul::{
+    Syllable, compose, decompose, has_hangul, is_syllable, read, read_run,
+};
 
 fn romans(v: &Option<Vec<Syllable>>) -> Vec<String> {
     v.as_ref().unwrap().iter().map(Syllable::roman).collect()
@@ -47,8 +49,16 @@ fn syllables_romanise_onset_vowel_and_coda() {
 fn a_coda_carries_into_a_following_vowel() {
     assert_eq!(romans(&read("음악")), ["eu", "mak"]);
     assert_eq!(romans(&read("밖에")), ["ba", "kke"]);
-    assert_eq!(romans(&read("좋아")), ["jo", "a"], "ㅎ before a vowel is silent");
-    assert_eq!(romans(&read("읽어")), ["il", "geo"], "a cluster leaves its first");
+    assert_eq!(
+        romans(&read("좋아")),
+        ["jo", "a"],
+        "ㅎ before a vowel is silent"
+    );
+    assert_eq!(
+        romans(&read("읽어")),
+        ["il", "geo"],
+        "a cluster leaves its first"
+    );
     // ㅇ is a sound of its own as a coda and stays.
     assert_eq!(romans(&read("사랑이")), ["sa", "rang", "i"]);
 }

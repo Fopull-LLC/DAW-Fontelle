@@ -27,6 +27,11 @@ pub struct PageRow {
     pub terms: Rect,
     /// Uninstall, Install, Get it.
     pub action: Rect,
+    /// Installed only: show the bank's folder.
+    pub reveal: Rect,
+    /// Installed only: play the sample its author named (drawn only when
+    /// there is one).
+    pub sample: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,8 +62,8 @@ pub fn voicebank_page_layout(
     count: usize,
     scroll: f32,
 ) -> VoicebankPageLayout {
-    // Both tabs are laid out alike; the tab only changes what the rows say.
-    let _ = tab;
+    // Both tabs are laid out alike but for the installed rows' folder and
+    // sample buttons; the tab otherwise only changes what the rows say.
     let width = (window.width - 80.0).clamp(320.0, 860.0).min(window.width);
     let height = (window.height - 80.0)
         .clamp(240.0, 680.0)
@@ -119,10 +124,22 @@ pub fn voicebank_page_layout(
             26.0,
         );
         let terms = Rect::new(action.x - 126.0, action.y, 118.0, 26.0);
+        let (reveal, sample) = if tab == VoicebankTab::Installed {
+            let reveal = Rect::new(terms.x - 78.0, action.y, 70.0, 26.0);
+            let sample = Rect::new(reveal.x - 88.0, action.y, 80.0, 26.0);
+            (reveal, sample)
+        } else {
+            (Rect::default(), Rect::default())
+        };
+        let words_end = if tab == VoicebankTab::Installed {
+            sample.x
+        } else {
+            terms.x
+        };
         let text = Rect::new(
             portrait.right() + 10.0,
             row.y + 4.0,
-            (terms.x - portrait.right() - 18.0).max(0.0),
+            (words_end - portrait.right() - 18.0).max(0.0),
             row.height - 8.0,
         );
         rows.push(PageRow {
@@ -132,6 +149,8 @@ pub fn voicebank_page_layout(
             text,
             terms,
             action,
+            reveal,
+            sample,
         });
     }
     VoicebankPageLayout {
@@ -156,6 +175,10 @@ pub enum PageHit {
     OpenFolder,
     Action(usize),
     Terms(usize),
+    /// An installed bank's folder.
+    Reveal(usize),
+    /// An installed bank's sample.
+    Sample(usize),
     Row(usize),
     /// On the page but on nothing.
     Page,
@@ -188,6 +211,12 @@ pub fn voicebank_page_hit(page: &VoicebankPageLayout, x: f32, y: f32) -> Option<
             }
             if row.terms.contains(x, y) {
                 return Some(PageHit::Terms(row.index));
+            }
+            if !row.reveal.is_empty() && row.reveal.contains(x, y) {
+                return Some(PageHit::Reveal(row.index));
+            }
+            if !row.sample.is_empty() && row.sample.contains(x, y) {
+                return Some(PageHit::Sample(row.index));
             }
             if row.frame.contains(x, y) {
                 return Some(PageHit::Row(row.index));

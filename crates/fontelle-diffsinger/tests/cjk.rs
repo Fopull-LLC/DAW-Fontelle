@@ -129,8 +129,11 @@ entries:
 #[test]
 fn hangul_reads_as_romanised_syllables_when_the_dictionary_has_them() {
     let d = Dictionary::parse(KO_SYLLABLES).unwrap();
-    let inv =
-        Inventory::parse("SP\nAP\nko/h\nko/a\nko/n\nko/g\nko/eu\nko/l\nko/m\nko/k\n", false).unwrap();
+    let inv = Inventory::parse(
+        "SP\nAP\nko/h\nko/a\nko/n\nko/g\nko/eu\nko/l\nko/m\nko/k\n",
+        false,
+    )
+    .unwrap();
     let r = Reader {
         dict: &d,
         inventory: &inv,

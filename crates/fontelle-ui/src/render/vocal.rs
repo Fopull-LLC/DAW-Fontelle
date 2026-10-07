@@ -61,8 +61,8 @@ pub struct RollVocal<'a> {
     pub engine_chip: Option<Rect>,
     /// "Note ▾" at the end of the tabs: the note menu.
     pub note_button: Option<Rect>,
-    /// The Voicebanks page, while open — drawn over the whole window.
-    pub page: Option<VoicebankPage<'a>>,
+    /// The singer's portrait, drawn in the corner chip before the name.
+    pub portrait: Option<&'a vello::peniko::ImageData>,
 }
 
 /// The engine chip's words.
@@ -115,7 +115,11 @@ fn scale_labels(scale: &CurveScale) -> [String; 2] {
     ]
 }
 
-/// The corner chip: where it goes for a caption `width` wide.
+/// How much wider the corner chip is with a portrait in it.
+pub const CAPTION_PORTRAIT: f32 = 20.0;
+
+/// The corner chip: where it goes for a caption `width` wide (add
+/// [`CAPTION_PORTRAIT`] when the singer has a portrait).
 pub fn caption_rect(grid: Rect, width: f32) -> Rect {
     let w = width + 16.0;
     Rect::new(grid.right() - w - 8.0, grid.y + 6.0, w, 20.0)
@@ -375,10 +379,21 @@ pub fn draw_vocal_overlay(
     {
         fill_rect_rounded(scene, chip, 4.0, p.panel_header.with_alpha(235));
         stroke_rect_rounded(scene, chip, 4.0, 1.0, p.border);
+        let mut text_x = chip.x + 8.0;
+        if let Some(image) = vocal.portrait {
+            let face = Rect::new(
+                chip.x + 2.0,
+                chip.y + 2.0,
+                chip.height - 4.0,
+                chip.height - 4.0,
+            );
+            draw_portrait(scene, labels, Some(image), face, "");
+            text_x = face.right() + 6.0;
+        }
         draw_text(
             scene,
             text,
-            chip.x + 8.0,
+            text_x,
             chip.y + ((chip.height - text.height) / 2.0).max(0.0),
             p.text,
         );
@@ -885,6 +900,10 @@ pub struct VoicebankPage<'a> {
     pub folder: &'a str,
 }
 
+/// An installed row's folder button and sample button.
+pub const PAGE_FOLDER: &str = "Folder";
+pub const PAGE_SAMPLE: &str = "\u{25b6} Sample";
+
 /// The page's strings, for `shape_labels` at [`PHONEME_STYLE`] (and the
 /// title at [`LYRIC_STYLE`]).
 pub fn page_strings(page: &VoicebankPage) -> Vec<String> {
@@ -904,6 +923,8 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<String> {
         "No terms",
         "Drop a voicebank's .zip, .7z, .uar, .oudep or folder anywhere on the window to install it.",
         "No catalogue entries.",
+        PAGE_FOLDER,
+        PAGE_SAMPLE,
     ]
     .iter()
     .map(|s| s.to_string())
@@ -931,10 +952,19 @@ fn initial(name: &str) -> String {
 }
 
 fn installed_line(r: &VoicebankRow) -> String {
-    match &r.author {
-        Some(a) => format!("{} \u{b7} by {a}", r.kind),
-        None => r.kind.clone(),
+    let mut line = r.kind.clone();
+    if !r.languages.is_empty() {
+        let langs: Vec<String> = r
+            .languages
+            .iter()
+            .map(|l| crate::canvas::language_name(l))
+            .collect();
+        line.push_str(&format!(" \u{b7} {}", langs.join(", ")));
     }
+    if let Some(a) = &r.author {
+        line.push_str(&format!(" \u{b7} by {a}"));
+    }
+    line
 }
 
 fn catalogue_line(r: &CatalogueRow) -> String {
@@ -991,6 +1021,7 @@ pub fn draw_voicebank_page(
     scene: &mut Scene,
     theme: &Theme,
     labels: &Labels,
+    portraits: &crate::portrait::Portraits,
     page: &VoicebankPage,
 ) {
     let p = &theme.palette;
@@ -1036,7 +1067,7 @@ pub fn draw_voicebank_page(
     clipped(scene, l.list, |scene| {
         for row in &l.rows {
             fill_rect_rounded(scene, row.frame, 5.0, p.panel_header);
-            let (name, line, summary, terms, action, waiting) = match page.tab {
+            let (name, line, summary, terms, action, waiting, portrait, sample) = match page.tab {
                 VoicebankTab::Installed => {
                     let Some(r) = page.installed.get(row.index) else {
                         continue;
@@ -1053,6 +1084,8 @@ pub fn draw_voicebank_page(
                         terms,
                         "Uninstall",
                         false,
+                        r.portrait.as_deref(),
+                        r.sample.is_some(),
                     )
                 }
                 VoicebankTab::Find => {
@@ -1073,19 +1106,13 @@ pub fn draw_voicebank_page(
                         "Read terms\u{2026}",
                         action,
                         r.waiting,
+                        None,
+                        false,
                     )
                 }
             };
-            fill_rect_rounded(scene, row.portrait, 6.0, avatar(&name));
-            if let Some(t) = labels.get_styled(&initial(&name), PHONEME_STYLE) {
-                draw_text(
-                    scene,
-                    t,
-                    row.portrait.x + (row.portrait.width - t.width) / 2.0,
-                    row.portrait.y + (row.portrait.height - t.height) / 2.0,
-                    Color::rgba(0xff, 0xff, 0xff, 0xff),
-                );
-            }
+            let image = portrait.and_then(|path| portraits.peek(path));
+            draw_portrait(scene, labels, image, row.portrait, &name);
             if let Some(t) = labels.get_styled(&name, PHONEME_STYLE) {
                 draw_text_clipped(scene, t, row.text, row.text.x, row.text.y + 2.0, p.text);
             }
@@ -1112,9 +1139,390 @@ pub fn draw_voicebank_page(
                 );
             }
             button(scene, theme, labels, row.terms, terms, false);
+            if !row.reveal.is_empty() {
+                button(scene, theme, labels, row.reveal, PAGE_FOLDER, false);
+            }
+            if sample && !row.sample.is_empty() {
+                button(scene, theme, labels, row.sample, PAGE_SAMPLE, false);
+            }
             // Uninstalling is not the thing to make loud.
             let strong = !waiting && page.tab == VoicebankTab::Find;
             button(scene, theme, labels, row.action, action, strong);
         }
     });
+}
+
+// ------------------------------------------------------------ portraits
+
+/// A portrait filling `rect` (cropped to its shape, rounded), or, with none,
+/// a colour from the name and its initial.
+pub fn draw_portrait(
+    scene: &mut Scene,
+    labels: &Labels,
+    image: Option<&vello::peniko::ImageData>,
+    rect: Rect,
+    name: &str,
+) {
+    if rect.is_empty() {
+        return;
+    }
+    let radius = (rect.width.min(rect.height) * 0.12).clamp(2.0, 8.0);
+    match image.filter(|i| i.width > 0 && i.height > 0) {
+        Some(image) => {
+            // Cover: the shorter side fills, the longer is cropped, centred.
+            let scale = (rect.width / image.width as f32).max(rect.height / image.height as f32);
+            let w = image.width as f32 * scale;
+            let h = image.height as f32 * scale;
+            let x = rect.x + (rect.width - w) / 2.0;
+            let y = rect.y + (rect.height - h) / 2.0;
+            let brush = vello::peniko::ImageBrush {
+                image: image.clone(),
+                sampler: vello::peniko::ImageSampler::new()
+                    .with_quality(vello::peniko::ImageQuality::Medium),
+            };
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &brush,
+                Some(
+                    Affine::translate((f64::from(x), f64::from(y)))
+                        * Affine::scale(f64::from(scale)),
+                ),
+                &super::rounded(rect, radius),
+            );
+        }
+        None => {
+            fill_rect_rounded(scene, rect, radius, avatar(name));
+            if let Some(t) = labels.get_styled(&initial(name), PHONEME_STYLE) {
+                draw_text(
+                    scene,
+                    t,
+                    rect.x + (rect.width - t.width) / 2.0,
+                    rect.y + (rect.height - t.height) / 2.0,
+                    Color::rgba(0xff, 0xff, 0xff, 0xff),
+                );
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------- the picker
+
+/// What the singer picker shows.
+pub struct SingerPickerView<'a> {
+    pub layout: &'a crate::canvas::SingerPickerLayout,
+    pub singers: &'a [crate::document::SingerChoice],
+    /// What is typed in the search.
+    pub query: &'a str,
+    /// The focused card (an index into the layout's cards) and which of its
+    /// language chips Tab has reached.
+    pub focus: Option<usize>,
+    pub language: usize,
+    /// Who sings the track now.
+    pub current: Option<&'a fontelle_model::VocalVoice>,
+    pub problems: &'a [String],
+}
+
+/// The Voicebanks page and the singer picker, over the whole window
+/// (either can be opened with no vocal track in the roll).
+pub struct VocalOverlay<'a> {
+    pub page: Option<VoicebankPage<'a>>,
+    pub picker: Option<SingerPickerView<'a>>,
+    pub portraits: &'a crate::portrait::Portraits,
+}
+
+pub const PICKER_TITLE: &str = "Choose a singer";
+pub const PICKER_SEARCH_HINT: &str = "Search \u{2014} name, language, UTAU, DiffSinger, engine";
+pub const PICKER_BANKS: &str = "Fontelle Singer \u{2014} free voicebanks";
+pub const PICKER_ENGINES: &str = "Singer engines";
+pub const PICKER_NONE: &str = "No singer matches the search.";
+pub const PICKER_EMPTY: &str =
+    "No singer is installed yet \u{2014} Voicebanks & Find singers has free ones.";
+
+fn kind_badge(s: &crate::document::SingerChoice) -> &'static str {
+    match s.kind {
+        crate::document::SingerKind::Utau => "UTAU",
+        crate::document::SingerKind::DiffSinger => "DiffSinger",
+        crate::document::SingerKind::Engine => "Engine",
+    }
+}
+
+fn terms_badge(s: &crate::document::SingerChoice) -> Option<&'static str> {
+    match (&s.terms, s.terms_agreed) {
+        (Some(_), false) => Some("Terms to read"),
+        (Some(_), true) => Some("Terms agreed"),
+        (None, _) => None,
+    }
+}
+
+const RESEARCH_SHORT: &str = "Research only";
+const SINGING: &str = "Singing";
+
+/// The picker's strings, for `shape_labels` at [`PHONEME_STYLE`] (the title
+/// at [`LYRIC_STYLE`]).
+pub fn picker_strings(p: &SingerPickerView) -> Vec<String> {
+    let mut out: Vec<String> = [
+        PICKER_SEARCH_HINT,
+        PICKER_BANKS,
+        PICKER_ENGINES,
+        PICKER_NONE,
+        PICKER_EMPTY,
+        "No singer",
+        "Install a voicebank\u{2026}",
+        "Voicebanks & Find singers\u{2026}",
+        "\u{2715}",
+        RESEARCH_SHORT,
+        SINGING,
+        "Terms to read",
+        "Terms agreed",
+        "UTAU",
+        "DiffSinger",
+        "Engine",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    out.push(p.query.to_string());
+    for card in &p.layout.cards {
+        let Some(s) = p.singers.get(card.singer) else {
+            continue;
+        };
+        out.push(s.name.clone());
+        out.push(initial(&s.name));
+        if !s.kind.is_voicebank() {
+            out.push(s.engine_name.clone());
+        }
+        for (tag, _) in &card.languages {
+            out.push(tag.to_uppercase());
+        }
+    }
+    for problem in p.problems {
+        out.push(format!("Not loaded: {problem}"));
+    }
+    out
+}
+
+fn chip(scene: &mut Scene, labels: &Labels, rect: Rect, text: &str, fill: Color, ink: Color) {
+    fill_rect_rounded(scene, rect, 3.0, fill);
+    if let Some(t) = labels.get_styled(text, PHONEME_STYLE) {
+        draw_text_clipped(
+            scene,
+            t,
+            rect,
+            rect.x + ((rect.width - t.width) / 2.0).max(2.0),
+            rect.y + ((rect.height - t.height) / 2.0).max(0.0),
+            ink,
+        );
+    }
+}
+
+pub fn draw_singer_picker(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    portraits: &crate::portrait::Portraits,
+    picker: &SingerPickerView,
+) {
+    let p = &theme.palette;
+    let l = picker.layout;
+    fill_rect_rounded(scene, l.frame, 8.0, p.panel);
+    stroke_rect_rounded(scene, l.frame, 8.0, 1.0, p.border);
+    if let Some(t) = labels.get_styled(PICKER_TITLE, LYRIC_STYLE) {
+        draw_text(scene, t, l.title.x, l.title.y + 2.0, p.text);
+    }
+    button(scene, theme, labels, l.close, "\u{2715}", false);
+    // The search field.
+    fill_rect_rounded(scene, l.search, 4.0, p.window);
+    stroke_rect_rounded(scene, l.search, 4.0, 1.0, p.accent);
+    let (shown, ink) = if picker.query.is_empty() {
+        (PICKER_SEARCH_HINT, p.text_muted)
+    } else {
+        (picker.query, p.text)
+    };
+    if let Some(t) = labels.get_styled(shown, PHONEME_STYLE) {
+        let y = l.search.y + ((l.search.height - t.height) / 2.0).max(0.0);
+        draw_text_clipped(scene, t, l.search.inset(2.0), l.search.x + 8.0, y, ink);
+        if !picker.query.is_empty() {
+            let caret = Rect::new(
+                l.search.x + 9.0 + t.width,
+                l.search.y + 6.0,
+                1.5,
+                l.search.height - 12.0,
+            );
+            fill_rect(scene, caret, p.accent);
+        }
+    } else if picker.query.is_empty() {
+        // Nothing shaped yet: still a field.
+    }
+    if l.cards.is_empty() {
+        let hint = if picker.singers.is_empty() {
+            PICKER_EMPTY
+        } else {
+            PICKER_NONE
+        };
+        if let Some(t) = labels.get_styled(hint, PHONEME_STYLE) {
+            draw_text(scene, t, l.list.x + 4.0, l.list.y + 8.0, p.text_muted);
+        }
+    }
+    clipped(scene, l.list, |scene| {
+        for (group, rect) in &l.groups {
+            let text = match group {
+                crate::canvas::PickerGroup::Voicebanks => PICKER_BANKS,
+                crate::canvas::PickerGroup::Engines => PICKER_ENGINES,
+            };
+            if let Some(t) = labels.get_styled(text, PHONEME_STYLE) {
+                draw_text(scene, t, rect.x + 2.0, rect.y + 4.0, p.text_muted);
+            }
+            fill_rect(
+                scene,
+                Rect::new(rect.x, rect.bottom() - 3.0, rect.width, 1.0),
+                p.border,
+            );
+        }
+        for (k, card) in l.cards.iter().enumerate() {
+            if card.frame.bottom() < l.list.y || card.frame.y > l.list.bottom() {
+                continue;
+            }
+            let Some(s) = picker.singers.get(card.singer) else {
+                continue;
+            };
+            let focused = picker.focus == Some(k);
+            let singing = picker
+                .current
+                .is_some_and(|c| c.engine == s.engine && c.singer == s.id);
+            fill_rect_rounded(scene, card.frame, 6.0, p.panel_header);
+            stroke_rect_rounded(
+                scene,
+                card.frame,
+                6.0,
+                if focused { 2.0 } else { 1.0 },
+                if focused || singing {
+                    p.accent
+                } else {
+                    p.border
+                },
+            );
+            let image = s.image.as_deref().and_then(|path| portraits.peek(path));
+            draw_portrait(scene, labels, image, card.portrait, &s.name);
+            let text_x = card.portrait.right() + 10.0;
+            let text = Rect::new(
+                text_x,
+                card.frame.y + 8.0,
+                (card.frame.right() - text_x - 8.0).max(0.0),
+                card.portrait.height + 4.0,
+            );
+            if let Some(t) = labels.get_styled(&s.name, PHONEME_STYLE) {
+                draw_text_clipped(scene, t, text, text.x, text.y + 2.0, p.text);
+            }
+            // The kind, as a badge; an engine's own name under it.
+            let badge = kind_badge(s);
+            let bw = labels
+                .get_styled(badge, PHONEME_STYLE)
+                .map_or(40.0, |t| t.width + 10.0);
+            let badge_rect = Rect::new(text.x, text.y + 20.0, bw.min(text.width), 16.0);
+            let kind_fill = match s.kind {
+                crate::document::SingerKind::Utau => Color::rgba(0x3d, 0x7e, 0xc9, 0xff),
+                crate::document::SingerKind::DiffSinger => Color::rgba(0x7a, 0x52, 0xc8, 0xff),
+                crate::document::SingerKind::Engine => Color::rgba(0x4f, 0x8a, 0x5b, 0xff),
+            };
+            chip(
+                scene,
+                labels,
+                badge_rect,
+                badge,
+                kind_fill,
+                Color::rgba(0xff, 0xff, 0xff, 0xff),
+            );
+            let mut line_y = badge_rect.bottom() + 4.0;
+            if !s.kind.is_voicebank()
+                && let Some(t) = labels.get_styled(&s.engine_name, PHONEME_STYLE)
+            {
+                draw_text_clipped(scene, t, text, text.x, line_y, p.text_muted);
+                line_y += 16.0;
+            }
+            if singing {
+                if let Some(t) = labels.get_styled(SINGING, PHONEME_STYLE) {
+                    draw_text_clipped(scene, t, text, text.x, line_y, p.accent);
+                }
+            } else if let Some(terms) = terms_badge(s)
+                && let Some(t) = labels.get_styled(terms, PHONEME_STYLE)
+            {
+                let ink = if s.terms_agreed {
+                    p.text_muted
+                } else {
+                    RESEARCH_BADGE_COLOR
+                };
+                draw_text_clipped(scene, t, text, text.x, line_y, ink);
+            }
+            // Languages, a chip each; research-only at the card's corner.
+            for (j, (tag, rect)) in card.languages.iter().enumerate() {
+                let lit = focused && picker.language == j;
+                let current = singing && picker.current.is_some_and(|c| &c.language == tag);
+                let (fill, ink) = if lit || current {
+                    (p.accent, p.window)
+                } else {
+                    (p.window, p.text)
+                };
+                chip(scene, labels, *rect, &tag.to_uppercase(), fill, ink);
+            }
+            if s.research_only {
+                let w = labels
+                    .get_styled(RESEARCH_SHORT, PHONEME_STYLE)
+                    .map_or(80.0, |t| t.width + 10.0);
+                let r = Rect::new(
+                    card.frame.right() - w - 8.0,
+                    card.frame.bottom() - 28.0,
+                    w,
+                    18.0,
+                );
+                chip(
+                    scene,
+                    labels,
+                    r,
+                    RESEARCH_SHORT,
+                    RESEARCH_BADGE_COLOR,
+                    Color::rgba(0x1a, 0x10, 0x05, 0xff),
+                );
+            }
+        }
+    });
+    for (rect, problem) in l.problems.iter().zip(picker.problems) {
+        if let Some(t) = labels.get_styled(&format!("Not loaded: {problem}"), PHONEME_STYLE) {
+            draw_text_clipped(scene, t, *rect, rect.x, rect.y + 2.0, p.text_muted);
+        }
+    }
+    button(
+        scene,
+        theme,
+        labels,
+        l.nobody,
+        "No singer",
+        picker.current.is_none(),
+    );
+    button(
+        scene,
+        theme,
+        labels,
+        l.install,
+        "Install a voicebank\u{2026}",
+        false,
+    );
+    button(
+        scene,
+        theme,
+        labels,
+        l.manage,
+        "Voicebanks & Find singers\u{2026}",
+        false,
+    );
+}
+
+/// The overlay: the page, then the picker over it.
+pub fn draw_vocal_overlays(scene: &mut Scene, theme: &Theme, labels: &Labels, o: &VocalOverlay) {
+    if let Some(page) = &o.page {
+        draw_voicebank_page(scene, theme, labels, o.portraits, page);
+    }
+    if let Some(picker) = &o.picker {
+        draw_singer_picker(scene, theme, labels, o.portraits, picker);
+    }
 }

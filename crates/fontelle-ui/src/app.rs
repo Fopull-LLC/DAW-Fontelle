@@ -548,13 +548,14 @@ enum PluginPurpose {
 /// The record menu's last row: a take into a study of its own.
 pub const RECORD_INTO_ANALYZE: &str = "Record into Analyze Musically\u{2026}";
 
+/// The instrument menus' row that opens the Voicebanks page: a vocal
+/// track's singers are found from where instruments are chosen too.
+pub const VOICEBANKS_ROW: &str = "Voicebanks & Find singers\u{2026}";
+
 #[derive(Debug, Clone, PartialEq)]
 enum MenuTarget {
     /// A channel in the rack, by row.
     Channel(usize),
-    /// Who sings vocal channel `usize`: every installed singer in each of
-    /// its languages — see `canvas::singer_menu_rows`.
-    Singer(usize),
     /// A voicebank's terms, before it first sings on `channel`: the singer
     /// (an index into `singers()`) and the language chosen.
     SingerTerms {
@@ -928,7 +929,6 @@ impl MenuTarget {
             // the main window.
             Self::SettingChoice(_) | Self::TourSection => None,
             Self::Channel(_)
-            | Self::Singer(_)
             | Self::SingerTerms { .. }
             | Self::BankTerms(_)
             | Self::VocalNote
@@ -3558,6 +3558,7 @@ impl WindowApp {
                         },
                     }
                 }),
+                vocal_overlay: vocal::vocal_overlay_of(&self.vocal_edit),
             },
         );
 
@@ -5090,6 +5091,8 @@ impl ApplicationHandler for WindowApp {
                     }
                     self.tree.invalidate_rect(self.layout.window);
                     self.update_hover();
+                } else if self.vocal_edit.picker.is_some() {
+                    self.scroll_singer_picker(dy);
                 } else if let Some(page) = &mut self.vocal_edit.page {
                     page.scroll = (page.scroll - dy * 40.0).max(0.0);
                     if let Some(layout) = &page.layout {
@@ -8613,10 +8616,18 @@ impl WindowApp {
                 self.labels
                     .ensure_styled(text, &font, PHONEME_STYLE, &mut self.text);
             }
-            let width = self
+            let mut width = self
                 .labels
                 .get_styled(&view.caption, LYRIC_STYLE)
                 .map_or(0.0, |t| t.width);
+            // Room for the singer's face before the name.
+            if view
+                .portrait
+                .as_deref()
+                .is_some_and(|p| self.vocal_edit.portraits.get(p).is_some())
+            {
+                width += crate::render::vocal::CAPTION_PORTRAIT;
+            }
             self.vocal_caption = Some(caption_rect(self.roll_layout.grid, width));
             let font = font.clone();
             self.shape_vocal_edit(&font);
@@ -8647,6 +8658,9 @@ impl WindowApp {
                 });
             }
         }
+        // The Voicebanks page and the singer picker open from anywhere.
+        let font_now = font.clone();
+        self.shape_vocal_overlays(&font_now);
     }
 
     // ------------------------------------------------------------- mouse ---
@@ -8794,6 +8808,10 @@ impl WindowApp {
         // drop-down and the name prompt it opens, which are menus above it.
         if self.settings_page.is_some() {
             self.press_settings_page(button, x, y);
+            return;
+        }
+        if self.vocal_edit.picker.is_some() {
+            self.press_singer_picker(x, y);
             return;
         }
         if self.vocal_edit.page.is_some() {
@@ -16559,8 +16577,7 @@ impl WindowApp {
                 && self.vocal_caption.is_some_and(|chip| chip.contains(x, y))
             {
                 let index = doc.selected_channel();
-                let bounds = self.layout.window;
-                self.open_menu(MenuTarget::Singer(index), x, y, bounds);
+                self.open_singer_picker(index);
                 return;
             }
             if self.lyric.is_some() {
@@ -17836,7 +17853,14 @@ impl WindowApp {
         current: Option<fontelle_types::InstrumentKind>,
     ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::InstrumentRow)> {
         let plugins = self.plugin_listings(PluginPurpose::NewChannel);
-        crate::canvas::instrument_menu_rows(current, &self.favorites(), &plugins)
+        let mut rows = crate::canvas::instrument_menu_rows(current, &self.favorites(), &plugins);
+        // A vocal track's singers are found here too, not only from a vocal
+        // track already in the roll.
+        rows.push((
+            crate::canvas::MenuEntry::new(VOICEBANKS_ROW).after_rule(),
+            crate::canvas::InstrumentRow::Voicebanks,
+        ));
+        rows
     }
 
     /// The plugin picker's rows, narrowed by what has been typed.
@@ -17974,11 +17998,6 @@ impl WindowApp {
                     }),
                 ]
             }
-            MenuTarget::Singer(index) => self
-                .singer_rows(*index)
-                .into_iter()
-                .map(|(entry, _)| entry)
-                .collect(),
             MenuTarget::SingerTerms { singer, .. } => self
                 .singer_terms_rows(*singer)
                 .into_iter()
@@ -18989,9 +19008,7 @@ impl WindowApp {
             && self.is_vocal_channel(index)
         {
             self.show_tab(EditorTab::Roll);
-            let (x, y) = self.cursor;
-            let bounds = self.layout.window;
-            self.open_menu(MenuTarget::Singer(index), x, y, bounds);
+            self.open_singer_picker(index);
             return;
         }
         self.open_editor(EditorKind::Instrument);
@@ -19005,20 +19022,77 @@ impl WindowApp {
         })
     }
 
-    /// The singer picker's rows for channel `index`.
-    fn singer_rows(
-        &self,
-        index: usize,
-    ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::SingerRow)> {
-        let Some(doc) = &self.options.document else {
-            return Vec::new();
+    /// What choosing a row of the singer picker does — the menu's and the
+    /// card grid's alike: a voicebank whose terms are unread asks first.
+    pub(crate) fn choose_singer_row(
+        &mut self,
+        channel: usize,
+        row: Option<crate::canvas::SingerRow>,
+    ) {
+        match &row {
+            Some(crate::canvas::SingerRow::InstallVoicebank) => {
+                self.choose_and_install_voicebank();
+                return;
+            }
+            Some(crate::canvas::SingerRow::ManageVoicebanks) => {
+                self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                return;
+            }
+            Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                let unread = self.options.document.as_ref().is_some_and(|doc| {
+                    doc.singers()
+                        .get(*singer)
+                        .is_some_and(|s| s.terms.is_some() && !s.terms_agreed)
+                });
+                if unread {
+                    let (x, y) = self.cursor;
+                    let bounds = self.layout.window;
+                    let target = MenuTarget::SingerTerms {
+                        channel,
+                        singer: *singer,
+                        language: language.clone(),
+                    };
+                    self.open_menu(target, x, y, bounds);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let singers = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.singers())
+            .unwrap_or_default();
+        let voice = match row {
+            Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                singers.get(singer).map(|s| {
+                    (
+                        Some(fontelle_model::VocalVoice::new(
+                            s.engine.clone(),
+                            s.id.clone(),
+                            language.clone(),
+                        )),
+                        format!(
+                            "{} sings this track, in {}",
+                            s.name,
+                            crate::canvas::language_name(&language)
+                        ),
+                    )
+                })
+            }
+            Some(crate::canvas::SingerRow::Nobody) => Some((
+                None,
+                "Nobody sings this track \u{2014} its notes and words are kept".to_string(),
+            )),
+            _ => None,
         };
-        crate::canvas::singer_menu_rows(
-            &doc.singers(),
-            doc.vocal_voice(index).as_ref(),
-            &doc.singer_problems(),
-            &doc.singers_folder(),
-        )
+        if let (Some((voice, said)), Some(doc)) = (voice, &mut self.options.document) {
+            doc.set_singer(channel, voice);
+            self.status = said;
+            self.refresh_studio();
+            self.tree.invalidate(PANEL);
+        }
     }
 
     /// Reads the vocal layer again when the host says it moved: an edit, or
@@ -19258,9 +19332,7 @@ impl WindowApp {
                     doc.select_channel(*channel);
                 }
                 if self.is_vocal_channel(*channel) {
-                    let (x, y) = self.cursor;
-                    let bounds = self.layout.window;
-                    self.open_menu(MenuTarget::Singer(*channel), x, y, bounds);
+                    self.open_singer_picker(*channel);
                 } else {
                     self.open_editor(EditorKind::Instrument);
                 }
@@ -19281,74 +19353,6 @@ impl WindowApp {
                 self.choose_bank_terms(&id, index);
             }
             (MenuTarget::VocalNote, index) => self.choose_vocal_note_row(index),
-            (MenuTarget::Singer(channel), index) => {
-                let channel = *channel;
-                let row = self.singer_rows(channel).get(index).map(|(_, r)| r.clone());
-                match &row {
-                    Some(crate::canvas::SingerRow::InstallVoicebank) => {
-                        self.choose_and_install_voicebank();
-                        return;
-                    }
-                    Some(crate::canvas::SingerRow::ManageVoicebanks) => {
-                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
-                        return;
-                    }
-                    Some(crate::canvas::SingerRow::Choose { singer, language }) => {
-                        let unread = self.options.document.as_ref().is_some_and(|doc| {
-                            doc.singers()
-                                .get(*singer)
-                                .is_some_and(|s| s.terms.is_some() && !s.terms_agreed)
-                        });
-                        if unread {
-                            let (x, y) = self.cursor;
-                            let bounds = self.layout.window;
-                            let target = MenuTarget::SingerTerms {
-                                channel,
-                                singer: *singer,
-                                language: language.clone(),
-                            };
-                            self.open_menu(target, x, y, bounds);
-                            return;
-                        }
-                    }
-                    _ => {}
-                }
-                let singers = self
-                    .options
-                    .document
-                    .as_ref()
-                    .map(|doc| doc.singers())
-                    .unwrap_or_default();
-                let voice = match row {
-                    Some(crate::canvas::SingerRow::Choose { singer, language }) => {
-                        singers.get(singer).map(|s| {
-                            (
-                                Some(fontelle_model::VocalVoice::new(
-                                    s.engine.clone(),
-                                    s.id.clone(),
-                                    language.clone(),
-                                )),
-                                format!(
-                                    "{} sings this track, in {}",
-                                    s.name,
-                                    crate::canvas::language_name(&language)
-                                ),
-                            )
-                        })
-                    }
-                    Some(crate::canvas::SingerRow::Nobody) => Some((
-                        None,
-                        "Nobody sings this track \u{2014} its notes and words are kept".to_string(),
-                    )),
-                    _ => None,
-                };
-                if let (Some((voice, said)), Some(doc)) = (voice, &mut self.options.document) {
-                    doc.set_singer(channel, voice);
-                    self.status = said;
-                    self.refresh_studio();
-                    self.tree.invalidate(PANEL);
-                }
-            }
             // A menu of its own rather than three more rows here: the kinds
             // are one list (`MenuTarget::ChangeInstrument`) and both places
             // that offer them read it, so they cannot come to disagree.
@@ -20027,6 +20031,10 @@ impl WindowApp {
                 use crate::canvas::InstrumentRow;
                 let kind = match self.instrument_rows(None).get(index).map(|(_, row)| *row) {
                     Some(InstrumentRow::Kind(kind)) => kind,
+                    Some(InstrumentRow::Voicebanks) => {
+                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                        return;
+                    }
                     // A starred plugin: what starring it was for.
                     Some(InstrumentRow::Plugin(which)) => {
                         let name = self
@@ -20092,6 +20100,10 @@ impl WindowApp {
                     .map(|(_, row)| *row)
                 {
                     Some(InstrumentRow::Kind(kind)) => kind,
+                    Some(InstrumentRow::Voicebanks) => {
+                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                        return;
+                    }
                     Some(InstrumentRow::Plugin(which)) => {
                         let name = self
                             .plugin_listings(PluginPurpose::ChangeChannel(channel))
@@ -21611,6 +21623,32 @@ impl WindowApp {
     /// the same as a soundfont row. The note is held for the file's own length
     /// so the whole sound plays and then stops on its own; clicking another
     /// file, or anything else that auditions, replaces it.
+    /// Plays an installed voicebank's sample through the preview voice, as
+    /// [`preview_import`](Self::preview_import) plays a file.
+    pub(crate) fn preview_voicebank_sample(&mut self, id: &str) {
+        let seconds = match &mut self.options.document {
+            Some(doc) => doc.preview_voicebank_sample(id),
+            None => return,
+        };
+        let seconds = match seconds {
+            Ok(seconds) => seconds,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let ticks = self.options.document.as_ref().map_or(0, |doc| {
+            let per_tick = doc.seconds_per_tick();
+            if per_tick > 0.0 {
+                (seconds / per_tick) as fontelle_types::Tick
+            } else {
+                0
+            }
+        });
+        self.start_audition(60, ticks.max(1));
+        self.status = "Playing the voicebank's sample".to_string();
+    }
+
     fn preview_import(&mut self, index: usize) {
         let seconds = match &mut self.options.document {
             Some(doc) => doc.preview_import(index),
@@ -22065,6 +22103,9 @@ impl WindowApp {
                 }
             }
             Action::Help => self.open_help(),
+            Action::Voicebanks => {
+                self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+            }
             _ => return false,
         }
         true
@@ -22180,6 +22221,12 @@ impl WindowApp {
             return;
         }
 
+        // The singer picker takes every key while it is open: its search is
+        // a field, its arrows move between cards.
+        if self.singer_picker_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         // A lyric being typed has the keyboard too: a "d" is a letter in a
         // word, not the delete tool.
         if self.phoneme_field_key(event) {
@@ -22517,6 +22564,7 @@ impl WindowApp {
             | Action::ExportWav
             | Action::ExportMidi
             | Action::Help
+            | Action::Voicebanks
             | Action::RemoveBand
             | Action::AnalyzeCopyNotes
             | Action::AnalyzeCopyScale

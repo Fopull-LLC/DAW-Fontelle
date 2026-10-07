@@ -487,6 +487,9 @@ fn a_real_chinese_bank_sings_chinese_characters() {
             sung.phonemes.iter().all(|n| !n.guessed),
             "{voice}: every character is read: {said:?}"
         );
-        assert!(said[6].contains("ang"), "{voice}: 银行 is yin hang: {said:?}");
+        assert!(
+            said[6].contains("ang"),
+            "{voice}: 银行 is yin hang: {said:?}"
+        );
     }
 }

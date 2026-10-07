@@ -285,7 +285,7 @@ fn shoot(
                     px_per_second: 150.0,
                     engine_chip: None,
                     note_button: None,
-                    page: None,
+                    portrait: None,
                 }),
             }),
             rack: None,
@@ -310,6 +310,7 @@ fn shoot(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared

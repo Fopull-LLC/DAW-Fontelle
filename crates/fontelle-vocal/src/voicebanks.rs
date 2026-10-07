@@ -526,9 +526,12 @@ pub fn read_info(root: &Path, kind: PackageKind) -> BankInfo {
         }
         info.author = yaml_value(&text, "author").or(info.author);
         info.web = yaml_value(&text, "web").or(info.web);
-        info.portrait = existing(yaml_value(&text, "portrait"))
-            .or_else(|| existing(yaml_value(&text, "image")))
-            .or(info.portrait);
+        // `image` is the bank's icon; `portrait` (OpenUtau's) the large
+        // picture behind the roll — a face for a card only when there is
+        // no icon.
+        info.portrait = existing(yaml_value(&text, "image"))
+            .or(info.portrait)
+            .or_else(|| existing(yaml_value(&text, "portrait")));
         info.sample = existing(yaml_value(&text, "sample")).or(info.sample);
         if let Some(list) = yaml_value(&text, "languages") {
             info.languages = list

@@ -12,10 +12,11 @@ use fontelle_model::{LaneCurve, LaneKey, NoteVoice};
 use fontelle_types::{NoteId, PPQN, Tick};
 
 use crate::canvas::{
-    LaneStroke, NoteHandle, PageHit, PhonemeCell, PhonemeHit, StrokeMode, TermsRow, TextEntry,
-    VocalCurve, VocalNoteRow, VocalStrips, VocalTab, VoicebankPageLayout, VoicebankTab,
+    LaneStroke, NoteHandle, PageHit, PhonemeCell, PhonemeHit, PickerHit, PickerMove,
+    SingerPickerLayout, SingerRow, StrokeMode, TermsRow, TextEntry, VocalCurve, VocalNoteRow,
+    VocalStrips, VocalTab, VoicebankPageLayout, VoicebankTab,
 };
-use crate::document::{CatalogueRow, VoicebankRow};
+use crate::document::{CatalogueRow, SingerChoice, VoicebankRow};
 
 /// A handle on a note's expression, held.
 #[derive(Debug, Clone)]
@@ -39,6 +40,23 @@ pub(super) struct PageState {
     pub layout: Option<VoicebankPageLayout>,
 }
 
+/// The singer picker, while open.
+#[derive(Debug, Clone, Default)]
+pub(super) struct PickerState {
+    /// The channel it chooses for.
+    pub channel: usize,
+    pub query: TextEntry,
+    pub scroll: f32,
+    /// The focused card, an index into the layout's cards.
+    pub focus: Option<usize>,
+    /// Which of the focused card's languages Tab has reached.
+    pub language: usize,
+    pub singers: Vec<SingerChoice>,
+    pub problems: Vec<String>,
+    pub current: Option<fontelle_model::VocalVoice>,
+    pub layout: Option<SingerPickerLayout>,
+}
+
 /// Everything the vocal roll's editing holds between frames.
 #[derive(Debug, Default)]
 pub(super) struct VocalEditing {
@@ -58,6 +76,10 @@ pub(super) struct VocalEditing {
     /// "Note ▾" at the end of the tabs: the note menu.
     pub note_button: Option<crate::layout::Rect>,
     pub page: Option<PageState>,
+    /// The singer picker (a card grid), while open.
+    pub picker: Option<PickerState>,
+    /// Voicebank portraits, decoded once each.
+    pub portraits: crate::portrait::Portraits,
     pub px_per_second: f32,
     /// The lane as drawn this frame: its scale and points.
     pub lane: Option<(crate::canvas::CurveScale, LaneCurve)>,
@@ -162,7 +184,17 @@ impl WindowApp {
             self.labels
                 .ensure_styled(&text, font, PHONEME_STYLE, &mut self.text);
         }
+    }
+
+    /// Lays out and shapes the Voicebanks page and the singer picker, and
+    /// decodes the portraits they (and the roll's corner) show — every
+    /// frame, whatever is in the roll: both open from anywhere.
+    pub(super) fn shape_vocal_overlays(&mut self, font: &crate::theme::FontTokens) {
+        use crate::render::vocal::{LYRIC_STYLE, PHONEME_STYLE};
         self.lay_out_voicebank_page();
+        self.lay_out_singer_picker();
+        let mut strings: Vec<String> = Vec::new();
+        let mut faces: Vec<String> = Vec::new();
         if let Some(page) = &self.vocal_edit.page
             && let Some(layout) = &page.layout
         {
@@ -173,17 +205,49 @@ impl WindowApp {
                 catalogue: &page.catalogue,
                 folder: &page.folder,
             };
-            let strings = crate::render::vocal::page_strings(&p);
-            for text in strings {
-                self.labels
-                    .ensure_styled(&text, font, PHONEME_STYLE, &mut self.text);
+            strings.extend(crate::render::vocal::page_strings(&p));
+            if page.tab == VoicebankTab::Installed {
+                faces.extend(page.installed.iter().filter_map(|r| r.portrait.clone()));
             }
+            self.labels
+                .ensure_styled("Voicebanks", font, LYRIC_STYLE, &mut self.text);
+        }
+        if let Some(picker) = &self.vocal_edit.picker
+            && let Some(layout) = &picker.layout
+        {
+            let view = crate::render::vocal::SingerPickerView {
+                layout,
+                singers: &picker.singers,
+                query: picker.query.text(),
+                focus: picker.focus,
+                language: picker.language,
+                current: picker.current.as_ref(),
+                problems: &picker.problems,
+            };
+            strings.extend(crate::render::vocal::picker_strings(&view));
+            faces.extend(
+                layout
+                    .cards
+                    .iter()
+                    .filter_map(|c| picker.singers.get(c.singer))
+                    .filter_map(|s| s.image.clone()),
+            );
             self.labels.ensure_styled(
-                "Voicebanks",
+                crate::render::vocal::PICKER_TITLE,
                 font,
-                crate::render::vocal::LYRIC_STYLE,
+                LYRIC_STYLE,
                 &mut self.text,
             );
+        }
+        if let Some(face) = self.vocal.as_ref().and_then(|v| v.portrait.clone()) {
+            faces.push(face);
+        }
+        for text in strings {
+            self.labels
+                .ensure_styled(&text, font, PHONEME_STYLE, &mut self.text);
+        }
+        for face in faces {
+            self.vocal_edit.portraits.get(&face);
         }
     }
 
@@ -816,6 +880,8 @@ impl WindowApp {
     }
 
     pub(super) fn refresh_voicebank_page(&mut self) {
+        // An install or uninstall may have put another picture at a path.
+        self.vocal_edit.portraits.clear();
         let Some(doc) = &self.options.document else {
             return;
         };
@@ -873,6 +939,22 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.reveal_voicebanks_dir();
                 }
+            }
+            Some(PageHit::Reveal(i)) => {
+                if let (Some(r), Some(doc)) = (page.installed.get(i), &mut self.options.document) {
+                    doc.reveal_voicebank(&r.id);
+                }
+            }
+            Some(PageHit::Sample(i)) => {
+                let Some(id) = page
+                    .installed
+                    .get(i)
+                    .filter(|r| r.sample.is_some())
+                    .map(|r| r.id.clone())
+                else {
+                    return;
+                };
+                self.preview_voicebank_sample(&id);
             }
             Some(PageHit::Terms(i)) => {
                 let id = match tab {
@@ -939,6 +1021,243 @@ impl WindowApp {
     }
 }
 
+impl WindowApp {
+    // ------------------------------------------------------- the picker
+
+    /// Opens the singer picker for `channel`: a grid of cards, the search
+    /// focused.
+    pub(super) fn open_singer_picker(&mut self, channel: usize) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let current = doc.vocal_voice(channel);
+        let singers = doc.singers();
+        let problems = doc.singer_problems();
+        // The card singing now is focused, so Enter keeps it.
+        self.vocal_edit.picker = Some(PickerState {
+            channel,
+            singers,
+            problems,
+            current,
+            ..PickerState::default()
+        });
+        self.lay_out_singer_picker();
+        if let Some(picker) = &mut self.vocal_edit.picker
+            && let Some(layout) = &picker.layout
+        {
+            picker.focus = layout.cards.iter().position(|c| {
+                picker.singers.get(c.singer).is_some_and(|s| {
+                    picker
+                        .current
+                        .as_ref()
+                        .is_some_and(|v| v.engine == s.engine && v.singer == s.id)
+                })
+            });
+        }
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    pub(super) fn close_singer_picker(&mut self) {
+        self.vocal_edit.picker = None;
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    fn lay_out_singer_picker(&mut self) {
+        let window = self.layout.window;
+        if let Some(p) = &mut self.vocal_edit.picker {
+            let shown = crate::canvas::picker_filter(&p.singers, p.query.text());
+            let layout = crate::canvas::singer_picker_layout(
+                window,
+                &p.singers,
+                &shown,
+                p.scroll,
+                p.problems.len(),
+            );
+            p.scroll = p
+                .scroll
+                .clamp(0.0, (layout.content_height - layout.list.height).max(0.0));
+            if p.focus.is_some_and(|f| f >= layout.cards.len()) {
+                p.focus = None;
+            }
+            p.layout = Some(layout);
+        }
+    }
+
+    /// Chooses `singer` in `language` (or the language the track has when
+    /// the singer sings it, else its first) for the picker's channel.
+    fn pick_singer(&mut self, singer: usize, language: Option<String>) {
+        let Some(picker) = self.vocal_edit.picker.take() else {
+            return;
+        };
+        let Some(s) = picker.singers.get(singer) else {
+            return;
+        };
+        let language = language
+            .or_else(|| {
+                picker
+                    .current
+                    .as_ref()
+                    .map(|v| v.language.clone())
+                    .filter(|l| s.languages.contains(l))
+            })
+            .or_else(|| s.languages.first().cloned())
+            .unwrap_or_default();
+        self.tree.invalidate_rect(self.layout.window);
+        // By the singer's place in the host's list, as the menu's rows are.
+        let index = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| {
+                doc.singers()
+                    .iter()
+                    .position(|x| x.engine == s.engine && x.id == s.id)
+            })
+            .unwrap_or(singer);
+        self.choose_singer_row(
+            picker.channel,
+            Some(SingerRow::Choose {
+                singer: index,
+                language,
+            }),
+        );
+    }
+
+    pub(super) fn press_singer_picker(&mut self, x: f32, y: f32) {
+        let Some(layout) = self
+            .vocal_edit
+            .picker
+            .as_ref()
+            .and_then(|p| p.layout.clone())
+        else {
+            return;
+        };
+        let channel = self.vocal_edit.picker.as_ref().map_or(0, |p| p.channel);
+        match crate::canvas::singer_picker_hit(&layout, x, y) {
+            Some(PickerHit::Outside | PickerHit::Close) => self.close_singer_picker(),
+            Some(PickerHit::Card(singer)) => self.pick_singer(singer, None),
+            Some(PickerHit::Language(singer, language)) => self.pick_singer(singer, Some(language)),
+            Some(PickerHit::Nobody) => {
+                self.close_singer_picker();
+                self.choose_singer_row(channel, Some(SingerRow::Nobody));
+            }
+            Some(PickerHit::Install) => {
+                self.close_singer_picker();
+                self.choose_and_install_voicebank();
+            }
+            Some(PickerHit::Manage) => {
+                self.close_singer_picker();
+                self.open_voicebank_page(VoicebankTab::Installed);
+            }
+            Some(PickerHit::Search | PickerHit::Page) | None => {}
+        }
+    }
+
+    pub(super) fn scroll_singer_picker(&mut self, dy: f32) {
+        if let Some(p) = &mut self.vocal_edit.picker {
+            p.scroll = (p.scroll - dy * 40.0).max(0.0);
+        }
+        self.lay_out_singer_picker();
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
+    /// A key while the picker is open: it takes them all. Arrows move
+    /// between cards, Tab through the focused card's languages, Enter
+    /// chooses, Esc closes; anything else is the search.
+    pub(super) fn singer_picker_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        if self.vocal_edit.picker.is_none() || self.menu.is_some() {
+            return false;
+        }
+        if event.state != winit::event::ElementState::Pressed {
+            return true;
+        }
+        use winit::keyboard::{Key, NamedKey};
+        let step = match &event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) => Some(PickerMove::Left),
+            Key::Named(NamedKey::ArrowRight) => Some(PickerMove::Right),
+            Key::Named(NamedKey::ArrowUp) => Some(PickerMove::Up),
+            Key::Named(NamedKey::ArrowDown) => Some(PickerMove::Down),
+            Key::Named(NamedKey::PageUp) => Some(PickerMove::Home),
+            Key::Named(NamedKey::PageDown) => Some(PickerMove::End),
+            _ => None,
+        };
+        if let Some(step) = step {
+            if let Some(p) = &mut self.vocal_edit.picker
+                && let Some(layout) = &p.layout
+            {
+                p.focus = crate::canvas::picker_move(layout, p.focus, step);
+                p.language = 0;
+                // Keep the focused card in sight.
+                if let Some(card) = p.focus.and_then(|f| layout.cards.get(f)) {
+                    if card.frame.y < layout.list.y {
+                        p.scroll -= layout.list.y - card.frame.y + 4.0;
+                    } else if card.frame.bottom() > layout.list.bottom() {
+                        p.scroll += card.frame.bottom() - layout.list.bottom() + 4.0;
+                    }
+                }
+            }
+            self.lay_out_singer_picker();
+            self.tree.invalidate_rect(self.layout.window);
+            return true;
+        }
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.close_singer_picker(),
+            Key::Named(NamedKey::Tab) => {
+                if let Some(p) = &mut self.vocal_edit.picker
+                    && let Some(layout) = &p.layout
+                    && let Some(card) = p.focus.and_then(|f| layout.cards.get(f))
+                {
+                    let n = card.languages.len().max(1);
+                    p.language = (p.language + 1) % n;
+                }
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            Key::Named(NamedKey::Enter) => {
+                let chosen = self.vocal_edit.picker.as_ref().and_then(|p| {
+                    let layout = p.layout.as_ref()?;
+                    let card = layout.cards.get(p.focus.unwrap_or(0))?;
+                    let language = (p.focus.is_some() && p.language > 0)
+                        .then(|| card.languages.get(p.language).map(|l| l.0.clone()))
+                        .flatten();
+                    Some((card.singer, language))
+                });
+                if let Some((singer, language)) = chosen {
+                    self.pick_singer(singer, language);
+                }
+            }
+            _ => {
+                let (ctrl, shift) = (self.modifiers.control_key(), self.modifiers.shift_key());
+                let mut clipboard = std::mem::take(&mut self.clipboard_text);
+                if let Some(p) = &mut self.vocal_edit.picker {
+                    let before = p.query.text().to_string();
+                    let _ = crate::canvas::text_key(
+                        &mut p.query,
+                        &event.logical_key,
+                        ctrl,
+                        shift,
+                        &mut clipboard,
+                    );
+                    if p.query.text() != before {
+                        p.scroll = 0.0;
+                        p.focus = None;
+                    }
+                }
+                self.clipboard_text = clipboard;
+                self.lay_out_singer_picker();
+                if let Some(p) = &mut self.vocal_edit.picker
+                    && p.focus.is_none()
+                    && p.layout.as_ref().is_some_and(|l| !l.cards.is_empty())
+                    && !p.query.text().is_empty()
+                {
+                    p.focus = Some(0);
+                }
+                self.tree.invalidate_rect(self.layout.window);
+            }
+        }
+        true
+    }
+}
+
 /// Whether a dropped path looks like a voicebank package: an archive a bank
 /// ships as, or a folder with a bank's own files in it (or one level down).
 pub(super) fn is_voicebank_package(path: &std::path::Path) -> bool {
@@ -992,16 +1311,42 @@ pub(super) fn roll_vocal_of<'a>(
         px_per_second: e.px_per_second,
         engine_chip: e.engine_chip,
         note_button: e.note_button,
-        page: e.page.as_ref().and_then(|p| {
-            p.layout
-                .as_ref()
-                .map(|layout| crate::render::vocal::VoicebankPage {
-                    layout,
-                    tab: p.tab,
-                    installed: &p.installed,
-                    catalogue: &p.catalogue,
-                    folder: &p.folder,
-                })
-        }),
+        portrait: view
+            .portrait
+            .as_deref()
+            .and_then(|path| e.portraits.peek(path)),
     }
+}
+
+/// The page and the picker as the window draws them over everything.
+pub(super) fn vocal_overlay_of(e: &VocalEditing) -> Option<crate::render::vocal::VocalOverlay<'_>> {
+    let page = e.page.as_ref().and_then(|p| {
+        p.layout
+            .as_ref()
+            .map(|layout| crate::render::vocal::VoicebankPage {
+                layout,
+                tab: p.tab,
+                installed: &p.installed,
+                catalogue: &p.catalogue,
+                folder: &p.folder,
+            })
+    });
+    let picker = e.picker.as_ref().and_then(|p| {
+        p.layout
+            .as_ref()
+            .map(|layout| crate::render::vocal::SingerPickerView {
+                layout,
+                singers: &p.singers,
+                query: p.query.text(),
+                focus: p.focus,
+                language: p.language,
+                current: p.current.as_ref(),
+                problems: &p.problems,
+            })
+    });
+    (page.is_some() || picker.is_some()).then_some(crate::render::vocal::VocalOverlay {
+        page,
+        picker,
+        portraits: &e.portraits,
+    })
 }

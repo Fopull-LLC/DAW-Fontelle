@@ -313,3 +313,37 @@ fn the_voicebanks_folder_follows_the_apps_folder_rule() {
         )
     );
 }
+
+#[test]
+fn a_shift_jis_character_txt_names_its_sample_and_picture_with_its_own_backslash() {
+    // Teto's: `sample=重音テト単独音\_にゃ.wav` in Shift-JIS, whose backslash
+    // byte reads as ¥; and a DiffSinger bank's icon (`image`) is its face,
+    // the yaml's `portrait` the large picture behind the roll.
+    let dir = scratch("sjis-sample");
+    let bank = dir.join("teto");
+    std::fs::create_dir_all(bank.join("単独音")).unwrap();
+    std::fs::write(bank.join("oto.ini"), OTO).unwrap();
+    std::fs::write(bank.join("単独音/_にゃ.wav"), b"RIFF").unwrap();
+    std::fs::write(bank.join("teto.bmp"), b"BM").unwrap();
+    let mut text = sjis("name=重音テト\r\nimage=teto.bmp\r\nsample=単独音");
+    text.push(b'\\');
+    text.extend(sjis("_にゃ.wav\r\n"));
+    std::fs::write(bank.join("character.txt"), text).unwrap();
+    let info = voicebanks::read_info(&bank, PackageKind::Utau);
+    assert_eq!(info.sample, Some(bank.join("単独音/_にゃ.wav")));
+    assert_eq!(info.portrait, Some(bank.join("teto.bmp")));
+
+    let ds = dir.join("ds");
+    std::fs::create_dir_all(&ds).unwrap();
+    std::fs::write(ds.join("dsconfig.yaml"), b"phonemes: p.txt\n").unwrap();
+    std::fs::write(ds.join("face.png"), b"\x89PNG").unwrap();
+    std::fs::write(ds.join("big.png"), b"\x89PNG").unwrap();
+    std::fs::write(ds.join("character.txt"), b"image=face.png\n").unwrap();
+    std::fs::write(ds.join("character.yaml"), b"portrait: big.png\n").unwrap();
+    let info = voicebanks::read_info(&ds, PackageKind::DiffSinger);
+    assert_eq!(
+        info.portrait,
+        Some(ds.join("face.png")),
+        "the icon, not the backdrop"
+    );
+}

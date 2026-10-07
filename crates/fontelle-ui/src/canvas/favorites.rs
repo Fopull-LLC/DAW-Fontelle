@@ -63,6 +63,8 @@ pub enum InstrumentRow {
     Kind(InstrumentKind),
     /// A starred plugin instrument, by position in the listing.
     Plugin(usize),
+    /// The Voicebanks page: singers for a vocal track, installed and found.
+    Voicebanks,
 }
 
 /// What a row of the plugin picker means.

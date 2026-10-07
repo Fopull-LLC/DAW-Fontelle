@@ -172,6 +172,8 @@ pub struct Chrome<'a> {
     /// menus, prompts and modals it opens. See
     /// [`crate::canvas::settings_page_layout`].
     pub settings_page: Option<SettingsPageChrome<'a>>,
+    /// The Voicebanks page and the singer picker, while either is open.
+    pub vocal_overlay: Option<vocal::VocalOverlay<'a>>,
 }
 
 /// The guide page (`canvas::guide`), as the window draws it.
@@ -988,14 +990,10 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(tour) = &chrome.tour {
         draw_tour(scene, theme, chrome.labels, layout.window, tour);
     }
-    // The Voicebanks page, over the studio and under its terms menus.
-    if let Some(page) = chrome
-        .roll
-        .as_ref()
-        .and_then(|r| r.vocal.as_ref())
-        .and_then(|v| v.page.as_ref())
-    {
-        vocal::draw_voicebank_page(scene, theme, chrome.labels, page);
+    // The Voicebanks page and the singer picker, over the studio (with or
+    // without a vocal track in the roll) and under their terms menus.
+    if let Some(overlay) = &chrome.vocal_overlay {
+        vocal::draw_vocal_overlays(scene, theme, chrome.labels, overlay);
     }
     draw_context_menu(
         scene,

@@ -40,7 +40,11 @@ fn each_character_reads_its_most_common_reading_without_tones() {
 #[test]
 fn a_lyric_is_a_syllable_per_character() {
     assert_eq!(read("你好"), s(&["ni", "hao"]));
-    assert_eq!(read("我爱你。"), s(&["wo", "ai", "ni"]), "punctuation is not sung");
+    assert_eq!(
+        read("我爱你。"),
+        s(&["wo", "ai", "ni"]),
+        "punctuation is not sung"
+    );
     assert_eq!(read("hello"), None);
     assert_eq!(read("你ok"), None, "mixed scripts are not guessed at");
     assert_eq!(read(""), None);
@@ -77,8 +81,15 @@ fn a_bracketed_reading_after_a_character_overrides_it() {
     // Tones and the ü spelling are accepted and normalised.
     assert_eq!(read("行[hang2]"), s(&["hang"]));
     assert_eq!(read("绿[lü4]"), s(&["lv"]));
-    assert_eq!(read("银行[xing]"), s(&["yin", "xing"]), "the override wins over the word");
-    assert_eq!(read_run(&["长[zhang]", "大"]), vec![s(&["zhang"]), s(&["da"])]);
+    assert_eq!(
+        read("银行[xing]"),
+        s(&["yin", "xing"]),
+        "the override wins over the word"
+    );
+    assert_eq!(
+        read_run(&["长[zhang]", "大"]),
+        vec![s(&["zhang"]), s(&["da"])]
+    );
 }
 
 #[test]
@@ -102,6 +113,12 @@ fn the_reading_table_is_the_one_reviewed() {
     // changed table is reviewed again before this is updated.
     use sha2::{Digest, Sha256};
     let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/data/pinyin.txt")).unwrap();
-    let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(hash, "f029d8614e4c3c4289563b784db77c120f72d02650d893f85934b2a347dcf154");
+    let hash: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        hash,
+        "f029d8614e4c3c4289563b784db77c120f72d02650d893f85934b2a347dcf154"
+    );
 }

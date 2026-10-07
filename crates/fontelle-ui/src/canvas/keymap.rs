@@ -344,10 +344,13 @@ pub enum Action {
     /// Marker tool.
     AnalyzeNoiseTool,
     AnalyzeMarkerTool,
+    /// The Voicebanks page — installed singers and Find singers — from
+    /// anywhere, a vocal track in the roll or not.
+    Voicebanks,
 }
 
 impl Action {
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 64] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -411,6 +414,7 @@ impl Action {
         Self::AnalyzeZoomAll,
         Self::AnalyzeNoiseTool,
         Self::AnalyzeMarkerTool,
+        Self::Voicebanks,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -482,6 +486,7 @@ impl Action {
             Self::AnalyzeZoomAll => "analyze-zoom-all",
             Self::AnalyzeNoiseTool => "analyze-noise-tool",
             Self::AnalyzeMarkerTool => "analyze-marker-tool",
+            Self::Voicebanks => "voicebanks",
         }
     }
 
@@ -566,6 +571,7 @@ impl Action {
             Self::AnalyzeZoomAll => "Analyze Musically: show all of it",
             Self::AnalyzeNoiseTool => "Analyze Musically: the Noise tool (Clean)",
             Self::AnalyzeMarkerTool => "Analyze Musically: the Marker tool (Slice)",
+            Self::Voicebanks => "Voicebanks & Find singers: install and find free singers",
         }
     }
 
@@ -581,7 +587,8 @@ impl Action {
             | Self::Redo
             | Self::ExportWav
             | Self::ExportMidi
-            | Self::Help => Context::Global,
+            | Self::Help
+            | Self::Voicebanks => Context::Global,
             Self::RemoveBand
             | Self::AnalyzeCopyNotes
             | Self::AnalyzeCopyScale
@@ -673,6 +680,7 @@ impl Action {
             Self::AnalyzeZoomAll => &["Shift+Z"],
             Self::AnalyzeNoiseTool => &["N"],
             Self::AnalyzeMarkerTool => &["K"],
+            Self::Voicebanks => &["Ctrl+Shift+Y"],
         }
     }
 
