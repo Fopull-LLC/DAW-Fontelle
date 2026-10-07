@@ -1484,6 +1484,9 @@ dependencies = [
 [[package]]
 name = "fontelle-lang"
 version = "0.26.1"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "fontelle-midi"

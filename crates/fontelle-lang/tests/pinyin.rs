@@ -95,3 +95,13 @@ fn syllables_split_into_initial_and_final() {
     assert!(!is_syllable("kya"));
     assert!(!is_syllable("tsu"));
 }
+
+#[test]
+fn the_reading_table_is_the_one_reviewed() {
+    // licenses/MODELS.md names this file, its source and its licence; a
+    // changed table is reviewed again before this is updated.
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/data/pinyin.txt")).unwrap();
+    let hash: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hash, "f029d8614e4c3c4289563b784db77c120f72d02650d893f85934b2a347dcf154");
+}
