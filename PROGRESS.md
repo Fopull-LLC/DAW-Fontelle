@@ -19,6 +19,96 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07 — `fontelle-utau`: the Fontelle Singer sings classic
+UTAU voicebanks.** Branch `feature/fontelle-utau` (a new crate only, plus
+its workspace entry), not merged. It implements `fontelle_sing::Backend`
+and `Session`; the integration on `feature/vocal-track` instantiates
+`UtauBackend::new(roots, Some(cache::default_cache_dir()))`. Nothing in
+`fontelle-sing` changed.
+
+- **Banks** (`bank`, `oto`, `text`): `character.txt` / `character.yaml`
+  (name, image, sample, author, web, `text_file_encoding`,
+  `default_phonemizer`, subbanks), `readme.txt` and any terms file beside
+  it (`利用規約`, `使用許諾…`, UTF-16 too) as `VoiceInfo::terms`; an
+  `oto.ini` in every subfolder (Shift-JIS, GBK or UTF-8, guessed by which
+  decoding reads as its own script; the bank's encoding is then used for
+  its readme, since a readme of kanji alone is valid in both);
+  `prefix.map` and yaml subbanks (multi-pitch, nearest range when a note is
+  outside them); voice colours from yaml colours, a suffix most aliases
+  come with (`か強`), or subfolders recorded with the same aliases —
+  offered as the note option `colour`. Files an oto names in another case
+  or Unicode form (macOS) are found. `.frq` averages steer F0 analysis.
+- **Phonemizers** (`phonemize`, `kana`, `dict`): Japanese CV, VCV (`a か`,
+  `- か`, endings `a R`), CVVC (`a k` before the next consonant, the next
+  CV's preutterance long, at most half the note), English ARPAsing
+  (diphones, consonants 60 ms / velocity before the beat, at most half the
+  syllable before), VCCV basics (`-rE`, `Ed-`, CC, VV) and English CVVC
+  in X-SAMPA (`- h@`, `@ l`, `loU`, `oU -`, Teto English's layout). Picked
+  from the aliases (or yaml `default_phonemizer`); the setting
+  `phonemizer` overrides (0 automatic, then 1–6 in `Phonemizer::ALL`
+  order, appended only). Lyric rules per the singer ABI: slurs hold (after
+  a rest they re-sing the vowel), several morae or syllables on a note
+  spread over its slurs or split it, `hel-` `lo` joins, `[aliases]` /
+  `[arpabet]` as written, hand phonemes with their timing. Kana, katakana
+  and romaji all read. English through CMUdict (BSD-2; a derived 0.8 MB
+  gzip in `data/`, hash pinned by a test, notice in
+  `data/CMUDICT-LICENSE` — **the release's `licenses/` should carry that
+  notice**; this branch did not touch it) and a letter-to-sound guess
+  (`guessed`).
+- **Resampler and wavtool, built in** (`world`, `render`): a WORLD-style
+  vocoder written here — YIN F0 (a coarse pass picks the register, the
+  real one searches an octave either side; `.frq` prior), CheapTrick
+  envelopes, band aperiodicity from each frame against the next period
+  (per band the best of seven period candidates and a gain, so drift and
+  crescendos are not noise), pulse synthesis through minimum-phase
+  filters, pulses sung in parallel chunks with per-pulse noise seeds
+  (deterministic whatever the thread count). Units are placed by UTAU's
+  rules (preutterance before the anchor, overlap crossfade, consonant at
+  most half the unit before, velocity `1/v` on consonant, preutterance and
+  overlap, endings at their own length, a rest ends the unit at the
+  note), then **assembled in the parameter domain**: consonant region at
+  its speed, the rest stretched (played as recorded and cut when the note
+  is shorter), units crossfaded in power with aperiodicity mixed
+  physically, one synthesis on the pitch line `note_pitch` + PitchBend
+  makes (vibrato, portamento) with optional modulation (the setting
+  `modulation`, the recording's own pitch movement, 0 by default).
+  Lanes honoured: PitchBend, Dynamics (dB), Breathiness, Voicing,
+  Tension (±12 dB tilt about 1 kHz), Gender (envelope warp, cents).
+  Preview sings at 22.05 kHz on the envelope's lower half (same bins in
+  Hz), Final at 44.1 kHz. `Sung` carries the F0 sung per 5 ms frame and
+  each note's aliases with their audible start.
+- **Cache** (`cache`): analyses in memory (768 MB LRU) and on disk under
+  `default_cache_dir()` (`$XDG_CACHE_HOME/fontelle/utau`, `~/Library/
+  Caches`, `%LOCALAPPDATA%`), keyed by the sample's SHA-256 with the
+  analysis version; envelopes at 0.01 dB in u16, zlib.
+- **Measured** on Kasane Teto (単独音, 統合 VCV, English) and Canary
+  ARPAsing (`real_banks.rs`, `#[ignore]`, `FONTELLE_TEST_VOICEBANKS`; banks
+  in `/mnt/disks/6tb/FontelleTestData/voicebanks`, never in git): every
+  note within 1 cent of its pitch by an independent autocorrelation
+  (one Canary note read an octave up by that estimator; the vocoder's own
+  reads it right), no clicks; resynthesis of the recordings within
+  0.5 dB in level, log-spectral distance 1.6–2.7 dB. Spectrograms of a
+  VCV run (あいうえお at G4 against the recording) show the same formant
+  transitions. Timings for a ~5 s,
+  six-note phrase (16 threads, measured while another agent's build kept
+  the load at 20–130, so ranges): **Final** cold (nothing analysed) 0.5–1.0 s,
+  analyses on disk 0.1–0.2 s, in memory 20–110 ms (20 ms when the machine
+  was quiet); **Preview** cold 0.2–0.7 s, warm 12–60 ms. One 4 s VCV sample
+  analyses in ~20 ms on 16 threads (150 ms on one).
+- `cargo run --release -p fontelle-utau --example utau_sing -- <bank>
+  out.wav "さ:62 く:64 ら:66"` sings a phrase and prints what was sung.
+- Tests (written first against stubs; the preview-level and setting checks
+  were added after): `bank.rs` (10), `text_rules.rs`
+  (6), `phonemize.rs` (16), `placement.rs` (8), `world.rs` (7), `sing.rs`
+  (8), `real_banks.rs` (1, ignored). Two fixtures were corrected on the
+  way, not the code: CMUdict reads "read" as r eh d (the VCCV test now
+  checks both readings), and the cache test asked for a sample its phrase
+  never sang.
+- Not done: UTAU per-note envelopes (p/v points) and flags beyond the
+  lanes; `.mrq`; Chinese/Korean/other phonemizers; X-SAMPA and VCCV are
+  basics (no CCV starts, few fallbacks); presamp.ini is not read; a word's
+  syllables are spread by vowel count, not stress.
+
 **As of 2026-10-07 — the vocal track: a channel that sings.** Branch
 `feature/vocal-track` (from v0.26.1 and the two `fontelle-singer-abi`
 commits), not merged, not bumped. Ty wants to make a song with sung
