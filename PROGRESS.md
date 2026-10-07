@@ -19,6 +19,109 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07 — the vocal track: a channel that sings.** Branch
+`feature/vocal-track` (from v0.26.1 and the two `fontelle-singer-abi`
+commits), not merged, not bumped. Ty wants to make a song with sung
+vocals; the singing comes from a **singer engine**, a shared library
+implementing `fontelle-singer-abi` and built elsewhere, found at run time
+the way bridges are. Nothing in this tree knows any particular engine.
+
+- **The contract** (`fontelle-singer-abi`, still ABI 1, doc additions
+  only): where engines are installed (a singers folder's own libraries,
+  and in a subfolder only the library named after it, so helper libraries
+  are never opened); `last_error` read on the failing call's thread right
+  after it; the version string read after an instance exists; phonemes
+  JSON keys a host does not know ignored, `guessed` understood; a slur
+  after a rest re-sings the vowel; notes reach an engine one at a time.
+- **Loading** (`fontelle_host::singer`): `SingerEngines::load` over
+  `singer_search_paths()` — `FONTELLE_SINGERS` (a path list), then
+  `<data>/fontelle/singers` by the settings' own folder rule
+  (`$XDG_DATA_HOME` or `~/.local/share`, macOS included; Windows
+  `%LOCALAPPDATA%`). An engine built for another ABI is listed as needing
+  a newer (or older) Fontelle and not loaded. In-process, like bridges.
+  `SingerInstance::render` sings a phrase with a cancel flag.
+  `cargo run -p fontelle-host --example singer_probe` lists and exercises
+  what is installed. `fontelle-testsinger` is a cdylib engine with no
+  voice in it (a soft vowel per note, a noise consonant before each
+  syllable, so audio starts before the phrase; a research-only singer;
+  `slowly` and `!fail` lyrics for tests; words over five letters come back
+  `guessed`).
+- **The document** (format **2**): `InstrumentKind::Vocal` (appended),
+  `Channel::vocal: Option<VocalVoice { engine, singer, language }>` and
+  `Note::lyric: String`, both defaulted and omitted when empty. A song is
+  written as format 1 unless it has a voice or a lyric
+  (`Project::format_needed`), so earlier builds keep opening everything
+  that does not sing; the 1→2 step is empty. Commands `SetLyrics` (each
+  note its own lyric, one undo, never merged) and `SetSinger` (voice and
+  language together), wire forms appended. `fontelle_model::lyrics`:
+  spreading a typed line (words, `a-ma-zing` a syllable each, `-` a
+  slur, `[phonemes]` one lyric, kana a mora each) and each language's
+  syllable (`la`, Japanese `ら`). `TempoMap::tick_to_seconds`.
+- **Rendering** (`fontelle-vocal`, new crate): `phrases_of` cuts a vocal
+  channel's part by the sequencer's own rules (mutes, solos, clip ends,
+  loops, prefabs; one voice — the later of overlapping notes wins) at
+  rests of 0.2 s, capped at 12 s, empty lyrics resolved. `render_key`
+  hashes engine, version, singer, language, quality and the phrase in its
+  own time; the seed comes from the same less the quality. `VocalRenderer`:
+  worker threads (at most two, an engine instance each), every preview
+  before any final, nearest the playhead first and behind it last, the
+  unwanted dropped or cancelled mid-render, takes cached by key (a move or
+  an undo sings nothing; a spare budget of ~256 MB kept for undo),
+  failures kept with their reason and not retried. `wait_for_final` for
+  exports.
+- **Playback** (`fontelle_engine::vocal`): `VocalNode` reads an
+  immutable `VocalTable` (phrases placed in song seconds) published
+  through a `VocalPlayer` mailbox; binary search to the playhead, linear
+  resampling to the device rate, equal-power crossfades where a lead-in
+  runs under the last tail, 4 ms fades at lone edges, channel level and
+  pan; silent when stopped or counting in. No allocation or free on the
+  audio thread (its own guarded test); the replaced table goes back for
+  the app to free.
+- **The studio** (`fontelle-app::vocal`): engines load on first need;
+  every edit re-derives phrases and what is wanted (asked 200 ms after
+  the last edit), every frame the playhead steers and landed takes are
+  published; `realise` builds a `VocalNode` per vocal channel keeping its
+  player across rebuilds. A vocal track added from the instrument menu
+  (it is in `InstrumentKind::ALL`, so every place instruments are added
+  offers it) arrives with the first installed singer in its first
+  language, in the same undo step. A drawn note sings the language's
+  syllable. The arrangement caption is "Singer · first words". **An
+  export waits for every final take** on the render thread, the progress
+  card counting phrases, then renders through players of its own.
+- **The window**: lyrics in the notes, phonemes under them, phrases
+  being sung hatched (in the roll and on the arrangement block), the sung
+  pitch faint over the notes, guessed words underlined, the singer chip
+  and research badge in the roll's corner (click: the picker). The lyric
+  field: double-click a note, or Enter on a selection (`EditLyric`,
+  rebindable); Enter keeps, Esc leaves, Tab / Shift+Tab move on; several
+  notes are one line spread on Enter; several words in one note's field
+  spread over the notes after it; IME commits go in. The singer picker
+  lists every singer in every language, badges research-only voices
+  ("research only — don't share"), names engines that failed to load and
+  says where one goes when none is installed.
+- Tests: `fontelle-testsinger/tests/engine.rs` (7),
+  `fontelle-host/tests/singers.rs` (9), `fontelle-model/tests/vocal.rs`
+  (15) and `wire.rs` (+2 commands, +2 pinned), `fontelle-engine/tests/
+  vocal_node.rs` (8), `vocal_node_no_allocation.rs` (1),
+  `fontelle-vocal/tests/phrases.rs` (9), `scheduler.rs` (6),
+  `end_to_end.rs` (1), `fontelle-app/tests/vocal_track.rs` (8),
+  `fontelle-ui/tests/vocal_roll.rs` (9), `vocal_headless.rs` (4, dumps
+  `vocal-roll*`, `vocal-singer-picker*`). Tests first for the model,
+  engine node, phrases, scheduler and the UI pieces; the host's
+  folder/version/guessed additions and the app's debounce were written
+  beside their tests in one pass after the engine side's notes arrived.
+  Checked against the real engine installed on this machine with
+  `singer_probe`.
+- **Not done** (said so on purpose): curve lanes for pitch, breath and
+  tension; phoneme overrides beyond the bracket syntax; instant re-pitch
+  while dragging (T0); freeze; a sample-layer fallback when no engine is
+  installed; crash isolation (an engine runs in-process); a disk cache of
+  takes (memory only — a reopened song sings again); the IME's preedit
+  is not drawn (only its commits); clip play mode (pattern) plays vocals
+  at song time only; a collaborator without the engine keeps the words
+  and is silent (takes are not shared); not driven on a real display —
+  headless dumps and the session tests only.
+
 **As of 2026-10-06, latest — Analyze Musically keeps its own time; a
 flatten handle; a pro's pass over its edges.** Same branch
 (`feature/analyze-musically`), not merged, not bumped. Ty, trying the

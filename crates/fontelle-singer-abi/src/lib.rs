@@ -9,8 +9,6 @@
 //! structs, constants and a version number, MIT/Apache like the rest of the
 //! tree — exactly as `fontelle-bridge-abi` is for plugin bridges.
 //!
-//! # The shape
-//!
 //! # Where an engine is installed
 //!
 //! Loading a library runs its initialisers, so the host loads only what is
@@ -27,6 +25,8 @@
 //! never opens the helpers itself, and nothing in a subfolder is looked at
 //! below that one level. A library that does not export [`ENTRY_SYMBOL`] is
 //! reported as not an engine and not used.
+//!
+//! # The shape
 //!
 //! The library exports one symbol, [`ENTRY_SYMBOL`], returning a
 //! [`FontelleSingerEngine`]: a table of function pointers. The host makes an
