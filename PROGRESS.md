@@ -19,6 +19,98 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07, latest — voicebanks in the studio: portraits, a card
+picker, the Voicebanks page from anywhere, `.7z`/`.uar`, Chinese and Korean
+lyrics, takes kept on disk.** Branch `feature/vocal-banks` (from
+`feature/vocal-track` d942434), not merged, not bumped. `docs/vocal-plan.md`
+§2.2 says how it was built.
+
+- **Packages** (`fontelle_vocal::voicebanks`): `.7z` through `sevenz-rust2`
+  (Apache-2.0, pure Rust; LZMA/LZMA2/BCJ, deflate on the tree's `flate2`, no
+  encryption), `.uar` as UTAU's zip with `install.txt` (`folder=`,
+  `contentsdir=` honoured in any package — the real Teto packages carry
+  one); what a file is comes from its bytes (a `.7z` named `.zip`
+  installs), a RAR says to extract it first. Every 7z name is checked before
+  anything is written, as for zips. A bank's icon is `image`, before the
+  yaml's `portrait` (OpenUtau's backdrop).
+- **`fontelle-lang`** (new crate): Chinese characters → toneless pinyin
+  (`data/pinyin.txt`, each character's commonest reading from
+  mozillazg/pinyin-data — MIT, readings Unicode's Unihan `kMandarin`,
+  Unicode-3.0, both notices in `licenses/pinyin-data/`, listed in
+  `licenses/MODELS.md`, hash pinned by a test; rebuilt by
+  `data/make_pinyin.py`), common words read otherwise matched across notes
+  (`data/pinyin-words.txt`, written here), `长` sung `chang`, `行[hang]` to
+  say any reading. Hangul → onset/vowel/coda by Unicode's arithmetic,
+  romanised, a coda carried into a following vowel, stops nasalised before
+  ㄴ/ㅁ. `fontelle_model::lyrics` spreads a character or block a note (a
+  bracketed reading stays with its character); Korean's default syllable
+  is 라.
+- **DiffSinger**: a word in characters or hangul is read with its run of
+  notes (`phonemize::Script`), each syllable looked up (`ni`, `han`), else
+  sung as its parts (`zh/n zh/i`, `ko/h ko/a ko/n`). Qixuan and 琅 sang
+  我们一起去银行 with nothing guessed and 行 as `h ang`
+  (`real_bank.rs`, ignored).
+- **UTAU**: two phonemizers appended to the setting (7 and 8, so saved
+  values keep their meaning), detected from aliases: **Chinese CV/CVVC**
+  (pinyin aliases, `- ni`, VC `i h`, endings `ao R`) and **Korean CV/CVVC**
+  (hangul: a whole block when recorded, else the open syllable and a coda
+  unit `a k` before the note ends; VC `a r`; `ae R`). No Chinese or Korean
+  UTAU bank on this machine: fixtures only.
+- **Takes kept** (`fontelle_vocal::TakeStore`, `VocalRenderer::set_store`):
+  finals written by the render thread after it hands them over, to the
+  song's `cache/vocal/` (`fontelle_app::vocal_takes_dir`, the analysis
+  cache's rule; unsaved songs share the cache folder's `vocal/`): 16-bit
+  (scaled when louder than full scale), delta-coded, byte planes, deflated
+  (`miniz_oxide`, already in the tree), pitch and phonemes beside, key and
+  xxHash checked; 512 MB LRU (a load touches the file). A final on disk is
+  read back by a render thread and its preview never queued; a store set
+  later gets the finals already sung (a first save).
+- **Portraits** (`fontelle_ui::portrait`): BMP decoded here (1–32-bit,
+  bitfields, either row order), PNG/JPEG by the theme's decoders, WebP by
+  `image-webp` (MIT/Apache-2.0 — 琅's `lang.jpg` is a WebP); 256 px at most,
+  kept by path, drawn cropped and rounded.
+- **The picker** (`canvas::singer_picker`, `render::vocal::draw_singer_picker`):
+  a card grid over the window — portrait, name, kind badge, a chip per
+  language (choosing it), terms state, research-only; voicebanks above
+  engines; search (name, kind, language tag or name, engine); arrows by
+  layout, Tab through languages, Enter, Esc; No singer / Install / Voicebanks
+  below; unread terms still asked first (`WindowApp::choose_singer_row`, the
+  menu's old path). The menu (`MenuTarget::Singer`) is gone from the window;
+  `canvas::singer_menu_rows` stays, tested.
+- **The Voicebanks page from anywhere**: drawn as `Chrome::vocal_overlay`
+  (not the roll's), opened by the instrument menus' row and
+  `Action::Voicebanks` (Ctrl+Shift+Y, global, appended); installed rows show
+  languages, ▶ Sample (the bank's own sample through the Import tab's preview
+  voice, `DocumentHost::preview_voicebank_sample`) and Folder
+  (`reveal_voicebank`). The roll's singer chip shows the singer's face.
+- Tests (first, seen failing, unless said): `fontelle-vocal` `archives.rs`
+  (6), `takes.rs` (5), `voicebanks.rs` (+1); `fontelle-lang` `pinyin.rs`
+  (8), `hangul.rs` (5); `fontelle-diffsinger` `cjk.rs` (4) and
+  `real_bank.rs` (+1 ignored); `fontelle-utau` `cjk.rs` (5); `fontelle-model`
+  `vocal.rs` (+2, one changed); `fontelle-ui` `singer_picker.rs` (5),
+  `portraits.rs` (6 — the BMP ones passed on their first run, the decoder
+  having been written before the stub was compiled; WebP seen failing),
+  `vocal_picker.rs` (+1), `vocal_edit_headless.rs` (+1, dumps
+  `vocal3-picker`, `vocal3-picker-search`, `vocal3-corner`; real portraits
+  when `FONTELLE_TEST_VOICEBANKS` is set); `fontelle-app` `vocal_studio.rs`
+  (+2, written beside the app's plumbing). Whole workspace (568 test binaries, `--no-fail-fast`): 6327 passed, 6 failed —
+  all six in `fontelle-app/tests/vocal_track.rs`, which reads this machine's
+  real voicebanks folder (`~/.local/share/fontelle/voicebanks` now links the
+  test banks) and so picks a real bank first; with `XDG_DATA_HOME` at an
+  empty folder all 8 pass. That test should isolate its folder (not done
+  here: outside this branch's area).
+  Preflight all clear (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: the real studio was not driven on a display in this pass
+  (headless renders only); Find singers' rows play no sample (the catalogue's
+  `sample` is a URL); `.7z` names are UTF-16 in the format, so no encoding is
+  guessed; RAR is refused; Korean rules beyond liaison and nasalisation (ㄹ
+  after ㄴ, aspiration, tensing) are not applied — type the block that is
+  sung; Chinese tone sandhi and erhua are not read (toneless banks do not
+  need tones); polyphonic characters outside the word list read their
+  commonest reading; UTAU Chinese/Korean phonemizers are checked on fixtures
+  only; takes are kept for finals only, and per folder, not per song, when
+  unsaved; the take cache's size limit is a constant, not a setting.
+
 **As of 2026-10-07, latest — the Fontelle Singer's integration: the part
 sings through `fontelle_sing`, voicebanks install, and an engine's own
 window edits the part.** Same branch (`feature/vocal-track`), not merged,
