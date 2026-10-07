@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod zip;
+
 use fontelle_model::{
     Arena, Channel, Clip, ClipSource, Lane, Note, NoteData, Project, TempoMap, VocalVoice,
 };
@@ -58,6 +60,18 @@ pub struct Song {
 }
 
 impl Song {
+    /// Another copy of the song, ids and all.
+    pub fn clone_song(&self) -> Song {
+        Song {
+            project: self.project.clone(),
+            voice: self.voice,
+            other: self.other,
+            lane: self.lane,
+            clip: self.clip,
+            notes: self.notes.clone(),
+        }
+    }
+
     pub fn tempo(&self) -> TempoMap {
         fontelle_model::effective_tempo_map(&self.project)
     }

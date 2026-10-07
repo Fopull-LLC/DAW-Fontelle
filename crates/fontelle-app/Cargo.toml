@@ -30,6 +30,8 @@ fontelle-host = { path = "../fontelle-host" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
 fontelle-singer-abi = { path = "../fontelle-singer-abi" }
 fontelle-vocal = { path = "../fontelle-vocal" }
+fontelle-sing = { path = "../fontelle-sing" }
+twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
 # Analyze Musically: the notes, key and chords of an audio clip.
@@ -91,3 +93,5 @@ fontelle-testlv2 = { path = "../fontelle-testlv2" }
 fontelle-testbridge = { path = "../fontelle-testbridge" }
 fontelle-testsinger = { path = "../fontelle-testsinger" }
 fontelle-testvst3 = { path = "../fontelle-testvst3" }
+# Shift-JIS names for the voicebank install test.
+encoding_rs = "0.8"

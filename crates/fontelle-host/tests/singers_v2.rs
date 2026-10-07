@@ -79,6 +79,8 @@ fn phrase(notes: Vec<PhraseNote>) -> Phrase {
         extra_curves: BTreeMap::new(),
         settings: BTreeMap::new(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     }
 }
 
@@ -344,11 +346,19 @@ fn the_window_moves_the_transport_and_reads_takes() {
         samples: vec![0.1; 1234].into(),
         pitch: vec![440.0; 10].into(),
         pitch_step: 0.01,
+        phonemes: vec![fontelle_sing::SungNote {
+            note: 0,
+            phonemes: vec![fontelle_sing::SungPhoneme {
+                symbol: "a".into(),
+                offset: Some(0.0),
+            }],
+            guessed: false,
+        }],
     }]);
     editor.set_part(&view(&[fontelle_testsinger::TAKE_LYRIC]));
     let asked = editor.tick();
     assert_eq!(
         asked.edits,
-        vec![vec![PartEdit::Lyrics(vec![(100, "take 1234".into())])]]
+        vec![vec![PartEdit::Lyrics(vec![(100, "take 1234 1".into())])]]
     );
 }

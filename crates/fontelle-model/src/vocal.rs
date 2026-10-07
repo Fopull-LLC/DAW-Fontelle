@@ -346,6 +346,14 @@ impl LaneCurve {
         Self { points }
     }
 
+    /// A lane from samples (a curve an engine drew, in ticks): straight runs
+    /// kept to their ends, held ends to one point, all-neutral to nothing.
+    pub fn from_samples(points: Vec<(Tick, f32)>, neutral: f32) -> Self {
+        let mut curve = Self::from_points(points);
+        curve.simplify(neutral);
+        curve
+    }
+
     pub fn points(&self) -> &[(Tick, f32)] {
         &self.points
     }

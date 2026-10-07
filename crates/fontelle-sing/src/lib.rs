@@ -49,6 +49,43 @@ pub struct Phrase {
     /// The track's whole-part state blob for this backend, if it keeps one
     /// (an external engine's own window may store anything here).
     pub state: Option<Vec<u8>>,
+    /// **Identity, not content.** Where the phrase is in the song: song
+    /// seconds of its first note. With [`note_ids`](Self::note_ids) it lets
+    /// a backend key per-phrase state (a take chosen in its own window) to
+    /// a place in the song rather than to what is sung.
+    ///
+    /// Neither field is part of the host's render key, which hashes the
+    /// phrase **in its own time** so that a phrase moved, copied or put back
+    /// by an undo finds its take already sung: a backend must not let them
+    /// change what it sings, only which of its own stored choices it applies.
+    #[serde(default)]
+    pub start: f64,
+    /// The host's id of each note, parallel to [`notes`](Self::notes) — the
+    /// ids a [`PartView`] and [`PartEdit`] name notes by. Empty when the host
+    /// has none to give.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_ids: Vec<u64>,
+}
+
+impl Phrase {
+    /// A phrase of `notes` with nothing drawn, at the top of the song.
+    pub fn new(
+        voice: impl Into<String>,
+        language: impl Into<String>,
+        notes: Vec<PhraseNote>,
+    ) -> Self {
+        Self {
+            voice: voice.into(),
+            language: language.into(),
+            notes,
+            curves: BTreeMap::new(),
+            extra_curves: BTreeMap::new(),
+            settings: BTreeMap::new(),
+            state: None,
+            start: 0.0,
+            note_ids: Vec::new(),
+        }
+    }
 }
 
 /// One note of a phrase.
@@ -505,6 +542,9 @@ pub struct ViewNote {
 /// Times are song seconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PartEdit {
+    /// **Merged** into the part's settings for the singing backend: each key
+    /// given is set to its value, keys not given keep theirs. (Sending the
+    /// whole map is therefore always right.)
     Settings(BTreeMap<String, f32>),
     State(Option<Vec<u8>>),
     Curve {
@@ -628,6 +668,8 @@ mod tests {
             extra_curves: BTreeMap::new(),
             settings: BTreeMap::new(),
             state: None,
+            start: 12.5,
+            note_ids: vec![7],
         };
         p.curves.insert(
             Lane::Breathiness,

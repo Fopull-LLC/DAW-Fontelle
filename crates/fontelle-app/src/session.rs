@@ -502,6 +502,8 @@ pub struct Session {
     /// The vocal tracks: engines, phrases, the scheduler singing them and
     /// the players the graph reads (`crate::vocal`).
     vocal: crate::vocal::VocalSession,
+    /// Notes an engine's window asked to have selected, for the roll.
+    vocal_select: Option<Vec<NoteId>>,
     /// What the next bounce waits for before it renders: the vocal tracks'
     /// final takes. Set by `realise_for_render`, taken by the bounce.
     render_vocals: Option<crate::vocal::VocalRenderPrep>,
@@ -1580,6 +1582,7 @@ impl Session {
             analysis_keys: HashMap::new(),
             study_player: fontelle_engine::StudyPlayer::new(),
             vocal: crate::vocal::VocalSession::new(),
+            vocal_select: None,
             render_vocals: None,
             preview: None,
             analysis_target: None,
@@ -2999,6 +3002,75 @@ impl Session {
         self.vocal.set_folders(folders);
         self.republish();
         self.touch();
+    }
+
+    /// The voicebanks folder and the Fontelle Singer's runtimes over it,
+    /// rather than Fontelle's own — for tests.
+    pub fn set_voicebanks(
+        &mut self,
+        folder: PathBuf,
+        builtins: Vec<fontelle_vocal::BuiltinBackend>,
+    ) {
+        self.vocal.set_voicebanks(folder, builtins);
+        self.republish();
+        self.touch();
+    }
+
+    /// Where Find singers reads its index and where Get it watches for the
+    /// download; pages are not opened in a browser — for tests.
+    pub fn set_catalogue_for_tests(&mut self, index: Option<PathBuf>, downloads: Option<PathBuf>) {
+        self.vocal.set_catalogue(index, downloads);
+        self.vocal.quiet_pages = true;
+    }
+
+    /// Opens engine windows on no screen — for tests.
+    pub fn set_headless_singer_editors(&mut self, headless: bool) {
+        self.vocal.headless_editors = headless;
+    }
+
+    /// Whether an engine's window is open.
+    pub fn singer_editor_open(&self) -> bool {
+        self.vocal.editor_open()
+    }
+
+    /// One frame of an engine's window: what it asked, applied — each batch
+    /// one undo step — and the transport moved.
+    fn pump_singer_editor(&mut self) {
+        if !self.vocal.editor_open() {
+            return;
+        }
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let sr = f64::from(self.options.sample_rate.max(1));
+        let (playhead, playing) = self.transport.as_ref().map_or((0.0, false), |t| {
+            (t.position_sample().max(0) as f64 / sr, t.is_playing())
+        });
+        let asks = self
+            .vocal
+            .tick_editor(&self.project, &tempo, playhead, playing);
+        for command in asks.commands {
+            self.let_go();
+            self.run(command);
+            self.let_go();
+        }
+        for why in asks.refused {
+            self.message = Some(format!(
+                "The singer's window asked for an edit that could not be made: {why}"
+            ));
+        }
+        if let Some(select) = asks.select {
+            self.vocal_select = Some(select);
+        }
+        if let Some(transport) = &self.transport {
+            for t in asks.transport {
+                match t {
+                    fontelle_sing::Transport::Play => transport.play(),
+                    fontelle_sing::Transport::Stop => transport.stop(),
+                    fontelle_sing::Transport::Seek(seconds) => {
+                        transport.seek((seconds.max(0.0) * sr).round() as i64)
+                    }
+                }
+            }
+        }
     }
 
     /// Points the session at a projects folder and remembers it. For tests,
@@ -9520,6 +9592,121 @@ impl StudioHost for Session {
         self.vocal.rendering_spans(&self.project)
     }
 
+    fn set_note_voices(
+        &mut self,
+        ids: &[NoteId],
+        voices: Vec<Option<fontelle_model::NoteVoice>>,
+        label: &str,
+    ) -> Result<(), String> {
+        let home = self.note_target();
+        let before = self.history.generation();
+        self.run(Box::new(fontelle_model::SetNoteVoices::new(
+            home,
+            ids.to_vec(),
+            voices,
+            label,
+        )));
+        if self.history.generation() == before {
+            return Err(self
+                .message
+                .clone()
+                .unwrap_or_else(|| "the notes could not be changed".to_string()));
+        }
+        Ok(())
+    }
+
+    fn set_vocal_lane(
+        &mut self,
+        key: fontelle_model::LaneKey,
+        curve: Option<fontelle_model::LaneCurve>,
+    ) {
+        let home = self.note_target();
+        self.run(Box::new(fontelle_model::SetVocalLane::new(
+            home, key, curve,
+        )));
+    }
+
+    fn set_vocal_settings(
+        &mut self,
+        backend: &str,
+        settings: std::collections::BTreeMap<String, f32>,
+    ) {
+        let home = self.note_target();
+        self.run(Box::new(fontelle_model::SetVocalSettings::new(
+            home, backend, settings,
+        )));
+    }
+
+    fn end_vocal_gesture(&mut self) {
+        self.let_go();
+    }
+
+    fn set_vocal_selection(&mut self, ids: &[NoteId]) {
+        if self.vocal.selection != ids {
+            self.vocal.selection = ids.to_vec();
+        }
+    }
+
+    fn take_vocal_selection(&mut self) -> Option<Vec<NoteId>> {
+        self.vocal_select.take()
+    }
+
+    fn open_singer_editor(&mut self) -> Result<String, String> {
+        let channel = self
+            .selected_channel_id()
+            .ok_or("select a vocal track first")?;
+        let said = self.vocal.open_editor(&self.project, channel, self.clip)?;
+        self.touch();
+        Ok(said)
+    }
+
+    fn close_singer_editor(&mut self) {
+        self.vocal.close_editor();
+        self.touch();
+    }
+
+    fn agree_singer_terms(&mut self, engine: &str, singer: &str) {
+        self.vocal.agree(engine, singer);
+        self.touch();
+    }
+
+    fn voicebanks(&self) -> Vec<fontelle_ui::document::VoicebankRow> {
+        self.vocal.voicebank_rows()
+    }
+
+    fn voicebanks_folder(&self) -> String {
+        self.vocal.voicebanks_dir().display().to_string()
+    }
+
+    fn install_voicebank(&mut self, path: &std::path::Path) -> Result<String, String> {
+        let said = self.vocal.install(path)?;
+        self.republish();
+        self.touch();
+        Ok(said)
+    }
+
+    fn uninstall_voicebank(&mut self, id: &str) -> Result<String, String> {
+        let said = self.vocal.uninstall(id)?;
+        self.republish();
+        self.touch();
+        Ok(said)
+    }
+
+    fn agree_voicebank_terms(&mut self, id: &str) {
+        self.vocal.agree_bank(id);
+        self.touch();
+    }
+
+    fn catalogue(&self) -> Vec<fontelle_ui::document::CatalogueRow> {
+        self.vocal.catalogue_rows()
+    }
+
+    fn catalogue_get(&mut self, id: &str) -> Result<String, String> {
+        let said = self.vocal.catalogue_get(id)?;
+        self.touch();
+        Ok(said)
+    }
+
     fn add_channel_of(&mut self, kind: fontelle_types::InstrumentKind) -> Result<(), String> {
         // Named for what it is rather than "Channel N": a rack of "Sampler",
         // "3OSC", "SoundFont" tells you what you are looking at, and a rack of
@@ -14752,6 +14939,14 @@ impl StudioHost for Session {
             t.position_sample().max(0) as f64 / f64::from(self.options.sample_rate.max(1))
         });
         self.vocal.pump(playhead);
+        self.vocal.pump_installs();
+        if !self.vocal.messages.is_empty() {
+            self.message = self.vocal.messages.pop();
+            self.vocal.messages.clear();
+            self.republish();
+            self.touch();
+        }
+        self.pump_singer_editor();
         // Emptied every pass, so the ring never fills while a long take is
         // being played — the same rule the CLI's own recording loop follows.
         if let Some(capture) = &mut self.capture {

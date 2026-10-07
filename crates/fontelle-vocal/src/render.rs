@@ -1,6 +1,6 @@
 //! The render scheduler and its cache.
 //!
-//! Worker threads sing phrases through a [`Singer`]; the app's thread says
+//! Worker threads sing phrases through a `fontelle_sing::Backend`; the app's thread says
 //! which phrases it wants ([`VocalRenderer::want`]) and where the playhead is,
 //! and collects what was sung ([`VocalRenderer::poll`]). The order is
 //! musical: **every phrase's quick preview before any final take**, so an
@@ -17,72 +17,27 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use fontelle_host::{PhraseSpec, RenderFailure, SingerEngine, SingerInstance, Sung, SungPhonemes};
-use fontelle_singer_abi::{QUALITY_FINAL, QUALITY_PREVIEW};
+use fontelle_sing::{Backend, Quality, Session, SingError, Sung, SungNote};
 
 use crate::phrases::{RenderKey, render_key};
 
-/// An engine: something that can make voices to sing with.
-pub trait Singer: Send + Sync {
-    fn name(&self) -> &str;
-    /// Part of every key: a new version sings again. Asked each time,
-    /// because an engine may only know it once an instance exists.
-    fn version(&self) -> String;
-    /// A voice for one worker thread to sing with.
-    fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String>;
-}
-
-/// One engine instance, used by one thread at a time.
-pub trait SingerVoice: Send {
-    fn render(
-        &mut self,
-        spec: &PhraseSpec,
-        quality: u32,
-        seed: u64,
-        cancel: &AtomicU32,
-    ) -> Result<Sung, RenderFailure>;
-}
-
-impl Singer for SingerEngine {
-    fn name(&self) -> &str {
-        SingerEngine::name(self)
-    }
-    fn version(&self) -> String {
-        SingerEngine::version(self)
-    }
-    fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String> {
-        Ok(Box::new(self.instance()?))
-    }
-}
-
-impl SingerVoice for SingerInstance {
-    fn render(
-        &mut self,
-        spec: &PhraseSpec,
-        quality: u32,
-        seed: u64,
-        cancel: &AtomicU32,
-    ) -> Result<Sung, RenderFailure> {
-        SingerInstance::render(self, spec, quality, seed, cancel)
-    }
-}
-
-/// A phrase the app wants sung, and where it is (for the order).
+/// A phrase the app wants sung, who sings it, and where it is (for the
+/// order).
 #[derive(Clone)]
 pub struct Wanted {
-    pub singer: Arc<dyn Singer>,
-    pub spec: PhraseSpec,
+    pub backend: Arc<dyn Backend>,
+    pub phrase: fontelle_sing::Phrase,
     /// Song seconds of its first note and its last note's end.
     pub start: f64,
     pub end: f64,
 }
 
 impl Wanted {
-    fn key(&self, quality: u32) -> RenderKey {
+    fn key(&self, quality: Quality) -> RenderKey {
         render_key(
-            self.singer.name(),
-            &self.singer.version(),
-            &self.spec,
+            self.backend.name(),
+            &self.backend.version(),
+            &self.phrase,
             quality,
         )
     }
@@ -91,9 +46,9 @@ impl Wanted {
 impl std::fmt::Debug for Wanted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Wanted")
-            .field("engine", &self.singer.name())
+            .field("backend", &self.backend.name())
             .field("start", &self.start)
-            .field("notes", &self.spec.notes.len())
+            .field("notes", &self.phrase.notes.len())
             .finish()
     }
 }
@@ -101,7 +56,7 @@ impl std::fmt::Debug for Wanted {
 /// A take, cached.
 #[derive(Debug, Clone)]
 pub struct Rendered {
-    pub quality: u32,
+    pub quality: Quality,
     pub sample_rate: u32,
     pub samples: Arc<[f32]>,
     /// Seconds from the phrase's first note to the first sample.
@@ -110,11 +65,11 @@ pub struct Rendered {
     pub pitch: Arc<[f32]>,
     pub pitch_step: f64,
     /// What each note was sung as (index into the phrase's notes).
-    pub phonemes: Vec<SungPhonemes>,
+    pub phonemes: Vec<SungNote>,
 }
 
-impl From<(u32, Sung)> for Rendered {
-    fn from((quality, sung): (u32, Sung)) -> Self {
+impl From<(Quality, Sung)> for Rendered {
+    fn from((quality, sung): (Quality, Sung)) -> Self {
         Self {
             quality,
             sample_rate: sung.sample_rate,
@@ -143,9 +98,9 @@ pub enum PhraseState {
 
 struct Job {
     key: RenderKey,
-    quality: u32,
-    singer: Arc<dyn Singer>,
-    spec: PhraseSpec,
+    quality: Quality,
+    backend: Arc<dyn Backend>,
+    phrase: fontelle_sing::Phrase,
     start: f64,
     end: f64,
     cancel: Arc<AtomicU32>,
@@ -155,7 +110,7 @@ struct Job {
 struct Queue {
     jobs: Vec<Job>,
     running: Vec<(RenderKey, Arc<AtomicU32>)>,
-    done: Vec<(RenderKey, Result<Rendered, RenderFailure>)>,
+    done: Vec<(RenderKey, Result<Rendered, SingError>)>,
     playhead: f64,
     stop: bool,
 }
@@ -171,7 +126,7 @@ impl Queue {
             } else {
                 1e9 + (playhead - job.end)
             };
-            (job.quality != QUALITY_PREVIEW, distance)
+            (job.quality != Quality::Preview, distance)
         };
         (0..self.jobs.len()).min_by(|a, b| {
             let (qa, da) = rank(&self.jobs[*a]);
@@ -244,17 +199,17 @@ impl VocalRenderer {
         let mut keys = HashSet::new();
         let mut fresh = Vec::new();
         for w in &wanted {
-            let preview = w.key(QUALITY_PREVIEW);
-            let fin = w.key(QUALITY_FINAL);
+            let preview = w.key(Quality::Preview);
+            let fin = w.key(Quality::Final);
             keys.insert(preview.hash);
             keys.insert(fin.hash);
             if self.failed.contains_key(&preview.seed) || self.cache.contains_key(&fin.hash) {
                 continue;
             }
             if !self.cache.contains_key(&preview.hash) {
-                fresh.push((preview, QUALITY_PREVIEW, w));
+                fresh.push((preview, Quality::Preview, w));
             }
-            fresh.push((fin, QUALITY_FINAL, w));
+            fresh.push((fin, Quality::Final, w));
         }
         let Ok(mut q) = self.shared.queue.lock() else {
             return;
@@ -276,8 +231,8 @@ impl VocalRenderer {
             q.jobs.push(Job {
                 key,
                 quality,
-                singer: Arc::clone(&w.singer),
-                spec: w.spec.clone(),
+                backend: Arc::clone(&w.backend),
+                phrase: w.phrase.clone(),
                 start: w.start,
                 end: w.end,
                 cancel: Arc::new(AtomicU32::new(0)),
@@ -303,11 +258,11 @@ impl VocalRenderer {
                     self.cache.insert(key.hash, (Arc::new(take), self.stamp));
                     landed += 1;
                 }
-                Err(RenderFailure::Failed(why)) => {
+                Err(SingError::Failed(why)) => {
                     self.failed.insert(key.seed, why);
                     landed += 1;
                 }
-                Err(RenderFailure::Cancelled) => {}
+                Err(SingError::Cancelled) => {}
             }
         }
         if landed > 0 {
@@ -339,17 +294,17 @@ impl VocalRenderer {
 
     /// The best take of `w` so far: the final, else the preview.
     pub fn best(&self, w: &Wanted) -> Option<Arc<Rendered>> {
-        [QUALITY_FINAL, QUALITY_PREVIEW]
+        [Quality::Final, Quality::Preview]
             .into_iter()
             .find_map(|q| self.cache.get(&w.key(q).hash).map(|(r, _)| Arc::clone(r)))
     }
 
     pub fn state(&self, w: &Wanted) -> PhraseState {
-        let fin = w.key(QUALITY_FINAL);
+        let fin = w.key(Quality::Final);
         if self.cache.contains_key(&fin.hash) {
             return PhraseState::Final;
         }
-        let preview = w.key(QUALITY_PREVIEW);
+        let preview = w.key(Quality::Preview);
         if let Some(why) = self.failed.get(&preview.seed) {
             return PhraseState::Failed(why.clone());
         }
@@ -433,10 +388,11 @@ impl Drop for VocalRenderer {
 }
 
 fn work(shared: &Shared) {
-    // One instance per engine on this thread, made on first use and kept:
-    // starting an engine can be slow, and the ABI wants one render at a
-    // time per instance, which one thread gives.
-    let mut voices: HashMap<String, Box<dyn SingerVoice>> = HashMap::new();
+    // One session per backend on this thread, made on first use and kept:
+    // starting one can be slow (an engine instance, a voicebank's models),
+    // and an engine wants one render at a time per instance, which one
+    // thread gives.
+    let mut sessions: HashMap<String, Box<dyn Session>> = HashMap::new();
     loop {
         let job = {
             let Ok(mut q) = shared.queue.lock() else {
@@ -457,16 +413,19 @@ fn work(shared: &Shared) {
                 };
             }
         };
-        let id = format!("{}\u{1f}{}", job.singer.name(), job.singer.version());
-        let result = match voices.get_mut(&id) {
-            Some(voice) => voice.render(&job.spec, job.quality, job.key.seed, &job.cancel),
-            None => match Arc::clone(&job.singer).voice() {
-                Ok(mut voice) => {
-                    let r = voice.render(&job.spec, job.quality, job.key.seed, &job.cancel);
-                    voices.insert(id, voice);
+        let id = format!("{}\u{1f}{}", job.backend.name(), job.backend.version());
+        let sing = |session: &mut Box<dyn Session>| {
+            session.sing_flagged(&job.phrase, job.quality, job.key.seed, &job.cancel)
+        };
+        let result = match sessions.get_mut(&id) {
+            Some(session) => sing(session),
+            None => match job.backend.session() {
+                Ok(mut session) => {
+                    let r = sing(&mut session);
+                    sessions.insert(id, session);
                     r
                 }
-                Err(why) => Err(RenderFailure::Failed(why)),
+                Err(why) => Err(SingError::Failed(why)),
             },
         };
         let Ok(mut q) = shared.queue.lock() else {
@@ -474,7 +433,7 @@ fn work(shared: &Shared) {
         };
         q.running
             .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-        if let Err(RenderFailure::Failed(_)) = &result {
+        if let Err(SingError::Failed(_)) = &result {
             // The same words will fail the same way at the other quality.
             q.jobs.retain(|j| j.key.seed != job.key.seed);
         }

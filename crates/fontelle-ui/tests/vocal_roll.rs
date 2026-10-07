@@ -171,6 +171,7 @@ fn choice(id: &str, name: &str, languages: &[&str], research: bool) -> SingerCho
         name: name.into(),
         languages: languages.iter().map(|l| l.to_string()).collect(),
         research_only: research,
+        ..Default::default()
     }
 }
 

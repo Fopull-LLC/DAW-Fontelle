@@ -33,6 +33,7 @@ pub mod tour;
 pub mod tune;
 pub mod updates;
 mod vocal;
+pub mod vocal_part;
 mod window;
 
 use std::collections::HashMap;

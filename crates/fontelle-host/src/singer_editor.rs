@@ -39,6 +39,24 @@ pub struct EditorTake {
     /// Hz every `pitch_step` from `take_start`.
     pub pitch: Arc<[f32]>,
     pub pitch_step: f64,
+    /// What each note was sung as (indices into the phrase's notes).
+    pub phonemes: Vec<fontelle_sing::SungNote>,
+}
+
+/// A take's phonemes in the ABI's report form, `offsets` included.
+fn phonemes_json(notes: &[fontelle_sing::SungNote]) -> CString {
+    let report: Vec<serde_json::Value> = notes
+        .iter()
+        .map(|n| {
+            serde_json::json!({
+                "note": n.note,
+                "phonemes": n.phonemes.iter().map(|p| p.symbol.as_str()).collect::<Vec<_>>(),
+                "offsets": n.phonemes.iter().map(|p| p.offset).collect::<Vec<_>>(),
+                "guessed": n.guessed,
+            })
+        })
+        .collect();
+    CString::new(serde_json::Value::Array(report).to_string()).unwrap_or_default()
 }
 
 /// What the window asked for during one tick.
@@ -55,7 +73,7 @@ struct Link {
     part: RefCell<Option<CString>>,
     ids: RefCell<HashSet<u64>>,
     asked: RefCell<SingerEditorRequests>,
-    takes: RefCell<Vec<EditorTake>>,
+    takes: RefCell<Vec<(EditorTake, CString)>>,
 }
 
 /// Whether every note `edits` names is one of `ids` and every number in
@@ -164,7 +182,10 @@ unsafe extern "C" fn take_at(context: *mut c_void, seconds: f64, take: *mut Phra
             return false;
         }
         let takes = link(context).takes.borrow();
-        let Some(found) = takes.iter().find(|t| seconds >= t.start && seconds < t.end) else {
+        let Some((found, phonemes)) = takes
+            .iter()
+            .find(|(t, _)| seconds >= t.start && seconds < t.end)
+        else {
             return false;
         };
         // Pointers into buffers the take keeps alive until the next
@@ -179,7 +200,7 @@ unsafe extern "C" fn take_at(context: *mut c_void, seconds: f64, take: *mut Phra
                 pitch: found.pitch.as_ptr() as *mut f32,
                 pitch_count: found.pitch.len() as u64,
                 pitch_step: found.pitch_step,
-                phonemes: std::ptr::null_mut(),
+                phonemes: phonemes.as_ptr() as *mut c_char,
             };
         }
         true
@@ -275,7 +296,13 @@ impl SingerEditor {
 
     /// The takes `take_at` answers from.
     pub fn set_takes(&mut self, takes: Vec<EditorTake>) {
-        *self.link.takes.borrow_mut() = takes;
+        *self.link.takes.borrow_mut() = takes
+            .into_iter()
+            .map(|t| {
+                let json = phonemes_json(&t.phonemes);
+                (t, json)
+            })
+            .collect();
     }
 
     /// One frame of the window: it draws and handles its events, and what it

@@ -47,7 +47,7 @@ pub const EDITOR_SIZE: (u32, u32) = (480, 320);
 /// Levers for the ABI 2 window, as a note's lyric: apply an edit batch
 /// (`poked`, a setting, a growl curve, a glide); try an edit naming no note
 /// and, refused, say so (`refused`); press play; read the take under the
-/// note and write its length (`take N`).
+/// note and write its length and how many notes its phonemes name (`take N P`).
 pub const POKE_LYRIC: &str = "!poke";
 pub const BAD_LYRIC: &str = "!bad";
 pub const PLAY_LYRIC: &str = "!play";

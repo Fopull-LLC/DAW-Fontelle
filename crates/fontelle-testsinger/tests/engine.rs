@@ -284,6 +284,8 @@ fn its_abi_2_self_answers_capabilities_and_sings_a_phrase_from_json() {
         extra_curves: Default::default(),
         settings: Default::default(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     };
     let json = CString::new(serde_json::to_string(&phrase).unwrap()).unwrap();
     let mut result = PhraseResult::EMPTY;

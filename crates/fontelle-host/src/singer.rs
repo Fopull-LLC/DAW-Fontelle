@@ -855,6 +855,52 @@ fn parse_phonemes(json: &str) -> Vec<SungPhonemes> {
         .collect()
 }
 
+fn is_absolute(value: &str, windows: bool) -> bool {
+    if windows {
+        let b = value.as_bytes();
+        (b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+            || value.starts_with("\\\\")
+    } else {
+        value.starts_with('/')
+    }
+}
+
+/// Fontelle's own data folder (`<data>/fontelle`) by the settings' rule
+/// (`Settings::data_dir_on` in `fontelle-app`): an absolute
+/// `$XDG_DATA_HOME`, else `~/.local/share` — macOS included, as the app's
+/// other folders are — and on Windows `%LOCALAPPDATA%`, unless a
+/// `~/.local/share/fontelle` is already there. Singer engines live in its
+/// `singers`, voicebanks in its `voicebanks`.
+pub fn fontelle_data_dir_from(
+    env: &dyn Fn(&str) -> Option<String>,
+    windows: bool,
+    exists: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let absolute = |value: &str| is_absolute(value, windows);
+    if let Some(xdg) = env("XDG_DATA_HOME").filter(|v| absolute(v)) {
+        return Some(PathBuf::from(xdg).join("fontelle"));
+    }
+    let under_home = env("HOME")
+        .filter(|h| !h.is_empty())
+        .map(|h| PathBuf::from(h).join(".local/share").join("fontelle"));
+    if windows {
+        if let Some(old) = under_home.as_ref().filter(|d| exists(d)) {
+            return Some(old.clone());
+        }
+        if let Some(base) = env("LOCALAPPDATA").filter(|v| absolute(v)) {
+            return Some(PathBuf::from(base).join("fontelle"));
+        }
+    }
+    under_home
+}
+
+/// [`fontelle_data_dir_from`] for this process.
+pub fn fontelle_data_dir() -> Option<PathBuf> {
+    fontelle_data_dir_from(&|key| std::env::var(key).ok(), cfg!(windows), &|path| {
+        path.is_dir()
+    })
+}
+
 /// Where Fontelle looks for singer engines: `FONTELLE_SINGERS` (a path list)
 /// first, then `singers` in its own data folder.
 pub fn singer_search_paths() -> Vec<PathBuf> {
@@ -873,36 +919,13 @@ pub fn singer_search_paths_from(
     windows: bool,
     exists: &dyn Fn(&Path) -> bool,
 ) -> Vec<PathBuf> {
-    let absolute = |value: &str| {
-        if windows {
-            let b = value.as_bytes();
-            (b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
-                || value.starts_with("\\\\")
-        } else {
-            value.starts_with('/')
-        }
-    };
     let mut paths = Vec::new();
     if let Some(list) = env("FONTELLE_SINGERS") {
-        paths.extend(std::env::split_paths(&list).filter(|p| absolute(&p.to_string_lossy())));
+        paths.extend(
+            std::env::split_paths(&list).filter(|p| is_absolute(&p.to_string_lossy(), windows)),
+        );
     }
-    let data = 'data: {
-        if let Some(xdg) = env("XDG_DATA_HOME").filter(|v| absolute(v)) {
-            break 'data Some(PathBuf::from(xdg).join("fontelle"));
-        }
-        let under_home = env("HOME")
-            .filter(|h| !h.is_empty())
-            .map(|h| PathBuf::from(h).join(".local/share").join("fontelle"));
-        if windows {
-            if let Some(old) = under_home.as_ref().filter(|d| exists(d)) {
-                break 'data Some(old.clone());
-            }
-            if let Some(base) = env("LOCALAPPDATA").filter(|v| absolute(v)) {
-                break 'data Some(PathBuf::from(base).join("fontelle"));
-            }
-        }
-        under_home
-    };
+    let data = fontelle_data_dir_from(env, windows, exists);
     if let Some(data) = data {
         paths.push(data.join("singers"));
     }

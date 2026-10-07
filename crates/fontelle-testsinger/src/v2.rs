@@ -437,10 +437,15 @@ unsafe extern "C" fn v2_editor_tick(p: *mut EngineInstance) {
     };
     for note in &view.notes {
         let lever = note.note.lyric.as_str();
+        let key = (note.id, lever.to_string());
         if ![POKE_LYRIC, BAD_LYRIC, PLAY_LYRIC, TAKE_LYRIC].contains(&lever)
-            || !editor.done.insert((note.id, lever.to_string()))
+            || editor.done.contains(&key)
         {
             continue;
+        }
+        // A take not sung yet is asked for again when the part next changes.
+        if lever != TAKE_LYRIC {
+            editor.done.insert(key.clone());
         }
         if lever == POKE_LYRIC {
             apply(&[
@@ -474,9 +479,15 @@ unsafe extern "C" fn v2_editor_tick(p: *mut EngineInstance) {
         } else if lever == TAKE_LYRIC {
             let mut take = PhraseResult::EMPTY;
             if unsafe { (host.take_at)(host.context, note.note.start + 0.01, &mut take) } {
+                editor.done.insert(key);
+                // Its length, and how many notes its phoneme report names.
+                let sung = serde_json::from_str::<serde_json::Value>(&text(take.phonemes))
+                    .ok()
+                    .and_then(|v| v.as_array().map(Vec::len))
+                    .unwrap_or(0);
                 apply(&[PartEdit::Lyrics(vec![(
                     note.id,
-                    format!("take {}", take.frame_count),
+                    format!("take {} {sung}", take.frame_count),
                 )])]);
             }
         }

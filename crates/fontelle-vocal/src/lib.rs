@@ -12,16 +12,25 @@
 //! ```
 //!
 //! Nothing here runs on the audio thread, and nothing here knows which
-//! engine is installed: an engine is anything that is a [`Singer`], which a
-//! loaded `fontelle_host::SingerEngine` is.
+//! singer is installed: whatever sings is a `fontelle_sing::Backend` — the
+//! Fontelle Singer's built-in voicebank runtimes, or an external engine
+//! (`fontelle_host::SingerEngine` is one) — found through the
+//! [`SingerRegistry`]. Voicebanks are installed by [`voicebanks`], and the
+//! free ones are found through [`catalogue`].
 
+pub mod catalogue;
 mod phrases;
+mod registry;
 mod render;
+pub mod voicebanks;
+mod zip;
 
 pub use phrases::{
-    MAX_PHRASE_SECONDS, MIN_REST_SECONDS, NoteRef, Phrase, RenderKey, phrases_of, render_key,
+    CURVE_LEAD, CURVE_TAIL, MAX_PHRASE_SECONDS, MIN_REST_SECONDS, NoteRef, Phrase, RenderKey,
+    note_from_wire, note_wire_id, phrases_of, phrases_with, render_key,
 };
-pub use render::{PhraseState, Rendered, Singer, SingerVoice, VocalRenderer, Wanted};
+pub use registry::{BuiltinBackend, RegistryVoice, SingerKind, SingerRegistry, builtin_backends};
+pub use render::{PhraseState, Rendered, VocalRenderer, Wanted};
 
 use fontelle_engine::{SungPhrase, VocalTable};
 

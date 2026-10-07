@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "updated": "2026-10-07",
+  "singers": [
+    {
+      "id": "kasane-teto.utau",
+      "name": "Kasane Teto (UTAU)",
+      "kind": "utau",
+      "languages": ["ja", "en"],
+      "author": "TWINDRILL",
+      "terms": {
+        "summary": "Free to download and use; the library itself may not be redistributed or sold. Commercial use of the UTAU library needs separate permission first. Credit is not required.",
+        "url": "https://kasaneteto.jp/guidelines/voice.html",
+        "commercial": "ask",
+        "ai_training": "unknown",
+        "credit": "no"
+      },
+      "page": "https://kasaneteto.jp/utau/"
+    },
+    {
+      "id": "qixuan.diffsinger",
+      "name": "Qixuan (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["zh"],
+      "author": "yqzhishen / OpenVPI",
+      "terms": {
+        "summary": "Songs made with it may be shared and released, commercially too; label them as AI-synthesised and credit \"Qixuan\" and \"DiffSinger\". The voicebank may not be sold, and its output may not be used to train other voice models. The Chinese terms prevail.",
+        "url": "https://github.com/yqzhishen/qixuan-diffsinger/blob/main/terms_of_use/Terms_of_Use.zh-CN.md",
+        "commercial": "yes",
+        "ai_training": "no",
+        "credit": "yes"
+      },
+      "page": "https://github.com/yqzhishen/qixuan-diffsinger/releases"
+    }
+  ]
+}

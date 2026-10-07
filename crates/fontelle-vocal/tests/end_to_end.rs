@@ -13,7 +13,8 @@ use fontelle_engine::{
 };
 use fontelle_host::SingerEngines;
 use fontelle_model::VocalVoice;
-use fontelle_vocal::{PhraseState, Singer, VocalRenderer, Wanted, phrases_of, table_for};
+use fontelle_sing::Backend;
+use fontelle_vocal::{PhraseState, VocalRenderer, Wanted, phrases_of, table_for};
 
 fn library_name(stem: &str) -> String {
     if cfg!(target_os = "windows") {
@@ -80,12 +81,12 @@ fn a_part_is_sung_by_an_installed_engine_and_heard_in_time() {
     let phrases = phrases_of(&s.project, s.voice, &s.tempo());
     assert_eq!(phrases.len(), 2);
 
-    let singer: Arc<dyn Singer> = engine;
+    let backend: Arc<dyn Backend> = engine;
     let wanted: Vec<Wanted> = phrases
         .iter()
         .map(|p| Wanted {
-            singer: Arc::clone(&singer),
-            spec: p.spec.clone(),
+            backend: Arc::clone(&backend),
+            phrase: p.sing.clone(),
             start: p.start,
             end: p.end,
         })

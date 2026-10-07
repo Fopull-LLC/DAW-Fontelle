@@ -381,6 +381,7 @@ fn the_singer_picker_lists_singers_with_the_research_badge() {
             name: "Test Alto".into(),
             languages: vec!["en".into(), "ja".into()],
             research_only: false,
+            ..Default::default()
         },
         SingerChoice {
             engine: "Fontelle Test Singer".into(),
@@ -388,6 +389,7 @@ fn the_singer_picker_lists_singers_with_the_research_badge() {
             name: "Research Voice".into(),
             languages: vec!["ja".into(), "en".into()],
             research_only: true,
+            ..Default::default()
         },
     ];
     let current = VocalVoice::new("Fontelle Test Singer", "test.alto", "en");

@@ -9,16 +9,25 @@
 //! its [`VocalPlayer`].
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::hash::Hasher;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use fontelle_engine::VocalPlayer;
-use fontelle_host::{SingerEngine, SingerEngines};
-use fontelle_model::{Project, TempoMap, VocalVoice};
-use fontelle_types::{ChannelId, ClipId, InstrumentKind, Tick};
-use fontelle_ui::document::{SingerChoice, VocalPhraseView, VocalRenderState, VocalView};
-use fontelle_vocal::{Phrase, PhraseState, Singer, VocalRenderer, Wanted, phrases_of, table_for};
+use fontelle_host::{EditorTake, PluginWindow, SingerEditor, SingerEngines};
+use fontelle_model::{ClipSource, Project, TempoMap, VocalVoice};
+use fontelle_sing::{Lane, Transport};
+use fontelle_types::{ChannelId, ClipId, InstrumentKind, NoteId, Tick};
+use fontelle_ui::document::{
+    CatalogueRow, SingerChoice, SingerKind, VocalPhraseView, VocalRenderState, VocalView,
+    VoicebankRow,
+};
+use fontelle_vocal::catalogue::{Catalogue, DownloadWatch, Get};
+use fontelle_vocal::{
+    BuiltinBackend, Phrase, PhraseState, SingerRegistry, VocalRenderer, Wanted, phrases_with,
+    table_for, voicebanks,
+};
 
 /// The longest an export waits for the last final take before giving up.
 const EXPORT_WAIT: Duration = Duration::from_secs(600);
@@ -38,9 +47,54 @@ struct Part {
     problem: Option<String>,
 }
 
+/// An engine's window, open on one vocal part.
+struct EngineWindow {
+    channel: ChannelId,
+    clip: ClipId,
+    /// Declared before `window`: the engine lets go of the window first.
+    editor: SingerEditor,
+    window: PluginWindow,
+}
+
+/// What an engine's window asked of the session during a frame.
+#[derive(Default)]
+pub(crate) struct EditorAsks {
+    /// One command a batch, each one undo step.
+    pub commands: Vec<Box<dyn fontelle_model::Command>>,
+    pub transport: Vec<Transport>,
+    pub select: Option<Vec<NoteId>>,
+    /// Batches that could not be made (the part changed under them).
+    pub refused: Vec<String>,
+}
+
 pub(crate) struct VocalSession {
     folders: Option<Vec<PathBuf>>,
+    /// The voicebanks folder, when not Fontelle's own (tests).
+    voicebanks: Option<PathBuf>,
+    /// The built-in runtimes, when not this build's own (tests).
+    builtins: Option<Vec<BuiltinBackend>>,
     engines: OnceLock<Arc<SingerEngines>>,
+    registry: OnceLock<Arc<SingerRegistry>>,
+    /// The engine window, while one is open.
+    editor: Option<EngineWindow>,
+    /// Open engine windows on no screen (tests).
+    pub headless_editors: bool,
+    /// The roll's selection, for the window.
+    pub selection: Vec<NoteId>,
+    /// Singers' terms agreed to: `engine \u{1f} singer` → hash of the terms.
+    agreed: OnceLock<Mutex<HashMap<String, String>>>,
+    /// Where the Find singers index is read from, when not the default.
+    catalogue_path: Option<PathBuf>,
+    /// Where Get it watches for downloads, when not the desktop's own.
+    downloads: Option<PathBuf>,
+    /// Pages are not opened in a browser (tests).
+    pub quiet_pages: bool,
+    /// A Get it waiting for its file.
+    watch: Option<(String, DownloadWatch)>,
+    /// An Install downloading on a thread.
+    fetching: Option<(String, std::thread::JoinHandle<Result<PathBuf, String>>)>,
+    /// What happened, for the status line.
+    pub messages: Vec<String>,
     renderer: Option<Arc<Mutex<VocalRenderer>>>,
     /// One per vocal channel, outliving graphs; what the graph's nodes read.
     pub players: HashMap<ChannelId, Arc<VocalPlayer>>,
@@ -119,7 +173,20 @@ impl VocalSession {
     pub fn new() -> Self {
         Self {
             folders: None,
+            voicebanks: None,
+            builtins: None,
             engines: OnceLock::new(),
+            registry: OnceLock::new(),
+            editor: None,
+            headless_editors: false,
+            selection: Vec::new(),
+            agreed: OnceLock::new(),
+            catalogue_path: None,
+            downloads: None,
+            quiet_pages: false,
+            watch: None,
+            fetching: None,
+            messages: Vec::new(),
             renderer: None,
             players: HashMap::new(),
             parts: HashMap::new(),
@@ -133,7 +200,53 @@ impl VocalSession {
     pub fn set_folders(&mut self, folders: Vec<PathBuf>) {
         self.folders = Some(folders);
         self.engines = OnceLock::new();
+        self.registry = OnceLock::new();
+        self.editor = None;
         self.parts.clear();
+    }
+
+    /// The voicebanks folder and the built-in runtimes over it, rather than
+    /// this build's own — for tests.
+    pub fn set_voicebanks(&mut self, folder: PathBuf, builtins: Vec<BuiltinBackend>) {
+        self.voicebanks = Some(folder);
+        self.builtins = Some(builtins);
+        self.registry = OnceLock::new();
+        self.agreed = OnceLock::new();
+        self.parts.clear();
+    }
+
+    /// Where Find singers reads its index and Get it watches for files.
+    pub fn set_catalogue(&mut self, index: Option<PathBuf>, downloads: Option<PathBuf>) {
+        self.catalogue_path = index;
+        self.downloads = downloads;
+    }
+
+    pub fn voicebanks_dir(&self) -> PathBuf {
+        self.voicebanks
+            .clone()
+            .or_else(voicebanks::voicebanks_dir)
+            .unwrap_or_else(|| PathBuf::from("voicebanks"))
+    }
+
+    /// Everyone who can sing, made the first time anything asks.
+    pub fn registry(&self) -> &Arc<SingerRegistry> {
+        self.registry.get_or_init(|| {
+            let builtins = self
+                .builtins
+                .clone()
+                .unwrap_or_else(fontelle_vocal::builtin_backends);
+            Arc::new(SingerRegistry::new(
+                &self.voicebanks_dir(),
+                builtins,
+                Arc::clone(self.engines()),
+            ))
+        })
+    }
+
+    /// Reads the voicebanks again (after an install or an uninstall).
+    fn rescan(&mut self) {
+        self.registry = OnceLock::new();
+        self.revision += 1;
     }
 
     /// The engines, loaded the first time anything asks — loading one runs
@@ -160,42 +273,74 @@ impl VocalSession {
         self.revision
     }
 
-    /// The voice a new vocal track starts with: the first singer that is
-    /// not research-only (else the first), in its own first language.
+    /// The voice a new vocal track starts with: the first free voicebank,
+    /// else the first engine singer that is not research-only, else any.
     pub fn default_voice(&self) -> Option<VocalVoice> {
-        let engines = self.engines();
-        let pick = |research: bool| {
-            engines.engines().iter().find_map(|e| {
-                e.singers()
-                    .iter()
-                    .find(|s| s.research_only == research)
-                    .map(|s| (e, s))
-            })
+        self.registry().default_voice()
+    }
+
+    fn agreed(&self) -> &Mutex<HashMap<String, String>> {
+        self.agreed.get_or_init(|| {
+            let map = std::fs::read_to_string(self.voicebanks_dir().join(AGREED_FILE))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            Mutex::new(map)
+        })
+    }
+
+    /// Whether `terms` for `engine`'s `singer` have been agreed to here.
+    pub fn terms_agreed(&self, engine: &str, singer: &str, terms: Option<&str>) -> bool {
+        let Some(terms) = terms else {
+            return true;
         };
-        let (engine, singer) = pick(false).or_else(|| pick(true))?;
-        Some(VocalVoice::new(
-            engine.name(),
-            singer.id.clone(),
-            singer
-                .languages
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "en".into()),
-        ))
+        self.agreed()
+            .lock()
+            .is_ok_and(|m| m.get(&agree_key(engine, singer)) == Some(&terms_hash(terms)))
+    }
+
+    /// Records that the singer's current terms were agreed to.
+    pub fn agree(&mut self, engine: &str, singer: &str) {
+        let terms = self
+            .registry()
+            .voices()
+            .into_iter()
+            .find(|v| v.backend == engine && v.info.id == singer)
+            .and_then(|v| v.info.terms);
+        let Some(terms) = terms else {
+            return;
+        };
+        let dir = self.voicebanks_dir();
+        if let Ok(mut map) = self.agreed().lock() {
+            map.insert(agree_key(engine, singer), terms_hash(&terms));
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(text) = serde_json::to_string_pretty(&*map) {
+                let _ = std::fs::write(dir.join(AGREED_FILE), text);
+            }
+        }
+        self.revision += 1;
     }
 
     pub fn singers(&self) -> Vec<SingerChoice> {
-        self.engines()
-            .engines()
-            .iter()
-            .flat_map(|e| {
-                e.singers().iter().map(move |s| SingerChoice {
-                    engine: e.name().to_string(),
-                    id: s.id.clone(),
-                    name: s.name.clone(),
-                    languages: s.languages.clone(),
-                    research_only: s.research_only,
-                })
+        self.registry()
+            .voices()
+            .into_iter()
+            .map(|v| SingerChoice {
+                terms_agreed: self.terms_agreed(&v.backend, &v.info.id, v.info.terms.as_deref()),
+                engine: v.backend,
+                engine_name: v.backend_name,
+                id: v.info.id,
+                name: v.info.name,
+                languages: v.info.languages,
+                research_only: v.info.research_only,
+                kind: match v.kind {
+                    fontelle_vocal::SingerKind::Utau => SingerKind::Utau,
+                    fontelle_vocal::SingerKind::DiffSinger => SingerKind::DiffSinger,
+                    fontelle_vocal::SingerKind::Engine => SingerKind::Engine,
+                },
+                has_editor: v.has_editor,
+                image: v.info.image,
+                terms: v.info.terms,
             })
             .collect()
     }
@@ -208,8 +353,14 @@ impl VocalSession {
             .collect()
     }
 
-    fn engine(&self, voice: &VocalVoice) -> Option<Arc<SingerEngine>> {
-        self.engines().engine(&voice.engine).cloned()
+    /// The display name of who sings `voice`, if they are installed.
+    fn singer_name(&self, voice: &VocalVoice) -> Option<(String, bool)> {
+        let backend = self.registry().backend(&voice.engine)?;
+        backend
+            .voices()
+            .into_iter()
+            .find(|v| v.id == voice.singer)
+            .map(|v| (v.name, v.research_only))
     }
 
     fn renderer(&mut self) -> Arc<Mutex<VocalRenderer>> {
@@ -247,16 +398,28 @@ impl VocalSession {
         let mut parts = HashMap::new();
         for id in vocal {
             let voice = project.channels[id].vocal.clone();
-            let phrases = phrases_of(project, id, tempo);
-            let (engine, problem) = match &voice {
-                None if self.engines().is_empty() => (None, Some(self.no_engine_message())),
+            let registry = Arc::clone(self.registry());
+            let caps = voice
+                .as_ref()
+                .map(|v| registry.capabilities(v))
+                .unwrap_or_default();
+            let phrases = phrases_with(project, id, tempo, &caps);
+            let nobody = registry.voices().is_empty();
+            let (backend, problem) = match &voice {
+                None if nobody => (None, Some(self.no_engine_message())),
                 None => (None, Some("Choose a singer for this track".to_string())),
-                Some(v) => match self.engine(v) {
-                    Some(engine) => (Some(engine), None),
+                Some(v) => match registry.backend(&v.engine) {
+                    Some(backend) => (Some(backend), None),
                     None => (
                         None,
-                        Some(if self.engines().is_empty() {
+                        Some(if nobody {
                             self.no_engine_message()
+                        } else if SingerRegistry::is_builtin_key(&v.engine) {
+                            format!(
+                                "{} is not installed here, so this track is silent \u{2014} \
+                                 install the voicebank from Voicebanks",
+                                v.singer
+                            )
                         } else {
                             format!(
                                 "{} is not installed here, so this track is silent",
@@ -269,9 +432,9 @@ impl VocalSession {
             let wanted = phrases
                 .iter()
                 .map(|p| {
-                    engine.as_ref().map(|e| Wanted {
-                        singer: Arc::clone(e) as Arc<dyn Singer>,
-                        spec: p.spec.clone(),
+                    backend.as_ref().map(|b| Wanted {
+                        backend: Arc::clone(b),
+                        phrase: p.sing.clone(),
                         start: p.start,
                         end: p.end,
                     })
@@ -405,15 +568,32 @@ impl VocalSession {
             default_lyric: fontelle_model::lyrics::default_syllable(language).to_string(),
             ..VocalView::default()
         };
-        let singer = voice
-            .as_ref()
-            .and_then(|v| self.engine(v).and_then(|e| e.singer(&v.singer).cloned()));
+        let singer = voice.as_ref().and_then(|v| self.singer_name(v));
         view.caption = match (&voice, &singer) {
-            (Some(v), Some(s)) => format!("{} \u{b7} {}", s.name, v.language),
+            (Some(v), Some((name, _))) => format!("{name} \u{b7} {}", v.language),
             (Some(v), None) => format!("{} \u{b7} {}", v.singer, v.language),
             (None, _) => "No singer".to_string(),
         };
-        view.research_only = singer.as_ref().is_some_and(|s| s.research_only);
+        view.research_only = singer.as_ref().is_some_and(|(_, r)| *r);
+        if let Some(v) = &voice {
+            let registry = self.registry();
+            view.backend = v.engine.clone();
+            view.capabilities = registry.capabilities(v);
+            view.editor = registry
+                .engine(&v.engine)
+                .filter(|e| e.has_editor())
+                .map(|e| e.name().to_string());
+            view.editor_open = self.editor.as_ref().is_some_and(|e| e.channel == channel);
+        }
+        if let Some(ClipSource::Notes(data)) = project.clip_source(clip).as_deref() {
+            view.part = data.vocal.as_deref().cloned().unwrap_or_default();
+        }
+        if let Some(c) = project.clips.get(clip) {
+            let at = tempo.tick_to_seconds(c.start);
+            let sr = tempo.sample_rate_hz();
+            let ticks = tempo.sample_to_tick(((at + 1.0) * sr).round() as i64) - c.start;
+            view.ticks_per_second = ticks.max(1) as f64;
+        }
         let part = self.parts.get(&channel);
         view.message = part.and_then(|p| p.problem.clone());
         let Some(part) = part else {
@@ -449,6 +629,35 @@ impl VocalSession {
                 None => VocalRenderState::Waiting,
             };
             view.phrases.push(VocalPhraseView { start, end, state });
+            // The pitch the notes, glides and vibrato make, and the bend
+            // lane over it: the line the bend is drawn against.
+            {
+                let sung = &phrase.sing;
+                let from = -fontelle_vocal::CURVE_LEAD;
+                let to = sung.notes.last().map_or(0.0, |n| n.end());
+                let line = fontelle_sing::note_pitch(&sung.notes, from, to);
+                let bend = sung.curves.get(&Lane::PitchBend);
+                let mut points = Vec::with_capacity(line.values.len());
+                for (i, key) in line.values.iter().enumerate() {
+                    let t = from + i as f64 * line.step;
+                    let cents = bend.map_or(0.0, |c| c.at(t, 0.0));
+                    let tick =
+                        tempo.sample_to_tick(((phrase.start + t) * sr).round() as i64) - origin;
+                    if tick < start || tick > end {
+                        continue;
+                    }
+                    if points
+                        .last()
+                        .is_some_and(|(last, _): &(Tick, f32)| *last == tick)
+                    {
+                        continue;
+                    }
+                    points.push((tick, key + cents / 100.0));
+                }
+                if points.len() > 1 {
+                    view.pitch_line.push(points);
+                }
+            }
             let take = match (&renderer, wanted) {
                 (Some(r), Some(w)) => {
                     if let PhraseState::Failed(why) = r.state(w)
@@ -465,7 +674,16 @@ impl VocalSession {
             };
             for sung in &take.phonemes {
                 if let Some((_, n)) = mine.iter().find(|(i, _)| *i == sung.note) {
-                    view.phonemes.push((n.note, sung.phonemes.join(" ")));
+                    let symbols: Vec<&str> =
+                        sung.phonemes.iter().map(|p| p.symbol.as_str()).collect();
+                    view.phonemes.push((n.note, symbols.join(" ")));
+                    view.timed.push((
+                        n.note,
+                        sung.phonemes
+                            .iter()
+                            .map(|p| (p.symbol.clone(), p.offset))
+                            .collect(),
+                    ));
                     if sung.guessed {
                         view.guessed.push(n.note);
                     }
@@ -565,8 +783,8 @@ impl VocalSession {
         let voice = project.channels[channel].vocal.as_ref();
         let who = voice
             .and_then(|v| {
-                self.engine(v)
-                    .and_then(|e| e.singer(&v.singer).map(|s| s.name.clone()))
+                self.singer_name(v)
+                    .map(|(name, _)| name)
                     .or_else(|| Some(v.singer.clone()))
             })
             .unwrap_or_else(|| project.channels[channel].name.clone());
@@ -630,4 +848,362 @@ fn no_engine_message(folders: Option<Vec<PathBuf>>) -> String {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "Fontelle's singers folder".to_string());
     format!("No singer engine is installed \u{2014} put one in {folder}")
+}
+
+/// Where the agreed singers' terms are recorded, in the voicebanks folder.
+const AGREED_FILE: &str = ".agreed-terms.json";
+
+fn agree_key(engine: &str, singer: &str) -> String {
+    format!("{engine}\u{1f}{singer}")
+}
+
+fn terms_hash(terms: &str) -> String {
+    let mut h = twox_hash::XxHash64::with_seed(7);
+    h.write(terms.as_bytes());
+    format!("{:016x}", h.finish())
+}
+
+/// The Find singers index shipped with this build.
+const SHIPPED_INDEX: &str = include_str!("../../../docs/singers-index.json");
+
+impl VocalSession {
+    // ------------------------------------------------- an engine's window
+
+    /// Opens the window of the engine singing `channel`, on `clip`.
+    pub fn open_editor(
+        &mut self,
+        project: &Project,
+        channel: ChannelId,
+        clip: ClipId,
+    ) -> Result<String, String> {
+        let voice = project
+            .channels
+            .get(channel)
+            .and_then(|c| c.vocal.clone())
+            .ok_or("this track has no singer")?;
+        let engine = self
+            .registry()
+            .engine(&voice.engine)
+            .filter(|e| e.has_editor())
+            .cloned()
+            .ok_or_else(|| format!("{} has no window of its own", voice.engine))?;
+        if let Some(open) = &mut self.editor {
+            if open.channel == channel && open.clip == clip {
+                open.window.raise();
+                return Ok(format!("{} is open", engine.name()));
+            }
+            self.editor = None;
+        }
+        let size = fontelle_host::GuiSize {
+            width: 900,
+            height: 560,
+        };
+        let mut window = if self.headless_editors {
+            PluginWindow::headless(size.width, size.height)
+        } else {
+            PluginWindow::open(engine.name(), size).map_err(|e| e.to_string())?
+        };
+        let editor = SingerEditor::open(&engine, window.id())?;
+        let (w, h) = editor.size();
+        window.resize(fontelle_host::GuiSize {
+            width: w,
+            height: h,
+        });
+        self.editor = Some(EngineWindow {
+            channel,
+            clip,
+            editor,
+            window,
+        });
+        self.revision += 1;
+        Ok(format!("{} opened", engine.name()))
+    }
+
+    pub fn close_editor(&mut self) {
+        if self.editor.take().is_some() {
+            self.revision += 1;
+        }
+    }
+
+    pub fn editor_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// One frame of the engine's window: it is shown the part as it is now
+    /// (told when that changed), drawn and handled, and what it asked for
+    /// comes back as commands — each batch one undo step.
+    pub fn tick_editor(
+        &mut self,
+        project: &Project,
+        tempo: &TempoMap,
+        playhead: f64,
+        playing: bool,
+    ) -> EditorAsks {
+        let mut asks = EditorAsks::default();
+        let Some(open) = self.editor.as_ref() else {
+            return asks;
+        };
+        let (channel, clip) = (open.channel, open.clip);
+        let still_there = project.clips.get(clip).is_some()
+            && project
+                .channels
+                .get(channel)
+                .is_some_and(|c| c.vocal.is_some());
+        if !still_there {
+            self.close_editor();
+            return asks;
+        }
+        // What each note was last sung as, and the takes, for the window.
+        let mut sung: HashMap<NoteId, Vec<String>> = HashMap::new();
+        let mut takes = Vec::new();
+        if let (Some(part), Some(renderer)) = (
+            self.parts.get(&channel),
+            self.renderer.as_ref().and_then(|r| r.lock().ok()),
+        ) {
+            for (phrase, wanted) in part.phrases.iter().zip(&part.wanted) {
+                let Some(take) = wanted.as_ref().and_then(|w| renderer.best(w)) else {
+                    continue;
+                };
+                for s in &take.phonemes {
+                    if let Some(n) = phrase.notes.get(s.note) {
+                        sung.insert(
+                            n.note,
+                            s.phonemes.iter().map(|p| p.symbol.clone()).collect(),
+                        );
+                    }
+                }
+                takes.push(EditorTake {
+                    start: phrase.start,
+                    end: phrase.end,
+                    sample_rate: take.sample_rate,
+                    take_start: take.start,
+                    samples: Arc::clone(&take.samples),
+                    pitch: Arc::clone(&take.pitch),
+                    pitch_step: take.pitch_step,
+                    phonemes: take.phonemes.clone(),
+                });
+            }
+        }
+        let selection = self.selection.clone();
+        let view = crate::vocal_part::part_view(
+            project,
+            tempo,
+            channel,
+            clip,
+            &selection,
+            playhead,
+            playing,
+            &|id| sung.get(&id).cloned().unwrap_or_default(),
+        );
+        let caps = project
+            .channels
+            .get(channel)
+            .and_then(|c| c.vocal.as_ref())
+            .map(|v| self.registry().capabilities(v))
+            .unwrap_or_default();
+        let Some(open) = self.editor.as_mut() else {
+            return asks;
+        };
+        open.editor.set_takes(takes);
+        if let Some(view) = &view {
+            open.editor.set_part(view);
+        }
+        let poll = open.window.poll();
+        if let Some(size) = poll.resized {
+            open.editor.resized(size.width, size.height);
+        }
+        let asked = open.editor.tick();
+        if poll.closed {
+            self.close_editor();
+        }
+        asks.transport = asked.transport;
+        for batch in &asked.edits {
+            match crate::vocal_part::edits_to_command(project, tempo, channel, clip, batch, &caps) {
+                Ok(applied) => {
+                    if let Some(command) = applied.command {
+                        asks.commands.push(command);
+                    }
+                    if applied.select.is_some() {
+                        asks.select = applied.select;
+                    }
+                }
+                Err(why) => asks.refused.push(why),
+            }
+        }
+        asks
+    }
+
+    // ------------------------------------------------------ voicebanks
+
+    pub fn voicebank_rows(&self) -> Vec<VoicebankRow> {
+        let dir = self.voicebanks_dir();
+        voicebanks::list(&dir)
+            .into_iter()
+            .chain(voicebanks::dependencies(&dir))
+            .map(|b| VoicebankRow {
+                id: if b.kind == voicebanks::PackageKind::Dependency {
+                    format!("{}/{}", voicebanks::DEPENDENCIES, b.id)
+                } else {
+                    b.id.clone()
+                },
+                name: b.name.clone(),
+                kind: b.kind.label().to_string(),
+                author: b.info.author.clone(),
+                portrait: b.info.portrait.as_ref().map(|p| p.display().to_string()),
+                terms_agreed: voicebanks::terms_acknowledged(&b.path),
+                terms: b.terms.clone(),
+                path: b.path.display().to_string(),
+            })
+            .collect()
+    }
+
+    pub fn install(&mut self, path: &Path) -> Result<String, String> {
+        let dir = self.voicebanks_dir();
+        let bank = voicebanks::install(path, &dir).map_err(|e| e.to_string())?;
+        self.rescan();
+        Ok(match (&bank.kind, &bank.terms) {
+            (voicebanks::PackageKind::Dependency, _) => {
+                format!("Installed {} (a dependency)", bank.name)
+            }
+            (kind, Some(_)) => format!(
+                "Installed {} ({}) \u{2014} read its terms in Voicebanks before it sings",
+                bank.name,
+                kind.label()
+            ),
+            (kind, None) => format!("Installed {} ({})", bank.name, kind.label()),
+        })
+    }
+
+    pub fn uninstall(&mut self, id: &str) -> Result<String, String> {
+        voicebanks::uninstall(&self.voicebanks_dir(), id)?;
+        self.rescan();
+        Ok(format!("Removed {id}"))
+    }
+
+    pub fn agree_bank(&mut self, id: &str) {
+        let path = self.voicebanks_dir().join(id);
+        if voicebanks::acknowledge_terms(&path).is_ok() {
+            self.revision += 1;
+        }
+    }
+
+    // ---------------------------------------------------- find singers
+
+    fn catalogue(&self) -> Catalogue {
+        let local = self
+            .catalogue_path
+            .clone()
+            .or_else(|| fontelle_host::fontelle_data_dir().map(|d| d.join("singers-index.json")));
+        local
+            .filter(|p| p.is_file())
+            .and_then(|p| Catalogue::load(&p).ok())
+            .or_else(|| Catalogue::parse(SHIPPED_INDEX).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn catalogue_rows(&self) -> Vec<CatalogueRow> {
+        let perm = |p: fontelle_vocal::catalogue::Permission| {
+            use fontelle_vocal::catalogue::Permission as P;
+            match p {
+                P::Yes => "yes",
+                P::No => "no",
+                P::Ask => "ask",
+                P::Unknown => "?",
+            }
+            .to_string()
+        };
+        self.catalogue()
+            .singers
+            .into_iter()
+            .map(|s| CatalogueRow {
+                direct: matches!(s.get(), Get::Download(_)),
+                waiting: self.watch.as_ref().is_some_and(|(id, _)| *id == s.id)
+                    || self.fetching.as_ref().is_some_and(|(id, _)| *id == s.id),
+                id: s.id.clone(),
+                name: s.name.clone(),
+                kind: s.kind.label().to_string(),
+                languages: s.languages.clone(),
+                author: s.author.clone(),
+                portrait: s.portrait.clone(),
+                sample: s.sample.clone(),
+                terms_summary: s.terms.summary.clone(),
+                terms_url: s.terms.url.clone(),
+                commercial: perm(s.terms.commercial),
+                ai_training: perm(s.terms.ai_training),
+                credit: perm(s.terms.credit),
+                page: s.page.clone(),
+            })
+            .collect()
+    }
+
+    /// Install (fetch on a thread, check, install) or Get it (open the page,
+    /// watch Downloads).
+    pub fn catalogue_get(&mut self, id: &str) -> Result<String, String> {
+        let singer = self
+            .catalogue()
+            .singers
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| format!("{id} is not in the catalogue"))?;
+        match singer.get() {
+            Get::Download(download) => {
+                let into = self.voicebanks_dir().join(".downloads");
+                std::fs::create_dir_all(&into).map_err(|e| e.to_string())?;
+                let file = into.join(format!("{}.zip", id.replace(['/', '\\'], "_")));
+                let worker = std::thread::spawn(move || {
+                    let body = crate::updates::fetch_with_progress(&download.url, &mut |_, _| {})?;
+                    std::fs::write(&file, body).map_err(|e| e.to_string())?;
+                    fontelle_vocal::catalogue::verify(&file, &download.sha256, download.size)?;
+                    Ok(file)
+                });
+                self.fetching = Some((id.to_string(), worker));
+                Ok(format!("Downloading {}\u{2026}", singer.name))
+            }
+            Get::Page(page) => {
+                let downloads = self
+                    .downloads
+                    .clone()
+                    .or_else(fontelle_vocal::catalogue::downloads_dir)
+                    .ok_or("there is no Downloads folder to watch")?;
+                if !self.quiet_pages {
+                    crate::desktop::open_url(&page)?;
+                }
+                let sha = singer.download.as_ref().map(|d| d.sha256.clone());
+                self.watch = Some((
+                    id.to_string(),
+                    DownloadWatch::new(&downloads, SystemTime::now(), sha),
+                ));
+                Ok(format!(
+                    "Download {} from its page \u{2014} it installs when it lands in {}",
+                    singer.name,
+                    downloads.display()
+                ))
+            }
+        }
+    }
+
+    /// Every frame: a Get it's file landing, an Install's download done.
+    pub fn pump_installs(&mut self) {
+        if let Some((_, watch)) = &mut self.watch
+            && let Some(file) = watch.poll()
+        {
+            self.watch = None;
+            let said = self.install(&file).unwrap_or_else(|e| e);
+            self.messages.push(said);
+        }
+        if self.fetching.as_ref().is_some_and(|(_, h)| h.is_finished())
+            && let Some((_, worker)) = self.fetching.take()
+        {
+            let said = match worker.join() {
+                Ok(Ok(file)) => {
+                    let said = self.install(&file).unwrap_or_else(|e| e);
+                    let _ = std::fs::remove_file(&file);
+                    said
+                }
+                Ok(Err(why)) => format!("The download failed: {why}"),
+                Err(_) => "The download stopped".to_string(),
+            };
+            self.messages.push(said);
+        }
+    }
 }

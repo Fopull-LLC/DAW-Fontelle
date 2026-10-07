@@ -63,7 +63,7 @@ pub enum UpdateStatus {
 
 /// One singer an installed engine offers — a row of the vocal track's
 /// singer picker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SingerChoice {
     /// The engine's name, as a song stores it.
     pub engine: String,
@@ -75,6 +75,83 @@ pub struct SingerChoice {
     /// For testing only — whatever it sings must not be shared. The picker
     /// says so on the row.
     pub research_only: bool,
+    /// What kind of singer: a free voicebank the Fontelle Singer sings
+    /// (UTAU, DiffSinger), or an external engine's.
+    pub kind: SingerKind,
+    /// The backend's own name, for the picker's heading ("Fontelle Test
+    /// Singer"); `engine` is the key a song stores.
+    pub engine_name: String,
+    /// Its engine has a window of its own.
+    pub has_editor: bool,
+    /// Its portrait (a file), when it has one.
+    pub image: Option<String>,
+    /// Its author's terms, as written; `None` when it has none.
+    pub terms: Option<String>,
+    /// Whether those terms have been read and agreed to here.
+    pub terms_agreed: bool,
+}
+
+/// What kind of singer a [`SingerChoice`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SingerKind {
+    #[default]
+    Engine,
+    Utau,
+    DiffSinger,
+}
+
+impl SingerKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Engine => "engine",
+            Self::Utau => "UTAU",
+            Self::DiffSinger => "DiffSinger",
+        }
+    }
+
+    /// One of the Fontelle Singer's free voicebanks.
+    pub fn is_voicebank(self) -> bool {
+        self != Self::Engine
+    }
+}
+
+/// An installed voicebank, for the voicebanks page.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VoicebankRow {
+    /// Its folder: what uninstalling it takes.
+    pub id: String,
+    pub name: String,
+    /// "UTAU", "DiffSinger", "Dependency".
+    pub kind: String,
+    pub author: Option<String>,
+    pub portrait: Option<String>,
+    pub terms: Option<String>,
+    pub terms_agreed: bool,
+    pub path: String,
+}
+
+/// One singer in the Find singers catalogue.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CatalogueRow {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub languages: Vec<String>,
+    pub author: Option<String>,
+    pub portrait: Option<String>,
+    pub sample: Option<String>,
+    pub terms_summary: String,
+    pub terms_url: String,
+    /// "yes", "no", "ask", "?" — what the author's terms say.
+    pub commercial: String,
+    pub ai_training: String,
+    pub credit: String,
+    /// Installed straight from here (a checked download); else the author's
+    /// page opens and the download is watched for.
+    pub direct: bool,
+    pub page: Option<String>,
+    /// A "Get it" is waiting for this one's file in Downloads.
+    pub waiting: bool,
 }
 
 /// Where a phrase of a vocal track stands.
@@ -121,6 +198,25 @@ pub struct VocalView {
     /// Why the track is silent, when it is: no engine installed, the
     /// singer not found, a phrase that failed.
     pub message: Option<String>,
+    /// The key of the backend that sings (`VocalVoice::engine`).
+    pub backend: String,
+    /// What the voice answers to: the lanes it ignores are greyed, its own
+    /// lanes, settings and note options are offered.
+    pub capabilities: fontelle_sing::Capabilities,
+    /// The open clip's lanes, settings and state.
+    pub part: fontelle_model::VocalPart,
+    /// The pitch the notes, glides, vibrato and bend lane make, one line per
+    /// phrase, `(tick in the clip, MIDI key)` — what the bend is drawn over.
+    pub pitch_line: Vec<Vec<(Tick, f32)>>,
+    /// What each sung note was sung as, phoneme by phoneme with where each
+    /// starts (seconds from the note's start) when the singer said.
+    pub timed: Vec<(NoteId, Vec<(String, Option<f64>)>)>,
+    /// Ticks a second around the open clip, to place phoneme times.
+    pub ticks_per_second: f64,
+    /// The engine's name when it has a window of its own: "Open <engine>".
+    pub editor: Option<String>,
+    /// Whether that window is open.
+    pub editor_open: bool,
 }
 
 /// One row of the start menu's *Recent* list.
@@ -3552,5 +3648,90 @@ pub trait StudioHost: DocumentHost {
     /// sung, in the clip's own ticks — drawn dimmed on the block.
     fn vocal_rendering_spans(&self) -> Vec<(ClipId, Vec<(Tick, Tick)>)> {
         Vec::new()
+    }
+
+    /// Each of `ids` (in the open clip) is sung as `voices` say — vibrato,
+    /// glide, phonemes, options — one undo step a gesture (see
+    /// [`end_vocal_gesture`](Self::end_vocal_gesture)).
+    fn set_note_voices(
+        &mut self,
+        _ids: &[NoteId],
+        _voices: Vec<Option<fontelle_model::NoteVoice>>,
+        _label: &str,
+    ) -> Result<(), String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Draws one of the open clip's vocal lanes (`None` clears it); a
+    /// stroke's moves are one undo step.
+    fn set_vocal_lane(
+        &mut self,
+        _key: fontelle_model::LaneKey,
+        _curve: Option<fontelle_model::LaneCurve>,
+    ) {
+    }
+
+    /// The open clip's settings for `backend`, as a whole.
+    fn set_vocal_settings(
+        &mut self,
+        _backend: &str,
+        _settings: std::collections::BTreeMap<String, f32>,
+    ) {
+    }
+
+    /// The vocal gesture in the hand is over: the next edit is a new step.
+    fn end_vocal_gesture(&mut self) {}
+
+    /// The notes selected in the roll, for an engine's window to show.
+    fn set_vocal_selection(&mut self, _ids: &[NoteId]) {}
+
+    /// Notes an engine's window asked to have selected, taken.
+    fn take_vocal_selection(&mut self) -> Option<Vec<NoteId>> {
+        None
+    }
+
+    /// Opens the selected vocal track's engine window. Says what happened.
+    fn open_singer_editor(&mut self) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    fn close_singer_editor(&mut self) {}
+
+    /// Records that `engine`'s singer `singer`'s terms were read and agreed
+    /// to.
+    fn agree_singer_terms(&mut self, _engine: &str, _singer: &str) {}
+
+    /// Every voicebank installed.
+    fn voicebanks(&self) -> Vec<VoicebankRow> {
+        Vec::new()
+    }
+
+    /// Where voicebanks are installed.
+    fn voicebanks_folder(&self) -> String {
+        String::new()
+    }
+
+    /// Installs a dropped or chosen `.zip`, `.oudep` or folder. Says what it
+    /// installed.
+    fn install_voicebank(&mut self, _path: &std::path::Path) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    fn uninstall_voicebank(&mut self, _id: &str) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Records that the installed bank `id`'s terms were agreed to.
+    fn agree_voicebank_terms(&mut self, _id: &str) {}
+
+    /// The Find singers catalogue.
+    fn catalogue(&self) -> Vec<CatalogueRow> {
+        Vec::new()
+    }
+
+    /// Install (a checked direct download) or Get it (the author's page,
+    /// and Downloads watched for the file). Says what it started.
+    fn catalogue_get(&mut self, _id: &str) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
     }
 }

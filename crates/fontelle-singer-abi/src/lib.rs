@@ -235,6 +235,11 @@ pub struct SingerEngineV2 {
     pub has_editor: unsafe extern "C" fn(instance: *mut EngineInstance) -> bool,
     /// Opens the editor inside `parent`, editing the part `host` describes,
     /// and writes the size it wants. False when it cannot.
+    ///
+    /// `parent` may be **0**: no window to draw in (a host running headless,
+    /// or a test driving the editor through `host`). The editor must accept
+    /// it, return true, and simply not draw; everything else — reading the
+    /// part, applying edits, the transport — works as with a window.
     pub editor_open: unsafe extern "C" fn(
         instance: *mut EngineInstance,
         parent: u64,
@@ -270,7 +275,10 @@ pub struct HostCallbacks {
     pub transport: unsafe extern "C" fn(context: *mut c_void, transport_json: *const c_char),
     /// The current take of the phrase at `seconds` (song time), as a
     /// `PhraseResult` the engine must not free, or false when none is sung
-    /// yet: lets the window draw waveforms and sung pitch.
+    /// yet: lets the window draw waveforms, sung pitch and phonemes. Its
+    /// `phonemes` is the take's report in the form `render` answers with
+    /// (including `"offsets"` where the singer gave them). Every pointer in
+    /// it stays valid until the engine's next return to the host.
     pub take_at:
         unsafe extern "C" fn(context: *mut c_void, seconds: f64, take: *mut PhraseResult) -> bool,
     pub free_string: unsafe extern "C" fn(context: *mut c_void, string: *mut c_char),
@@ -308,6 +316,17 @@ pub struct PhraseNote {
 }
 
 /// What the host asks for.
+///
+/// # The seed
+///
+/// The host derives [`seed`](Self::seed) (and `render_phrase`'s) from the
+/// phrase's **content** — everything that is sung, in the phrase's own
+/// time — less the quality: a preview and its final share a seed, and the
+/// same content anywhere in the song (moved, copied, put back by an undo)
+/// is the same take, which is what lets the host cache takes by content. An
+/// engine whose window lets the writer choose among takes must therefore
+/// carry the chosen take's own seed in the part (its state blob or a
+/// setting, which are content) rather than expect the host's seed to vary.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PhraseRequest {

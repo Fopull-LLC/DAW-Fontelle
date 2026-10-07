@@ -17,6 +17,8 @@ cosmic-text = { version = "0.17.0", features = ["peniko"] }
 # those into commands. It does not — and must not — depend on `fontelle-engine`;
 # that pairing is `fontelle-app`'s alone.
 fontelle-model = { path = "../fontelle-model" }
+# A vocal part's lanes, capabilities and pitch line are the singing contract's.
+fontelle-sing = { path = "../fontelle-sing" }
 fontelle-types = { path = "../fontelle-types" }
 serde = { version = "1.0.229", features = ["derive"] }
 # `float_roundtrip`: without it serde_json's fast float parser can land a

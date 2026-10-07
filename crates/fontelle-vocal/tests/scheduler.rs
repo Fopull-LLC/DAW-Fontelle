@@ -7,13 +7,18 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fontelle_host::{PhraseSpec, RenderFailure, SpecNote, Sung, SungPhonemes};
-use fontelle_singer_abi::{QUALITY_FINAL, QUALITY_PREVIEW};
-use fontelle_vocal::{PhraseState, Singer, SingerVoice, VocalRenderer, Wanted};
+use fontelle_sing::{
+    Backend, Capabilities, Phrase, PhraseNote, Quality, Session, SingError, Sung, SungNote,
+    SungPhoneme, VoiceInfo,
+};
+use fontelle_vocal::{PhraseState, VocalRenderer, Wanted};
+
+const QUALITY_PREVIEW: Quality = Quality::Preview;
+const QUALITY_FINAL: Quality = Quality::Final;
 
 /// A singer that sings silence and writes down what it was asked.
 struct Fake {
-    log: Arc<Mutex<Vec<(String, u32)>>>,
+    log: Arc<Mutex<Vec<(String, Quality)>>>,
     delay: Duration,
     started: Arc<AtomicUsize>,
     cancels_seen: Arc<AtomicUsize>,
@@ -28,74 +33,107 @@ impl Fake {
             cancels_seen: Arc::default(),
         })
     }
-    fn log(&self) -> Vec<(String, u32)> {
+    fn log(&self) -> Vec<(String, Quality)> {
         self.log.lock().unwrap().clone()
     }
 }
 
 struct FakeVoice(Arc<Fake>);
 
-impl Singer for Fake {
+/// The fake's handle to itself, so a session can count what it is asked.
+struct FakeBackend(Arc<Fake>);
+
+impl Backend for FakeBackend {
     fn name(&self) -> &str {
         "Fake"
     }
     fn version(&self) -> String {
         "1".into()
     }
-    fn voice(self: Arc<Self>) -> Result<Box<dyn SingerVoice>, String> {
-        Ok(Box::new(FakeVoice(self)))
+    fn voices(&self) -> Vec<VoiceInfo> {
+        Vec::new()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn Session>, String> {
+        Ok(Box::new(FakeVoice(Arc::clone(&self.0))))
     }
 }
 
-impl SingerVoice for FakeVoice {
-    fn render(
+impl Session for FakeVoice {
+    fn sing(
         &mut self,
-        spec: &PhraseSpec,
-        quality: u32,
+        _phrase: &Phrase,
+        _quality: Quality,
+        _seed: u64,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Result<Sung, SingError> {
+        unreachable!("the scheduler hands its flag over")
+    }
+
+    fn sing_flagged(
+        &mut self,
+        spec: &Phrase,
+        quality: Quality,
         _seed: u64,
         cancel: &AtomicU32,
-    ) -> Result<Sung, RenderFailure> {
+    ) -> Result<Sung, SingError> {
         self.0.started.fetch_add(1, Ordering::SeqCst);
         let until = Instant::now() + self.0.delay;
         while Instant::now() < until {
             if cancel.load(Ordering::Relaxed) != 0 {
                 self.0.cancels_seen.fetch_add(1, Ordering::SeqCst);
-                return Err(RenderFailure::Cancelled);
+                return Err(SingError::Cancelled);
             }
             std::thread::sleep(Duration::from_millis(1));
         }
         let lyric = spec.notes[0].lyric.clone();
         if lyric == "!fail" {
-            return Err(RenderFailure::Failed("no".into()));
+            return Err(SingError::Failed("no".into()));
         }
         self.0.log.lock().unwrap().push((lyric, quality));
         Ok(Sung {
             sample_rate: 24_000,
-            samples: vec![quality as f32; 2_400],
+            samples: vec![quality_number(quality); 2_400],
             start: -0.05,
             pitch: vec![440.0; 10],
             pitch_step: 0.01,
-            phonemes: vec![SungPhonemes {
+            phonemes: vec![SungNote {
                 note: 0,
-                phonemes: vec!["l".into(), "a".into()],
+                phonemes: ["l", "a"]
+                    .iter()
+                    .map(|s| SungPhoneme {
+                        symbol: s.to_string(),
+                        offset: None,
+                    })
+                    .collect(),
                 guessed: false,
             }],
         })
     }
 }
 
+fn quality_number(q: Quality) -> f32 {
+    match q {
+        Quality::Preview => 0.0,
+        Quality::Final => 1.0,
+    }
+}
+
 fn phrase(engine: &Arc<Fake>, at: f64, lyric: &str) -> Wanted {
     Wanted {
-        singer: Arc::clone(engine) as Arc<dyn Singer>,
-        spec: PhraseSpec {
-            singer: "alto".into(),
+        backend: Arc::new(FakeBackend(Arc::clone(engine))) as Arc<dyn Backend>,
+        phrase: Phrase {
+            voice: "alto".into(),
             language: "en".into(),
-            notes: vec![SpecNote {
-                start: 0.0,
-                duration: 1.0,
-                pitch: 60.0,
-                lyric: lyric.into(),
-            }],
+            notes: vec![PhraseNote::new(0.0, 1.0, 60.0, lyric)],
+            curves: Default::default(),
+            extra_curves: Default::default(),
+            settings: Default::default(),
+            state: None,
+            start: at,
+            note_ids: Vec::new(),
         },
         start: at,
         end: at + 1.0,
@@ -151,9 +189,9 @@ fn the_best_take_is_the_final_once_it_lands() {
     settle(&mut r, |r| r.state(&w) == PhraseState::Final);
     let best = r.best(&w).expect("sung");
     assert_eq!(best.quality, QUALITY_FINAL);
-    assert_eq!(best.samples[0], QUALITY_FINAL as f32);
+    assert_eq!(best.samples[0], quality_number(QUALITY_FINAL));
     assert_eq!(best.sample_rate, 24_000);
-    assert_eq!(best.phonemes[0].phonemes, vec!["l", "a"]);
+    assert_eq!(best.phonemes[0].phonemes[1].symbol, "a");
 }
 
 #[test]

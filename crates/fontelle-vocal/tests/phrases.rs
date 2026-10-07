@@ -10,6 +10,7 @@ mod common;
 
 use common::{BEAT, note, song};
 use fontelle_model::{ClipSource, Note};
+use fontelle_sing::Quality;
 use fontelle_types::PPQN;
 use fontelle_vocal::{MAX_PHRASE_SECONDS, phrases_of, render_key};
 
@@ -32,12 +33,12 @@ fn a_rest_of_a_fifth_of_a_second_or_more_ends_a_phrase() {
     assert!((phrases[0].end - 1.5).abs() < 1e-9);
     assert!((phrases[1].start - 2.0).abs() < 1e-9);
     // In phrase-relative seconds, as the ABI wants them.
-    let starts: Vec<f64> = phrases[1].spec.notes.iter().map(|n| n.start).collect();
+    let starts: Vec<f64> = phrases[1].sing.notes.iter().map(|n| n.start).collect();
     assert_eq!(starts, vec![0.0, 0.5]);
-    assert!((phrases[1].spec.notes[0].duration - 0.5).abs() < 1e-9);
-    assert_eq!(phrases[1].spec.notes[0].pitch, 63.0);
-    assert_eq!(phrases[0].spec.singer, "alto");
-    assert_eq!(phrases[0].spec.language, "en");
+    assert!((phrases[1].sing.notes[0].duration - 0.5).abs() < 1e-9);
+    assert_eq!(phrases[1].sing.notes[0].pitch, 63.0);
+    assert_eq!(phrases[0].sing.voice, "alto");
+    assert_eq!(phrases[0].sing.language, "en");
 }
 
 #[test]
@@ -72,10 +73,10 @@ fn a_long_legato_line_is_capped() {
 fn an_empty_lyric_sings_the_languages_own_syllable() {
     let s = song("ja", line(&[0.0, 1.0], ""));
     let phrases = phrases_of(&s.project, s.voice, &s.tempo());
-    assert_eq!(phrases[0].spec.notes[0].lyric, "ら");
+    assert_eq!(phrases[0].sing.notes[0].lyric, "ら");
     let s = song("en", line(&[0.0], ""));
     assert_eq!(
-        phrases_of(&s.project, s.voice, &s.tempo())[0].spec.notes[0].lyric,
+        phrases_of(&s.project, s.voice, &s.tempo())[0].sing.notes[0].lyric,
         "la"
     );
 }
@@ -118,7 +119,7 @@ fn a_clip_cut_short_or_looped_sings_what_it_plays() {
     // Each pass is the same phrase: one render, four places.
     let keys: Vec<u64> = phrases
         .iter()
-        .map(|p| render_key("Engine", "1", &p.spec, 0).hash)
+        .map(|p| render_key("Engine", "1", &p.sing, Quality::Preview).hash)
         .collect();
     assert!(keys.windows(2).all(|w| w[0] == w[1]));
 }
@@ -127,7 +128,7 @@ fn a_clip_cut_short_or_looped_sings_what_it_plays() {
 fn moving_a_phrase_keeps_its_key_and_an_edit_changes_only_its_own() {
     let s = song("en", line(&[0.0, 1.0, 4.0, 5.0], "la"));
     let before = phrases_of(&s.project, s.voice, &s.tempo());
-    let key = |p: &fontelle_vocal::Phrase| render_key("Engine", "1", &p.spec, 0);
+    let key = |p: &fontelle_vocal::Phrase| render_key("Engine", "1", &p.sing, Quality::Preview);
 
     // The whole clip two bars later.
     let mut moved = song("en", line(&[0.0, 1.0, 4.0, 5.0], "la"));
@@ -155,20 +156,26 @@ fn moving_a_phrase_keeps_its_key_and_an_edit_changes_only_its_own() {
 fn the_key_names_engine_version_singer_language_and_quality() {
     let s = song("en", line(&[0.0, 1.0], "la"));
     let p = &phrases_of(&s.project, s.voice, &s.tempo())[0];
-    let base = render_key("Engine", "1", &p.spec, 0);
-    assert_ne!(base, render_key("Other", "1", &p.spec, 0));
-    assert_ne!(base, render_key("Engine", "2", &p.spec, 0));
-    assert_ne!(base, render_key("Engine", "1", &p.spec, 1));
-    let mut spec = p.spec.clone();
-    spec.singer = "soprano".into();
-    assert_ne!(base, render_key("Engine", "1", &spec, 0));
-    let mut spec = p.spec.clone();
+    let base = render_key("Engine", "1", &p.sing, Quality::Preview);
+    assert_ne!(base, render_key("Other", "1", &p.sing, Quality::Preview));
+    assert_ne!(base, render_key("Engine", "2", &p.sing, Quality::Preview));
+    assert_ne!(base, render_key("Engine", "1", &p.sing, Quality::Final));
+    let mut spec = p.sing.clone();
+    spec.voice = "soprano".into();
+    assert_ne!(base, render_key("Engine", "1", &spec, Quality::Preview));
+    let mut spec = p.sing.clone();
     spec.language = "ja".into();
-    assert_ne!(base, render_key("Engine", "1", &spec, 0));
+    assert_ne!(base, render_key("Engine", "1", &spec, Quality::Preview));
     // The seed comes from what is sung, not the quality: preview and final
     // are the same take, the final one better.
-    assert_eq!(base.seed, render_key("Engine", "1", &p.spec, 1).seed);
-    assert_eq!(base, render_key("Engine", "1", &p.spec.clone(), 0));
+    assert_eq!(
+        base.seed,
+        render_key("Engine", "1", &p.sing, Quality::Final).seed
+    );
+    assert_eq!(
+        base,
+        render_key("Engine", "1", &p.sing.clone(), Quality::Preview)
+    );
 }
 
 /// A voice sings one note at a time: where notes overlap the later one wins
@@ -184,7 +191,7 @@ fn overlapping_notes_are_sung_one_at_a_time() {
     let s = song("en", notes);
     let phrases = phrases_of(&s.project, s.voice, &s.tempo());
     assert_eq!(phrases.len(), 1);
-    let spec = &phrases[0].spec;
+    let spec = &phrases[0].sing;
     assert_eq!(spec.notes.len(), 2);
     assert!(
         (spec.notes[0].duration - 0.5).abs() < 1e-9,
