@@ -114,7 +114,15 @@ fn a_library_that_is_not_a_singer_engine_is_a_failure_not_a_crash() {
 fn an_engine_built_for_another_abi_says_which_fontelle_it_needs() {
     assert_eq!(abi_verdict(ABI_VERSION), AbiVerdict::Fits);
     assert_eq!(abi_verdict(ABI_VERSION + 1), AbiVerdict::NeedsNewerFontelle);
-    assert_eq!(abi_verdict(ABI_VERSION - 1), AbiVerdict::NeedsOlderFontelle);
+    assert_eq!(
+        abi_verdict(1),
+        AbiVerdict::Fits,
+        "version-1 engines still load"
+    );
+    assert_eq!(
+        abi_verdict(fontelle_singer_abi::MIN_ABI_VERSION - 1),
+        AbiVerdict::NeedsOlderFontelle
+    );
     assert!(
         AbiVerdict::NeedsNewerFontelle
             .explain(2)

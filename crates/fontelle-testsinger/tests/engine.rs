@@ -120,7 +120,7 @@ fn fundamental(samples: &[f32], rate: u32) -> f32 {
 #[test]
 fn the_table_says_who_it_is() {
     let t = table();
-    assert_eq!(t.abi_version, ABI_VERSION);
+    assert!(t.abi_version <= ABI_VERSION);
     assert_eq!(text(t.name), fontelle_testsinger::ENGINE_NAME);
     assert!(!text(t.version).is_empty());
 }

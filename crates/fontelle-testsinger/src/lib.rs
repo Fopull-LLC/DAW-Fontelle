@@ -20,9 +20,8 @@ use std::ffi::{CStr, CString, c_char};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use fontelle_singer_abi::{
-    ABI_VERSION, EngineInstance, FontelleSingerEngine, LYRIC_SLUR, PhraseNote, PhraseRequest,
-    PhraseResult, QUALITY_FINAL, SINGER_RESEARCH_ONLY, STATUS_CANCELLED, STATUS_ERROR, STATUS_OK,
-    SingerInfo,
+    EngineInstance, FontelleSingerEngine, LYRIC_SLUR, PhraseNote, PhraseRequest, PhraseResult,
+    QUALITY_FINAL, SINGER_RESEARCH_ONLY, STATUS_CANCELLED, STATUS_ERROR, STATUS_OK, SingerInfo,
 };
 
 pub const ENGINE_NAME: &str = "Fontelle Test Singer";
@@ -436,7 +435,9 @@ struct Table(FontelleSingerEngine);
 unsafe impl Sync for Table {}
 
 static ENGINE: Table = Table(FontelleSingerEngine {
-    abi_version: ABI_VERSION,
+    // A version-1 engine, so the host's support for those stays tested; the
+    // version-2 table is the integration's to add.
+    abi_version: 1,
     name: NAME.as_ptr(),
     version: VERSION.as_ptr(),
     create,
@@ -446,6 +447,7 @@ static ENGINE: Table = Table(FontelleSingerEngine {
     render,
     free_result,
     last_error,
+    v2: std::ptr::null(),
 });
 
 /// The engine's one export.

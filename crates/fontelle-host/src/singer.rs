@@ -63,10 +63,12 @@ impl AbiVerdict {
 
 /// Whether an engine built for ABI `theirs` can be loaded here.
 pub fn abi_verdict(theirs: u32) -> AbiVerdict {
-    match theirs.cmp(&ABI_VERSION) {
-        std::cmp::Ordering::Equal => AbiVerdict::Fits,
-        std::cmp::Ordering::Greater => AbiVerdict::NeedsNewerFontelle,
-        std::cmp::Ordering::Less => AbiVerdict::NeedsOlderFontelle,
+    if theirs > ABI_VERSION {
+        AbiVerdict::NeedsNewerFontelle
+    } else if theirs < fontelle_singer_abi::MIN_ABI_VERSION {
+        AbiVerdict::NeedsOlderFontelle
+    } else {
+        AbiVerdict::Fits
     }
 }
 

@@ -89,12 +89,16 @@
 //!   together the higher is kept — and an engine handed overlapping notes
 //!   anyway clips each at the next one's start.
 
-use core::ffi::c_char;
+use core::ffi::{c_char, c_void};
 use core::sync::atomic::AtomicU32;
 
-/// Bumped on any change to a struct or a function's meaning. An engine whose
-/// number differs from the host's is not loaded.
-pub const ABI_VERSION: u32 = 1;
+/// Bumped on any change to a struct or a function's meaning. The host loads
+/// engines built for any version from [`MIN_ABI_VERSION`] to this one, and
+/// reads [`FontelleSingerEngine::v2`] only from engines built for 2 or later.
+pub const ABI_VERSION: u32 = 2;
+
+/// The oldest engine ABI the host still loads.
+pub const MIN_ABI_VERSION: u32 = 1;
 
 /// The one symbol an engine exports, of type [`EntryFn`].
 pub const ENTRY_SYMBOL: &str = "fontelle_singer_entry";
@@ -170,6 +174,106 @@ pub struct FontelleSingerEngine {
     /// The last failure on this instance, UTF-8, NUL-terminated, valid until
     /// the next call; null when there was none.
     pub last_error: unsafe extern "C" fn(instance: *mut EngineInstance) -> *const c_char,
+    /// **ABI 2.** The engine's version-2 table, or null. Read only when
+    /// [`abi_version`](Self::abi_version) is 2 or more: a version-1 engine's
+    /// table ends before this field.
+    pub v2: *const SingerEngineV2,
+}
+
+/// # Version 2: the whole phrase, and the engine's own window
+///
+/// Version 1 sings notes and lyrics. Version 2 lets an engine be an
+/// instrument in its own right:
+///
+/// - **Capabilities.** The engine says, per singer, which of the vocal
+///   track's standard lanes, note expression and phoneme timing it honours,
+///   and declares lanes, whole-part settings and per-note options of its
+///   own. Fontelle draws the declared lanes in its piano roll under the
+///   engine's name and keeps their values in the part.
+/// - **The whole phrase.** [`render_phrase`](SingerEngineV2::render_phrase)
+///   takes the phrase as `fontelle-sing`'s `Phrase` in JSON: notes with
+///   lyrics, phoneme edits, velocity, vibrato and portamento, every drawn
+///   lane, the engine's own lanes, settings and its state blob.
+/// - **Its own window.** An engine may draw its own editor, with its own
+///   design, into a window Fontelle makes and owns (an X11 window id on
+///   Linux, an `HWND` on Windows, an `NSView*` on macOS), exactly as a
+///   plugin bridge's editor is embedded. The window reads the part it edits
+///   and asks for edits through [`HostCallbacks`]; every edit is a Fontelle
+///   command, so it is undoable, saved with the song and shared in a
+///   collaboration like any other.
+///
+/// JSON is the format of everything that crosses here beyond version 1:
+/// `fontelle-sing`'s types with serde's default representation. Unknown
+/// keys are ignored on both sides, so either may grow.
+///
+/// Threads: [`capabilities`](SingerEngineV2::capabilities) and the editor
+/// calls are made on the main thread; `render_phrase` like `render`. An
+/// editor gets an instance of its own (made with `create` on the main
+/// thread) and never shares it with a render worker.
+#[repr(C)]
+pub struct SingerEngineV2 {
+    /// `fontelle-sing`'s `Capabilities` for `singer_id`, as JSON in a
+    /// string the host frees with [`free_string`](Self::free_string); null
+    /// when the singer is unknown.
+    pub capabilities: unsafe extern "C" fn(
+        instance: *mut EngineInstance,
+        singer_id: *const c_char,
+    ) -> *mut c_char,
+    /// Sings `phrase_json` (a `Phrase`) into `result`, as `render` does.
+    pub render_phrase: unsafe extern "C" fn(
+        instance: *mut EngineInstance,
+        phrase_json: *const c_char,
+        quality: u32,
+        seed: u64,
+        cancel: *const AtomicU32,
+        result: *mut PhraseResult,
+    ) -> i32,
+    /// Frees a string this table returned.
+    pub free_string: unsafe extern "C" fn(instance: *mut EngineInstance, string: *mut c_char),
+    /// Whether the engine has a window of its own; the rest of the editor
+    /// calls are made only when it does.
+    pub has_editor: unsafe extern "C" fn(instance: *mut EngineInstance) -> bool,
+    /// Opens the editor inside `parent`, editing the part `host` describes,
+    /// and writes the size it wants. False when it cannot.
+    pub editor_open: unsafe extern "C" fn(
+        instance: *mut EngineInstance,
+        parent: u64,
+        host: *const HostCallbacks,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> bool,
+    /// Called once a frame while open; the editor does its drawing and event
+    /// handling here (it has no thread of its own).
+    pub editor_tick: unsafe extern "C" fn(instance: *mut EngineInstance),
+    /// The host's window was resized.
+    pub editor_resized:
+        unsafe extern "C" fn(instance: *mut EngineInstance, width: u32, height: u32),
+    /// The part changed (an edit anywhere, a render landed, the selection or
+    /// the playhead moved): read it again.
+    pub editor_part_changed: unsafe extern "C" fn(instance: *mut EngineInstance),
+    pub editor_close: unsafe extern "C" fn(instance: *mut EngineInstance),
+}
+
+/// What the host offers an engine's window. Valid from `editor_open` to
+/// `editor_close`; called only on the main thread, from inside
+/// `editor_tick` or `editor_part_changed`.
+#[repr(C)]
+pub struct HostCallbacks {
+    pub context: *mut c_void,
+    /// The part as `fontelle-sing`'s `PartView`, JSON, freed with
+    /// `free_string`.
+    pub get_part: unsafe extern "C" fn(context: *mut c_void) -> *mut c_char,
+    /// Applies `edits_json` (a JSON array of `PartEdit`) as one undo step.
+    /// False, with nothing changed, when any edit is invalid.
+    pub apply_edits: unsafe extern "C" fn(context: *mut c_void, edits_json: *const c_char) -> bool,
+    /// `fontelle-sing`'s `Transport`, JSON.
+    pub transport: unsafe extern "C" fn(context: *mut c_void, transport_json: *const c_char),
+    /// The current take of the phrase at `seconds` (song time), as a
+    /// `PhraseResult` the engine must not free, or false when none is sung
+    /// yet: lets the window draw waveforms and sung pitch.
+    pub take_at:
+        unsafe extern "C" fn(context: *mut c_void, seconds: f64, take: *mut PhraseResult) -> bool,
+    pub free_string: unsafe extern "C" fn(context: *mut c_void, string: *mut c_char),
 }
 
 /// One singer an engine offers.
@@ -273,7 +377,8 @@ mod tests {
     #[test]
     fn the_entry_symbol_and_version_are_what_engines_build_against() {
         assert_eq!(ENTRY_SYMBOL, "fontelle_singer_entry");
-        assert_eq!(ABI_VERSION, 1);
+        assert_eq!(ABI_VERSION, 2);
+        assert_eq!(MIN_ABI_VERSION, 1);
         assert_eq!(LYRIC_SLUR, "-");
     }
 

@@ -1494,6 +1494,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontelle-sing"
+version = "0.26.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fontelle-singer-abi"
 version = "0.26.1"
 
