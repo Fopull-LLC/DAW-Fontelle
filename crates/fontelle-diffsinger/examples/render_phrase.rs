@@ -77,6 +77,8 @@ fn main() {
         extra_curves: BTreeMap::new(),
         settings,
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     };
     let quality = if flag("--preview") {
         Quality::Preview

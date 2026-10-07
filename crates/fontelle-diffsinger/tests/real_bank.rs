@@ -73,6 +73,8 @@ fn phrase(voice: &str) -> Phrase {
         extra_curves: BTreeMap::new(),
         settings: BTreeMap::new(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     }
 }
 
@@ -384,6 +386,8 @@ fn a_real_multi_speaker_bank_sings_kana_with_each_speaker() {
         extra_curves: BTreeMap::new(),
         settings: BTreeMap::new(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     };
     base.settings.insert("natural_pitch".into(), 0.0);
     let mut takes = Vec::new();

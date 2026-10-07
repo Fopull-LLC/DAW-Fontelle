@@ -62,6 +62,8 @@ fn main() {
         extra_curves: BTreeMap::new(),
         settings: BTreeMap::new(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     };
     let cache_dir = std::env::var_os("FONTELLE_UTAU_CACHE")
         .map(PathBuf::from)

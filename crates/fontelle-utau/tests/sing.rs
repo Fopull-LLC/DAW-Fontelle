@@ -40,6 +40,8 @@ fn phrase(notes: &[(f64, f64, f32, &str)]) -> Phrase {
         extra_curves: BTreeMap::new(),
         settings: BTreeMap::new(),
         state: None,
+        start: 0.0,
+        note_ids: Vec::new(),
     }
 }
 

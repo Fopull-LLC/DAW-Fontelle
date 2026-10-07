@@ -48,6 +48,8 @@ fn every_installed_bank_sings_in_tune() {
             extra_curves: BTreeMap::new(),
             settings: BTreeMap::new(),
             state: None,
+            start: 0.0,
+            note_ids: Vec::new(),
         };
         let mut session = backend.session().unwrap();
         for q in [Quality::Preview, Quality::Final, Quality::Final] {
