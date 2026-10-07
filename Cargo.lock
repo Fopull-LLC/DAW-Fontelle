@@ -1404,6 +1404,7 @@ dependencies = [
 name = "fontelle-diffsinger"
 version = "0.26.1"
 dependencies = [
+ "fontelle-lang",
  "fontelle-sing",
  "ort",
  "serde",
@@ -1643,6 +1644,7 @@ version = "0.26.1"
 dependencies = [
  "encoding_rs",
  "flate2",
+ "fontelle-lang",
  "fontelle-sing",
  "rayon",
  "realfft",

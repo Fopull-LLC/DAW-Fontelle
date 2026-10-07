@@ -80,6 +80,17 @@ impl Syllable {
         format!("{}{}{}", self.onset, self.vowel, self.coda)
     }
 
+    /// Its vowel alone (`한` → `아`): what a slur after a rest sings again.
+    pub fn vowel_only(&self) -> Syllable {
+        let v = VOWELS.iter().position(|o| *o == self.vowel).unwrap_or(0) as u32;
+        Syllable {
+            text: compose(11, v, 0).unwrap_or('아'),
+            onset: "",
+            vowel: self.vowel,
+            coda: "",
+        }
+    }
+
     /// The block without its coda, as a CV voicebank names it (`한` → `하`),
     /// with the onset as sung (`음악`'s `악` is `마`).
     pub fn open(&self) -> char {

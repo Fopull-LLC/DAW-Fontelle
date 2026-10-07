@@ -12,7 +12,11 @@
 //! - phonemes in brackets (`"[h ə l oʊ]"`) are one lyric, spaces and all;
 //! - kana are a mora per note (`"さくら"` is `"さ" "く" "ら"`), small kana
 //!   joining the one before (`"きょ"`), because that is how Japanese is sung
-//!   and written under notes.
+//!   and written under notes;
+//! - Chinese characters and Korean hangul are a syllable per note
+//!   (`"我爱你"` is `"我" "爱" "你"`, `"사랑해"` is `"사" "랑" "해"`), a
+//!   reading in brackets staying with its character (`"银行[hang]"` is
+//!   `"银" "行[hang]"`) and punctuation with the character before it.
 
 /// What [`spread`] made of a line.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -62,6 +66,10 @@ fn word(word: &str, out: &mut Vec<String>) {
         morae(word, out);
         return;
     }
+    if let Some(syllables) = cjk_syllables(word) {
+        out.extend(syllables);
+        return;
+    }
     // "a-ma-zing" → "a-" "ma-" "zing"; "hel-" stays "hel-". Hyphens at the
     // front or doubled are kept as written rather than guessed at.
     let parts: Vec<&str> = word.split('-').collect();
@@ -86,6 +94,46 @@ fn fontelle_lyric_slur() -> &'static str {
 
 fn is_kana(c: char) -> bool {
     ('\u{3041}'..='\u{309F}').contains(&c) || ('\u{30A0}'..='\u{30FF}').contains(&c)
+}
+
+/// A Chinese character or a hangul syllable block: a syllable each.
+fn is_cjk_syllable(c: char) -> bool {
+    matches!(c as u32,
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x323AF
+            | 0xAC00..=0xD7A3)
+}
+
+/// A word of Chinese characters or hangul, a syllable each, with any
+/// bracketed reading or punctuation after a syllable kept on it; `None`
+/// when the word has anything else in it.
+fn cjk_syllables(word: &str) -> Option<Vec<String>> {
+    if !word.chars().any(is_cjk_syllable) {
+        return None;
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut lead = String::new();
+    let mut in_bracket = false;
+    for c in word.chars() {
+        if in_bracket {
+            out.last_mut()?.push(c);
+            in_bracket = c != ']';
+        } else if is_cjk_syllable(c) {
+            out.push(std::mem::take(&mut lead));
+            out.last_mut()?.push(c);
+        } else if c == '[' {
+            out.last_mut()?.push(c);
+            in_bracket = true;
+        } else if !c.is_alphanumeric() {
+            // Punctuation: on the syllable before, or the first one.
+            match out.last_mut() {
+                Some(last) => last.push(c),
+                None => lead.push(c),
+            }
+        } else {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 /// Small kana that belong to the mora before them.
@@ -136,6 +184,7 @@ pub fn default_syllable(language: &str) -> &'static str {
     let primary = language.split(['-', '_']).next().unwrap_or("");
     match primary {
         "ja" => "ら",
+        "ko" => "라",
         _ => "la",
     }
 }

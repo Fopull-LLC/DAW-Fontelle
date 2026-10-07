@@ -429,3 +429,64 @@ fn a_real_multi_speaker_bank_sings_kana_with_each_speaker() {
     assert_healthy(&sung, "mix");
     assert!(sung.samples != takes[0] && sung.samples != takes[1]);
 }
+
+#[test]
+#[ignore = "needs a real voicebank: FONTELLE_TEST_VOICEBANKS"]
+fn a_real_chinese_bank_sings_chinese_characters() {
+    let Ok(dir) = std::env::var("FONTELLE_TEST_VOICEBANKS") else {
+        eprintln!("FONTELLE_TEST_VOICEBANKS is not set; nothing to sing with");
+        return;
+    };
+    let singer = DiffSinger::new(Options::new(vec![dir.into()]));
+    let voices: Vec<String> = singer
+        .voices()
+        .into_iter()
+        .filter(|v| v.languages.iter().any(|l| l == "zh"))
+        .map(|v| v.id)
+        .collect();
+    if voices.is_empty() {
+        eprintln!("no Chinese voicebank; nothing to test");
+        return;
+    }
+    // 我们一起去银行: 行 is hang only beside 银, on the note before.
+    let lyrics = ["我", "们", "一", "起", "去", "银", "行"];
+    let pitches = [62.0, 64.0, 66.0, 67.0, 69.0, 67.0, 66.0];
+    for voice in voices {
+        let p = Phrase {
+            voice: voice.clone(),
+            language: "zh".into(),
+            notes: lyrics
+                .iter()
+                .zip(pitches)
+                .enumerate()
+                .map(|(i, (l, p))| PhraseNote::new(i as f64 * 0.45, 0.45, p - 5.0, *l))
+                .collect(),
+            curves: BTreeMap::new(),
+            extra_curves: BTreeMap::new(),
+            settings: BTreeMap::new(),
+            state: None,
+            start: 0.0,
+            note_ids: Vec::new(),
+        };
+        let (sung, took) = sing(&singer, &p, Quality::Final, 3);
+        let said: Vec<String> = sung
+            .phonemes
+            .iter()
+            .map(|n| {
+                n.phonemes
+                    .iter()
+                    .map(|p| p.symbol.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        eprintln!("{voice}: {said:?} in {took:.2} s");
+        save(&format!("zh_{}", voice.replace(['/', ' '], "_")), &sung);
+        assert_healthy(&sung, &voice);
+        assert!(
+            sung.phonemes.iter().all(|n| !n.guessed),
+            "{voice}: every character is read: {said:?}"
+        );
+        assert!(said[6].contains("ang"), "{voice}: 银行 is yin hang: {said:?}");
+    }
+}

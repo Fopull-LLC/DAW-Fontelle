@@ -74,6 +74,12 @@ impl Reader<'_> {
 
     /// A word's phonemes, and whether they are a guess.
     pub fn read(&self, text: &str) -> (Vec<String>, bool) {
+        self.read_with(text, None)
+    }
+
+    /// A word's phonemes, given how its run of notes reads it when it is
+    /// Chinese or Korean (words across notes, a coda carried over).
+    pub fn read_with(&self, text: &str, context: Option<&Script>) -> (Vec<String>, bool) {
         let text = text.trim();
         if let Some(p) = self.lookup(text) {
             return (p, false);
@@ -81,6 +87,15 @@ impl Reader<'_> {
         let bare = text.trim_matches(|c: char| PUNCTUATION.contains(c));
         if let Some(p) = self.lookup(bare) {
             return (p, false);
+        }
+        match context
+            .cloned()
+            .or_else(|| Script::of(text))
+            .or_else(|| Script::of(bare))
+        {
+            Some(Script::Pinyin(s)) => return self.read_pinyin(&s),
+            Some(Script::Hangul(s)) => return self.read_hangul(&s),
+            None => {}
         }
         // Kana, a mora at a time, in the romaji the dictionary is keyed by.
         if let Some(morae) = crate::kana::morae(bare) {
@@ -101,6 +116,70 @@ impl Reader<'_> {
             return (p, true);
         }
         (self.default_syllable(), true)
+    }
+
+    /// Pinyin syllables: each as the dictionary has it, else as its
+    /// initial and final when the bank has those symbols.
+    fn read_pinyin(&self, syllables: &[String]) -> (Vec<String>, bool) {
+        let mut out = Vec::new();
+        let mut guessed = false;
+        for s in syllables {
+            if let Some(p) = self.lookup(s) {
+                out.extend(p);
+                continue;
+            }
+            let (i, f) = fontelle_lang::pinyin::split(s);
+            let parts: Option<Vec<String>> = [i, f]
+                .iter()
+                .filter(|x| !x.is_empty())
+                .map(|x| self.resolve(x))
+                .collect();
+            match parts {
+                Some(p) if !p.is_empty() => out.extend(p),
+                _ => {
+                    guessed = true;
+                    out.extend(self.default_syllable());
+                }
+            }
+        }
+        (out, guessed)
+    }
+
+    /// Hangul syllables: each as the dictionary has the block or its
+    /// romanisation, else as onset, vowel and coda symbols.
+    fn read_hangul(&self, syllables: &[fontelle_lang::hangul::Syllable]) -> (Vec<String>, bool) {
+        let mut out = Vec::new();
+        let mut guessed = false;
+        for s in syllables {
+            if let Some(p) = self
+                .lookup(&s.roman())
+                .or_else(|| self.lookup(&s.text.to_string()))
+            {
+                out.extend(p);
+                continue;
+            }
+            let sound = |x: &str| self.resolve(x).or_else(|| self.resolve(&x.to_uppercase()));
+            let vowel = sound(s.vowel);
+            let Some(vowel) = vowel else {
+                guessed = true;
+                out.extend(self.default_syllable());
+                continue;
+            };
+            if !s.onset.is_empty() {
+                match sound(s.onset) {
+                    Some(o) => out.push(o),
+                    None => guessed = true,
+                }
+            }
+            out.push(vowel);
+            if !s.coda.is_empty() {
+                match sound(s.coda) {
+                    Some(c) => out.push(c),
+                    None => guessed = true,
+                }
+            }
+        }
+        (out, guessed)
     }
 
     /// What an empty lyric sings.
@@ -195,9 +274,10 @@ impl Reader<'_> {
 pub fn phonemize(notes: &[PhraseNote], words: &[Word], reader: &Reader) -> Vec<NotePhonemes> {
     let mut out = vec![NotePhonemes::default(); notes.len()];
     let mut last_vowel: Option<String> = None;
-    for word in words {
+    let scripts = Script::of_run(notes, words);
+    for (word, script) in words.iter().zip(&scripts) {
         let (symbols, guessed) = match &word.reading {
-            Reading::Text(text) => reader.read(text),
+            Reading::Text(text) => reader.read_with(text, script.as_ref()),
             Reading::Phonemes(typed) => {
                 let p: Vec<String> = typed.iter().filter_map(|s| reader.resolve(s)).collect();
                 if p.is_empty() {
@@ -308,6 +388,74 @@ fn distribute(symbols: &[String], notes: &[usize], reader: &Reader) -> Vec<(usiz
         ));
     }
     out
+}
+
+/// How a word in a script of its own reads, in the context of its run of
+/// notes (`fontelle_lang`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Script {
+    /// Chinese characters, as pinyin syllables.
+    Pinyin(Vec<String>),
+    /// Hangul, as its syllables' sounds.
+    Hangul(Vec<fontelle_lang::hangul::Syllable>),
+}
+
+impl Script {
+    /// A word on its own.
+    pub fn of(text: &str) -> Option<Script> {
+        if fontelle_lang::pinyin::has_hanzi(text) {
+            fontelle_lang::pinyin::read(text).map(Script::Pinyin)
+        } else if fontelle_lang::hangul::has_hangul(text) {
+            fontelle_lang::hangul::read(text).map(Script::Hangul)
+        } else {
+            None
+        }
+    }
+
+    /// Each word of a phrase, read with the words sung next to it: a run is
+    /// broken by a rest, a slur or a word in another script.
+    pub fn of_run(notes: &[PhraseNote], words: &[Word]) -> Vec<Option<Script>> {
+        // The words' texts with a break ("") wherever a rest falls between
+        // two words, and where each word's text is in that list.
+        let mut texts: Vec<&str> = Vec::new();
+        let mut at: Vec<Option<usize>> = Vec::new();
+        let mut last_end: Option<f64> = None;
+        for word in words {
+            let first = word.notes.first().and_then(|&n| notes.get(n));
+            if let (Some(end), Some(first)) = (last_end, first)
+                && first.start - end > crate::lyrics::TOUCH
+            {
+                texts.push("");
+            }
+            last_end = word
+                .notes
+                .last()
+                .and_then(|&n| notes.get(n))
+                .map(|n| n.end());
+            match &word.reading {
+                Reading::Text(t) => {
+                    at.push(Some(texts.len()));
+                    texts.push(t.trim());
+                }
+                _ => {
+                    at.push(None);
+                    texts.push("");
+                }
+            }
+        }
+        let pinyin = fontelle_lang::pinyin::read_run(&texts);
+        let hangul = fontelle_lang::hangul::read_run(&texts);
+        at.iter()
+            .map(|i| {
+                let i = (*i)?;
+                if fontelle_lang::pinyin::has_hanzi(texts[i]) {
+                    pinyin[i].clone().map(Script::Pinyin)
+                } else {
+                    hangul[i].clone().map(Script::Hangul)
+                }
+            })
+            .collect()
+    }
 }
 
 /// Stripped from a lyric's ends before a second look in the dictionary.
