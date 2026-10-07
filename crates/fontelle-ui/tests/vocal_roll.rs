@@ -221,8 +221,7 @@ fn with_no_engine_the_picker_says_so_and_where_one_goes() {
     let rows = singer_menu_rows(&[], None, &[], "/home/ty/.local/share/fontelle/singers");
     let text: Vec<&str> = rows.iter().map(|(e, _)| e.label.as_str()).collect();
     assert!(
-        text.iter()
-            .any(|t| t.contains("No singer engine is installed")),
+        text.iter().any(|t| t.contains("No singer is installed")),
         "{text:?}"
     );
     assert!(

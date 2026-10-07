@@ -189,6 +189,10 @@ pub enum SingerRow {
     Choose { singer: usize, language: String },
     /// Nobody: the track keeps its notes and words and is silent.
     Nobody,
+    /// Install a voicebank from a file.
+    InstallVoicebank,
+    /// The Voicebanks page: what is installed, and Find singers.
+    ManageVoicebanks,
 }
 
 /// The colour of the research-only badge beside a singer's name.
@@ -216,10 +220,11 @@ pub fn language_name(tag: &str) -> String {
     }
 }
 
-/// The singer picker: every installed singer in each of its languages,
-/// engine by engine, the chosen one marked; research-only voices badged and
-/// said so; engines that did not load named; and with none installed, where
-/// one goes.
+/// The singer picker: the **Fontelle Singer**'s free voicebanks first (each
+/// bank's name, language, kind, and whether its terms are still to be
+/// read), then the **singer engines**, each under its own name (saying when
+/// it has a window of its own), research-only voices badged; engines that
+/// did not load named; and always the ways to get more singers.
 pub fn singer_menu_rows(
     singers: &[SingerChoice],
     current: Option<&VocalVoice>,
@@ -229,55 +234,93 @@ pub fn singer_menu_rows(
     let mut rows = vec![(MenuEntry::disabled("Singer"), SingerRow::Info)];
     if singers.is_empty() {
         rows.push((
-            MenuEntry::disabled("No singer engine is installed"),
+            MenuEntry::disabled("No singer is installed yet \u{2014} get a free voicebank below"),
             SingerRow::Info,
         ));
         if !folder_hint.is_empty() {
             rows.push((
-                MenuEntry::disabled(format!("Put one in {folder_hint}")),
+                MenuEntry::disabled(format!("Singer engines go in {folder_hint}")),
                 SingerRow::Info,
             ));
         }
     }
-    let mut engine: Option<&str> = None;
-    for (index, singer) in singers.iter().enumerate() {
-        if engine != Some(singer.engine.as_str()) {
-            engine = Some(singer.engine.as_str());
-            rows.push((
-                MenuEntry::disabled(singer.engine.clone()).after_rule(),
-                SingerRow::Info,
-            ));
-        }
-        for language in &singer.languages {
-            let chosen = current.is_some_and(|c| {
-                c.engine == singer.engine && c.singer == singer.id && &c.language == language
-            });
-            let label = format!(
-                "{}{} \u{2014} {}{}",
-                if chosen { CHOSEN_MARK } else { "" },
-                singer.name,
-                language_name(language),
-                if singer.research_only {
-                    "  \u{26a0} research only \u{2014} don't share"
-                } else {
-                    ""
-                }
-            );
-            let mut entry = if chosen {
-                MenuEntry::disabled(label)
-            } else {
-                MenuEntry::new(label)
-            };
-            if singer.research_only {
-                entry = entry.with_swatch(RESEARCH_BADGE);
+    let row = |index: usize, singer: &SingerChoice, language: &String| {
+        let chosen = current.is_some_and(|c| {
+            c.engine == singer.engine && c.singer == singer.id && &c.language == language
+        });
+        let mut label = format!(
+            "{}{} \u{2014} {}",
+            if chosen { CHOSEN_MARK } else { "" },
+            singer.name,
+            language_name(language),
+        );
+        if singer.kind.is_voicebank() {
+            label.push_str(&format!(" \u{b7} {}", singer.kind.label()));
+            if singer.terms.is_some() && !singer.terms_agreed {
+                label.push_str(" \u{b7} terms to read");
             }
-            rows.push((
-                entry,
-                SingerRow::Choose {
-                    singer: index,
-                    language: language.clone(),
-                },
-            ));
+        }
+        if singer.research_only {
+            label.push_str("  \u{26a0} research only \u{2014} don't share");
+        }
+        let mut entry = if chosen {
+            MenuEntry::disabled(label)
+        } else {
+            MenuEntry::new(label)
+        };
+        if singer.research_only {
+            entry = entry.with_swatch(RESEARCH_BADGE);
+        }
+        (
+            entry,
+            SingerRow::Choose {
+                singer: index,
+                language: language.clone(),
+            },
+        )
+    };
+    if singers.iter().any(|s| s.kind.is_voicebank()) {
+        rows.push((
+            MenuEntry::disabled("Fontelle Singer \u{2014} free voicebanks").after_rule(),
+            SingerRow::Info,
+        ));
+        for (index, singer) in singers.iter().enumerate() {
+            if singer.kind.is_voicebank() {
+                for language in &singer.languages {
+                    rows.push(row(index, singer, language));
+                }
+            }
+        }
+    }
+    if singers.iter().any(|s| !s.kind.is_voicebank()) {
+        rows.push((
+            MenuEntry::disabled("Singer engines").after_rule(),
+            SingerRow::Info,
+        ));
+        let mut engine: Option<&str> = None;
+        for (index, singer) in singers.iter().enumerate() {
+            if singer.kind.is_voicebank() {
+                continue;
+            }
+            if engine != Some(singer.engine.as_str()) {
+                engine = Some(singer.engine.as_str());
+                let name = if singer.engine_name.is_empty() {
+                    singer.engine.clone()
+                } else {
+                    singer.engine_name.clone()
+                };
+                rows.push((
+                    MenuEntry::disabled(if singer.has_editor {
+                        format!("{name} \u{2014} has a window of its own")
+                    } else {
+                        name
+                    }),
+                    SingerRow::Info,
+                ));
+            }
+            for language in &singer.languages {
+                rows.push(row(index, singer, language));
+            }
         }
     }
     if !singers.is_empty() {
@@ -291,11 +334,84 @@ pub fn singer_menu_rows(
             SingerRow::Nobody,
         ));
     }
+    rows.push((
+        MenuEntry::new("Install a voicebank\u{2026}").after_rule(),
+        SingerRow::InstallVoicebank,
+    ));
+    rows.push((
+        MenuEntry::new("Voicebanks & Find singers\u{2026}"),
+        SingerRow::ManageVoicebanks,
+    ));
     for problem in problems {
         rows.push((
             MenuEntry::disabled(format!("Not loaded: {problem}")),
             SingerRow::Info,
         ));
     }
+    rows
+}
+
+/// What a row of the terms prompt does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermsRow {
+    Info,
+    Agree,
+    Cancel,
+}
+
+/// Words wrapped to `width` characters.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.lines() {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            // A word longer than the line (CJK text has no spaces) is cut.
+            let mut word = word.to_string();
+            while word.chars().count() > width {
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                let head: String = word.chars().take(width).collect();
+                word = word.chars().skip(width).collect();
+                out.push(head);
+            }
+            if line.chars().count() + word.chars().count() + 1 > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(&word);
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// A voicebank's terms, whole, and the choice to agree — what is asked
+/// before a bank first sings.
+pub fn terms_menu_rows(name: &str, terms: &str) -> Vec<(MenuEntry, TermsRow)> {
+    let mut rows = vec![(
+        MenuEntry::disabled(format!("{name} \u{2014} its author's terms")),
+        TermsRow::Info,
+    )];
+    let lines = wrap(terms, 70);
+    let shown = 40;
+    for line in lines.iter().take(shown) {
+        rows.push((MenuEntry::disabled(line.clone()), TermsRow::Info));
+    }
+    if lines.len() > shown {
+        rows.push((
+            MenuEntry::disabled("\u{2026} the rest is in the bank's readme"),
+            TermsRow::Info,
+        ));
+    }
+    rows.push((
+        MenuEntry::new(format!("I have read and agree \u{2014} sing with {name}")).after_rule(),
+        TermsRow::Agree,
+    ));
+    rows.push((MenuEntry::new("Not now"), TermsRow::Cancel));
     rows
 }

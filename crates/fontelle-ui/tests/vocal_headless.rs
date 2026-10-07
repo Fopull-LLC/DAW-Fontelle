@@ -141,6 +141,7 @@ fn song() -> Song {
         guessed: vec![ids[4]],
         pitch: vec![pitch],
         message: None,
+        ..VocalView::default()
     };
     Song { notes, ids, view }
 }
@@ -275,6 +276,16 @@ fn shoot(
                     editing,
                     marks,
                     caption,
+                    strips: Default::default(),
+                    tabs: &[],
+                    curve: None,
+                    lane: None,
+                    cells: &[],
+                    phoneme_field: None,
+                    px_per_second: 150.0,
+                    engine_chip: None,
+                    note_button: None,
+                    page: None,
                 }),
             }),
             rack: None,

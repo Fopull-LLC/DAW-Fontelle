@@ -3717,6 +3717,15 @@ pub trait StudioHost: DocumentHost {
         Err("this studio has no vocal tracks".to_string())
     }
 
+    /// Asks for a voicebank file (the desktop's own picker) and installs
+    /// it; `Ok(None)` when nothing was chosen.
+    fn choose_and_install_voicebank(&mut self) -> Result<Option<String>, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Shows the voicebanks folder on the desktop.
+    fn reveal_voicebanks_dir(&mut self) {}
+
     fn uninstall_voicebank(&mut self, _id: &str) -> Result<String, String> {
         Err("this studio has no vocal tracks".to_string())
     }

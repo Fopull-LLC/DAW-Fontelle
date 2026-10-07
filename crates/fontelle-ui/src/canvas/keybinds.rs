@@ -208,6 +208,19 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
                 "A line, several notes",
                 "Words spread a note each; a-ma-zing a syllable each; - holds",
             ),
+            fixed(
+                "Drag in a lane",
+                "Draw it; Shift a straight line; right button or the eraser clears",
+            ),
+            fixed(
+                "Handles over a selected note",
+                "Vibrato delay, fades, depth, rate; the dot ahead: the glide (Shift moves it)",
+            ),
+            fixed(
+                "Double-click the phoneme row",
+                "Type a note's phonemes; Tab takes the suggestion; drag a start to retime",
+            ),
+            fixed("Drop a .zip, .oudep or folder", "Installs a voicebank"),
         ],
     },
     KeybindSection {

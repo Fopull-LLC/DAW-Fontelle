@@ -74,6 +74,7 @@ use crate::transport::{
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
 mod analyze;
+mod vocal;
 
 /// What can be on its way on the synth window (`motion.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -103,6 +104,9 @@ const TRACK_COLOUR_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    /// A vocal roll's lane stroke, expression handle or phoneme start —
+    /// which one is in `vocal_edit`.
+    Vocal,
     /// The open menu's scrollbar. How far down the thumb it was taken hold of
     /// is in `menu_grab` — a `Drag` is compared and a float is not a thing to
     /// compare, the same arrangement `flop_knob` has.
@@ -551,6 +555,17 @@ enum MenuTarget {
     /// Who sings vocal channel `usize`: every installed singer in each of
     /// its languages — see `canvas::singer_menu_rows`.
     Singer(usize),
+    /// A voicebank's terms, before it first sings on `channel`: the singer
+    /// (an index into `singers()`) and the language chosen.
+    SingerTerms {
+        channel: usize,
+        singer: usize,
+        language: String,
+    },
+    /// An installed bank's (or a catalogue entry's) terms, by id.
+    BankTerms(String),
+    /// The note menu of a vocal roll's selection.
+    VocalNote,
     /// The mixer's *+ fx* row on this strip: which effect to put on the end
     /// of its chain. See [`crate::canvas::effect_menu_rows`].
     AddEffect(usize),
@@ -914,6 +929,9 @@ impl MenuTarget {
             Self::SettingChoice(_) | Self::TourSection => None,
             Self::Channel(_)
             | Self::Singer(_)
+            | Self::SingerTerms { .. }
+            | Self::BankTerms(_)
+            | Self::VocalNote
             | Self::AddEffect(_)
             | Self::NewInstrument
             | Self::ChangeInstrument(_)
@@ -2058,6 +2076,8 @@ pub struct WindowApp {
     )>,
     /// Where the roll's singer chip is, measured in `shape_labels`.
     vocal_caption: Option<crate::layout::Rect>,
+    /// The vocal roll's editing: lanes, handles, phonemes, the page.
+    vocal_edit: vocal::VocalEditing,
     /// Whether the caret is in its **on** half. Flipped on a timer, because a
     /// caret that does not blink is easy to read as a character.
     caret_on: bool,
@@ -2644,6 +2664,7 @@ impl WindowApp {
             vocal_seen: (u64::MAX, u64::MAX),
             vocal_spans: Vec::new(),
             vocal_caption: None,
+            vocal_edit: vocal::VocalEditing::default(),
             caret_on: true,
             caret_phase: 0.0,
             renaming: None,
@@ -3259,15 +3280,15 @@ impl WindowApp {
                     tools: &self.tools,
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
-                    vocal: self
-                        .vocal
-                        .as_ref()
-                        .map(|view| crate::render::vocal::RollVocal {
+                    vocal: self.vocal.as_ref().map(|view| {
+                        vocal::roll_vocal_of(
+                            &self.vocal_edit,
                             view,
-                            editing: self.lyric.as_ref().map(|e| (e.ids(), e.entry().text())),
-                            marks: self.lyric_marks,
-                            caption: self.vocal_caption,
-                        }),
+                            self.lyric.as_ref(),
+                            self.lyric_marks,
+                            self.vocal_caption,
+                        )
+                    }),
                 }),
                 // Exactly one of the two: they are one panel with two tabs
                 // (`canvas::tab_strip`), and drawing both would put two lists
@@ -4038,6 +4059,7 @@ impl WindowApp {
     fn drag_pointer_shape(&self) -> Option<Pointer> {
         match self.drag {
             Drag::None => None,
+            Drag::Vocal => Some(Pointer::Grabbing),
             // A fade keeps the cursor it was taken hold of with: the handle
             // is dragged along, the node up and down, and the pointer's
             // travel over the body must not turn either into a hand.
@@ -4919,6 +4941,9 @@ impl ApplicationHandler for WindowApp {
                 if matches!(self.drag, Drag::InsertRow) {
                     self.drop_insert_row();
                 }
+                if self.drag == Drag::Vocal {
+                    self.release_vocal_edit();
+                }
                 if matches!(self.drag, Drag::MoveStrip) {
                     self.drop_strip();
                 }
@@ -5065,6 +5090,14 @@ impl ApplicationHandler for WindowApp {
                     }
                     self.tree.invalidate_rect(self.layout.window);
                     self.update_hover();
+                } else if let Some(page) = &mut self.vocal_edit.page {
+                    page.scroll = (page.scroll - dy * 40.0).max(0.0);
+                    if let Some(layout) = &page.layout {
+                        page.scroll = page
+                            .scroll
+                            .min((layout.content_height - layout.list.height).max(0.0));
+                    }
+                    self.tree.invalidate_rect(self.layout.window);
                 } else if self.welcome.is_none() {
                     self.scroll_roll(dx, dy);
                 }
@@ -5103,7 +5136,10 @@ impl ApplicationHandler for WindowApp {
             // A finished composition from an input method — kana, hanzi —
             // goes into the lyric being typed.
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                if let Some(editor) = &mut self.lyric {
+                if self.phoneme_field_commit_text(&text) {
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                } else if let Some(editor) = &mut self.lyric {
                     editor.commit_text(&text);
                     self.tree.invalidate(PANEL);
                     self.request_redraw_if_dirty();
@@ -6978,6 +7014,11 @@ impl WindowApp {
             self.roll.lane_height,
             crate::canvas::keyboard_width_for(&self.key_map, self.key_style),
         );
+        self.vocal_edit.strips = if self.vocal.is_some() {
+            crate::canvas::carve_vocal_strips(&mut self.roll_layout)
+        } else {
+            crate::canvas::VocalStrips::default()
+        };
         self.roll_bar = toolbar_layout(self.roll_layout.toolbar, m);
         self.timeline_layout = timeline_layout(self.layout.timeline.body, m);
         self.timeline_bar = timeline_toolbar_layout(self.timeline_layout.toolbar, m);
@@ -8577,6 +8618,8 @@ impl WindowApp {
                 .get_styled(&view.caption, LYRIC_STYLE)
                 .map_or(0.0, |t| t.width);
             self.vocal_caption = Some(caption_rect(self.roll_layout.grid, width));
+            let font = font.clone();
+            self.shape_vocal_edit(&font);
             if let Some(editor) = &self.lyric {
                 let entry = editor.entry();
                 let text = entry.text();
@@ -8751,6 +8794,10 @@ impl WindowApp {
         // drop-down and the name prompt it opens, which are menus above it.
         if self.settings_page.is_some() {
             self.press_settings_page(button, x, y);
+            return;
+        }
+        if self.vocal_edit.page.is_some() {
+            self.press_voicebank_page(x, y);
             return;
         }
         if self.tools_panel.is_some() {
@@ -8981,6 +9028,14 @@ impl WindowApp {
             }
             return;
         }
+        // A vocal roll's own parts: the engine chip, the lane's tabs and
+        // strokes, the phoneme row, a note's expression handles.
+        if self.tab == EditorTab::Roll
+            && self.vocal.is_some()
+            && self.press_vocal_edit(button, x, y)
+        {
+            return;
+        }
         // The roll's chrome — the lane, its seam, the keyboard, the ruler —
         // answers to the left button only. The right button is the eraser
         // (see `canvas::piano_roll`'s `Gesture::Erasing`), and none of these
@@ -9111,6 +9166,7 @@ impl WindowApp {
         let (x, y) = self.cursor;
         match self.drag {
             Drag::None => {}
+            Drag::Vocal => self.drag_vocal_edit(),
             Drag::MenuScroll => self.drag_menu_scroll(y),
             Drag::ListScroll(list) => self.drag_list_scroll(list, y),
             Drag::Roll => self.drag_roll(),
@@ -17923,6 +17979,21 @@ impl WindowApp {
                 .into_iter()
                 .map(|(entry, _)| entry)
                 .collect(),
+            MenuTarget::SingerTerms { singer, .. } => self
+                .singer_terms_rows(*singer)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::BankTerms(id) => self
+                .bank_terms_rows(id)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::VocalNote => self
+                .vocal_note_rows()
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             MenuTarget::Channel(index) => {
                 let plays = self
                     .channels
@@ -18953,6 +19024,18 @@ impl WindowApp {
     /// Reads the vocal layer again when the host says it moved: an edit, or
     /// a phrase that has just been sung.
     fn refresh_vocal(&mut self) {
+        // The roll's selection, for an engine's window; and what that window
+        // asked to have selected.
+        if self.vocal.is_some()
+            && let Some(doc) = &mut self.options.document
+        {
+            let selection = self.roll.selection().to_vec();
+            doc.set_vocal_selection(&selection);
+            if let Some(ids) = doc.take_vocal_selection() {
+                self.roll.select(ids);
+                self.tree.invalidate(PANEL);
+            }
+        }
         let Some(doc) = &self.options.document else {
             return;
         };
@@ -18961,10 +19044,20 @@ impl WindowApp {
             return;
         }
         self.vocal_seen = seen;
+        let had = self.vocal.is_some();
         self.vocal = doc.vocal_view();
         self.vocal_spans = doc.vocal_rendering_spans();
         if self.vocal.is_none() && self.lyric.is_some() {
             self.close_lyric();
+        }
+        // The vocal roll takes strips of its own: a roll that became (or
+        // stopped being) one is laid out again.
+        if had != self.vocal.is_some() {
+            self.relayout_panels();
+        }
+        if self.vocal.is_none() {
+            self.vocal_edit.field = None;
+            self.vocal_edit.stroke = None;
         }
         self.tree.invalidate(PANEL);
         self.tree.invalidate(TIMELINE);
@@ -19172,9 +19265,54 @@ impl WindowApp {
                     self.open_editor(EditorKind::Instrument);
                 }
             }
+            (
+                MenuTarget::SingerTerms {
+                    channel,
+                    singer,
+                    language,
+                },
+                index,
+            ) => {
+                let (channel, singer, language) = (*channel, *singer, language.clone());
+                self.choose_singer_terms(channel, singer, &language, index);
+            }
+            (MenuTarget::BankTerms(id), index) => {
+                let id = id.clone();
+                self.choose_bank_terms(&id, index);
+            }
+            (MenuTarget::VocalNote, index) => self.choose_vocal_note_row(index),
             (MenuTarget::Singer(channel), index) => {
                 let channel = *channel;
                 let row = self.singer_rows(channel).get(index).map(|(_, r)| r.clone());
+                match &row {
+                    Some(crate::canvas::SingerRow::InstallVoicebank) => {
+                        self.choose_and_install_voicebank();
+                        return;
+                    }
+                    Some(crate::canvas::SingerRow::ManageVoicebanks) => {
+                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                        return;
+                    }
+                    Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                        let unread = self.options.document.as_ref().is_some_and(|doc| {
+                            doc.singers()
+                                .get(*singer)
+                                .is_some_and(|s| s.terms.is_some() && !s.terms_agreed)
+                        });
+                        if unread {
+                            let (x, y) = self.cursor;
+                            let bounds = self.layout.window;
+                            let target = MenuTarget::SingerTerms {
+                                channel,
+                                singer: *singer,
+                                language: language.clone(),
+                            };
+                            self.open_menu(target, x, y, bounds);
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
                 let singers = self
                     .options
                     .document
@@ -20688,6 +20826,11 @@ impl WindowApp {
         if self.options.document.is_none() {
             return;
         }
+        // A voicebank dropped anywhere on the window is installed.
+        let paths = self.install_dropped_voicebanks(paths);
+        if paths.is_empty() {
+            return;
+        }
         let (x, y) = self.cursor;
         let arrival = crate::canvas::arrival_row(
             &self.timeline.view,
@@ -22039,6 +22182,10 @@ impl WindowApp {
 
         // A lyric being typed has the keyboard too: a "d" is a letter in a
         // word, not the delete tool.
+        if self.phoneme_field_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         if self.lyric_key(event) {
             self.request_redraw_if_dirty();
             return;

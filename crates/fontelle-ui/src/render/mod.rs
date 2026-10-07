@@ -988,6 +988,15 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(tour) = &chrome.tour {
         draw_tour(scene, theme, chrome.labels, layout.window, tour);
     }
+    // The Voicebanks page, over the studio and under its terms menus.
+    if let Some(page) = chrome
+        .roll
+        .as_ref()
+        .and_then(|r| r.vocal.as_ref())
+        .and_then(|v| v.page.as_ref())
+    {
+        vocal::draw_voicebank_page(scene, theme, chrome.labels, page);
+    }
     draw_context_menu(
         scene,
         theme,
@@ -6334,6 +6343,8 @@ pub fn draw_piano_roll(
 
     // Its words in the notes, what they were sung as, the sung pitch.
     if let Some(vocal) = &chrome.vocal {
+        vocal::draw_pitch_line(scene, theme, v, grid, vocal.view);
+        vocal::draw_note_expression(scene, theme, v, grid, chrome.notes, chrome.selection, vocal);
         vocal::draw_vocal_overlay(
             scene,
             theme,
@@ -6344,6 +6355,7 @@ pub fn draw_piano_roll(
             chrome.selection,
             vocal,
         );
+        vocal::draw_engine_chip(scene, theme, labels, vocal);
     }
 
     // The take being recorded, over the notes that are already there and in
@@ -6487,6 +6499,23 @@ pub fn draw_piano_roll(
     );
     draw_ruler_strip(scene, theme, labels, l, v, chrome);
     draw_property_lane(scene, theme, labels, chrome);
+    // A vocal roll's lane (over the notes' own when another is chosen), its
+    // tabs, and the phoneme row.
+    if let Some(vocal) = &chrome.vocal {
+        vocal::draw_vocal_lane(
+            scene,
+            theme,
+            labels,
+            &chrome.view,
+            chrome.layout.grid,
+            chrome.layout.velocity,
+            chrome.layout.velocity_keys,
+            vocal,
+        );
+        vocal::draw_vocal_tabs(scene, theme, labels, vocal);
+        vocal::draw_note_button(scene, theme, labels, vocal);
+        vocal::draw_phoneme_row(scene, theme, labels, vocal);
+    }
     draw_roll_toolbar(scene, theme, labels, chrome);
     draw_lane_menu(scene, theme, labels, chrome);
     draw_tools_panel(scene, theme, labels, chrome);

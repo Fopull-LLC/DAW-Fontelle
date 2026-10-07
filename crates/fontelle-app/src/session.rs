@@ -9685,6 +9685,27 @@ impl StudioHost for Session {
         Ok(said)
     }
 
+    fn choose_and_install_voicebank(&mut self) -> Result<Option<String>, String> {
+        let start = fontelle_vocal::catalogue::downloads_dir();
+        match crate::desktop::choose_open_file(
+            "Install a voicebank",
+            start.as_deref(),
+            "*.zip *.oudep",
+        ) {
+            Ok(Some(path)) => self.install_voicebank(&path).map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn reveal_voicebanks_dir(&mut self) {
+        let dir = self.vocal.voicebanks_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
     fn uninstall_voicebank(&mut self, id: &str) -> Result<String, String> {
         let said = self.vocal.uninstall(id)?;
         self.republish();
