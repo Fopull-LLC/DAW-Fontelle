@@ -66,6 +66,13 @@ forms changed.
   state), `fontelle-app/tests/vocal_studio.rs` (+1: `note_line`).
   Headless (`vocal_edit_headless.rs`, +2): `vocal3-pitch`,
   `vocal3-preedit-lyric`, `vocal3-preedit-phoneme` — looked at.
+  Whole workspace (560 binaries, fresh target, the test plugins built):
+  6301 passed, 6 failed — all six in `fontelle-app/tests/vocal_track.rs`,
+  which reads this machine's real voicebanks folder
+  (`~/.local/share/fontelle/voicebanks`, where a DiffSinger bank is now
+  installed and agreed) and so gets that bank as the first singer instead
+  of the test singer: a test that leaks the machine's state, not this
+  branch (nothing here touches the registry). Preflight all clear.
 - **Not done**: not driven in the real binary on a display (no input tool
   on this machine for `:99` this pass); snapping is to the song's key (a
   clip has no scale of its own yet); no pitch-point (node) editing, only
