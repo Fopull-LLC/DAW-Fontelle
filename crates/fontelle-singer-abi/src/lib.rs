@@ -41,7 +41,12 @@
 //! - a word or syllable (`"hel"`, `"lo"`, `"さ"`, `"sa"`): the engine turns it
 //!   into its own phonemes;
 //! - [`LYRIC_SLUR`] (`"-"`): the previous note's syllable carries on to this
-//!   pitch (a melisma);
+//!   pitch (a melisma). A word of several syllables written on one note and
+//!   followed by slurs is spread across them, a syllable per note, until its
+//!   syllables run out (`"amazing" "-" "-"` sings a-ma-zing); slurs beyond
+//!   that hold the last syllable;
+//! - a syllable ending in a hyphen (`"a-" "ma-" "zing"`) joins the next
+//!   note's into one word, for writers who split words by hand;
 //! - phonemes in square brackets (`"[h ə l oʊ]"`): used as given, for a word
 //!   the engine does not know or a pronunciation the writer wants;
 //! - empty: the engine's default syllable.
