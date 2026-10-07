@@ -28,6 +28,8 @@ fontelle-sequencer = { path = "../fontelle-sequencer" }
 fontelle-engine = { path = "../fontelle-engine" }
 fontelle-host = { path = "../fontelle-host" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
+fontelle-singer-abi = { path = "../fontelle-singer-abi" }
+fontelle-vocal = { path = "../fontelle-vocal" }
 fontelle-midi = { path = "../fontelle-midi" }
 fontelle-assets = { path = "../fontelle-assets" }
 # Analyze Musically: the notes, key and chords of an audio clip.
@@ -87,4 +89,5 @@ png = "0.18.1"
 fontelle-testplug = { path = "../fontelle-testplug" }
 fontelle-testlv2 = { path = "../fontelle-testlv2" }
 fontelle-testbridge = { path = "../fontelle-testbridge" }
+fontelle-testsinger = { path = "../fontelle-testsinger" }
 fontelle-testvst3 = { path = "../fontelle-testvst3" }

@@ -141,6 +141,10 @@ pub struct Realised {
     /// post-fader; the app's take writer drains it. Empty in a render.
     pub analyze_captures:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
+    /// The player every vocal channel's node reads, kept from
+    /// [`KeptTaps::vocal`] or minted: what the session publishes each
+    /// channel's sung phrases to (`crate::vocal`).
+    pub vocal_players: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VocalPlayer>>,
     /// The writing end of every DisgustingBeat's **curves**.
     ///
     /// Beside [`effect_controls`](Self::effect_controls) rather than in it,
@@ -501,6 +505,11 @@ pub struct KeptTaps {
     /// gives every Analyze insert one, kept or minted.
     pub analyze:
         Option<HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>>,
+    /// One player per vocal channel, so a rebuild keeps playing what has been
+    /// sung rather than going silent until the next take lands. A vocal
+    /// channel with none is given a fresh one, which plays nothing until
+    /// something is published to it.
+    pub vocal: HashMap<ChannelId, std::sync::Arc<fontelle_engine::VocalPlayer>>,
 }
 
 /// A live input, and the mixer track it is heard through (TDD §15.4).
@@ -643,7 +652,45 @@ pub fn realise_hosting(
     // themselves does not matter; what does matter is that every one of them
     // has run before the fader on the bus it feeds, and every fader comes
     // after this loop.
+    let mut vocal_players = HashMap::new();
     for (channel_id, channel) in project.channels.iter() {
+        // A vocal track: it sings what was sung for it, ahead of time, off
+        // this thread (`fontelle_engine::VocalNode`). Its own level and
+        // placement are automatable like any instrument's.
+        if channel.instrument == Some(fontelle_types::InstrumentKind::Vocal) {
+            let bus = project
+                .channel_route(channel_id)
+                .and_then(|id| bus_of.get(&id).copied())
+                .unwrap_or([0, 1]);
+            for target in [
+                fontelle_types::ParamTarget::ChannelGain(channel_id),
+                fontelle_types::ParamTarget::ChannelPan(channel_id),
+            ] {
+                param_nodes.insert(target.address(), channel_nodes[&channel_id]);
+            }
+            let player = existing_taps
+                .vocal
+                .get(&channel_id)
+                .cloned()
+                .unwrap_or_else(fontelle_engine::VocalPlayer::new);
+            vocal_players.insert(channel_id, std::sync::Arc::clone(&player));
+            let mut node =
+                fontelle_engine::VocalNode::new(player).on_channel(channel.gain_db, channel.pan);
+            fontelle_engine::AudioNode::prepare(
+                &mut node,
+                &fontelle_engine::PrepareContext {
+                    sample_rate: options.sample_rate as f32,
+                    max_block_size: options.block_size as u32,
+                },
+            );
+            schedule.push(ScheduledNode {
+                id: channel_nodes[&channel_id],
+                node: Box::new(node),
+                input_buffers: Vec::new(),
+                output_buffers: bus.to_vec(),
+            });
+            continue;
+        }
         // A channel playing a plugin: the plugin is the instrument, and
         // whatever patch it used to have is left where it is and not played
         // (see `Channel::plugin`).
@@ -1226,6 +1273,7 @@ pub fn realise_hosting(
         tune_taps,
         disgusting_beat_taps,
         analyze_captures,
+        vocal_players,
         disgusting_beat_controls,
         send_controls,
         metronome,

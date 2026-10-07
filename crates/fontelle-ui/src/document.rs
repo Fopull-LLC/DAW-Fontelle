@@ -61,6 +61,65 @@ pub enum UpdateStatus {
     Failed(String),
 }
 
+/// One singer an installed engine offers — a row of the vocal track's
+/// singer picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SingerChoice {
+    /// The engine's name, as a song stores it.
+    pub engine: String,
+    /// The singer's stable id inside the engine.
+    pub id: String,
+    pub name: String,
+    /// BCP 47 tags, the singer's default first.
+    pub languages: Vec<String>,
+    /// For testing only — whatever it sings must not be shared. The picker
+    /// says so on the row.
+    pub research_only: bool,
+}
+
+/// Where a phrase of a vocal track stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VocalRenderState {
+    /// Not sung yet: silence where it is, drawn as rendering.
+    Waiting,
+    /// A quick take plays while the final one is sung.
+    Preview,
+    Final,
+    /// The engine could not sing it; the view's message says why.
+    Failed,
+}
+
+/// One phrase, as the roll draws it: in the open clip's own ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VocalPhraseView {
+    pub start: Tick,
+    pub end: Tick,
+    pub state: VocalRenderState,
+}
+
+/// What the piano roll shows of a vocal track on top of its notes.
+///
+/// Flattened for the canvas, which may not see a `Project` (INVARIANT 2),
+/// and read again when [`StudioHost::vocal_revision`] moves.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VocalView {
+    /// Who sings, for the roll's corner: "Test Alto · en".
+    pub caption: String,
+    /// What a note with no lyric sings (and what a new note is given).
+    pub default_lyric: String,
+    /// Whether the singer is research-only, so the roll can say so too.
+    pub research_only: bool,
+    pub phrases: Vec<VocalPhraseView>,
+    /// What each sung note was sung as, phonemes separated by spaces.
+    pub phonemes: Vec<(NoteId, String)>,
+    /// The pitch the singer sang, one line per phrase: `(tick in the clip,
+    /// MIDI key with cents as the fraction)`, unvoiced stretches left out.
+    pub pitch: Vec<Vec<(Tick, f32)>>,
+    /// Why the track is silent, when it is: no engine installed, the
+    /// singer not found, a phrase that failed.
+    pub message: Option<String>,
+}
+
 /// One row of the start menu's *Recent* list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentProject {
@@ -3430,4 +3489,59 @@ pub trait StudioHost: DocumentHost {
     /// off the audio thread — chiefly freeing the graph the RT side handed
     /// back (see `fontelle_engine::GraphPublisher::reclaim`).
     fn pump(&mut self);
+
+    // --- the vocal track ---
+
+    /// Every singer every installed engine offers, engine by engine.
+    fn singers(&self) -> Vec<SingerChoice> {
+        Vec::new()
+    }
+
+    /// Why an engine in the singers folder did not load — one line each.
+    fn singer_problems(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Who sings channel `index`, when it is a vocal track with a voice.
+    fn vocal_voice(&self, _index: usize) -> Option<fontelle_model::VocalVoice> {
+        None
+    }
+
+    /// Chooses who sings channel `index` (singer and language together, one
+    /// undo).
+    fn set_singer(&mut self, _index: usize, _voice: Option<fontelle_model::VocalVoice>) {}
+
+    /// Each of `ids` (in the open clip) gets its own lyric, in one undo.
+    fn set_lyrics(&mut self, _ids: &[NoteId], _lyrics: Vec<String>) -> Result<(), String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// Spreads a typed line over `ids` in time order — a word or syllable
+    /// each, by `fontelle_model::lyrics` — in one undo. Says what it did.
+    fn set_lyric_line(&mut self, _ids: &[NoteId], _line: &str) -> Result<String, String> {
+        Err("this studio has no vocal tracks".to_string())
+    }
+
+    /// What the roll draws over a vocal track's notes; `None` when the
+    /// selected channel is not a vocal track.
+    fn vocal_view(&self) -> Option<VocalView> {
+        None
+    }
+
+    /// Moves whenever [`vocal_view`](Self::vocal_view) would answer
+    /// differently — an edit, or a take landing.
+    fn vocal_revision(&self) -> u64 {
+        0
+    }
+
+    /// Whether phrases are still being sung, so the window keeps drawing.
+    fn vocal_busy(&self) -> bool {
+        false
+    }
+
+    /// For each vocal clip on the arrangement, the stretches still being
+    /// sung, in the clip's own ticks — drawn dimmed on the block.
+    fn vocal_rendering_spans(&self) -> Vec<(ClipId, Vec<(Tick, Tick)>)> {
+        Vec::new()
+    }
 }

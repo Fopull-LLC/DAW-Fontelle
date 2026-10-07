@@ -32,6 +32,7 @@ pub mod themes;
 pub mod tour;
 pub mod tune;
 pub mod updates;
+mod vocal;
 mod window;
 
 use std::collections::HashMap;

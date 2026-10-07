@@ -75,6 +75,11 @@ struct Bounce {
     floor: usize,
     path: PathBuf,
     sample_rate: u32,
+    /// The vocal tracks' final takes to wait for before rendering, and the
+    /// count of phrases sung so far for the progress card — `(done << 32) |
+    /// total`, zero while there is nothing to wait for.
+    vocals: Option<crate::vocal::VocalRenderPrep>,
+    singing: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Where a bounce's file ends.
@@ -111,6 +116,17 @@ impl Bounce {
     /// Renders and writes the file, telling `progress` the frames done.
     /// Returns how many samples clipped.
     fn run(mut self, progress: &mut dyn FnMut(i64)) -> Result<usize, String> {
+        // An export of a song that sings waits for every phrase's final
+        // take: a preview is for hearing an edit soon, not for a file.
+        if let Some(vocals) = self.vocals.take() {
+            let singing = std::sync::Arc::clone(&self.singing);
+            vocals.wait_and_publish(&mut |done, total| {
+                singing.store(
+                    ((done as u64) << 32) | total as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            })?;
+        }
         let rendered = crate::render_offline_reporting(
             &self.timeline,
             &mut self.graph,
@@ -140,6 +156,8 @@ struct RunningJob {
     path: PathBuf,
     then: AfterBounce,
     worker: std::thread::JoinHandle<Result<usize, String>>,
+    /// The bounce's vocal count — see `Bounce::singing`.
+    singing: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// `<stem>.wav` in `renders`, or `<stem> 2.wav` and so on when that is taken.
@@ -481,6 +499,12 @@ pub struct Session {
     /// on the master of every graph built, so a rebuild neither silences it
     /// nor moves its playhead.
     study_player: std::sync::Arc<fontelle_engine::StudyPlayer>,
+    /// The vocal tracks: engines, phrases, the scheduler singing them and
+    /// the players the graph reads (`crate::vocal`).
+    vocal: crate::vocal::VocalSession,
+    /// What the next bounce waits for before it renders: the vocal tracks'
+    /// final takes. Set by `realise_for_render`, taken by the bounce.
+    render_vocals: Option<crate::vocal::VocalRenderPrep>,
     /// What it plays for the clip open in the window.
     preview: Option<crate::analyze::Preview>,
     /// What the Analyze Musically window is open on (`session/study.rs`).
@@ -1555,6 +1579,8 @@ impl Session {
             analysis: None,
             analysis_keys: HashMap::new(),
             study_player: fontelle_engine::StudyPlayer::new(),
+            vocal: crate::vocal::VocalSession::new(),
+            render_vocals: None,
             preview: None,
             analysis_target: None,
             render_job: None,
@@ -2967,6 +2993,14 @@ impl Session {
         Ok(())
     }
 
+    /// Loads singer engines from `folders` rather than Fontelle's own
+    /// singers folder — for tests, and for anybody keeping engines elsewhere.
+    pub fn set_singer_folders(&mut self, folders: Vec<PathBuf>) {
+        self.vocal.set_folders(folders);
+        self.republish();
+        self.touch();
+    }
+
     /// Points the session at a projects folder and remembers it. For tests,
     /// and for a `--projects <dir>` flag when there is one.
     pub fn set_projects_dir(&mut self, dir: Option<PathBuf>) {
@@ -3849,6 +3883,8 @@ impl Session {
                 floor: 0,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Row {
                 index,
@@ -3964,6 +4000,8 @@ impl Session {
                 floor: 0,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Row {
                 index,
@@ -3999,7 +4037,8 @@ impl Session {
     /// ten seconds of silence and a wet one keeps every second of its
     /// reverb.
     pub fn export_wav_with(&mut self, export: ExportOptions) -> Result<String, String> {
-        let (bounce, then) = self.prepare_export(export)?;
+        let (mut bounce, then) = self.prepare_export(export)?;
+        bounce.vocals = self.render_vocals.take();
         let path = bounce.path.clone();
         let clipped = bounce.run(&mut |_| {});
         self.end_render();
@@ -4082,6 +4121,8 @@ impl Session {
                 floor: self.options.sample_rate as usize / 10,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Export,
         ))
@@ -4145,26 +4186,39 @@ impl Session {
     /// while the render runs has what is playing.
     fn realise_for_render(&mut self, options: RealiseOptions) -> Result<crate::Realised, String> {
         self.end_render();
-        if crate::plugin_slots(&self.project).is_empty() {
+        // The vocal tracks get players of their own for the render, filled
+        // once every phrase's final take is in: `Bounce::run` waits for them
+        // on the render's thread (`VocalRenderPrep`).
+        let (vocal_players, prep) = self.vocal.render_prep(&self.project);
+        self.render_vocals = prep.filter(|p| !p.is_empty());
+        if crate::plugin_slots(&self.project).is_empty() && vocal_players.is_empty() {
             return realise(&self.project, &self.library, options).map_err(|e| e.to_string());
         }
-        self.capture_plugin_states();
-        self.free_retired_graphs();
-        let wiring = self.plugins.lend_for_render(
-            &self.project,
-            f64::from(options.sample_rate),
-            options.block_size as u32,
-        );
-        if let Some(message) = self.plugins.take_message() {
-            self.message = Some(message);
-        }
+        let wiring = if crate::plugin_slots(&self.project).is_empty() {
+            HashMap::new()
+        } else {
+            self.capture_plugin_states();
+            self.free_retired_graphs();
+            let wiring = self.plugins.lend_for_render(
+                &self.project,
+                f64::from(options.sample_rate),
+                options.block_size as u32,
+            );
+            if let Some(message) = self.plugins.take_message() {
+                self.message = Some(message);
+            }
+            wiring
+        };
         let realised = crate::realise_hosting(
             &self.project,
             &self.library,
             options,
             &HashMap::new(),
             None,
-            &Default::default(),
+            &crate::realise::KeptTaps {
+                vocal: vocal_players,
+                ..Default::default()
+            },
             None,
             None,
             &wiring,
@@ -4198,7 +4252,9 @@ impl Session {
         if self.job.is_some() {
             return Err("a render is already running \u{2014} wait for it to finish".to_string());
         }
-        let (bounce, then) = prepare(self)?;
+        let (mut bounce, then) = prepare(self)?;
+        bounce.vocals = self.render_vocals.take();
+        let singing = std::sync::Arc::clone(&bounce.singing);
         let path = bounce.path.clone();
         let total = bounce.render_to.max(1);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
@@ -4222,6 +4278,7 @@ impl Session {
             path,
             then,
             worker,
+            singing,
         });
         Ok(format!("{label}\u{2026}"))
     }
@@ -4233,6 +4290,15 @@ impl Session {
             return JobPoll::Idle;
         };
         if !job.worker.is_finished() {
+            // Waiting for the singer first: its own words and count.
+            let singing = job.singing.load(std::sync::atomic::Ordering::Relaxed);
+            let (sung, phrases) = (singing >> 32, singing & 0xffff_ffff);
+            if phrases > 0 && sung < phrases {
+                return JobPoll::Running(JobProgress {
+                    label: format!("Singing the vocals \u{2014} {sung} of {phrases} phrases"),
+                    fraction: Some((sung as f64 / phrases as f64) as f32),
+                });
+            }
             let done = job.done.load(std::sync::atomic::Ordering::Relaxed);
             return JobPoll::Running(JobProgress {
                 label: job.label.clone(),
@@ -4516,6 +4582,11 @@ impl Session {
         self.heal_audio_clips();
         let timeline = self.compiled();
         self.publisher.publish(timeline);
+        // The vocal tracks follow the song: phrases again, what is wanted of
+        // the engines, and the tables re-placed. In the song's own time
+        // whatever is playing — a phrase is sung once, wherever it is heard.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        self.vocal.sync(&self.project, &tempo);
     }
 
     /// The tempo map this session's [`scope`](Session::scope) plays by.
@@ -5086,6 +5157,7 @@ impl Session {
                 disgusting_beat: self.disgusting_beat_taps.clone(),
                 master: self.master_meter.clone(),
                 analyze: Some(self.analyze_captures.clone()),
+                vocal: self.vocal.players.clone(),
             },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
@@ -5110,6 +5182,7 @@ impl Session {
                 self.tune_taps = realised.tune_taps;
                 self.disgusting_beat_taps = realised.disgusting_beat_taps;
                 self.analyze_captures = realised.analyze_captures;
+                self.vocal.players = realised.vocal_players;
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
@@ -7308,7 +7381,13 @@ impl DocumentHost for Session {
             // The roll hands over a whole note, properties and all: what you
             // draw is a copy of the last note you drew or clicked, which is
             // `PianoRoll::template`.
-            RollEdit::Add { note } => self.insert(clip, vec![note]),
+            RollEdit::Add { mut note } => {
+                // A drawn note on a vocal track sings the language's own
+                // syllable, not the word of the note the template was
+                // copied from (`insert` fills it in).
+                note.lyric.clear();
+                self.insert(clip, vec![note])
+            }
             RollEdit::Insert(notes) => self.insert(clip, notes),
             RollEdit::Remove(ids) => {
                 self.run(Box::new(RemoveNotes::new(clip, ids)));
@@ -7711,12 +7790,27 @@ impl Session {
         // mixes instruments is saved exactly as it always was.
         let home = self.home_channel(clip);
         let selected = self.selected_channel_id();
+        // On a vocal track every note sings something: one written with no
+        // lyric gets the language's own syllable, so it shows and sings.
+        let syllable = selected
+            .and_then(|id| self.project.channels.get(id))
+            .filter(|c| c.instrument == Some(fontelle_types::InstrumentKind::Vocal))
+            .map(|c| {
+                fontelle_model::lyrics::default_syllable(
+                    c.vocal.as_ref().map_or("en", |v| v.language.as_str()),
+                )
+            });
         for note in &mut notes {
             note.channel = match (selected, home) {
                 (Some(selected), Some(home)) if selected == home => None,
                 (Some(selected), _) => Some(selected),
                 (None, _) => None,
             };
+            if let Some(syllable) = syllable
+                && note.lyric.trim().is_empty()
+            {
+                note.lyric = syllable.to_string();
+            }
         }
         // Through `apply_for` like every other command that hands its ids
         // back. It used to call `History::apply` itself, which made a **third**
@@ -8262,7 +8356,11 @@ impl StudioHost for Session {
                 soloed: channel.soloed,
                 // A channel playing a plugin has an instrument even though it
                 // has no patch: the plugin *is* the instrument (TDD §8.4).
-                has_instrument: channel.patch_data.is_some() || channel.plugin.is_some(),
+                // A vocal track's instrument is its singer.
+                has_instrument: channel.patch_data.is_some()
+                    || channel.plugin.is_some()
+                    || (channel.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+                        && channel.vocal.is_some()),
                 // What the row's route chip says. `None` is the master, which
                 // the chip writes out by name rather than as a blank.
                 route: self
@@ -9322,6 +9420,99 @@ impl StudioHost for Session {
         self.touch();
     }
 
+    fn singers(&self) -> Vec<fontelle_ui::document::SingerChoice> {
+        self.vocal.singers()
+    }
+
+    fn singer_problems(&self) -> Vec<String> {
+        self.vocal.problems()
+    }
+
+    fn vocal_voice(&self, index: usize) -> Option<fontelle_model::VocalVoice> {
+        let id = self.channel_ids().get(index).copied()?;
+        let channel = self.project.channels.get(id)?;
+        (channel.instrument == Some(fontelle_types::InstrumentKind::Vocal))
+            .then(|| channel.vocal.clone())
+            .flatten()
+    }
+
+    fn set_singer(&mut self, index: usize, voice: Option<fontelle_model::VocalVoice>) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        if self.project.channels.get(id).and_then(|c| c.vocal.as_ref()) == voice.as_ref() {
+            return;
+        }
+        self.let_go();
+        self.run(Box::new(fontelle_model::SetSinger::new(id, voice)));
+        self.let_go();
+    }
+
+    fn set_lyrics(&mut self, ids: &[NoteId], lyrics: Vec<String>) -> Result<(), String> {
+        let home = self.note_target();
+        let before = self.history.generation();
+        self.let_go();
+        self.run(Box::new(fontelle_model::SetLyrics::new(
+            home,
+            ids.to_vec(),
+            lyrics,
+        )));
+        // Each commit its own step: Tab through a line, and Ctrl+Z takes
+        // back one word at a time.
+        self.let_go();
+        if self.history.generation() == before {
+            return Err(self
+                .message
+                .clone()
+                .unwrap_or_else(|| "the lyrics could not be set".to_string()));
+        }
+        Ok(())
+    }
+
+    fn set_lyric_line(&mut self, ids: &[NoteId], line: &str) -> Result<String, String> {
+        // In time order, whatever order they were selected in.
+        let mut ordered: Vec<NoteId> = ids
+            .iter()
+            .copied()
+            .filter(|id| self.notes().get(*id).is_some())
+            .collect();
+        ordered.sort_by_key(|id| {
+            let n = &self.notes()[*id];
+            (n.start, std::cmp::Reverse(n.key))
+        });
+        let spread = fontelle_model::lyrics::spread(line, ordered.len());
+        if spread.lyrics.is_empty() {
+            return Err("no words to spread".to_string());
+        }
+        ordered.truncate(spread.lyrics.len());
+        let count = ordered.len();
+        self.set_lyrics(&ordered, spread.lyrics)?;
+        Ok(match spread.left_over {
+            0 => format!("Lyrics on {count} notes"),
+            n => {
+                format!("Lyrics on {count} notes \u{2014} {n} more than there were notes left out")
+            }
+        })
+    }
+
+    fn vocal_view(&self) -> Option<fontelle_ui::document::VocalView> {
+        let channel = self.selected_channel_id()?;
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        self.vocal.view(&self.project, channel, self.clip, &tempo)
+    }
+
+    fn vocal_revision(&self) -> u64 {
+        self.vocal.revision()
+    }
+
+    fn vocal_busy(&self) -> bool {
+        self.vocal.busy()
+    }
+
+    fn vocal_rendering_spans(&self) -> Vec<(ClipId, Vec<(Tick, Tick)>)> {
+        self.vocal.rendering_spans(&self.project)
+    }
+
     fn add_channel_of(&mut self, kind: fontelle_types::InstrumentKind) -> Result<(), String> {
         // Named for what it is rather than "Channel N": a rack of "Sampler",
         // "3OSC", "SoundFont" tells you what you are looking at, and a rack of
@@ -9333,6 +9524,17 @@ impl StudioHost for Session {
         );
         let patch = self.starter_patch(kind);
         let channel = self.new_channel_of(name, patch, kind)?;
+        // A vocal track arrives singing: the first singer installed, in
+        // its own language, as part of the same step as the channel.
+        if kind == fontelle_types::InstrumentKind::Vocal
+            && let Some(voice) = self.vocal.default_voice()
+            && let Err(e) = self.history.amend(
+                Box::new(fontelle_model::SetSinger::new(channel, Some(voice))),
+                &mut self.project,
+            )
+        {
+            self.message = Some(e.to_string());
+        }
         self.patch_cache = None;
         // On the status line through the session, like `set_channel_kind`.
         self.message = Some(match kind {
@@ -9365,10 +9567,22 @@ impl StudioHost for Session {
         // The label and the instrument move together, in one entry: "make this
         // a sampler" is one thing somebody did and one press of Ctrl+Z.
         let patch = self.starter_patch(kind);
-        let parts: Vec<Box<dyn fontelle_model::Command>> = vec![
+        let mut parts: Vec<Box<dyn fontelle_model::Command>> = vec![
             Box::new(fontelle_model::SetChannelKind::new(id, kind)),
             Box::new(fontelle_model::SetChannelPatch::new(id, patch)),
         ];
+        // A channel turned into a vocal track gets a singer, unless it had
+        // one from before (kept, like a plugin is).
+        if kind == fontelle_types::InstrumentKind::Vocal
+            && self
+                .project
+                .channels
+                .get(id)
+                .is_some_and(|c| c.vocal.is_none())
+            && let Some(voice) = self.vocal.default_voice()
+        {
+            parts.push(Box::new(fontelle_model::SetSinger::new(id, Some(voice))));
+        }
         if let Err(e) = self.history.apply(
             Box::new(fontelle_model::Compound::new("Choose instrument", parts)),
             &mut self.project,
@@ -13869,6 +14083,11 @@ impl StudioHost for Session {
                 // A clip somebody has named is called that, whatever it
                 // plays.
                 let name = clip.name.clone().unwrap_or(name);
+                // A vocal clip says who sings and what: "Alto · hello world".
+                let name = match self.vocal.caption(&self.project, id) {
+                    Some(sung) if clip.name.is_none() => sung,
+                    _ => name,
+                };
                 ClipInfo {
                     id,
                     lane: lanes.iter().position(|l| *l == clip.lane).unwrap_or(0),
@@ -14515,6 +14734,16 @@ impl StudioHost for Session {
                 self.rebuild_graph();
             }
         }
+        // The same for a vocal track the graph has no player for yet — a
+        // reopened song with one, or a channel turned into one by a
+        // collaborator's edit.
+        if self.vocal.needs_players(&self.project) {
+            self.rebuild_graph();
+        }
+        let playhead = self.transport.as_ref().map(|t| {
+            t.position_sample().max(0) as f64 / f64::from(self.options.sample_rate.max(1))
+        });
+        self.vocal.pump(playhead);
         // Emptied every pass, so the ring never fills while a long take is
         // being played — the same rule the CLI's own recording loop follows.
         if let Some(capture) = &mut self.capture {
