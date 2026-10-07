@@ -203,6 +203,69 @@ and `Session`; the integration on `feature/vocal-track` instantiates
   lanes; `.mrq`; Chinese/Korean/other phonemizers; X-SAMPA and VCCV are
   basics (no CCV starts, few fallbacks); presamp.ini is not read; a word's
   syllables are spread by vowel count, not stress.
+**As of 2026-10-07 — `fontelle-diffsinger`: the Fontelle Singer sings
+DiffSinger banks.** Branch `feature/fontelle-diffsinger`, a crate of its own
+(`docs/vocal-plan.md` §2), not merged. It implements `fontelle_sing::Backend`
+/ `Session` for community DiffSinger voicebanks in OpenUtau's layout, written
+from DiffSinger's published exporters and OpenUtau's documented layout only.
+Nothing outside the crate changed but the workspace members and the lock
+file; `fontelle-sing` is used as it is.
+
+- **Banks** (`bank.rs`, `config.rs`): `dsconfig.yaml` at the root and in
+  `dsdur/`, `dspitch/`, `dsvariance/` (a folder whose files are missing is a
+  listed problem, not a failure); `phonemes.txt`/`.json`, `languages.json`,
+  speakers (`.emb`, `hidden_size` f32s, matched across folders by suffix as
+  OpenUtau does), `character.txt`/`.yaml` (name, portrait, voice colours as
+  speakers), the readme/terms text. The vocoder: the bank's `dsvocoder/`,
+  else a dependency folder named after it, else one whose `oudep.yaml` id or
+  `vocoder.yaml` name is it; the mel layout is checked against the acoustic
+  model, a different log base converted.
+- **Reading** (`dict.rs`, `lyrics.rs`, `phonemize.rs`, `kana.rs`): `dsdict-
+  <lang>.yaml` then `dsdict.yaml` (dsdur, then root); a line scanner reads
+  the usual block layout (Qixuan's 27 MB English dictionary in well under a
+  second), anything else goes to `serde_yaml_ng`. The singer-abi lyric rules
+  (slurs spread a word's syllables, a slur after a rest re-sings the vowel,
+  `a-` joins, `[phonemes]`, empty is the default syllable); kana to Hepburn
+  romaji per mora; unknown words are guessed (typed phonemes, a compound of
+  dictionary words, else the default syllable) and reported `guessed`.
+  Phoneme edits replace their note's reading; their offsets are kept.
+- **Timing** (`timing.rs`): onsets end on the note start (squeezed into
+  half the note before when they do not fit), vowels to the next onset,
+  codas close the span, slurred notes extend it; consonant lengths from the
+  bank's duration model (DiffSinger words: vowel to vowel, a rest's silence
+  and onset a word of their own), divided by velocity. Frames are rounded at
+  boundaries, never zero.
+- **Running** (`models.rs`, `onnx.rs`, `render.rs`): `ort` 2.0.0-rc.13,
+  ONNX Runtime 1.28, linked statically from pyke's prebuilt build on Linux,
+  Windows MSVC and Apple-silicon macOS; loaded at run time on Intel macOS
+  and Windows GNU (no prebuilt build there). Duration → pitch (unless the
+  writer drew a bend, a vibrato or a glide, or turned `natural_pitch` off:
+  then `note_pitch` + bend) → variance (user lanes added as dB/tension
+  deltas) → acoustic (gender as key shift, velocity as speed, speakers per
+  frame with mix lanes) → vocoder → Dynamics as gain. Word-mode and
+  phoneme-mode encoders both fed. Preview: 4 steps everywhere; final: 20
+  acoustic (the `steps` setting), 20 variance, 10 pitch, depth = the bank's
+  `max_depth`. **Determinism**: ONNX Runtime seeds its random nodes from the
+  clock with no C API to reseed, so `onnx.rs` rewrites the graph in memory
+  (never on disk, weights copied byte for byte) to read each
+  `RandomNormal(Like)` from a noise input this crate fills from the seed.
+  Cancel polls during runs and terminates them (about 100 ms).
+- **Tests**: 65 tests on hand-written fixtures (configs, dictionaries,
+  lyrics, timing, frames, curves, noise, the ONNX rewrite on tiny models
+  built byte by byte, the backend over a fixture bank folder), and
+  `tests/real_bank.rs`, ignored unless `FONTELLE_TEST_VOICEBANKS` points at
+  banks (Qixuan v2.7.0 and 琅 were used; never in git). On a Ryzen 7
+  5800X3D, CPU: a 5 s English phrase in ~2.7 s final, ~1.0 s preview;
+  sung pitch within 2 cents of the notes (notes' line) and 15 cents (the
+  bank's pitch model); the same seed sings the same samples.
+  `cargo run --release -p fontelle-diffsinger --example render_phrase` writes
+  a phrase to a wav.
+- **Not done**: Chinese characters (lyrics must be pinyin) and Korean
+  hangul; English words outside a bank's dictionary are guessed, there is
+  no neural G2P; the predicted variance curves are not returned to the roll
+  (`Sung` has no place for them); partial retakes; tone shift through a
+  pitch-controllable vocoder; DirectML/CoreML; the `cuda` feature builds but
+  was not run here.
 
 **As of 2026-10-07 — the vocal track: a channel that sings.** Branch
 `feature/vocal-track` (from v0.26.1 and the two `fontelle-singer-abi`

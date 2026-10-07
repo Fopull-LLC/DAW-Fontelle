@@ -23,6 +23,7 @@ members = [
     "crates/fontelle-sing",
     "crates/fontelle-utau",
     "crates/fontelle-vocal",
+    "crates/fontelle-diffsinger",
     "crates/fontelle-testbridge",
     "crates/fontelle-testsinger",
     "crates/fontelle-app",
