@@ -1,0 +1,63 @@
+# Words whose characters are read otherwise than alone, toneless: written
+# for Fontelle (no source data), the common polyphonic characters as they
+# are sung. A word is matched greedily, longest first, across a run of
+# notes; a reading in brackets after a character always wins.
+银行 yin hang
+一行 yi hang
+行业 hang ye
+排行 pai hang
+长大 zhang da
+成长 cheng zhang
+生长 sheng zhang
+校长 xiao zhang
+家长 jia zhang
+重新 chong xin
+重来 chong lai
+重复 chong fu
+重逢 chong feng
+重叠 chong die
+还给 huan gei
+归还 gui huan
+音乐 yin yue
+乐器 yue qi
+乐队 yue dui
+乐曲 yue qu
+睡觉 shui jiao
+午觉 wu jiao
+着急 zhao ji
+睡着 shui zhao
+着火 zhao huo
+着迷 zhao mi
+着凉 zhao liang
+首都 shou du
+都市 du shi
+大夫 dai fu
+角色 jue se
+主角 zhu jue
+出差 chu chai
+参差 cen ci
+薄荷 bo he
+单薄 dan bo
+调皮 tiao pi
+空调 kong tiao
+调整 tiao zheng
+便宜 pian yi
+暖和 nuan huo
+和面 huo mian
+朝阳 zhao yang
+朝霞 zhao xia
+自传 zi zhuan
+传记 zhuan ji
+模样 mu yang
+漂泊 piao bo
+可恶 ke wu
+厌恶 yan wu
+投降 tou xiang
+慢慢地 man man de
+轻轻地 qing qing de
+静静地 jing jing de
+默默地 mo mo de
+悄悄地 qiao qiao de
+了解 liao jie
+了不起 liao bu qi
+似的 shi de

@@ -1,0 +1,12 @@
+[package]
+name = "fontelle-lang"
+description = "Language modules for singing: Chinese characters to pinyin, Korean hangul to its sounds — what the built-in voicebank runtimes read lyrics with."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

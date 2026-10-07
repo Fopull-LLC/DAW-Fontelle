@@ -21,6 +21,7 @@ members = [
     "crates/fontelle-bridge-abi",
     "crates/fontelle-singer-abi",
     "crates/fontelle-sing",
+    "crates/fontelle-lang",
     "crates/fontelle-utau",
     "crates/fontelle-vocal",
     "crates/fontelle-diffsinger",
