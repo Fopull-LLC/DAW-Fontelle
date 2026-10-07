@@ -46,6 +46,7 @@ use fontelle_model::{
 use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
 pub use analyze::analysis_cache_dir;
+pub use vocal::vocal_takes_dir;
 pub use bundle::{
     MissingAsset, OpenError, OpenedProject, open_project, open_project_with, resolve, save_project,
 };

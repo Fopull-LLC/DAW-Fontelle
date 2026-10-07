@@ -22,6 +22,7 @@ pub mod catalogue;
 mod phrases;
 mod registry;
 mod render;
+mod takes;
 pub mod voicebanks;
 mod zip;
 
@@ -31,6 +32,7 @@ pub use phrases::{
 };
 pub use registry::{BuiltinBackend, RegistryVoice, SingerKind, SingerRegistry, builtin_backends};
 pub use render::{PhraseState, Rendered, VocalRenderer, Wanted};
+pub use takes::{DEFAULT_TAKE_BYTES, TakeStore};
 
 use fontelle_engine::{SungPhrase, VocalTable};
 
