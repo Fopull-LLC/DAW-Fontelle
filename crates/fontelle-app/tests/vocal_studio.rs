@@ -468,3 +468,76 @@ fn a_batch_naming_a_note_that_is_not_there_changes_nothing() {
         s.notes()[id].lyric == "refused"
     });
 }
+
+// ------------------------------------------------------------- kept takes
+
+#[test]
+fn sung_takes_are_kept_in_the_song_and_a_reopened_song_plays_them_at_once() {
+    let (mut session, dir) = session("takes");
+    session.install_voicebank(&teto_zip(&dir)).unwrap();
+    session.add_channel_of(InstrumentKind::Vocal).unwrap();
+    let voice = session.vocal_voice(vocal_index(&session)).unwrap();
+    session.agree_singer_terms(&voice.engine, &voice.singer);
+    draw(&mut session, 0, 60);
+    draw(&mut session, 4, 62);
+    pump_until(&mut session, "the bank sang", |s| {
+        s.vocal_view()
+            .is_some_and(|v| v.phrases.iter().all(|p| p.state == VocalRenderState::Final))
+    });
+    // In the song's own cache folder, beside Analyze Musically's.
+    let kept = dir.join("Song.fontelle").join("cache").join("vocal");
+    pump_until(&mut session, "the takes were written", |_| {
+        std::fs::read_dir(&kept)
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "take"))
+                    .count()
+            })
+            .unwrap_or(0)
+            == 2
+    });
+    // Reopened: the finals come off the disk; nothing is previewed.
+    let project = session.project().clone();
+    drop(session);
+    let mut reopened = common::a_session_in(project, Some(dir.join("Song.fontelle")));
+    reopened.set_singer_folders(vec![singer_folder()]);
+    reopened.set_voicebanks(dir.join("voicebanks"), builtins());
+    reopened.set_headless_singer_editors(true);
+    reopened.select_channel(vocal_index(&reopened));
+    let mut previewed = false;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        reopened.pump();
+        if let Some(v) = reopened.vocal_view() {
+            previewed |= v
+                .phrases
+                .iter()
+                .any(|p| p.state == VocalRenderState::Preview);
+            if !v.phrases.is_empty() && v.phrases.iter().all(|p| p.state == VocalRenderState::Final)
+            {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "the kept takes never played");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!previewed, "a kept final is played, not sung again");
+}
+
+#[test]
+fn an_unsaved_songs_takes_go_to_fontelles_cache_folder() {
+    use fontelle_app::settings::Platform;
+    let env = |key: &str| (key == "XDG_CACHE_HOME").then(|| "/home/someone/.cache".to_string());
+    assert_eq!(
+        fontelle_app::vocal_takes_dir(None, &env, Platform::Unix),
+        Some(PathBuf::from("/home/someone/.cache/fontelle/vocal"))
+    );
+    assert_eq!(
+        fontelle_app::vocal_takes_dir(
+            Some(Path::new("/songs/Song.fontelle")),
+            &env,
+            Platform::Unix
+        ),
+        Some(PathBuf::from("/songs/Song.fontelle/cache/vocal"))
+    );
+}

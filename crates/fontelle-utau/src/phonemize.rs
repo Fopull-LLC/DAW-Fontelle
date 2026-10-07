@@ -20,18 +20,24 @@ pub enum Phonemizer {
     EnVccv,
     /// English CVVC in X-SAMPA: "- ka", "ka", "{ k", "eI t-", "oU -".
     EnCvvc,
+    /// Chinese on pinyin aliases: "ni", "- ni", "i h", "ao R".
+    ZhCvvc,
+    /// Korean on hangul aliases: "가", "- 가", "a k", "a R".
+    KoCvvc,
 }
 
 impl Phonemizer {
     /// In setting order: new ones are appended, so a saved setting keeps
     /// its meaning.
-    pub const ALL: [Phonemizer; 6] = [
+    pub const ALL: [Phonemizer; 8] = [
         Phonemizer::JaCv,
         Phonemizer::JaVcv,
         Phonemizer::JaCvvc,
         Phonemizer::EnArpasing,
         Phonemizer::EnVccv,
         Phonemizer::EnCvvc,
+        Phonemizer::ZhCvvc,
+        Phonemizer::KoCvvc,
     ];
 
     pub fn name(self) -> &'static str {
@@ -42,6 +48,8 @@ impl Phonemizer {
             Phonemizer::EnArpasing => "English ARPAsing",
             Phonemizer::EnVccv => "English VCCV",
             Phonemizer::EnCvvc => "English CVVC (X-SAMPA)",
+            Phonemizer::ZhCvvc => "Chinese CV/CVVC (pinyin)",
+            Phonemizer::KoCvvc => "Korean CV/CVVC (hangul)",
         }
     }
 
@@ -63,6 +71,8 @@ impl Phonemizer {
         match self {
             Phonemizer::JaCv | Phonemizer::JaVcv | Phonemizer::JaCvvc => "ja",
             Phonemizer::EnArpasing | Phonemizer::EnVccv | Phonemizer::EnCvvc => "en",
+            Phonemizer::ZhCvvc => "zh",
+            Phonemizer::KoCvvc => "ko",
         }
     }
 }
@@ -82,6 +92,10 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
             Some(Phonemizer::JaVcv)
         } else if h.contains("japanese") && h.contains("cv") {
             Some(Phonemizer::JaCv)
+        } else if h.contains("chinese") || h.contains(".zh") {
+            Some(Phonemizer::ZhCvvc)
+        } else if h.contains("korean") || h.contains(".ko") {
+            Some(Phonemizer::KoCvvc)
         } else {
             None
         };
@@ -92,6 +106,7 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
     let (mut arpa, mut vcv, mut cvvc, mut vccv) = (0usize, 0usize, 0usize, 0usize);
     let mut xsampa = 0usize;
     let mut kana_aliases = 0usize;
+    let (mut hangul_aliases, mut pinyin_aliases) = (0usize, 0usize);
     let arpa_token = |t: &str| {
         let t = t.trim_end_matches(|c: char| c.is_ascii_digit());
         t == "-" || dict::is_vowel(t) || dict::CONSONANTS.contains(&t)
@@ -100,6 +115,21 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
     for alias in bank.base_aliases() {
         if has_kana(&alias) {
             kana_aliases += 1;
+        }
+        if fontelle_lang::hangul::has_hangul(&alias) {
+            hangul_aliases += 1;
+        }
+        // Syllables only pinyin spells: no Japanese romaji or English has
+        // them as an alias.
+        let last = alias.rsplit(' ').next().unwrap_or("");
+        if fontelle_lang::pinyin::is_syllable(last)
+            && [
+                "zh", "ch", "sh", "x", "q", "ng", "ui", "iu", "ie", "ve", "ia", "uo", "v",
+            ]
+            .iter()
+            .any(|m| last.contains(m))
+        {
+            pinyin_aliases += 1;
         }
         if alias.split([' ', '-']).any(|t| {
             ["{", "@", "eI", "aI", "aU", "oU", "OI", "3", "tS", "dZ", "V"]
@@ -138,7 +168,11 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
             _ => {}
         }
     }
-    if arpa >= 30 && arpa > vcv + cvvc && kana_aliases * 4 < arpa {
+    if hangul_aliases >= 30 && hangul_aliases > kana_aliases {
+        Phonemizer::KoCvvc
+    } else if pinyin_aliases >= 20 && kana_aliases == 0 && pinyin_aliases * 2 > arpa {
+        Phonemizer::ZhCvvc
+    } else if arpa >= 30 && arpa > vcv + cvvc && kana_aliases * 4 < arpa {
         Phonemizer::EnArpasing
     } else if xsampa >= 40
         && kana_aliases == 0
@@ -192,8 +226,12 @@ pub const CONSONANT: f64 = 0.06;
 /// Turns a phrase's lyrics into units of `bank` with `kind`.
 pub fn plan(bank: &Voicebank, phrase: &Phrase, kind: Phonemizer) -> Plan {
     let ctx = Ctx::new(bank, phrase);
+    let mut ctx = ctx;
+    if matches!(kind, Phonemizer::ZhCvvc | Phonemizer::KoCvvc) {
+        ctx.scripts = scripts(&ctx, kind);
+    }
     let english = kind.language() == "en";
-    let events = events(&ctx, english);
+    let events = events(&ctx, english, kind);
     let mut plan = Plan {
         units: Vec::new(),
         guessed: vec![false; phrase.notes.len()],
@@ -210,6 +248,7 @@ pub fn plan(bank: &Voicebank, phrase: &Phrase, kind: Phonemizer) -> Plan {
         Phonemizer::EnArpasing | Phonemizer::EnVccv | Phonemizer::EnCvvc => {
             english_units(&ctx, &events, kind, &mut plan)
         }
+        Phonemizer::ZhCvvc | Phonemizer::KoCvvc => syllabic(&ctx, &events, &mut plan),
     }
     plan.units.sort_by(|a, b| a.anchor.total_cmp(&b.anchor));
     plan
@@ -220,6 +259,10 @@ struct Ctx<'a> {
     notes: &'a [fontelle_sing::PhraseNote],
     tones: Vec<u8>,
     colours: Vec<String>,
+    /// Chinese or Korean: each note's syllables read with its run of
+    /// notes (words across notes, a coda carried over), when it is written
+    /// in that script.
+    scripts: Vec<Option<Vec<Content>>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -242,6 +285,7 @@ impl<'a> Ctx<'a> {
                         .unwrap_or_default()
                 })
                 .collect(),
+            scripts: Vec::new(),
         }
     }
 
@@ -286,6 +330,10 @@ enum Content {
     Aliases(Vec<String>),
     /// Hand-placed phonemes: (alias, start).
     Hand(Vec<(String, Option<f64>)>),
+    /// Chinese: a pinyin syllable.
+    Zh(String),
+    /// Korean: a syllable's sounds.
+    Ko(fontelle_lang::hangul::Syllable),
 }
 
 #[derive(Debug, Clone)]
@@ -304,7 +352,7 @@ fn default_syllable(english: bool) -> &'static str {
 
 /// The lyric rules every singer shares: slurs, hyphen joins, brackets,
 /// several syllables on one note.
-fn events(ctx: &Ctx, english: bool) -> Vec<Event> {
+fn events(ctx: &Ctx, english: bool, kind: Phonemizer) -> Vec<Event> {
     let notes = ctx.notes;
     let mut out: Vec<Event> = Vec::new();
     let mut i = 0;
@@ -344,6 +392,10 @@ fn events(ctx: &Ctx, english: bool) -> Vec<Event> {
                         .unwrap_or_else(|| "ah".into()),
                 ]),
                 Some(Content::Mora(m)) => Content::Mora(vowel_kana(m).unwrap_or("あ").to_string()),
+                Some(Content::Zh(s)) => Content::Zh(zh_vowel(s).to_string()),
+                Some(Content::Ko(s)) => Content::Ko(s.vowel_only()),
+                _ if kind == Phonemizer::ZhCvvc => Content::Zh("a".into()),
+                _ if kind == Phonemizer::KoCvvc => Content::Ko(ko_default()),
                 _ => single(default_syllable(english), english).0,
             };
             out.push(Event {
@@ -389,8 +441,10 @@ fn events(ctx: &Ctx, english: bool) -> Vec<Event> {
             english_syllables(&word)
         } else {
             let text = lyric.trim_end_matches('-');
-            let (c, g) = japanese_morae(ctx, text, i);
-            (c, g)
+            match kind {
+                Phonemizer::ZhCvvc | Phonemizer::KoCvvc => cjk_syllables(ctx, text, i, kind),
+                _ => japanese_morae(ctx, text, i),
+            }
         };
         spread(ctx, &syllables, &slots, guessed, &mut out);
         i = j;
@@ -614,7 +668,7 @@ fn japanese(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan) {
                 }
                 prev_vowel = list.last().and_then(|a| vowel_of_alias(a));
             }
-            Content::Syllable(_) => {}
+            Content::Syllable(_) | Content::Zh(_) | Content::Ko(_) => {}
             Content::Mora(m) => {
                 let romaji = kana::kana_to_romaji(m);
                 let mut cands: Vec<String> = Vec::new();
@@ -701,6 +755,251 @@ fn japanese(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan) {
     }
 }
 
+/// Each note's syllables when it is written in Chinese characters or
+/// hangul, read with the notes sung next to it (a rest, a slur or a hand-
+/// placed note breaks the run).
+fn scripts(ctx: &Ctx, kind: Phonemizer) -> Vec<Option<Vec<Content>>> {
+    let mut texts: Vec<&str> = Vec::new();
+    let mut at = Vec::new();
+    for (i, n) in ctx.notes.iter().enumerate() {
+        if i > 0 && ctx.rest_between(i - 1, i) {
+            texts.push("");
+        }
+        at.push(texts.len());
+        texts.push(if n.phonemes.is_some() {
+            ""
+        } else {
+            n.lyric.trim().trim_end_matches('-')
+        });
+    }
+    let read: Vec<Option<Vec<Content>>> = match kind {
+        Phonemizer::ZhCvvc => fontelle_lang::pinyin::read_run(&texts)
+            .into_iter()
+            .map(|r| r.map(|v| v.into_iter().map(Content::Zh).collect()))
+            .collect(),
+        _ => fontelle_lang::hangul::read_run(&texts)
+            .into_iter()
+            .map(|r| r.map(|v| v.into_iter().map(Content::Ko).collect()))
+            .collect(),
+    };
+    at.into_iter().map(|k| read[k].clone()).collect()
+}
+
+/// 라: what an empty Korean lyric sings.
+fn ko_default() -> fontelle_lang::hangul::Syllable {
+    fontelle_lang::hangul::Syllable {
+        text: '라',
+        onset: "r",
+        vowel: "a",
+        coda: "",
+    }
+}
+
+/// A Chinese or Korean lyric's syllables.
+fn cjk_syllables(ctx: &Ctx, text: &str, note: usize, kind: Phonemizer) -> (Vec<Content>, bool) {
+    if let Some(inner) = bracketed(text) {
+        return (
+            vec![Content::Aliases(split_aliases(ctx, inner, note))],
+            false,
+        );
+    }
+    let default = || match kind {
+        Phonemizer::ZhCvvc => Content::Zh("la".into()),
+        _ => Content::Ko(ko_default()),
+    };
+    if text.is_empty() {
+        return (vec![default()], false);
+    }
+    if let Some(Some(read)) = ctx.scripts.get(note) {
+        return (read.clone(), false);
+    }
+    let lower = text.to_lowercase();
+    if kind == Phonemizer::ZhCvvc && fontelle_lang::pinyin::is_syllable(&lower) {
+        return (vec![Content::Zh(lower)], false);
+    }
+    if ctx.has(text, note) {
+        return (vec![Content::Aliases(vec![text.to_string()])], false);
+    }
+    (vec![default()], true)
+}
+
+/// The final a Chinese syllable ends on, sung again after a rest.
+fn zh_vowel(syllable: &str) -> &str {
+    let (_, f) = fontelle_lang::pinyin::split(syllable);
+    if fontelle_lang::pinyin::is_syllable(f) {
+        return f;
+    }
+    match f.chars().last() {
+        Some('i') => "yi",
+        Some('u') => "wu",
+        Some('v') => "yu",
+        Some('o') => "o",
+        Some('e') => "e",
+        _ => "a",
+    }
+}
+
+/// How a Chinese or Korean syllable is asked for: (the onset the vowel
+/// before it glides into, the CV candidates, whole-syllable candidates
+/// that already hold its coda, its vowel, its coda).
+struct SyllableNames {
+    onset: String,
+    cv: Vec<String>,
+    vowel: String,
+    coda: String,
+}
+
+fn syllable_names(content: &Content, start: bool) -> Option<SyllableNames> {
+    match content {
+        Content::Zh(s) => {
+            let (i, f) = fontelle_lang::pinyin::split(s);
+            let mut cv = Vec::new();
+            if start {
+                cv.push(format!("- {s}"));
+                cv.push(format!("-{s}"));
+            }
+            cv.push(s.clone());
+            Some(SyllableNames {
+                onset: i.to_string(),
+                cv,
+                vowel: f.to_string(),
+                coda: String::new(),
+            })
+        }
+        Content::Ko(s) => {
+            let open = s.open();
+            let mut cv = Vec::new();
+            // A bank recorded with whole syllables (한, 글) sings the
+            // block whole, when the sung onset is the written one.
+            let onset_as_written = fontelle_lang::hangul::decompose(s.text).map(|d| d.0)
+                == fontelle_lang::hangul::decompose(open).map(|d| d.0);
+            let whole = !s.coda.is_empty() && onset_as_written;
+            if whole {
+                if start {
+                    cv.push(format!("- {}", s.text));
+                }
+                cv.push(s.text.to_string());
+            }
+            if start {
+                cv.push(format!("- {open}"));
+            }
+            cv.push(open.to_string());
+            cv.push(format!("{}{}", s.onset, s.vowel));
+            Some(SyllableNames {
+                onset: s.onset.to_string(),
+                cv,
+                vowel: s.vowel.to_string(),
+                coda: s.coda.to_string(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Chinese and Korean: a CV unit per syllable; a coda before the note
+/// ends; vowel-to-consonant into the next syllable and an ending before a
+/// rest, when the bank has them (a CV-only bank simply has none).
+fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
+    for k in 0..events.len() {
+        let e = &events[k];
+        let (end, rest_after) = event_end(ctx, events, k);
+        let start = after_rest(ctx, events, k);
+        // The vowel this event ends on, when something may follow it.
+        let prev_vowel: Option<String> = match &e.content {
+            Content::Hand(list) => {
+                hand_units(ctx, e, list, end, plan);
+                None
+            }
+            Content::Aliases(list) => {
+                let m = list.len();
+                for (j, a) in list.iter().enumerate() {
+                    push(
+                        plan,
+                        a.clone(),
+                        e.note,
+                        e.time + (end - e.time) * j as f64 / m as f64,
+                        false,
+                    );
+                }
+                None
+            }
+            content => {
+                let Some(names) = syllable_names(content, start) else {
+                    continue;
+                };
+                let Some(cv) = ctx.first(&names.cv, e.note) else {
+                    continue;
+                };
+                // A whole syllable (its coda in it) needs no coda unit.
+                let whole = matches!(content, Content::Ko(s)
+                    if !s.coda.is_empty() && cv.contains(s.text));
+                push(plan, cv, e.note, e.time, false);
+                if whole {
+                    None
+                } else if !names.coda.is_empty() {
+                    let cands = [
+                        format!("{} {}", names.vowel, names.coda),
+                        format!("{}{}", names.vowel, names.coda),
+                    ];
+                    if let Some(coda) = ctx.first(&cands, e.last) {
+                        let lead = (ctx.pre(&coda, e.last) / ctx.velocity(e.last))
+                            .min((end - e.time) / 3.0);
+                        let anchor = end - lead;
+                        let note = (e.note..=e.last)
+                            .rev()
+                            .find(|&i| ctx.notes[i].start <= anchor)
+                            .unwrap_or(e.note);
+                        push(plan, coda, note, anchor, false);
+                    }
+                    None
+                } else {
+                    Some(names.vowel)
+                }
+            }
+        };
+        let Some(v) = prev_vowel else {
+            continue;
+        };
+        if rest_after {
+            let cands = [format!("{v} R"), format!("{v} -"), format!("{v}R")];
+            if let Some(alias) = ctx.first(&cands, e.last) {
+                push(plan, alias, e.last, end, true);
+            }
+            continue;
+        }
+        // The vowel into the next syllable's onset.
+        let Some(next) = events.get(k + 1) else {
+            continue;
+        };
+        let Some(next_names) = syllable_names(&next.content, false) else {
+            continue;
+        };
+        if next_names.onset.is_empty() {
+            continue;
+        }
+        let mut cands = vec![format!("{v} {}", next_names.onset)];
+        if let Some(last) = v.chars().last()
+            && v.chars().count() > 1
+        {
+            cands.push(format!("{last} {}", next_names.onset));
+        }
+        let Some(vc) = ctx.first(&cands, e.last) else {
+            continue;
+        };
+        let next_cv = ctx
+            .first(&next_names.cv, next.note)
+            .unwrap_or_else(|| next_names.cv[0].clone());
+        let lead = (ctx.pre(&next_cv, next.note) / ctx.velocity(next.note))
+            .min((next.time - e.time) / 2.0);
+        let anchor = next.time - lead;
+        let note = (e.note..=e.last)
+            .rev()
+            .find(|&i| ctx.notes[i].start <= anchor)
+            .unwrap_or(e.note);
+        push(plan, vc, note, anchor, false);
+    }
+}
+
 /// VCCV's names for ARPAbet phonemes.
 fn vccv_symbol(p: &str) -> &str {
     match p {
@@ -762,6 +1061,8 @@ fn english_units(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan)
         let phones: Vec<String> = match &e.content {
             Content::Syllable(p) => p.clone(),
             Content::Mora(m) => vec![m.clone()],
+            Content::Zh(m) => vec![m.clone()],
+            Content::Ko(m) => vec![m.roman()],
             Content::Aliases(list) => {
                 flush(ctx, &mut run, run_last_note, kind, plan);
                 let m = list.len();

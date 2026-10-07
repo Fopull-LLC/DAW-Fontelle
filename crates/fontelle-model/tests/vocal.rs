@@ -300,6 +300,22 @@ fn kana_spread_a_mora_per_note() {
 }
 
 #[test]
+fn chinese_characters_spread_a_character_per_note_with_their_readings() {
+    let s = spread("我爱你 银行[hang]", 5);
+    assert_eq!(s.lyrics, vec!["我", "爱", "你", "银", "行[hang]"]);
+    assert_eq!(s.left_over, 0);
+    // Punctuation stays with the character before it.
+    let s = spread("你好，世界", 4);
+    assert_eq!(s.lyrics, vec!["你", "好，", "世", "界"]);
+}
+
+#[test]
+fn hangul_spreads_a_syllable_per_note() {
+    let s = spread("사랑해 음악", 5);
+    assert_eq!(s.lyrics, vec!["사", "랑", "해", "음", "악"]);
+}
+
+#[test]
 fn fewer_words_than_notes_fills_the_first_notes_and_more_are_counted() {
     let s = spread("one two", 4);
     assert_eq!(s.lyrics, vec!["one", "two"]);
@@ -314,5 +330,7 @@ fn each_language_has_a_syllable_a_new_note_sings() {
     assert_eq!(default_syllable("en"), "la");
     assert_eq!(default_syllable("en-US"), "la");
     assert_eq!(default_syllable("ja"), "ら");
+    assert_eq!(default_syllable("ko"), "라");
+    assert_eq!(default_syllable("zh"), "la");
     assert_eq!(default_syllable("xx"), "la");
 }

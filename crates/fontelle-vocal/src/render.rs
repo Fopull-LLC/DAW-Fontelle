@@ -11,6 +11,8 @@
 //!
 //! Takes are cached by [`RenderKey`]: what is sung, never where, so a phrase
 //! moved, a clip duplicated, an undo — all find their take already sung.
+//! With a [`TakeStore`] the final takes are also kept on disk (written and
+//! read by the render threads), so a reopened song plays at once.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -20,6 +22,7 @@ use std::time::{Duration, Instant};
 use fontelle_sing::{Backend, Quality, Session, SingError, Sung, SungNote};
 
 use crate::phrases::{RenderKey, render_key};
+use crate::takes::TakeStore;
 
 /// A phrase the app wants sung, who sings it, and where it is (for the
 /// order).
@@ -113,6 +116,8 @@ struct Queue {
     done: Vec<(RenderKey, Result<Rendered, SingError>)>,
     playhead: f64,
     stop: bool,
+    /// Where final takes are kept on disk.
+    store: Option<Arc<TakeStore>>,
 }
 
 impl Queue {
@@ -149,7 +154,9 @@ const SPARE_SAMPLES: usize = 64 * 1024 * 1024;
 pub struct VocalRenderer {
     shared: Arc<Shared>,
     workers: Vec<std::thread::JoinHandle<()>>,
-    cache: HashMap<u64, (Arc<Rendered>, u64)>,
+    /// Takes by key hash: the take, when it was last stored or used, and
+    /// its whole key (for the disk).
+    cache: HashMap<u64, (Arc<Rendered>, u64, RenderKey)>,
     /// Why a phrase could not be sung, by its content (`RenderKey::seed`):
     /// asked again it is not tried again until something about it changes.
     failed: HashMap<u64, String>,
@@ -184,6 +191,47 @@ impl VocalRenderer {
         }
     }
 
+    /// Where final takes are kept on disk, or nowhere.
+    ///
+    /// Final takes already sung are written to a new store on a thread of
+    /// their own: an unsaved song saved for the first time takes its takes
+    /// with it.
+    pub fn set_store(&mut self, store: Option<TakeStore>) {
+        let store = store.map(Arc::new);
+        if let Ok(mut q) = self.shared.queue.lock() {
+            let same = match (&q.store, &store) {
+                (Some(a), Some(b)) => a.dir() == b.dir(),
+                (None, None) => true,
+                _ => false,
+            };
+            if same {
+                return;
+            }
+            q.store = store.clone();
+        }
+        let Some(store) = store else {
+            return;
+        };
+        let finals: Vec<(RenderKey, Arc<Rendered>)> = self
+            .cache
+            .values()
+            .filter(|(r, _, _)| r.quality == Quality::Final)
+            .map(|(r, _, k)| (*k, Arc::clone(r)))
+            .collect();
+        if finals.is_empty() {
+            return;
+        }
+        let _ = std::thread::Builder::new()
+            .name("fontelle-vocal-takes".into())
+            .spawn(move || {
+                for (key, take) in finals {
+                    if !store.has(key) {
+                        let _ = store.save(key, &take);
+                    }
+                }
+            });
+    }
+
     /// Where the playhead is, in song seconds: what the order is measured
     /// from.
     pub fn set_playhead(&mut self, seconds: f64) {
@@ -198,6 +246,7 @@ impl VocalRenderer {
         self.poll();
         let mut keys = HashSet::new();
         let mut fresh = Vec::new();
+        let store = self.shared.queue.lock().ok().and_then(|q| q.store.clone());
         for w in &wanted {
             let preview = w.key(Quality::Preview);
             let fin = w.key(Quality::Final);
@@ -206,7 +255,9 @@ impl VocalRenderer {
             if self.failed.contains_key(&preview.seed) || self.cache.contains_key(&fin.hash) {
                 continue;
             }
-            if !self.cache.contains_key(&preview.hash) {
+            // A final on disk is read back by a render thread: no preview.
+            let on_disk = store.as_ref().is_some_and(|s| s.has(fin));
+            if !self.cache.contains_key(&preview.hash) && !on_disk {
                 fresh.push((preview, Quality::Preview, w));
             }
             fresh.push((fin, Quality::Final, w));
@@ -255,7 +306,8 @@ impl VocalRenderer {
             match result {
                 Ok(take) => {
                     self.stamp += 1;
-                    self.cache.insert(key.hash, (Arc::new(take), self.stamp));
+                    self.cache
+                        .insert(key.hash, (Arc::new(take), self.stamp, key));
                     landed += 1;
                 }
                 Err(SingError::Failed(why)) => {
@@ -276,7 +328,7 @@ impl VocalRenderer {
             .cache
             .iter()
             .filter(|(k, _)| !self.wanted.contains(k))
-            .map(|(k, (r, stamp))| (*k, *stamp, r.samples.len()))
+            .map(|(k, (r, stamp, _))| (*k, *stamp, r.samples.len()))
             .collect();
         let mut total: usize = spare.iter().map(|s| s.2).sum();
         if total <= SPARE_SAMPLES {
@@ -296,7 +348,11 @@ impl VocalRenderer {
     pub fn best(&self, w: &Wanted) -> Option<Arc<Rendered>> {
         [Quality::Final, Quality::Preview]
             .into_iter()
-            .find_map(|q| self.cache.get(&w.key(q).hash).map(|(r, _)| Arc::clone(r)))
+            .find_map(|q| {
+                self.cache
+                    .get(&w.key(q).hash)
+                    .map(|(r, _, _)| Arc::clone(r))
+            })
     }
 
     pub fn state(&self, w: &Wanted) -> PhraseState {
@@ -394,7 +450,7 @@ fn work(shared: &Shared) {
     // thread gives.
     let mut sessions: HashMap<String, Box<dyn Session>> = HashMap::new();
     loop {
-        let job = {
+        let (job, store) = {
             let Ok(mut q) = shared.queue.lock() else {
                 return;
             };
@@ -405,7 +461,7 @@ fn work(shared: &Shared) {
                 if let Some(i) = q.pick() {
                     let job = q.jobs.swap_remove(i);
                     q.running.push((job.key, Arc::clone(&job.cancel)));
-                    break job;
+                    break (job, q.store.clone());
                 }
                 q = match shared.wake.wait(q) {
                     Ok(q) => q,
@@ -413,6 +469,20 @@ fn work(shared: &Shared) {
                 };
             }
         };
+        // Sung before, and kept: read it back rather than sing it.
+        let kept = match (&store, job.quality) {
+            (Some(store), Quality::Final) => store.load(job.key),
+            _ => None,
+        };
+        if let Some(take) = kept {
+            let Ok(mut q) = shared.queue.lock() else {
+                return;
+            };
+            q.running
+                .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+            q.done.push((job.key, Ok(take)));
+            continue;
+        }
         let id = format!("{}\u{1f}{}", job.backend.name(), job.backend.version());
         let sing = |session: &mut Box<dyn Session>| {
             session.sing_flagged(&job.phrase, job.quality, job.key.seed, &job.cancel)
@@ -428,16 +498,29 @@ fn work(shared: &Shared) {
                 Err(why) => Err(SingError::Failed(why)),
             },
         };
-        let Ok(mut q) = shared.queue.lock() else {
-            return;
-        };
-        q.running
-            .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
-        if let Err(SingError::Failed(_)) = &result {
-            // The same words will fail the same way at the other quality.
-            q.jobs.retain(|j| j.key.seed != job.key.seed);
-        }
         let result = result.map(|sung| Rendered::from((job.quality, sung)));
-        q.done.push((job.key, result));
+        // A final is kept on disk once it is handed over (its samples are
+        // shared, not copied), so the window hears it without waiting.
+        let keep = match (&store, &result) {
+            (Some(store), Ok(take)) if job.quality == Quality::Final => {
+                Some((Arc::clone(store), take.clone()))
+            }
+            _ => None,
+        };
+        {
+            let Ok(mut q) = shared.queue.lock() else {
+                return;
+            };
+            q.running
+                .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+            if let Err(SingError::Failed(_)) = &result {
+                // The same words will fail the same way at the other quality.
+                q.jobs.retain(|j| j.key.seed != job.key.seed);
+            }
+            q.done.push((job.key, result));
+        }
+        if let Some((store, take)) = keep {
+            let _ = store.save(job.key, &take);
+        }
     }
 }

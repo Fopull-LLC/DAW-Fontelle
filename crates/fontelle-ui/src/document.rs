@@ -132,6 +132,10 @@ pub struct VoicebankRow {
     pub terms: Option<String>,
     pub terms_agreed: bool,
     pub path: String,
+    /// BCP 47 tags, where the bank says.
+    pub languages: Vec<String>,
+    /// A sample to listen to, when the bank names one.
+    pub sample: Option<String>,
 }
 
 /// One singer in the Find singers catalogue.
@@ -221,6 +225,8 @@ pub struct VocalView {
     pub editor: Option<String>,
     /// Whether that window is open.
     pub editor_open: bool,
+    /// The singer's portrait (a file), drawn in the corner chip.
+    pub portrait: Option<String>,
 }
 
 /// One row of the start menu's *Recent* list.
@@ -3715,7 +3721,7 @@ pub trait StudioHost: DocumentHost {
         String::new()
     }
 
-    /// Installs a dropped or chosen `.zip`, `.oudep` or folder. Says what it
+    /// Installs a dropped or chosen `.zip`, `.7z`, `.uar`, `.oudep` or folder. Says what it
     /// installed.
     fn install_voicebank(&mut self, _path: &std::path::Path) -> Result<String, String> {
         Err("this studio has no vocal tracks".to_string())
@@ -3729,6 +3735,16 @@ pub trait StudioHost: DocumentHost {
 
     /// Shows the voicebanks folder on the desktop.
     fn reveal_voicebanks_dir(&mut self) {}
+
+    /// Shows the installed bank `id`'s own folder on the desktop.
+    fn reveal_voicebank(&mut self, _id: &str) {}
+
+    /// Loads the installed bank `id`'s sample (what its `character.txt` or
+    /// `character.yaml` names) into the preview voice, as the Import tab's
+    /// preview does, and answers its length in seconds.
+    fn preview_voicebank_sample(&mut self, _id: &str) -> Result<f64, String> {
+        Err("this studio cannot preview".to_string())
+    }
 
     fn uninstall_voicebank(&mut self, _id: &str) -> Result<String, String> {
         Err("this studio has no vocal tracks".to_string())

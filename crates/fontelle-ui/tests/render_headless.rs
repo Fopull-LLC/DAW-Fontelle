@@ -203,6 +203,7 @@ fn shoot_sized(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -926,6 +927,7 @@ fn shoot_roll_everything(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -1427,6 +1429,7 @@ fn shoot_timeline_recording(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -2216,6 +2219,7 @@ fn shoot_mixer_lit(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -2683,6 +2687,7 @@ fn shoot_rack_routed(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -4978,6 +4983,7 @@ fn shoot_carry(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5241,6 +5247,7 @@ fn shoot_welcome_status(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5529,6 +5536,7 @@ fn shoot_settings_controls() {
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5654,6 +5662,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5850,6 +5859,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
                 focus: None,
                 dragging: None,
             }),
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -6031,6 +6041,7 @@ fn shoot_guide(
                 media: media.first().map(|(_, image)| image),
             }),
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -6644,6 +6655,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
                 help: None,
                 tour: None,
                 settings_page: None,
+                vocal_overlay: None,
             },
         );
         shared
@@ -6853,6 +6865,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
                 help: None,
                 tour: None,
                 settings_page: None,
+                vocal_overlay: None,
             },
         );
         shared

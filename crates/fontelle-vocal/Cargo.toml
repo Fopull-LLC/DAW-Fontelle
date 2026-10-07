@@ -32,8 +32,14 @@ encoding_rs = "0.8"
 # the same crate the updater checks a release with.
 sha2 = "0.10.9"
 slotmap = "1.1.1"
+# `.7z` voicebank archives (§3): pure Rust, Apache-2.0. Only the readers —
+# LZMA/LZMA2 and the BCJ filters are always in; deflate rides on the
+# `flate2` already in the tree. No encryption, no C.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["deflate"] }
 twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
 
 [dev-dependencies]
+# Writes the small `.7z` archives the install tests read.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
 # Built for its side effect: the end-to-end test loads it as an engine.
 fontelle-testsinger = { path = "../fontelle-testsinger" }

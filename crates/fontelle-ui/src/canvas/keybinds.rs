@@ -198,6 +198,11 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
         title: "Vocal tracks",
         binds: &[
             act(Action::EditLyric),
+            act(Action::Voicebanks),
+            fixed(
+                "Click the singer chip",
+                "Choose who sings: type to search, arrows between cards, Tab a language, Enter",
+            ),
             fixed("Double-click", "On a note of a vocal track: type its lyric"),
             fixed(
                 "Tab / Shift+Tab",
@@ -220,7 +225,10 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
                 "Double-click the phoneme row",
                 "Type a note's phonemes; Tab takes the suggestion; drag a start to retime",
             ),
-            fixed("Drop a .zip, .oudep or folder", "Installs a voicebank"),
+            fixed(
+                "Drop a .zip, .7z, .uar, .oudep or folder",
+                "Installs a voicebank",
+            ),
         ],
     },
     KeybindSection {

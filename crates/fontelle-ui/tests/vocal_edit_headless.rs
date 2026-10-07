@@ -32,6 +32,7 @@ use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{Meter, TransportView, format_readout, transport_bar_layout};
 
 const RW: u32 = 1100;
+const PROBLEMS: [String; 0] = [];
 const RH: u32 = 700;
 
 fn headless() -> Option<&'static Mutex<Headless>> {
@@ -212,6 +213,10 @@ struct Shot<'a> {
     field: Option<(NoteId, &'a str, Vec<String>)>,
     menu: Option<fontelle_ui::canvas::ContextMenu>,
     page: Option<(VoicebankTab, Vec<VoicebankRow>, Vec<CatalogueRow>)>,
+    /// The singer picker: who is offered, what is typed, the focused card.
+    picker: Option<(Vec<SingerChoice>, String, Option<usize>)>,
+    /// The roll corner's portrait.
+    portrait: Option<String>,
 }
 
 impl Default for Shot<'_> {
@@ -222,6 +227,8 @@ impl Default for Shot<'_> {
             field: None,
             menu: None,
             page: None,
+            picker: None,
+            portrait: None,
         }
     }
 }
@@ -291,9 +298,14 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         &song.view.timed,
         song.view.ticks_per_second,
     );
+    let face = if shot.portrait.is_some() {
+        fontelle_ui::render::vocal::CAPTION_PORTRAIT
+    } else {
+        0.0
+    };
     let caption = labels
         .get_styled(&song.view.caption, LYRIC_STYLE)
-        .map(|t| caption_rect(roll_l.grid, t.width));
+        .map(|t| caption_rect(roll_l.grid, t.width + face));
     let chip_text = engine_chip_text("Fontelle Test Singer 2", false);
     labels.ensure_styled(&chip_text, &theme.font, PHONEME_STYLE, &mut text);
     let engine_chip = caption.map(|c| {
@@ -331,6 +343,46 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         }
         None => None,
     };
+    let mut portraits = fontelle_ui::portrait::Portraits::default();
+    let mut faces: Vec<String> = shot.portrait.iter().cloned().collect();
+    if let Some((_, installed, _)) = &shot.page {
+        faces.extend(installed.iter().filter_map(|r| r.portrait.clone()));
+    }
+    if let Some((singers, _, _)) = &shot.picker {
+        faces.extend(singers.iter().filter_map(|s| s.image.clone()));
+    }
+    for face in &faces {
+        portraits.get(face);
+    }
+    let picker_layout;
+    let picker = match &shot.picker {
+        Some((singers, query, focus)) => {
+            let shown = fontelle_ui::canvas::picker_filter(singers, query);
+            picker_layout =
+                fontelle_ui::canvas::singer_picker_layout(layout.window, singers, &shown, 0.0, 1);
+            Some(fontelle_ui::render::vocal::SingerPickerView {
+                layout: &picker_layout,
+                singers,
+                query,
+                focus: *focus,
+                language: 0,
+                current: None,
+                problems: &PROBLEMS,
+            })
+        }
+        None => None,
+    };
+    if let Some(p) = &picker {
+        for w in fontelle_ui::render::vocal::picker_strings(p) {
+            labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
+        }
+        labels.ensure_styled(
+            fontelle_ui::render::vocal::PICKER_TITLE,
+            &theme.font,
+            LYRIC_STYLE,
+            &mut text,
+        );
+    }
     let rv = RollVocal {
         view: &song.view,
         editing: None,
@@ -350,12 +402,12 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
             56.0,
             16.0,
         )),
-        page,
+        portrait: shot.portrait.as_deref().and_then(|p| portraits.peek(p)),
     };
     for w in edit_strings(&rv) {
         labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
     }
-    if let Some(p) = &rv.page {
+    if let Some(p) = &page {
         for w in page_strings(p) {
             labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
         }
@@ -444,6 +496,13 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: (page.is_some() || picker.is_some()).then_some(
+                fontelle_ui::render::vocal::VocalOverlay {
+                    page,
+                    picker,
+                    portraits: &portraits,
+                },
+            ),
         },
     );
     let pixels = shared
@@ -638,6 +697,10 @@ fn the_voicebanks_page_lists_what_is_installed_and_what_can_be_found() {
             author: Some("線の人".into()),
             terms: Some("利用規約".into()),
             terms_agreed: true,
+            portrait: real_portrait("KasaneTeto_tougou_110401/重音テト音声ライブラリー/teto.bmp")
+                .or_else(|| Some(portrait_file("teto-page", 200, true))),
+            sample: Some("sample.wav".into()),
+            languages: vec!["ja".into()],
             ..Default::default()
         },
         VoicebankRow {
@@ -646,6 +709,8 @@ fn the_voicebanks_page_lists_what_is_installed_and_what_can_be_found() {
             kind: "DiffSinger".into(),
             terms: Some("terms".into()),
             terms_agreed: false,
+            portrait: real_portrait("Qixuan_v2.7.0_DiffSinger_OpenUtau/qixuan256x256.png")
+                .or_else(|| Some(portrait_file("qixuan-page", 120, false))),
             ..Default::default()
         },
         VoicebankRow {
@@ -711,5 +776,153 @@ fn the_voicebanks_page_lists_what_is_installed_and_what_can_be_found() {
             ..Shot::default()
         },
         "vocal2-page-find",
+    );
+}
+
+/// A portrait file for the picker's cards: generated (a gradient with a
+/// face-ish disc), or, with `FONTELLE_TEST_VOICEBANKS` set, a real bank's
+/// picture — for looking at, never in git.
+fn portrait_file(name: &str, hue: u8, bmp: bool) -> String {
+    let dir = std::env::temp_dir().join(format!("fontelle-picker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (w, h) = (96u32, 96u32);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - 48.0;
+            let dy = y as f32 - 40.0;
+            let face = dx * dx + dy * dy < 26.0 * 26.0;
+            if face {
+                rgba.extend_from_slice(&[250, 220, 200, 255]);
+            } else {
+                rgba.extend_from_slice(&[hue, (x * 2) as u8, (y * 2) as u8, 255]);
+            }
+        }
+    }
+    if bmp {
+        let path = dir.join(format!("{name}.bmp"));
+        let mut out = Vec::new();
+        let row = w * 3;
+        let size = 54 + row * h;
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(w as i32).to_le_bytes());
+        out.extend_from_slice(&(h as i32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24u16.to_le_bytes());
+        out.extend_from_slice(&[0; 24]);
+        for y in (0..h).rev() {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                out.extend_from_slice(&[rgba[i + 2], rgba[i + 1], rgba[i]]);
+            }
+        }
+        std::fs::write(&path, out).unwrap();
+        path.to_string_lossy().into_owned()
+    } else {
+        let path = dir.join(format!("{name}.png"));
+        let file = std::fs::File::create(&path).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+}
+
+/// A real bank's portrait, when the test voicebanks are on this machine.
+fn real_portrait(relative: &str) -> Option<String> {
+    let root = std::env::var("FONTELLE_TEST_VOICEBANKS").ok()?;
+    let path = std::path::Path::new(&root).join(relative);
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+fn picker_singers() -> Vec<SingerChoice> {
+    let card = |name: &str, kind: SingerKind, langs: &[&str], image: String| SingerChoice {
+        engine: match kind {
+            SingerKind::Utau => "fontelle-utau".into(),
+            SingerKind::DiffSinger => "fontelle-diffsinger".into(),
+            SingerKind::Engine => "Fontelle Test Singer 2".into(),
+        },
+        engine_name: "Fontelle Test Singer 2".into(),
+        id: name.to_lowercase(),
+        name: name.into(),
+        languages: langs.iter().map(|l| l.to_string()).collect(),
+        kind,
+        image: Some(image),
+        ..Default::default()
+    };
+    let teto = real_portrait("KasaneTeto_tougou_110401/重音テト音声ライブラリー/teto.bmp")
+        .unwrap_or_else(|| portrait_file("teto", 200, true));
+    let qixuan = real_portrait("Qixuan_v2.7.0_DiffSinger_OpenUtau/qixuan256x256.png")
+        .unwrap_or_else(|| portrait_file("qixuan", 120, false));
+    let lang = real_portrait("DiffSinger_lang/lang.jpg")
+        .unwrap_or_else(|| portrait_file("lang", 60, false));
+    let mut teto = card("重音テト", SingerKind::Utau, &["ja"], teto);
+    teto.terms = Some("利用規約".into());
+    teto.terms_agreed = true;
+    let mut qx = card(
+        "Qixuan",
+        SingerKind::DiffSinger,
+        &["zh", "ja", "en"],
+        qixuan,
+    );
+    qx.terms = Some("terms".into());
+    let canary = card("Canary ARPAsing", SingerKind::Utau, &["en"], String::new());
+    let lang = card("琅", SingerKind::DiffSinger, &["ja", "zh"], lang);
+    let mut engine = card(
+        "Test Alto",
+        SingerKind::Engine,
+        &["en", "ja"],
+        String::new(),
+    );
+    engine.research_only = true;
+    vec![teto, qx, canary, lang, engine]
+}
+
+#[test]
+fn the_singer_picker_is_a_grid_of_cards_with_portraits() {
+    let song = song();
+    let singers = picker_singers();
+    let Some((pixels, theme, _, _)) = shoot(
+        &song,
+        Shot {
+            picker: Some((singers.clone(), String::new(), Some(1))),
+            portrait: singers[0].image.clone(),
+            ..Shot::default()
+        },
+        "vocal3-picker",
+    ) else {
+        return;
+    };
+    let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
+    let shown = fontelle_ui::canvas::picker_filter(&singers, "");
+    let picker = fontelle_ui::canvas::singer_picker_layout(layout.window, &singers, &shown, 0.0, 0);
+    // A portrait is drawn, not a flat colour: many colours in the first card's.
+    let first = &picker.cards[0];
+    assert!(
+        distinct(&pixels, first.portrait) > 20,
+        "the portrait is a picture"
+    );
+    // Searching narrows it.
+    shoot(
+        &song,
+        Shot {
+            picker: Some((singers.clone(), "chinese".into(), Some(0))),
+            ..Shot::default()
+        },
+        "vocal3-picker-search",
+    );
+    // The roll's corner: the singer's face in the chip.
+    shoot(
+        &song,
+        Shot {
+            portrait: singers[1].image.clone(),
+            ..Shot::default()
+        },
+        "vocal3-corner",
     );
 }

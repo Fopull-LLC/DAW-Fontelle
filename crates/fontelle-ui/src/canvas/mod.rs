@@ -28,6 +28,7 @@ mod roll_scale;
 mod scrollbar;
 mod settings_page;
 mod share;
+mod singer_picker;
 mod text_entry;
 mod timeline;
 mod tools;
@@ -272,6 +273,10 @@ pub use share::{
     PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG, STOP_SHARING, ShareHit,
     SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout, peer_colour,
     share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
+};
+pub use singer_picker::{
+    PickerCard, PickerGroup, PickerHit, PickerMove, SingerPickerLayout, picker_filter, picker_move,
+    singer_picker_hit, singer_picker_layout,
 };
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use timeline::{

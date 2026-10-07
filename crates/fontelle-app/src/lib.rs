@@ -61,6 +61,7 @@ pub use realise::{
     realise_previewing, realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::Session;
+pub use vocal::vocal_takes_dir;
 pub use window::EngineHost;
 
 /// Why `--play-sf2` couldn't produce a usable path.

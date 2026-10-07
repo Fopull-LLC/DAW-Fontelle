@@ -29,6 +29,33 @@ use fontelle_vocal::{
     table_for, voicebanks,
 };
 
+/// Where a song's sung takes are kept (as Analyze Musically's analyses
+/// are, INVARIANT 10): the project's own `cache/vocal/`, or before it is
+/// saved, Fontelle's cache folder's `vocal/` (`$XDG_CACHE_HOME/fontelle`,
+/// `~/.cache/fontelle`, `%LOCALAPPDATA%\fontelle`), shared by unsaved songs
+/// and kept under the same size limit. `None` when there is nowhere, and
+/// then takes live only in memory.
+pub fn vocal_takes_dir(
+    bundle: Option<&Path>,
+    env: &dyn Fn(&str) -> Option<String>,
+    platform: crate::settings::Platform,
+) -> Option<PathBuf> {
+    if let Some(bundle) = bundle {
+        return Some(bundle.join("cache").join("vocal"));
+    }
+    crate::settings::Settings::cache_dir_on(env, platform, &|path| path.is_dir())
+        .map(|dir| dir.join("vocal"))
+}
+
+/// [`vocal_takes_dir`] from this process's environment.
+pub(crate) fn takes_dir_here(bundle: Option<&Path>) -> Option<PathBuf> {
+    vocal_takes_dir(
+        bundle,
+        &|key| std::env::var(key).ok(),
+        crate::settings::Platform::here(),
+    )
+}
+
 /// The longest an export waits for the last final take before giving up.
 const EXPORT_WAIT: Duration = Duration::from_secs(600);
 
@@ -102,6 +129,8 @@ pub(crate) struct VocalSession {
     revision: u64,
     /// What to ask of the renderer once the edits stop — see [`DEBOUNCE`].
     pending: Option<(Vec<Wanted>, Instant)>,
+    /// Where final takes are kept on disk ([`vocal_takes_dir`]).
+    takes: Option<PathBuf>,
 }
 
 /// Everything an export needs to wait for the final takes and hand them to
@@ -192,7 +221,28 @@ impl VocalSession {
             parts: HashMap::new(),
             revision: 0,
             pending: None,
+            takes: None,
         }
+    }
+
+    /// Where the song's takes are kept: the session says so after every
+    /// edit (a save-as moves it, and the takes already sung move with it).
+    pub fn set_takes_dir(&mut self, dir: Option<PathBuf>) {
+        if self.takes == dir {
+            return;
+        }
+        self.takes = dir;
+        if let Some(renderer) = &self.renderer
+            && let Ok(mut r) = renderer.lock()
+        {
+            r.set_store(self.take_store());
+        }
+    }
+
+    fn take_store(&self) -> Option<fontelle_vocal::TakeStore> {
+        self.takes
+            .clone()
+            .map(|d| fontelle_vocal::TakeStore::new(d, fontelle_vocal::DEFAULT_TAKE_BYTES))
     }
 
     /// Loads the engines from `folders` rather than Fontelle's own — for
@@ -353,17 +403,19 @@ impl VocalSession {
             .collect()
     }
 
-    /// The display name of who sings `voice`, if they are installed.
-    fn singer_name(&self, voice: &VocalVoice) -> Option<(String, bool)> {
+    /// The display name of who sings `voice`, if they are installed,
+    /// whether it is research-only, and its portrait.
+    fn singer_name(&self, voice: &VocalVoice) -> Option<(String, bool, Option<String>)> {
         let backend = self.registry().backend(&voice.engine)?;
         backend
             .voices()
             .into_iter()
             .find(|v| v.id == voice.singer)
-            .map(|v| (v.name, v.research_only))
+            .map(|v| (v.name, v.research_only, v.image))
     }
 
     fn renderer(&mut self) -> Arc<Mutex<VocalRenderer>> {
+        let store = self.take_store();
         Arc::clone(self.renderer.get_or_insert_with(|| {
             // Leave room for the audio thread and the window.
             // Two at most: each worker holds an engine instance of its own,
@@ -371,7 +423,9 @@ impl VocalSession {
             let workers = std::thread::available_parallelism()
                 .map_or(1, |n| n.get().saturating_sub(2))
                 .clamp(1, 2);
-            Arc::new(Mutex::new(VocalRenderer::new(workers)))
+            let mut renderer = VocalRenderer::new(workers);
+            renderer.set_store(store);
+            Arc::new(Mutex::new(renderer))
         }))
     }
 
@@ -570,11 +624,12 @@ impl VocalSession {
         };
         let singer = voice.as_ref().and_then(|v| self.singer_name(v));
         view.caption = match (&voice, &singer) {
-            (Some(v), Some((name, _))) => format!("{name} \u{b7} {}", v.language),
+            (Some(v), Some((name, _, _))) => format!("{name} \u{b7} {}", v.language),
             (Some(v), None) => format!("{} \u{b7} {}", v.singer, v.language),
             (None, _) => "No singer".to_string(),
         };
-        view.research_only = singer.as_ref().is_some_and(|(_, r)| *r);
+        view.research_only = singer.as_ref().is_some_and(|(_, r, _)| *r);
+        view.portrait = singer.and_then(|(_, _, image)| image);
         if let Some(v) = &voice {
             let registry = self.registry();
             view.backend = v.engine.clone();
@@ -784,7 +839,7 @@ impl VocalSession {
         let who = voice
             .and_then(|v| {
                 self.singer_name(v)
-                    .map(|(name, _)| name)
+                    .map(|(name, _, _)| name)
                     .or_else(|| Some(v.singer.clone()))
             })
             .unwrap_or_else(|| project.channels[channel].name.clone());
@@ -1053,8 +1108,27 @@ impl VocalSession {
                 terms_agreed: voicebanks::terms_acknowledged(&b.path),
                 terms: b.terms.clone(),
                 path: b.path.display().to_string(),
+                languages: b.info.languages.clone(),
+                sample: b.info.sample.as_ref().map(|p| p.display().to_string()),
             })
             .collect()
+    }
+
+    /// The installed bank `id`'s folder.
+    pub fn voicebank_path(&self, id: &str) -> Option<PathBuf> {
+        self.voicebank_rows()
+            .into_iter()
+            .find(|r| r.id == id)
+            .map(|r| PathBuf::from(r.path))
+    }
+
+    /// The sample the installed bank `id` names, if it names one.
+    pub fn voicebank_sample(&self, id: &str) -> Option<PathBuf> {
+        self.voicebank_rows()
+            .into_iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.sample)
+            .map(PathBuf::from)
     }
 
     pub fn install(&mut self, path: &Path) -> Result<String, String> {

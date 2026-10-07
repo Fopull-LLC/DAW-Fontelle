@@ -167,3 +167,21 @@ fn choosing_a_bank_row_names_it() {
         .unwrap();
     assert!(!chosen.0.enabled, "the one singing is marked, not offered");
 }
+
+#[test]
+fn an_installed_row_opens_its_folder_and_plays_its_sample() {
+    let window = Rect::new(0.0, 0.0, 1200.0, 800.0);
+    let page = voicebank_page_layout(window, VoicebankTab::Installed, 2, 0.0);
+    let r = &page.rows[0];
+    let centre = |r: Rect| (r.x + r.width / 2.0, r.y + r.height / 2.0);
+    // Left of the terms, right of the words.
+    assert!(r.text.right() <= r.sample.x && r.sample.right() <= r.reveal.x);
+    assert!(r.reveal.right() <= r.terms.x);
+    let (x, y) = centre(r.reveal);
+    assert_eq!(voicebank_page_hit(&page, x, y), Some(PageHit::Reveal(0)));
+    let (x, y) = centre(r.sample);
+    assert_eq!(voicebank_page_hit(&page, x, y), Some(PageHit::Sample(0)));
+    // Find singers' rows have neither: a bank not installed has no folder.
+    let find = voicebank_page_layout(window, VoicebankTab::Find, 2, 0.0);
+    assert!(find.rows[0].reveal.is_empty() && find.rows[0].sample.is_empty());
+}

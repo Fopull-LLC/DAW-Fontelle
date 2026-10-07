@@ -31,6 +31,7 @@ pub mod icon;
 pub mod layout;
 pub mod motion;
 pub mod pointer;
+pub mod portrait;
 pub mod render;
 pub mod skin;
 pub mod sky;

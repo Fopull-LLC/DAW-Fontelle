@@ -16,6 +16,8 @@ cuda = ["ort/cuda"]
 
 [dependencies]
 fontelle-sing = { path = "../fontelle-sing" }
+# Chinese characters to pinyin, hangul to its sounds.
+fontelle-lang = { path = "../fontelle-lang" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # dsconfig.yaml, dsdict*.yaml, vocoder.yaml, oudep.yaml, character.yaml.

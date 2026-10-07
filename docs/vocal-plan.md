@@ -114,13 +114,69 @@ rule (`$XDG_DATA_HOME` or `~/.local/share`, macOS included; Windows
 `.installing-*` (an install in progress), `.downloads/`, `.agreed-terms.json`
 (singers whose terms were agreed to, by backend and voice, with a hash of the
 terms), and a bank's `.fontelle-terms` (its readme's terms, acknowledged).
-Install (`voicebanks::install`) takes a `.zip`, an `.oudep` or a folder; zip
+Install (`voicebanks::install`) takes a `.zip`, an `.oudep`, a `.7z`
+(`sevenz-rust2`, pure Rust), a `.uar` (UTAU's installer archive, a zip with
+an `install.txt` whose `folder=`/`contentsdir=` are honoured in any package)
+or a folder — told apart by their first bytes, a RAR refused with what to do; zip
 names are read in Shift-JIS, GBK or UTF-8 (chosen once per archive by which
 reading looks like a language), the bank's root is found under any wrapping
 folders (`dsconfig.yaml` → DiffSinger; `character.txt`/`character.yaml` over
 an `oto.ini`, or the folder all the `oto.ini`s share → UTAU; `vocoder.yaml`
 or `oudep.yaml` → a dependency), names that would climb out are refused, and
-nothing half-installed is left. `.7z` is not read yet.
+nothing half-installed is left.
+
+### 2.2 Banks in the studio, lyrics in every script, takes kept (2026-10-07)
+
+Branch `feature/vocal-banks`.
+
+- **Portraits** (`fontelle_ui::portrait`): `character.txt`'s `image=` (BMP
+  most often — 1/4/8/16/24/32-bit, bitfields, either row order, read here),
+  `character.yaml`'s `portrait:`/`image:` (PNG, JPEG, or WebP whatever the
+  extension says, `image-webp`). Box-filtered to 256 px at most and kept by
+  path; drawn cropped to a rounded square on the picker's cards, the
+  Voicebanks page's rows and the roll's singer chip.
+- **The picker is a card grid** (`canvas::singer_picker`): portrait, name,
+  kind badge (UTAU / DiffSinger / Engine), a chip per language (which
+  chooses it), terms to read or agreed, research-only; the voicebanks'
+  group above the engines'. A search field narrows by name, kind, language
+  tag or name, engine; arrows move between cards as laid out, Tab walks the
+  focused card's languages, Enter chooses, Esc closes. No singer, Install a
+  voicebank…, Voicebanks & Find singers… below. Unread terms are still asked
+  before a bank first sings.
+- **The Voicebanks page opens from anywhere**: the instrument menus (New
+  instrument, Change instrument) have a row for it, and the key
+  `Ctrl+Shift+Y` (`Action::Voicebanks`, rebindable); it no longer needs a
+  vocal track in the roll. An installed row has its languages, ▶ Sample (the
+  sample its author named, through the Import tab's preview voice), Folder,
+  its terms and Uninstall.
+- **Lyrics in Chinese characters and hangul** (`fontelle-lang`): a typed line
+  spreads a character or a syllable block a note (a bracketed reading stays
+  with its character). Chinese reads toneless pinyin — each character's most
+  common reading (Unihan `kMandarin` via `pinyin-data`, MIT/Unicode-3.0,
+  `licenses/pinyin-data/`), common words that read a character otherwise
+  matched across notes (`银` `行` → `yin hang`), a few readings songs prefer
+  (`长` → `chang`), and `行[hang]` to say any other. Hangul is taken apart by
+  Unicode's arithmetic into onset/vowel/coda, romanised, with a coda carried
+  into a following vowel and stops nasalised before ㄴ/ㅁ. DiffSinger banks
+  look each syllable up in their dictionary (`ni`, `han`), else sing its
+  parts as phonemes (`zh/n zh/i`, `ko/h ko/a ko/n`); UTAU banks get two
+  phonemizers appended to the setting: **Chinese CV/CVVC** (pinyin aliases,
+  `- ni`, `i h`, `ao R`) and **Korean CV/CVVC** (hangul aliases: whole
+  blocks when recorded, else the open syllable and a coda unit `a k`,
+  vowel-to-consonant `a r`, `ae R`), each detected from a bank's aliases.
+- **Takes kept on disk** (`fontelle_vocal::TakeStore`): final takes are
+  written by the render thread that sang them to the song's own
+  `cache/vocal/` (an unsaved song: Fontelle's cache folder's `vocal/`, by the
+  analysis cache's rule), one file per render key — 16-bit samples
+  (scaled when louder than full scale), delta-coded, high and low byte
+  planes, deflated; the pitch line and phonemes beside them; a key and an
+  xxHash checked on read. 512 MB a folder, least recently used out first.
+  A phrase whose final is on disk is not previewed: a reopened song plays
+  at once. A song saved for the first time takes its sung finals with it.
+- **Packages**: `.7z` (`sevenz-rust2`, Apache-2.0) and `.uar` (a zip with
+  UTAU's `install.txt`, whose `folder=`/`contentsdir=` are honoured in any
+  package), told apart by their bytes; names checked before anything is
+  written, as for zips.
 
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
@@ -129,10 +185,10 @@ nothing missing in daily work.
 
 **Voicebanks**
 - Install by dropping a `.zip`, `.7z`*, `.oudep` or folder anywhere on the
-  window, or from **Find singers** (§4). File names in Shift-JIS, GBK or
+  window, or from **Find singers** (§4); `.uar` too. File names in Shift-JIS, GBK or
   UTF-8 zips are decoded; `oto.ini`/`character.txt` in Shift-JIS or UTF-8
   are read; `character.yaml`, `readme.txt`, portraits and sample audio are
-  shown. *(`.7z` if a pure-Rust decoder fits.)*
+  shown.
 - The **terms** each author wrote are shown at install and on the picker;
   the user acknowledges them. Fontelle records what is known: commercial use,
   AI use, credit required.
@@ -145,7 +201,8 @@ nothing missing in daily work.
 **Writing**
 - Lyrics as now (Tab through notes, a line spread over notes, `-` slurs,
   hyphenated syllables, `[phonemes]`), with the phonemizer chosen per bank:
-  Japanese CV/VCV/CVVC, English ARPAsing/VCCV/X-SAMPA, DiffSinger dictionary.
+  Japanese CV/VCV/CVVC, English ARPAsing/VCCV/X-SAMPA, Chinese and Korean
+  CV/CVVC, DiffSinger dictionary; Chinese characters and hangul read (§2.2).
 - **Phoneme row**: every note's phonemes, editable; drag a phoneme's start to
   retime it (banks that honour timing).
 - **Per-note expression**: velocity (consonant speed), vibrato (depth, rate,

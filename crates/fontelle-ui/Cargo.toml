@@ -38,6 +38,9 @@ png = "0.18.1"
 # tree), and JPEG as well as PNG, because a wallpaper is usually a JPEG.
 base64 = "0.22.1"
 zune-jpeg = "0.4"
+# WebP voicebank portraits (some DiffSinger banks ship one, whatever its
+# extension says). Pure Rust, from image-rs; MIT OR Apache-2.0.
+image-webp = "0.2.4"
 zune-core = "0.4"
 # A theme's moving backdrop is WGSL, checked with naga before wgpu sees it:
 # wgpu's answer to a bad shader is a panic on another thread. The version

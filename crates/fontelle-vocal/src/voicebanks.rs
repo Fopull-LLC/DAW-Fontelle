@@ -15,7 +15,10 @@
 //!
 //! # What a package is
 //!
-//! A `.zip`, an `.oudep` (a zip) or a folder. Inside it, the **bank's root**
+//! A `.zip`, an `.oudep` (a zip), a `.7z`, a `.uar` (UTAU's installer
+//! archive: a zip with an `install.txt` saying `folder=` and `contentsdir=`,
+//! which are honoured in any package) or a folder — told apart by the
+//! file's first bytes, not its name. Inside it, the **bank's root**
 //! is found wherever the author put it — under one or more wrapping
 //! folders, beside a readme:
 //!
@@ -172,16 +175,27 @@ fn install_from(
         let into = staging.join(file_name(source).unwrap_or_else(|| "bank".into()));
         copy_dir(source, &into)?;
     } else {
-        unzip(source, staging)?;
+        unpack(source, staging)?;
     }
     let oudep = source
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("oudep"));
-    let (kind, root) = find_root(staging, oudep).ok_or(InstallError::NotAVoicebank)?;
+    // UTAU's installer file, when the package has one, says where the bank
+    // is in it and what its folder is called.
+    let hint = install_txt(staging);
+    let search = hint
+        .as_ref()
+        .and_then(|h| h.contents.as_ref())
+        .map(|c| staging.join(c))
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(|| staging.to_path_buf());
+    let (kind, root) = find_root(&search, oudep).ok_or(InstallError::NotAVoicebank)?;
     let info = read_info(&root, kind);
-    // The folder's own name when the package had one, else what the bank
-    // calls itself.
-    let folder = if root == staging {
+    // install.txt's folder, else the folder's own name when the package had
+    // one, else what the bank calls itself.
+    let folder = if let Some(folder) = hint.and_then(|h| h.folder) {
+        folder
+    } else if root == staging {
         info.name.clone()
     } else {
         file_name(&root).unwrap_or_else(|| info.name.clone())
@@ -238,6 +252,100 @@ fn sanitize(name: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// What UTAU's `install.txt` says (`type=voiceset`, `folder=`,
+/// `contentsdir=`), from the shallowest one in the package.
+struct InstallTxt {
+    folder: Option<String>,
+    /// The bank's files, relative to the install.txt's own folder, checked.
+    contents: Option<PathBuf>,
+}
+
+fn install_txt(staging: &Path) -> Option<InstallTxt> {
+    let file = walk(staging, 2)
+        .into_iter()
+        .find(|f| named(f, &["install.txt"]))?;
+    let text = read(&file)?;
+    if ini_value(&text, "type").is_some_and(|t| !t.eq_ignore_ascii_case("voiceset")) {
+        return None;
+    }
+    let base = file.parent()?.strip_prefix(staging).ok()?.to_path_buf();
+    let contents = ini_value(&text, "contentsdir")
+        .and_then(|c| safe_path(&c).ok().flatten())
+        .map(|c| base.join(c));
+    // The last part of a path given as the folder; sanitized like any other.
+    let folder = ini_value(&text, "folder").and_then(|f| {
+        f.replace('\\', "/")
+            .rsplit('/')
+            .find(|p| !p.is_empty())
+            .map(sanitize)
+    });
+    Some(InstallTxt { folder, contents })
+}
+
+/// What an archive is, by its first bytes: a `.uar` is a zip, and a `.7z`
+/// saved as `.zip` happens.
+fn unpack(source: &Path, into: &Path) -> Result<(), InstallError> {
+    let mut magic = [0u8; 8];
+    let n = {
+        use std::io::Read;
+        let mut f = std::fs::File::open(source)?;
+        f.read(&mut magic)?
+    };
+    let magic = &magic[..n];
+    if magic.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        un7z(source, into)
+    } else if magic.starts_with(b"Rar!") {
+        Err(InstallError::Archive(
+            "this is a RAR archive, which Fontelle cannot unpack; extract it with \
+             another tool and drop the folder in instead"
+                .into(),
+        ))
+    } else {
+        unzip(source, into)
+    }
+}
+
+fn un7z(source: &Path, into: &Path) -> Result<(), InstallError> {
+    use sevenz_rust2::{ArchiveReader, Password};
+    let archive_error = |e: sevenz_rust2::Error| InstallError::Archive(e.to_string());
+    let mut reader = ArchiveReader::open(source, Password::empty()).map_err(archive_error)?;
+    // Every name is checked before anything is written. 7z names are
+    // UTF-16 in the archive, so there is no encoding to guess.
+    for entry in &reader.archive().files {
+        if let Err(name) = safe_path(&entry.name) {
+            return Err(InstallError::Unsafe(name));
+        }
+    }
+    let mut failed: Option<InstallError> = None;
+    reader
+        .for_each_entries(|entry, data| {
+            let Ok(Some(path)) = safe_path(&entry.name) else {
+                return Ok(true);
+            };
+            let to = into.join(path);
+            let result = (|| -> std::io::Result<()> {
+                if entry.is_directory {
+                    return std::fs::create_dir_all(&to);
+                }
+                if let Some(parent) = to.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut out = std::fs::File::create(&to)?;
+                std::io::copy(data, &mut out)?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    failed = Some(e.into());
+                    Ok(false)
+                }
+            }
+        })
+        .map_err(archive_error)?;
+    failed.map_or(Ok(()), Err)
 }
 
 fn unzip(source: &Path, into: &Path) -> Result<(), InstallError> {
@@ -418,9 +526,12 @@ pub fn read_info(root: &Path, kind: PackageKind) -> BankInfo {
         }
         info.author = yaml_value(&text, "author").or(info.author);
         info.web = yaml_value(&text, "web").or(info.web);
-        info.portrait = existing(yaml_value(&text, "portrait"))
-            .or_else(|| existing(yaml_value(&text, "image")))
-            .or(info.portrait);
+        // `image` is the bank's icon; `portrait` (OpenUtau's) the large
+        // picture behind the roll — a face for a card only when there is
+        // no icon.
+        info.portrait = existing(yaml_value(&text, "image"))
+            .or(info.portrait)
+            .or_else(|| existing(yaml_value(&text, "portrait")));
         info.sample = existing(yaml_value(&text, "sample")).or(info.sample);
         if let Some(list) = yaml_value(&text, "languages") {
             info.languages = list

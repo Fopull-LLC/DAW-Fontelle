@@ -4658,6 +4658,8 @@ impl Session {
         // the engines, and the tables re-placed. In the song's own time
         // whatever is playing — a phrase is sung once, wherever it is heard.
         let tempo = fontelle_model::effective_tempo_map(&self.project);
+        self.vocal
+            .set_takes_dir(crate::vocal::takes_dir_here(self.bundle.as_deref()));
         self.vocal.sync(&self.project, &tempo);
     }
 
@@ -9690,7 +9692,7 @@ impl StudioHost for Session {
         match crate::desktop::choose_open_file(
             "Install a voicebank",
             start.as_deref(),
-            "*.zip *.oudep",
+            "*.zip *.7z *.uar *.oudep",
         ) {
             Ok(Some(path)) => self.install_voicebank(&path).map(Some),
             Ok(None) => Ok(None),
@@ -9704,6 +9706,30 @@ impl StudioHost for Session {
         if let Err(e) = crate::desktop::reveal(&dir) {
             self.message = Some(e);
         }
+    }
+
+    fn reveal_voicebank(&mut self, id: &str) {
+        let Some(dir) = self.vocal.voicebank_path(id) else {
+            self.message = Some(format!("{id} is not installed"));
+            return;
+        };
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
+    fn preview_voicebank_sample(&mut self, id: &str) -> Result<f64, String> {
+        // The same preview voice the Import tab's listen uses: nothing is
+        // written to the document.
+        let path = self
+            .vocal
+            .voicebank_sample(id)
+            .ok_or_else(|| "this voicebank names no sample to listen to".to_string())?;
+        let (_name, patch, seconds) = self.sampler_patch(&path)?;
+        self.preview_patch = Some(patch);
+        self.previewing = true;
+        self.rebuild_graph();
+        Ok(seconds)
     }
 
     fn uninstall_voicebank(&mut self, id: &str) -> Result<String, String> {

@@ -11,6 +11,8 @@ repository.workspace = true
 
 [dependencies]
 fontelle-sing = { path = "../fontelle-sing" }
+# Chinese characters to pinyin, hangul to its sounds.
+fontelle-lang = { path = "../fontelle-lang" }
 encoding_rs = "0.8"
 yaml-rust2 = "0.10"
 flate2 = "1.1.9"
