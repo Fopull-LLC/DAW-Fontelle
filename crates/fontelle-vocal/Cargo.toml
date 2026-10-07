@@ -1,0 +1,22 @@
+[package]
+name = "fontelle-vocal"
+description = "The vocal track's render pipeline: phrases from a part, a cache keyed by what is sung, a scheduler that sings ahead of the playhead through a singer engine, and the table the audio node plays."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-model = { path = "../fontelle-model" }
+fontelle-host = { path = "../fontelle-host" }
+fontelle-engine = { path = "../fontelle-engine" }
+fontelle-singer-abi = { path = "../fontelle-singer-abi" }
+twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
+
+[dev-dependencies]
+# Built for its side effect: the end-to-end test loads it as an engine.
+fontelle-testsinger = { path = "../fontelle-testsinger" }

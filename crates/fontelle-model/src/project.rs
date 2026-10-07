@@ -224,6 +224,16 @@ impl TempoMap {
         }
     }
 
+    /// Where `tick` falls, in seconds from the top — unrounded, which is what
+    /// anything placed in seconds (a sung phrase) wants: a sample index is
+    /// only right for one rate.
+    pub fn tick_to_seconds(&self, tick: Tick) -> f64 {
+        let index = self.segment_at(tick);
+        let segment = &self.segments[index];
+        self.prefix_seconds[index]
+            + (tick - segment.start_tick) as f64 * seconds_per_tick(segment.bpm)
+    }
+
     pub fn tick_to_sample(&self, tick: Tick) -> Sample {
         let index = self.segment_at(tick);
         let segment = &self.segments[index];
