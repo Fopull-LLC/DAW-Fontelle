@@ -19,6 +19,102 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07, latest — the Fontelle Singer's integration: the part
+sings through `fontelle_sing`, voicebanks install, and an engine's own
+window edits the part.** Same branch (`feature/vocal-track`), not merged,
+not bumped. Ty's plan is `docs/vocal-plan.md` (§2.1, §4.1 and §5.1 say how
+it was built); the two voicebank runtimes (`fontelle-utau`,
+`fontelle-diffsinger`) are other branches, wired by one
+`fontelle_vocal::builtin_backends()` entry each.
+
+- **The part** (format **3**, written only when used; 2→3 empty):
+  `Note::voice` (phonemes with offsets in seconds, vibrato, glide, options
+  by backend; velocity read as consonant speed, OpenUtau's VEL) and
+  `NoteData::vocal` (standard lanes as tick points from the clip's start,
+  each backend's own lanes, settings, a base64 state blob — never pruned
+  when the singer changes). `LaneCurve::write/erase` keep what is outside a
+  stroke and simplify straight runs. Commands `SetNoteVoices`,
+  `SetVocalLane`, `SetVocalSettings`, `SetVocalState` (merge while a gesture
+  is in the hand; wire forms appended and pinned). A cut clip shifts its
+  second half's lanes.
+- **The pipeline** (`fontelle-vocal`): `phrases_with` builds
+  `fontelle_sing::Phrase` — expression, lanes sampled from whichever clip
+  pass plays, the backend's own lanes/settings/state, identity
+  (`start`, `note_ids`) left out of the render key, which hashes the whole
+  phrase. The scheduler drives `Backend`/`Session` through
+  `Session::sing_flagged` (added to the contract, defaulted) so an engine
+  gets the cancel flag itself. `SingerRegistry` puts built-ins (keys
+  `fontelle-*`, reserved) before engines; `voicebanks` installs
+  zip/oudep/folders (Shift-JIS/GBK/UTF-8 names chosen per archive, the bank's
+  root found under wrapping folders, zip-slip refused, nothing left half
+  done), reads terms and records acknowledgement; `catalogue` reads the Find
+  singers index (`docs/singers-index.json`, two entries checked at source:
+  Kasane Teto UTAU, Qixuan DiffSinger — both "Get it", their pages), verifies
+  downloads and watches Downloads. Our own zip reader (stored + deflate +
+  zip64, `miniz_oxide`); new deps `encoding_rs`, `sha2`, `slotmap` here.
+- **ABI 2, host side** (`fontelle_host`): `SingerEngine` is a
+  `fontelle_sing::Backend` (v1: notes and words, hand phonemes as a
+  bracketed lyric; v2: the phrase as JSON); capabilities and `has_editor`
+  asked once at load. `SingerEditor` opens an engine's window into a
+  `PluginWindow`, ticks it, answers `get_part`/`take_at` (phonemes report
+  with offsets) from what it was last shown, tells it when the part
+  changed, and queues `apply_edits` batches (checked whole) and transport
+  for the app, which applies each batch as one `Compound`
+  (`fontelle_app::vocal_part`). The lead's five notes from the closed
+  engine's author are in: phrase identity, `take_at` phonemes, `Settings`
+  merges, parent 0 and the seed documented in the ABI.
+- **`fontelle-testsinger` is two engines**: copied as a file whose name has
+  `abi2` in it (found with `dladdr` / `GetModuleFileNameW`) it is "Fontelle
+  Test Singer 2" — pitch bend, dynamics, breathiness (not gender), a
+  `growl` lane, a `brightness` setting, a `colour` option, timed phonemes —
+  with a window that paints a teal child window and edits the part on
+  lyric levers (`!poke`, `!bad`, `!play`, `!take`). **Never copy over a
+  loaded copy**: a test that loads twice must copy once (it segfaulted).
+- **The studio**: the picker groups "Fontelle Singer — free voicebanks"
+  (kind, language, terms still to read) above "Singer engines" (saying when
+  one has a window), with Install a voicebank… and Voicebanks & Find
+  singers…; an unread bank's terms are shown whole and agreed to first. The
+  vocal roll takes a phoneme row under the grid and a tab strip over the
+  lane: notes / pitch / dyn / breath / voice / tension / gender / the voice's
+  own, ignored ones struck through and saying why; the roll's tools draw
+  (pencil, Shift a line, eraser or right button to neutral), one undo per
+  stroke. A selected note shows its vibrato wave with delay/fade/depth/rate
+  handles and its glide handle (Shift moves its position); "Note ▾" opens
+  the note menu; the computed pitch line is drawn over the notes; the
+  phoneme row double-clicks into a field with the voice's phonemes as
+  suggestions (Tab takes one) and drags a start to retime. "Open <engine>"
+  beside the singer chip. The Voicebanks page (Installed / Find singers,
+  Esc or outside closes, wheel scrolls). Dropping a voicebank anywhere
+  installs it.
+- Tests: `fontelle-model/tests/vocal_expression.rs` (17) and `wire.rs`
+  (+4 commands, +4 pinned); `fontelle-host/tests/singers_v2.rs` (12);
+  `fontelle-testsinger/tests/engine.rs` (+2); `fontelle-vocal`
+  `expression.rs` (7), `registry.rs` (6), `voicebanks.rs` (11),
+  `catalogue.rs` (7), zip unit tests (2), `phrases.rs`/`scheduler.rs`/
+  `end_to_end.rs` ported; `fontelle-app/tests/vocal_studio.rs` (7);
+  `fontelle-ui` `vocal_expression.rs` (14), `vocal_picker.rs` (5),
+  `vocal_edit_headless.rs` (5, dumps `vocal2-*`). Tests first and seen
+  failing for the model, host ABI 2, the pipeline (phrases, registry,
+  voicebanks, catalogue) and the roll's pure pieces; the testsinger's own
+  table tests, the app's studio tests and the window plumbing
+  (`app/vocal.rs`) were written beside their code.
+- **Not done**: portraits are drawn as a coloured initial (no image
+  decoding on the page yet); `.7z` and `.uar` are watched for but not
+  unpacked; the picker is a menu, not a card with portraits; the note
+  menu has no keyboard shortcut (Note ▾ in the tab strip); pitch is bent in
+  the lane, not drawn directly on the grid (§3's pencil-the-pitch-line,
+  smooth, snap to scale are open); imports (UST/USTX/VSQX/MusicXML),
+  freeze and render-to-clip are open (§7.3); the Voicebanks page is only
+  reachable while a vocal track is in the roll; the full studio was not driven on
+  a real display in this pass; the engine window was, on its own: `cargo
+  run -p fontelle-host --example singer_editor -- <folder> "<engine>"` on a
+  nested Xwayland :99 opened the ABI 2 test singer's window in a
+  `PluginWindow`, it painted its teal child window into it and sent its
+  edit batch through `apply_edits`. Whole workspace: 6159 tests passed, 0
+  failed (537 binaries); preflight all clear (fmt, clippy on Linux, Windows,
+  macOS).
+
+
 **As of 2026-10-07 — the vocal track: a channel that sings.** Branch
 `feature/vocal-track` (from v0.26.1 and the two `fontelle-singer-abi`
 commits), not merged, not bumped. Ty wants to make a song with sung
