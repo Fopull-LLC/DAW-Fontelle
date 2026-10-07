@@ -301,6 +301,9 @@ pub enum Action {
     PathPoint,
     /// Take the last point of the path back.
     PathPointBack,
+    /// Open the inline lyric field on the selected notes (a vocal track):
+    /// one note's word, or a whole line over several.
+    EditLyric,
     // --- Analyze Musically (docs/analyze-musically-plan.md §3.5) ---
     /// Open Analyze Musically on the selected audio clip.
     AnalyzeClip,
@@ -344,7 +347,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 63] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -388,6 +391,7 @@ impl Action {
         Self::RemoveBand,
         Self::PathPoint,
         Self::PathPointBack,
+        Self::EditLyric,
         Self::AnalyzeClip,
         Self::AnalyzeCopyNotes,
         Self::AnalyzeCopyScale,
@@ -458,6 +462,7 @@ impl Action {
             Self::RemoveBand => "remove-band",
             Self::PathPoint => "path-point",
             Self::PathPointBack => "path-point-back",
+            Self::EditLyric => "edit-lyric",
             Self::AnalyzeClip => "analyze-clip",
             Self::AnalyzeCopyNotes => "analyze-copy-notes",
             Self::AnalyzeCopyScale => "analyze-copy-scale",
@@ -533,6 +538,7 @@ impl Action {
             Self::RemoveBand => "Remove the selected EQ band",
             Self::PathPoint => "While drawing a note: a point here — then hold or slide on",
             Self::PathPointBack => "While drawing a note: take the last point back",
+            Self::EditLyric => "Type the lyric of the selected notes (vocal track)",
             Self::AnalyzeClip => {
                 "Analyze Musically: the selected audio clip's notes, key and chords"
             }
@@ -647,6 +653,7 @@ impl Action {
             Self::RemoveBand => &["Delete", "Backspace"],
             Self::PathPoint => &["S"],
             Self::PathPointBack => &["Backspace"],
+            Self::EditLyric => &["Enter"],
             Self::AnalyzeClip => &["Ctrl+Shift+A"],
             Self::AnalyzeCopyNotes => &["Ctrl+C"],
             Self::AnalyzeCopyScale => &["Ctrl+Shift+C"],

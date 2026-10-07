@@ -13,6 +13,7 @@ mod guide;
 mod instrument;
 mod keybinds;
 mod keymap;
+mod lyrics;
 mod menu;
 mod mixer;
 mod note_clipboard;
@@ -214,6 +215,10 @@ pub use disgusting_beat::{
     point_position, rate_caption, split_twin,
 };
 pub use glide::{Glide, wheel_travel};
+pub use lyrics::{
+    LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, language_name, line_text, neighbour,
+    singer_menu_rows,
+};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
     MAX_STRIP_WIDTH, MIN_FADER_DB, MIN_PATCH_HEIGHT, MIN_SEND_DB, MIN_STRIP_WIDTH, MixerControl,

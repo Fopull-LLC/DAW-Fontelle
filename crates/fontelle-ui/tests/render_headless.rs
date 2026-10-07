@@ -901,6 +901,7 @@ fn shoot_roll_everything(
                 scale: song_key.and_then(fontelle_ui::canvas::RollScale::of),
                 key: song_key,
                 key_root: song_key.map_or(0, |key| key.root),
+                vocal: None,
             }),
             rack: None,
             prefabs: None,
@@ -1374,6 +1375,7 @@ fn shoot_timeline_recording(
             prefabs: None,
             browser: None,
             timeline: Some(TimelineChrome {
+                vocal_spans: &[],
                 tool: fontelle_ui::canvas::TimelineTool::default(),
                 stretch,
                 toolbar: fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics),

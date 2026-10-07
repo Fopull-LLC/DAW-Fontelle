@@ -17,6 +17,7 @@
 mod analyze;
 mod analyze_pages;
 mod bridge;
+pub mod vocal;
 
 pub use analyze::{AnalyzeChrome, analyze_style, lay_out_analyze, shape_analyze};
 pub use bridge::SkyFrame;
@@ -396,6 +397,9 @@ pub struct BrowserChrome<'a> {
 /// The arrangement's contents. Read-only, like every other canvas here
 /// (INVARIANT 2).
 pub struct TimelineChrome<'a> {
+    /// Vocal clips' stretches still being sung, in each clip's own ticks —
+    /// drawn hatched on the block.
+    pub vocal_spans: &'a [(fontelle_types::ClipId, Vec<(Tick, Tick)>)],
     pub panel: PanelLayout,
     pub layout: TimelineLayout,
     pub view: TimelineView,
@@ -561,6 +565,9 @@ pub struct RollChrome<'a> {
     /// (the one a scale will be built on when none is chosen yet).
     pub key: Option<&'a fontelle_types::KeyScale>,
     pub key_root: u8,
+    /// A vocal track's layer — its words, phrases and sung pitch — when the
+    /// roll is showing one.
+    pub vocal: Option<vocal::RollVocal<'a>>,
 }
 
 /// The instrument editor's contents (TDD §7.2).
@@ -6232,6 +6239,11 @@ pub fn draw_piano_roll(
         );
     }
 
+    // A vocal track's phrases, behind its notes.
+    if let Some(vocal) = &chrome.vocal {
+        vocal::draw_phrase_bands(scene, theme, v, grid, vocal);
+    }
+
     // Notes.
     for (id, note) in chrome.notes.iter() {
         // A note with a **path** is one ribbon through its points — flat
@@ -6317,6 +6329,20 @@ pub fn draw_piano_roll(
             fill.to_peniko(),
             None,
             &rounded(block.inset(0.5), 2.0),
+        );
+    }
+
+    // Its words in the notes, what they were sung as, the sung pitch.
+    if let Some(vocal) = &chrome.vocal {
+        vocal::draw_vocal_overlay(
+            scene,
+            theme,
+            labels,
+            v,
+            grid,
+            chrome.notes,
+            chrome.selection,
+            vocal,
         );
     }
 
@@ -8249,6 +8275,10 @@ fn draw_timeline(
             // reason: what is *in* a clip is the thing you are looking for
             // when you scan an arrangement.
             draw_clip_notes(scene, theme, l.grid, whole, clip, selected);
+            // A vocal clip's phrases not sung yet: silence until they land.
+            if let Some((_, spans)) = chrome.vocal_spans.iter().find(|(id, _)| *id == clip.id) {
+                vocal::draw_clip_rendering(scene, theme, l.grid, whole, clip.length, spans);
+            }
             // And the ones landing in it right now, while a take is being
             // recorded: the open clip is where the take goes, so the block
             // fills with the notes as they are played, in the record colour.

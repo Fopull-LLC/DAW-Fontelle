@@ -607,6 +607,17 @@ impl VocalSession {
 }
 
 impl VocalSession {
+    /// Where an engine goes: Fontelle's own singers folder (the last of the
+    /// search paths, after `FONTELLE_SINGERS`).
+    pub fn folder_hint(&self) -> String {
+        self.folders
+            .clone()
+            .unwrap_or_else(fontelle_host::singer_search_paths)
+            .last()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    }
+
     fn no_engine_message(&self) -> String {
         no_engine_message(self.folders.clone())
     }

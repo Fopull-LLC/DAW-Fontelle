@@ -9428,6 +9428,10 @@ impl StudioHost for Session {
         self.vocal.problems()
     }
 
+    fn singers_folder(&self) -> String {
+        self.vocal.folder_hint()
+    }
+
     fn vocal_voice(&self, index: usize) -> Option<fontelle_model::VocalVoice> {
         let id = self.channel_ids().get(index).copied()?;
         let channel = self.project.channels.get(id)?;

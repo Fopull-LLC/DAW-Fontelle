@@ -195,6 +195,22 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
         ],
     },
     KeybindSection {
+        title: "Vocal tracks",
+        binds: &[
+            act(Action::EditLyric),
+            fixed("Double-click", "On a note of a vocal track: type its lyric"),
+            fixed(
+                "Tab / Shift+Tab",
+                "In a lyric: keep it and type the next / last note's",
+            ),
+            fixed("Enter / Esc", "In a lyric: keep it / leave it as it was"),
+            fixed(
+                "A line, several notes",
+                "Words spread a note each; a-ma-zing a syllable each; - holds",
+            ),
+        ],
+    },
+    KeybindSection {
         title: "Mixer",
         binds: &[act(Action::MuteTrack), act(Action::SoloTrack)],
     },

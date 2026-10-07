@@ -3505,6 +3505,12 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// Where a singer engine is installed, for the picker to say when there
+    /// is none.
+    fn singers_folder(&self) -> String {
+        String::new()
+    }
+
     /// Who sings channel `index`, when it is a vocal track with a voice.
     fn vocal_voice(&self, _index: usize) -> Option<fontelle_model::VocalVoice> {
         None

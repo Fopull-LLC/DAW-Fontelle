@@ -548,6 +548,9 @@ pub const RECORD_INTO_ANALYZE: &str = "Record into Analyze Musically\u{2026}";
 enum MenuTarget {
     /// A channel in the rack, by row.
     Channel(usize),
+    /// Who sings vocal channel `usize`: every installed singer in each of
+    /// its languages — see `canvas::singer_menu_rows`.
+    Singer(usize),
     /// The mixer's *+ fx* row on this strip: which effect to put on the end
     /// of its chain. See [`crate::canvas::effect_menu_rows`].
     AddEffect(usize),
@@ -910,6 +913,7 @@ impl MenuTarget {
             // the main window.
             Self::SettingChoice(_) | Self::TourSection => None,
             Self::Channel(_)
+            | Self::Singer(_)
             | Self::AddEffect(_)
             | Self::NewInstrument
             | Self::ChangeInstrument(_)
@@ -2038,6 +2042,22 @@ pub struct WindowApp {
     /// the way `field_widths` is for the prompt. `None` when nothing is
     /// being renamed.
     rename_marks: Option<crate::render::RenameMarks>,
+    /// The inline lyric field on a vocal track's notes, while it is open.
+    lyric: Option<crate::canvas::LyricEditor>,
+    /// Its caret and selection, measured in `shape_labels` like
+    /// `rename_marks`.
+    lyric_marks: Option<crate::render::RenameMarks>,
+    /// What the roll draws over a vocal track's notes; `None` off one.
+    vocal: Option<crate::document::VocalView>,
+    /// The host's vocal and studio revisions `vocal` was read at.
+    vocal_seen: (u64, u64),
+    /// Each vocal clip's stretches still being sung, for the arrangement.
+    vocal_spans: Vec<(
+        fontelle_types::ClipId,
+        Vec<(fontelle_types::Tick, fontelle_types::Tick)>,
+    )>,
+    /// Where the roll's singer chip is, measured in `shape_labels`.
+    vocal_caption: Option<crate::layout::Rect>,
     /// Whether the caret is in its **on** half. Flipped on a timer, because a
     /// caret that does not blink is easy to read as a character.
     caret_on: bool,
@@ -2618,6 +2638,12 @@ impl WindowApp {
             rename_entry: crate::canvas::TextEntry::default(),
             field_widths: std::collections::HashMap::new(),
             rename_marks: None,
+            lyric: None,
+            lyric_marks: None,
+            vocal: None,
+            vocal_seen: (u64::MAX, u64::MAX),
+            vocal_spans: Vec::new(),
+            vocal_caption: None,
             caret_on: true,
             caret_phase: 0.0,
             renaming: None,
@@ -3233,6 +3259,15 @@ impl WindowApp {
                     tools: &self.tools,
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
+                    vocal: self
+                        .vocal
+                        .as_ref()
+                        .map(|view| crate::render::vocal::RollVocal {
+                            view,
+                            editing: self.lyric.as_ref().map(|e| (e.ids(), e.entry().text())),
+                            marks: self.lyric_marks,
+                            caption: self.vocal_caption,
+                        }),
                 }),
                 // Exactly one of the two: they are one panel with two tabs
                 // (`canvas::tab_strip`), and drawing both would put two lists
@@ -3311,6 +3346,7 @@ impl WindowApp {
                 timeline: (!self.layout.timeline.frame.is_empty()
                     && self.options.document.is_some())
                 .then(|| TimelineChrome {
+                    vocal_spans: &self.vocal_spans,
                     panel: self.layout.timeline,
                     layout: self.timeline_layout,
                     view: self.timeline.view,
@@ -3647,6 +3683,7 @@ impl WindowApp {
             .as_mut()
             .is_some_and(|doc| doc.pump_session());
         self.read_session();
+        self.refresh_vocal();
         // The tour's spotlight glides between steps.
         if self.tour_moving() {
             self.tree.invalidate_rect(self.layout.window);
@@ -3717,7 +3754,12 @@ impl WindowApp {
         // is rather than at the end of the name.
         // The notepad's caret blinks on the same clock, in its own window.
         let writing = self.notepad_typing && self.notepad.is_some();
-        if prompting || writing || self.renaming.is_some() || self.tempo_entry.is_some() {
+        if prompting
+            || writing
+            || self.renaming.is_some()
+            || self.tempo_entry.is_some()
+            || self.lyric.is_some()
+        {
             self.caret_phase += dt;
             if self.caret_phase >= CARET_BLINK_S {
                 self.caret_phase -= CARET_BLINK_S;
@@ -3727,6 +3769,8 @@ impl WindowApp {
                 }
                 if prompting {
                     self.tree.invalidate_rect(self.menu_at.1);
+                } else if self.lyric.is_some() {
+                    self.tree.invalidate(PANEL);
                 } else if self.tempo_entry.is_some() {
                     self.tree.invalidate(TRANSPORT);
                 } else {
@@ -5056,6 +5100,16 @@ impl ApplicationHandler for WindowApp {
 
             // The compositor threw our pixels away, or is about to show them
             // again. Either way what we believe is on screen is no longer true.
+            // A finished composition from an input method — kana, hanzi —
+            // goes into the lyric being typed.
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                if let Some(editor) = &mut self.lyric {
+                    editor.commit_text(&text);
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
+
             WindowEvent::Occluded(true) => {
                 self.sight.occluded = true;
             }
@@ -8499,6 +8553,55 @@ impl WindowApp {
                     }
                     tick += bar;
                 }
+            }
+        }
+
+        // A vocal track's words, phonemes, corner and lyric field — and the
+        // field's caret, measured at the size it is drawn.
+        self.vocal_caption = None;
+        self.lyric_marks = None;
+        if let (Some(view), Some(doc)) = (self.vocal.as_ref(), self.options.document.as_ref()) {
+            use crate::render::vocal::{LYRIC_STYLE, PHONEME_STYLE, caption_rect, strings};
+            let typed = self.lyric.as_ref().map(|e| e.entry().text().to_string());
+            let (words, small) = strings(view, doc.notes(), typed.as_deref());
+            for text in &words {
+                self.labels
+                    .ensure_styled(text, &font, LYRIC_STYLE, &mut self.text);
+            }
+            for text in &small {
+                self.labels
+                    .ensure_styled(text, &font, PHONEME_STYLE, &mut self.text);
+            }
+            let width = self
+                .labels
+                .get_styled(&view.caption, LYRIC_STYLE)
+                .map_or(0.0, |t| t.width);
+            self.vocal_caption = Some(caption_rect(self.roll_layout.grid, width));
+            if let Some(editor) = &self.lyric {
+                let entry = editor.entry();
+                let text = entry.text();
+                let sized = crate::theme::FontTokens {
+                    family: font.family.clone(),
+                    size: LYRIC_STYLE.size(),
+                    line_height: 1.0,
+                    display: None,
+                };
+                let mut width_to = |at: usize| {
+                    if at == 0 {
+                        0.0
+                    } else {
+                        self.text
+                            .layout_weighted(&text[..at], &sized, None, LYRIC_STYLE.weight())
+                            .width
+                    }
+                };
+                self.lyric_marks = Some(crate::render::RenameMarks {
+                    caret_x: width_to(entry.caret()),
+                    selection: entry
+                        .selection()
+                        .map(|(from, to)| (width_to(from), width_to(to))),
+                    caret_on: self.caret_on,
+                });
             }
         }
     }
@@ -16392,6 +16495,41 @@ impl WindowApp {
             && self
                 .double_click
                 .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        // A vocal track: the singer chip opens the picker; a click anywhere
+        // else keeps the lyric being typed; a double-click on a note types
+        // its word.
+        if self.vocal.is_some() {
+            if button == MouseButton::Left
+                && self.vocal_caption.is_some_and(|chip| chip.contains(x, y))
+            {
+                let index = doc.selected_channel();
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::Singer(index), x, y, bounds);
+                return;
+            }
+            if self.lyric.is_some() {
+                self.commit_open_lyric();
+            }
+            let Some(doc) = &self.options.document else {
+                return;
+            };
+            if doubled
+                && let crate::canvas::RollHit::Note(id, _) = crate::canvas::hit_test(
+                    &self.roll.view,
+                    self.roll_layout.grid,
+                    doc.notes(),
+                    x,
+                    y,
+                )
+            {
+                self.start_lyric(vec![id]);
+                self.tree.invalidate(PANEL);
+                return;
+            }
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
         let on_note = matches!(
             crate::canvas::hit_test(&self.roll.view, self.roll_layout.grid, doc.notes(), x, y),
             crate::canvas::RollHit::Note(..)
@@ -17780,13 +17918,23 @@ impl WindowApp {
                     }),
                 ]
             }
+            MenuTarget::Singer(index) => self
+                .singer_rows(*index)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             MenuTarget::Channel(index) => {
                 let plays = self
                     .channels
                     .get(*index)
                     .is_some_and(|channel| channel.has_instrument);
+                let sings = self.is_vocal_channel(*index);
                 let mut entries = vec![
-                    MenuEntry::new("Open instrument"),
+                    MenuEntry::new(if sings {
+                        "Choose singer\u{2026}"
+                    } else {
+                        "Open instrument"
+                    }),
                     MenuEntry::new("Change instrument..."),
                     MenuEntry::new("Rename"),
                     MenuEntry::new("Duplicate"),
@@ -18759,7 +18907,216 @@ impl WindowApp {
     fn open_chosen_instrument(&mut self) {
         self.refresh_studio();
         self.refresh_title();
+        // A vocal track has no instrument window: its instrument is a
+        // singer, chosen from a list, and its work is in the roll.
+        let selected = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.selected_channel());
+        if let Some(index) = selected
+            && self.is_vocal_channel(index)
+        {
+            self.show_tab(EditorTab::Roll);
+            let (x, y) = self.cursor;
+            let bounds = self.layout.window;
+            self.open_menu(MenuTarget::Singer(index), x, y, bounds);
+            return;
+        }
         self.open_editor(EditorKind::Instrument);
+    }
+
+    // ----------------------------------------------------- vocal tracks ---
+
+    fn is_vocal_channel(&self, index: usize) -> bool {
+        self.options.document.as_ref().is_some_and(|doc| {
+            doc.channel_kind(index) == Some(fontelle_types::InstrumentKind::Vocal)
+        })
+    }
+
+    /// The singer picker's rows for channel `index`.
+    fn singer_rows(
+        &self,
+        index: usize,
+    ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::SingerRow)> {
+        let Some(doc) = &self.options.document else {
+            return Vec::new();
+        };
+        crate::canvas::singer_menu_rows(
+            &doc.singers(),
+            doc.vocal_voice(index).as_ref(),
+            &doc.singer_problems(),
+            &doc.singers_folder(),
+        )
+    }
+
+    /// Reads the vocal layer again when the host says it moved: an edit, or
+    /// a phrase that has just been sung.
+    fn refresh_vocal(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let seen = (doc.vocal_revision(), doc.revision());
+        if seen == self.vocal_seen {
+            return;
+        }
+        self.vocal_seen = seen;
+        self.vocal = doc.vocal_view();
+        self.vocal_spans = doc.vocal_rendering_spans();
+        if self.vocal.is_none() && self.lyric.is_some() {
+            self.close_lyric();
+        }
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(TIMELINE);
+    }
+
+    /// Opens the lyric field on `ids` — one note's word, or several notes'
+    /// line.
+    fn start_lyric(&mut self, ids: Vec<fontelle_types::NoteId>) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        if self.vocal.is_none() {
+            return;
+        }
+        let Some(editor) = crate::canvas::LyricEditor::open(doc.notes(), &ids) else {
+            self.status = "Select the notes to write words under, then press Enter".to_string();
+            return;
+        };
+        let guessed = self
+            .vocal
+            .as_ref()
+            .is_some_and(|v| editor.ids().iter().any(|id| v.guessed.contains(id)));
+        self.status = if editor.is_line() {
+            "Type the line \u{2014} Enter spreads it over the notes, a word each (a-ma-zing a syllable each, - holds)".to_string()
+        } else if guessed {
+            "The singer guessed how to say this word \u{2014} write it as [phonemes] to be sure"
+                .to_string()
+        } else {
+            "Type the lyric \u{2014} Tab for the next note, Shift+Tab the last, Enter to keep, Esc to leave it".to_string()
+        };
+        self.roll.select(editor.ids().to_vec());
+        self.lyric = Some(editor);
+        self.caret_on = true;
+        self.caret_phase = 0.0;
+        self.set_ime(true);
+        self.tree.invalidate(PANEL);
+    }
+
+    fn close_lyric(&mut self) {
+        self.lyric = None;
+        self.lyric_marks = None;
+        self.set_ime(false);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Lets the input method compose into the window while a lyric is typed
+    /// (Japanese is typed through one), and not otherwise.
+    fn set_ime(&self, on: bool) {
+        if let Some(live) = &self.live {
+            live.window.set_ime_allowed(on);
+        }
+    }
+
+    /// Keeps whatever is in the lyric field — a click elsewhere while typing.
+    fn commit_open_lyric(&mut self) {
+        let Some(editor) = self.lyric.take() else {
+            return;
+        };
+        let ids = editor.ids().to_vec();
+        let text = editor.entry().text().trim().to_string();
+        let line = editor.is_line();
+        self.commit_lyric(ids, text, line);
+        self.close_lyric();
+    }
+
+    /// Writes a committed lyric, one undo step. One note's field holding
+    /// several words spreads them over that note and the ones after it —
+    /// how a whole line is typed or pasted from its first note.
+    fn commit_lyric(&mut self, ids: Vec<fontelle_types::NoteId>, text: String, line: bool) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let words = fontelle_model::lyrics::tokens(&text).len();
+        let result = if line {
+            doc.set_lyric_line(&ids, &text)
+        } else if words > 1 {
+            let mut run = ids.clone();
+            while run.len() < words {
+                let Some(next) = run
+                    .last()
+                    .and_then(|at| crate::canvas::neighbour(doc.notes(), *at, true))
+                else {
+                    break;
+                };
+                run.push(next);
+            }
+            doc.set_lyric_line(&run, &text)
+        } else {
+            let unchanged = ids
+                .first()
+                .and_then(|id| doc.notes().get(*id))
+                .is_some_and(|n| n.lyric == text);
+            if unchanged {
+                Ok(String::new())
+            } else {
+                doc.set_lyrics(&ids, vec![text]).map(|()| String::new())
+            }
+        };
+        match result {
+            Ok(said) if !said.is_empty() => self.status = said,
+            Ok(_) => {}
+            Err(why) => self.status = why,
+        }
+        self.refresh_vocal();
+    }
+
+    /// A key while the lyric field is open. Whether it was taken.
+    fn lyric_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        let Some(mut editor) = self.lyric.take() else {
+            return false;
+        };
+        let Some(doc) = &self.options.document else {
+            self.lyric = Some(editor);
+            return false;
+        };
+        let ctrl = self.modifiers.control_key();
+        let shift = self.modifiers.shift_key();
+        let what = editor.key(
+            &event.logical_key,
+            ctrl,
+            shift,
+            &mut self.clipboard_text,
+            doc.notes(),
+        );
+        use crate::canvas::LyricKey;
+        match what {
+            LyricKey::Edited | LyricKey::Ignored => {
+                self.lyric = Some(editor);
+                self.caret_on = true;
+                self.caret_phase = 0.0;
+            }
+            LyricKey::Cancel => {
+                self.close_lyric();
+                self.status = "Lyric left as it was".to_string();
+            }
+            LyricKey::Commit { ids, text, line } => {
+                self.close_lyric();
+                self.commit_lyric(ids, text, line);
+            }
+            LyricKey::CommitAndMove {
+                ids,
+                text,
+                line,
+                to,
+            } => {
+                self.close_lyric();
+                self.commit_lyric(ids, text, line);
+                self.start_lyric(vec![to]);
+            }
+        }
+        self.tree.invalidate(PANEL);
+        true
     }
 
     /// Opens the window of the effect just added to the end of `strip`'s
@@ -18807,7 +19164,52 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.select_channel(*channel);
                 }
-                self.open_editor(EditorKind::Instrument);
+                if self.is_vocal_channel(*channel) {
+                    let (x, y) = self.cursor;
+                    let bounds = self.layout.window;
+                    self.open_menu(MenuTarget::Singer(*channel), x, y, bounds);
+                } else {
+                    self.open_editor(EditorKind::Instrument);
+                }
+            }
+            (MenuTarget::Singer(channel), index) => {
+                let channel = *channel;
+                let row = self.singer_rows(channel).get(index).map(|(_, r)| r.clone());
+                let singers = self
+                    .options
+                    .document
+                    .as_ref()
+                    .map(|doc| doc.singers())
+                    .unwrap_or_default();
+                let voice = match row {
+                    Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                        singers.get(singer).map(|s| {
+                            (
+                                Some(fontelle_model::VocalVoice::new(
+                                    s.engine.clone(),
+                                    s.id.clone(),
+                                    language.clone(),
+                                )),
+                                format!(
+                                    "{} sings this track, in {}",
+                                    s.name,
+                                    crate::canvas::language_name(&language)
+                                ),
+                            )
+                        })
+                    }
+                    Some(crate::canvas::SingerRow::Nobody) => Some((
+                        None,
+                        "Nobody sings this track \u{2014} its notes and words are kept".to_string(),
+                    )),
+                    _ => None,
+                };
+                if let (Some((voice, said)), Some(doc)) = (voice, &mut self.options.document) {
+                    doc.set_singer(channel, voice);
+                    self.status = said;
+                    self.refresh_studio();
+                    self.tree.invalidate(PANEL);
+                }
             }
             // A menu of its own rather than three more rows here: the kinds
             // are one list (`MenuTarget::ChangeInstrument`) and both places
@@ -21635,6 +22037,12 @@ impl WindowApp {
             return;
         }
 
+        // A lyric being typed has the keyboard too: a "d" is a letter in a
+        // word, not the delete tool.
+        if self.lyric_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         // While a name is being typed, that has the keyboard: the same rule
         // the search box follows, and for the same reason.
         if self.rename_key(event) {
@@ -21911,6 +22319,14 @@ impl WindowApp {
             Action::RollSnap => {
                 if self.tab == EditorTab::Roll {
                     self.cycle_snap();
+                }
+            }
+            // The lyric field on the selected notes of a vocal track: one
+            // note's word, or a line over several.
+            Action::EditLyric => {
+                if self.tab == EditorTab::Roll && self.vocal.is_some() {
+                    let ids = self.roll.selection().to_vec();
+                    self.start_lyric(ids);
                 }
             }
             Action::LaneProperty => self.cycle_lane_property(),
@@ -23239,7 +23655,12 @@ impl WindowApp {
         // **A bounce and "Saved!" hold the loop awake**: the one is read off
         // another thread and the other moves on its own, and neither is an
         // event this loop would wake for.
-        if self.job.is_some() || self.saved_at.is_some() || self.tour_moving() {
+        let singing = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.vocal_busy());
+        if self.job.is_some() || self.saved_at.is_some() || self.tour_moving() || singing {
             let frame = if self.saved_at.is_some() || self.tour_moving() {
                 std::time::Duration::from_millis(16)
             } else {
