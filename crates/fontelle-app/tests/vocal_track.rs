@@ -64,6 +64,9 @@ fn vocal_session(name: &str, engines: bool) -> (Session, PathBuf) {
     } else {
         vec![dir.join("no-singers")]
     });
+    // Never the machine's own voicebanks: an installed bank would be the
+    // first singer and change what these tests hear.
+    session.set_voicebanks(dir.join("no-voicebanks"), Vec::new());
     session.add_channel_of(InstrumentKind::Vocal).unwrap();
     (session, bundle)
 }
