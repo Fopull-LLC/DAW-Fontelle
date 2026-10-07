@@ -77,6 +77,7 @@ mod probe;
 mod processor;
 mod resident;
 mod scan;
+mod singer;
 pub mod vst3;
 
 pub use alpha_egl::{
@@ -99,4 +100,9 @@ pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
 pub use scan::{
     PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with, search_paths,
     search_paths_with,
+};
+pub use singer::{
+    AbiVerdict, PhraseSpec, RenderFailure, SingerDescription, SingerEngine, SingerEngines,
+    SingerFailure, SingerInstance, SpecNote, Sung, abi_verdict, singer_search_paths,
+    singer_search_paths_from,
 };

@@ -20,6 +20,7 @@ doc = false
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
 fontelle-bridge-abi = { path = "../fontelle-bridge-abi" }
+fontelle-singer-abi = { path = "../fontelle-singer-abi" }
 # dlopen for bridges. clack does its own for CLAP and lilv for LV2.
 libloading = "0.8"
 clack-host = "0.1.1"
@@ -77,6 +78,7 @@ png = "0.18.1"
 fontelle-testlv2 = { path = "../fontelle-testlv2" }
 fontelle-testvst3 = { path = "../fontelle-testvst3" }
 fontelle-testbridge = { path = "../fontelle-testbridge" }
+fontelle-testsinger = { path = "../fontelle-testsinger" }
 
 # AppKit windows are made on the main thread, and libtest runs each test on
 # a thread of its own: the macOS editor tests have a `main` of their own.

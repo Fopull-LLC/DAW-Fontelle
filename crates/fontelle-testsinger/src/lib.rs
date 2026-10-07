@@ -166,10 +166,10 @@ fn cancelled(flag: *const AtomicU32) -> bool {
 /// The phonemes a lyric is shown as: brackets as given, a word split into
 /// its leading consonants and the rest, a slur nothing.
 fn phonemes(lyric: &str) -> Option<Vec<String>> {
-    let lyric = lyric.trim().trim_end_matches('-');
-    if lyric == LYRIC_SLUR {
+    if lyric.trim() == LYRIC_SLUR {
         return None;
     }
+    let lyric = lyric.trim().trim_end_matches('-');
     if let Some(inner) = lyric.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
         return Some(inner.split_whitespace().map(str::to_string).collect());
     }
