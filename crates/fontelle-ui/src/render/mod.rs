@@ -6341,7 +6341,7 @@ pub fn draw_piano_roll(
 
     // Its words in the notes, what they were sung as, the sung pitch.
     if let Some(vocal) = &chrome.vocal {
-        vocal::draw_pitch_line(scene, theme, v, grid, vocal.view);
+        vocal::draw_pitch_line(scene, theme, v, grid, vocal);
         vocal::draw_note_expression(scene, theme, v, grid, chrome.notes, chrome.selection, vocal);
         vocal::draw_vocal_overlay(
             scene,
@@ -6512,6 +6512,7 @@ pub fn draw_piano_roll(
         );
         vocal::draw_vocal_tabs(scene, theme, labels, vocal);
         vocal::draw_note_button(scene, theme, labels, vocal);
+        vocal::draw_pitch_button(scene, theme, labels, vocal);
         vocal::draw_phoneme_row(scene, theme, labels, vocal);
     }
     draw_roll_toolbar(scene, theme, labels, chrome);

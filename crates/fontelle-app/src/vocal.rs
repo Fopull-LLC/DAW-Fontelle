@@ -707,6 +707,7 @@ impl VocalSession {
                 let line = fontelle_sing::note_pitch(&sung.notes, from, to);
                 let bend = sung.curves.get(&Lane::PitchBend);
                 let mut points = Vec::with_capacity(line.values.len());
+                let mut plain = Vec::with_capacity(line.values.len());
                 for (i, key) in line.values.iter().enumerate() {
                     let t = from + i as f64 * line.step;
                     let cents = bend.map_or(0.0, |c| c.at(t, 0.0));
@@ -722,9 +723,11 @@ impl VocalSession {
                         continue;
                     }
                     points.push((tick, key + cents / 100.0));
+                    plain.push((tick, *key));
                 }
                 if points.len() > 1 {
                     view.pitch_line.push(points);
+                    view.note_line.push(plain);
                 }
             }
             let take = match (&renderer, wanted) {

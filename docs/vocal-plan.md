@@ -213,6 +213,8 @@ nothing missing in daily work.
   bank's or engine's own. A lane the voice ignores is greyed with why.
 - **Pitch drawing**: pencil the pitch line directly; reset to the notes;
   smooth; snap the drawn line to the scale.
+  *(Built 2026-10-07 on `feature/vocal-roll`: Shift+P pitch pen, Alt+S /
+  Alt+Q / Alt+R, Alt+Enter the note menu — `canvas::vocal_pitch`.)*
 - Import **UST**, **USTX**, **VSQX**, **MIDI with lyrics** and **MusicXML**;
   export MIDI with lyrics and USTX.
 

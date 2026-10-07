@@ -203,6 +203,11 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
                 "Click the singer chip",
                 "Choose who sings: type to search, arrows between cards, Tab a language, Enter",
             ),
+            act(Action::NoteMenu),
+            act(Action::PitchPen),
+            act(Action::SmoothPitch),
+            act(Action::SnapPitch),
+            act(Action::ResetPitch),
             fixed("Double-click", "On a note of a vocal track: type its lyric"),
             fixed(
                 "Tab / Shift+Tab",

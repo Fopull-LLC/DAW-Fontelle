@@ -17,14 +17,15 @@ use fontelle_ui::canvas::{
     singer_menu_rows, terms_menu_rows, tick_to_x, toolbar_layout, vocal_tabs,
     voicebank_page_layout,
 };
+use fontelle_ui::canvas::{PitchBase, drawn_pitch, pitch_to_y};
 use fontelle_ui::document::{
     CatalogueRow, KeyMap, SingerChoice, SingerKind, VocalPhraseView, VocalRenderState, VocalView,
     VoicebankRow,
 };
 use fontelle_ui::layout::{Rect, window_layout};
 use fontelle_ui::render::vocal::{
-    LYRIC_STYLE, PHONEME_STYLE, RollVocal, VoicebankPage, caption_rect, edit_strings,
-    engine_chip_rect, engine_chip_text, page_strings, strings,
+    DRAWN_PITCH, LYRIC_STYLE, PHONEME_STYLE, PITCH_BUTTON_TEXT, RollVocal, VoicebankPage,
+    caption_rect, edit_strings, engine_chip_rect, engine_chip_text, page_strings, strings,
 };
 use fontelle_ui::render::{Chrome, Headless, RollChrome, TransportChrome, draw_window};
 use fontelle_ui::text::{Labels, TextContext};
@@ -200,6 +201,14 @@ fn song() -> Song {
         backend: "Fontelle Test Singer 2".into(),
         capabilities: caps(),
         part,
+        note_line: vec![pitch_line.clone()],
+        // What the singer sang: the line a little flat and late.
+        pitch: vec![
+            pitch_line
+                .iter()
+                .map(|(t, k)| (t + PPQN / 10, k - 0.25))
+                .collect(),
+        ],
         pitch_line: vec![pitch_line],
         editor: Some("Fontelle Test Singer 2".into()),
         ..VocalView::default()
@@ -207,7 +216,19 @@ fn song() -> Song {
     Song { notes, ids, view }
 }
 
+/// The lyric field's notes, what it shows, the composition's underline
+/// and the caret, as byte offsets.
+type LyricShot<'a> = (Vec<NoteId>, &'a str, Option<(usize, usize)>, usize);
+
 struct Shot<'a> {
+    /// The lyric field: its notes, what it shows, the composition's
+    /// underline as byte offsets.
+    lyric: Option<LyricShot<'a>>,
+    /// The phoneme field's composition underline, as byte offsets, and caret.
+    phoneme_compose: Option<((usize, usize), usize)>,
+    /// A pitch bend drawn over the notes, and the pen on.
+    bend: Option<LaneCurve>,
+    pitch_pen: bool,
     curve: Option<VocalCurve>,
     selection: Vec<NoteId>,
     field: Option<(NoteId, &'a str, Vec<String>)>,
@@ -222,6 +243,10 @@ struct Shot<'a> {
 impl Default for Shot<'_> {
     fn default() -> Self {
         Self {
+            lyric: None,
+            phoneme_compose: None,
+            bend: None,
+            pitch_pen: false,
             curve: Some(VocalCurve::Standard(Lane::Dynamics)),
             selection: Vec::new(),
             field: None,
@@ -383,10 +408,74 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
             &mut text,
         );
     }
+    // Byte offsets into what a field shows, as widths from its left.
+    let width_to = |labels: &mut Labels, text: &mut TextContext, s: &str, at: usize, lyric| {
+        if at == 0 {
+            return 0.0;
+        }
+        let style = if lyric { LYRIC_STYLE } else { PHONEME_STYLE };
+        labels.ensure_styled(&s[..at], &theme.font, style, text);
+        labels.get_styled(&s[..at], style).map_or(0.0, |t| t.width)
+    };
+    let mut lyric_underline = None;
+    let mut marks = None;
+    if let Some((_, shown, under, caret)) = &shot.lyric {
+        labels.ensure_styled(shown, &theme.font, LYRIC_STYLE, &mut text);
+        lyric_underline = under.map(|(a, b)| {
+            (
+                width_to(&mut labels, &mut text, shown, a, true),
+                width_to(&mut labels, &mut text, shown, b, true),
+            )
+        });
+        marks = Some(fontelle_ui::render::RenameMarks {
+            caret_x: width_to(&mut labels, &mut text, shown, *caret, true),
+            selection: None,
+            caret_on: true,
+        });
+    }
+    let mut phoneme_underline = None;
+    let mut phoneme_marks = None;
+    if let (Some(((a, b), caret)), Some((_, shown, _))) = (shot.phoneme_compose, &shot.field) {
+        phoneme_underline = Some((
+            width_to(&mut labels, &mut text, shown, a, false),
+            width_to(&mut labels, &mut text, shown, b, false),
+        ));
+        phoneme_marks = Some(fontelle_ui::render::RenameMarks {
+            caret_x: width_to(&mut labels, &mut text, shown, caret, false),
+            selection: None,
+            caret_on: true,
+        });
+    }
+    let base = PitchBase::from_lines(&song.view.note_line);
+    let drawn = match &shot.bend {
+        Some(bend) => drawn_pitch(&base, bend, 0, PPQN * 8, 8),
+        None => Vec::new(),
+    };
+    let note_button = Rect::new(strips.tabs.right() - 60.0, strips.tabs.y + 1.0, 56.0, 16.0);
+    labels.ensure_styled(PITCH_BUTTON_TEXT, &theme.font, PHONEME_STYLE, &mut text);
+    let pitch_w = labels
+        .get_styled(PITCH_BUTTON_TEXT, PHONEME_STYLE)
+        .map_or(70.0, |t| t.width)
+        + 14.0;
     let rv = RollVocal {
         view: &song.view,
-        editing: None,
-        marks: None,
+        editing: shot
+            .lyric
+            .as_ref()
+            .map(|(ids, shown, _, _)| (ids.as_slice(), *shown)),
+        marks,
+        lyric_underline,
+        phoneme_marks,
+        phoneme_underline,
+        phoneme_anchor: None,
+        pitch_pen: shot.pitch_pen,
+        pitch_button: Some(Rect::new(
+            note_button.x - pitch_w - 4.0,
+            note_button.y,
+            pitch_w,
+            note_button.height,
+        )),
+        drawn: &drawn,
         caption,
         strips,
         tabs: &tabs,
@@ -396,12 +485,7 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         phoneme_field: shot.field.as_ref().map(|(n, t, s)| (*n, *t, s.as_slice())),
         px_per_second: (0.11 * song.view.ticks_per_second) as f32,
         engine_chip,
-        note_button: Some(Rect::new(
-            strips.tabs.right() - 60.0,
-            strips.tabs.y + 1.0,
-            56.0,
-            16.0,
-        )),
+        note_button: Some(note_button),
         portrait: shot.portrait.as_deref().and_then(|p| portraits.peek(p)),
     };
     for w in edit_strings(&rv) {
@@ -924,5 +1008,110 @@ fn the_singer_picker_is_a_grid_of_cards_with_portraits() {
             ..Shot::default()
         },
         "vocal3-corner",
+    );
+}
+
+/// A scoop drawn into the held note and a fall off its end, over the
+/// computed line, with the sung line faint beneath: three lines, three
+/// looks — and the pen's chip lit.
+#[test]
+fn the_drawn_pitch_is_told_apart_from_the_computed_and_sung_lines() {
+    let song = song();
+    let n = &song.notes[song.ids[2]];
+    let mut bend = LaneCurve::default();
+    let (s, e) = (n.start, n.start + n.length);
+    // From a semitone and a half under, up to the note over a third of a beat.
+    bend.write(
+        s,
+        s + PPQN / 3,
+        8,
+        |t| -150.0 * (1.0 - (t - s) as f32 / (PPQN / 3) as f32),
+        0.0,
+    );
+    // A fall off the end: two semitones down over the last half beat.
+    bend.write(
+        e - PPQN / 2,
+        e,
+        8,
+        |t| -200.0 * ((t - (e - PPQN / 2)) as f32 / (PPQN / 2) as f32),
+        0.0,
+    );
+    let Some((pixels, _, roll, view)) = shoot(
+        &song,
+        Shot {
+            bend: Some(bend),
+            pitch_pen: true,
+            curve: Some(VocalCurve::Standard(Lane::PitchBend)),
+            selection: vec![song.ids[2]],
+            ..Shot::default()
+        },
+        "vocal3-pitch",
+    ) else {
+        return;
+    };
+    // Amber along the fall, a little under the note's row at its end.
+    let x = tick_to_x(&view, roll.grid, e - PPQN / 8);
+    let y = pitch_to_y(&view, roll.grid, f32::from(n.key) - 1.5);
+    let amber = DRAWN_PITCH.0;
+    let mut found = false;
+    for dy in -6..=6 {
+        for dx in -3..=3 {
+            let p = at(&pixels, x + dx as f32, y + dy as f32);
+            if (p[0] as i32 - amber[0] as i32).abs() < 30
+                && (p[1] as i32 - amber[1] as i32).abs() < 30
+                && (p[2] as i32 - amber[2] as i32).abs() < 40
+            {
+                found = true;
+            }
+        }
+    }
+    assert!(found, "the drawn fall is amber");
+}
+
+/// Japanese typed through an input method: the composition shows in the
+/// field, underlined at the caret, before it is committed.
+#[test]
+fn a_composition_shows_underlined_in_the_lyric_and_phoneme_fields() {
+    let song = song();
+    let shown = "さくら";
+    let Some((pixels, theme, roll, view)) = shoot(
+        &song,
+        Shot {
+            lyric: Some((
+                vec![song.ids[1]],
+                shown,
+                Some(("さ".len(), "さく".len())),
+                "さく".len(),
+            )),
+            selection: vec![song.ids[1]],
+            ..Shot::default()
+        },
+        "vocal3-preedit-lyric",
+    ) else {
+        return;
+    };
+    // The underline: a line of text colour under the middle of the field.
+    let n = &song.notes[song.ids[1]];
+    let row = key_row(&view, roll.grid, n.key);
+    let x0 = tick_to_x(&view, roll.grid, n.start);
+    let field_bottom = row.y - 3.0 + row.height.max(16.0) + 6.0;
+    let y = (field_bottom - 4.0).round();
+    let ink = theme.palette.text.0;
+    let lit = (0..200)
+        .filter(|dx| {
+            let p = at(&pixels, x0 + *dx as f32, y + 0.5);
+            (p[0] as i32 - ink[0] as i32).abs() < 40 && (p[1] as i32 - ink[1] as i32).abs() < 40
+        })
+        .count();
+    assert!(lit >= 6, "an underline under the composition ({lit})");
+    shoot(
+        &song,
+        Shot {
+            selection: vec![song.ids[1]],
+            field: Some((song.ids[1], "k あ", vec![])),
+            phoneme_compose: Some((("k ".len(), "k あ".len()), "k あ".len())),
+            ..Shot::default()
+        },
+        "vocal3-preedit-phoneme",
     );
 }

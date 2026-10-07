@@ -170,6 +170,65 @@ to what.
   part can still be edited (it is not sung until unfrozen) and the roll
   does not say it is frozen; channel automation of level/pan is not in a
   freeze; render to clip renders whole phrases cut to the selection.
+**As of 2026-10-07 — the vocal roll's pitch pen, from the keyboard.**
+Branch `feature/vocal-roll` (from `feature/vocal-track` d942434), not
+merged, not bumped. Roll and editing only; nothing in the model's wire
+forms changed.
+
+- **Pitch drawn on the grid** (`canvas::vocal_pitch`): **Shift+P** (or the
+  "✎ Pitch pen" chip beside "Note ▾") makes the grid a pencil for the
+  pitch line, over the notes; Shift draws a straight line, the right button
+  (or the Delete tool) puts a dragged stretch back on the notes; choosing
+  any roll tool leaves it. A stroke writes the pitch-bend lane as **where
+  the hand is minus the pitch the notes, glides and vibrato make**
+  (`PitchBase`, from the new `VocalView::note_line`, or the notes before
+  anything is sung), clamped to ±1200 cents; one stroke, one undo step.
+  **Smooth** (Alt+S), **Snap pitch to scale** (Alt+Q) and **Reset pitch**
+  (Alt+R), also rows of the note menu, work on the selected notes, else the
+  time selection, else the whole part, one undo step each. Snapping finds
+  the drawn line's held stretches (averaged over ~0.2 s, slower than
+  4 st/s, at least 50 ms), moves each by its median onto the nearest degree
+  of the song's scale (`RollScale::mask`; semitones with no key, and says
+  so), bends the moves between them to meet, and leaves undrawn notes
+  alone — vibrato and scoops kept. The roll draws three pitch lines apart:
+  what was sung (faint), the computed line (dashed accent), the drawn line
+  (amber, outlined).
+- **Note menu from the keyboard**: **Alt+Enter** opens it under the first
+  selected note (`note_menu_anchor`). All five keys are rebindable actions
+  (`pitch-pen`, `smooth-pitch`, `snap-pitch-to-scale`, `reset-pitch`,
+  `note-menu`) on the Shortcuts page's Vocal tracks section.
+- **The roll follows**: a vocal part opening frames its notes
+  (`frame_notes`: first note a little in, the keys around the middle, the
+  zoom kept); the lyric field brings its note into sight when Tab /
+  Shift+Tab (or Enter) opens it off screen (`follow_note`, a quarter in).
+- **IME composition shown** (`canvas::preedit`): `Ime::Preedit` is drawn in
+  the lyric and phoneme fields, spliced at the caret (over the selection),
+  underlined, with the IME's cursor; keys go to the IME while it composes
+  (an Enter that picks a kanji no longer keeps the field); the candidate
+  window is placed at the field (`set_ime_cursor_area`).
+- **Polish found on the way**: the phoneme field had no caret (it has one
+  now, and a selection); it opened at the row's left edge for a note with
+  nothing sung yet (now at the note's head); the pitch pen's pointer is the
+  pencil over notes too.
+- Tests first, seen failing: `fontelle-ui/tests/vocal_pitch.rs` (16:
+  strokes → lane values, line/reset, clamping, smoothing, scale snapping
+  math with vibrato and undrawn notes, ranges, framing, following, menu
+  anchor and rows), `vocal_keys.rs` (6: the keys, rebinding, preedit
+  state), `fontelle-app/tests/vocal_studio.rs` (+1: `note_line`).
+  Headless (`vocal_edit_headless.rs`, +2): `vocal3-pitch`,
+  `vocal3-preedit-lyric`, `vocal3-preedit-phoneme` — looked at.
+  Whole workspace (560 binaries, fresh target, the test plugins built):
+  6301 passed, 6 failed — all six in `fontelle-app/tests/vocal_track.rs`,
+  which reads this machine's real voicebanks folder
+  (`~/.local/share/fontelle/voicebanks`, where a DiffSinger bank is now
+  installed and agreed) and so gets that bank as the first singer instead
+  of the test singer: a test that leaks the machine's state, not this
+  branch (nothing here touches the registry). Preflight all clear.
+- **Not done**: not driven in the real binary on a display (no input tool
+  on this machine for `:99` this pass); snapping is to the song's key (a
+  clip has no scale of its own yet); no pitch-point (node) editing, only
+  freehand/line; the drawn line is not shown in the lane under the roll
+  while the pitch tab is open (it is drawn on the grid).
 
 **As of 2026-10-07, latest — the Fontelle Singer's integration: the part
 sings through `fontelle_sing`, voicebanks install, and an engine's own

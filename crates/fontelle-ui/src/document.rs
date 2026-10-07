@@ -241,6 +241,10 @@ pub struct VocalView {
     /// The pitch the notes, glides, vibrato and bend lane make, one line per
     /// phrase, `(tick in the clip, MIDI key)` — what the bend is drawn over.
     pub pitch_line: Vec<Vec<(Tick, f32)>>,
+    /// The same lines before the bend lane: the pitch the notes, glides and
+    /// vibrato make alone — what the pitch pen measures a stroke from, and
+    /// what the roll draws as the computed pitch.
+    pub note_line: Vec<Vec<(Tick, f32)>>,
     /// What each sung note was sung as, phoneme by phoneme with where each
     /// starts (seconds from the note's start) when the singer said.
     pub timed: Vec<(NoteId, TimedPhonemes)>,

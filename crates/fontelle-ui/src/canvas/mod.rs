@@ -21,6 +21,7 @@ mod notepad;
 mod overlays;
 mod piano_roll;
 mod plugin_menu;
+mod preedit;
 mod prefabs;
 mod preset_bar;
 mod rack;
@@ -34,6 +35,7 @@ mod timeline;
 mod tools;
 mod tune;
 mod vocal_edit;
+mod vocal_pitch;
 mod voicebank_page;
 mod welcome;
 
@@ -256,6 +258,7 @@ pub use piano_roll::{
     toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
     x_to_tick, y_to_key, zoom_x, zoom_y,
 };
+pub use preedit::{Composed, Preedit, compose};
 pub use prefabs::{
     PrefabHit, PrefabLayout, PrefabRow, prefab_hit, prefab_layout,
     scroll_to_show as prefab_scroll_to_show,
@@ -312,6 +315,10 @@ pub use vocal_edit::{
     drag_glide_position, drag_handle, note_handles, parse_phonemes, phoneme_cells, phoneme_hit,
     phoneme_suggestions, retime_phoneme, vibrato_wave, vocal_note_menu_rows, vocal_tab_at,
     vocal_tabs,
+};
+pub use vocal_pitch::{
+    PitchBase, PitchCommand, PitchStroke, drawn_pitch, follow_note, frame_notes, nearest_in_scale,
+    note_menu_anchor, pitch_edit_range, pitch_to_y, smooth_bend, snap_bend_to_scale, y_to_pitch,
 };
 pub use voicebank_page::{
     PAGE_ROW_HEIGHT, PageHit, PageRow, VoicebankPageLayout, VoicebankTab, voicebank_page_hit,
