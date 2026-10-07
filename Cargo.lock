@@ -1489,6 +1489,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontelle-singer-abi"
+version = "0.26.1"
+
+[[package]]
 name = "fontelle-testbridge"
 version = "0.26.1"
 dependencies = [

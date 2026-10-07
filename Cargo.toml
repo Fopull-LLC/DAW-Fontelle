@@ -19,6 +19,7 @@ members = [
     "crates/fontelle-testlv2",
     "crates/fontelle-testvst3",
     "crates/fontelle-bridge-abi",
+    "crates/fontelle-singer-abi",
     "crates/fontelle-testbridge",
     "crates/fontelle-app",
     "xtask",
