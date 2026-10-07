@@ -3715,7 +3715,7 @@ pub trait StudioHost: DocumentHost {
         String::new()
     }
 
-    /// Installs a dropped or chosen `.zip`, `.oudep` or folder. Says what it
+    /// Installs a dropped or chosen `.zip`, `.7z`, `.uar`, `.oudep` or folder. Says what it
     /// installed.
     fn install_voicebank(&mut self, _path: &std::path::Path) -> Result<String, String> {
         Err("this studio has no vocal tracks".to_string())

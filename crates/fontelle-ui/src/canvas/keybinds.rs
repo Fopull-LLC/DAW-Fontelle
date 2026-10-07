@@ -220,7 +220,7 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
                 "Double-click the phoneme row",
                 "Type a note's phonemes; Tab takes the suggestion; drag a start to retime",
             ),
-            fixed("Drop a .zip, .oudep or folder", "Installs a voicebank"),
+            fixed("Drop a .zip, .7z, .uar, .oudep or folder", "Installs a voicebank"),
         ],
     },
     KeybindSection {

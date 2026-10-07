@@ -9690,7 +9690,7 @@ impl StudioHost for Session {
         match crate::desktop::choose_open_file(
             "Install a voicebank",
             start.as_deref(),
-            "*.zip *.oudep",
+            "*.zip *.7z *.uar *.oudep",
         ) {
             Ok(Some(path)) => self.install_voicebank(&path).map(Some),
             Ok(None) => Ok(None),

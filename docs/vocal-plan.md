@@ -114,13 +114,16 @@ rule (`$XDG_DATA_HOME` or `~/.local/share`, macOS included; Windows
 `.installing-*` (an install in progress), `.downloads/`, `.agreed-terms.json`
 (singers whose terms were agreed to, by backend and voice, with a hash of the
 terms), and a bank's `.fontelle-terms` (its readme's terms, acknowledged).
-Install (`voicebanks::install`) takes a `.zip`, an `.oudep` or a folder; zip
+Install (`voicebanks::install`) takes a `.zip`, an `.oudep`, a `.7z`
+(`sevenz-rust2`, pure Rust), a `.uar` (UTAU's installer archive, a zip with
+an `install.txt` whose `folder=`/`contentsdir=` are honoured in any package)
+or a folder — told apart by their first bytes, a RAR refused with what to do; zip
 names are read in Shift-JIS, GBK or UTF-8 (chosen once per archive by which
 reading looks like a language), the bank's root is found under any wrapping
 folders (`dsconfig.yaml` → DiffSinger; `character.txt`/`character.yaml` over
 an `oto.ini`, or the folder all the `oto.ini`s share → UTAU; `vocoder.yaml`
 or `oudep.yaml` → a dependency), names that would climb out are refused, and
-nothing half-installed is left. `.7z` is not read yet.
+nothing half-installed is left.
 
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
@@ -129,10 +132,10 @@ nothing missing in daily work.
 
 **Voicebanks**
 - Install by dropping a `.zip`, `.7z`*, `.oudep` or folder anywhere on the
-  window, or from **Find singers** (§4). File names in Shift-JIS, GBK or
+  window, or from **Find singers** (§4); `.uar` too. File names in Shift-JIS, GBK or
   UTF-8 zips are decoded; `oto.ini`/`character.txt` in Shift-JIS or UTF-8
   are read; `character.yaml`, `readme.txt`, portraits and sample audio are
-  shown. *(`.7z` if a pure-Rust decoder fits.)*
+  shown.
 - The **terms** each author wrote are shown at install and on the picker;
   the user acknowledges them. Fontelle records what is known: commercial use,
   AI use, credit required.

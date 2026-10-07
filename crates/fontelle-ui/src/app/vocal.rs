@@ -958,9 +958,12 @@ pub(super) fn is_voicebank_package(path: &std::path::Path) -> bool {
                 .flatten()
                 .any(|e| e.path().is_dir() && has(&e.path()));
     }
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "zip" | "oudep"))
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "zip" | "oudep" | "7z" | "uar"
+        )
+    })
 }
 
 /// The vocal layer as the roll draws it, from the window's parts (so the

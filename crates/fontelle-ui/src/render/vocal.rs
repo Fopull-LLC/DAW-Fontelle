@@ -902,7 +902,7 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<String> {
         "Read terms\u{2026}",
         "Terms agreed",
         "No terms",
-        "Drop a voicebank's .zip, .oudep or folder anywhere on the window to install it.",
+        "Drop a voicebank's .zip, .7z, .uar, .oudep or folder anywhere on the window to install it.",
         "No catalogue entries.",
     ]
     .iter()
@@ -1024,7 +1024,7 @@ pub fn draw_voicebank_page(
     if count == 0 {
         let hint = match page.tab {
             VoicebankTab::Installed => {
-                "Drop a voicebank's .zip, .oudep or folder anywhere on the window to install it."
+                "Drop a voicebank's .zip, .7z, .uar, .oudep or folder anywhere on the window to install it."
             }
             VoicebankTab::Find => "No catalogue entries.",
         };
