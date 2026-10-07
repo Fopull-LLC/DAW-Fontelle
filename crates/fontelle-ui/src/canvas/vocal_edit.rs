@@ -487,6 +487,8 @@ pub enum VocalNoteRow {
         id: String,
         value: String,
     },
+    /// A command over the drawn pitch of the selected notes.
+    Pitch(super::vocal_pitch::PitchCommand),
 }
 
 fn shape_name(shape: GlideShape) -> &'static str {
@@ -562,6 +564,21 @@ pub fn vocal_note_menu_rows(
             VocalNoteRow::ResetPhonemes,
         ));
     }
+    let bends = caps.lanes.contains(&Lane::PitchBend);
+    for (i, command) in [
+        super::vocal_pitch::PitchCommand::Smooth,
+        super::vocal_pitch::PitchCommand::Snap,
+        super::vocal_pitch::PitchCommand::Reset,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = enabled(MenuEntry::new(command.label()), bends);
+        rows.push((
+            if i == 0 { entry.after_rule() } else { entry },
+            VocalNoteRow::Pitch(command),
+        ));
+    }
     let chosen = voice.map(|v| v.options_for(backend)).unwrap_or_default();
     for option in &caps.note_options {
         rows.push((
@@ -591,7 +608,7 @@ pub fn apply_note_row(
 ) -> Option<Option<NoteVoice>> {
     let mut v = voice.cloned().unwrap_or_default();
     match row {
-        VocalNoteRow::Info | VocalNoteRow::EditPhonemes => return None,
+        VocalNoteRow::Info | VocalNoteRow::EditPhonemes | VocalNoteRow::Pitch(_) => return None,
         VocalNoteRow::Vibrato(on) => v.vibrato = on.then(Vibrato::default),
         VocalNoteRow::Glide(shape) => {
             v.portamento = shape.map(|shape| Portamento {

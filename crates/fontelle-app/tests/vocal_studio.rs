@@ -376,6 +376,30 @@ fn lanes_and_note_voices_are_edits_that_undo_and_reach_the_singer() {
     let _ = BTreeMap::<String, f32>::new();
 }
 
+/// The pitch pen measures from the pitch the notes make, so the view
+/// carries that line beside the one with the bend in it.
+#[test]
+fn the_view_carries_the_notes_pitch_line_under_the_bend() {
+    let (mut session, dir) = session("note-line");
+    session.install_voicebank(&teto_zip(&dir)).unwrap();
+    session.add_channel_of(InstrumentKind::Vocal).unwrap();
+    draw(&mut session, 0, 60);
+    let mut bend = LaneCurve::default();
+    bend.write(0, PPQN * 4, 20, |_| 100.0, 0.0);
+    session.set_vocal_lane(LaneKey::Standard(Lane::PitchBend), Some(bend));
+    session.end_vocal_gesture();
+    let view = session.vocal_view().unwrap();
+    assert_eq!(view.note_line.len(), view.pitch_line.len());
+    assert!(!view.note_line.is_empty());
+    let (notes, bent) = (&view.note_line[0], &view.pitch_line[0]);
+    assert_eq!(notes.len(), bent.len());
+    // Inside the note, the notes' line is the note and the bend is a
+    // semitone over it.
+    let mid = notes.len() / 2;
+    assert!((notes[mid].1 - 60.0).abs() < 0.01, "{:?}", notes[mid]);
+    assert!((bent[mid].1 - notes[mid].1 - 1.0).abs() < 0.01);
+}
+
 // ------------------------------------------------ an engine's own window
 
 fn engine_session(name: &str) -> (Session, NoteId) {

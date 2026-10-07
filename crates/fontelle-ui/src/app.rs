@@ -4246,6 +4246,15 @@ impl WindowApp {
                 wanted = Pointer::Grab;
             }
         }
+        // The pitch pen is a pencil over the whole grid, notes included:
+        // a press there draws the pitch, never grabs a note.
+        if self.tab == EditorTab::Roll
+            && self.vocal_edit.pitch_pen
+            && self.drag == Drag::None
+            && self.roll_layout.grid.contains(x, y)
+        {
+            wanted = Pointer::Draw;
+        }
         if wanted == self.pointer {
             return;
         }
@@ -5135,7 +5144,23 @@ impl ApplicationHandler for WindowApp {
             // again. Either way what we believe is on screen is no longer true.
             // A finished composition from an input method — kana, hanzi —
             // goes into the lyric being typed.
+            // What it is composing, shown in the field as it is composed.
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if self.lyric.is_some() || self.vocal_edit.field.is_some() {
+                    self.vocal_edit.preedit.set(&text, cursor);
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                if self.vocal_edit.preedit.is_active() {
+                    self.vocal_edit.preedit.clear();
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.vocal_edit.preedit.clear();
                 if self.phoneme_field_commit_text(&text) {
                     self.tree.invalidate(PANEL);
                     self.request_redraw_if_dirty();
@@ -8601,6 +8626,8 @@ impl WindowApp {
         // field's caret, measured at the size it is drawn.
         self.vocal_caption = None;
         self.lyric_marks = None;
+        self.vocal_edit.lyric_shown = None;
+        self.vocal_edit.lyric_underline = None;
         if let (Some(view), Some(doc)) = (self.vocal.as_ref(), self.options.document.as_ref()) {
             use crate::render::vocal::{LYRIC_STYLE, PHONEME_STYLE, caption_rect, strings};
             let typed = self.lyric.as_ref().map(|e| e.entry().text().to_string());
@@ -8621,8 +8648,10 @@ impl WindowApp {
             let font = font.clone();
             self.shape_vocal_edit(&font);
             if let Some(editor) = &self.lyric {
-                let entry = editor.entry();
-                let text = entry.text();
+                let shown = crate::canvas::compose(editor.entry(), &self.vocal_edit.preedit);
+                self.labels
+                    .ensure_styled(&shown.text, &font, LYRIC_STYLE, &mut self.text);
+                let text = shown.text.as_str();
                 let sized = crate::theme::FontTokens {
                     family: font.family.clone(),
                     size: LYRIC_STYLE.size(),
@@ -8639,13 +8668,17 @@ impl WindowApp {
                     }
                 };
                 self.lyric_marks = Some(crate::render::RenameMarks {
-                    caret_x: width_to(entry.caret()),
-                    selection: entry
-                        .selection()
+                    caret_x: width_to(shown.caret),
+                    selection: shown
+                        .selection
                         .map(|(from, to)| (width_to(from), width_to(to))),
                     caret_on: self.caret_on,
                 });
+                self.vocal_edit.lyric_underline =
+                    shown.underline.map(|(a, b)| (width_to(a), width_to(b)));
+                self.vocal_edit.lyric_shown = Some(shown);
             }
+            self.place_ime_cursor();
         }
     }
 
@@ -15375,9 +15408,14 @@ impl WindowApp {
             }
             if kind == Some(crate::document::ClipKind::Notes) {
                 self.tab = EditorTab::Roll;
+                self.vocal_edit.frame_pending = true;
             }
             self.refresh_studio();
             self.relayout_panels();
+            // A vocal part opens framed on its notes; any other clip's
+            // pending frame is dropped.
+            self.frame_vocal_if_pending();
+            self.vocal_edit.frame_pending = false;
         }
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
@@ -19055,9 +19093,15 @@ impl WindowApp {
         if had != self.vocal.is_some() {
             self.relayout_panels();
         }
+        if !had && self.vocal.is_some() {
+            self.vocal_edit.frame_pending = true;
+            self.frame_vocal_if_pending();
+        }
         if self.vocal.is_none() {
             self.vocal_edit.field = None;
             self.vocal_edit.stroke = None;
+            self.vocal_edit.pitch_stroke = None;
+            self.vocal_edit.pitch_pen = false;
         }
         self.tree.invalidate(PANEL);
         self.tree.invalidate(TIMELINE);
@@ -19089,7 +19133,13 @@ impl WindowApp {
             "Type the lyric \u{2014} Tab for the next note, Shift+Tab the last, Enter to keep, Esc to leave it".to_string()
         };
         self.roll.select(editor.ids().to_vec());
+        // Tab walked the field off screen (or Enter opened it on a note
+        // scrolled away): the roll follows it, so the word being typed is
+        // always in sight.
+        let first = editor.ids()[0];
+        let width = if editor.is_line() { 220.0 } else { 72.0 };
         self.lyric = Some(editor);
+        self.follow_lyric_note(first, width);
         self.caret_on = true;
         self.caret_phase = 0.0;
         self.set_ime(true);
@@ -19099,6 +19149,9 @@ impl WindowApp {
     fn close_lyric(&mut self) {
         self.lyric = None;
         self.lyric_marks = None;
+        self.vocal_edit.preedit.clear();
+        self.vocal_edit.lyric_shown = None;
+        self.vocal_edit.lyric_underline = None;
         self.set_ime(false);
         self.tree.invalidate(PANEL);
     }
@@ -19166,6 +19219,10 @@ impl WindowApp {
 
     /// A key while the lyric field is open. Whether it was taken.
     fn lyric_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        if self.lyric.is_some() && self.vocal_edit.preedit.is_active() {
+            // The input method's keys while it composes.
+            return true;
+        }
         let Some(mut editor) = self.lyric.take() else {
             return false;
         };
@@ -22476,6 +22533,22 @@ impl WindowApp {
                     self.start_lyric(ids);
                 }
             }
+            // The vocal roll's own keys, only while one is showing.
+            Action::PitchPen
+            | Action::SmoothPitch
+            | Action::SnapPitch
+            | Action::ResetPitch
+            | Action::NoteMenu => {
+                if self.tab == EditorTab::Roll && self.vocal.is_some() {
+                    match action {
+                        Action::PitchPen => self.toggle_pitch_pen(),
+                        Action::SmoothPitch => self.pitch_command(crate::canvas::PitchCommand::Smooth),
+                        Action::SnapPitch => self.pitch_command(crate::canvas::PitchCommand::Snap),
+                        Action::ResetPitch => self.pitch_command(crate::canvas::PitchCommand::Reset),
+                        _ => self.note_menu_from_key(),
+                    }
+                }
+            }
             Action::LaneProperty => self.cycle_lane_property(),
             Action::Ghosts => self.cycle_ghosts(),
             // `A` for a slide by default: `S` is the snap and every other
@@ -23074,6 +23147,8 @@ impl WindowApp {
 
     fn set_tool(&mut self, tool: Tool) {
         self.roll.tool = tool;
+        // Choosing a tool is leaving the pitch pen: the grid is the tool's.
+        self.vocal_edit.pitch_pen = false;
         self.tree.invalidate(PANEL);
     }
 

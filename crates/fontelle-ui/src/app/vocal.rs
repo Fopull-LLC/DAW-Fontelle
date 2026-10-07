@@ -12,8 +12,9 @@ use fontelle_model::{LaneCurve, LaneKey, NoteVoice};
 use fontelle_types::{NoteId, PPQN, Tick};
 
 use crate::canvas::{
-    LaneStroke, NoteHandle, PageHit, PhonemeCell, PhonemeHit, StrokeMode, TermsRow, TextEntry,
-    VocalCurve, VocalNoteRow, VocalStrips, VocalTab, VoicebankPageLayout, VoicebankTab,
+    Composed, LaneStroke, NoteHandle, PageHit, PhonemeCell, PhonemeHit, PitchBase, PitchCommand,
+    PitchStroke, Preedit, StrokeMode, TermsRow, TextEntry, VocalCurve, VocalNoteRow, VocalStrips,
+    VocalTab, VoicebankPageLayout, VoicebankTab,
 };
 use crate::document::{CatalogueRow, VoicebankRow};
 
@@ -61,9 +62,39 @@ pub(super) struct VocalEditing {
     pub px_per_second: f32,
     /// The lane as drawn this frame: its scale and points.
     pub lane: Option<(crate::canvas::CurveScale, LaneCurve)>,
+    /// The pitch pen: presses on the grid draw the pitch line, not notes.
+    pub pitch_pen: bool,
+    /// A pitch stroke in hand.
+    pub pitch_stroke: Option<PitchStroke>,
+    /// "Pitch pen" in the tab strip, beside "Note ▾".
+    pub pitch_button: Option<crate::layout::Rect>,
+    /// The drawn pitch over what the grid shows, this frame.
+    pub drawn: Vec<Vec<(Tick, f32)>>,
+    /// What an input method is composing into the lyric or phoneme field.
+    pub preedit: Preedit,
+    /// The lyric field as drawn: its text with the composition in it.
+    pub lyric_shown: Option<Composed>,
+    /// The composition's underline in the lyric field, from the text's left.
+    pub lyric_underline: Option<(f32, f32)>,
+    /// The phoneme field as drawn, its caret and selection, its underline.
+    pub phoneme_shown: Option<Composed>,
+    pub phoneme_marks: Option<crate::render::RenameMarks>,
+    pub phoneme_underline: Option<(f32, f32)>,
+    /// The phoneme field's note's head, for a note with nothing sung yet.
+    pub phoneme_anchor: Option<f32>,
+    /// A part just opened: frame its notes once the roll is laid out.
+    pub frame_pending: bool,
+    /// Where the input method was last told the field is.
+    pub ime_area: Option<(f32, f32, f32, f32)>,
 }
 
 pub(super) const NOTE_BUTTON: &str = "Note \u{25be}";
+pub(super) const PITCH_BUTTON: &str = crate::render::vocal::PITCH_BUTTON_TEXT;
+
+/// A sample of a pitch command every this many seconds.
+const PITCH_STEP_SECONDS: f64 = 0.005;
+/// Smoothing reaches this far either side.
+const SMOOTH_SECONDS: f64 = 0.04;
 
 impl WindowApp {
     /// The px a second around the open clip.
@@ -95,7 +126,8 @@ impl WindowApp {
         };
         self.vocal_edit.px_per_second = self.vocal_px_per_second();
         // Tab labels first, so the tabs can be measured.
-        let mut labels_to_shape: Vec<String> = vec![NOTE_BUTTON.to_string()];
+        let mut labels_to_shape: Vec<String> =
+            vec![NOTE_BUTTON.to_string(), PITCH_BUTTON.to_string()];
         labels_to_shape.push("notes".to_string());
         for lane in fontelle_sing::Lane::ALL {
             labels_to_shape.push(fontelle_model::lane_spec(lane).short.to_string());
@@ -122,6 +154,10 @@ impl WindowApp {
                 strip.height - 2.0,
             )
         });
+        self.vocal_edit.pitch_button = self.vocal_edit.note_button.map(|note| {
+            let w = width(PITCH_BUTTON) + 14.0;
+            crate::layout::Rect::new(note.x - w - 4.0, note.y, w, note.height)
+        });
         if let Some(doc) = &self.options.document {
             self.vocal_edit.cells = crate::canvas::phoneme_cells(
                 self.vocal_edit.strips.phonemes,
@@ -145,6 +181,61 @@ impl WindowApp {
         if let Some((_, typed)) = &self.vocal_edit.field {
             self.vocal_edit.suggestions =
                 crate::canvas::phoneme_suggestions(&view.capabilities.phonemes, typed.text(), 6);
+        }
+        // The drawn pitch over what the grid shows: the stroke in hand, or
+        // the part's bend.
+        {
+            let base = self.vocal_pitch_base(&view);
+            let key = LaneKey::Standard(fontelle_sing::Lane::PitchBend);
+            let bend = match &self.vocal_edit.pitch_stroke {
+                Some(stroke) => stroke.curve().clone(),
+                None => view.part.curve(&key).cloned().unwrap_or_default(),
+            };
+            let ticks = crate::canvas::visible_ticks(&self.roll.view, self.roll_layout.grid);
+            self.vocal_edit.drawn =
+                crate::canvas::drawn_pitch(&base, &bend, ticks.start, ticks.end, self.vocal_step());
+        }
+        // The phoneme field as drawn, with any composition, and its marks.
+        self.vocal_edit.phoneme_shown = None;
+        self.vocal_edit.phoneme_marks = None;
+        self.vocal_edit.phoneme_underline = None;
+        self.vocal_edit.phoneme_anchor = self.vocal_edit.field.as_ref().and_then(|(id, _)| {
+            let doc = self.options.document.as_ref()?;
+            let note = doc.notes().get(*id)?;
+            Some(crate::canvas::tick_to_x(
+                &self.roll.view,
+                self.roll_layout.grid,
+                note.start,
+            ))
+        });
+        if let Some((_, entry)) = &self.vocal_edit.field {
+            let shown = crate::canvas::compose(entry, &self.vocal_edit.preedit);
+            let sized = crate::theme::FontTokens {
+                family: font.family.clone(),
+                size: PHONEME_STYLE.size(),
+                line_height: 1.0,
+                display: None,
+            };
+            let text = shown.text.clone();
+            let mut width_to = |at: usize| {
+                if at == 0 {
+                    0.0
+                } else {
+                    self.text
+                        .layout_weighted(&text[..at], &sized, None, PHONEME_STYLE.weight())
+                        .width
+                }
+            };
+            self.vocal_edit.phoneme_marks = Some(crate::render::RenameMarks {
+                caret_x: width_to(shown.caret),
+                selection: shown.selection.map(|(a, b)| (width_to(a), width_to(b))),
+                caret_on: self.caret_on,
+            });
+            self.vocal_edit.phoneme_underline =
+                shown.underline.map(|(a, b)| (width_to(a), width_to(b)));
+            self.labels
+                .ensure_styled(&shown.text, font, PHONEME_STYLE, &mut self.text);
+            self.vocal_edit.phoneme_shown = Some(shown);
         }
         // The engine chip, left of the singer chip.
         self.vocal_edit.engine_chip = match (&view.editor, self.vocal_caption) {
@@ -229,6 +320,15 @@ impl WindowApp {
             self.open_vocal_note_menu(x, y);
             return true;
         }
+        if button == MouseButton::Left
+            && self
+                .vocal_edit
+                .pitch_button
+                .is_some_and(|b| b.contains(x, y))
+        {
+            self.toggle_pitch_pen();
+            return true;
+        }
         if self.vocal_edit.strips.tabs.contains(x, y) {
             if let Some(i) = crate::canvas::vocal_tab_at(&self.vocal_edit.tabs, x, y) {
                 let tab = self.vocal_edit.tabs[i].clone();
@@ -287,7 +387,262 @@ impl WindowApp {
             self.drag = Drag::Vocal;
             return true;
         }
+        // The pitch pen on the grid: the pitch line, drawn over the notes.
+        if self.vocal_edit.pitch_pen
+            && matches!(button, MouseButton::Left | MouseButton::Right)
+            && self.roll_layout.grid.contains(x, y)
+        {
+            let mode =
+                if button == MouseButton::Right || self.roll.tool == crate::canvas::Tool::Delete {
+                    StrokeMode::Erase
+                } else if self.modifiers.shift_key() {
+                    StrokeMode::Line
+                } else {
+                    StrokeMode::Pencil
+                };
+            let key = LaneKey::Standard(fontelle_sing::Lane::PitchBend);
+            let bend = view.part.curve(&key).cloned().unwrap_or_default();
+            let at = self.vocal_pitch_point(x, y);
+            let stroke = PitchStroke::begin(
+                self.vocal_pitch_base(&view),
+                bend,
+                mode,
+                at,
+                self.vocal_step(),
+            );
+            if let Some(doc) = &mut self.options.document {
+                doc.end_vocal_gesture();
+                doc.set_vocal_lane(key, Some(stroke.curve().clone()));
+            }
+            self.status = match mode {
+                StrokeMode::Erase => "Back to the notes where you drag",
+                StrokeMode::Line => "A straight pitch line \u{2014} let go where it ends",
+                StrokeMode::Pencil => {
+                    "Drawing the pitch \u{2014} Shift for a straight line, right button back to the notes"
+                }
+            }
+            .to_string();
+            if !view
+                .capabilities
+                .lanes
+                .contains(&fontelle_sing::Lane::PitchBend)
+            {
+                self.status = "This voice ignores pitch bend \u{2014} what you draw is kept for a voice that uses it".to_string();
+            }
+            self.vocal_edit.pitch_stroke = Some(stroke);
+            self.drag = Drag::Vocal;
+            self.tree.invalidate(PANEL);
+            return true;
+        }
         false
+    }
+
+    /// `(tick in the clip, pitch)` under the pointer on the grid.
+    fn vocal_pitch_point(&self, x: f32, y: f32) -> (Tick, f32) {
+        let grid = self.roll_layout.grid;
+        let x = x.clamp(grid.x, grid.right());
+        let y = y.clamp(grid.y, grid.bottom());
+        (
+            crate::canvas::x_to_tick(&self.roll.view, grid, x),
+            crate::canvas::y_to_pitch(&self.roll.view, grid, y),
+        )
+    }
+
+    /// The pitch the notes make: the computed line once something has been
+    /// sung, the notes themselves before.
+    pub(super) fn vocal_pitch_base(&self, view: &crate::document::VocalView) -> PitchBase {
+        if !view.note_line.is_empty() {
+            return PitchBase::from_lines(&view.note_line);
+        }
+        self.options
+            .document
+            .as_ref()
+            .map(|doc| PitchBase::from_notes(doc.notes()))
+            .unwrap_or_default()
+    }
+
+    /// The pitch pen on or off (Shift+P, or its chip).
+    pub(super) fn toggle_pitch_pen(&mut self) {
+        if self.vocal.is_none() {
+            return;
+        }
+        self.vocal_edit.pitch_pen = !self.vocal_edit.pitch_pen;
+        self.status = if self.vocal_edit.pitch_pen {
+            "Pitch pen \u{2014} draw the pitch over the notes; Shift a straight line; right button back to the notes; a tool key leaves it"
+        } else {
+            "Pitch pen off \u{2014} the grid draws notes again"
+        }
+        .to_string();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Smooth, snap or reset the drawn pitch over the selected notes, else
+    /// the time selection, else the whole part. One undo step.
+    pub(super) fn pitch_command(&mut self, command: PitchCommand) {
+        let Some(view) = self.vocal.clone() else {
+            return;
+        };
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let time = self
+            .loop_range
+            .map(|(a, b)| (doc.clip_tick_of_song_tick(a), doc.clip_tick_of_song_tick(b)));
+        let selection = self.roll.selection().to_vec();
+        let Some((from, to)) = crate::canvas::pitch_edit_range(doc.notes(), &selection, time)
+        else {
+            self.status = "No notes to work on".to_string();
+            return;
+        };
+        let key = LaneKey::Standard(fontelle_sing::Lane::PitchBend);
+        let bend = view.part.curve(&key).cloned().unwrap_or_default();
+        let tps = view.ticks_per_second.max(1.0);
+        let step = ((tps * PITCH_STEP_SECONDS).round() as Tick).max(1);
+        let base = self.vocal_pitch_base(&view);
+        let scale = self.roll.scale;
+        let new = match command {
+            PitchCommand::Smooth => crate::canvas::smooth_bend(
+                &bend,
+                from,
+                to,
+                step,
+                ((tps * SMOOTH_SECONDS).round() as Tick).max(step),
+            ),
+            PitchCommand::Snap => crate::canvas::snap_bend_to_scale(
+                &base,
+                &bend,
+                from,
+                to,
+                step,
+                scale.map_or(0, |s| s.mask),
+                tps,
+            ),
+            PitchCommand::Reset => {
+                let mut b = bend.clone();
+                b.erase(from, to, 0.0);
+                b
+            }
+        };
+        let what = if !selection.is_empty() {
+            "the selected notes"
+        } else if time.is_some() {
+            "the time selection"
+        } else {
+            "the whole part"
+        };
+        if new == bend {
+            self.status = match command {
+                PitchCommand::Snap if bend.is_empty() => {
+                    "Nothing drawn to snap \u{2014} draw the pitch first (Shift+P)".to_string()
+                }
+                _ => format!("{} changed nothing on {what}", command.label()),
+            };
+            return;
+        }
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        doc.end_vocal_gesture();
+        doc.set_vocal_lane(key, Some(new));
+        doc.end_vocal_gesture();
+        self.status = match (command, scale) {
+            (PitchCommand::Snap, None) => format!(
+                "Snapped {what} to semitones \u{2014} the song has no key; set one to snap to its scale. Ctrl+Z takes it back"
+            ),
+            _ => format!(
+                "{} on {what} \u{2014} Ctrl+Z takes it back",
+                command.label()
+            ),
+        };
+        self.refresh_vocal();
+        self.tree.invalidate(PANEL);
+    }
+
+    /// The note menu from the keyboard, at the first selected note.
+    pub(super) fn note_menu_from_key(&mut self) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let first = self
+            .roll
+            .selection()
+            .iter()
+            .filter_map(|id| doc.notes().get(*id))
+            .min_by_key(|n| n.start)
+            .cloned();
+        match first {
+            Some(note) => {
+                let (x, y) =
+                    crate::canvas::note_menu_anchor(&self.roll.view, self.roll_layout.grid, &note);
+                self.open_vocal_note_menu(x, y);
+            }
+            None => {
+                self.status = "Select a note first \u{2014} the note menu is about it".to_string()
+            }
+        }
+    }
+
+    /// Brings the lyric field's note into view when Tab took it off screen.
+    pub(super) fn follow_lyric_note(&mut self, id: NoteId, field_width: f32) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let Some(note) = doc.notes().get(id) else {
+            return;
+        };
+        if let Some(view) =
+            crate::canvas::follow_note(&self.roll.view, self.roll_layout.grid, note, field_width)
+        {
+            self.roll.view = view;
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// Tells the input method where the field being typed into is, so its
+    /// candidate window opens beside the word rather than in a corner.
+    pub(super) fn place_ime_cursor(&mut self) {
+        let grid = self.roll_layout.grid;
+        let area = if let Some(editor) = &self.lyric {
+            let doc = self.options.document.as_ref();
+            doc.and_then(|d| d.notes().get(editor.ids()[0])).map(|n| {
+                let row = crate::canvas::key_row(&self.roll.view, grid, n.key);
+                let x = crate::canvas::tick_to_x(&self.roll.view, grid, n.start).max(grid.x);
+                (x, row.y - 3.0, 120.0, row.height.max(16.0) + 6.0)
+            })
+        } else if self.vocal_edit.field.is_some() {
+            let row = self.vocal_edit.strips.phonemes;
+            let x = self.vocal_edit.phoneme_anchor.unwrap_or(row.x).max(row.x);
+            Some((x, row.y - 4.0, 100.0, row.height + 6.0))
+        } else {
+            None
+        };
+        if area == self.vocal_edit.ime_area {
+            return;
+        }
+        self.vocal_edit.ime_area = area;
+        if let (Some((x, y, w, h)), Some(live)) = (area, &self.live) {
+            live.window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(f64::from(x), f64::from(y)),
+                winit::dpi::LogicalSize::new(f64::from(w), f64::from(h)),
+            );
+        }
+    }
+
+    /// Frames the open part's notes, once, after it opened.
+    pub(super) fn frame_vocal_if_pending(&mut self) {
+        if !self.vocal_edit.frame_pending || self.vocal.is_none() {
+            return;
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        if self.roll_layout.grid.is_empty() {
+            return;
+        }
+        self.vocal_edit.frame_pending = false;
+        self.roll.view =
+            crate::canvas::frame_notes(&self.roll.view, self.roll_layout.grid, doc.notes());
+        self.tree.invalidate(PANEL);
     }
 
     fn vocal_step(&self) -> Tick {
@@ -455,6 +810,7 @@ impl WindowApp {
         let Some((note, entry)) = self.vocal_edit.field.take() else {
             return;
         };
+        self.vocal_edit.preedit.clear();
         self.set_ime(false);
         let edits = crate::canvas::parse_phonemes(entry.text());
         self.set_note_voice_with(&[note], "Set phonemes", |v| v.phonemes = edits.clone());
@@ -506,11 +862,17 @@ impl WindowApp {
         if self.vocal_edit.field.is_none() || event.state != winit::event::ElementState::Pressed {
             return self.vocal_edit.field.is_some();
         }
+        // While an input method composes, its keys are its own: an Enter
+        // that picks a kanji must not also keep the field.
+        if self.vocal_edit.preedit.is_active() {
+            return true;
+        }
         use winit::keyboard::{Key, NamedKey};
         match &event.logical_key {
             Key::Named(NamedKey::Enter) => self.commit_phoneme_field(),
             Key::Named(NamedKey::Escape) => {
                 self.vocal_edit.field = None;
+                self.vocal_edit.preedit.clear();
                 self.set_ime(false);
                 self.status = "Phonemes left as they were".to_string();
             }
@@ -546,7 +908,9 @@ impl WindowApp {
     pub(super) fn phoneme_field_commit_text(&mut self, text: &str) -> bool {
         match &mut self.vocal_edit.field {
             Some((_, entry)) => {
-                entry.insert(text);
+                self.vocal_edit.preedit.clear();
+                let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+                entry.insert(&clean);
                 true
             }
             None => false,
@@ -557,6 +921,18 @@ impl WindowApp {
 
     pub(super) fn drag_vocal_edit(&mut self) {
         let (x, y) = self.cursor;
+        if let Some(mut stroke) = self.vocal_edit.pitch_stroke.take() {
+            stroke.drag(self.vocal_pitch_point(x, y));
+            if let Some(doc) = &mut self.options.document {
+                doc.set_vocal_lane(
+                    LaneKey::Standard(fontelle_sing::Lane::PitchBend),
+                    Some(stroke.curve().clone()),
+                );
+            }
+            self.vocal_edit.pitch_stroke = Some(stroke);
+            self.tree.invalidate(PANEL);
+            return;
+        }
         if let Some((key, mut stroke)) = self.vocal_edit.stroke.take() {
             if let Some((scale, _)) = &self.vocal_edit.lane {
                 let at = self.vocal_lane_point(scale, x, y);
@@ -627,6 +1003,7 @@ impl WindowApp {
 
     pub(super) fn release_vocal_edit(&mut self) {
         self.vocal_edit.stroke = None;
+        self.vocal_edit.pitch_stroke = None;
         self.vocal_edit.handle = None;
         self.vocal_edit.boundary = None;
         if let Some(doc) = &mut self.options.document {
@@ -665,6 +1042,10 @@ impl WindowApp {
             return;
         };
         let ids = self.roll.selection().to_vec();
+        if let VocalNoteRow::Pitch(command) = row {
+            self.pitch_command(command);
+            return;
+        }
         if row == VocalNoteRow::EditPhonemes {
             if let Some(first) = ids.first() {
                 self.open_phoneme_field(*first);
@@ -974,7 +1355,15 @@ pub(super) fn roll_vocal_of<'a>(
 ) -> crate::render::vocal::RollVocal<'a> {
     crate::render::vocal::RollVocal {
         view,
-        editing: lyric.map(|l| (l.ids(), l.entry().text())),
+        editing: lyric.map(|l| {
+            (
+                l.ids(),
+                e.lyric_shown
+                    .as_ref()
+                    .map_or(l.entry().text(), |c| c.text.as_str()),
+            )
+        }),
+        lyric_underline: e.lyric_underline,
         marks,
         caption,
         strips: e.strips,
@@ -982,10 +1371,21 @@ pub(super) fn roll_vocal_of<'a>(
         curve: e.curve.as_ref(),
         lane: e.lane.as_ref().map(|(s, c)| (s.clone(), c)),
         cells: &e.cells,
-        phoneme_field: e
-            .field
-            .as_ref()
-            .map(|(n, t)| (*n, t.text(), e.suggestions.as_slice())),
+        phoneme_field: e.field.as_ref().map(|(n, t)| {
+            (
+                *n,
+                e.phoneme_shown
+                    .as_ref()
+                    .map_or(t.text(), |c| c.text.as_str()),
+                e.suggestions.as_slice(),
+            )
+        }),
+        phoneme_marks: e.phoneme_marks,
+        phoneme_underline: e.phoneme_underline,
+        pitch_pen: e.pitch_pen,
+        pitch_button: e.pitch_button,
+        phoneme_anchor: e.phoneme_anchor,
+        drawn: &e.drawn,
         px_per_second: e.px_per_second,
         engine_chip: e.engine_chip,
         note_button: e.note_button,

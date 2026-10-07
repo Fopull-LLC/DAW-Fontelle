@@ -63,7 +63,29 @@ pub struct RollVocal<'a> {
     pub note_button: Option<Rect>,
     /// The Voicebanks page, while open — drawn over the whole window.
     pub page: Option<VoicebankPage<'a>>,
+    /// An input method's composition in the lyric field: its underline, from
+    /// the text's left edge.
+    pub lyric_underline: Option<(f32, f32)>,
+    /// The phoneme field's caret and selection, and a composition's
+    /// underline, from the text's left edge.
+    pub phoneme_marks: Option<RenameMarks>,
+    pub phoneme_underline: Option<(f32, f32)>,
+    /// Where the phoneme field opens when its note has no sung phonemes yet:
+    /// the note's head.
+    pub phoneme_anchor: Option<f32>,
+    /// Whether the pitch pen is on, and its chip.
+    pub pitch_pen: bool,
+    pub pitch_button: Option<Rect>,
+    /// The drawn pitch, `(tick, pitch)` runs where a bend is.
+    pub drawn: &'a [Vec<(Tick, f32)>],
 }
+
+/// The pitch pen's chip.
+pub const PITCH_BUTTON_TEXT: &str = "\u{270e} Pitch pen";
+
+/// The drawn pitch line: amber, so it reads apart from the teal notes, the
+/// computed line over them and the faint line the singer sang.
+pub const DRAWN_PITCH: Color = Color::rgba(0xf0, 0xa8, 0x3c, 0xff);
 
 /// The engine chip's words.
 pub fn engine_chip_text(engine: &str, open: bool) -> String {
@@ -88,6 +110,7 @@ pub fn edit_strings(vocal: &RollVocal) -> Vec<String> {
         out.push(engine_chip_text(engine, vocal.view.editor_open));
     }
     out.push("Note \u{25be}".to_string());
+    out.push(PITCH_BUTTON_TEXT.to_string());
     if let Some((_, typed, suggestions)) = vocal.phoneme_field {
         out.push(typed.to_string());
         out.extend(suggestions.iter().cloned());
@@ -241,47 +264,6 @@ pub fn draw_vocal_overlay(
     let p = &theme.palette;
     let editing_first = vocal.editing.and_then(|(ids, _)| ids.first().copied());
 
-    // The pitch the singer sang: faint, so the notes stay what you read.
-    for line in &vocal.view.pitch {
-        let mut path = BezPath::new();
-        let mut started = false;
-        for (tick, key) in line {
-            let x = tick_to_x(v, grid, *tick);
-            let base = key.floor().clamp(0.0, 127.0) as u8;
-            let row = key_row(v, grid, base);
-            let y = row.y + row.height / 2.0 - (key - f32::from(base)) * row.height;
-            let point = Point::new(x as f64, y as f64);
-            if started {
-                path.line_to(point);
-            } else {
-                path.move_to(point);
-                started = true;
-            }
-        }
-        if started {
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &vello::kurbo::Rect::new(
-                    grid.x as f64,
-                    grid.y as f64,
-                    grid.right() as f64,
-                    grid.bottom() as f64,
-                ),
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
-                Affine::IDENTITY,
-                p.text.with_alpha(120).to_peniko(),
-                None,
-                &path,
-            );
-            scene.pop_layer();
-        }
-    }
-
     // Each note's word inside it, and its phonemes small beneath.
     for (id, note) in notes.iter() {
         if Some(id) == editing_first {
@@ -366,6 +348,9 @@ pub fn draw_vocal_overlay(
             draw_text_clipped(scene, text, field.inset(2.0), text_x, y, p.text);
         }
         draw_rename_marks(scene, theme, field, text_x, text_w, vocal.marks);
+        if let Some((a, b)) = vocal.lyric_underline {
+            draw_underline(scene, p.text, field, text_x + a, text_x + b);
+        }
     }
 
     // The corner: who sings (a chip — click it to choose), then the
@@ -691,7 +676,9 @@ pub fn draw_phoneme_row(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal
             .cells
             .iter()
             .find(|c| c.note == note)
-            .map_or(row.x, |c| c.rect.x);
+            .map(|c| c.rect.x)
+            .or(vocal.phoneme_anchor)
+            .unwrap_or(row.x);
         let text = labels.get_styled(typed, PHONEME_STYLE);
         let w = text.map_or(0.0, |t| t.width).max(90.0) + 12.0;
         let field = Rect::new(
@@ -711,6 +698,20 @@ pub fn draw_phoneme_row(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal
                 p.text,
             );
         }
+        let text_w = text.map_or(0.0, |t| t.width);
+        if vocal.phoneme_marks.is_some() {
+            draw_rename_marks(
+                scene,
+                theme,
+                field,
+                field.x + 6.0,
+                text_w,
+                vocal.phoneme_marks,
+            );
+        }
+        if let Some((a, b)) = vocal.phoneme_underline {
+            draw_underline(scene, p.text, field, field.x + 6.0 + a, field.x + 6.0 + b);
+        }
         // Suggestions from the voice's own phonemes, above it.
         let mut sx = field.x;
         for s in suggestions {
@@ -726,41 +727,94 @@ pub fn draw_phoneme_row(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal
     }
 }
 
-/// The pitch the notes, glides, vibrato and bend make — the line a bend is
-/// drawn against — over the notes.
+/// An input method's composition under the text it is composing.
+fn draw_underline(scene: &mut Scene, color: Color, field: Rect, x0: f32, x1: f32) {
+    let y = (field.bottom() - 4.0).round();
+    fill_rect(
+        scene,
+        Rect::new(x0, y, (x1 - x0).max(2.0), 1.0).intersection(&field),
+        color,
+    );
+}
+
+fn pitch_points(v: &RollView, grid: Rect, line: &[(Tick, f32)]) -> Vec<(f32, f32)> {
+    line.iter()
+        .map(|(tick, key)| {
+            (
+                tick_to_x(v, grid, *tick),
+                crate::canvas::pitch_to_y(v, grid, *key),
+            )
+        })
+        .collect()
+}
+
+/// The three pitch lines, told apart: what the singer sang (faint, under
+/// everything), the pitch the notes, glides and vibrato make (dashed — what
+/// the pen measures from), and the pitch drawn over it (amber, on top).
 pub fn draw_pitch_line(
     scene: &mut Scene,
     theme: &Theme,
     v: &RollView,
     grid: Rect,
-    view: &VocalView,
+    vocal: &RollVocal,
 ) {
     let p = &theme.palette;
-    for line in &view.pitch_line {
-        let points: Vec<(f32, f32)> = line
-            .iter()
-            .map(|(tick, key)| {
-                let base = key.floor().clamp(0.0, 127.0) as u8;
-                let row = key_row(v, grid, base);
-                (
-                    tick_to_x(v, grid, *tick),
-                    row.y + row.height / 2.0 - (key - f32::from(base)) * row.height,
-                )
-            })
-            .collect();
-        if points.len() < 2 {
-            continue;
+    let view = vocal.view;
+    clipped(scene, grid, |scene| {
+        for line in &view.pitch {
+            let points = pitch_points(v, grid, line);
+            if points.len() > 1 {
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    Affine::IDENTITY,
+                    p.text.with_alpha(110).to_peniko(),
+                    None,
+                    &polyline(&points),
+                );
+            }
         }
-        clipped(scene, grid, |scene| {
+        // Before anything is sung there is no computed line yet; the lines
+        // with the bend in them are the fallback for a host that only sends
+        // those.
+        let computed = if view.note_line.is_empty() {
+            &view.pitch_line
+        } else {
+            &view.note_line
+        };
+        for line in computed {
+            let points = pitch_points(v, grid, line);
+            if points.len() > 1 {
+                scene.stroke(
+                    &Stroke::new(1.25).with_dashes(0.0, [5.0, 3.0]),
+                    Affine::IDENTITY,
+                    p.accent.with_alpha(200).to_peniko(),
+                    None,
+                    &polyline(&points),
+                );
+            }
+        }
+        for line in vocal.drawn {
+            let points = pitch_points(v, grid, line);
+            if points.len() < 2 {
+                continue;
+            }
+            let path = polyline(&points);
             scene.stroke(
-                &Stroke::new(1.25),
+                &Stroke::new(4.0),
                 Affine::IDENTITY,
-                p.accent.with_alpha(170).to_peniko(),
+                p.window.with_alpha(150).to_peniko(),
                 None,
-                &polyline(&points),
+                &path,
             );
-        });
-    }
+            scene.stroke(
+                &Stroke::new(2.0),
+                Affine::IDENTITY,
+                DRAWN_PITCH.to_peniko(),
+                None,
+                &path,
+            );
+        }
+    });
 }
 
 /// Each note's vibrato as a wave, and the selected notes' handles.
@@ -840,6 +894,30 @@ pub fn draw_note_button(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal
             rect.x + 7.0,
             rect.y + ((rect.height - t.height) / 2.0).max(0.0),
             p.text,
+        );
+    }
+}
+
+/// The pitch pen's chip, lit while it is on.
+pub fn draw_pitch_button(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal: &RollVocal) {
+    let Some(rect) = vocal.pitch_button else {
+        return;
+    };
+    let p = &theme.palette;
+    let (fill, ink) = if vocal.pitch_pen {
+        (DRAWN_PITCH, p.window)
+    } else {
+        (p.panel, p.text)
+    };
+    fill_rect_rounded(scene, rect, 3.0, fill);
+    stroke_rect_rounded(scene, rect, 3.0, 1.0, p.border);
+    if let Some(t) = labels.get_styled(PITCH_BUTTON_TEXT, PHONEME_STYLE) {
+        draw_text(
+            scene,
+            t,
+            rect.x + 7.0,
+            rect.y + ((rect.height - t.height) / 2.0).max(0.0),
+            ink,
         );
     }
 }

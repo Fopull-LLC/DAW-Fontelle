@@ -198,6 +198,11 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
         title: "Vocal tracks",
         binds: &[
             act(Action::EditLyric),
+            act(Action::NoteMenu),
+            act(Action::PitchPen),
+            act(Action::SmoothPitch),
+            act(Action::SnapPitch),
+            act(Action::ResetPitch),
             fixed("Double-click", "On a note of a vocal track: type its lyric"),
             fixed(
                 "Tab / Shift+Tab",
