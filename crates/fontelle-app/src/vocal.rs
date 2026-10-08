@@ -20,8 +20,8 @@ use fontelle_model::{ClipSource, Project, TempoMap, VocalVoice};
 use fontelle_sing::{Lane, Transport};
 use fontelle_types::{ChannelId, ClipId, InstrumentKind, NoteId, Tick};
 use fontelle_ui::document::{
-    CatalogueRow, SingerChoice, SingerKind, VocalPhraseView, VocalRenderState, VocalView,
-    VoicebankRow,
+    CatalogueRow, SingerChoice, SingerInstrument, SingerKind, VocalPhraseView, VocalRenderState,
+    VocalView, VoicebankRow,
 };
 use fontelle_vocal::catalogue::{Catalogue, DownloadWatch, Get};
 use fontelle_vocal::{
@@ -343,6 +343,41 @@ impl VocalSession {
         self.registry().default_voice()
     }
 
+    /// The voice `instrument` (`None`: the Fontelle Singer; else an
+    /// engine's name) starts with — one of its own singers, in `language`
+    /// when one sings it.
+    pub fn default_voice_for(
+        &self,
+        instrument: Option<&str>,
+        language: Option<&str>,
+    ) -> Option<VocalVoice> {
+        self.registry().default_voice_for(instrument, language)
+    }
+
+    /// The instruments a vocal track can be: the Fontelle Singer, then each
+    /// engine installed.
+    pub fn instruments(&self) -> Vec<SingerInstrument> {
+        self.registry()
+            .instruments()
+            .into_iter()
+            .map(|i| SingerInstrument {
+                engine: i.engine,
+                name: i.name,
+                has_editor: i.has_editor,
+            })
+            .collect()
+    }
+
+    /// What the instrument singing `voice` is called: the Fontelle Singer
+    /// (a track with no voice is one), or the engine by its short name —
+    /// installed here or not.
+    pub fn instrument_name(voice: Option<&VocalVoice>) -> String {
+        match voice.and_then(|v| v.engine_instrument()) {
+            None => fontelle_vocal::FONTELLE_SINGER.to_string(),
+            Some(engine) => fontelle_vocal::instrument_name(engine),
+        }
+    }
+
     fn agreed(&self) -> &Mutex<HashMap<String, String>> {
         self.agreed.get_or_init(|| {
             let map = std::fs::read_to_string(self.voicebanks_dir().join(AGREED_FILE))
@@ -386,10 +421,34 @@ impl VocalSession {
     }
 
     pub fn singers(&self) -> Vec<SingerChoice> {
+        // A voicebank's name, folder and picture come from the one place
+        // the Installed page reads them (`voicebanks::list`), so its card
+        // and its row agree — *"the singer select menu and installed singers
+        // menus do not display the same the picture is missing on some"*.
+        let installed = voicebanks::list(&self.voicebanks_dir());
         self.registry()
             .voices()
             .into_iter()
-            .map(|v| SingerChoice {
+            .map(|mut v| {
+                let bank = v.built_in.then(|| {
+                    voicebanks::bank_for_voice(
+                        &installed,
+                        &v.info.id,
+                        v.info.image.as_deref().map(Path::new),
+                    )
+                });
+                let mut folder = None;
+                if let Some(Some(bank)) = bank {
+                    folder = Some(bank.id.clone());
+                    v.info.name = bank.name.clone();
+                    if let Some(face) = &bank.info.portrait {
+                        v.info.image = Some(face.display().to_string());
+                    }
+                }
+                (v, folder)
+            })
+            .map(|(v, folder)| SingerChoice {
+                folder,
                 terms_agreed: self.terms_agreed(&v.backend, &v.info.id, v.info.terms.as_deref()),
                 engine: v.backend,
                 engine_name: v.backend_name,
@@ -476,6 +535,10 @@ impl VocalSession {
             let (backend, problem) = match &voice {
                 None if nobody => (None, Some(self.no_engine_message())),
                 None => (None, Some("Choose a singer for this track".to_string())),
+                // An engine's instrument with nobody chosen yet.
+                Some(v) if v.singer.is_empty() => {
+                    (None, Some("Choose a singer for this track".to_string()))
+                }
                 Some(v) => match registry.backend(&v.engine) {
                     Some(backend) => (Some(backend), None),
                     None => (
@@ -639,8 +702,10 @@ impl VocalSession {
         let singer = voice.as_ref().and_then(|v| self.singer_name(v));
         view.caption = match (&voice, &singer) {
             (Some(v), Some((name, _, _))) => format!("{name} \u{b7} {}", v.language),
-            (Some(v), None) => format!("{} \u{b7} {}", v.singer, v.language),
-            (None, _) => "No singer".to_string(),
+            (Some(v), None) if !v.singer.is_empty() => {
+                format!("{} \u{b7} {}", v.singer, v.language)
+            }
+            _ => "No singer".to_string(),
         };
         view.research_only = singer.as_ref().is_some_and(|(_, r, _)| *r);
         view.portrait = singer.and_then(|(_, _, image)| image);
@@ -648,10 +713,11 @@ impl VocalSession {
             let registry = self.registry();
             view.backend = v.engine.clone();
             view.capabilities = registry.capabilities(v);
+            // "Open <instrument>": the engine by its instrument's name.
             view.editor = registry
                 .engine(&v.engine)
                 .filter(|e| e.has_editor())
-                .map(|e| e.name().to_string());
+                .map(|e| fontelle_vocal::instrument_name(e.name()));
             view.editor_open = self.editor.as_ref().is_some_and(|e| e.channel == channel);
         }
         if let Some(ClipSource::Notes(data)) = project.clip_source(clip).as_deref() {
@@ -852,20 +918,29 @@ impl VocalSession {
                 words.push(' ');
             }
         }
+        // Which instrument sings, then who: "Fontelle Singer · Teto · la
+        // la" beside "Some Engine · Tenor · la la" — two instruments, told
+        // apart on the arrangement.
         let voice = project.channels[channel].vocal.as_ref();
         let who = voice
-            .and_then(|v| {
+            .filter(|v| !v.singer.is_empty())
+            .map(|v| {
                 self.singer_name(v)
                     .map(|(name, _, _)| name)
-                    .or_else(|| Some(v.singer.clone()))
+                    .unwrap_or_else(|| v.singer.clone())
             })
             .unwrap_or_else(|| project.channels[channel].name.clone());
-        let words = words.trim();
-        Some(if words.is_empty() {
+        let instrument = Self::instrument_name(voice);
+        let mut caption = if who.starts_with(&instrument) {
             who
         } else {
-            format!("{who} \u{b7} {words}")
-        })
+            format!("{instrument} \u{b7} {who}")
+        };
+        let words = words.trim();
+        if !words.is_empty() {
+            caption.push_str(&format!(" \u{b7} {words}"));
+        }
+        Some(caption)
     }
 
     /// Fresh players for an export's graph, and what fills them.

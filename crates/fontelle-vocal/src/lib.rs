@@ -30,7 +30,10 @@ pub use phrases::{
     CURVE_LEAD, CURVE_TAIL, MAX_PHRASE_SECONDS, MIN_REST_SECONDS, NoteRef, Phrase, RenderKey,
     note_from_wire, note_wire_id, phrases_of, phrases_with, render_key,
 };
-pub use registry::{BuiltinBackend, RegistryVoice, SingerKind, SingerRegistry, builtin_backends};
+pub use registry::{
+    BuiltinBackend, FONTELLE_SINGER, RegistryVoice, SingerInstrument, SingerKind, SingerRegistry,
+    builtin_backends, instrument_name,
+};
 pub use render::{PhraseState, Rendered, VocalRenderer, Wanted};
 pub use takes::{DEFAULT_TAKE_BYTES, TakeStore};
 

@@ -347,3 +347,89 @@ fn a_shift_jis_character_txt_names_its_sample_and_picture_with_its_own_backslash
         "the icon, not the backdrop"
     );
 }
+
+/// A bank installed with its files one folder down (as a `.uar`'s
+/// `contentsdir=` leaves them, and as Canary's and Teto's packages are):
+/// the Installed page reads its name, picture and sample from the folder
+/// with the `character.txt`, as the singer picker does — reported as
+/// *"the picture is missing on some in the installed section"*.
+#[test]
+fn a_bank_one_folder_down_is_described_from_its_own_folder() {
+    let dir = scratch("wrapped");
+    let inner = dir
+        .join("KasaneTeto_English")
+        .join("重音テト音声ライブラリー");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(inner.join("oto.ini"), OTO).unwrap();
+    std::fs::write(inner.join("teto.bmp"), b"BM").unwrap();
+    std::fs::write(
+        inner.join("character.txt"),
+        sjis("name=重音テト\r\nimage=teto.bmp\r\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("KasaneTeto_English").join("install.txt"),
+        b"type=voiceset\n",
+    )
+    .unwrap();
+    let banks = list(&dir);
+    assert_eq!(banks.len(), 1);
+    let teto = &banks[0];
+    assert_eq!(
+        teto.id, "KasaneTeto_English",
+        "the folder is still what is uninstalled"
+    );
+    assert_eq!(teto.name, "重音テト");
+    assert_eq!(teto.root, inner);
+    assert_eq!(teto.info.portrait, Some(inner.join("teto.bmp")));
+}
+
+/// Which installed bank a built-in runtime's voice is — so the picker's
+/// card and the Installed page's row show the one name and the one picture.
+#[test]
+fn a_built_in_voice_is_found_among_the_installed_banks() {
+    let dir = scratch("voice-to-bank");
+    let make = |folder: &str, inner: Option<&str>, character: &str| {
+        let root = match inner {
+            Some(i) => dir.join(folder).join(i),
+            None => dir.join(folder),
+        };
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("oto.ini"), OTO).unwrap();
+        std::fs::write(root.join("character.txt"), character).unwrap();
+        root
+    };
+    let canary = make(
+        "Canary_ARPAsing",
+        Some("Canary Arpasing 1.0"),
+        "name=Canary\nimage=c.bmp\n",
+    );
+    std::fs::write(canary.join("c.bmp"), b"BM").unwrap();
+    make("Teto_A", Some("Teto"), "name=Teto A\n");
+    make("Teto_B", Some("Teto"), "name=Teto B\n");
+    make("plain", None, "name=Plain\n");
+    let ds = dir.join("Qixuan");
+    std::fs::create_dir_all(&ds).unwrap();
+    std::fs::write(ds.join("dsconfig.yaml"), b"phonemes: p.txt\n").unwrap();
+    let banks = list(&dir);
+    let find = |id: &str, image: Option<&Path>| {
+        voicebanks::bank_for_voice(&banks, id, image).map(|b| b.id.clone())
+    };
+    // By its picture, wherever it is.
+    assert_eq!(
+        find("anything", Some(&canary.join("c.bmp"))).as_deref(),
+        Some("Canary_ARPAsing")
+    );
+    // A UTAU id: `utau/` and the folder with the bank's files, and that
+    // folder's parent when two share a name.
+    assert_eq!(
+        find("utau/Canary Arpasing 1.0", None).as_deref(),
+        Some("Canary_ARPAsing")
+    );
+    assert_eq!(find("utau/Teto", None).as_deref(), Some("Teto_A"));
+    assert_eq!(find("utau/Teto (Teto_B)", None).as_deref(), Some("Teto_B"));
+    // A DiffSinger id is its folder's name; a test runtime's is the folder.
+    assert_eq!(find("Qixuan", None).as_deref(), Some("Qixuan"));
+    assert_eq!(find("plain", None).as_deref(), Some("plain"));
+    assert_eq!(find("utau/Nobody", None), None);
+}

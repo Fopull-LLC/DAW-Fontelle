@@ -55,6 +55,12 @@ pub(super) struct PickerState {
     pub singers: Vec<SingerChoice>,
     pub problems: Vec<String>,
     pub current: Option<fontelle_model::VocalVoice>,
+    /// Whose singers these are: `None` the Fontelle Singer's voicebanks,
+    /// else the engine's name — each instrument's picker shows only its
+    /// own; the others are a change of instrument.
+    pub instrument: Option<String>,
+    /// What that instrument is called.
+    pub instrument_name: String,
     pub layout: Option<SingerPickerLayout>,
 }
 
@@ -136,7 +142,7 @@ impl WindowApp {
     /// draws: tabs, phoneme cells, the lane's scale, the engine chip.
     pub(super) fn shape_vocal_edit(&mut self, font: &crate::theme::FontTokens) {
         use crate::render::vocal::{
-            PHONEME_STYLE, edit_strings, engine_chip_rect, engine_chip_text,
+            LYRIC_STYLE, PHONEME_STYLE, edit_strings, engine_chip_rect, engine_chip_text,
         };
         let Some(view) = self.vocal.clone() else {
             self.vocal_edit.tabs.clear();
@@ -262,10 +268,15 @@ impl WindowApp {
         // The engine chip, left of the singer chip.
         self.vocal_edit.engine_chip = match (&view.editor, self.vocal_caption) {
             (Some(engine), Some(caption)) => {
+                // At the singer chip's size: the way into the engine's own
+                // window is the engine instrument's headline.
                 let text = engine_chip_text(engine, view.editor_open);
                 self.labels
-                    .ensure_styled(&text, font, PHONEME_STYLE, &mut self.text);
-                let w = width_in(&self.labels, &text);
+                    .ensure_styled(&text, font, LYRIC_STYLE, &mut self.text);
+                let w = self
+                    .labels
+                    .get_styled(&text, LYRIC_STYLE)
+                    .map_or(100.0, |t| t.width);
                 Some(engine_chip_rect(caption, w))
             }
             _ => None,
@@ -281,10 +292,9 @@ impl WindowApp {
     /// decodes the portraits they (and the roll's corner) show — every
     /// frame, whatever is in the roll: both open from anywhere.
     pub(super) fn shape_vocal_overlays(&mut self, font: &crate::theme::FontTokens) {
-        use crate::render::vocal::{LYRIC_STYLE, PHONEME_STYLE};
         self.lay_out_voicebank_page();
         self.lay_out_singer_picker();
-        let mut strings: Vec<String> = Vec::new();
+        let mut styled: Vec<(String, crate::text::TextStyle)> = Vec::new();
         let mut faces: Vec<String> = Vec::new();
         if let Some(page) = &self.vocal_edit.page
             && let Some(layout) = &page.layout
@@ -296,26 +306,16 @@ impl WindowApp {
                 catalogue: &page.catalogue,
                 folder: &page.folder,
             };
-            strings.extend(crate::render::vocal::page_strings(&p));
+            styled.extend(crate::render::vocal::page_strings(&p));
             if page.tab == VoicebankTab::Installed {
                 faces.extend(page.installed.iter().filter_map(|r| r.portrait.clone()));
             }
-            self.labels
-                .ensure_styled("Voicebanks", font, LYRIC_STYLE, &mut self.text);
         }
         if let Some(picker) = &self.vocal_edit.picker
             && let Some(layout) = &picker.layout
         {
-            let view = crate::render::vocal::SingerPickerView {
-                layout,
-                singers: &picker.singers,
-                query: picker.query.text(),
-                focus: picker.focus,
-                language: picker.language,
-                current: picker.current.as_ref(),
-                problems: &picker.problems,
-            };
-            strings.extend(crate::render::vocal::picker_strings(&view));
+            let view = picker_view(picker, layout);
+            styled.extend(crate::render::vocal::picker_strings(&view));
             faces.extend(
                 layout
                     .cards
@@ -323,19 +323,13 @@ impl WindowApp {
                     .filter_map(|c| picker.singers.get(c.singer))
                     .filter_map(|s| s.image.clone()),
             );
-            self.labels.ensure_styled(
-                crate::render::vocal::PICKER_TITLE,
-                font,
-                LYRIC_STYLE,
-                &mut self.text,
-            );
+        }
+        for (text, style) in styled {
+            self.labels
+                .ensure_styled(&text, font, style, &mut self.text);
         }
         if let Some(face) = self.vocal.as_ref().and_then(|v| v.portrait.clone()) {
             faces.push(face);
-        }
-        for text in strings {
-            self.labels
-                .ensure_styled(&text, font, PHONEME_STYLE, &mut self.text);
         }
         for face in faces {
             self.vocal_edit.portraits.get(&face);
@@ -1414,12 +1408,24 @@ impl WindowApp {
         let current = doc.vocal_voice(channel);
         let singers = doc.singers();
         let problems = doc.singer_problems();
+        // The track's own instrument's singers only.
+        let instrument = doc.vocal_instrument(channel).flatten();
+        let instrument_name = match &instrument {
+            None => crate::document::FONTELLE_SINGER.to_string(),
+            Some(engine) => doc
+                .singer_instruments()
+                .into_iter()
+                .find(|i| i.engine.as_deref() == Some(engine.as_str()))
+                .map_or_else(|| engine.clone(), |i| i.name),
+        };
         // The card singing now is focused, so Enter keeps it.
         self.vocal_edit.picker = Some(PickerState {
             channel,
             singers,
             problems,
             current,
+            instrument,
+            instrument_name,
             ..PickerState::default()
         });
         self.lay_out_singer_picker();
@@ -1446,13 +1452,25 @@ impl WindowApp {
     fn lay_out_singer_picker(&mut self) {
         let window = self.layout.window;
         if let Some(p) = &mut self.vocal_edit.picker {
-            let shown = crate::canvas::picker_filter(&p.singers, p.query.text());
-            let layout = crate::canvas::singer_picker_layout(
+            let shown = crate::canvas::picker_filter_for(
+                &p.singers,
+                p.query.text(),
+                p.instrument.as_deref(),
+            );
+            // Engines that did not load are the Fontelle Singer picker's
+            // to say: an engine's own picker is that engine, loaded.
+            let problems = if p.instrument.is_none() {
+                p.problems.len()
+            } else {
+                0
+            };
+            let layout = crate::canvas::singer_picker_layout_for(
                 window,
                 &p.singers,
                 &shown,
                 p.scroll,
-                p.problems.len(),
+                problems,
+                p.instrument.is_none(),
             );
             p.scroll = p
                 .scroll
@@ -1519,8 +1537,33 @@ impl WindowApp {
             Some(PickerHit::Card(singer)) => self.pick_singer(singer, None),
             Some(PickerHit::Language(singer, language)) => self.pick_singer(singer, Some(language)),
             Some(PickerHit::Nobody) => {
+                let picker = self.vocal_edit.picker.clone();
                 self.close_singer_picker();
-                self.choose_singer_row(channel, Some(SingerRow::Nobody));
+                match picker.and_then(|p| p.instrument.map(|e| (e, p.current))) {
+                    // An engine's track with nobody chosen is still the
+                    // engine's.
+                    Some((engine, current)) => {
+                        let language = current.map_or_else(|| "en".to_string(), |v| v.language);
+                        if let Some(doc) = &mut self.options.document {
+                            doc.set_singer(
+                                channel,
+                                Some(fontelle_model::VocalVoice::new(engine, "", language)),
+                            );
+                        }
+                        self.status =
+                            "Nobody sings this track \u{2014} its notes and words are kept"
+                                .to_string();
+                        self.refresh_studio();
+                        self.tree.invalidate(PANEL);
+                    }
+                    None => self.choose_singer_row(channel, Some(SingerRow::Nobody)),
+                }
+            }
+            Some(PickerHit::ChangeInstrument) => {
+                self.close_singer_picker();
+                let (x, y) = self.cursor;
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::ChangeInstrument(channel), x, y, bounds);
             }
             Some(PickerHit::Install) => {
                 self.close_singer_picker();
@@ -1718,6 +1761,28 @@ pub(super) fn roll_vocal_of<'a>(
     }
 }
 
+/// The picker as drawn, from its state and layout.
+fn picker_view<'a>(
+    p: &'a PickerState,
+    layout: &'a SingerPickerLayout,
+) -> crate::render::vocal::SingerPickerView<'a> {
+    crate::render::vocal::SingerPickerView {
+        layout,
+        singers: &p.singers,
+        query: p.query.text(),
+        focus: p.focus,
+        language: p.language,
+        current: p.current.as_ref(),
+        problems: if p.instrument.is_none() {
+            &p.problems
+        } else {
+            &[]
+        },
+        instrument: &p.instrument_name,
+        built_in: p.instrument.is_none(),
+    }
+}
+
 /// The page and the picker as the window draws them over everything.
 pub(super) fn vocal_overlay_of(e: &VocalEditing) -> Option<crate::render::vocal::VocalOverlay<'_>> {
     let page = e.page.as_ref().and_then(|p| {
@@ -1731,19 +1796,10 @@ pub(super) fn vocal_overlay_of(e: &VocalEditing) -> Option<crate::render::vocal:
                 folder: &p.folder,
             })
     });
-    let picker = e.picker.as_ref().and_then(|p| {
-        p.layout
-            .as_ref()
-            .map(|layout| crate::render::vocal::SingerPickerView {
-                layout,
-                singers: &p.singers,
-                query: p.query.text(),
-                focus: p.focus,
-                language: p.language,
-                current: p.current.as_ref(),
-                problems: &p.problems,
-            })
-    });
+    let picker = e
+        .picker
+        .as_ref()
+        .and_then(|p| p.layout.as_ref().map(|layout| picker_view(p, layout)));
     (page.is_some() || picker.is_some()).then_some(crate::render::vocal::VocalOverlay {
         page,
         picker,

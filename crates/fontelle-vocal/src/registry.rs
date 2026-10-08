@@ -91,6 +91,32 @@ pub fn builtin_backends() -> Vec<BuiltinBackend> {
     ]
 }
 
+/// What the built-in instrument is called.
+pub const FONTELLE_SINGER: &str = "Fontelle Singer";
+
+/// The instrument an engine is, by its display name: what it says before
+/// any bracketed note (`"Some Engine (test singers, research only)"` is
+/// the instrument "Some Engine"); the whole name when nothing comes
+/// before the bracket. Kept generic: no engine is named in this tree.
+pub fn instrument_name(engine_name: &str) -> String {
+    let name = engine_name.trim();
+    match name.find(" (") {
+        Some(at) if !name[..at].trim().is_empty() => name[..at].trim().to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// One instrument a vocal track can be: the Fontelle Singer, or an
+/// installed engine. All sing the same part, so a track changes between
+/// them keeping its notes, lyrics, expression and lanes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SingerInstrument {
+    /// `None` for the Fontelle Singer; else the engine's name.
+    pub engine: Option<String>,
+    pub name: String,
+    pub has_editor: bool,
+}
+
 /// One voice anybody could choose.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegistryVoice {
@@ -154,7 +180,7 @@ impl SingerRegistry {
     /// Whether `key` names a built-in runtime's backend (reserved: no engine
     /// may use one).
     pub fn is_builtin_key(key: &str) -> bool {
-        key.starts_with("fontelle-")
+        fontelle_model::is_builtin_engine(key)
     }
 
     /// Makes every built-in backend again over the voicebanks folder — after
@@ -231,6 +257,64 @@ impl SingerRegistry {
             }
         }
         out
+    }
+
+    /// Every instrument a vocal track can be: the Fontelle Singer first
+    /// (always — its voicebanks can be installed later), then each engine.
+    pub fn instruments(&self) -> Vec<SingerInstrument> {
+        let mut out = vec![SingerInstrument {
+            engine: None,
+            name: FONTELLE_SINGER.to_string(),
+            has_editor: false,
+        }];
+        for engine in self.engines.engines() {
+            if Self::is_builtin_key(engine.name()) {
+                continue;
+            }
+            out.push(SingerInstrument {
+                engine: Some(engine.name().to_string()),
+                name: instrument_name(engine.name()),
+                has_editor: engine.has_editor(),
+            });
+        }
+        out
+    }
+
+    /// The voice `instrument` (`None`: the Fontelle Singer; else an
+    /// engine's name) starts with: one of **its own** singers, in
+    /// `language` when one sings it, an ordinary singer before a
+    /// research-only one; `None` when it has no singer.
+    pub fn default_voice_for(
+        &self,
+        instrument: Option<&str>,
+        language: Option<&str>,
+    ) -> Option<VocalVoice> {
+        let voices: Vec<RegistryVoice> = self
+            .voices()
+            .into_iter()
+            .filter(|v| match instrument {
+                None => v.built_in,
+                Some(engine) => !v.built_in && v.backend == engine,
+            })
+            .collect();
+        let sings =
+            |v: &&RegistryVoice| language.is_some_and(|l| v.info.languages.iter().any(|x| x == l));
+        let pick = voices
+            .iter()
+            .find(|v| sings(v) && !v.info.research_only)
+            .or_else(|| voices.iter().find(sings))
+            .or_else(|| voices.iter().find(|v| !v.info.research_only))
+            .or_else(|| voices.first())?;
+        let language = language
+            .filter(|l| pick.info.languages.iter().any(|x| x == l))
+            .map(str::to_string)
+            .or_else(|| pick.info.languages.first().cloned())
+            .unwrap_or_else(|| "en".into());
+        Some(VocalVoice::new(
+            pick.backend.clone(),
+            pick.info.id.clone(),
+            language,
+        ))
     }
 
     /// What `voice` answers to, asked once and kept.

@@ -236,8 +236,14 @@ struct Shot<'a> {
     page: Option<(VoicebankTab, Vec<VoicebankRow>, Vec<CatalogueRow>)>,
     /// The singer picker: who is offered, what is typed, the focused card.
     picker: Option<(Vec<SingerChoice>, String, Option<usize>)>,
+    /// Whose picker it is: `None` the Fontelle Singer's, else an engine's
+    /// name (only its singers are shown).
+    instrument: Option<&'a str>,
     /// The roll corner's portrait.
     portrait: Option<String>,
+    /// The UI scale: the window is this many times smaller in logical
+    /// pixels, drawn this many times bigger.
+    scale: f32,
 }
 
 impl Default for Shot<'_> {
@@ -253,7 +259,9 @@ impl Default for Shot<'_> {
             menu: None,
             page: None,
             picker: None,
+            instrument: None,
             portrait: None,
+            scale: 1.0,
         }
     }
 }
@@ -262,7 +270,12 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
     let theme = Theme::dark_default();
     let shared = headless()?;
     let mut text = TextContext::new();
-    let layout = window_layout(RW as f32, RH as f32, &theme.metrics, 0.0);
+    let layout = window_layout(
+        RW as f32 / shot.scale,
+        RH as f32 / shot.scale,
+        &theme.metrics,
+        0.0,
+    );
     let mut labels = Labels::new();
     let title = text.layout("Roll", &theme.font, None);
     let view = TransportView::unavailable();
@@ -332,12 +345,12 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         .get_styled(&song.view.caption, LYRIC_STYLE)
         .map(|t| caption_rect(roll_l.grid, t.width + face));
     let chip_text = engine_chip_text("Fontelle Test Singer 2", false);
-    labels.ensure_styled(&chip_text, &theme.font, PHONEME_STYLE, &mut text);
+    labels.ensure_styled(&chip_text, &theme.font, LYRIC_STYLE, &mut text);
     let engine_chip = caption.map(|c| {
         engine_chip_rect(
             c,
             labels
-                .get_styled(&chip_text, PHONEME_STYLE)
+                .get_styled(&chip_text, LYRIC_STYLE)
                 .map_or(100.0, |t| t.width),
         )
     });
@@ -382,9 +395,15 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
     let picker_layout;
     let picker = match &shot.picker {
         Some((singers, query, focus)) => {
-            let shown = fontelle_ui::canvas::picker_filter(singers, query);
-            picker_layout =
-                fontelle_ui::canvas::singer_picker_layout(layout.window, singers, &shown, 0.0, 1);
+            let shown = fontelle_ui::canvas::picker_filter_for(singers, query, shot.instrument);
+            picker_layout = fontelle_ui::canvas::singer_picker_layout_for(
+                layout.window,
+                singers,
+                &shown,
+                0.0,
+                0,
+                shot.instrument.is_none(),
+            );
             Some(fontelle_ui::render::vocal::SingerPickerView {
                 layout: &picker_layout,
                 singers,
@@ -393,20 +412,18 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
                 language: 0,
                 current: None,
                 problems: &PROBLEMS,
+                instrument: shot
+                    .instrument
+                    .unwrap_or(fontelle_ui::document::FONTELLE_SINGER),
+                built_in: shot.instrument.is_none(),
             })
         }
         None => None,
     };
     if let Some(p) = &picker {
-        for w in fontelle_ui::render::vocal::picker_strings(p) {
-            labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
+        for (w, style) in fontelle_ui::render::vocal::picker_strings(p) {
+            labels.ensure_styled(&w, &theme.font, style, &mut text);
         }
-        labels.ensure_styled(
-            fontelle_ui::render::vocal::PICKER_TITLE,
-            &theme.font,
-            LYRIC_STYLE,
-            &mut text,
-        );
     }
     // Byte offsets into what a field shows, as widths from its left.
     let width_to = |labels: &mut Labels, text: &mut TextContext, s: &str, at: usize, lyric| {
@@ -492,10 +509,9 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
     }
     if let Some(p) = &page {
-        for w in page_strings(p) {
-            labels.ensure_styled(&w, &theme.font, PHONEME_STYLE, &mut text);
+        for (w, style) in page_strings(p) {
+            labels.ensure_styled(&w, &theme.font, style, &mut text);
         }
-        labels.ensure_styled("Voicebanks", &theme.font, LYRIC_STYLE, &mut text);
     }
     if let Some(menu) = &shot.menu {
         for entry in &menu.entries {
@@ -589,6 +605,17 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
             ),
         },
     );
+    // A UI scale draws the logical window that much bigger.
+    let scene = if (shot.scale - 1.0).abs() > f32::EPSILON {
+        let mut scaled = vello::Scene::new();
+        scaled.append(
+            &scene,
+            Some(vello::kurbo::Affine::scale(f64::from(shot.scale))),
+        );
+        scaled
+    } else {
+        scene
+    };
     let pixels = shared
         .lock()
         .expect("the shared renderer")
@@ -955,7 +982,12 @@ fn picker_singers() -> Vec<SingerChoice> {
         qixuan,
     );
     qx.terms = Some("terms".into());
-    let canary = card("Canary ARPAsing", SingerKind::Utau, &["en"], String::new());
+    let canary = card(
+        "Canary ARPAsing",
+        SingerKind::Utau,
+        &["en"],
+        real_portrait("Canary_ARPAsing_1.0/Canary Arpasing 1.0/canary.bmp").unwrap_or_default(),
+    );
     let lang = card("琅", SingerKind::DiffSinger, &["ja", "zh"], lang);
     let mut engine = card(
         "Test Alto",
@@ -1114,4 +1146,144 @@ fn a_composition_shows_underlined_in_the_lyric_and_phoneme_fields() {
         },
         "vocal3-preedit-phoneme",
     );
+}
+
+/// The Fontelle Singer and each engine as instruments of their own: the
+/// New instrument menu lists them apart; each one's picker shows only its
+/// own singers, big — at 100 % and at a 150 % UI scale — and the Installed
+/// page shows a bank as its card does. Dumps `sep-*`.
+#[test]
+fn each_singer_instrument_has_its_own_row_and_its_own_big_picker() {
+    use fontelle_ui::canvas::{InstrumentRow, singer_instrument_menu_rows};
+    use fontelle_ui::document::SingerInstrument;
+    let song = song();
+    let theme = Theme::dark_default();
+    let engines = [
+        SingerInstrument {
+            engine: Some("Fontelle Test Singer 2".into()),
+            name: "Fontelle Test Singer 2".into(),
+            has_editor: true,
+        },
+        SingerInstrument {
+            engine: Some("Some Engine (research only)".into()),
+            name: "Some Engine".into(),
+            has_editor: false,
+        },
+    ];
+    let rows = singer_instrument_menu_rows(None, None, &[], &[], &engines);
+    assert!(rows.iter().any(|(_, r)| *r == InstrumentRow::Engine(1)));
+    let mut entries: Vec<_> = rows.into_iter().map(|(e, _)| e).collect();
+    entries[0] = fontelle_ui::canvas::MenuEntry::disabled("New instrument");
+    let menu = picker_menu(&theme, entries);
+    shoot(
+        &song,
+        Shot {
+            menu: Some(menu),
+            ..Shot::default()
+        },
+        "sep-add-instrument",
+    );
+
+    let mut singers = picker_singers();
+    for s in &mut singers {
+        if s.kind.is_voicebank() {
+            s.folder = Some(format!("{}_bank", s.id));
+        }
+    }
+    let mut tenor = singers.last().unwrap().clone();
+    tenor.name = "Test Tenor".into();
+    tenor.id = "test.tenor".into();
+    tenor.research_only = false;
+    tenor.terms = Some("terms".into());
+    singers.push(tenor);
+    for (scale, tag) in [(1.0, "100"), (1.5, "150")] {
+        let Some((pixels, _, _, _)) = shoot(
+            &song,
+            Shot {
+                picker: Some((singers.clone(), String::new(), Some(0))),
+                scale,
+                ..Shot::default()
+            },
+            &format!("sep-picker-fontelle-{tag}"),
+        ) else {
+            return;
+        };
+        // The first card's portrait is a picture, drawn big.
+        let window = Rect::new(0.0, 0.0, RW as f32 / scale, RH as f32 / scale);
+        let shown = fontelle_ui::canvas::picker_filter_for(&singers, "", None);
+        assert_eq!(shown.len(), 4, "only the voicebanks");
+        let l =
+            fontelle_ui::canvas::singer_picker_layout_for(window, &singers, &shown, 0.0, 0, true);
+        let face = l.cards[0].portrait;
+        let on_screen = Rect::new(
+            face.x * scale,
+            face.y * scale,
+            face.width * scale,
+            face.height * scale,
+        );
+        assert!(
+            distinct(&pixels, on_screen) > 20,
+            "the portrait is a picture"
+        );
+        shoot(
+            &song,
+            Shot {
+                picker: Some((singers.clone(), String::new(), Some(0))),
+                instrument: Some("Fontelle Test Singer 2"),
+                scale,
+                ..Shot::default()
+            },
+            &format!("sep-picker-engine-{tag}"),
+        );
+    }
+
+    // The Installed page: the same picture, name and folder as the card.
+    let row =
+        |id: &str, name: &str, kind: &str, langs: &[&str], portrait: Option<String>| VoicebankRow {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            portrait,
+            languages: langs.iter().map(|l| l.to_string()).collect(),
+            terms: Some("terms".into()),
+            terms_agreed: true,
+            ..Default::default()
+        };
+    let installed = vec![
+        row(
+            "Canary_ARPAsing_1.0",
+            "Canary Arpasing",
+            "UTAU",
+            &[],
+            real_portrait("Canary_ARPAsing_1.0/Canary Arpasing 1.0/canary.bmp")
+                .or_else(|| Some(portrait_file("canary-page", 40, true))),
+        ),
+        row(
+            "KasaneTeto_English_150401",
+            "重音テト（かさねてと）音声ライブラリー",
+            "UTAU",
+            &[],
+            real_portrait("KasaneTeto_English_150401/重音テト音声ライブラリー/teto.bmp")
+                .or_else(|| Some(portrait_file("teto-en-page", 200, true))),
+        ),
+        row(
+            "Qixuan_v2.7.0_DiffSinger_OpenUtau",
+            "Qixuan_v2.7.0",
+            "DiffSinger",
+            &["zh"],
+            real_portrait("Qixuan_v2.7.0_DiffSinger_OpenUtau/qixuan256x256.png")
+                .or_else(|| Some(portrait_file("qixuan-page2", 120, false))),
+        ),
+    ];
+    for (scale, tag) in [(1.0, "100"), (1.5, "150")] {
+        shoot(
+            &song,
+            Shot {
+                page: Some((VoicebankTab::Installed, installed.clone(), Vec::new())),
+                scale,
+                ..Shot::default()
+            },
+            &format!("sep-installed-{tag}"),
+        );
+    }
 }

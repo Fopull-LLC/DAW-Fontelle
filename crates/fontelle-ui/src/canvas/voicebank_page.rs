@@ -52,7 +52,12 @@ pub struct VoicebankPageLayout {
     pub content_height: f32,
 }
 
-pub const PAGE_ROW_HEIGHT: f32 = 76.0;
+/// A row: a portrait as big as the singer picker's (the same bank looks
+/// the same in both), its name, its folder, what it is.
+pub const PAGE_ROW_HEIGHT: f32 = 152.0;
+/// The portrait on a row, as on a picker card.
+pub const PAGE_PORTRAIT: f32 = super::singer_picker::PORTRAIT_SIZE;
+const BUTTON_HEIGHT: f32 = 32.0;
 
 /// The page over `window`, showing `tab` with `count` rows scrolled by
 /// `scroll` pixels.
@@ -64,9 +69,9 @@ pub fn voicebank_page_layout(
 ) -> VoicebankPageLayout {
     // Both tabs are laid out alike but for the installed rows' folder and
     // sample buttons; the tab otherwise only changes what the rows say.
-    let width = (window.width - 80.0).clamp(320.0, 860.0).min(window.width);
-    let height = (window.height - 80.0)
-        .clamp(240.0, 680.0)
+    let width = (window.width - 48.0).clamp(320.0, 1180.0).min(window.width);
+    let height = (window.height - 48.0)
+        .clamp(240.0, 980.0)
         .min(window.height);
     let frame = Rect::new(
         window.x + (window.width - width) / 2.0,
@@ -74,32 +79,33 @@ pub fn voicebank_page_layout(
         width,
         height,
     );
-    let pad = 14.0;
+    let pad = 20.0;
     let title = Rect::new(
         frame.x + pad,
         frame.y + pad,
-        frame.width - 2.0 * pad - 30.0,
-        24.0,
+        frame.width - 2.0 * pad - 40.0,
+        30.0,
     );
-    let close = Rect::new(frame.right() - pad - 24.0, frame.y + pad, 24.0, 24.0);
-    let tab_y = title.bottom() + 8.0;
+    let close = Rect::new(frame.right() - pad - 32.0, frame.y + pad, 32.0, 32.0);
+    let tab_y = title.bottom() + 10.0;
     let tabs = [
         (
             VoicebankTab::Installed,
-            Rect::new(frame.x + pad, tab_y, 110.0, 26.0),
+            Rect::new(frame.x + pad, tab_y, 130.0, BUTTON_HEIGHT),
         ),
         (
             VoicebankTab::Find,
-            Rect::new(frame.x + pad + 116.0, tab_y, 120.0, 26.0),
+            Rect::new(frame.x + pad + 138.0, tab_y, 150.0, BUTTON_HEIGHT),
         ),
     ];
-    let install = Rect::new(frame.right() - pad - 300.0, tab_y, 170.0, 26.0);
-    let folder = Rect::new(frame.right() - pad - 124.0, tab_y, 124.0, 26.0);
+    let folder = Rect::new(frame.right() - pad - 140.0, tab_y, 140.0, BUTTON_HEIGHT);
+    let install = Rect::new(folder.x - 8.0 - 200.0, tab_y, 200.0, BUTTON_HEIGHT);
+    let list_top = tab_y + BUTTON_HEIGHT + 14.0;
     let list = Rect::new(
         frame.x + pad,
-        tab_y + 26.0 + 10.0,
+        list_top,
         frame.width - 2.0 * pad,
-        (frame.bottom() - pad - (tab_y + 36.0)).max(0.0),
+        (frame.bottom() - pad - list_top).max(0.0),
     );
     let content_height = count as f32 * PAGE_ROW_HEIGHT;
     let max_scroll = (content_height - list.height).max(0.0);
@@ -110,37 +116,49 @@ pub fn voicebank_page_layout(
         if y + PAGE_ROW_HEIGHT <= list.y || y >= list.bottom() {
             continue;
         }
-        let row = Rect::new(list.x, y, list.width, PAGE_ROW_HEIGHT - 6.0);
-        let portrait = Rect::new(
-            row.x + 6.0,
-            row.y + 6.0,
-            row.height - 12.0,
-            row.height - 12.0,
-        );
-        let action = Rect::new(
-            row.right() - 112.0,
-            row.y + (row.height - 26.0) / 2.0,
-            104.0,
-            26.0,
-        );
-        let terms = Rect::new(action.x - 126.0, action.y, 118.0, 26.0);
+        let row = Rect::new(list.x, y, list.width, PAGE_ROW_HEIGHT - 8.0);
+        let inset = (row.height - PAGE_PORTRAIT) / 2.0;
+        let portrait = Rect::new(row.x + inset, row.y + inset, PAGE_PORTRAIT, PAGE_PORTRAIT);
+        // The buttons beside the words; on a narrow page (a small window,
+        // a large UI scale) along the row's foot, under them, so the words
+        // keep the row's width.
+        let buttons = if tab == VoicebankTab::Installed {
+            120.0 + 148.0 + 92.0 + 108.0
+        } else {
+            120.0 + 148.0
+        };
+        let narrow = row.width - PAGE_PORTRAIT - inset - 28.0 - buttons < 260.0;
+        let button_y = if narrow {
+            row.bottom() - inset - BUTTON_HEIGHT
+        } else {
+            row.y + (row.height - BUTTON_HEIGHT) / 2.0
+        };
+        let action = Rect::new(row.right() - 12.0 - 120.0, button_y, 120.0, BUTTON_HEIGHT);
+        let terms = Rect::new(action.x - 148.0, action.y, 140.0, BUTTON_HEIGHT);
         let (reveal, sample) = if tab == VoicebankTab::Installed {
-            let reveal = Rect::new(terms.x - 78.0, action.y, 70.0, 26.0);
-            let sample = Rect::new(reveal.x - 88.0, action.y, 80.0, 26.0);
+            let reveal = Rect::new(terms.x - 92.0, action.y, 84.0, BUTTON_HEIGHT);
+            let sample = Rect::new(reveal.x - 108.0, action.y, 100.0, BUTTON_HEIGHT);
             (reveal, sample)
         } else {
             (Rect::default(), Rect::default())
         };
-        let words_end = if tab == VoicebankTab::Installed {
-            sample.x
+        let words_end = if narrow {
+            row.right() - 12.0
+        } else if tab == VoicebankTab::Installed {
+            sample.x - 12.0
         } else {
-            terms.x
+            terms.x - 12.0
+        };
+        let text_bottom = if narrow {
+            button_y - 4.0
+        } else {
+            row.y + inset + PAGE_PORTRAIT
         };
         let text = Rect::new(
-            portrait.right() + 10.0,
-            row.y + 4.0,
-            (words_end - portrait.right() - 18.0).max(0.0),
-            row.height - 8.0,
+            portrait.right() + 16.0,
+            row.y + inset,
+            (words_end - portrait.right() - 16.0).max(0.0),
+            (text_bottom - row.y - inset).max(0.0),
         );
         rows.push(PageRow {
             index,

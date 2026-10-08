@@ -173,3 +173,76 @@ fn a_long_list_scrolls_and_only_what_shows_is_hit() {
     let last = far.cards.last().unwrap();
     assert!(last.frame.bottom() <= far.list.bottom() + 1.0);
 }
+
+// ------------------------------------- one instrument's singers, bigger
+
+/// Each instrument's picker shows only its own singers: the Fontelle
+/// Singer its voicebanks, an engine its own; the other is reached through
+/// Change instrument.
+#[test]
+fn each_instrument_offers_only_its_own_singers() {
+    use fontelle_ui::canvas::{picker_filter_for, singer_picker_layout_for};
+    let mut s = singers();
+    s.push(SingerChoice {
+        engine: "Other Engine".into(),
+        ..singer("Other Tenor", SingerKind::Engine, &["en"])
+    });
+    assert_eq!(picker_filter_for(&s, "", None), vec![1, 2, 3]);
+    assert_eq!(picker_filter_for(&s, "", Some("Some Engine")), vec![0, 4]);
+    assert_eq!(picker_filter_for(&s, "", Some("Other Engine")), vec![5]);
+    assert_eq!(picker_filter_for(&s, "bass", Some("Some Engine")), vec![4]);
+    assert!(picker_filter_for(&s, "teto", Some("Some Engine")).is_empty());
+    // The Fontelle Singer's picker installs voicebanks; an engine's does
+    // not. Both can change instrument.
+    let shown = picker_filter_for(&s, "", None);
+    let l = singer_picker_layout_for(WINDOW, &s, &shown, 0.0, 0, true);
+    assert!(!l.install.is_empty() && !l.manage.is_empty());
+    let (x, y) = centre(l.change);
+    assert_eq!(
+        singer_picker_hit(&l, x, y),
+        Some(PickerHit::ChangeInstrument)
+    );
+    let shown = picker_filter_for(&s, "", Some("Some Engine"));
+    let l = singer_picker_layout_for(WINDOW, &s, &shown, 0.0, 0, false);
+    assert!(l.install.is_empty() && l.manage.is_empty());
+    assert_eq!(l.groups.len(), 1);
+    let (x, y) = centre(l.change);
+    assert_eq!(
+        singer_picker_hit(&l, x, y),
+        Some(PickerHit::ChangeInstrument)
+    );
+}
+
+/// > *"increase the scale of the singer select menu more (kind of tiny to
+/// > read currently)"*
+///
+/// Portraits twice what they were, cards to match, and fewer, bigger cards
+/// across a smaller window (or a larger UI scale, which is a smaller window
+/// in logical pixels).
+#[test]
+fn the_cards_are_big_and_fewer_across_a_small_window() {
+    use fontelle_ui::canvas::PORTRAIT_SIZE;
+    const { assert!(PORTRAIT_SIZE >= 128.0) };
+    let s: Vec<SingerChoice> = (0..9)
+        .map(|i| singer(&format!("Bank {i}"), SingerKind::Utau, &["ja"]))
+        .collect();
+    let shown = picker_filter(&s, "");
+    let across = |window: Rect| {
+        let l = singer_picker_layout(window, &s, &shown, 0.0, 0);
+        let first = l.cards[0].frame;
+        assert!(first.width >= 280.0, "{first:?}");
+        assert!(l.cards[0].portrait.width >= 128.0);
+        assert!(first.contains(
+            l.cards[0].portrait.right() - 1.0,
+            l.cards[0].portrait.bottom() - 1.0
+        ));
+        l.cards
+            .iter()
+            .take_while(|c| (c.frame.y - first.y).abs() < 1.0)
+            .count()
+    };
+    let big = across(Rect::new(0.0, 0.0, 1600.0, 1000.0));
+    let at_150 = across(Rect::new(0.0, 0.0, 1100.0 / 1.5, 700.0 / 1.5));
+    assert!((3..=5).contains(&big), "{big}");
+    assert!((1..=2).contains(&at_150), "{at_150}");
+}

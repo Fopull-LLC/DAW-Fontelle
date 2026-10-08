@@ -32,6 +32,18 @@ use crate::theme::{Color, Theme};
 pub const LYRIC_STYLE: TextStyle = TextStyle::from_tenths(110, 500);
 /// The phonemes under them, and the corner's small print.
 pub const PHONEME_STYLE: TextStyle = TextStyle::from_tenths(90, 400);
+/// The singer picker and the Voicebanks page: at least the app's own
+/// text size (13 px), names bigger, titles bigger still — *"kind of tiny
+/// to read currently"*.
+pub const PICKER_TEXT_STYLE: TextStyle = TextStyle::from_tenths(130, 400);
+/// A singer's name on a card or a row.
+pub const PICKER_NAME_STYLE: TextStyle = TextStyle::from_tenths(170, 600);
+/// The picker's and the page's titles.
+pub const PICKER_TITLE_STYLE: TextStyle = TextStyle::from_tenths(200, 600);
+/// Badges and language chips.
+pub const PICKER_BADGE_STYLE: TextStyle = TextStyle::from_tenths(120, 600);
+/// The initial drawn in a big portrait's place when there is no picture.
+pub const PORTRAIT_INITIAL_STYLE: TextStyle = TextStyle::from_tenths(480, 600);
 /// The research-only badge.
 pub const RESEARCH_TEXT: &str = "RESEARCH ONLY \u{2014} DON'T SHARE";
 
@@ -950,7 +962,10 @@ pub fn draw_engine_chip(scene: &mut Scene, theme: &Theme, labels: &Labels, vocal
         p.accent
     };
     fill_rect_rounded(scene, chip, 4.0, fill);
-    if let Some(t) = labels.get_styled(&text, PHONEME_STYLE) {
+    if let Some(t) = labels
+        .get_styled(&text, LYRIC_STYLE)
+        .or_else(|| labels.get_styled(&text, PHONEME_STYLE))
+    {
         draw_text(
             scene,
             t,
@@ -982,11 +997,10 @@ pub struct VoicebankPage<'a> {
 pub const PAGE_FOLDER: &str = "Folder";
 pub const PAGE_SAMPLE: &str = "\u{25b6} Sample";
 
-/// The page's strings, for `shape_labels` at [`PHONEME_STYLE`] (and the
-/// title at [`LYRIC_STYLE`]).
-pub fn page_strings(page: &VoicebankPage) -> Vec<String> {
-    let mut out: Vec<String> = [
-        "Voicebanks",
+/// The page's strings and the style each is drawn at, for
+/// `shape_labels`.
+pub fn page_strings(page: &VoicebankPage) -> Vec<(String, TextStyle)> {
+    let mut out: Vec<(String, TextStyle)> = [
         "Installed",
         "Find singers",
         "Install from file\u{2026}",
@@ -1005,19 +1019,21 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<String> {
         PAGE_SAMPLE,
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(|s| (s.to_string(), PICKER_TEXT_STYLE))
     .collect();
-    out.push(page.folder.to_string());
+    out.push(("Voicebanks".to_string(), PICKER_TITLE_STYLE));
+    out.push((page.folder.to_string(), PICKER_TEXT_STYLE));
     for r in page.installed {
-        out.push(r.name.clone());
-        out.push(installed_line(r));
-        out.push(initial(&r.name));
+        out.push((r.name.clone(), PICKER_NAME_STYLE));
+        out.push((r.id.clone(), PICKER_TEXT_STYLE));
+        out.push((installed_line(r), PICKER_TEXT_STYLE));
+        out.push((initial(&r.name), PORTRAIT_INITIAL_STYLE));
     }
     for r in page.catalogue {
-        out.push(r.name.clone());
-        out.push(catalogue_line(r));
-        out.push(r.terms_summary.clone());
-        out.push(initial(&r.name));
+        out.push((r.name.clone(), PICKER_NAME_STYLE));
+        out.push((catalogue_line(r), PICKER_TEXT_STYLE));
+        out.push((r.terms_summary.clone(), PICKER_TEXT_STYLE));
+        out.push((initial(&r.name), PORTRAIT_INITIAL_STYLE));
     }
     out
 }
@@ -1062,15 +1078,18 @@ fn catalogue_line(r: &CatalogueRow) -> String {
 }
 
 fn button(scene: &mut Scene, theme: &Theme, labels: &Labels, rect: Rect, text: &str, strong: bool) {
+    if rect.is_empty() {
+        return;
+    }
     let p = &theme.palette;
     fill_rect_rounded(
         scene,
         rect,
-        4.0,
+        5.0,
         if strong { p.accent } else { p.panel_header },
     );
-    stroke_rect_rounded(scene, rect, 4.0, 1.0, p.border);
-    if let Some(t) = labels.get_styled(text, PHONEME_STYLE) {
+    stroke_rect_rounded(scene, rect, 5.0, 1.0, p.border);
+    if let Some(t) = labels.get_styled(text, PICKER_TEXT_STYLE) {
         draw_text_clipped(
             scene,
             t,
@@ -1104,9 +1123,9 @@ pub fn draw_voicebank_page(
 ) {
     let p = &theme.palette;
     let l = page.layout;
-    fill_rect_rounded(scene, l.frame, 8.0, p.panel);
-    stroke_rect_rounded(scene, l.frame, 8.0, 1.0, p.border);
-    if let Some(t) = labels.get_styled("Voicebanks", LYRIC_STYLE) {
+    fill_rect_rounded(scene, l.frame, 10.0, p.panel);
+    stroke_rect_rounded(scene, l.frame, 10.0, 1.0, p.border);
+    if let Some(t) = labels.get_styled("Voicebanks", PICKER_TITLE_STYLE) {
         draw_text(scene, t, l.title.x, l.title.y + 2.0, p.text);
     }
     button(scene, theme, labels, l.close, "\u{2715}", false);
@@ -1137,84 +1156,75 @@ pub fn draw_voicebank_page(
             }
             VoicebankTab::Find => "No catalogue entries.",
         };
-        if let Some(t) = labels.get_styled(hint, PHONEME_STYLE) {
+        if let Some(t) = labels.get_styled(hint, PICKER_TEXT_STYLE) {
             draw_text(scene, t, l.list.x + 4.0, l.list.y + 8.0, p.text_muted);
         }
         return;
     }
     clipped(scene, l.list, |scene| {
         for row in &l.rows {
-            fill_rect_rounded(scene, row.frame, 5.0, p.panel_header);
-            let (name, line, summary, terms, action, waiting, portrait, sample) = match page.tab {
-                VoicebankTab::Installed => {
-                    let Some(r) = page.installed.get(row.index) else {
-                        continue;
-                    };
-                    let terms = match (&r.terms, r.terms_agreed) {
-                        (None, _) => "No terms",
-                        (Some(_), true) => "Terms agreed",
-                        (Some(_), false) => "Read terms\u{2026}",
-                    };
-                    (
-                        r.name.clone(),
-                        installed_line(r),
-                        None,
-                        terms,
-                        "Uninstall",
-                        false,
-                        r.portrait.as_deref(),
-                        r.sample.is_some(),
-                    )
-                }
-                VoicebankTab::Find => {
-                    let Some(r) = page.catalogue.get(row.index) else {
-                        continue;
-                    };
-                    let action = if r.waiting {
-                        "Waiting\u{2026}"
-                    } else if r.direct {
-                        "Install"
-                    } else {
-                        "Get it"
-                    };
-                    (
-                        r.name.clone(),
-                        catalogue_line(r),
-                        Some(r.terms_summary.clone()),
-                        "Read terms\u{2026}",
-                        action,
-                        r.waiting,
-                        None,
-                        false,
-                    )
-                }
-            };
+            fill_rect_rounded(scene, row.frame, 8.0, p.panel_header);
+            let (name, folder, line, summary, terms, action, waiting, portrait, sample) =
+                match page.tab {
+                    VoicebankTab::Installed => {
+                        let Some(r) = page.installed.get(row.index) else {
+                            continue;
+                        };
+                        let terms = match (&r.terms, r.terms_agreed) {
+                            (None, _) => "No terms",
+                            (Some(_), true) => "Terms agreed",
+                            (Some(_), false) => "Read terms\u{2026}",
+                        };
+                        (
+                            r.name.clone(),
+                            // The folder under the name, as on the picker's card.
+                            (r.id != r.name).then(|| r.id.clone()),
+                            installed_line(r),
+                            None,
+                            terms,
+                            "Uninstall",
+                            false,
+                            r.portrait.as_deref(),
+                            r.sample.is_some(),
+                        )
+                    }
+                    VoicebankTab::Find => {
+                        let Some(r) = page.catalogue.get(row.index) else {
+                            continue;
+                        };
+                        let action = if r.waiting {
+                            "Waiting\u{2026}"
+                        } else if r.direct {
+                            "Install"
+                        } else {
+                            "Get it"
+                        };
+                        (
+                            r.name.clone(),
+                            None,
+                            catalogue_line(r),
+                            Some(r.terms_summary.clone()),
+                            "Read terms\u{2026}",
+                            action,
+                            r.waiting,
+                            None,
+                            false,
+                        )
+                    }
+                };
             let image = portrait.and_then(|path| portraits.peek(path));
             draw_portrait(scene, labels, image, row.portrait, &name);
-            if let Some(t) = labels.get_styled(&name, PHONEME_STYLE) {
-                draw_text_clipped(scene, t, row.text, row.text.x, row.text.y + 2.0, p.text);
+            let mut y = row.text.y + 4.0;
+            if let Some(t) = labels.get_styled(&name, PICKER_NAME_STYLE) {
+                draw_text_clipped(scene, t, row.text, row.text.x, y, p.text);
+                y += t.height + 6.0;
             }
-            if let Some(t) = labels.get_styled(&line, PHONEME_STYLE) {
-                draw_text_clipped(
-                    scene,
-                    t,
-                    row.text,
-                    row.text.x,
-                    row.text.y + 20.0,
-                    p.text_muted,
-                );
-            }
-            if let Some(summary) = summary
-                && let Some(t) = labels.get_styled(&summary, PHONEME_STYLE)
-            {
-                draw_text_clipped(
-                    scene,
-                    t,
-                    row.text,
-                    row.text.x,
-                    row.text.y + 38.0,
-                    p.text_muted,
-                );
+            let lines = [folder.as_deref(), Some(line.as_str()), summary.as_deref()];
+            for text in lines.into_iter().flatten() {
+                if let Some(t) = labels.get_styled(text, PICKER_TEXT_STYLE) {
+                    draw_text_clipped(scene, t, row.text, row.text.x, y, p.text_muted);
+                    y += t.height + 4.0;
+                }
             }
             button(scene, theme, labels, row.terms, terms, false);
             if !row.reveal.is_empty() {
@@ -1244,7 +1254,7 @@ pub fn draw_portrait(
     if rect.is_empty() {
         return;
     }
-    let radius = (rect.width.min(rect.height) * 0.12).clamp(2.0, 8.0);
+    let radius = (rect.width.min(rect.height) * 0.1).clamp(2.0, 12.0);
     match image.filter(|i| i.width > 0 && i.height > 0) {
         Some(image) => {
             // Cover: the shorter side fills, the longer is cropped, centred.
@@ -1271,7 +1281,7 @@ pub fn draw_portrait(
         }
         None => {
             fill_rect_rounded(scene, rect, radius, avatar(name));
-            if let Some(t) = labels.get_styled(&initial(name), PHONEME_STYLE) {
+            if let Some(t) = labels.get_styled(&initial(name), initial_style(rect)) {
                 draw_text(
                     scene,
                     t,
@@ -1281,6 +1291,16 @@ pub fn draw_portrait(
                 );
             }
         }
+    }
+}
+
+/// The size a portrait's initial is drawn at: big in a card's or a row's
+/// portrait, small in the roll's corner.
+pub fn initial_style(rect: Rect) -> TextStyle {
+    if rect.width >= 64.0 {
+        PORTRAIT_INITIAL_STYLE
+    } else {
+        PHONEME_STYLE
     }
 }
 
@@ -1299,6 +1319,11 @@ pub struct SingerPickerView<'a> {
     /// Who sings the track now.
     pub current: Option<&'a fontelle_model::VocalVoice>,
     pub problems: &'a [String],
+    /// The instrument whose singers these are: "Fontelle Singer", or an
+    /// engine's name.
+    pub instrument: &'a str,
+    /// The Fontelle Singer's picker (voicebanks) rather than an engine's.
+    pub built_in: bool,
 }
 
 /// The Voicebanks page and the singer picker, over the whole window
@@ -1310,12 +1335,20 @@ pub struct VocalOverlay<'a> {
 }
 
 pub const PICKER_TITLE: &str = "Choose a singer";
-pub const PICKER_SEARCH_HINT: &str = "Search \u{2014} name, language, UTAU, DiffSinger, engine";
-pub const PICKER_BANKS: &str = "Fontelle Singer \u{2014} free voicebanks";
-pub const PICKER_ENGINES: &str = "Singer engines";
+pub const PICKER_SEARCH_HINT: &str = "Search \u{2014} name, language, UTAU, DiffSinger";
+pub const PICKER_ENGINE_SEARCH_HINT: &str = "Search \u{2014} name, language";
+pub const PICKER_BANKS: &str = "Free voicebanks \u{2014} UTAU and DiffSinger";
+pub const PICKER_ENGINES: &str = "Singers";
 pub const PICKER_NONE: &str = "No singer matches the search.";
 pub const PICKER_EMPTY: &str =
-    "No singer is installed yet \u{2014} Voicebanks & Find singers has free ones.";
+    "No voicebank is installed yet \u{2014} Voicebanks & Find singers has free ones.";
+pub const PICKER_ENGINE_EMPTY: &str = "This engine offers no singers.";
+pub const PICKER_CHANGE: &str = "Change instrument\u{2026}";
+
+/// The picker's title: "Choose a singer — Fontelle Singer".
+pub fn picker_title(instrument: &str) -> String {
+    format!("{PICKER_TITLE} \u{2014} {instrument}")
+}
 
 fn kind_badge(s: &crate::document::SingerChoice) -> &'static str {
     match s.kind {
@@ -1334,60 +1367,74 @@ fn terms_badge(s: &crate::document::SingerChoice) -> Option<&'static str> {
 }
 
 const RESEARCH_SHORT: &str = "Research only";
-const SINGING: &str = "Singing";
+const SINGING: &str = "\u{2713} Singing";
 
-/// The picker's strings, for `shape_labels` at [`PHONEME_STYLE`] (the title
-/// at [`LYRIC_STYLE`]).
-pub fn picker_strings(p: &SingerPickerView) -> Vec<String> {
-    let mut out: Vec<String> = [
+/// The picker's strings and the style each is drawn at, for
+/// `shape_labels`.
+pub fn picker_strings(p: &SingerPickerView) -> Vec<(String, TextStyle)> {
+    let mut out: Vec<(String, TextStyle)> = [
         PICKER_SEARCH_HINT,
+        PICKER_ENGINE_SEARCH_HINT,
         PICKER_BANKS,
-        PICKER_ENGINES,
         PICKER_NONE,
         PICKER_EMPTY,
+        PICKER_ENGINE_EMPTY,
+        PICKER_CHANGE,
         "No singer",
         "Install a voicebank\u{2026}",
         "Voicebanks & Find singers\u{2026}",
         "\u{2715}",
-        RESEARCH_SHORT,
         SINGING,
         "Terms to read",
         "Terms agreed",
-        "UTAU",
-        "DiffSinger",
-        "Engine",
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(|s| (s.to_string(), PICKER_TEXT_STYLE))
     .collect();
-    out.push(p.query.to_string());
+    for badge in [RESEARCH_SHORT, "UTAU", "DiffSinger", "Engine"] {
+        out.push((badge.to_string(), PICKER_BADGE_STYLE));
+    }
+    out.push((picker_title(p.instrument), PICKER_TITLE_STYLE));
+    out.push((engine_heading(p.instrument), PICKER_TEXT_STYLE));
+    out.push((p.query.to_string(), PICKER_TEXT_STYLE));
     for card in &p.layout.cards {
         let Some(s) = p.singers.get(card.singer) else {
             continue;
         };
-        out.push(s.name.clone());
-        out.push(initial(&s.name));
-        if !s.kind.is_voicebank() {
-            out.push(s.engine_name.clone());
+        out.push((s.name.clone(), PICKER_NAME_STYLE));
+        out.push((initial(&s.name), PORTRAIT_INITIAL_STYLE));
+        if let Some(folder) = card_folder(s) {
+            out.push((folder.to_string(), PICKER_TEXT_STYLE));
         }
         for (tag, _) in &card.languages {
-            out.push(tag.to_uppercase());
+            out.push((tag.to_uppercase(), PICKER_BADGE_STYLE));
         }
     }
     for problem in p.problems {
-        out.push(format!("Not loaded: {problem}"));
+        out.push((format!("Not loaded: {problem}"), PICKER_TEXT_STYLE));
     }
     out
 }
 
+/// An engine picker's heading: "Some Engine singers".
+fn engine_heading(instrument: &str) -> String {
+    format!("{instrument} {}", PICKER_ENGINES.to_lowercase())
+}
+
+/// The folder line under a card's name: a voicebank's folder, when it is
+/// not just its name again.
+fn card_folder(s: &crate::document::SingerChoice) -> Option<&str> {
+    s.folder.as_deref().filter(|f| *f != s.name)
+}
+
 fn chip(scene: &mut Scene, labels: &Labels, rect: Rect, text: &str, fill: Color, ink: Color) {
-    fill_rect_rounded(scene, rect, 3.0, fill);
-    if let Some(t) = labels.get_styled(text, PHONEME_STYLE) {
+    fill_rect_rounded(scene, rect, 4.0, fill);
+    if let Some(t) = labels.get_styled(text, PICKER_BADGE_STYLE) {
         draw_text_clipped(
             scene,
             t,
             rect,
-            rect.x + ((rect.width - t.width) / 2.0).max(2.0),
+            rect.x + ((rect.width - t.width) / 2.0).max(3.0),
             rect.y + ((rect.height - t.height) / 2.0).max(0.0),
             ink,
         );
@@ -1403,57 +1450,63 @@ pub fn draw_singer_picker(
 ) {
     let p = &theme.palette;
     let l = picker.layout;
-    fill_rect_rounded(scene, l.frame, 8.0, p.panel);
-    stroke_rect_rounded(scene, l.frame, 8.0, 1.0, p.border);
-    if let Some(t) = labels.get_styled(PICKER_TITLE, LYRIC_STYLE) {
-        draw_text(scene, t, l.title.x, l.title.y + 2.0, p.text);
+    fill_rect_rounded(scene, l.frame, 10.0, p.panel);
+    stroke_rect_rounded(scene, l.frame, 10.0, 1.0, p.border);
+    if let Some(t) = labels.get_styled(&picker_title(picker.instrument), PICKER_TITLE_STYLE) {
+        draw_text_clipped(scene, t, l.title, l.title.x, l.title.y + 2.0, p.text);
     }
     button(scene, theme, labels, l.close, "\u{2715}", false);
     // The search field.
-    fill_rect_rounded(scene, l.search, 4.0, p.window);
-    stroke_rect_rounded(scene, l.search, 4.0, 1.0, p.accent);
+    fill_rect_rounded(scene, l.search, 5.0, p.window);
+    stroke_rect_rounded(scene, l.search, 5.0, 1.0, p.accent);
+    let hint = if picker.built_in {
+        PICKER_SEARCH_HINT
+    } else {
+        PICKER_ENGINE_SEARCH_HINT
+    };
     let (shown, ink) = if picker.query.is_empty() {
-        (PICKER_SEARCH_HINT, p.text_muted)
+        (hint, p.text_muted)
     } else {
         (picker.query, p.text)
     };
-    if let Some(t) = labels.get_styled(shown, PHONEME_STYLE) {
+    if let Some(t) = labels.get_styled(shown, PICKER_TEXT_STYLE) {
         let y = l.search.y + ((l.search.height - t.height) / 2.0).max(0.0);
-        draw_text_clipped(scene, t, l.search.inset(2.0), l.search.x + 8.0, y, ink);
+        draw_text_clipped(scene, t, l.search.inset(2.0), l.search.x + 10.0, y, ink);
         if !picker.query.is_empty() {
             let caret = Rect::new(
-                l.search.x + 9.0 + t.width,
-                l.search.y + 6.0,
+                l.search.x + 11.0 + t.width,
+                l.search.y + 7.0,
                 1.5,
-                l.search.height - 12.0,
+                l.search.height - 14.0,
             );
             fill_rect(scene, caret, p.accent);
         }
-    } else if picker.query.is_empty() {
-        // Nothing shaped yet: still a field.
     }
     if l.cards.is_empty() {
-        let hint = if picker.singers.is_empty() {
+        let hint = if !picker.query.is_empty() {
+            PICKER_NONE
+        } else if picker.built_in {
             PICKER_EMPTY
         } else {
-            PICKER_NONE
+            PICKER_ENGINE_EMPTY
         };
-        if let Some(t) = labels.get_styled(hint, PHONEME_STYLE) {
-            draw_text(scene, t, l.list.x + 4.0, l.list.y + 8.0, p.text_muted);
+        if let Some(t) = labels.get_styled(hint, PICKER_TEXT_STYLE) {
+            draw_text(scene, t, l.list.x + 4.0, l.list.y + 10.0, p.text_muted);
         }
     }
+    let heading = engine_heading(picker.instrument);
     clipped(scene, l.list, |scene| {
         for (group, rect) in &l.groups {
             let text = match group {
                 crate::canvas::PickerGroup::Voicebanks => PICKER_BANKS,
-                crate::canvas::PickerGroup::Engines => PICKER_ENGINES,
+                crate::canvas::PickerGroup::Engines => heading.as_str(),
             };
-            if let Some(t) = labels.get_styled(text, PHONEME_STYLE) {
-                draw_text(scene, t, rect.x + 2.0, rect.y + 4.0, p.text_muted);
+            if let Some(t) = labels.get_styled(text, PICKER_TEXT_STYLE) {
+                draw_text(scene, t, rect.x + 2.0, rect.y + 6.0, p.text_muted);
             }
             fill_rect(
                 scene,
-                Rect::new(rect.x, rect.bottom() - 3.0, rect.width, 1.0),
+                Rect::new(rect.x, rect.bottom() - 5.0, rect.width, 1.0),
                 p.border,
             );
         }
@@ -1464,119 +1517,16 @@ pub fn draw_singer_picker(
             let Some(s) = picker.singers.get(card.singer) else {
                 continue;
             };
-            let focused = picker.focus == Some(k);
-            let singing = picker
-                .current
-                .is_some_and(|c| c.engine == s.engine && c.singer == s.id);
-            fill_rect_rounded(scene, card.frame, 6.0, p.panel_header);
-            stroke_rect_rounded(
-                scene,
-                card.frame,
-                6.0,
-                if focused { 2.0 } else { 1.0 },
-                if focused || singing {
-                    p.accent
-                } else {
-                    p.border
-                },
-            );
-            let image = s.image.as_deref().and_then(|path| portraits.peek(path));
-            draw_portrait(scene, labels, image, card.portrait, &s.name);
-            let text_x = card.portrait.right() + 10.0;
-            let text = Rect::new(
-                text_x,
-                card.frame.y + 8.0,
-                (card.frame.right() - text_x - 8.0).max(0.0),
-                card.portrait.height + 4.0,
-            );
-            if let Some(t) = labels.get_styled(&s.name, PHONEME_STYLE) {
-                draw_text_clipped(scene, t, text, text.x, text.y + 2.0, p.text);
-            }
-            // The kind, as a badge; an engine's own name under it.
-            let badge = kind_badge(s);
-            let bw = labels
-                .get_styled(badge, PHONEME_STYLE)
-                .map_or(40.0, |t| t.width + 10.0);
-            let badge_rect = Rect::new(text.x, text.y + 20.0, bw.min(text.width), 16.0);
-            let kind_fill = match s.kind {
-                crate::document::SingerKind::Utau => Color::rgba(0x3d, 0x7e, 0xc9, 0xff),
-                crate::document::SingerKind::DiffSinger => Color::rgba(0x7a, 0x52, 0xc8, 0xff),
-                crate::document::SingerKind::Engine => Color::rgba(0x4f, 0x8a, 0x5b, 0xff),
-            };
-            chip(
-                scene,
-                labels,
-                badge_rect,
-                badge,
-                kind_fill,
-                Color::rgba(0xff, 0xff, 0xff, 0xff),
-            );
-            let mut line_y = badge_rect.bottom() + 4.0;
-            if !s.kind.is_voicebank()
-                && let Some(t) = labels.get_styled(&s.engine_name, PHONEME_STYLE)
-            {
-                draw_text_clipped(scene, t, text, text.x, line_y, p.text_muted);
-                line_y += 16.0;
-            }
-            if singing {
-                if let Some(t) = labels.get_styled(SINGING, PHONEME_STYLE) {
-                    draw_text_clipped(scene, t, text, text.x, line_y, p.accent);
-                }
-            } else if let Some(terms) = terms_badge(s)
-                && let Some(t) = labels.get_styled(terms, PHONEME_STYLE)
-            {
-                let ink = if s.terms_agreed {
-                    p.text_muted
-                } else {
-                    RESEARCH_BADGE_COLOR
-                };
-                draw_text_clipped(scene, t, text, text.x, line_y, ink);
-            }
-            // Languages, a chip each; research-only at the card's corner.
-            for (j, (tag, rect)) in card.languages.iter().enumerate() {
-                let lit = focused && picker.language == j;
-                let current = singing && picker.current.is_some_and(|c| &c.language == tag);
-                let (fill, ink) = if lit || current {
-                    (p.accent, p.window)
-                } else {
-                    (p.window, p.text)
-                };
-                chip(scene, labels, *rect, &tag.to_uppercase(), fill, ink);
-            }
-            if s.research_only {
-                let w = labels
-                    .get_styled(RESEARCH_SHORT, PHONEME_STYLE)
-                    .map_or(80.0, |t| t.width + 10.0);
-                let r = Rect::new(
-                    card.frame.right() - w - 8.0,
-                    card.frame.bottom() - 28.0,
-                    w,
-                    18.0,
-                );
-                chip(
-                    scene,
-                    labels,
-                    r,
-                    RESEARCH_SHORT,
-                    RESEARCH_BADGE_COLOR,
-                    Color::rgba(0x1a, 0x10, 0x05, 0xff),
-                );
-            }
+            draw_card(scene, theme, labels, portraits, picker, card, s, k);
         }
     });
     for (rect, problem) in l.problems.iter().zip(picker.problems) {
-        if let Some(t) = labels.get_styled(&format!("Not loaded: {problem}"), PHONEME_STYLE) {
+        if let Some(t) = labels.get_styled(&format!("Not loaded: {problem}"), PICKER_TEXT_STYLE) {
             draw_text_clipped(scene, t, *rect, rect.x, rect.y + 2.0, p.text_muted);
         }
     }
-    button(
-        scene,
-        theme,
-        labels,
-        l.nobody,
-        "No singer",
-        picker.current.is_none(),
-    );
+    let nobody = picker.current.is_none_or(|c| c.singer.is_empty());
+    button(scene, theme, labels, l.nobody, "No singer", nobody);
     button(
         scene,
         theme,
@@ -1593,6 +1543,123 @@ pub fn draw_singer_picker(
         "Voicebanks & Find singers\u{2026}",
         false,
     );
+    button(scene, theme, labels, l.change, PICKER_CHANGE, false);
+}
+
+/// One singer's card: the portrait, the name (big), the bank's folder
+/// under it, the kind as a badge, singing now or its terms, a chip a
+/// language, research-only at the corner.
+#[allow(clippy::too_many_arguments)]
+fn draw_card(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    portraits: &crate::portrait::Portraits,
+    picker: &SingerPickerView,
+    card: &crate::canvas::PickerCard,
+    s: &crate::document::SingerChoice,
+    k: usize,
+) {
+    let p = &theme.palette;
+    let focused = picker.focus == Some(k);
+    let singing = picker
+        .current
+        .is_some_and(|c| c.engine == s.engine && c.singer == s.id);
+    fill_rect_rounded(scene, card.frame, 8.0, p.panel_header);
+    stroke_rect_rounded(
+        scene,
+        card.frame,
+        8.0,
+        if focused { 2.5 } else { 1.0 },
+        if focused || singing {
+            p.accent
+        } else {
+            p.border
+        },
+    );
+    let image = s.image.as_deref().and_then(|path| portraits.peek(path));
+    draw_portrait(scene, labels, image, card.portrait, &s.name);
+    let text_x = card.portrait.right() + 14.0;
+    let text = Rect::new(
+        text_x,
+        card.portrait.y,
+        (card.frame.right() - text_x - 12.0).max(0.0),
+        card.portrait.height,
+    );
+    let mut y = text.y;
+    if let Some(t) = labels.get_styled(&s.name, PICKER_NAME_STYLE) {
+        draw_text_clipped(scene, t, text, text.x, y, p.text);
+        y += t.height + 4.0;
+    }
+    if let Some(folder) = card_folder(s)
+        && let Some(t) = labels.get_styled(folder, PICKER_TEXT_STYLE)
+    {
+        draw_text_clipped(scene, t, text, text.x, y, p.text_muted);
+        y += t.height + 4.0;
+    }
+    // The kind, as a badge.
+    let badge = kind_badge(s);
+    let bw = labels
+        .get_styled(badge, PICKER_BADGE_STYLE)
+        .map_or(60.0, |t| t.width + 16.0);
+    let badge_rect = Rect::new(text.x, y + 4.0, bw.min(text.width), 24.0);
+    let kind_fill = match s.kind {
+        crate::document::SingerKind::Utau => Color::rgba(0x3d, 0x7e, 0xc9, 0xff),
+        crate::document::SingerKind::DiffSinger => Color::rgba(0x7a, 0x52, 0xc8, 0xff),
+        crate::document::SingerKind::Engine => Color::rgba(0x4f, 0x8a, 0x5b, 0xff),
+    };
+    chip(
+        scene,
+        labels,
+        badge_rect,
+        badge,
+        kind_fill,
+        Color::rgba(0xff, 0xff, 0xff, 0xff),
+    );
+    let line_y = badge_rect.bottom() + 8.0;
+    if singing {
+        if let Some(t) = labels.get_styled(SINGING, PICKER_TEXT_STYLE) {
+            draw_text_clipped(scene, t, text, text.x, line_y, p.accent);
+        }
+    } else if let Some(terms) = terms_badge(s)
+        && let Some(t) = labels.get_styled(terms, PICKER_TEXT_STYLE)
+    {
+        let ink = if s.terms_agreed {
+            p.text_muted
+        } else {
+            RESEARCH_BADGE_COLOR
+        };
+        draw_text_clipped(scene, t, text, text.x, line_y, ink);
+    }
+    // Languages, a chip each; research-only at the card's corner.
+    for (j, (tag, rect)) in card.languages.iter().enumerate() {
+        let lit = focused && picker.language == j;
+        let current = singing && picker.current.is_some_and(|c| &c.language == tag);
+        let (fill, ink) = if lit || current {
+            (p.accent, p.window)
+        } else {
+            (p.window, p.text)
+        };
+        chip(scene, labels, *rect, &tag.to_uppercase(), fill, ink);
+    }
+    if s.research_only {
+        let w = labels
+            .get_styled(RESEARCH_SHORT, PICKER_BADGE_STYLE)
+            .map_or(100.0, |t| t.width + 16.0);
+        let chip_y = card
+            .languages
+            .first()
+            .map_or(card.frame.bottom() - 36.0, |(_, r)| r.y);
+        let r = Rect::new(card.frame.right() - w - 14.0, chip_y, w, 24.0);
+        chip(
+            scene,
+            labels,
+            r,
+            RESEARCH_SHORT,
+            RESEARCH_BADGE_COLOR,
+            Color::rgba(0x1a, 0x10, 0x05, 0xff),
+        );
+    }
 }
 
 /// The overlay: the page, then the picker over it.

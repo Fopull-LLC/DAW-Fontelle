@@ -9813,6 +9813,15 @@ impl StudioHost for Session {
     }
 
     fn add_channel_of(&mut self, kind: fontelle_types::InstrumentKind) -> Result<(), String> {
+        // A vocal track is one of the singer instruments: whichever sings
+        // the first singer there is (a free voicebank before any engine).
+        if kind == fontelle_types::InstrumentKind::Vocal {
+            let engine = self
+                .vocal
+                .default_voice()
+                .and_then(|v| v.engine_instrument().map(str::to_string));
+            return self.add_singer_channel(engine.as_deref());
+        }
         // Named for what it is rather than "Channel N": a rack of "Sampler",
         // "3OSC", "SoundFont" tells you what you are looking at, and a rack of
         // "Channel 4" does not.
@@ -9850,6 +9859,105 @@ impl StudioHost for Session {
 
     fn channel_kind(&self, index: usize) -> Option<fontelle_types::InstrumentKind> {
         Session::channel_kind(self, index)
+    }
+
+    fn singer_instruments(&self) -> Vec<fontelle_ui::document::SingerInstrument> {
+        self.vocal.instruments()
+    }
+
+    fn add_singer_channel(&mut self, engine: Option<&str>) -> Result<(), String> {
+        use fontelle_types::InstrumentKind;
+        let voice = self.vocal.default_voice_for(engine, None).or_else(|| {
+            // An engine with no singer to offer is still its instrument.
+            engine.map(|e| fontelle_model::VocalVoice::new(e, "", "en"))
+        });
+        let instrument = crate::vocal::VocalSession::instrument_name(voice.as_ref());
+        // Named for the instrument: a rack of "Fontelle Singer 4" and "Some
+        // Engine 5" says which is which.
+        let name = format!("{instrument} {}", self.project.channels.len() + 1);
+        let patch = self.starter_patch(InstrumentKind::Vocal);
+        let channel = self.new_channel_of(name, patch, InstrumentKind::Vocal)?;
+        // It arrives singing, as part of the same step as the channel.
+        if let Some(voice) = voice
+            && let Err(e) = self.history.amend(
+                Box::new(fontelle_model::SetSinger::new(channel, Some(voice))),
+                &mut self.project,
+            )
+        {
+            self.message = Some(e.to_string());
+            return Ok(());
+        }
+        self.patch_cache = None;
+        self.message = Some(format!("New instrument: {instrument}"));
+        self.rebuild_graph();
+        self.touch();
+        Ok(())
+    }
+
+    fn set_singer_instrument(&mut self, index: usize, engine: Option<&str>) {
+        use fontelle_types::InstrumentKind;
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        let Some(channel) = self.project.channels.get(id) else {
+            return;
+        };
+        let vocal = channel.instrument == Some(InstrumentKind::Vocal);
+        let before = channel.vocal.clone();
+        // Already that instrument is not a change (nothing applied, no step).
+        if vocal && before.as_ref().and_then(|v| v.engine_instrument()) == engine {
+            return;
+        }
+        let old_name = channel.name.clone();
+        let old_instrument =
+            vocal.then(|| crate::vocal::VocalSession::instrument_name(before.as_ref()));
+        // The part stays as it is — one part format for every singer — and
+        // the new instrument sings it with one of its own singers, in the
+        // part's language when one sings that.
+        let language = before.as_ref().map(|v| v.language.as_str());
+        let voice = self.vocal.default_voice_for(engine, language).or_else(|| {
+            engine.map(|e| fontelle_model::VocalVoice::new(e, "", language.unwrap_or("en")))
+        });
+        let instrument = crate::vocal::VocalSession::instrument_name(voice.as_ref());
+        let mut parts: Vec<Box<dyn fontelle_model::Command>> = Vec::new();
+        if !vocal {
+            let patch = self.starter_patch(InstrumentKind::Vocal);
+            parts.push(Box::new(fontelle_model::SetChannelKind::new(
+                id,
+                InstrumentKind::Vocal,
+            )));
+            parts.push(Box::new(fontelle_model::SetChannelPatch::new(id, patch)));
+        }
+        parts.push(Box::new(fontelle_model::SetSinger::new(id, voice)));
+        // A track still called what its old instrument named it is renamed
+        // for the new one ("Fontelle Singer 4" → "Some Engine 4"); a name
+        // somebody gave it is theirs.
+        if let Some(rest) = old_instrument
+            .as_deref()
+            .and_then(|old| old_name.strip_prefix(old))
+            .or_else(|| old_name.strip_prefix("Vocal"))
+            .filter(|rest| rest.is_empty() || rest.trim().chars().all(|c| c.is_ascii_digit()))
+        {
+            parts.push(Box::new(fontelle_model::RenameChannel::new(
+                id,
+                format!("{instrument}{rest}"),
+            )));
+        }
+        self.let_go();
+        if let Err(e) = self.history.apply(
+            Box::new(fontelle_model::Compound::new("Choose instrument", parts)),
+            &mut self.project,
+        ) {
+            self.message = Some(e.to_string());
+            return;
+        }
+        self.let_go();
+        self.channel_presets.remove(&id);
+        self.patch_cache = None;
+        self.dirty = true;
+        self.message = Some(format!("Instrument is now {instrument}"));
+        self.rebuild_graph();
+        self.touch();
     }
 
     fn set_channel_kind(&mut self, index: usize, kind: fontelle_types::InstrumentKind) {

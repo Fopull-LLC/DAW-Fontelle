@@ -274,3 +274,89 @@ fn the_built_in_runtimes_find_nothing_in_an_empty_folder() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ------------------------------------------- one instrument per backend
+
+/// > *"split generic vocals and [the paid engine] into separate addable
+/// > instruments"*
+///
+/// The Fontelle Singer (every built-in runtime's banks) is one instrument,
+/// and each engine installed is another, named by the engine without what
+/// it says in brackets.
+#[test]
+fn the_fontelle_singer_and_each_engine_are_instruments_of_their_own() {
+    use fontelle_vocal::{FONTELLE_SINGER, instrument_name};
+    assert_eq!(
+        instrument_name("Some Engine (test singers, research only)"),
+        "Some Engine"
+    );
+    assert_eq!(
+        instrument_name(fontelle_testsinger::ENGINE2_NAME),
+        fontelle_testsinger::ENGINE2_NAME
+    );
+    assert_eq!(instrument_name("(odd)"), "(odd)");
+    let registry = SingerRegistry::new(&voicebanks("instruments"), builtins(), engines());
+    let instruments = registry.instruments();
+    assert_eq!(instruments[0].engine, None);
+    assert_eq!(instruments[0].name, FONTELLE_SINGER);
+    let engines: Vec<&str> = instruments[1..]
+        .iter()
+        .map(|i| i.engine.as_deref().expect("an engine"))
+        .collect();
+    assert_eq!(engines.len(), 2);
+    assert!(engines.contains(&fontelle_testsinger::ENGINE_NAME));
+    assert!(engines.contains(&fontelle_testsinger::ENGINE2_NAME));
+    let two = instruments
+        .iter()
+        .find(|i| i.engine.as_deref() == Some(fontelle_testsinger::ENGINE2_NAME))
+        .unwrap();
+    assert!(two.has_editor);
+    // Nothing installed at all: the Fontelle Singer is still there to add.
+    assert_eq!(SingerRegistry::empty().instruments().len(), 1);
+    // A song's voice says which instrument it is.
+    assert_eq!(
+        VocalVoice::new("fontelle-utau", "utau-teto", "ja").engine_instrument(),
+        None
+    );
+    assert_eq!(
+        VocalVoice::new(fontelle_testsinger::ENGINE_NAME, "x", "en").engine_instrument(),
+        Some(fontelle_testsinger::ENGINE_NAME)
+    );
+}
+
+/// An instrument chosen for a part starts with one of its own singers, in
+/// the part's language when one sings it — never another instrument's.
+#[test]
+fn each_instrument_starts_with_its_own_singer_in_the_parts_language() {
+    let registry = SingerRegistry::new(&voicebanks("own-default"), builtins(), engines());
+    assert_eq!(
+        registry.default_voice_for(None, Some("ja")),
+        Some(VocalVoice::new("fontelle-utau", "utau-teto", "ja"))
+    );
+    let v = registry
+        .default_voice_for(Some(fontelle_testsinger::ENGINE_NAME), Some("ja"))
+        .unwrap();
+    assert_eq!(
+        (v.engine.as_str(), v.singer.as_str(), v.language.as_str()),
+        (
+            fontelle_testsinger::ENGINE_NAME,
+            fontelle_testsinger::ALTO_ID,
+            "ja"
+        )
+    );
+    let v = registry
+        .default_voice_for(Some(fontelle_testsinger::ENGINE2_NAME), Some("fr"))
+        .unwrap();
+    assert_eq!(
+        v.singer,
+        fontelle_testsinger::ALTO_ID,
+        "not the research voice"
+    );
+    assert_eq!(v.language, "en", "its own first language");
+    // The Fontelle Singer never borrows an engine's singer.
+    let empty = std::env::temp_dir().join(format!("fontelle-registry-none-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&empty);
+    let registry = SingerRegistry::new(&empty, builtins(), engines());
+    assert_eq!(registry.default_voice_for(None, Some("en")), None);
+    assert_eq!(registry.default_voice_for(Some("Nobody"), None), None);
+}

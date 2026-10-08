@@ -19,6 +19,63 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-07, latest — the Fontelle Singer and each singer engine
+are instruments of their own; a bigger singer picker; one face per bank.**
+Branch `feature/vocal-track`, not merged, not bumped. `docs/vocal-plan.md`
+§2.3 says how. Ty: *"split generic vocals and [the paid engine] into
+separate addable instruments, that can be changed between and it will
+still sing correctly"*, *"increase the scale of the singer select menu"*,
+*"the picture is missing on some in the installed section"*.
+
+- **Instruments**: New/Change instrument list *Fontelle Singer*
+  (`InstrumentKind::Vocal`, relabelled) and a row per engine loaded, named
+  before any bracket (`fontelle_vocal::instrument_name`; no engine named in
+  the tree). A track's instrument is its voice's backend
+  (`VocalVoice::engine_instrument`, `fontelle_model::is_builtin_engine`) —
+  nothing new stored, old songs open as what their voice names, the part
+  is untouched by a change. `StudioHost::{singer_instruments,
+  vocal_instrument, add_singer_channel, set_singer_instrument}`; a change is
+  one `Compound` (kind + patch when not vocal, the new instrument's singer
+  in the part's language via `SingerRegistry::default_voice_for`, a rename
+  when the name is still the old instrument's default). An engine with
+  nobody chosen is `VocalVoice{engine, singer: ""}` ("Choose a singer").
+  Channels are named for the instrument; the arrangement caption is
+  "Instrument · singer · words"; the roll's "Open <instrument>" chip is at
+  the singer chip's size.
+- **Pickers**: each instrument's shows only its own singers
+  (`canvas::picker_filter_for`, `singer_picker_layout_for`), with *Change
+  instrument…*; "No singer" keeps an engine's track the engine's. Cards
+  ≥ 300 × 192 with 128 px portraits, names 17 px, text 13 px, title 20 px,
+  columns by logical width (a larger UI scale gets fewer), footer wraps;
+  the Voicebanks page's rows match (128 px portraits, buttons under the
+  words when narrow).
+- **One face**: `voicebanks::list` describes a bank from the folder with
+  its files (`Installed::root` — Canary's and Teto's are a folder down,
+  which is why the page showed initials); `voicebanks::bank_for_voice` maps
+  a runtime's voice to its bank (picture path, folder id, `utau/<folder>`,
+  `utau/<folder> (<parent>)`), and the picker's card takes the bank's name,
+  picture and folder from it. Every real bank in the test folder maps
+  (`real_voicebanks.rs`, ignored).
+- Tests (first, seen failing, unless said): `fontelle-vocal` `registry.rs`
+  (+2), `voicebanks.rs` (+2), `real_voicebanks.rs` (+1 ignored, written
+  after); `fontelle-ui` `instrument_menu.rs` (+2), `singer_picker.rs` (+2),
+  `vocal_edit_headless.rs` (+1, written after; dumps `sep-add-instrument`,
+  `sep-picker-fontelle-{100,150}`, `sep-picker-engine-{100,150}`,
+  `sep-installed-{100,150}`, a 150 % UI scale drawn by scaling the scene);
+  `fontelle-app` `vocal_instruments.rs` (7: rows, adding each, switching
+  Fontelle Singer → ABI 1 → ABI 2 → back keeping notes/lyrics/lanes and
+  singing through each, one undo each, round trip, card = row).
+  Whole workspace (583 test binaries, `--no-fail-fast`, `XDG_DATA_HOME` at
+  a scratch folder): 6432 passed, 0 failed, 34 ignored. Preflight all
+  clear (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: the window's menu wiring (`app.rs`, the picker's
+  *Change instrument…*) was not driven on a display, only compiled and
+  covered through the canvas functions; engines report no short name of
+  their own (derived from the display name; an ABI-2 capabilities key
+  could carry one later); the engine picker has no "Open <engine>" button
+  (the roll's chip has it); terms on the Installed page are still read
+  from the bank's top folder.
+
 **As of 2026-10-07, latest — voicebanks in the studio: portraits, a card
 picker, the Voicebanks page from anywhere, `.7z`/`.uar`, Chinese and Korean
 lyrics, takes kept on disk.** Branch `feature/vocal-banks` (from

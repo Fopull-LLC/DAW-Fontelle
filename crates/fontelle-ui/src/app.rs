@@ -17887,13 +17887,54 @@ impl WindowApp {
         crate::canvas::effect_menu_rows(&self.favorites(), &plugins)
     }
 
-    /// The *New instrument* / *Change instrument* menu's rows.
+    /// The singer engines installed, each an instrument of its own beside
+    /// the Fontelle Singer — what `InstrumentRow::Engine` counts in.
+    fn singer_engines(&self) -> Vec<crate::document::SingerInstrument> {
+        self.options
+            .document
+            .as_ref()
+            .map(|doc| doc.singer_instruments())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.engine.is_some())
+            .collect()
+    }
+
+    /// The singer instrument an instrument menu's row is, when it is one:
+    /// the Fontelle Singer (`Kind(Vocal)`) or an engine's.
+    fn singer_row_instrument(
+        &self,
+        row: Option<crate::canvas::InstrumentRow>,
+    ) -> Option<crate::document::SingerInstrument> {
+        use crate::canvas::InstrumentRow;
+        match row? {
+            InstrumentRow::Kind(fontelle_types::InstrumentKind::Vocal) => {
+                Some(crate::document::SingerInstrument::fontelle_singer())
+            }
+            InstrumentRow::Engine(which) => self.singer_engines().get(which).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The *New instrument* menu's rows (`channel` `None`), or *Change
+    /// instrument*'s for `channel`.
     fn instrument_rows(
         &self,
-        current: Option<fontelle_types::InstrumentKind>,
+        channel: Option<usize>,
     ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::InstrumentRow)> {
         let plugins = self.plugin_listings(PluginPurpose::NewChannel);
-        let mut rows = crate::canvas::instrument_menu_rows(current, &self.favorites(), &plugins);
+        let doc = self.options.document.as_ref();
+        let current = channel.and_then(|c| doc.and_then(|doc| doc.channel_kind(c)));
+        let engine = channel
+            .and_then(|c| doc.and_then(|doc| doc.vocal_instrument(c)))
+            .flatten();
+        let mut rows = crate::canvas::singer_instrument_menu_rows(
+            current,
+            engine.as_deref(),
+            &self.favorites(),
+            &plugins,
+            &self.singer_engines(),
+        );
         // A vocal track's singers are found here too, not only from a vocal
         // track already in the roll.
         rows.push((
@@ -17937,15 +17978,11 @@ impl WindowApp {
                 EffectRow::Heading | EffectRow::PluginPicker => None,
             },
             MenuTarget::NewInstrument | MenuTarget::ChangeInstrument(_) => {
-                let current = match target {
-                    MenuTarget::ChangeInstrument(channel) => self
-                        .options
-                        .document
-                        .as_ref()
-                        .and_then(|doc| doc.channel_kind(*channel)),
+                let channel = match target {
+                    MenuTarget::ChangeInstrument(channel) => Some(*channel),
                     _ => None,
                 };
-                match self.instrument_rows(current).get(index)?.1 {
+                match self.instrument_rows(channel).get(index)?.1 {
                     InstrumentRow::Kind(kind) if kind != fontelle_types::InstrumentKind::Plugin => {
                         Some(Favorite::Instrument(kind))
                     }
@@ -18479,17 +18516,11 @@ impl WindowApp {
                 entries.push(MenuEntry::new(crate::render::NEW_CATEGORY).after_rule());
                 entries
             }
-            MenuTarget::ChangeInstrument(index) => {
-                let current = self
-                    .options
-                    .document
-                    .as_ref()
-                    .and_then(|doc| doc.channel_kind(*index));
-                self.instrument_rows(current)
-                    .into_iter()
-                    .map(|(entry, _)| entry)
-                    .collect()
-            }
+            MenuTarget::ChangeInstrument(index) => self
+                .instrument_rows(Some(*index))
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             // A rename target and nothing else — a mixer strip's name is typed
             // over in place rather than through a menu, which is what *"just
             // be able to rename super quickly"* asks for. An empty list opens
@@ -20110,7 +20141,30 @@ impl WindowApp {
             }
             (MenuTarget::NewInstrument, index) => {
                 use crate::canvas::InstrumentRow;
-                let kind = match self.instrument_rows(None).get(index).map(|(_, row)| *row) {
+                let row = self.instrument_rows(None).get(index).map(|(_, row)| *row);
+                // A singer — the Fontelle Singer or an engine — is a vocal
+                // track of that instrument.
+                let singer = self.singer_row_instrument(row);
+                if let Some(instrument) = singer {
+                    let mut added = false;
+                    if let Some(doc) = &mut self.options.document {
+                        match doc.add_singer_channel(instrument.engine.as_deref()) {
+                            Ok(()) => {
+                                self.status = format!("New instrument: {}", instrument.name);
+                                self.rack_scroll = usize::MAX;
+                                added = true;
+                            }
+                            Err(e) => self.status = e,
+                        }
+                    }
+                    self.tree.invalidate(RACK);
+                    self.tree.invalidate(PANEL);
+                    if added {
+                        self.open_chosen_instrument();
+                    }
+                    return;
+                }
+                let kind = match row {
                     Some(InstrumentRow::Kind(kind)) => kind,
                     Some(InstrumentRow::Voicebanks) => {
                         self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
@@ -20170,16 +20224,23 @@ impl WindowApp {
             (MenuTarget::ChangeInstrument(channel), index) => {
                 use crate::canvas::InstrumentRow;
                 let channel = *channel;
-                let current = self
-                    .options
-                    .document
-                    .as_ref()
-                    .and_then(|doc| doc.channel_kind(channel));
-                let kind = match self
-                    .instrument_rows(current)
+                let row = self
+                    .instrument_rows(Some(channel))
                     .get(index)
-                    .map(|(_, row)| *row)
-                {
+                    .map(|(_, row)| *row);
+                // To another singer instrument: the same part, sung by it.
+                if let Some(instrument) = self.singer_row_instrument(row) {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.select_channel(channel);
+                        doc.set_singer_instrument(channel, instrument.engine.as_deref());
+                    }
+                    self.status = format!("Instrument is now {}", instrument.name);
+                    self.tree.invalidate(RACK);
+                    self.tree.invalidate(PANEL);
+                    self.open_chosen_instrument();
+                    return;
+                }
+                let kind = match row {
                     Some(InstrumentRow::Kind(kind)) => kind,
                     Some(InstrumentRow::Voicebanks) => {
                         self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);

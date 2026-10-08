@@ -103,7 +103,9 @@ impl InstrumentKind {
             Self::DrumMachine => "Drum machine",
             Self::Flopsynth => "Flopsynth",
             Self::Plugin => "Plugin",
-            Self::Vocal => "Vocal track",
+            // The built-in singer; each singer engine installed is an
+            // instrument of its own beside it, named by the engine.
+            Self::Vocal => "Fontelle Singer",
         }
     }
 
@@ -116,7 +118,7 @@ impl InstrumentKind {
             Self::DrumMachine => "Drums",
             Self::Flopsynth => "Flopsynth",
             Self::Plugin => "Plugin",
-            Self::Vocal => "Vocal",
+            Self::Vocal => "Fontelle Singer",
         }
     }
 

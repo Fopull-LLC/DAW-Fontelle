@@ -73,7 +73,7 @@ pub use effect::{
 };
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
-    instrument_menu_rows, plugin_picker_rows,
+    instrument_menu_rows, plugin_picker_rows, singer_instrument_menu_rows,
 };
 pub use scrollbar::RowScrollbar;
 pub mod gestures;
@@ -279,8 +279,9 @@ pub use share::{
     share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
 };
 pub use singer_picker::{
-    PickerCard, PickerGroup, PickerHit, PickerMove, SingerPickerLayout, picker_filter, picker_move,
-    singer_picker_hit, singer_picker_layout,
+    PORTRAIT_SIZE, PickerCard, PickerGroup, PickerHit, PickerMove, SingerPickerLayout,
+    picker_filter, picker_filter_for, picker_move, singer_picker_hit, singer_picker_layout,
+    singer_picker_layout_for,
 };
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use timeline::{

@@ -89,6 +89,39 @@ pub struct SingerChoice {
     pub terms: Option<String>,
     /// Whether those terms have been read and agreed to here.
     pub terms_agreed: bool,
+    /// A voicebank's folder in the voicebanks folder, shown under its
+    /// name (the Installed page shows the same); `None` for an engine's.
+    pub folder: Option<String>,
+}
+
+/// What the built-in instrument is called — the one that sings free UTAU
+/// and DiffSinger voicebanks.
+pub const FONTELLE_SINGER: &str = "Fontelle Singer";
+
+/// One instrument a vocal track can be: the Fontelle Singer, or an
+/// installed singer engine. Every one sings the same part (notes, lyrics,
+/// expression, lanes), so a track changes between them keeping its work;
+/// which one it is, is who its voice's backend is
+/// ([`fontelle_model::VocalVoice::engine_instrument`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SingerInstrument {
+    /// `None` for the Fontelle Singer; else the engine's name, as a song
+    /// stores it.
+    pub engine: Option<String>,
+    /// What the menus, the track and its clips call it.
+    pub name: String,
+    /// The engine has a window of its own.
+    pub has_editor: bool,
+}
+
+impl SingerInstrument {
+    pub fn fontelle_singer() -> Self {
+        Self {
+            engine: None,
+            name: FONTELLE_SINGER.to_string(),
+            has_editor: false,
+        }
+    }
 }
 
 /// A note's sung phonemes, each with where it starts (seconds from the
@@ -3649,6 +3682,36 @@ pub trait StudioHost: DocumentHost {
     /// Who sings channel `index`, when it is a vocal track with a voice.
     fn vocal_voice(&self, _index: usize) -> Option<fontelle_model::VocalVoice> {
         None
+    }
+
+    /// The instruments a vocal track can be: the Fontelle Singer first,
+    /// then each installed engine.
+    fn singer_instruments(&self) -> Vec<SingerInstrument> {
+        vec![SingerInstrument::fontelle_singer()]
+    }
+
+    /// Which instrument vocal track `index` is: `Some(None)` the Fontelle
+    /// Singer (a track with no voice at all is one), `Some(Some(engine))`
+    /// an engine's; `None` when it is not a vocal track.
+    fn vocal_instrument(&self, index: usize) -> Option<Option<String>> {
+        (self.channel_kind(index) == Some(fontelle_types::InstrumentKind::Vocal)).then(|| {
+            self.vocal_voice(index)
+                .and_then(|v| v.engine_instrument().map(str::to_string))
+        })
+    }
+
+    /// A new vocal track that is `engine`'s instrument (`None`: the
+    /// Fontelle Singer), with one of its own singers when it has one.
+    fn add_singer_channel(&mut self, _engine: Option<&str>) -> Result<(), String> {
+        self.add_channel_of(fontelle_types::InstrumentKind::Vocal)
+    }
+
+    /// Makes channel `index` `engine`'s instrument (`None`: the Fontelle
+    /// Singer), keeping its part, with one of that instrument's singers in
+    /// the part's language — one undo step. Already that instrument is not
+    /// a change.
+    fn set_singer_instrument(&mut self, index: usize, _engine: Option<&str>) {
+        self.set_channel_kind(index, fontelle_types::InstrumentKind::Vocal);
     }
 
     /// Chooses who sings channel `index` (singer and language together, one

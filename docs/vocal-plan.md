@@ -178,6 +178,65 @@ Branch `feature/vocal-banks`.
   package), told apart by their bytes; names checked before anything is
   written, as for zips.
 
+### 2.3 Each singer an instrument of its own (2026-10-07)
+
+> *"i thought we agreed to split generic vocals and [the paid engine] into
+> separate addable instruments, that can be changed between and it will
+> still sing correctly, but actually using them is separate instruments"*
+
+- **One part, several instruments.** A vocal track is still
+  `InstrumentKind::Vocal` with a `VocalVoice`; **which instrument it is, is
+  who its voice's backend is**: `VocalVoice::engine_instrument()` is `None`
+  for the Fontelle Singer (keys starting `fontelle-`,
+  `fontelle_model::is_builtin_engine`; a track with no voice is one too)
+  and the engine's name otherwise. Nothing new is stored, so old songs open
+  as whichever backend their voice names, and changing instrument keeps the
+  notes, lyrics, expression and lanes.
+- **The instruments** (`SingerRegistry::instruments`, the host's
+  `StudioHost::singer_instruments`): the Fontelle Singer, always (its banks
+  can be installed later), then each engine loaded, named by
+  `fontelle_vocal::instrument_name` — the engine's display name before any
+  bracketed note (`"Some Engine (research only)"` → `Some Engine`). No
+  engine is named in this tree.
+- **The menus**: New instrument and Change instrument list *Fontelle
+  Singer* (`InstrumentKind::Vocal`'s label now) and, right after it, a row
+  per engine (`InstrumentRow::Engine`, `canvas::singer_instrument_menu_rows`);
+  on a vocal track its own instrument is marked and greyed.
+- **Adding** (`StudioHost::add_singer_channel`): a channel named for the
+  instrument ("Fontelle Singer 4", "Some Engine 5") with one of **its own**
+  singers (`SingerRegistry::default_voice_for`: the part's language first,
+  an ordinary singer before a research-only one; the Fontelle Singer never
+  borrows an engine's singer). An engine with nobody chosen is
+  `VocalVoice { engine, singer: "" }` — still its instrument, silent with
+  "Choose a singer". `add_channel_of(Vocal)` (song-file import, older
+  callers) adds whichever instrument sings the first singer there is.
+- **Changing** (`StudioHost::set_singer_instrument`): one `Compound` (one
+  undo): the kind and starter patch when the channel was not vocal, the new
+  instrument's singer in the part's language, and the channel renamed when
+  it still carries the old instrument's default name. Already that
+  instrument is no step.
+- **Each picker its own singers** (`canvas::picker_filter_for`): the
+  Fontelle Singer's shows voicebanks (with Install and Voicebanks & Find
+  singers), an engine's only its singers; both have *Change instrument…*.
+  "No singer" on an engine's track keeps the engine.
+- **Told apart**: the arrangement's caption is "Fontelle Singer · 重音テト ·
+  la la" / "Some Engine · Tenor · la la"; the roll's engine chip says
+  "Open <instrument>" at the singer chip's size.
+- **Bigger picker**: cards at least 300 × 192 logical px with 128 px
+  portraits (twice what they were), names 17 px semibold, text 13 px (the
+  app's own size), title 20 px; columns from the window's logical width, so
+  a larger UI scale gets fewer, still-big cards; the footer wraps. The
+  Voicebanks page's rows match (128 px portraits, the same styles).
+- **One face for a bank**: `voicebanks::list` describes a bank from the
+  folder that holds its files (`Installed::root` — Canary's and Teto's
+  packages put them a folder down, which is why the Installed page showed
+  initials where the picker showed pictures), and `voicebanks::bank_for_voice`
+  finds a built-in runtime's voice among the installed banks (by its
+  picture's path, its id as the folder, or the runtime's folder name —
+  `utau/<folder>`, `utau/<folder> (<parent>)`). The picker's card takes the
+  bank's name, picture and folder from there, so card and row agree: the
+  name `character.txt`/`character.yaml` gives, the folder under it.
+
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
 Producers coming from OpenUtau, UTAU, Vocaloid or Synthesizer V should find

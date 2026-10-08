@@ -39,6 +39,25 @@ impl VocalVoice {
             language: language.into(),
         }
     }
+
+    /// The engine whose instrument sings this voice, or `None` for the
+    /// built-in Fontelle Singer — whose runtimes' keys start
+    /// [`BUILTIN_ENGINE_PREFIX`]. A vocal track's instrument *is* this: one
+    /// part format for every singer, so changing instrument keeps the notes,
+    /// lyrics, expression and lanes.
+    pub fn engine_instrument(&self) -> Option<&str> {
+        (!is_builtin_engine(&self.engine)).then_some(self.engine.as_str())
+    }
+}
+
+/// What the keys of the Fontelle Singer's built-in runtimes start with
+/// (`fontelle-utau`, `fontelle-diffsinger`); no external engine may use one.
+pub const BUILTIN_ENGINE_PREFIX: &str = "fontelle-";
+
+/// Whether `engine` (a [`VocalVoice::engine`]) is one of the Fontelle
+/// Singer's runtimes rather than an external engine.
+pub fn is_builtin_engine(engine: &str) -> bool {
+    engine.starts_with(BUILTIN_ENGINE_PREFIX)
 }
 
 /// Each of a set of notes gets its own lyric — a typed line spread over a

@@ -64,3 +64,34 @@ fn every_installed_voicebank_sings_through_the_registry() {
     }
     assert!(sung > 0, "no voicebank found in {}", dir.display());
 }
+
+/// Every real bank's voice is found among the installed banks, and its
+/// picture there is the one the runtime shows — the picker's card and the
+/// Installed page's row show one face.
+#[test]
+#[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
+fn every_real_voice_is_one_installed_bank_with_one_face() {
+    let Some(dir) = std::env::var_os("FONTELLE_TEST_VOICEBANKS").map(PathBuf::from) else {
+        eprintln!("FONTELLE_TEST_VOICEBANKS not set");
+        return;
+    };
+    let installed = fontelle_vocal::voicebanks::list(&dir);
+    for builtin in fontelle_vocal::builtin_backends() {
+        for voice in (builtin.make)(&dir).voices() {
+            let image = voice.image.as_deref().map(std::path::Path::new);
+            let bank = fontelle_vocal::voicebanks::bank_for_voice(&installed, &voice.id, image)
+                .unwrap_or_else(|| panic!("{} is no installed bank", voice.id));
+            eprintln!(
+                "{} -> {} ({}) {:?}",
+                voice.id, bank.id, bank.name, bank.info.portrait
+            );
+            // Both show the bank's own picture — its icon (`image`) before
+            // OpenUtau's large `portrait`, which a runtime may prefer, and a
+            // file that is there (LIEE's yaml writes a Windows path) — so a
+            // bank whose runtime has a picture has one here too.
+            if image.is_some_and(|i| i.is_file()) {
+                assert!(bank.info.portrait.is_some(), "{}", voice.id);
+            }
+        }
+    }
+}

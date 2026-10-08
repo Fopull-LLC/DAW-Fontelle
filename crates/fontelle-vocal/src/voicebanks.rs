@@ -127,6 +127,9 @@ pub struct Installed {
     /// What it calls itself.
     pub name: String,
     pub path: PathBuf,
+    /// The folder inside it with the bank's own files (`character.txt`,
+    /// `oto.ini`, `dsconfig.yaml`): `path` itself, or a folder under it.
+    pub root: PathBuf,
     /// Its author's terms, as written.
     pub terms: Option<String>,
     pub info: BankInfo,
@@ -228,6 +231,7 @@ fn install_from(
         id: file_name(&dest).unwrap_or_default(),
         kind,
         name: info.name.clone(),
+        root: dest.clone(),
         path: dest,
         terms,
         info,
@@ -620,13 +624,18 @@ pub fn acknowledge_terms(bank: &Path) -> std::io::Result<()> {
 // --------------------------------------------------------------- listing
 
 fn describe(path: &Path) -> Option<Installed> {
-    let (kind, _) = find_root(path, false)?;
-    let info = read_info(path, kind);
+    // Described from the folder with its own files, as the runtimes that
+    // sing it read it: a package whose files are a folder down (Canary's,
+    // Teto's) keeps its name and picture there. *"the picture is missing
+    // on some in the installed section"*.
+    let (kind, root) = find_root(path, false)?;
+    let info = read_info(&root, kind);
     Some(Installed {
         id: file_name(path)?,
         kind,
         name: info.name.clone(),
         path: path.to_path_buf(),
+        root,
         terms: read_terms(path),
         info,
     })
@@ -666,11 +675,42 @@ pub fn dependencies(voicebanks: &Path) -> Vec<Installed> {
                 kind: PackageKind::Dependency,
                 name: info.name.clone(),
                 terms: read_terms(&path),
+                root: path.clone(),
                 path,
                 info,
             }
         })
         .collect()
+}
+
+/// Which of `installed` a built-in runtime's voice `id` is (`image` its
+/// picture, when it has one).
+pub fn bank_for_voice<'a>(
+    installed: &'a [Installed],
+    id: &str,
+    image: Option<&Path>,
+) -> Option<&'a Installed> {
+    // Its picture is in the bank's folder, wherever under it.
+    if let Some(image) = image
+        && let Some(bank) = installed.iter().find(|b| image.starts_with(&b.path))
+    {
+        return Some(bank);
+    }
+    if let Some(bank) = installed.iter().find(|b| b.id == id) {
+        return Some(bank);
+    }
+    // A runtime names a bank by the folder with its files (UTAU's with
+    // `utau/` before it, and that folder's parent in brackets when two
+    // share a name).
+    let named = id.strip_prefix("utau/").unwrap_or(id);
+    let root_is = |b: &Installed, name: &str| file_name(&b.root).as_deref() == Some(name);
+    if let Some(bank) = installed.iter().find(|b| root_is(b, named)) {
+        return Some(bank);
+    }
+    let (name, parent) = named.strip_suffix(')')?.rsplit_once(" (")?;
+    installed.iter().find(|b| {
+        root_is(b, name) && b.root.parent().and_then(file_name).as_deref() == Some(parent)
+    })
 }
 
 /// Removes the bank whose folder is `id` (or the dependency, as
