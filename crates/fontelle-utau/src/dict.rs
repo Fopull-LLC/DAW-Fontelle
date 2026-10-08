@@ -3,9 +3,12 @@
 //! for words it lacks.
 //!
 //! The derived file is CMUdict's first pronunciation of each word, stress
-//! marks removed (ARPAsing banks do not record stress), one
-//! `word<TAB>phones` line per word in byte order, gzipped: about 0.8 MB,
-//! from `cmudict.dict` of cmusphinx/cmudict at commit 74790861 (2026-10-07).
+//! marks removed (ARPAsing banks do not record stress) except that an
+//! unstressed AH is the schwa `ax` ("the", "a", the first of "hello"),
+//! which English banks record apart from the stressed vowel (X-SAMPA `@`
+//! against `V`), one `word<TAB>phones` line per word in byte order,
+//! gzipped: about 0.8 MB, from `cmudict.dict` of cmusphinx/cmudict at
+//! commit 74790861 (2026-10-07), rebuilt by `data/make_cmudict.py`.
 //! It is decompressed on first use and searched in place. CMUdict's licence
 //! (BSD-2-Clause) asks that binary redistributions carry its notice: ship
 //! `data/CMUDICT-LICENSE` with the release's licences.
@@ -50,7 +53,7 @@ impl Cmudict {
         l.split_once('\t').unwrap_or((l, ""))
     }
 
-    /// ARPAbet without stress, lowercase.
+    /// ARPAbet without stress, lowercase; `ax` for an unstressed `ah`.
     pub fn lookup(&self, word: &str) -> Option<Vec<String>> {
         let w = normalise(word);
         if w.is_empty() {
@@ -85,9 +88,9 @@ fn normalise(word: &str) -> String {
         .to_string()
 }
 
-/// The ARPAbet vowels (stress removed).
-pub const VOWELS: [&str; 15] = [
-    "aa", "ae", "ah", "ao", "aw", "ay", "eh", "er", "ey", "ih", "iy", "ow", "oy", "uh", "uw",
+/// The ARPAbet vowels (stress removed; `ax` the unstressed `ah`).
+pub const VOWELS: [&str; 16] = [
+    "aa", "ae", "ah", "ao", "aw", "ax", "ay", "eh", "er", "ey", "ih", "iy", "ow", "oy", "uh", "uw",
 ];
 
 /// The ARPAbet consonants.

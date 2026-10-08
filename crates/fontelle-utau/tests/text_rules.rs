@@ -47,10 +47,10 @@ fn kana_romanise_and_split() {
 fn the_dictionary_knows_english_words() {
     let d = dict::cmudict();
     assert!(d.len() > 100_000);
-    assert_eq!(d.lookup("hello").unwrap(), ["hh", "ah", "l", "ow"]);
+    assert_eq!(d.lookup("hello").unwrap(), ["hh", "ax", "l", "ow"]);
     assert_eq!(
         d.lookup("Hello").unwrap(),
-        ["hh", "ah", "l", "ow"],
+        ["hh", "ax", "l", "ow"],
         "any case"
     );
     assert_eq!(d.lookup("world's").unwrap(), ["w", "er", "l", "d", "z"]);
@@ -87,7 +87,9 @@ fn syllables_take_the_consonants_english_allows() {
 /// The embedded dictionary is reviewed data: CMUdict (BSD-2-Clause, its
 /// notice in `data/CMUDICT-LICENSE`), cmusphinx/cmudict at commit
 /// 74790861f652b15e4ac49015a90074ad62a27690, first pronunciations, stress
-/// removed. A changed file fails here until it is reviewed again.
+/// removed except that an unstressed AH is the schwa `ax` (rebuilt by
+/// `data/make_cmudict.py`). A changed file fails here until it is reviewed
+/// again.
 #[test]
 fn dictionary_file_hash_is_pinned() {
     use sha2::{Digest, Sha256};
@@ -98,7 +100,7 @@ fn dictionary_file_hash_is_pinned() {
         .collect();
     assert_eq!(
         hex,
-        "1e7a1ebb4f55ab1990447eff4c8fa407e41b4c9a362d90344142d766459a3168"
+        "60cbb4a066e70f2090f15b27da59444be871285eea58730c7e7fa71434045195"
     );
     let notice =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/data/CMUDICT-LICENSE"))
