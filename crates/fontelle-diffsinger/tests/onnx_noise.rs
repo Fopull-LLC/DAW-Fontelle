@@ -109,3 +109,12 @@ fn a_vocoders_noise_pool_covers_every_sample_and_its_harmonics() {
     let hop = 512;
     assert!(fontelle_diffsinger::render::vocoder_noise_pool(frames, hop) >= frames * hop * 9);
 }
+
+/// A duration or linguistic model may draw noise too: Yoko's duration
+/// model asked for {1, 2, 4} and was fed a pool of one value. Its pool is
+/// per phoneme, like a sampling model's per frame.
+#[test]
+fn a_phoneme_models_noise_pool_covers_its_phonemes() {
+    assert!(fontelle_diffsinger::render::phoneme_noise_pool(2) >= 2 * 4);
+    assert!(fontelle_diffsinger::render::phoneme_noise_pool(300) >= 300 * 256);
+}
