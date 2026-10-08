@@ -244,3 +244,48 @@ fn vccv_sings_a_schwa_as_uh() {
     let s = sung(&b, "hello", Phonemizer::EnVccv);
     assert_eq!(s.first().map(String::as_str), Some("-hu"), "{s:?}");
 }
+
+/// The shape of a Salem-style X-SAMPA CVVC bank (Joule EN CVVC): CV with
+/// no start ("bA", "- b" before it), consonant pairs spaced ("l d"),
+/// endings on the consonant ("d -"), and no ARPAbet anywhere — though
+/// "b d" and "- b" read as ARPAbet too.
+fn joule_like() -> Voicebank {
+    let mut a: Vec<String> = Vec::new();
+    for v in VOWELS {
+        a.push(format!("- {v}"));
+        a.push(v.to_string());
+        a.push(format!("{v} -"));
+        a.push(format!("h{v}"));
+        for c in CONSONANTS {
+            a.push(format!("{c}{v}"));
+            a.push(format!("{v} {c}"));
+        }
+    }
+    a.push("- h".into());
+    for c in CONSONANTS {
+        a.push(format!("- {c}"));
+        a.push(format!("{c} -"));
+        for d in CONSONANTS {
+            if c != d {
+                a.push(format!("{c} {d}"));
+            }
+        }
+    }
+    bank(&a)
+}
+
+#[test]
+fn a_salem_style_bank_is_x_sampa_and_starts_on_its_consonant() {
+    let b = joule_like();
+    assert_eq!(phonemize::detect(&b), Phonemizer::EnCvvc);
+    let k = Phonemizer::EnCvvc;
+    assert_eq!(sung(&b, "hold", k), ["- h", "hoU", "oU l", "l d", "d -"]);
+    assert_eq!(sung(&b, "bob", k), ["- b", "bA", "A b", "b -"]);
+    // A consonant with no CV for the vowel is sung alone before it.
+    let b = bank(&["- h", "oU", "- oU", "oU -"].map(String::from));
+    let mut p = line("x");
+    p.notes[0].lyric = "[hh ow]".into();
+    let plan = phonemize::plan(&b, &p, k);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["- h", "oU", "oU -"]);
+}

@@ -140,7 +140,13 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
         }
         match alias.split_once(' ') {
             Some((a, b)) if !b.contains(' ') => {
-                if arpa_token(a) && arpa_token(b) && (a != "-" || b != "-") {
+                // A vowel says ARPAbet: "b d" and "- b" are X-SAMPA too.
+                if arpa_token(a)
+                    && arpa_token(b)
+                    && [a, b]
+                        .iter()
+                        .any(|t| dict::is_vowel(t.trim_end_matches(|c: char| c.is_ascii_digit())))
+                {
                     arpa += 1;
                 }
                 // "- か" and "* か" are in single-sound banks too; only a
@@ -1457,10 +1463,17 @@ fn xsampa_cvvc(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
                         for kk in (i + 1..=last).rev() {
                             let d = if kk == last && dash { "-" } else { "" };
                             let parts: Vec<&str> = c[i..=kk].iter().map(|&x| ph(x)).collect();
-                            let cands =
+                            let mut cands =
                                 spellings(&parts, |s| format!("{} {}{d}", s[0], s[1..].concat()));
-                            if unit(plan, cands, c[i + 1], !d.is_empty()) {
-                                covered = !d.is_empty();
+                            if !d.is_empty() {
+                                // "l d" then "d -" where there is no "l d-".
+                                cands.extend(spellings(&parts, |s| {
+                                    format!("{} {}", s[0], s[1..].concat())
+                                }));
+                            }
+                            if let Some(a) = ctx.first(&cands, seq[c[i + 1]].note) {
+                                covered = a.ends_with('-');
+                                push(plan, a, seq[c[i + 1]].note, seq[c[i + 1]].anchor, covered);
                                 i = kk;
                                 moved = true;
                                 break;
@@ -1530,7 +1543,12 @@ fn xsampa_cvvc(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
                 break;
             }
         }
-        let m = cv.as_ref().map(|c| c.1).unwrap_or(len);
+        // Without a CV (or with the vowel alone) the last consonant is sung
+        // on its own before the vowel.
+        let m = match &cv {
+            Some((_, m)) if *m < len => *m,
+            _ => len.saturating_sub(1),
+        };
         // What sounds the first consonant: the VC, or a start.
         let mut i = 0;
         if len > 0 {
@@ -1538,10 +1556,12 @@ fn xsampa_cvvc(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
                 Some(p) => {
                     unit(plan, joined_vc(&[p, c[0]], ph, ""), c[0], false);
                 }
-                None if m > 0 => {
+                // A start before the CV: "- str" before "rE", or "- b"
+                // before "bA" in banks whose CVs have no start of their own.
+                None if m > 0 || cv.as_ref().is_none_or(|c| !c.0.starts_with("- ")) => {
                     for jj in (0..=m.min(len - 1)).rev() {
                         let mut cands = joined(&c[..=jj], "- ", "");
-                        if jj == 0 {
+                        if jj == 0 && m > 0 {
                             cands.extend(alone(c[0]));
                         }
                         if unit(plan, cands, c[jj], false) {
