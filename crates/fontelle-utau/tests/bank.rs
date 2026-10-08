@@ -292,3 +292,19 @@ fn a_bank_without_character_files_is_named_after_its_folder() {
     assert!(b.terms.is_none());
     assert_eq!(b.entries[0].folder, "A3");
 }
+
+/// Namine Ritsu's DiffSinger bank ships an oto.ini (OpenUtau's), but it is
+/// a DiffSinger bank: listed as a UTAU singer too, it sang silence.
+#[test]
+fn a_diffsinger_bank_with_an_oto_is_not_a_utau_bank() {
+    let dir = common::temp_dir("bank_diffsinger_oto");
+    std::fs::write(dir.join("oto.ini"), "a.wav=あ,0,0,0,0,0\n").unwrap();
+    std::fs::write(dir.join("character.yaml"), "singer_type: diffsinger\n").unwrap();
+    std::fs::write(dir.join("dsconfig.yaml"), "phonemes: phonemes.txt\n").unwrap();
+    assert!(!bank::is_voicebank(&dir));
+    // A classic bank that only says so is still one.
+    let classic = common::temp_dir("bank_classic_oto");
+    std::fs::write(classic.join("oto.ini"), "a.wav=あ,0,0,0,0,0\n").unwrap();
+    std::fs::write(classic.join("character.yaml"), "singer_type: classic\n").unwrap();
+    assert!(bank::is_voicebank(&classic));
+}

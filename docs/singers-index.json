@@ -31,6 +31,156 @@
         "credit": "yes"
       },
       "page": "https://github.com/yqzhishen/qixuan-diffsinger/releases"
+    },
+    {
+      "id": "namine-ritsu.utau",
+      "name": "Namine Ritsu (UTAU, VCV)",
+      "kind": "utau",
+      "languages": ["ja"],
+      "author": "Canon",
+      "terms": {
+        "summary": "Free to use, commercially too; credit is not required. Read the terms page for what is not allowed.",
+        "url": "https://www.canon-voice.com/terms/",
+        "commercial": "yes",
+        "ai_training": "unknown",
+        "credit": "no"
+      },
+      "page": "https://www.canon-voice.com/"
+    },
+    {
+      "id": "namine-ritsu.diffsinger",
+      "name": "Namine Ritsu (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["ja"],
+      "author": "Canon",
+      "terms": {
+        "summary": "Free to use, commercially too; credit is not required. Read the terms page for what is not allowed.",
+        "url": "https://www.canon-voice.com/terms/",
+        "commercial": "yes",
+        "ai_training": "unknown",
+        "credit": "no"
+      },
+      "page": "https://www.canon-voice.com/"
+    },
+    {
+      "id": "liee-english.utau",
+      "name": "LIEE English (UTAU, ARPAsing)",
+      "kind": "utau",
+      "languages": ["en"],
+      "author": "julieraptor",
+      "terms": {
+        "summary": "Free to use; credit \"LIEE\". The full terms are linked from the repository's readme.",
+        "url": "https://github.com/julieraptor/LIEE-ENGLISH-ARPASING",
+        "commercial": "unknown",
+        "ai_training": "unknown",
+        "credit": "yes"
+      },
+      "page": "https://github.com/julieraptor/LIEE-ENGLISH-ARPASING/releases"
+    },
+    {
+      "id": "joule-en-cvvc.utau",
+      "name": "Joule EN CVVC (UTAU, X-SAMPA)",
+      "kind": "utau",
+      "languages": ["en"],
+      "author": "CoolJoule",
+      "terms": {
+        "summary": "Free to use and to edit or convert for any singing synthesizer; credit the voicebank's name. Commercial use needs the author's approval; no NFT or cryptocurrency projects.",
+        "url": "https://github.com/CoolJoule/Joule-EN-CVVC-beta/blob/main/Voicebank%20Terms%20of%20Use",
+        "commercial": "ask",
+        "ai_training": "unknown",
+        "credit": "yes"
+      },
+      "page": "https://github.com/CoolJoule/Joule-EN-CVVC-beta/releases"
+    },
+    {
+      "id": "hitsuboku-kumi-chn.utau",
+      "name": "Hitsuboku Kumi Chinese (UTAU, CVVC)",
+      "kind": "utau",
+      "languages": ["zh"],
+      "author": "Cubialpha",
+      "terms": {
+        "summary": "Free to use, commercially too. Redistribution, edits and use in other synthesizers are allowed if the name stays \"Hitsuboku Kumi\", Cubialpha is credited with a link, and edits are stated.",
+        "url": "https://cubialpha.wixsite.com/koomstar/character",
+        "commercial": "yes",
+        "ai_training": "unknown",
+        "credit": "yes"
+      },
+      "page": "https://github.com/oxygen-dioxide/hitsuboku-kumi-chn"
+    },
+    {
+      "id": "tiger.diffsinger",
+      "name": "TIGER (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["en", "es", "ja", "fr", "ko", "pt"],
+      "author": "tigermeat",
+      "terms": {
+        "summary": "Free to use in any way that harms no one; commercial use needs a licence bought from the author. The licence ships in the download.",
+        "url": "https://tigermeat.xyz/#tiger-ds",
+        "commercial": "ask",
+        "ai_training": "unknown",
+        "credit": "unknown"
+      },
+      "page": "https://github.com/spicytigermeat/tiger_diffsinger/releases"
+    },
+    {
+      "id": "canary.diffsinger",
+      "name": "Canary (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["en", "fr", "ko"],
+      "author": "JAE Vocal Project, Mina Moonrise, tigermeat",
+      "terms": {
+        "summary": "CC BY-NC-ND 4.0 with the Commons Clause: non-commercial use with credit, no derivatives.",
+        "url": "https://github.com/spicytigermeat/canary_diffsinger",
+        "commercial": "no",
+        "ai_training": "unknown",
+        "credit": "yes"
+      },
+      "page": "https://github.com/spicytigermeat/canary_diffsinger/releases"
+    },
+    {
+      "id": "nishiren.diffsinger",
+      "name": "Nishiren Gard (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["en", "ja", "zh", "ko", "es", "it", "fr", "th"],
+      "author": "Gardanana",
+      "terms": {
+        "summary": "Non-commercial use is free; commercial use needs approval; credit the voicebank. Only in programs that need no edits to the bank; no machine-learning training without approval.",
+        "url": "https://github.com/Gardanana/Nishiren-AI-Diffsinger/blob/main/terms-of-service.md",
+        "commercial": "ask",
+        "ai_training": "no",
+        "credit": "yes"
+      },
+      "page": "https://github.com/Gardanana/Nishiren-AI-Diffsinger/releases"
+    },
+    {
+      "id": "kiritan.diffsinger",
+      "name": "Tohoku Kiritan (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["ja", "zh"],
+      "author": "BaiShuoQwQ",
+      "terms": {
+        "summary": "Non-commercial use; credit the singer and DiffSinger and mark songs as AI-synthesised. Its output may not train other models. The licence (Chinese) ships in the download.",
+        "url": "https://github.com/BaiShuoQwQ/DiffSinger_VoiceBanks_release/releases/tag/kiritan_V1.0",
+        "commercial": "no",
+        "ai_training": "no",
+        "credit": "yes"
+      },
+      "page": "https://github.com/BaiShuoQwQ/DiffSinger_VoiceBanks_release/releases/tag/kiritan_V1.0"
+    },
+    {
+      "id": "spore.diffsinger",
+      "name": "SPORE (DiffSinger)",
+      "kind": "diffsinger",
+      "languages": ["en"],
+      "author": "knoxstation",
+      "terms": {
+        "summary": "Strictly non-commercial (modified CC BY-NC-ND 4.0), with credit; only in UTAU-like synthesizers that need no edits to the bank.",
+        "url": "https://github.com/knoxstation/SPORE/blob/main/TOS.md",
+        "commercial": "no",
+        "ai_training": "unknown",
+        "credit": "yes"
+      },
+      "page": "https://github.com/knoxstation/SPORE/releases"
     }
   ]
 }

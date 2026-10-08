@@ -349,3 +349,82 @@ fn a_japanese_reader_takes_kana() {
         )
     );
 }
+
+/// A bank whose dictionary names its symbols but no words (SPORE ships
+/// `grapheme: aa, phonemes: [aa]` and leaves words to OpenUtau's English
+/// G2p): an English word is read from CMUdict into its symbols. It sang
+/// "hello world" as silence ("SP", guessed).
+#[test]
+fn english_words_missing_from_the_bank_are_read_from_cmudict() {
+    let arpabet = [
+        "aa", "ae", "ah", "ao", "aw", "ay", "b", "d", "dh", "eh", "er", "ey", "hh", "ih", "iy",
+        "l", "ow", "r", "t", "w",
+    ];
+    let mut yaml = String::from("symbols:\n");
+    let mut inv = String::from("SP\nAP\n");
+    for s in arpabet {
+        let kind = if fontelle_utau_vowel(s) {
+            "vowel"
+        } else {
+            "stop"
+        };
+        yaml.push_str(&format!("- symbol: {s}\n  type: {kind}\n"));
+        inv.push_str(&format!("{s}\n"));
+    }
+    yaml.push_str("entries:\n- grapheme: aa\n  phonemes: [aa]\n");
+    let d = Dictionary::parse(&yaml).unwrap();
+    let inv = Inventory::parse(&inv, false).unwrap();
+    let r = Reader {
+        dict: &d,
+        inventory: &inv,
+        language: "en",
+    };
+    assert_eq!(r.read("world"), (s(&["w", "er", "l", "d"]), false));
+    // No "ax" in this bank: the schwa is "ah".
+    assert_eq!(r.read("the"), (s(&["dh", "ah"]), false));
+    assert_eq!(r.read("Hello,"), (s(&["hh", "ah", "l", "ow"]), false));
+    // In a bank with words, its own reading wins.
+    let (d, inv) = bank();
+    let r = Reader {
+        dict: &d,
+        inventory: &inv,
+        language: "en",
+    };
+    assert_eq!(r.read("hello").0, ["en/hh", "en/ax", "en/l", "en/ow"]);
+    // A word with a sound the bank lacks is not forced ("strike" has its
+    // own entry; "stark" needs nothing missing).
+    assert_eq!(
+        r.read("stark"),
+        (s(&["en/s", "en/t", "en/aa", "en/r", "en/k"]), false)
+    );
+}
+
+fn s(v: &[&str]) -> Vec<String> {
+    v.iter().map(|x| x.to_string()).collect()
+}
+
+fn fontelle_utau_vowel(s: &str) -> bool {
+    [
+        "aa", "ae", "ah", "ao", "aw", "ay", "eh", "er", "ey", "ih", "iy", "ow",
+    ]
+    .contains(&s)
+}
+
+/// SPORE's duration dictionary declares `en/w`, its acoustic model knows
+/// `w`: the unprefixed symbol takes the prefixed one's kind.
+#[test]
+fn a_dictionary_prefixed_for_a_model_that_is_not_lends_its_kinds() {
+    let d = Dictionary::parse(
+        "symbols:\n- {symbol: en/w, type: semivowel}\n- {symbol: en/er, type: vowel}\n- {symbol: en/l, type: liquid}\n- {symbol: en/d, type: stop}\nentries:\n- {grapheme: aa, phonemes: [aa]}\n",
+    )
+    .unwrap();
+    let inv = Inventory::parse("SP\nAP\nw\ner\nl\nd\n", false).unwrap();
+    let d = d.with_unprefixed("en", |s| inv.contains(s));
+    assert!(d.is_vowel("er") && d.is_glide("w") && d.has_symbol("d"));
+    let r = Reader {
+        dict: &d,
+        inventory: &inv,
+        language: "en",
+    };
+    assert_eq!(r.read("world"), (s(&["w", "er", "l", "d"]), false));
+}

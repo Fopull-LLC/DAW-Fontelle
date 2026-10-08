@@ -30,6 +30,19 @@ pub const FINAL_PITCH_STEPS: u32 = 10;
 /// features it samples, with room to spare).
 pub const NOISE_PER_FRAME: usize = 1024;
 
+/// Noise values a model that reads phonemes (duration, linguistic) may
+/// draw: as many per phoneme as a sampling model draws per frame.
+pub fn phoneme_noise_pool(phonemes: usize) -> usize {
+    phonemes.max(1) * NOISE_PER_FRAME
+}
+
+/// Noise values a vocoder may draw: per output sample, for a source of up to
+/// 15 harmonics (RefineGAN-style vocoders such as Canary DS's tgm_hifigan
+/// draw samples x 9), never less than the sampling models' pool.
+pub fn vocoder_noise_pool(frames: usize, hop: usize) -> usize {
+    (frames * hop.max(1) * 16).max(frames * NOISE_PER_FRAME)
+}
+
 /// A bank's models, opened.
 pub struct Loaded {
     pub acoustic: Model,
@@ -469,7 +482,10 @@ pub fn sing(
             ("mel", Feed::F32(shape, mel)),
             ("f0", Feed::row_f32(f0.clone())),
         ],
-        Some((seed ^ 0x70c, total * NOISE_PER_FRAME)),
+        Some((
+            seed ^ 0x70c,
+            vocoder_noise_pool(total, vocoder.config.hop_size as usize),
+        )),
         cancelled,
     )?;
     let mut samples = out
@@ -658,7 +674,7 @@ fn predict_lengths(
             ("word_div", Feed::row_i64(input.word_div.clone())),
             ("word_dur", Feed::row_i64(input.word_dur.clone())),
         ],
-        None,
+        Some((0x11f6, phoneme_noise_pool(input.symbols.len()))),
         cancelled,
     )?;
     let mut feeds: Vec<(&str, Feed)> = Vec::new();
@@ -692,7 +708,11 @@ fn predict_lengths(
             Feed::F32(vec![1, input.symbols.len(), hidden], e),
         ));
     }
-    let out = dur.run(feeds, None, cancelled)?;
+    let out = dur.run(
+        feeds,
+        Some((0xd0, phoneme_noise_pool(input.symbols.len()))),
+        cancelled,
+    )?;
     let predicted = out
         .get("ph_dur_pred")
         .or_else(|| out.values().next())
@@ -868,7 +888,7 @@ fn encode(
             ("word_div", Feed::row_i64(word_div)),
             ("word_dur", Feed::row_i64(word_dur)),
         ],
-        None,
+        Some((0x11f7, phoneme_noise_pool(segs.len()))),
         cancelled,
     )?;
     let mut feeds = Vec::new();

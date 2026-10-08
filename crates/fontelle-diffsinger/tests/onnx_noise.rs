@@ -98,3 +98,23 @@ fn garbage_is_an_error_not_a_panic() {
     assert!(externalize_noise(&[0xff, 0xff, 0xff]).is_err());
     assert!(op_types(&[0x0a, 0x50, 0x01]).is_err());
 }
+
+/// A vocoder that draws its own noise draws it per sample, not per frame:
+/// Canary DS's tgm_hifigan (RefineGAN) asks for samples x 9 harmonics, and
+/// a frame's worth of 1024 values ran out ("Input shape:{156672},
+/// requested shape:{1,78336,9}" for 153 frames at hop 512).
+#[test]
+fn a_vocoders_noise_pool_covers_every_sample_and_its_harmonics() {
+    let frames = 153;
+    let hop = 512;
+    assert!(fontelle_diffsinger::render::vocoder_noise_pool(frames, hop) >= frames * hop * 9);
+}
+
+/// A duration or linguistic model may draw noise too: Yoko's duration
+/// model asked for {1, 2, 4} and was fed a pool of one value. Its pool is
+/// per phoneme, like a sampling model's per frame.
+#[test]
+fn a_phoneme_models_noise_pool_covers_its_phonemes() {
+    assert!(fontelle_diffsinger::render::phoneme_noise_pool(2) >= 2 * 4);
+    assert!(fontelle_diffsinger::render::phoneme_noise_pool(300) >= 300 * 256);
+}

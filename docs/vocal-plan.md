@@ -237,6 +237,60 @@ Branch `feature/vocal-banks`.
   bank's name, picture and folder from there, so card and row agree: the
   name `character.txt`/`character.yaml` gives, the folder under it.
 
+### 2.4 English that sounds like English, and a library to try (2026-10-07)
+
+Branch `feature/vocal-singers`. Ty: "the english wording sounds off when i
+try to force it to speak english" (Kasane Teto's English bank).
+
+- **What was wrong** (fontelle-utau, X-SAMPA CVVC): the final cluster was
+  dropped ("world" ended on `3 l`, "hand" on `{ n`, because only `ld-` and
+  `d-` were tried and the bank names them `l d-`). None of the bank's
+  cluster samples were used (`- str`, `st`, `tw`, `bju`, `r g`, `s kt-`).
+  Two consonants between vowels lost the first one's release
+  (`I t` → `s@`). Every unstressed "uh" was the stressed `V`, because
+  CMUdict's stress had been stripped. Joule EN CVVC, a Salem-style X-SAMPA
+  bank, was taken for ARPAsing (its `b d` and `- b` read as ARPAbet), and
+  half its notes went unsung.
+- **Now:**
+  - The dictionary keeps an unstressed AH as `ax` (`data/make_cmudict.py`).
+    X-SAMPA sings it `@`. ARPAsing banks without `ax` fall back to `ah` on
+    both sides of a diphone, and VCCV sings it `u`.
+  - Per vowel, the X-SAMPA planner picks the CV with the longest onset the
+    bank joins to it, or VCV where the bank has it (`@ hA`). Between that
+    and the VC it uses the bank's joined onsets, then `C C` pairs, then a
+    released consonant on its own (an obstruent only). It ends over the
+    whole final cluster (`l d-`, `s kt-`, else `l d` + `d -`). It gives a
+    start to CVs that have none (`- b` + `bA`).
+  - A coda consonant is joined only as the single consonant before the
+    next vowel ("world I": `daI`, as OpenUtau does).
+  - A consonant ending one word and starting the next is sung once.
+  - Detection counts an alias as ARPAsing only when it has an ARPAbet
+    vowel.
+- **Also found by singing the library** (fontelle-diffsinger unless said):
+  - English words a DiffSinger bank's dictionary lacks are read from
+    CMUdict, when the bank has every sound. SPORE's dictionary has no
+    words; Nishiren's has no "world".
+  - A dictionary prefixed `en/w` serves a model whose phonemes are `w`
+    (SPORE).
+  - Vocoders get a per-sample noise pool (Canary DS's RefineGAN draws
+    samples × 9), and duration and linguistic models get one per phoneme
+    (Yoko).
+  - (fontelle-utau) A folder with `dsconfig.yaml` is never a UTAU bank:
+    Ritsu's DiffSinger bank ships an oto.ini.
+  - (fontelle-utau) A Chinese or Korean syllable with no initial joins
+    from the vowel before (`ao a`), else uses its start (`- ai`).
+- **The library**, on this machine only:
+  `/mnt/disks/6tb/FontelleTestData/voicebanks/LIBRARY.md` covers 21
+  singers, with terms and quality notes. The verified ones with stable
+  pages are in `docs/singers-index.json` (Get it, no rehosting).
+- **Not done:**
+  - X-SAMPA r-coloured vowels (`Ar`, `Er`, Salem's list) are not formed
+    from `aa r`.
+  - Teto's `a`/`e`/`o` vowel variants and dark-L (`5`, `l0`) are unused.
+  - English VCCV keeps its old planner.
+  - Yamine Renri's English needs its own dictionary format and stays "la".
+  - "Teto" itself is not in CMUdict.
+
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
 Producers coming from OpenUtau, UTAU, Vocaloid or Synthesizer V should find

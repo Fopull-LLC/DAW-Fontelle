@@ -140,7 +140,13 @@ pub fn detect(bank: &Voicebank) -> Phonemizer {
         }
         match alias.split_once(' ') {
             Some((a, b)) if !b.contains(' ') => {
-                if arpa_token(a) && arpa_token(b) && (a != "-" || b != "-") {
+                // A vowel says ARPAbet: "b d" and "- b" are X-SAMPA too.
+                if arpa_token(a)
+                    && arpa_token(b)
+                    && [a, b]
+                        .iter()
+                        .any(|t| dict::is_vowel(t.trim_end_matches(|c: char| c.is_ascii_digit())))
+                {
                     arpa += 1;
                 }
                 // "- か" and "* か" are in single-sound banks too; only a
@@ -900,10 +906,13 @@ fn syllable_names(content: &Content, start: bool) -> Option<SyllableNames> {
 /// ends; vowel-to-consonant into the next syllable and an ending before a
 /// rest, when the bank has them (a CV-only bank simply has none).
 fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
+    // The open vowel the syllable before ended on, in this run.
+    let mut open_vowel: Option<String> = None;
     for k in 0..events.len() {
         let e = &events[k];
         let (end, rest_after) = event_end(ctx, events, k);
         let start = after_rest(ctx, events, k);
+        let before = if start { None } else { open_vowel.take() };
         // The vowel this event ends on, when something may follow it.
         let prev_vowel: Option<String> = match &e.content {
             Content::Hand(list) => {
@@ -927,7 +936,20 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
                 let Some(names) = syllable_names(content, start) else {
                     continue;
                 };
-                let Some(cv) = ctx.first(&names.cv, e.note) else {
+                // No initial: from the vowel before ("ao a"), as the bank
+                // has it, else the syllable's start ("- ai"). Hitsuboku
+                // Kumi has no bare "a": 你好啊 sang nothing on 啊.
+                let mut cands = Vec::new();
+                if names.onset.is_empty()
+                    && let Some(pv) = &before
+                {
+                    cands.extend(names.cv.iter().map(|c| format!("{pv} {c}")));
+                }
+                cands.extend(names.cv.iter().cloned());
+                if names.onset.is_empty() && !start {
+                    cands.extend(names.cv.iter().map(|c| format!("- {c}")));
+                }
+                let Some(cv) = ctx.first(&cands, e.note) else {
                     continue;
                 };
                 // A whole syllable (its coda in it) needs no coda unit.
@@ -957,6 +979,7 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
                 }
             }
         };
+        open_vowel = prev_vowel.clone();
         let Some(v) = prev_vowel else {
             continue;
         };
@@ -1005,7 +1028,7 @@ fn vccv_symbol(p: &str) -> &str {
     match p {
         "aa" => "a",
         "ae" => "@",
-        "ah" => "u",
+        "ah" | "ax" => "u",
         "ao" => "9",
         "aw" => "8",
         "ay" => "I",
@@ -1031,6 +1054,7 @@ fn vowel_fallbacks(p: &str) -> &'static [&'static str] {
         "aa" => &["ah", "ae"],
         "ae" => &["ah", "aa"],
         "ah" => &["aa", "ae"],
+        "ax" => &["ah", "uh"],
         "ao" => &["ow"],
         "ow" => &["ao"],
         "eh" => &["ae"],
@@ -1048,6 +1072,9 @@ struct Timed {
     phone: String,
     anchor: f64,
     note: usize,
+    /// A consonant that begins its syllable (not the coda of the one
+    /// before): only those may be sung as one joined cluster ("st", "bju").
+    onset: bool,
 }
 
 fn english_units(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan) {
@@ -1091,19 +1118,30 @@ fn english_units(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan)
         // Consonants before this vowel: the last syllable's coda and this
         // one's onset, before the beat; no more than half the syllable
         // before them.
-        let mut cluster: Vec<(String, usize)> = std::mem::take(&mut pending);
-        cluster.extend(phones[..vowel_at].iter().map(|p| (p.clone(), e.note)));
+        let mut cluster: Vec<(String, usize, bool)> = std::mem::take(&mut pending)
+            .into_iter()
+            .map(|(p, n)| (p, n, false))
+            .collect();
+        for p in &phones[..vowel_at] {
+            // "want to": a consonant ending one word and starting the next
+            // is said once.
+            if cluster.last().is_some_and(|l| &l.0 == p && !l.2) {
+                cluster.pop();
+            }
+            cluster.push((p.clone(), e.note, true));
+        }
         let room = match run.iter().rev().find(|t| dict::is_vowel(&t.phone)) {
             Some(v) => (e.time - v.anchor) / 2.0,
             None => f64::INFINITY,
         };
         let c = cluster.len() as f64;
         let step = if c > 0.0 { len.min(room / c) } else { len };
-        for (j, (p, note)) in cluster.iter().enumerate() {
+        for (j, (p, note, onset)) in cluster.iter().enumerate() {
             run.push(Timed {
                 phone: p.clone(),
                 anchor: e.time - step * (c - j as f64),
                 note: *note,
+                onset: *onset,
             });
         }
         if let Some(v) = phones.get(vowel_at) {
@@ -1111,6 +1149,7 @@ fn english_units(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan)
                 phone: v.clone(),
                 anchor: e.time,
                 note: e.note,
+                onset: false,
             });
         }
         let coda: Vec<(String, usize)> = phones
@@ -1131,12 +1170,14 @@ fn english_units(ctx: &Ctx, events: &[Event], kind: Phonemizer, plan: &mut Plan)
                     phone: p.clone(),
                     anchor: end - step * (m - j as f64),
                     note: *note,
+                    onset: false,
                 });
             }
             run.push(Timed {
                 phone: "-".into(),
                 anchor: end,
                 note: e.last,
+                onset: false,
             });
             flush(ctx, &mut run, run_last_note, kind, plan);
         } else {
@@ -1169,19 +1210,31 @@ fn arpasing(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
         } else {
             seq[k - 1].phone.as_str()
         };
+        // The phoneme before as the bank may name it: a schwa is "ah" in
+        // banks that have no "ax".
+        let prevs: Vec<&str> = std::iter::once(prev)
+            .chain(vowel_fallbacks(prev).iter().copied())
+            .collect();
         if cur.phone == "-" {
+            let cands: Vec<String> = prevs
+                .iter()
+                .flat_map(|q| [format!("{q} -"), format!("{q}-")])
+                .collect();
             if k > 0
                 && ended
-                && let Some(a) = ctx.first(&[format!("{prev} -"), format!("{prev}-")], cur.note)
+                && let Some(a) = ctx.first(&cands, cur.note)
             {
                 push(plan, a, cur.note, cur.anchor, true);
             }
             continue;
         }
         let p = cur.phone.as_str();
-        let mut cands = vec![format!("{prev} {p}")];
-        for f in vowel_fallbacks(p) {
-            cands.push(format!("{prev} {f}"));
+        let mut cands = Vec::new();
+        for q in &prevs {
+            cands.push(format!("{q} {p}"));
+            for f in vowel_fallbacks(p) {
+                cands.push(format!("{q} {f}"));
+            }
         }
         cands.push(format!("- {p}"));
         cands.push(p.to_string());
@@ -1277,6 +1330,7 @@ fn xsampa(p: &str) -> &'static [&'static str] {
         "aa" => &["A", "a"],
         "ae" => &["{", "a"],
         "ah" => &["V", "@", "A"],
+        "ax" => &["@", "V", "A"],
         "ao" => &["O", "A"],
         "aw" => &["aU"],
         "ay" => &["aI"],
@@ -1347,13 +1401,31 @@ fn spellings(parts: &[&str], pattern: impl Fn(&[&str]) -> String) -> Vec<String>
     }
 }
 
-/// English CVVC (X-SAMPA): a CV unit on each vowel ("- " at a start), a
-/// VC unit where the vowel meets the next consonant, endings "V C-" and
-/// "V -".
+/// Consonants a lone sample is sung for when nothing joins them to the
+/// next: its release ("t" between "I t" and "s@"). A nasal, liquid or glide
+/// is already heard in the unit before it.
+fn released(p: &str) -> bool {
+    !matches!(p, "m" | "n" | "ng" | "l" | "r" | "w" | "y" | "hh")
+}
+
+/// English CVVC (X-SAMPA), as Kasane Teto's English bank and those made
+/// like it are cut:
+///
+/// - a CV on each vowel, the longest onset the bank joins to it ("bju",
+///   "- kA"), or VCV where it has one ("@ hA");
+/// - a VC where a vowel meets the next consonant ("A n");
+/// - the consonants between joined as the bank allows: a whole onset
+///   ("st", "- str", "tw"), a pair ("r g"), else a released consonant alone
+///   ("t");
+/// - endings over the whole final cluster ("l d-", "s kt-", "A p-", "oU -").
+///
+/// Ty: "the english wording sounds off" — "world" ended on `3 l` without
+/// its d, "hand" on `{ n`, and no cluster sample was ever used.
 fn xsampa_cvvc(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
     let n = seq.len();
-    let vowel = |i: usize| dict::is_vowel(&seq[i].phone);
     let ph = |i: usize| seq[i].phone.as_str();
+    let vowel = |i: usize| dict::is_vowel(ph(i));
+    let onset = |c: &[usize]| c.iter().all(|&i| seq[i].onset);
     let unit = |plan: &mut Plan, cands: Vec<String>, i: usize, tail: bool| -> bool {
         match ctx.first(&cands, seq[i].note) {
             Some(a) => {
@@ -1363,104 +1435,197 @@ fn xsampa_cvvc(ctx: &Ctx, seq: &[Timed], ended: bool, plan: &mut Plan) {
             None => false,
         }
     };
-    let mut prev_vowel: Option<usize> = None;
+    // Phones `idx` written together, between `pre` and `post`.
+    let joined = |idx: &[usize], pre: &str, post: &str| -> Vec<String> {
+        let parts: Vec<&str> = idx.iter().map(|&i| ph(i)).collect();
+        spellings(&parts, |s| format!("{pre}{}{post}", s.concat()))
+    };
+    let alone = |i: usize| spellings(&[ph(i)], |s| s[0].to_string());
+    let mut prev: Option<usize> = None;
     let mut k = 0;
     while k < n {
-        if ph(k) == "-" {
-            if let Some(p) = prev_vowel
-                && ended
-            {
-                unit(
-                    plan,
-                    spellings(&[ph(p)], |s| format!("{} -", s[0])),
-                    k,
-                    true,
-                );
-            }
-            prev_vowel = None;
-            k += 1;
-            continue;
-        }
-        // The consonants before the next vowel, or before the end.
         let mut j = k;
         while j < n && !vowel(j) && ph(j) != "-" {
             j += 1;
         }
-        let cluster: Vec<usize> = (k..j).collect();
-        let at_end = j >= n || ph(j) == "-";
-        let len = cluster.len();
-        // Where the cluster's consonants go: the first meets the vowel
-        // before (VC), the last the vowel after (CV), the rest between.
-        let mut inner_from = 0;
-        if let Some(p) = prev_vowel
-            && let Some(&c1) = cluster.first()
-        {
-            if at_end
-                && ended
-                && len == 1
-                && unit(
-                    plan,
-                    spellings(&[ph(p), ph(c1)], |s| format!("{} {}-", s[0], s[1])),
-                    c1,
-                    true,
-                )
-            {
-                prev_vowel = None;
-                k = j + 1;
-                continue;
+        let c: Vec<usize> = (k..j).collect();
+        let len = c.len();
+        if j >= n || ph(j) == "-" {
+            // The end of the run, with the coda before it.
+            let dash = ended && j < n;
+            match prev {
+                Some(p) if len == 0 => {
+                    if dash {
+                        unit(
+                            plan,
+                            spellings(&[ph(p)], |s| format!("{} -", s[0])),
+                            j,
+                            true,
+                        );
+                    }
+                }
+                Some(p) => {
+                    let pc = [p, c[0]];
+                    if len == 1 && dash && unit(plan, joined_vc(&pc, ph, "-"), c[0], true) {
+                        k = j + 1;
+                        prev = None;
+                        continue;
+                    }
+                    unit(plan, joined_vc(&pc, ph, ""), c[0], false);
+                    let last = len - 1;
+                    let mut covered = false;
+                    let mut i = 0;
+                    while i < last {
+                        let mut moved = false;
+                        for kk in (i + 1..=last).rev() {
+                            let d = if kk == last && dash { "-" } else { "" };
+                            let parts: Vec<&str> = c[i..=kk].iter().map(|&x| ph(x)).collect();
+                            let mut cands =
+                                spellings(&parts, |s| format!("{} {}{d}", s[0], s[1..].concat()));
+                            if !d.is_empty() {
+                                // "l d" then "d -" where there is no "l d-".
+                                cands.extend(spellings(&parts, |s| {
+                                    format!("{} {}", s[0], s[1..].concat())
+                                }));
+                            }
+                            if let Some(a) = ctx.first(&cands, seq[c[i + 1]].note) {
+                                covered = a.ends_with('-');
+                                push(plan, a, seq[c[i + 1]].note, seq[c[i + 1]].anchor, covered);
+                                i = kk;
+                                moved = true;
+                                break;
+                            }
+                        }
+                        if !moved {
+                            if released(ph(c[i])) {
+                                unit(plan, alone(c[i]), c[i + 1], false);
+                            }
+                            i += 1;
+                        }
+                    }
+                    if dash && !covered {
+                        let l = c[last];
+                        let mut cands = spellings(&[ph(l)], |s| format!("{} -", s[0]));
+                        cands.extend(spellings(&[ph(l)], |s| format!("{}-", s[0])));
+                        if released(ph(l)) {
+                            cands.extend(alone(l));
+                        }
+                        unit(plan, cands, l, true);
+                    }
+                }
+                None => {
+                    for &i in &c {
+                        unit(plan, alone(i), i, false);
+                    }
+                }
             }
-            unit(
-                plan,
-                spellings(&[ph(p), ph(c1)], |s| format!("{} {}", s[0], s[1])),
-                c1,
-                false,
-            );
-            inner_from = 1;
-        } else if prev_vowel.is_none() && len > 1 {
-            unit(
-                plan,
-                spellings(&[ph(cluster[0])], |s| format!("- {}", s[0])),
-                cluster[0],
-                false,
-            );
-            inner_from = 1;
-        }
-        let inner_to = if at_end { len } else { len.saturating_sub(1) };
-        for w in inner_from.max(1)..inner_to {
-            let (a, b) = (cluster[w - 1], cluster[w]);
-            let last = at_end && ended && w + 1 == len;
-            let dash = if last { "-" } else { "" };
-            let mut cands = spellings(&[ph(a), ph(b)], |s| format!("{}{}{dash}", s[0], s[1]));
-            cands.extend(spellings(&[ph(b)], |s| format!("{}{dash}", s[0])));
-            unit(plan, cands, b, last);
-        }
-        if at_end {
-            prev_vowel = None;
+            prev = None;
             k = j + 1;
             continue;
         }
-        // The CV (or vowel) on the beat.
         let v = j;
-        let mut cands = Vec::new();
-        match cluster.last() {
-            Some(&c) => {
-                if prev_vowel.is_none() && len == 1 {
-                    cands.extend(spellings(&[ph(c), ph(v)], |s| {
-                        format!("- {}{}", s[0], s[1])
-                    }));
-                }
-                cands.extend(spellings(&[ph(c), ph(v)], |s| format!("{}{}", s[0], s[1])));
+        // VCV, where the bank has it ("@ hA").
+        if let Some(p) = prev
+            && len == 1
+        {
+            let cands = spellings(&[ph(p), ph(c[0]), ph(v)], |s| {
+                format!("{} {}{}", s[0], s[1], s[2])
+            });
+            if unit(plan, cands, v, false) {
+                prev = Some(v);
+                k = v + 1;
+                continue;
             }
-            None => match prev_vowel {
-                Some(p) => {
-                    cands.extend(spellings(&[ph(p), ph(v)], |s| format!("{} {}", s[0], s[1])))
-                }
-                None => cands.extend(spellings(&[ph(v)], |s| format!("- {}", s[0]))),
-            },
         }
-        cands.extend(spellings(&[ph(v)], |s| s[0].to_string()));
-        unit(plan, cands, v, false);
-        prev_vowel = Some(v);
+        // The CV with the longest onset the bank has; a coda consonant only
+        // as the single consonant before the vowel ("world I": "daI").
+        let mut cv: Option<(String, usize)> = None;
+        for m in 0..=len {
+            if m + 1 < len && !onset(&c[m..]) {
+                continue;
+            }
+            let idx: Vec<usize> = c[m..].iter().copied().chain([v]).collect();
+            let mut cands = Vec::new();
+            if prev.is_none() && m == 0 {
+                cands.extend(joined(&idx, "- ", ""));
+            }
+            if let Some(p) = prev
+                && len == 0
+            {
+                cands.extend(spellings(&[ph(p), ph(v)], |s| format!("{} {}", s[0], s[1])));
+            }
+            cands.extend(joined(&idx, "", ""));
+            if let Some(a) = ctx.first(&cands, seq[v].note) {
+                cv = Some((a, m));
+                break;
+            }
+        }
+        // Without a CV (or with the vowel alone) the last consonant is sung
+        // on its own before the vowel.
+        let m = match &cv {
+            Some((_, m)) if *m < len => *m,
+            _ => len.saturating_sub(1),
+        };
+        // What sounds the first consonant: the VC, or a start.
+        let mut i = 0;
+        if len > 0 {
+            match prev {
+                Some(p) => {
+                    unit(plan, joined_vc(&[p, c[0]], ph, ""), c[0], false);
+                }
+                // A start before the CV: "- str" before "rE", or "- b"
+                // before "bA" in banks whose CVs have no start of their own.
+                None if m > 0 || cv.as_ref().is_none_or(|c| !c.0.starts_with("- ")) => {
+                    for jj in (0..=m.min(len - 1)).rev() {
+                        let mut cands = joined(&c[..=jj], "- ", "");
+                        if jj == 0 && m > 0 {
+                            cands.extend(alone(c[0]));
+                        }
+                        if unit(plan, cands, c[jj], false) {
+                            i = jj;
+                            break;
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        // The consonants between it and the CV's.
+        while i < m {
+            let mut moved = false;
+            for kk in (i + 1..=m).rev() {
+                if onset(&c[i..=kk]) && unit(plan, joined(&c[i..=kk], "", ""), c[kk], false) {
+                    i = kk;
+                    moved = true;
+                    break;
+                }
+            }
+            if moved {
+                continue;
+            }
+            let pair = spellings(&[ph(c[i]), ph(c[i + 1])], |s| format!("{} {}", s[0], s[1]));
+            if !unit(plan, pair, c[i + 1], false) && released(ph(c[i])) {
+                unit(plan, alone(c[i]), c[i + 1], false);
+            }
+            i += 1;
+        }
+        match cv {
+            Some((a, _)) => push(plan, a, seq[v].note, seq[v].anchor, false),
+            None => {
+                let mut cands = alone(v);
+                cands.extend(spellings(&[ph(v)], |s| format!("- {}", s[0])));
+                unit(plan, cands, v, false);
+            }
+        }
+        prev = Some(v);
         k = v + 1;
     }
+}
+
+/// "V C" (or "V C-" with `post` "-") over the X-SAMPA spellings of a vowel
+/// and a consonant.
+fn joined_vc<'a>(pc: &[usize; 2], ph: impl Fn(usize) -> &'a str, post: &str) -> Vec<String> {
+    spellings(&[ph(pc[0]), ph(pc[1])], |s| {
+        format!("{} {}{post}", s[0], s[1])
+    })
 }
