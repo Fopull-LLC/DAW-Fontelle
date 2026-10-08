@@ -19,6 +19,59 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-08, latest — English that sounds like English on UTAU
+banks, and a library of free singers to try.** Branch
+`feature/vocal-singers` (from `feature/vocal-track` 6418754), not merged,
+not bumped. How it was built is in `docs/vocal-plan.md` §2.3.
+
+- **English CVVC (X-SAMPA)** (`fontelle-utau`): Ty said "the english
+  wording sounds off" on Kasane Teto's English bank. Final clusters were
+  dropped ("world" ended on `3 l`, "hand" on `{ n`), cluster samples were
+  never used, and every unstressed "uh" was `V`. The planner now does what
+  the bank is cut for:
+  - the longest joined onset (`- str`, `tw`, `bju`), else VCV (`@ hA`);
+  - `C C` pairs and released consonants between;
+  - endings over the whole cluster (`l d-`, `s kt-`).
+  It was rewritten in our own code after reading OpenUtau's EN X-SAMPA
+  phonemizer (MIT). The dictionary now keeps an unstressed AH as `ax`
+  (`data/make_cmudict.py`, hash re-pinned). A Salem-style bank (Joule EN
+  CVVC) is no longer taken for ARPAsing. A consonant shared across a word
+  boundary is sung once.
+- **Found by singing a 21-bank library through the registry:**
+  - (`fontelle-diffsinger`) English words a bank's dictionary lacks are
+    read from CMUdict; SPORE was silent and Nishiren sang "world" as ら.
+  - `en/`-prefixed dictionaries now serve unprefixed models.
+  - Vocoder noise is pooled per sample; Canary DS's RefineGAN crashed.
+    Duration and linguistic models get noise too (Yoko crashed).
+  - (`fontelle-utau`) A DiffSinger folder with an oto.ini is not a UTAU
+    bank. A Chinese or Korean syllable with no initial joins from the
+    vowel before (`ao a`).
+- **The library** (this machine only, no repo): see
+  `/mnt/disks/6tb/FontelleTestData/voicebanks/LIBRARY.md`. It lists 21
+  singers, symlinked into `~/.local/share/fontelle/voicebanks`, with terms
+  and quality notes. No terms were agreed for Ty. The verified ones went
+  into `docs/singers-index.json` (10 new entries, Get it only).
+- **Renders to compare**: `/mnt/disks/6tb/FontelleTestData/renders/english/
+  {before,after,diffsinger}/`.
+- **Tests** (written first and seen failing):
+  - `fontelle-utau`: `english.rs` (7), `text_rules.rs` (2 changed),
+    `bank.rs` (+1), `cjk.rs` (+1);
+  - `fontelle-diffsinger`: `reading.rs` (+2), `onnx_noise.rs` (+2).
+  - `fontelle-utau`, `fontelle-diffsinger` and `fontelle-vocal`: 159
+    passed, 0 failed.
+  - The workspace suite was stopped part-way: Ty was streaming, and the
+    lead asked that nothing open a window or play sound.
+  - Real banks (ignored tests, `FONTELLE_TEST_VOICEBANKS`):
+    `fontelle-vocal` `real_voicebanks` passes on all 21 voices; `fontelle-utau`
+    `real_banks` passes, all in tune.
+  - Preflight all clear.
+- **Not done**:
+  - X-SAMPA r-coloured vowels (`Ar`) and dark L.
+  - English VCCV's planner.
+  - Yamine Renri's own English dictionary format.
+  - Yoko DS renders very quietly (peak ~0.08); not looked into.
+  - No native Korean UTAU bank could be downloaded without a browser.
+
 **As of 2026-10-07, latest — voicebanks in the studio: portraits, a card
 picker, the Voicebanks page from anywhere, `.7z`/`.uar`, Chinese and Korean
 lyrics, takes kept on disk.** Branch `feature/vocal-banks` (from
