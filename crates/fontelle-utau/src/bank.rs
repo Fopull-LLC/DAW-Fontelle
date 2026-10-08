@@ -685,6 +685,11 @@ pub fn is_voicebank(dir: &Path) -> bool {
     }
     let has = |d: &Path, f: &str| d.join(f).is_file();
     let character = |d: &Path| has(d, "character.txt") || has(d, "character.yaml");
+    // A DiffSinger bank may carry an oto.ini for OpenUtau (Namine Ritsu's
+    // does); it is the DiffSinger runtime's.
+    if has(dir, "dsconfig.yaml") {
+        return false;
+    }
     if has(dir, "oto.ini") {
         return true;
     }
