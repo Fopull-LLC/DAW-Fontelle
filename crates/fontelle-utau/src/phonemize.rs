@@ -906,10 +906,13 @@ fn syllable_names(content: &Content, start: bool) -> Option<SyllableNames> {
 /// ends; vowel-to-consonant into the next syllable and an ending before a
 /// rest, when the bank has them (a CV-only bank simply has none).
 fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
+    // The open vowel the syllable before ended on, in this run.
+    let mut open_vowel: Option<String> = None;
     for k in 0..events.len() {
         let e = &events[k];
         let (end, rest_after) = event_end(ctx, events, k);
         let start = after_rest(ctx, events, k);
+        let before = if start { None } else { open_vowel.take() };
         // The vowel this event ends on, when something may follow it.
         let prev_vowel: Option<String> = match &e.content {
             Content::Hand(list) => {
@@ -933,7 +936,20 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
                 let Some(names) = syllable_names(content, start) else {
                     continue;
                 };
-                let Some(cv) = ctx.first(&names.cv, e.note) else {
+                // No initial: from the vowel before ("ao a"), as the bank
+                // has it, else the syllable's start ("- ai"). Hitsuboku
+                // Kumi has no bare "a": 你好啊 sang nothing on 啊.
+                let mut cands = Vec::new();
+                if names.onset.is_empty()
+                    && let Some(pv) = &before
+                {
+                    cands.extend(names.cv.iter().map(|c| format!("{pv} {c}")));
+                }
+                cands.extend(names.cv.iter().cloned());
+                if names.onset.is_empty() && !start {
+                    cands.extend(names.cv.iter().map(|c| format!("- {c}")));
+                }
+                let Some(cv) = ctx.first(&cands, e.note) else {
                     continue;
                 };
                 // A whole syllable (its coda in it) needs no coda unit.
@@ -963,6 +979,7 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
                 }
             }
         };
+        open_vowel = prev_vowel.clone();
         let Some(v) = prev_vowel else {
             continue;
         };

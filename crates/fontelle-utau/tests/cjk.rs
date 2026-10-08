@@ -168,3 +168,25 @@ fn a_bank_with_whole_syllables_sings_them_whole() {
     let plan = phonemize::plan(&b, &p, Phonemizer::KoCvvc);
     assert_eq!(units(&plan.units), [u("한", 0, 0), u("글", 1, 500)]);
 }
+
+/// Hitsuboku Kumi (Chinese CVVC) has no bare "a" or "ai": a syllable with
+/// no initial after another is the vowel-to-vowel unit ("ao a"), else its
+/// start ("- ai"). 你好啊 sang nothing on 啊.
+#[test]
+fn a_chinese_syllable_without_an_initial_joins_from_the_vowel_before() {
+    let b = bank(&[
+        "- ni", "ni", "hao", "ao a", "- ai", "ai", "wo", "o ai", "a R",
+    ]);
+    let p = phrase(
+        "zh",
+        &[(0.0, 0.5, "ni"), (0.5, 0.5, "hao"), (1.0, 0.5, "a")],
+    );
+    let plan = phonemize::plan(&b, &p, Phonemizer::ZhCvvc);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["- ni", "hao", "ao a", "a R"]);
+    let b = bank(&["- wo", "wo", "- ai"]);
+    let p = phrase("zh", &[(0.0, 0.5, "wo"), (0.5, 0.5, "ai")]);
+    let plan = phonemize::plan(&b, &p, Phonemizer::ZhCvvc);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["- wo", "- ai"]);
+}
