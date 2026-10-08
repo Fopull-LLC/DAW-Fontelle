@@ -112,6 +112,9 @@ impl Reader<'_> {
         if let Some(p) = typed.filter(|p| !p.is_empty()) {
             return (p, false);
         }
+        if let Some(p) = self.english(bare) {
+            return (p, false);
+        }
         if let Some(p) = self.compound(&bare.to_lowercase()) {
             return (p, true);
         }
@@ -180,6 +183,29 @@ impl Reader<'_> {
             }
         }
         (out, guessed)
+    }
+
+    /// An English word the bank's dictionary lacks, from CMUdict, when the
+    /// bank has every sound in it: SPORE's dictionary names its symbols and
+    /// no words, Nishiren's has no "world".
+    fn english(&self, word: &str) -> Option<Vec<String>> {
+        if self.language != "en" {
+            return None;
+        }
+        let phones = fontelle_utau::dict::cmudict().lookup(word)?;
+        phones
+            .iter()
+            .map(|p| {
+                // The schwa is "ah" in banks without "ax", and back.
+                let other = match p.as_str() {
+                    "ax" => Some("ah"),
+                    "ah" => Some("ax"),
+                    _ => None,
+                };
+                self.resolve(p)
+                    .or_else(|| other.and_then(|o| self.resolve(o)))
+            })
+            .collect()
     }
 
     /// What an empty lyric sings.

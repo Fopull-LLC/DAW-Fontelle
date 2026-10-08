@@ -30,6 +30,13 @@ pub const FINAL_PITCH_STEPS: u32 = 10;
 /// features it samples, with room to spare).
 pub const NOISE_PER_FRAME: usize = 1024;
 
+/// Noise values a vocoder may draw: per output sample, for a source of up to
+/// 15 harmonics (RefineGAN-style vocoders such as Canary DS's tgm_hifigan
+/// draw samples x 9), never less than the sampling models' pool.
+pub fn vocoder_noise_pool(frames: usize, hop: usize) -> usize {
+    (frames * hop.max(1) * 16).max(frames * NOISE_PER_FRAME)
+}
+
 /// A bank's models, opened.
 pub struct Loaded {
     pub acoustic: Model,
@@ -469,7 +476,10 @@ pub fn sing(
             ("mel", Feed::F32(shape, mel)),
             ("f0", Feed::row_f32(f0.clone())),
         ],
-        Some((seed ^ 0x70c, total * NOISE_PER_FRAME)),
+        Some((
+            seed ^ 0x70c,
+            vocoder_noise_pool(total, vocoder.config.hop_size as usize),
+        )),
         cancelled,
     )?;
     let mut samples = out

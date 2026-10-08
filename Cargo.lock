@@ -1413,6 +1413,7 @@ version = "0.26.1"
 dependencies = [
  "fontelle-lang",
  "fontelle-sing",
+ "fontelle-utau",
  "ort",
  "serde",
  "serde_json",

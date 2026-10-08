@@ -339,9 +339,11 @@ impl Bank {
         if let Some(d) = cache.get(&path) {
             return Ok(d.clone());
         }
+        let inventory = &self.acoustic.inventory;
         let d = Arc::new(
             Dictionary::parse(&read_text(&path)?)
-                .map_err(|e| format!("{}: {e}", path.display()))?,
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .with_unprefixed(language, |s| inventory.contains(s)),
         );
         cache.insert(path, d.clone());
         Ok(d)

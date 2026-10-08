@@ -88,6 +88,23 @@ impl Dictionary {
         self.kind(symbol) == Some(SymbolKind::Glide)
     }
 
+    /// Each `<language>/x` symbol also declared as plain `x` where the model
+    /// knows `x` and the dictionary does not: SPORE's duration dictionary
+    /// names `en/w` for an acoustic model whose phonemes are `w`.
+    pub fn with_unprefixed(mut self, language: &str, known: impl Fn(&str) -> bool) -> Self {
+        let prefix = format!("{language}/");
+        let add: Vec<(String, SymbolKind)> = self
+            .symbols
+            .iter()
+            .filter_map(|(s, k)| {
+                let bare = s.strip_prefix(&prefix)?;
+                (known(bare) && !self.symbols.contains_key(bare)).then(|| (bare.to_string(), *k))
+            })
+            .collect();
+        self.symbols.extend(add);
+        self
+    }
+
     /// Whether the dictionary declares the symbol (`SP` and `AP` always).
     pub fn has_symbol(&self, symbol: &str) -> bool {
         self.kind(symbol).is_some()
