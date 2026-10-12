@@ -643,3 +643,82 @@ fn a_chosen_singer_is_warmed_before_any_note_is_written() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
+
+/// Two banks: the first is anybody's default.
+struct Duo;
+
+impl Backend for Duo {
+    fn name(&self) -> &str {
+        "Duo"
+    }
+    fn version(&self) -> String {
+        "1".into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        let voice = |id: &str, name: &str, language: &str| VoiceInfo {
+            id: id.into(),
+            name: name.into(),
+            languages: vec![language.into()],
+            lowest: 36,
+            highest: 84,
+            research_only: false,
+            terms: None,
+            image: None,
+        };
+        vec![
+            voice("utau/Plain", "Plain", "ja"),
+            voice("utau/Joule_EN_CVVC_beta", "Joule EN CVVC \u{3b2}", "en"),
+        ]
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn SingSession>, String> {
+        Ok(Box::new(Hum))
+    }
+}
+
+/// A file names the bank it was written for (OpenUtau's `singer:`, UTAU's
+/// `VoiceDir`): when that bank is installed it sings the imported track,
+/// in its own language — the demo song that ships with Joule's bank came
+/// in sung by whichever bank was first. When it is not, the toast says so.
+#[test]
+fn an_imported_file_is_sung_by_the_bank_it_names() {
+    let dir = scratch("named");
+    let mut session = common::a_session_in(common::a_clip_project(4), None);
+    session.set_singer_folders(Vec::new());
+    session.set_voicebanks(
+        dir.join("voicebanks"),
+        vec![BuiltinBackend {
+            key: "fontelle-utau",
+            kind: SingerKind::Utau,
+            make: |_| Arc::new(Duo),
+        }],
+    );
+    let mut song = VocalSong::new("Daydream");
+    let mut part = SongPart::new("Lead");
+    part.singer = Some("Joule EN CVVC beta".into());
+    part.notes = vec![vocal_note(0, PPQN, 60, "day")];
+    song.parts.push(part);
+    let path = dir.join("daydream.ustx");
+    std::fs::write(&path, ustx::write(&song)).unwrap();
+    let said = session.drop_file(&path).unwrap();
+    let channel = vocal_channels(session.project())[0];
+    assert_eq!(
+        session.project().channels[channel].vocal,
+        Some(fontelle_model::VocalVoice::new(
+            "fontelle-utau",
+            "utau/Joule_EN_CVVC_beta",
+            "en"
+        ))
+    );
+    assert!(said.contains("Joule EN CVVC \u{3b2}"), "{said}");
+
+    // A bank that is not here: the first one sings, and the toast says so.
+    song.parts[0].singer = Some("Nobody Here".into());
+    let path = dir.join("other.ustx");
+    std::fs::write(&path, ustx::write(&song)).unwrap();
+    let said = session.drop_file(&path).unwrap();
+    assert!(said.contains("Nobody Here"), "{said}");
+    assert!(said.contains("not installed"), "{said}");
+}

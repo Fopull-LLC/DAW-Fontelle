@@ -487,3 +487,103 @@ fn a_long_song_stays_responsive_and_reopens_sung() {
         reopen.as_secs_f64() * 1000.0,
     );
 }
+
+/// The demo song that ships with Joule's bank, as a producer would bring
+/// it from OpenUtau: dropped in, sung by the bank it names, written back
+/// out as MIDI and USTX, frozen and unfrozen, saved and reopened.
+#[test]
+#[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
+fn an_openutau_song_comes_in_sung_and_goes_back_out() {
+    let Some(source) = std::env::var_os("FONTELLE_TEST_VOICEBANKS").map(PathBuf::from) else {
+        return;
+    };
+    let demo = source.join("Joule_EN_CVVC_beta/02 extra/demo_daydream.ustx");
+    if !demo.is_file() {
+        eprintln!("no demo song");
+        return;
+    }
+    let (mut session, bundle) = walk_session("ustx", 8).unwrap();
+    let said = session.drop_file(&demo).unwrap();
+    println!("{said}");
+    // The import opened its first track's clip and selected that track.
+    let index = (0..session.channels().len())
+        .find(|i| session.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    let voice = session.vocal_voice(index).unwrap();
+    assert!(voice.singer.contains("Joule_EN_CVVC"), "{voice:?}");
+    let heard = pump_until(&mut session, "the demo sung", |s| {
+        let st = states(s);
+        !st.is_empty() && st.iter().all(|x| *x == VocalRenderState::Final)
+    });
+    let view = session.vocal_view().unwrap();
+    assert!(view.message.is_none(), "{:?}", view.message);
+    println!(
+        "{} phrases, {} notes, all final in {:.1} s; phonemes {:?}",
+        view.phrases.len(),
+        session.notes().len(),
+        heard.as_secs_f64(),
+        view.phonemes
+            .iter()
+            .take(8)
+            .map(|(_, p)| p)
+            .collect::<Vec<_>>()
+    );
+    for format in [
+        fontelle_ui::document::VocalFileFormat::Midi,
+        fontelle_ui::document::VocalFileFormat::Ustx,
+    ] {
+        let ext = match format {
+            fontelle_ui::document::VocalFileFormat::Midi => "mid",
+            fontelle_ui::document::VocalFileFormat::Ustx => "ustx",
+        };
+        let out = bundle.with_file_name(format!("out.{ext}"));
+        let said = session.export_vocal_to(index, format, &out).unwrap();
+        println!("{said}");
+        let back = fontelle_vocal_files::read_file(&out).unwrap();
+        assert_eq!(
+            back.parts.iter().map(|p| p.notes.len()).sum::<usize>(),
+            session.notes().len()
+        );
+    }
+    let froze = Instant::now();
+    println!("{}", session.freeze_vocal_now(index).unwrap());
+    println!("frozen in {:.1} s", froze.elapsed().as_secs_f64());
+    println!("{}", session.unfreeze_vocal_now(index).unwrap());
+    DocumentHost::save(&mut session).unwrap();
+    let project = fontelle_app::open_project(&bundle).unwrap().project;
+    let mut reopened = common::a_session_in(project, Some(bundle.clone()));
+    reopened.set_singer_folders(vec![bundle.with_file_name("no-engines")]);
+    reopened.set_voicebanks(
+        bundle.with_file_name("voicebanks"),
+        fontelle_vocal::builtin_backends(),
+    );
+    let first = (0..reopened.channels().len())
+        .find(|i| reopened.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    reopened.select_channel(first);
+    // Open a clip it sings in, as the producer would.
+    let vocal = reopened
+        .project()
+        .channels
+        .keys()
+        .find(|id| reopened.project().channels[*id].instrument == Some(InstrumentKind::Vocal));
+    let clip = reopened
+        .project()
+        .clips
+        .iter()
+        .find(|(_, c)| {
+            matches!(&c.source, fontelle_model::ClipSource::Notes(d)
+                if Some(d.channel) == vocal && !d.notes.is_empty())
+        })
+        .map(|(id, _)| id)
+        .unwrap();
+    reopened.open_clip(clip);
+    let reopen = pump_until(&mut reopened, "reopened", |s| {
+        let st = states(s);
+        !st.is_empty() && st.iter().all(|x| *x == VocalRenderState::Final)
+    });
+    println!(
+        "reopened all final in {:.0} ms",
+        reopen.as_secs_f64() * 1000.0
+    );
+}

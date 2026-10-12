@@ -308,3 +308,19 @@ fn garbage_says_so() {
     assert!(ustx::read("{{{{", "x").is_err());
     assert!(ustx::read("name: nothing\n", "x").is_err());
 }
+
+/// `vel` on a later phoneme of a note (OpenUtau sets one per phoneme) is
+/// what is left out, and the toast says that — "the per-note expression
+/// vel" read as if consonant speed itself were not brought in (found
+/// importing the demo song shipped with Joule's bank).
+#[test]
+fn vel_on_a_later_phoneme_is_named_as_that() {
+    let text = DEMO.replace(
+        "    - {index: 0, abbr: vel, value: 200}",
+        "    - {index: 0, abbr: vel, value: 200}\n    - {index: 2, abbr: vel, value: 60}",
+    );
+    let song = ustx::read(&text, "file").unwrap();
+    let said = song.unmapped.join("; ");
+    assert!(said.contains("later phoneme"), "{said}");
+    assert!(!said.contains("expression \u{201c}vel"), "{said}");
+}

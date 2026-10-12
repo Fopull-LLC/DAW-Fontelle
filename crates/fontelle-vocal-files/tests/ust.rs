@@ -247,3 +247,21 @@ fn the_extension_says_ust() {
         Some(Format::Ust)
     );
 }
+
+/// The bank a UST was written for is its `VoiceDir`'s last folder —
+/// `%VOICE%uta`, or a whole path on the writer's computer — so the
+/// importing studio can choose that bank when it has it.
+#[test]
+fn the_voice_folder_names_the_singer() {
+    let song = ust::read(SONG.as_bytes(), "file").unwrap();
+    assert_eq!(song.parts[0].singer.as_deref(), Some("uta"));
+    let windows = SONG.replace(
+        "VoiceDir=%VOICE%uta",
+        "VoiceDir=C:\\Program Files (x86)\\UTAU\\voice\\重音テト音声ライブラリー\\",
+    );
+    let song = ust::read(windows.as_bytes(), "file").unwrap();
+    assert_eq!(
+        song.parts[0].singer.as_deref(),
+        Some("重音テト音声ライブラリー")
+    );
+}

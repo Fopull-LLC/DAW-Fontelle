@@ -513,6 +513,62 @@ impl VocalSession {
 
     /// The display name of who sings `voice`, if they are installed,
     /// whether it is research-only, and its portrait.
+    /// The installed built-in voice a song file names (OpenUtau's
+    /// `singer:`, UTAU's `VoiceDir`), in its own first language, and what
+    /// it is called: by its name or its folder, spelled loosely ("Joule EN
+    /// CVVC beta" is the bank "Joule EN CVVC β" in `Joule_EN_CVVC_beta`).
+    pub fn voice_named(&self, named: &str) -> Option<(VocalVoice, String)> {
+        fn loose(s: &str) -> String {
+            s.to_lowercase()
+                .replace('\u{3b2}', "beta")
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect()
+        }
+        let want = loose(named);
+        if want.is_empty() {
+            return None;
+        }
+        let voices: Vec<_> = self
+            .registry()
+            .voices()
+            .into_iter()
+            .filter(|v| v.built_in)
+            .collect();
+        let names = |v: &fontelle_vocal::RegistryVoice| {
+            [
+                loose(&v.info.name),
+                loose(v.info.id.strip_prefix("utau/").unwrap_or(&v.info.id)),
+            ]
+        };
+        let found = voices
+            .iter()
+            .find(|v| names(v).contains(&want))
+            .or_else(|| {
+                voices.iter().find(|v| {
+                    names(v).iter().any(|n| {
+                        n.len() >= 4 && want.len() >= 4 && (n.contains(&want) || want.contains(n))
+                    })
+                })
+            })?;
+        let language = found
+            .info
+            .languages
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "en".into());
+        Some((
+            VocalVoice::new(found.backend.clone(), found.info.id.clone(), language),
+            found.info.name.clone(),
+        ))
+    }
+
+    /// What `voice` is called, for saying so.
+    pub fn voice_label(&self, voice: &VocalVoice) -> String {
+        self.singer_name(voice)
+            .map_or_else(|| voice.singer.clone(), |(name, _, _)| name)
+    }
+
     fn singer_name(&self, voice: &VocalVoice) -> Option<(String, bool, Option<String>)> {
         let backend = self.registry().backend(&voice.engine)?;
         backend

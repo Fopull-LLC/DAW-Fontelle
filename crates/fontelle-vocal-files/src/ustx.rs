@@ -418,6 +418,9 @@ fn read_expressions(song: &mut VocalSong, n: &Value, note: &mut Note) {
             "vel" if index == 0 => {
                 note.velocity = velocity_for_speed(2f32.powf((value as f32 - 100.0) / 100.0));
             }
+            "vel" => song.unmapped(
+                "consonant speed (vel) on a note\u{2019}s later phonemes: a note has one speed here",
+            ),
             "clr" => song.unmapped("voice colours (clr): choose the colour per note in Fontelle"),
             other => song.unmapped(format!("the per-note expression \u{201c}{other}\u{201d}")),
         }

@@ -89,6 +89,16 @@ pub fn read(bytes: &[u8], name: &str) -> Result<VocalSong, String> {
     let tempo = song.tempo_map();
 
     let mut part = SongPart::new(song.name.clone());
+    // The bank it was written for: `VoiceDir`'s last folder.
+    part.singer = setting.get("VoiceDir").and_then(|dir| {
+        dir.trim()
+            .trim_end_matches(['\\', '/'])
+            .rsplit(['\\', '/', '%'])
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
     let mut curves: Vec<NoteCurve> = Vec::new();
     let mut mode1: Vec<(Tick, f64)> = Vec::new();
     let mut dynamics: Vec<(Tick, f32)> = Vec::new();

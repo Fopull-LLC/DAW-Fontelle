@@ -249,6 +249,13 @@ impl Session {
             .map(|p| files::clip_of(p, offset, bar))
             .collect();
         let notes: usize = clips.iter().map(|c| c.notes.len()).sum();
+        // Sung by the bank the file was written for, when it is here.
+        let named = parts.iter().find_map(|p| p.singer.clone());
+        let found = named.as_deref().and_then(|n| self.vocal.voice_named(n));
+        let new_voice = found
+            .as_ref()
+            .map(|(v, _)| v.clone())
+            .or_else(|| self.vocal.default_voice());
         let landing = match target {
             Some((channel, lane)) => VocalLanding::Onto { channel, lane },
             None => VocalLanding::NewTracks {
@@ -256,7 +263,7 @@ impl Session {
                     Some(r) => (r + 1).min(rows.len()),
                     None => self.arrival_index(),
                 }),
-                voice: self.vocal.default_voice(),
+                voice: new_voice.clone(),
             },
         };
         let mut command = ImportVocal::new(&what, clips, landing);
@@ -308,6 +315,22 @@ impl Session {
             }
         };
         let mut said = format!("Imported {who} from {what}, {notes} notes{tempo}");
+        // Who sings it, when the file named somebody and a new track was
+        // made for it.
+        if target.is_none()
+            && let Some(named) = &named
+        {
+            match (&found, &new_voice) {
+                (Some((_, name)), _) => said.push_str(&format!(", sung by {name}")),
+                (None, Some(voice)) => said.push_str(&format!(
+                    ". \u{201c}{named}\u{201d} is not installed here, so {} sings it",
+                    self.vocal.voice_label(voice)
+                )),
+                (None, None) => {
+                    said.push_str(&format!(". \u{201c}{named}\u{201d} is not installed here"))
+                }
+            }
+        }
         if !left_out.is_empty() {
             let shown: Vec<&str> = left_out.iter().take(3).map(String::as_str).collect();
             said.push_str(&format!(
