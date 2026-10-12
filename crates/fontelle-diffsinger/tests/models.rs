@@ -98,3 +98,52 @@ fn a_graph_can_be_left_as_it_is() {
         .unwrap();
     assert_eq!(out["Y"].f32().unwrap().len(), 4);
 }
+
+/// A model asked again with the same inputs and noise answers from memory:
+/// an edit that changes only what comes after it (a breathiness or gender
+/// lane leaves the duration, pitch and variance models' inputs as they
+/// were; dynamics leaves every model's) is not run through it again.
+/// Anything that differs — an input it reads, the seed, the pool — runs it.
+#[test]
+fn the_same_inputs_are_answered_from_memory() {
+    let m = Model::from_bytes(&noisy_model(), "noisy", &RuntimeOptions::default()).unwrap();
+    let run = |x: f32, seed: u64, pool: usize, extra: f32| {
+        m.run(
+            vec![
+                ("X", Feed::F32(vec![4, 8], vec![x; 32])),
+                // Not read by the model: no part of what it is asked.
+                ("depth", Feed::F32(vec![], vec![extra])),
+            ],
+            Some((seed, pool)),
+            &never,
+        )
+        .unwrap()
+    };
+    let a = run(0.0, 1, 64, 0.1);
+    assert_eq!(m.runs(), 1);
+    assert_eq!(run(0.0, 1, 64, 0.9), a, "the same answer");
+    assert_eq!(m.runs(), 1, "answered from memory");
+    run(0.5, 1, 64, 0.1);
+    assert_eq!(m.runs(), 2, "another input");
+    run(0.0, 2, 64, 0.1);
+    assert_eq!(m.runs(), 3, "another seed");
+    run(0.0, 1, 65, 0.1);
+    assert_eq!(m.runs(), 4, "another pool");
+    // The first is still remembered.
+    assert_eq!(run(0.0, 1, 64, 0.1), a);
+    assert_eq!(m.runs(), 4);
+}
+
+/// A cancelled run is not remembered as an answer.
+#[test]
+fn a_cancelled_run_is_not_remembered() {
+    let m = Model::from_bytes(&steps_model(), "steps", &RuntimeOptions::default()).unwrap();
+    let feeds = || vec![("steps", Feed::I64(vec![], vec![3]))];
+    assert_eq!(
+        m.run(feeds(), None, &|| true).unwrap_err(),
+        SingError::Cancelled
+    );
+    let out = m.run(feeds(), None, &never).unwrap();
+    assert_eq!(out["Y"], Out::I64(vec![], vec![3]));
+    assert_eq!(m.runs(), 1);
+}

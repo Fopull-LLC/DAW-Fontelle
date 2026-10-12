@@ -493,3 +493,49 @@ fn a_real_chinese_bank_sings_chinese_characters() {
         );
     }
 }
+
+/// A lane edit's preview runs only the models the lane reaches: dynamics
+/// (a gain after the vocoder) none, breathiness or gender (the acoustic
+/// model's inputs) the acoustic model and the vocoder, not the duration,
+/// pitch or variance models again. What is sung is what a full run sings.
+#[test]
+#[ignore = "needs a real voicebank: FONTELLE_TEST_VOICEBANKS"]
+fn a_lane_edit_runs_only_the_models_it_reaches() {
+    let Some((singer, voice)) = singer() else {
+        return;
+    };
+    singer.preload(&voice).unwrap();
+    let base = phrase(&voice);
+    let (first, full) = sing(&singer, &base, Quality::Preview, 7);
+    let lane = |lane: Lane, value: f32| {
+        let mut p = base.clone();
+        p.curves.insert(
+            lane,
+            Curve {
+                start: 0.0,
+                step: 0.01,
+                values: vec![value; 600],
+            },
+        );
+        p
+    };
+    let (louder, dynamics) = sing(&singer, &lane(Lane::Dynamics, -6.0), Quality::Preview, 7);
+    let (_, gender) = sing(&singer, &lane(Lane::Gender, 20.0), Quality::Preview, 7);
+    eprintln!(
+        "{voice}: preview {:.0} ms; after a dynamics edit {:.0} ms, a gender edit {:.0} ms",
+        full * 1000.0,
+        dynamics * 1000.0,
+        gender * 1000.0
+    );
+    assert!(dynamics < full / 4.0, "{dynamics} s of {full} s");
+    // The same take, 6 dB down.
+    let ratio = louder
+        .samples
+        .iter()
+        .zip(&first.samples)
+        .filter(|(_, b)| b.abs() > 0.05)
+        .map(|(a, b)| a / b)
+        .sum::<f32>()
+        / first.samples.iter().filter(|b| b.abs() > 0.05).count() as f32;
+    assert!((ratio - 0.5).abs() < 0.02, "{ratio}");
+}

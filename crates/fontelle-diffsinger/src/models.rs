@@ -10,9 +10,10 @@
 //! inside what 1.28 runs. A session is shared by every render of its bank,
 //! one run at a time; ONNX Runtime spreads each run over its own threads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fontelle_sing::SingError;
 use ort::session::Session;
@@ -51,6 +52,15 @@ impl Feed {
     pub fn row_bool(values: Vec<bool>) -> Self {
         Feed::Bool(vec![1, values.len()], values)
     }
+
+    /// About how much memory it holds.
+    pub fn bytes(&self) -> usize {
+        match self {
+            Feed::F32(_, v) => v.len() * 4,
+            Feed::I64(_, v) => v.len() * 8,
+            Feed::Bool(_, v) => v.len(),
+        }
+    }
 }
 
 /// An output, copied out of the session.
@@ -77,6 +87,15 @@ impl Out {
         }
     }
 
+    /// About how much memory it holds.
+    pub fn bytes(&self) -> usize {
+        match self {
+            Out::F32(_, v) => v.len() * 4,
+            Out::I64(_, v) => v.len() * 8,
+            Out::Bool(_, v) => v.len(),
+        }
+    }
+
     pub fn shape(&self) -> &[usize] {
         match self {
             Out::F32(s, _) | Out::I64(s, _) | Out::Bool(s, _) => s,
@@ -90,6 +109,22 @@ pub struct Model {
     /// Declared inputs and their ranks.
     inputs: Vec<(String, usize)>,
     noise_inputs: Vec<String>,
+    /// What it was asked lately and answered, oldest first.
+    memory: Mutex<VecDeque<Asked>>,
+    runs: AtomicUsize,
+}
+
+/// Answers a model keeps: enough for a phrase's preview and final and an
+/// edit or two, and never more than [`REMEMBERED_BYTES`] of inputs and
+/// outputs (a vocoder's take of a long phrase is a few megabytes).
+const REMEMBERED: usize = 6;
+const REMEMBERED_BYTES: usize = 24 << 20;
+
+struct Asked {
+    feeds: Vec<(String, Feed)>,
+    noise: Option<(u64, usize)>,
+    out: HashMap<String, Out>,
+    bytes: usize,
 }
 
 impl std::fmt::Debug for Model {
@@ -145,6 +180,8 @@ impl Model {
             session: Mutex::new(session),
             inputs,
             noise_inputs,
+            memory: Mutex::new(VecDeque::new()),
+            runs: AtomicUsize::new(0),
         })
     }
 
@@ -161,11 +198,23 @@ impl Model {
         &self.noise_inputs
     }
 
+    /// How many times the graph itself has run (an answer from memory is
+    /// not a run).
+    pub fn runs(&self) -> usize {
+        self.runs.load(Ordering::Relaxed)
+    }
+
     /// Runs the model. Feeds the model does not declare are left out; one
     /// it declares and is not given is an error. A one-value feed is shaped
     /// to the rank the model declares (`[1]` or a scalar). `noise` is the
     /// seed and the pool length (values per noise input). `cancelled` is
     /// polled while the run is in progress and ends it.
+    ///
+    /// Asked again what it was asked lately — the same declared inputs and
+    /// noise — it answers from memory: what it gave is what it would give.
+    /// An edit to a lane that only the acoustic model reads leaves the
+    /// duration, pitch and variance models' inputs as they were, so a
+    /// preview after it runs the acoustic model and the vocoder only.
     pub fn run(
         &self,
         feeds: Vec<(&str, Feed)>,
@@ -177,14 +226,79 @@ impl Model {
         }
         let fail = |why: String| SingError::Failed(format!("{}: {why}", self.name));
         let mut feeds: HashMap<&str, Feed> = feeds.into_iter().collect();
-        let mut values: Vec<(String, ort::value::DynValue)> = Vec::new();
-        for (name, rank) in &self.inputs {
+        let mut declared: Vec<(String, Feed)> = Vec::with_capacity(self.inputs.len());
+        for (name, _) in &self.inputs {
             let feed = feeds.remove(name.as_str()).ok_or_else(|| {
                 fail(format!(
                     "the model needs an input \"{name}\" this runtime does not know how to give"
                 ))
             })?;
-            values.push((name.clone(), value(feed, *rank).map_err(fail)?));
+            declared.push((name.clone(), feed));
+        }
+        // Noise only matters to a model that draws it.
+        let noise = noise.filter(|_| !self.noise_inputs.is_empty());
+        if let Some(out) = self.remembered(&declared, noise) {
+            return Ok(out);
+        }
+        let out = self.run_graph(declared.clone(), noise, cancelled)?;
+        self.runs.fetch_add(1, Ordering::Relaxed);
+        self.remember(declared, noise, &out);
+        Ok(out)
+    }
+
+    fn remembered(
+        &self,
+        feeds: &[(String, Feed)],
+        noise: Option<(u64, usize)>,
+    ) -> Option<HashMap<String, Out>> {
+        let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+        let at = memory
+            .iter()
+            .position(|a| a.noise == noise && a.feeds == feeds)?;
+        // Most recently asked last: the oldest is forgotten first.
+        let asked = memory.remove(at)?;
+        let out = asked.out.clone();
+        memory.push_back(asked);
+        Some(out)
+    }
+
+    fn remember(
+        &self,
+        feeds: Vec<(String, Feed)>,
+        noise: Option<(u64, usize)>,
+        out: &HashMap<String, Out>,
+    ) {
+        let bytes = feeds.iter().map(|(_, f)| f.bytes()).sum::<usize>()
+            + out.values().map(Out::bytes).sum::<usize>();
+        if bytes > REMEMBERED_BYTES {
+            return;
+        }
+        let mut memory = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+        memory.push_back(Asked {
+            feeds,
+            noise,
+            out: out.clone(),
+            bytes,
+        });
+        let mut total: usize = memory.iter().map(|a| a.bytes).sum();
+        while memory.len() > REMEMBERED || total > REMEMBERED_BYTES {
+            let Some(old) = memory.pop_front() else {
+                break;
+            };
+            total -= old.bytes;
+        }
+    }
+
+    fn run_graph(
+        &self,
+        declared: Vec<(String, Feed)>,
+        noise: Option<(u64, usize)>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<HashMap<String, Out>, SingError> {
+        let fail = |why: String| SingError::Failed(format!("{}: {why}", self.name));
+        let mut values: Vec<(String, ort::value::DynValue)> = Vec::new();
+        for ((name, feed), (_, rank)) in declared.into_iter().zip(&self.inputs) {
+            values.push((name, value(feed, *rank).map_err(fail)?));
         }
         let (seed, pool) = noise.unwrap_or((0, 1));
         for (k, name) in self.noise_inputs.iter().enumerate() {
@@ -217,7 +331,10 @@ impl Model {
                     let _ = options.terminate();
                     stopped = true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                // A small model answers in well under a millisecond: a
+                // coarse poll was a floor of 5 ms on each of a phrase's
+                // half-dozen runs.
+                std::thread::sleep(std::time::Duration::from_micros(500));
             }
             let r = handle
                 .join()
