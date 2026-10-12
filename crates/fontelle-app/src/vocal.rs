@@ -220,6 +220,24 @@ impl VocalRenderPrep {
         self.jobs.iter().all(|(_, w)| w.is_empty())
     }
 
+    /// Of the phrases this render waits for: how many could not be sung,
+    /// of how many, and why the first could not.
+    pub fn unsung(&self) -> (usize, usize, Option<String>) {
+        let all: Vec<&Wanted> = self.jobs.iter().flat_map(|(_, w)| w.iter()).collect();
+        let Ok(r) = self.renderer.lock() else {
+            return (0, all.len(), None);
+        };
+        let mut failed = 0;
+        let mut why = None;
+        for w in &all {
+            if let PhraseState::Failed(reason) = r.state(w) {
+                failed += 1;
+                why.get_or_insert(reason);
+            }
+        }
+        (failed, all.len(), why)
+    }
+
     /// Keeps only the vocal tracks `keep` says: a render of one row or one
     /// clip is that, not every vocal track singing at the same time. The
     /// others' players stay silent.
@@ -1601,6 +1619,26 @@ impl VocalSession {
     /// Why `channel` cannot sing, when it cannot.
     pub fn problem_of(&self, channel: ChannelId) -> Option<String> {
         self.parts.get(&channel).and_then(|p| p.problem.clone())
+    }
+
+    /// How many of `channel`'s phrases could not be sung, and why the first
+    /// could not — what a freeze or a render says it is missing.
+    pub fn unsung(&self, channel: ChannelId) -> (usize, Option<String>) {
+        let Some(part) = self.parts.get(&channel) else {
+            return (0, None);
+        };
+        let Some(renderer) = self.renderer.as_ref().and_then(|r| r.lock().ok()) else {
+            return (0, None);
+        };
+        let mut failed = 0;
+        let mut why = None;
+        for w in part.wanted.iter().flatten() {
+            if let fontelle_vocal::PhraseState::Failed(reason) = renderer.state(w) {
+                failed += 1;
+                why.get_or_insert(reason);
+            }
+        }
+        (failed, why)
     }
 
     /// Why the first of `channel`'s phrases that could not be sung could

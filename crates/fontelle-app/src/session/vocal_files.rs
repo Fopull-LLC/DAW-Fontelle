@@ -50,6 +50,8 @@ pub(super) enum VocalAfter {
         at: fontelle_types::Sample,
         name: String,
         track: Option<MixerTrackId>,
+        /// The vocal track it is a render of.
+        channel: ChannelId,
     },
 }
 
@@ -74,6 +76,15 @@ impl VocalBounce {
         self.prep.wait_and_publish(&mut |done, total| {
             singing.store(((done as u64) << 32) | total as u64, Ordering::Relaxed);
         })?;
+        // Nothing sung is nothing to freeze: say why rather than write
+        // silence and call it frozen.
+        let (failed, total, why) = self.prep.unsung();
+        if total > 0 && failed == total {
+            return Err(format!(
+                "nothing on that track could be sung \u{2014} {}",
+                why.unwrap_or_default()
+            ));
+        }
         let mut node = VocalNode::new(Arc::clone(&self.player)).on_channel(self.gain_db, self.pan);
         node.prepare(&PrepareContext {
             sample_rate: self.sample_rate as f32,
@@ -600,6 +611,7 @@ impl Session {
                 at: from,
                 name,
                 track: channel.mixer_track,
+                channel: id,
             }),
         ))
     }
@@ -697,6 +709,8 @@ impl Session {
                 row,
                 name,
             } => {
+                // Asked before the freeze: a frozen track sings nothing.
+                let unsung = self.unsung_note(channel);
                 let imported = self.library.import_audio(path).map_err(|e| e.to_string())?;
                 if imported.frames == 0 || imported.sample_rate == 0 {
                     return Err("the freeze rendered no sound".to_string());
@@ -728,7 +742,7 @@ impl Session {
                 self.touch();
                 Ok(format!(
                     "Froze \u{201c}{name}\u{201d} \u{2014} it plays its render now; its part \
-                     is kept, unfreeze to edit it"
+                     is kept, unfreeze to edit it{unsung}"
                 ))
             }
             VocalAfter::Row {
@@ -736,6 +750,7 @@ impl Session {
                 at,
                 name,
                 track,
+                channel,
             } => {
                 self.import_audio_named(
                     path,
@@ -748,8 +763,26 @@ impl Session {
                 self.dirty = true;
                 self.republish();
                 self.touch();
-                Ok(format!("Rendered \u{2014} {}", path.display()))
+                Ok(format!(
+                    "Rendered \u{2014} {}{}",
+                    path.display(),
+                    self.unsung_note(channel)
+                ))
             }
+        }
+    }
+
+    /// What a render of vocal track `channel` is missing: "" when every
+    /// phrase was sung, else how many are silent in it and why.
+    fn unsung_note(&self, channel: ChannelId) -> String {
+        match self.vocal.unsung(channel) {
+            (0, _) => String::new(),
+            (n, why) => format!(
+                ". {n} phrase{} could not be sung and {} silent in it: {}",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "is" } else { "are" },
+                why.unwrap_or_default()
+            ),
         }
     }
 }

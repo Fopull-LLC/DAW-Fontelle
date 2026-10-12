@@ -4575,14 +4575,32 @@ impl Session {
         match then {
             AfterBounce::Export => {
                 self.touch();
-                Ok(match clipped {
+                let mut said = match clipped {
                     // Surfaced rather than swallowed, which is what §11 of the
                     // plan asks for: a bounce that clipped is one you want to
                     // know about before you send it anywhere.
                     0 => format!("exported {}", path.display()),
                     1 => format!("exported {} \u{2014} 1 clipped sample", path.display()),
                     n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
-                })
+                };
+                // And for the same reason, a line that is silent in it.
+                let (mut unsung, mut why) = (0, None);
+                for id in self.channel_ids() {
+                    let (n, w) = self.vocal.unsung(id);
+                    unsung += n;
+                    if why.is_none() {
+                        why = w;
+                    }
+                }
+                if unsung > 0 {
+                    said.push_str(&format!(
+                        ". {unsung} vocal phrase{} could not be sung and {} silent in it: {}",
+                        if unsung == 1 { "" } else { "s" },
+                        if unsung == 1 { "is" } else { "are" },
+                        why.unwrap_or_default()
+                    ));
+                }
+                Ok(said)
             }
             AfterBounce::Vocal(after) => self.finish_vocal(after, path),
             AfterBounce::Row {

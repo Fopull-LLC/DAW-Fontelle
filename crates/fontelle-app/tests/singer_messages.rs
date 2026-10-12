@@ -324,3 +324,94 @@ fn a_new_track_starts_with_a_bank_whose_terms_are_settled() {
         "agreed: the first again"
     );
 }
+
+/// A singer that cannot sing a phrase starting on "x".
+struct Picky;
+
+impl Backend for Picky {
+    fn name(&self) -> &str {
+        "Picky"
+    }
+    fn version(&self) -> String {
+        "1".into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        one_bank(Path::new("")).voices()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn SingSession>, String> {
+        Ok(Box::new(PickySession))
+    }
+}
+
+struct PickySession;
+
+impl SingSession for PickySession {
+    fn sing(
+        &mut self,
+        phrase: &Phrase,
+        _quality: Quality,
+        _seed: u64,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Result<Sung, SingError> {
+        if phrase.notes[0].lyric == "x" {
+            return Err(SingError::Failed("\u{201c}x\u{201d} is not a sound".into()));
+        }
+        let end = phrase.notes.last().map_or(0.0, |n| n.end());
+        Ok(Sung {
+            sample_rate: 8_000,
+            samples: vec![0.1; (end * 8_000.0) as usize + 1],
+            ..Sung::default()
+        })
+    }
+}
+
+/// A freeze of a track nothing on which could be sung is refused with
+/// why — it froze to silence and said "Froze" — and a freeze or a render
+/// with some phrases unsung says how many are silent in it.
+#[test]
+fn a_freeze_says_what_could_not_be_sung() {
+    let mut session = studio("freeze-unsung", |dir| Arc::new(Needy(dir.to_path_buf())));
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    let note = fontelle_vocal_files::vocal_note(0, PPQN, 60, "a");
+    session.edit(fontelle_ui::canvas::RollEdit::Add { note });
+    let refused = session.freeze_vocal_now(index).unwrap_err();
+    assert!(refused.contains("vocoder"), "{refused}");
+    assert!(!session.vocal_frozen(index));
+
+    let mut session = studio("freeze-some", |_| Arc::new(Picky));
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    // A drawn note sings the language's syllable: the word is typed after.
+    for (beat, lyric) in [(0, "la"), (8, "x")] {
+        let note = fontelle_vocal_files::vocal_note(PPQN * beat, PPQN, 60, lyric);
+        let id = session.edit(fontelle_ui::canvas::RollEdit::Add { note })[0];
+        session.set_lyrics(&[id], vec![lyric.to_string()]).unwrap();
+    }
+    let said = session.freeze_vocal_now(index).unwrap();
+    assert!(said.contains("1 phrase could not be sung"), "{said}");
+    assert!(said.contains("is not a sound"), "{said}");
+}
+
+/// A song exported with phrases that could not be sung says so: a mix sent
+/// off with a silent line in it is one to know about first.
+#[test]
+fn an_export_says_which_phrases_are_silent_in_it() {
+    let mut session = studio("export-unsung", |_| Arc::new(Picky));
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    for (beat, lyric) in [(0, "la"), (8, "x")] {
+        let note = fontelle_vocal_files::vocal_note(PPQN * beat, PPQN, 60, lyric);
+        let id = session.edit(fontelle_ui::canvas::RollEdit::Add { note })[0];
+        session.set_lyrics(&[id], vec![lyric.to_string()]).unwrap();
+    }
+    let said = session.export_wav().unwrap();
+    assert!(said.contains("1 vocal phrase could not be sung"), "{said}");
+    assert!(said.contains("is not a sound"), "{said}");
+}
