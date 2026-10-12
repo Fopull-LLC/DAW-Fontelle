@@ -1769,11 +1769,32 @@ impl VocalSession {
             .and_then(|v| v.engine_instrument())
             .map(str::to_string);
         let chosen = voice.filter(|v| !v.singer.is_empty());
-        let singer = chosen.and_then(|v| {
-            self.singers()
-                .into_iter()
-                .find(|s| s.engine == v.engine && s.id == v.singer)
-        });
+        let singer = chosen
+            .and_then(|v| {
+                self.singers()
+                    .into_iter()
+                    .find(|s| s.engine == v.engine && s.id == v.singer)
+            })
+            .map(|mut s| {
+                // The stage names a bank as it names itself: its kind is
+                // the line over the name and its folder the line under it,
+                // which is what tells two of one name apart there — and a
+                // long name with its folder ran off the stage.
+                let kind = match s.kind {
+                    SingerKind::Utau => "UTAU",
+                    SingerKind::DiffSinger => "DiffSinger",
+                    SingerKind::Engine => "",
+                };
+                for told in [s.folder.as_deref().unwrap_or(""), kind] {
+                    if !told.is_empty()
+                        && let Some(own) = s.name.strip_suffix(&format!(" ({told})"))
+                    {
+                        s.name = own.to_string();
+                        break;
+                    }
+                }
+                s
+            });
         let row = singer
             .as_ref()
             .and_then(|s| s.folder.as_deref())

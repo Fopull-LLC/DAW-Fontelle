@@ -1314,3 +1314,59 @@ fn each_singer_instrument_has_its_own_row_and_its_own_big_picker() {
         );
     }
 }
+
+/// Two banks of one name, told apart (`voicebanks::told_apart`): each
+/// card's name says which, whole or cut with an ellipsis, over its folder.
+#[test]
+fn two_banks_of_one_name_read_apart_on_their_cards() {
+    let song = song();
+    let base = "重音テト（かさねてと）音声ライブラリー";
+    let face = real_portrait("KasaneTeto_tougou_110401/重音テト音声ライブラリー/teto.bmp")
+        .unwrap_or_else(|| portrait_file("teto2", 200, true));
+    let singers: Vec<SingerChoice> = ["KasaneTeto_tandoku_100619", "KasaneTeto_tougou_110401"]
+        .iter()
+        .map(|folder| SingerChoice {
+            engine: "fontelle-utau".into(),
+            engine_name: "Fontelle Singer".into(),
+            id: format!("utau/{folder}"),
+            name: format!("{base} ({folder})"),
+            languages: vec!["ja".into()],
+            kind: SingerKind::Utau,
+            image: Some(face.clone()),
+            folder: Some((*folder).into()),
+            ..Default::default()
+        })
+        .collect();
+    shoot(
+        &song,
+        Shot {
+            picker: Some((singers.clone(), String::new(), Some(0))),
+            ..Shot::default()
+        },
+        "vocal3-picker-one-name",
+    );
+    // The name line is the bank's own name — a long one cut the folder off
+    // it — and the folder line under it says which.
+    let window = Rect::new(0.0, 0.0, RW as f32, RH as f32);
+    let shown = fontelle_ui::canvas::picker_filter_for(&singers, "", None);
+    let layout =
+        fontelle_ui::canvas::singer_picker_layout_for(window, &singers, &shown, 0.0, 0, true);
+    let view = fontelle_ui::render::vocal::SingerPickerView {
+        layout: &layout,
+        singers: &singers,
+        query: "",
+        focus: None,
+        language: 0,
+        current: None,
+        problems: &[],
+        instrument: fontelle_ui::document::FONTELLE_SINGER,
+        built_in: true,
+    };
+    let names: Vec<String> = fontelle_ui::render::vocal::picker_strings(&view)
+        .into_iter()
+        .filter(|(_, style)| *style == fontelle_ui::render::vocal::PICKER_NAME_STYLE)
+        .map(|(s, _)| s)
+        .collect();
+    assert!(names.iter().any(|n| n == base), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("KasaneTeto")), "{names:?}");
+}

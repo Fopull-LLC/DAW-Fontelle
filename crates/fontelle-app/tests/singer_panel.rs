@@ -650,8 +650,11 @@ fn two_banks_of_one_name_are_told_apart_everywhere() {
         )),
     );
     draw(&mut session, 0, 64, "la");
-    let stage = session.singer_panel().and_then(|p| p.singer).unwrap();
-    assert_eq!(stage.name, tougou.name);
+    // The stage: the bank's own name (it runs long), with its folder on
+    // the line under it.
+    let stage = session.singer_panel().unwrap();
+    assert_eq!(stage.singer.unwrap().name, name);
+    assert_eq!(stage.bank.as_deref(), Some("KasaneTeto_tougou"));
     let caption = session
         .clips()
         .into_iter()

@@ -1050,7 +1050,12 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<(String, TextStyle)> {
     out.push(("Voicebanks".to_string(), PICKER_TITLE_STYLE));
     out.push((page.folder.to_string(), PICKER_TEXT_STYLE));
     for r in page.installed {
-        out.push((r.name.clone(), PICKER_NAME_STYLE));
+        out.push((
+            told_by_folder(&r.name, &r.id)
+                .unwrap_or(&r.name)
+                .to_string(),
+            PICKER_NAME_STYLE,
+        ));
         out.push((r.id.clone(), PICKER_TEXT_STYLE));
         out.push((installed_line(r), PICKER_TEXT_STYLE));
         out.push((initial(&r.name), PORTRAIT_INITIAL_STYLE));
@@ -1205,7 +1210,9 @@ pub fn draw_voicebank_page(
                             (Some(_), false) => "Read terms\u{2026}",
                         };
                         (
-                            r.name.clone(),
+                            told_by_folder(&r.name, &r.id)
+                                .unwrap_or(&r.name)
+                                .to_string(),
                             // The folder under the name, as on the picker's card.
                             (r.id != r.name).then(|| r.id.clone()),
                             installed_line(r),
@@ -1248,10 +1255,27 @@ pub fn draw_voicebank_page(
                 draw_text_clipped(scene, t, row.text, row.text.x, y, p.text);
                 y += t.height + 6.0;
             }
-            let lines = [folder.as_deref(), Some(line.as_str()), summary.as_deref()];
-            for text in lines.into_iter().flatten() {
+            // A folder that tells this row from another of its name is
+            // written in the text's own ink.
+            let telling = match page.tab {
+                VoicebankTab::Installed => page
+                    .installed
+                    .get(row.index)
+                    .is_some_and(|r| told_by_folder(&r.name, &r.id).is_some()),
+                VoicebankTab::Find => false,
+            };
+            let lines = [
+                (folder.as_deref(), telling),
+                (Some(line.as_str()), false),
+                (summary.as_deref(), false),
+            ];
+            for (text, telling) in lines {
+                let Some(text) = text else {
+                    continue;
+                };
                 if let Some(t) = labels.get_styled(text, PICKER_TEXT_STYLE) {
-                    draw_text_clipped(scene, t, row.text, row.text.x, y, p.text_muted);
+                    let ink = if telling { p.text } else { p.text_muted };
+                    draw_text_clipped(scene, t, row.text, row.text.x, y, ink);
                     y += t.height + 4.0;
                 }
             }
@@ -1430,7 +1454,10 @@ pub fn picker_strings(p: &SingerPickerView) -> Vec<(String, TextStyle)> {
         let Some(s) = p.singers.get(card.singer) else {
             continue;
         };
-        out.push((s.name.clone(), PICKER_NAME_STYLE));
+        let own = card_folder(s)
+            .and_then(|f| told_by_folder(&s.name, f))
+            .unwrap_or(&s.name);
+        out.push((own.to_string(), PICKER_NAME_STYLE));
         out.push((initial(&s.name), PORTRAIT_INITIAL_STYLE));
         if let Some(folder) = card_folder(s) {
             out.push((folder.to_string(), PICKER_TEXT_STYLE));
@@ -1454,6 +1481,30 @@ fn engine_heading(instrument: &str) -> String {
 /// not just its name again.
 fn card_folder(s: &crate::document::SingerChoice) -> Option<&str> {
     s.folder.as_deref().filter(|f| *f != s.name)
+}
+
+/// A name told apart from another of the same by its folder
+/// (`voicebanks::told_apart`'s "Name (folder)"), as the bank's own name:
+/// on a card or a row the folder is the line under it, and a long name
+/// lost its folder off the end. `None` when the name is its own.
+pub(crate) fn told_by_folder<'a>(name: &'a str, folder: &str) -> Option<&'a str> {
+    name.strip_suffix(')')?
+        .strip_suffix(folder)?
+        .strip_suffix(" (")
+}
+
+/// What a card or a row writes on its name line, and the ink of the
+/// folder line under it: the text's own when the folder is what tells
+/// two of one name apart.
+fn name_line<'a>(
+    name: &'a str,
+    folder: Option<&str>,
+    p: &crate::theme::Palette,
+) -> (&'a str, Color) {
+    match folder.and_then(|f| told_by_folder(name, f)) {
+        Some(own) => (own, p.text),
+        None => (name, p.text_muted),
+    }
 }
 
 pub(crate) fn chip(
@@ -1623,14 +1674,15 @@ fn draw_card(
         card.portrait.height,
     );
     let mut y = text.y;
-    if let Some(t) = labels.get_styled(&s.name, PICKER_NAME_STYLE) {
+    let (own, folder_ink) = name_line(&s.name, card_folder(s), p);
+    if let Some(t) = labels.get_styled(own, PICKER_NAME_STYLE) {
         draw_text_clipped(scene, t, text, text.x, y, p.text);
         y += t.height + 4.0;
     }
     if let Some(folder) = card_folder(s)
         && let Some(t) = labels.get_styled(folder, PICKER_TEXT_STYLE)
     {
-        draw_text_clipped(scene, t, text, text.x, y, p.text_muted);
+        draw_text_clipped(scene, t, text, text.x, y, folder_ink);
         y += t.height + 4.0;
     }
     // The kind, as a badge.
