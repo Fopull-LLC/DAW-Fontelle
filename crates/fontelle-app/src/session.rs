@@ -719,6 +719,9 @@ pub struct Session {
     /// clips through `&self`, and a cache that could only fill on a
     /// mutation would hand out blank blocks until the first edit.
     previews: std::cell::RefCell<HashMap<ClipId, CachedPreview>>,
+    /// A paint stroke is in the hand: its next step joins the history entry
+    /// its first made (`paint_step`). Let go of with the gesture.
+    paint_stroke: bool,
 }
 
 /// One audio clip's block picture and what it was built from.
@@ -1621,6 +1624,7 @@ impl Session {
             audition: None,
             roll_notes: Arena::default(),
             previews: std::cell::RefCell::new(HashMap::new()),
+            paint_stroke: false,
         };
         session.selected = session.channel_index_of_clip().unwrap_or(0);
         session.effective_tempo = session.tempo_for_scope();
@@ -4441,10 +4445,31 @@ impl Session {
     }
 
     fn channel_index_of_clip(&self) -> Option<usize> {
-        let ClipSource::Notes(data) = &self.project.clips.get(self.clip)?.source else {
-            return None;
-        };
-        self.channel_ids().iter().position(|id| *id == data.channel)
+        let face = self.clip_channels(self.clip)?.face()?;
+        self.channel_ids().iter().position(|id| *id == face)
+    }
+
+    /// Which channels play in `clip` — a place reads its prefab's notes —
+    /// against the rack as it is now. `None` for a clip that is not notes,
+    /// or not there. See `fontelle_model::ClipChannels`.
+    fn clip_channels(&self, clip: ClipId) -> Option<fontelle_model::ClipChannels> {
+        match self.project.clip_source(clip)?.as_ref() {
+            ClipSource::Notes(data) => {
+                Some(fontelle_model::ClipChannels::of(data, &self.channel_ids()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Selects `channel` in the rack, if it is there and not already the
+    /// selection; `None` leaves the rack alone.
+    fn select_channel_id(&mut self, channel: Option<ChannelId>) {
+        if let Some(channel) = channel
+            && let Some(index) = self.channel_ids().iter().position(|id| *id == channel)
+            && index != self.selected
+        {
+            self.select_channel(index);
+        }
     }
 
     /// Recompiles the timeline and hands the result to the audio thread.
@@ -5189,6 +5214,58 @@ impl Session {
     fn let_go(&mut self) {
         self.settle_lanes(true);
         self.history.break_gesture();
+        self.paint_stroke = false;
+    }
+
+    /// One clip of a paint stroke, put down as **part of the stroke's one
+    /// undo entry**: the first step through `apply_for` like any clip, every
+    /// step after it amended into that entry (`History::amend`), so a stroke
+    /// of sixteen copies is one Ctrl+Z and — the entry being sent once, when
+    /// the gesture is let go of — one edit to anybody sharing the song.
+    ///
+    /// `AddClip` does not merge with itself, and should not: two clips drawn
+    /// by two double-clicks are two things to take back.
+    fn paint_step(&mut self, command: Box<dyn Command>) -> Option<ClipId> {
+        /// The clip a paint step minted: a copy's or a place's.
+        fn minted(command: &dyn Command) -> Option<ClipId> {
+            let any = command.as_any();
+            any.downcast_ref::<AddClip>()
+                .and_then(AddClip::id)
+                .or_else(|| {
+                    any.downcast_ref::<fontelle_model::AddPrefabInstance>()?
+                        .clip()
+                })
+        }
+        if !self.paint_stroke {
+            if let Err(e) = self.history.apply(command, &mut self.project) {
+                self.message = Some(e.to_string());
+                return None;
+            }
+            self.dirty = true;
+            if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+                self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+            }
+            self.touch();
+            self.paint_stroke = true;
+            return self.history.last_applied().and_then(minted);
+        }
+        if let Err(e) = self.history.amend(command, &mut self.project) {
+            self.message = Some(e.to_string());
+            return None;
+        }
+        self.dirty = true;
+        if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+            self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+        }
+        self.touch();
+        // On top now: the entry the step joined, whose last part is it — or,
+        // when the entry had already gone out and could not be joined, the
+        // step on its own.
+        let top = self.history.last_applied()?;
+        minted(top).or_else(|| {
+            let joined = top.as_any().downcast_ref::<fontelle_model::Compound>()?;
+            minted(joined.parts().last()?.as_ref())
+        })
     }
 
     /// Lane-style's upkeep, once an edit has settled: every lane gets its
@@ -7392,12 +7469,6 @@ impl DocumentHost for Session {
                 self.let_go();
                 Vec::new()
             }
-            RollEdit::SetSlide { ids, slide } => {
-                self.run(Box::new(fontelle_model::SetNoteSlide::new(
-                    clip, ids, slide,
-                )));
-                Vec::new()
-            }
             RollEdit::SetProperty {
                 ids,
                 property,
@@ -8446,6 +8517,21 @@ impl StudioHost for Session {
             self.rack_tab = fontelle_ui::document::RackTab::Prefabs;
         }
         self.touch();
+    }
+
+    fn paint_prefab(&mut self, index: usize, lane: usize, start: Tick) -> Option<ClipId> {
+        let id = self.prefab_ids().get(index).copied()?;
+        let lane = self.lane_ids().get(lane).copied()?;
+        // A bar, as `draw_prefab`'s place is.
+        let length = fontelle_types::PPQN * 4;
+        let made = self.paint_step(Box::new(fontelle_model::AddPrefabInstance::new(
+            id,
+            lane,
+            start.max(0),
+            length,
+        )));
+        self.republish();
+        made
     }
 
     fn draw_prefab(&mut self, index: usize, lane: usize, start: Tick) -> Option<ClipId> {
@@ -13734,6 +13820,7 @@ impl StudioHost for Session {
 
     fn clips(&self) -> Vec<ClipInfo> {
         let lanes = self.lane_ids();
+        let rack = self.channel_ids();
         let colours = self.instrument_colours();
         // A deleted clip's picture goes with it; the cache is otherwise only
         // ever added to.
@@ -13764,7 +13851,12 @@ impl StudioHost for Session {
                     // with a clip name — a clip has none, and "what instrument
                     // is this" is what somebody scanning an arrangement asks.
                     ClipSource::Notes(data) => {
-                        home = Some(data.channel);
+                        // **What plays in it**, not what it was drawn with:
+                        // a clip whose notes are all the bass is the bass's
+                        // block, captioned and coloured so, whatever the
+                        // file's home channel says (`ClipChannels::face`).
+                        let channels = fontelle_model::ClipChannels::of(data, &rack);
+                        home = channels.face();
                         // The clip's own notes, in time order and **not**
                         // expanded across a loop's passes — the canvas tiles
                         // them the way it tiles the seams. See
@@ -13787,23 +13879,15 @@ impl StudioHost for Session {
                             })
                             .collect();
                         notes.sort_by_key(|note| (note.start, note.key));
-                        // Captioned with its home channel — and, when its
-                        // notes play others too, how many: "Drums +1" is a
-                        // clip with a bass line in it, which is worth
+                        // Captioned with the channel it is about — and, when
+                        // its notes play others too, how many: "Drums +1" is
+                        // a clip with a bass line in it, which is worth
                         // knowing from across the room.
-                        let mut name = self
-                            .project
-                            .channels
-                            .get(data.channel)
+                        let mut name = home
+                            .and_then(|face| self.project.channels.get(face))
                             .map(|channel| channel.name.clone())
                             .unwrap_or_else(|| "Clip".to_string());
-                        let others = data
-                            .channels()
-                            .iter()
-                            .filter(|c| {
-                                **c != data.channel && self.project.channels.contains_key(**c)
-                            })
-                            .count();
+                        let others = channels.others();
                         if others > 0 {
                             name = format!("{name} +{others}");
                         }
@@ -14056,6 +14140,71 @@ impl StudioHost for Session {
                 self.let_go();
                 self.republish();
                 self.touch();
+            }
+            // A step of a paint stroke: the stamp's copy, or the
+            // double-click's blank, folded into the stroke's one undo entry.
+            ArrangeEdit::Paint {
+                source,
+                lane,
+                start,
+            } => {
+                let Some(lane_id) = lanes.get(lane).or_else(|| lanes.last()).copied() else {
+                    self.message = Some("this project has no lanes to draw on".to_string());
+                    return Created {
+                        clips: created,
+                        points,
+                    };
+                };
+                let clip = match source {
+                    Some(source) => {
+                        let Some(original) = self.project.clips.get(source) else {
+                            self.message =
+                                Some("the clip to paint is not there any more".to_string());
+                            return Created {
+                                clips: created,
+                                points,
+                            };
+                        };
+                        Clip {
+                            lane: lane_id,
+                            start,
+                            ..original.clone()
+                        }
+                    }
+                    None => {
+                        // The double-click's blank: a bar of the rack's
+                        // selection — see `ArrangeEdit::Add`.
+                        let Some(channel) = self
+                            .selected_channel_id()
+                            .or_else(|| self.project.channels.keys().next())
+                        else {
+                            self.message = Some(
+                                "add an instrument first \u{2014} a clip has to play something"
+                                    .to_string(),
+                            );
+                            return Created {
+                                clips: created,
+                                points,
+                            };
+                        };
+                        Clip {
+                            name: None,
+                            lane: lane_id,
+                            start,
+                            length: PPQN * i64::from(self.project.beats_per_bar.max(1)),
+                            source: ClipSource::Notes(NoteData {
+                                channel,
+                                notes: Arena::default(),
+                            }),
+                            prefab_link: None,
+                            color: None,
+                            muted: false,
+                            loop_length: None,
+                        }
+                    }
+                };
+                created.extend(self.paint_step(Box::new(AddClip::new(clip))));
+                self.republish();
             }
             ArrangeEdit::Stamp {
                 source,
@@ -14322,34 +14471,31 @@ impl StudioHost for Session {
             return;
         }
         self.clip = clip;
-        // The rack follows a clip that holds **one** instrument, and only
-        // that one. It used to follow every clip, and that was a report: a
-        // clip holding several instruments could only ever be edited as the
-        // one it was captioned with. Then it followed none, and that was
-        // the next one — *"you could click your clips to already have the
-        // instrument selected to start editing instead of having to select
-        // the clip and the instrument in it"*. Both are right: a clip that
-        // plays one instrument is unambiguous about which one you mean, and
-        // a clip that plays several is not — opening the drum clip with the
-        // bass selected still means *write bass in here*. `channels()` is
-        // the same reading the caption's `+1` comes from, so the two agree
-        // about which clips hold several.
-        let one = self
-            .project
-            .clip_source(clip)
-            .and_then(|source| match source.as_ref() {
-                ClipSource::Notes(data) => match data.channels().as_slice() {
-                    [only] => Some(*only),
-                    _ => None,
-                },
-                _ => None,
-            });
-        if let Some(channel) = one
-            && let Some(index) = self.channel_ids().iter().position(|id| *id == channel)
-            && index != self.selected
-        {
-            self.select_channel(index);
-        }
+        // The rack follows **what plays in the clip** — read off its notes,
+        // never off the channel it was drawn with. Ty: *"clicking on that
+        // clip to select it does not select the instrument thats actually
+        // playing in the channel rack instead it selects the original
+        // instrument that was tied to that clip."* One instrument in it is
+        // that one; several keep a selection that already plays there (you
+        // were writing that part) and otherwise take the one with the most
+        // notes; an empty clip is the one it was drawn with. A second click
+        // steps through them (`cycle_clip_channel`). The caption and the
+        // colour read the same `ClipChannels`, so the block and the rack
+        // cannot disagree about what a clip is.
+        let current = self.selected_channel_id();
+        let wanted = self
+            .clip_channels(clip)
+            .and_then(|channels| channels.on_open(current));
+        self.select_channel_id(wanted);
+        self.touch();
+    }
+
+    fn cycle_clip_channel(&mut self, clip: ClipId) {
+        let current = self.selected_channel_id();
+        let wanted = self
+            .clip_channels(clip)
+            .and_then(|channels| channels.cycled(current));
+        self.select_channel_id(wanted);
         self.touch();
     }
 

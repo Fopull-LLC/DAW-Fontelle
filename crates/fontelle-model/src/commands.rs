@@ -2609,6 +2609,12 @@ impl Compound {
         self.parts.is_empty()
     }
 
+    /// Its parts, in the order they were applied — how a caller that amended
+    /// a gesture (`History::amend`) finds what the last step minted.
+    pub fn parts(&self) -> &[Box<dyn Command>] {
+        &self.parts
+    }
+
     /// Parts that have **already been applied**, joined after the fact — what
     /// [`History::amend`](crate::History::amend) makes of an entry and the
     /// command that follows it.

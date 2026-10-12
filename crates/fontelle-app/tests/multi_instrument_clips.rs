@@ -318,18 +318,24 @@ fn opening_a_clip_holding_one_instrument_selects_it() {
 }
 
 #[test]
-fn opening_a_clip_holding_several_instruments_does_not_move_the_rack() {
+fn opening_a_clip_holding_several_instruments_keeps_one_that_plays_there() {
     // The rack is the instrument you chose; a clip is the place you are
-    // writing. Opening the drum clip while the bass is selected means "write
-    // bass in here" — and only a clip that already holds both leaves the
-    // question open, so only that clip leaves the rack alone.
+    // writing. A clip that holds both leaves the question open, so a
+    // selection that already plays in it stays — picking the clip up to
+    // write more bass must not throw you onto the drums.
     let dir = scratch("open-several");
     let mut session = two_instruments(&dir);
-    // The first clip is the first channel's; a note from the second makes it
-    // hold both.
+    // A note from each channel makes it hold both. (It used to take only the
+    // second's: the first was counted as playing there because the clip was
+    // drawn with it, which is the very thing Ty reported.)
     session.edit(RollEdit::Add {
         note: a_note(0, 60),
     });
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN, 62),
+    });
+    session.select_channel(1);
     let first = session.clips()[0].id;
     assert_eq!(session.selected_channel(), 1);
     session.open_clip(first);
@@ -389,6 +395,16 @@ fn a_block_holding_several_instruments_says_so() {
     session.edit(RollEdit::Add {
         note: a_note(0, 60),
     });
+    // Only the second plays in it so far — so it is the second's block.
+    // (It said "first +1": the first was counted because the clip was drawn
+    // with it, though not one of its notes was in there.)
+    let second = session.channels()[1].name.clone();
+    assert_eq!(session.clips()[0].name, second);
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN, 62),
+    });
+    // Both now, one note each: the tie goes to the higher in the rack.
     assert_eq!(session.clips()[0].name, format!("{first} +1"));
     assert_eq!(session.clips()[0].kind, ClipKind::Notes);
     std::fs::remove_dir_all(&dir).ok();
@@ -684,5 +700,193 @@ fn shift_dragging_a_mixed_selection_loops_each_at_its_own_length_in_one_undo() {
 
     session.undo();
     assert_eq!(shape(&session), before, "one undo puts the whole drag back");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---------------------------------- which instrument a click on a clip means ---
+//
+// > *"if you end up deciding you dont like the instrument you initially
+// > started with and play a different instrument in that same clip and remove
+// > the first one, it will play the instrument right but clicking on that
+// > clip to select it does not select the instrument thats actually playing
+// > in the channel rack instead it selects the original instrument that was
+// > tied to that clip."*
+//
+// Read off the notes, at the moment of the click (`ClipChannels`): the home
+// channel stays in the file, and nothing a person sees comes from it unless
+// the clip is empty.
+
+/// Ty's clip: drawn with the first channel, every note in it the second's.
+fn played_by_the_second(dir: &std::path::Path) -> Session {
+    let mut session = two_instruments(dir);
+    // The first clip is the first channel's; the second is selected.
+    session.edit(RollEdit::Add {
+        note: a_note(0, 60),
+    });
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN, 62),
+    });
+    session
+}
+
+#[test]
+fn a_clip_drawn_with_one_instrument_and_played_by_another_selects_the_other() {
+    let dir = scratch("played-by");
+    let mut session = played_by_the_second(&dir);
+    let clip = session.clips()[0].id;
+    session.select_channel(0);
+    session.open_clip(clip);
+    assert_eq!(
+        session.selected_channel(),
+        1,
+        "the instrument actually playing, not the one it was drawn with"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn and_its_block_wears_the_instrument_playing_in_it() {
+    let dir = scratch("played-by-face");
+    let mut session = played_by_the_second(&dir);
+    let second = session.channels()[1].name.clone();
+    let block = session.clips()[0].clone();
+    assert_eq!(block.name, second, "captioned with what plays");
+    // And coloured with it: a block of the second's own drawing is.
+    let drawn = session.arrange(ArrangeEdit::Add {
+        lane: 3,
+        start: PPQN * 32,
+    });
+    let theirs = session
+        .clips()
+        .into_iter()
+        .find(|c| c.id == drawn.clips[0])
+        .expect("drawn");
+    assert_eq!(block.color, theirs.color, "coloured with what plays");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn with_several_instruments_the_one_with_the_most_notes_is_chosen() {
+    let dir = scratch("most");
+    let mut session = played_by_the_second(&dir);
+    let clip = session.clips()[0].id;
+    // One note of the first's beside the second's two, and a third channel
+    // that plays nothing here selected.
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN * 2, 64),
+    });
+    session.add_channel().expect("a third channel");
+    assert_eq!(session.selected_channel(), 2);
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 1, "the part the clip is about");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn clicking_the_open_clip_again_steps_through_its_instruments() {
+    let dir = scratch("cycle");
+    let mut session = played_by_the_second(&dir);
+    let clip = session.clips()[0].id;
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN * 2, 64),
+    });
+    session
+        .add_channel()
+        .expect("a third channel, which plays nothing here");
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 1);
+    session.cycle_clip_channel(clip);
+    assert_eq!(
+        session.selected_channel(),
+        0,
+        "round to the top of the rack"
+    );
+    session.cycle_clip_channel(clip);
+    assert_eq!(session.selected_channel(), 1);
+    session.cycle_clip_channel(clip);
+    assert_eq!(
+        session.selected_channel(),
+        0,
+        "never the third, which is not in it"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_empty_clip_still_selects_the_instrument_it_was_drawn_with() {
+    let dir = scratch("empty");
+    let mut session = two_instruments(&dir);
+    let clip = session.clips()[0].id;
+    assert_eq!(session.selected_channel(), 1);
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 0);
+    session.cycle_clip_channel(clip);
+    assert_eq!(session.selected_channel(), 0, "nothing else to step to");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_deleted_instrument_is_never_selected_and_its_undo_brings_it_back() {
+    let dir = scratch("deleted");
+    let mut session = played_by_the_second(&dir);
+    let clip = session.clips()[0].id;
+    // One note of the first's too, so the clip is not empty once the second
+    // has gone.
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN * 2, 64),
+    });
+    session.end_gesture();
+    let first = session.channels()[0].name.clone();
+    // The second goes. Its notes stay in the clip naming a channel that is
+    // not there, and count for nothing.
+    session.remove_channel(1);
+    session.end_gesture();
+    assert_eq!(session.channels().len(), 1);
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 0);
+    assert_eq!(
+        session
+            .clips()
+            .iter()
+            .find(|c| c.id == clip)
+            .map(|c| c.name.clone()),
+        Some(first),
+        "no +1 for an instrument that has gone"
+    );
+    session.cycle_clip_channel(clip);
+    assert_eq!(session.selected_channel(), 0);
+    // And back: the second is the one with the most notes again.
+    session.undo();
+    assert_eq!(session.channels().len(), 2);
+    session.select_channel(0);
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 0, "kept: the first plays here");
+    session.cycle_clip_channel(clip);
+    assert_eq!(session.selected_channel(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_automation_clip_leaves_the_rack_alone_when_clicked_or_clicked_again() {
+    let dir = scratch("automation");
+    let mut session = two_instruments(&dir);
+    let master = session
+        .mixer_track_id(session.mixer_strips().len() - 1)
+        .expect("the last strip is the master");
+    let address = fontelle_types::ParamTarget::TrackGain(master).address();
+    session.create_automation(&address, "Master \u{2014} gain", PPQN * 4);
+    let automation = session
+        .clips()
+        .into_iter()
+        .find(|c| c.kind == ClipKind::Automation)
+        .expect("an automation clip")
+        .id;
+    let before = session.selected_channel();
+    session.open_clip(automation);
+    session.cycle_clip_channel(automation);
+    assert_eq!(session.selected_channel(), before);
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -58,7 +58,7 @@ pub use mixer::{
     EffectSlot, LEGACY_TRACK_GREY, Mixer, MixerTrack, OLD_TRACK_PALETTE, PanLaw, Send,
     TRACK_PALETTE,
 };
-pub use note::{Note, NoteData, NoteHome, NoteProperty, PathPoint};
+pub use note::{ClipChannels, Note, NoteData, NoteHome, NoteProperty, PathPoint};
 pub use prefab::{
     ElementId, MAX_BASE_DEPTH, OverrideMap, Prefab, PrefabLink, PropKey, PropValue, resolve,
 };

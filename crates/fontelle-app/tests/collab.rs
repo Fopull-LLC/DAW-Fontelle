@@ -2946,3 +2946,41 @@ fn a_knob_kept_on_the_joiner_survives_his_copy_being_made_again() {
         "and so is his plugin"
     );
 }
+
+/// A paint stroke crosses the wire as the one gesture it is: Bob's sixteen
+/// hats arrive at Alice's as the stroke, and his one Ctrl+Z takes the
+/// stroke back on both. And what each block shows is read off its notes on
+/// either side, so the caption agrees however the clip's notes arrived.
+#[test]
+fn a_joiners_paint_stroke_lands_whole_and_comes_back_whole() {
+    let mut pair = Pair::joined("paint-stroke", 3);
+    let source = open_clip(&pair.joiner);
+    let before = pair.host.clips().len();
+    let bar = PPQN * 4;
+    for at in 2..6 {
+        pair.joiner.arrange(ArrangeEdit::Paint {
+            source: Some(source),
+            lane: 0,
+            start: bar * at,
+        });
+    }
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+    assert_eq!(pair.host.clips().len(), before + 4);
+    let names = |session: &Session| {
+        let mut names: Vec<_> = session.clips().into_iter().map(|c| c.name).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&pair.host), names(&pair.joiner));
+
+    pair.joiner.undo();
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        pair.host.clips().len(),
+        before,
+        "one undo, the whole stroke"
+    );
+}
