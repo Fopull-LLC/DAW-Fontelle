@@ -1340,34 +1340,38 @@ fn a_fork_is_a_new_song_that_remembers_its_parent() {
 
 // ------------------------------------------------------------- slot ids
 
-/// F8. A command names an insert by its place in the chain, and remembers
-/// which insert was there when it was made. If another edit has moved a
-/// different insert into that place, the command is refused rather than
-/// applied to the neighbour.
+/// F8 and F90. A command names an insert by its place in the chain, and
+/// remembers which insert was there when it was made. If another edit has
+/// moved a different insert into that place, the command follows its own
+/// insert to where it went — never the neighbour — and is refused only when
+/// its insert is gone.
 #[test]
-fn a_slot_command_refuses_when_the_slot_moved() {
+fn a_slot_command_follows_its_slot_and_refuses_when_it_is_gone() {
     let studio = a_studio();
     let mut here = studio.project.clone();
     let mut there = studio.project.clone();
 
     let mut mine = SetInsertBypassed::new(studio.part, EQ, true);
     mine.apply(&mut here).unwrap();
+    let eq = here.mixer.tracks[studio.part].inserts[EQ].id;
 
     // Meanwhile, on the other machine, the gate moved below the EQ.
     MoveInsert::new(studio.part, GATE, EQ)
         .apply(&mut there)
         .unwrap();
-    let untouched = snapshot(&there);
 
-    let result = across_the_wire(&mine).apply(&mut there);
-    assert!(result.is_err(), "the EQ is not at that place any more");
-    assert_eq!(
-        snapshot(&there),
-        untouched,
-        "and nothing else was bypassed in its stead"
-    );
+    across_the_wire(&mine)
+        .apply(&mut there)
+        .expect("the EQ is still in the chain");
+    for slot in &there.mixer.tracks[studio.part].inserts {
+        assert_eq!(
+            slot.bypassed,
+            slot.id == eq,
+            "the EQ is bypassed where it went, and nothing else in its stead"
+        );
+    }
 
-    // A send is the same.
+    // A send that is gone is refused, never another send in its place.
     let mut level = SetSendLevel::new(studio.part, 0, -12.0);
     let mut here = studio.project.clone();
     level.apply(&mut here).unwrap();
@@ -1376,10 +1380,12 @@ fn a_slot_command_refuses_when_the_slot_moved() {
     AddSend::new(studio.part, studio.master)
         .apply(&mut there)
         .unwrap();
+    let untouched = snapshot(&there);
     assert!(
         across_the_wire(&level).apply(&mut there).is_err(),
         "the send at that place is a different send"
     );
+    assert_eq!(snapshot(&there), untouched);
 }
 
 /// F8. Every insert and every send has an id of its own, and a copy of a

@@ -605,6 +605,9 @@ pub struct Session {
     /// generation and this moment, and the lanes have not been looked at
     /// since (`settle_lanes`).
     lanes_unsettled: Option<(u64, std::time::Instant)>,
+    /// How many times the graph has been built — what a burst of somebody
+    /// else's edits costs a shared song (`graph_builds`).
+    graph_builds: u64,
     /// The question a stray clip raised in lane-style, while it stands.
     lane_question: Option<fontelle_model::LaneConflict>,
     /// The stray clips already known about — asked of, or there when the
@@ -1595,6 +1598,7 @@ impl Session {
             arrival_row: 0,
             selected_lane: None,
             lanes_unsettled: None,
+            graph_builds: 0,
             lane_question: None,
             known_conflicts: Vec::new(),
             routing_question: false,
@@ -2703,6 +2707,12 @@ impl Session {
     /// How far along the file `hash` is while it is on its way here.
     pub fn collab_fetching(&self, hash: u64) -> Option<f32> {
         self.collab.as_ref()?.fetching(hash)
+    }
+
+    /// How many times this studio has built its graph, for a test to count
+    /// what a burst of somebody else's edits costs.
+    pub fn graph_builds(&self) -> u64 {
+        self.graph_builds
     }
 
     /// The files that have arrived whole in this session, by hash.
@@ -5052,6 +5062,7 @@ impl Session {
     }
 
     fn rebuild_graph(&mut self) {
+        self.graph_builds += 1;
         // Reusing the control surfaces, so a track's fader and meter outlive
         // the graph they were built with — see `realise::fader`.
         // The live input goes onto the armed track, so the strip you chose an
