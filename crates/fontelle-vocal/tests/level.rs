@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use fontelle_sing::{
     Backend, Capabilities, Phrase, PhraseNote, Quality, Session, SingError, Sung, VoiceInfo,
 };
-use fontelle_vocal::{PhraseState, VocalRenderer, Wanted, leveled, reference_phrase};
+use fontelle_vocal::{PhraseState, VocalRenderer, Wanted, leveled, leveled_kept, reference_phrase};
 
 /// A singer at a fixed level: a 220 Hz tone at `amplitude` over each note.
 struct Tone {
@@ -40,6 +40,39 @@ impl Tone {
 
 struct ToneBackend(Arc<Tone>);
 struct ToneSession(Arc<Tone>);
+
+/// A tone sung from a folder, at a version: what a built-in runtime says
+/// a voice is made of.
+struct FiledTone {
+    tone: Arc<Tone>,
+    folder: std::path::PathBuf,
+    version: &'static str,
+}
+
+impl Backend for FiledTone {
+    fn name(&self) -> &str {
+        "Tone"
+    }
+    fn version(&self) -> String {
+        self.version.into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        ToneBackend(Arc::clone(&self.tone)).voices()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn Session>, String> {
+        Ok(Box::new(ToneSession(Arc::clone(&self.tone))))
+    }
+    fn voice_files(&self, voice: &str) -> Vec<std::path::PathBuf> {
+        if voice == "tone" {
+            vec![self.folder.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 impl Backend for ToneBackend {
     fn name(&self) -> &str {
@@ -270,4 +303,111 @@ fn two_threads_starting_at_once_measure_the_voice_once() {
         .filter(|p| **p == reference)
         .count();
     assert_eq!(references, 1);
+}
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("fontelle-level-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn references(tone: &Tone, voice: &VoiceInfo) -> usize {
+    let reference = reference_phrase(voice);
+    tone.asked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| **p == reference)
+        .count()
+}
+
+/// A voice's level is kept on disk by what the voice is made of: the next
+/// session (a new run of the studio, a rescan after an install) sings its
+/// first phrase without singing the reference first — about half a second
+/// of a DiffSinger bank's first phrase, every session.
+#[test]
+fn a_voices_level_is_kept_on_disk_and_not_measured_again() {
+    let dir = scratch("kept");
+    let bank = dir.join("bank");
+    std::fs::create_dir_all(bank.join("sub")).unwrap();
+    std::fs::write(bank.join("oto.ini"), "a.wav=a,0,0,0,0,0").unwrap();
+    std::fs::write(bank.join("sub").join("model.onnx"), vec![7u8; 300_000]).unwrap();
+    let levels = dir.join("levels");
+    let filed = |tone: &Arc<Tone>, version| -> Arc<dyn Backend> {
+        leveled_kept(
+            Arc::new(FiledTone {
+                tone: Arc::clone(tone),
+                folder: bank.clone(),
+                version,
+            }),
+            Some(levels.clone()),
+        )
+    };
+    let first = Tone::new(0.05);
+    let a = sing(&filed(&first, "1"), &phrase("la"));
+    let voice = ToneBackend(Tone::new(0.1)).voices().remove(0);
+    assert_eq!(references(&first, &voice), 1);
+    assert!(
+        std::fs::read_dir(&levels).is_ok_and(|d| d.count() > 0),
+        "the level is written"
+    );
+    // The next session: no reference, the same take.
+    let second = Tone::new(0.05);
+    let b = sing(&filed(&second, "1"), &phrase("la"));
+    assert_eq!(references(&second, &voice), 0, "measured again");
+    assert_eq!(second.sung.load(Ordering::SeqCst), 1, "the phrase only");
+    assert_eq!(a.samples, b.samples);
+
+    // A new runtime version measures again (it may sing louder).
+    let third = Tone::new(0.05);
+    sing(&filed(&third, "2"), &phrase("la"));
+    assert_eq!(references(&third, &voice), 1);
+
+    // So does a bank whose files changed (a new release in the same
+    // folder), even at the same size.
+    let mut model = vec![7u8; 300_000];
+    model[150_000] = 8;
+    std::fs::write(bank.join("sub").join("model.onnx"), model).unwrap();
+    let fourth = Tone::new(0.05);
+    sing(&filed(&fourth, "1"), &phrase("la"));
+    assert_eq!(references(&fourth, &voice), 1);
+    let fifth = Tone::new(0.05);
+    sing(&filed(&fifth, "1"), &phrase("la"));
+    assert_eq!(references(&fifth, &voice), 0);
+}
+
+/// A voice that says nothing of its files (an external engine's) is
+/// measured each session, and a level folder that cannot be written only
+/// costs the reference again.
+#[test]
+fn a_voice_without_files_or_a_folder_that_cannot_be_written_still_sings() {
+    let dir = scratch("unkept");
+    let levels = dir.join("levels");
+    for _ in 0..2 {
+        let tone = Tone::new(0.05);
+        let backend = leveled_kept(
+            Arc::new(ToneBackend(Arc::clone(&tone))),
+            Some(levels.clone()),
+        );
+        sing(&backend, &phrase("la"));
+        assert_eq!(references(&tone, &backend.voices()[0]), 1);
+    }
+    // A file where the folder would be.
+    let blocked = dir.join("blocked");
+    std::fs::write(&blocked, "not a folder").unwrap();
+    let bank = dir.join("bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    std::fs::write(bank.join("oto.ini"), "x").unwrap();
+    let tone = Tone::new(0.05);
+    let backend = leveled_kept(
+        Arc::new(FiledTone {
+            tone: Arc::clone(&tone),
+            folder: bank,
+            version: "1",
+        }),
+        Some(blocked),
+    );
+    let quiet = rms_db(&sing(&backend, &phrase("la")).samples);
+    assert!((-24.0..-12.0).contains(&quiet), "{quiet:.1} dB: levelled");
 }

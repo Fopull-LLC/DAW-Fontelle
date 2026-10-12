@@ -102,3 +102,18 @@ fn rescanning_finds_new_banks_and_reports_broken_ones() {
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.ends_with("broken"));
 }
+
+/// A bank names its folder and its vocoder's as what it is sung from, so
+/// its loudness can be kept by their content; a voice it does not have
+/// names nothing.
+#[test]
+fn a_bank_is_sung_from_its_folder_and_its_vocoders() {
+    let root = scratch("backend-files");
+    let (bank, deps) = write_bank(&root);
+    let singer = DiffSinger::new(Options::new(vec![root.join("singers")]));
+    let files = singer.voice_files("Test Bank");
+    assert_eq!(files.len(), 2, "{files:?}");
+    assert!(files.contains(&bank), "{files:?}");
+    assert!(files.iter().any(|f| f.starts_with(&deps)), "{files:?}");
+    assert!(singer.voice_files("nobody").is_empty());
+}

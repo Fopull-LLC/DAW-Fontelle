@@ -169,6 +169,15 @@ impl Backend for UtauBackend {
             .collect()
     }
 
+    fn voice_files(&self, voice: &str) -> Vec<PathBuf> {
+        self.banks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(voice)
+            .map(|k| vec![k.dir.clone()])
+            .unwrap_or_default()
+    }
+
     fn capabilities(&self, voice: &str) -> Capabilities {
         let Ok((b, kind)) = load(&self.banks, voice) else {
             return Capabilities::default();

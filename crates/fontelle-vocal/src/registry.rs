@@ -73,19 +73,25 @@ pub fn builtin_backends() -> Vec<BuiltinBackend> {
             key: "fontelle-diffsinger",
             kind: SingerKind::DiffSinger,
             make: |voicebanks| {
-                crate::leveled(Arc::new(fontelle_diffsinger::DiffSinger::new(
-                    fontelle_diffsinger::Options::new(vec![voicebanks.to_path_buf()]),
-                )))
+                crate::leveled_kept(
+                    Arc::new(fontelle_diffsinger::DiffSinger::new(
+                        fontelle_diffsinger::Options::new(vec![voicebanks.to_path_buf()]),
+                    )),
+                    crate::default_levels_dir(),
+                )
             },
         },
         BuiltinBackend {
             key: "fontelle-utau",
             kind: SingerKind::Utau,
             make: |voicebanks| {
-                crate::leveled(Arc::new(fontelle_utau::UtauBackend::new(
-                    vec![voicebanks.to_path_buf()],
-                    fontelle_utau::cache::default_cache_dir(),
-                )))
+                crate::leveled_kept(
+                    Arc::new(fontelle_utau::UtauBackend::new(
+                        vec![voicebanks.to_path_buf()],
+                        fontelle_utau::cache::default_cache_dir(),
+                    )),
+                    crate::default_levels_dir(),
+                )
             },
         },
     ]

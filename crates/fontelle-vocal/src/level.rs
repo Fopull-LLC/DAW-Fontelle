@@ -15,9 +15,15 @@
 //! ([`crate::VocalRenderer::warm`]): chosen on a track, a voice's models are
 //! loaded and its level found while the first notes are being written.
 //!
+//! A gain measured is kept on disk ([`leveled_kept`]), by the content of
+//! the files the voice is sung from and the runtime's version, so the next
+//! session's first phrase does not sing the reference first.
+//!
 //! External engines are not wrapped: what they sing is theirs.
 
 use std::collections::HashMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -112,12 +118,137 @@ fn gain_for(db: Option<f32>) -> f32 {
     10f32.powf(change / 20.0)
 }
 
-/// `inner`, every voice levelled — see the module doc.
+/// `inner`, every voice levelled — see the module doc. Gains are kept in
+/// memory only.
 pub fn leveled(inner: Arc<dyn Backend>) -> Arc<dyn Backend> {
+    leveled_kept(inner, None)
+}
+
+/// [`leveled`], each gain also kept in `dir` (see [`default_levels_dir`])
+/// for a voice whose backend names its files
+/// ([`Backend::voice_files`]).
+pub fn leveled_kept(inner: Arc<dyn Backend>, dir: Option<PathBuf>) -> Arc<dyn Backend> {
     Arc::new(Leveled {
         inner,
-        gains: Arc::default(),
+        gains: Arc::new(Gains {
+            dir,
+            ..Gains::default()
+        }),
     })
+}
+
+/// Where gains are kept: beside the UTAU runtime's analyses
+/// (`…/fontelle/levels`).
+pub fn default_levels_dir() -> Option<PathBuf> {
+    fontelle_utau::cache::default_cache_dir().and_then(|d| d.parent().map(|p| p.join("levels")))
+}
+
+/// Bytes of a file read whole into its fingerprint; a larger one gives its
+/// length and three samples of [`SAMPLE_BYTES`] (start, middle, end). A
+/// bank is hundreds of megabytes of models or thousands of recordings:
+/// reading it all would cost more than the reference it saves.
+const WHOLE_BYTES: u64 = 64 * 1024;
+const SAMPLE_BYTES: u64 = 4 * 1024;
+
+/// What a voice is made of, as a file name: its files' paths, lengths and
+/// contents (sampled), the runtime's version and the levelling's. `None`
+/// when the backend names no files, or they cannot be read.
+fn fingerprint(version: &str, voice: &str, files: &[PathBuf]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    if files.is_empty() {
+        return None;
+    }
+    let mut h = Sha256::new();
+    h.update(LEVEL_VERSION.to_le_bytes());
+    for part in [version, voice] {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
+    for root in files {
+        let mut found = Vec::new();
+        walk(root, root, &mut found);
+        if found.is_empty() {
+            return None;
+        }
+        found.sort();
+        for (rel, path) in found {
+            let bytes = sampled(&path)?;
+            h.update((rel.len() as u64).to_le_bytes());
+            h.update(rel.as_bytes());
+            h.update((bytes.len() as u64).to_le_bytes());
+            h.update(&bytes);
+        }
+    }
+    Some(
+        h.finalize()
+            .iter()
+            .take(20)
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
+/// Every file under `path` (or `path` itself), by its path from `root`.
+fn walk(root: &Path, path: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.is_file() {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push((rel, path.to_path_buf()));
+    } else if meta.is_dir()
+        && let Ok(entries) = std::fs::read_dir(path)
+    {
+        for e in entries.flatten() {
+            walk(root, &e.path(), out);
+        }
+    }
+}
+
+/// A file's bytes, or its length and samples of it.
+fn sampled(path: &Path) -> Option<Vec<u8>> {
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut out = len.to_le_bytes().to_vec();
+    if len <= WHOLE_BYTES {
+        f.read_to_end(&mut out).ok()?;
+        return Some(out);
+    }
+    for at in [0, len / 2 - SAMPLE_BYTES / 2, len - SAMPLE_BYTES] {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut chunk = vec![0u8; SAMPLE_BYTES as usize];
+        f.read_exact(&mut chunk).ok()?;
+        out.extend_from_slice(&chunk);
+    }
+    Some(out)
+}
+
+fn read_kept(path: &Path) -> Option<f32> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let gain: f32 = text.trim().parse().ok()?;
+    (gain.is_finite() && gain > 0.0).then_some(gain)
+}
+
+/// Written whole or not at all; a folder that cannot be written only means
+/// the reference is sung again next time.
+fn write_kept(path: &Path, gain: f32) {
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let partial = path.with_extension(format!("part{}", std::process::id()));
+    if std::fs::write(&partial, format!("{gain}\n")).is_ok()
+        && std::fs::rename(&partial, path).is_err()
+    {
+        let _ = std::fs::remove_file(&partial);
+    }
 }
 
 /// Each voice's gain, shared by every session: measured by one of them
@@ -127,6 +258,8 @@ pub fn leveled(inner: Arc<dyn Backend>) -> Arc<dyn Backend> {
 struct Gains {
     known: Mutex<HashMap<String, Gain>>,
     changed: Condvar,
+    /// Where gains are kept on disk, or nowhere.
+    dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -155,6 +288,10 @@ impl Backend for Leveled {
 
     fn capabilities(&self, voice: &str) -> Capabilities {
         self.inner.capabilities(voice)
+    }
+
+    fn voice_files(&self, voice: &str) -> Vec<PathBuf> {
+        self.inner.voice_files(voice)
     }
 
     fn session(&self) -> Result<Box<dyn Session>, String> {
@@ -224,6 +361,18 @@ impl LeveledSession {
         let gain = match self.known(&phrase.voice) {
             Some(gain) => gain,
             None => {
+                // Kept from an earlier session?
+                let kept = self.gains.dir.as_ref().and_then(|dir| {
+                    let files = self.backend.voice_files(&phrase.voice);
+                    let name = fingerprint(&self.backend.version(), &phrase.voice, &files)?;
+                    Some(dir.join(&name[..2]).join(format!("{name}.level")))
+                });
+                if let Some(gain) = kept.as_deref().and_then(read_kept) {
+                    self.settle(&phrase.voice, Some(gain));
+                    let mut take = sing(self.inner.as_mut(), phrase, quality, seed)?;
+                    scale(&mut take, gain);
+                    return Ok(take);
+                }
                 let reference = self
                     .backend
                     .voices()
@@ -244,6 +393,10 @@ impl LeveledSession {
                     None => (1.0, None),
                 };
                 self.settle(&phrase.voice, Some(gain));
+                // A reference that did not sing is not kept: it may next time.
+                if let (Some(path), Some(_)) = (&kept, &take) {
+                    write_kept(path, gain);
+                }
                 // Asked for the reference itself (warming): it is sung.
                 if let (Some(mut take), true) = (take, reference.as_ref() == Some(phrase))
                     && quality == Quality::Preview

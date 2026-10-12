@@ -348,3 +348,13 @@ fn the_phonemizer_setting_overrides_detection() {
         .collect();
     assert_eq!(sung, ["- か", "a R"]);
 }
+
+/// A bank names its folder as what it is sung from (its loudness is kept
+/// by the folder's content); a voice it does not have names nothing.
+#[test]
+fn a_bank_is_sung_from_its_folder() {
+    let (root, _b) = bank("sing_backend_files");
+    let backend = UtauBackend::new(vec![root.clone()], Some(root.join("cache")));
+    assert_eq!(backend.voice_files("utau/Synth"), vec![root.join("Synth")]);
+    assert!(backend.voice_files("utau/Nobody").is_empty());
+}

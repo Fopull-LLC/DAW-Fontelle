@@ -389,6 +389,13 @@ pub trait Backend: Send + Sync {
     fn capabilities(&self, voice: &str) -> Capabilities;
     /// A session for one worker thread.
     fn session(&self) -> Result<Box<dyn Session>, String>;
+    /// The files and folders `voice` is sung from — its voicebank and
+    /// whatever it depends on (a vocoder) — so the host can keep what it
+    /// learns about the voice (its loudness) by their content. Empty when
+    /// there is nothing to say: then nothing is kept.
+    fn voice_files(&self, _voice: &str) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
 }
 
 /// One worker's session with a backend.

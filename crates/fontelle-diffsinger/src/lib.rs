@@ -255,6 +255,17 @@ impl Backend for DiffSinger {
             .unwrap_or_default()
     }
 
+    fn voice_files(&self, voice: &str) -> Vec<PathBuf> {
+        let Some(e) = self.inner.entry(voice) else {
+            return Vec::new();
+        };
+        let mut files = vec![e.bank.dir.clone()];
+        if let Ok(v) = &e.bank.vocoder {
+            files.push(v.dir.clone());
+        }
+        files
+    }
+
     fn session(&self) -> Result<Box<dyn Session>, String> {
         Ok(Box::new(DiffSingerSession {
             inner: self.inner.clone(),
