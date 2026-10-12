@@ -890,3 +890,60 @@ fn an_automation_clip_leaves_the_rack_alone_when_clicked_or_clicked_again() {
     assert_eq!(session.selected_channel(), before);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------- deleting the first instrument ---
+
+#[test]
+fn deleting_the_instrument_a_clip_was_drawn_with_keeps_the_others_notes() {
+    // Ty's case to the letter: drawn with A, B played into it, A removed.
+    // *"it will play the instrument right but clicking on that clip ...
+    // selects the original instrument"* — and before that, deleting A took
+    // the whole clip, B's part with it.
+    let dir = scratch("delete-first");
+    let mut session = played_by_the_second(&dir);
+    let clip = session.clips()[0].id;
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(PPQN * 2, 64),
+    });
+    session.end_gesture();
+    let second = session.channels()[1].name.clone();
+    let before = session.clips();
+
+    session.remove_channel(0);
+    session.end_gesture();
+    assert_eq!(session.channels().len(), 1);
+    let block = session
+        .clips()
+        .into_iter()
+        .find(|c| c.id == clip)
+        .expect("the clip with B's notes is still there");
+    assert_eq!(block.name, second, "and it is B's block");
+    assert_eq!(block.notes.len(), 2, "B's two notes, A's one gone");
+    session.open_clip(clip);
+    assert_eq!(session.selected_channel(), 0, "a click selects B");
+    // It plays B: B's notes compile.
+    assert!(!session.compiled().events.is_empty());
+
+    session.undo();
+    assert_eq!(session.channels().len(), 2);
+    assert_eq!(session.clips(), before, "undo puts back exactly");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn deleting_an_instrument_still_takes_a_clip_of_nothing_but_its_notes() {
+    let dir = scratch("delete-only");
+    let mut session = two_instruments(&dir);
+    // The first channel's clip, with one of its own notes in it.
+    session.select_channel(0);
+    session.edit(RollEdit::Add {
+        note: a_note(0, 60),
+    });
+    session.end_gesture();
+    let before = session.clips().len();
+    session.remove_channel(0);
+    session.end_gesture();
+    assert_eq!(session.clips().len(), before - 1);
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -81,10 +81,32 @@ merged, not bumped. Four reports from Ty.
   arrange_paint.rs` (6), `multi_instrument_clips.rs` (+7, two updated: a
   clip drawn with A and holding only B's notes is B's), `collab.rs` (+1, a
   stroke crosses the wire whole), `shakedown.rs` (the slide note is now an
-  old song's). Gaps: `RemoveChannel` still deletes clips whose *home* is
-  the deleted channel even when they hold other channels' notes (a model
-  change with wire implications, left alone); Windows untested on a
-  device — reasoned, unit- and pixel-tested here.
+  old song's). Windows untested on a device — reasoned, unit- and
+  pixel-tested here.
+- **Deleting an instrument takes its notes, not the clips it shares**:
+  `RemoveChannel` took every clip *drawn with* the channel, so Ty's clip
+  (drawn with A, written with B) went with A. `DeleteChannel` (+
+  `RestoreDeletedChannel`, appended to the wire's `Edit`, name pinned) takes
+  A's notes out of every clip and prefab; a clip goes only if nothing but A
+  was in it (or it was empty and drawn with A); one that keeps notes is
+  re-homed onto `ClipChannels::face`, places follow their prefab. Undo is
+  exact. The studio runs it; `RemoveChannel` is unchanged for old peers and
+  undo stacks. Tests: `fontelle-model/tests/delete_channel.rs` (6),
+  `multi_instrument_clips.rs` (+2), `collab.rs` (+1), `wire.rs`.
+- **Settings from a newer build load here** (a preview build's
+  `{"instrument": "Vocal"}` star made the release refuse the whole file and
+  run on defaults): `Settings::from_json` sets aside an unreadable favourite
+  on its own, and an unknown or unreadable field on its own (field by field
+  onto the defaults), in `Settings::unread`; `to_json` writes them back
+  verbatim — a known field only while this build has left it at its default.
+  A file from a newer *format version* is still refused, as before. Tests:
+  `settings_from_newer_builds.rs` (6).
+- **Tests no longer read or write the real `~/.config/fontelle`**:
+  `Session::new` starts on default settings and reads no file; `main` asks
+  for the user's (`with_user_settings`); a session with no settings path
+  saves nowhere, and its tour, previews and themes no longer fall back to
+  the config folder. `settings_isolation.rs` (1); the `live_take` failure
+  on the devbox was this.
 
 **As of 2026-10-06, earlier — Analyze Musically keeps its own time; a
 flatten handle; a pro's pass over its edges.** Same branch

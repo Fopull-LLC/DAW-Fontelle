@@ -218,6 +218,10 @@ edits!(
     SetStudyClean,
     SetStudyTakes,
     SetStudyOriginal,
+    // v0.26.2: a delete that takes an instrument's notes, not the clips it
+    // shares (`DeleteChannel`). Appended: a name on the wire is forever.
+    DeleteChannel,
+    RestoreDeletedChannel,
 );
 
 impl Edit {

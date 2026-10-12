@@ -665,6 +665,8 @@ fn play_or_render(
                 clip,
                 save.map(std::path::Path::to_path_buf),
             )
+            // The user's own settings, first: the `with_*`s below read them.
+            .with_user_settings()
             // The instruments reach the running stream through their own
             // channel, so choosing a soundfont from inside the window does not
             // restart the audio device.

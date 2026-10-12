@@ -1479,7 +1479,14 @@ impl Session {
         clip: ClipId,
         bundle: Option<PathBuf>,
     ) -> Self {
-        let (settings, error) = Settings::load();
+        // **Defaults, and nothing read.** The user's own file is the
+        // studio's to ask for (`with_user_settings`, in `main`); a session
+        // made any other way — every test — reads and writes no settings
+        // but the ones it is pointed at (`with_settings_path`). It used to
+        // read `~/.config/fontelle/settings.json` here, so a test passed or
+        // failed by what was on the machine running it: one did, when a
+        // preview build left a favourite this build could not read.
+        let settings = Settings::default();
         let plugin_dirs = settings.plugin_dirs.clone();
         let mut session = Self {
             project,
@@ -1620,7 +1627,7 @@ impl Session {
             preview_patch: None,
             random_state: 0,
             previewing: false,
-            message: error.map(|e| e.to_string()),
+            message: None,
             audition: None,
             roll_notes: Arena::default(),
             previews: std::cell::RefCell::new(HashMap::new()),
@@ -1881,6 +1888,21 @@ impl Session {
             .map(|recovery| format!("Recover unsaved work in {}", recovery.name))
     }
 
+    /// The user's own settings, from the usual place
+    /// ([`Settings::config_path`]) — what the studio runs on. Before the
+    /// `with_*` that read settings (the MIDI input, the audio output).
+    pub fn with_user_settings(self) -> Self {
+        match Settings::config_path() {
+            Some(path) => {
+                let mut session = self.with_settings_path(path);
+                let dirs = session.settings.plugin_dirs.clone();
+                session.plugins.set_folders(dirs);
+                session
+            }
+            None => self,
+        }
+    }
+
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
         let (settings, error) = Settings::load_from(&path);
         self.preset_bank.set_user_dir(settings.user_preset_dir());
@@ -1906,7 +1928,6 @@ impl Session {
         settings_path
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(Settings::config_dir)
             .unwrap_or_else(std::env::temp_dir)
             .join("themes")
     }
@@ -2208,10 +2229,13 @@ impl Session {
         self.touch();
     }
 
+    /// Writes the settings to the file this session was pointed at — and
+    /// with none, nowhere: a session with no settings file keeps them in
+    /// memory (see `Session::new`).
     fn save_settings(&self) -> std::io::Result<()> {
         match &self.settings_path {
             Some(path) => self.settings.save_to(path),
-            None => self.settings.save(),
+            None => Ok(()),
         }
     }
 
@@ -3078,7 +3102,7 @@ impl Session {
             .settings_path
             .as_ref()
             .and_then(|path| path.parent().map(|dir| dir.join("tour")))
-            .or_else(|| Settings::config_dir().map(|dir| dir.join("tour")))
+            .or_else(|| Some(std::env::temp_dir().join("fontelle-tour")))
             .ok_or("there is nowhere to keep the tour\u{2019}s song")?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.fontelle", crate::tour::TOUR_NAME));
@@ -9530,7 +9554,8 @@ impl StudioHost for Session {
             self.message = Some("a project needs at least one instrument".to_string());
             return;
         }
-        self.run(Box::new(fontelle_model::RemoveChannel::new(id)));
+        // Its **notes**, not every clip drawn with it — see `DeleteChannel`.
+        self.run(Box::new(fontelle_model::DeleteChannel::new(id)));
         self.let_go();
         self.channel_presets.remove(&id);
         self.patch_cache = None;
@@ -10914,9 +10939,9 @@ impl StudioHost for Session {
         // question a settings tab leaves somebody with, and the answer is a
         // path. Elided from the left like the bank's, because the end of a
         // path is the half that says where you are.
-        match self.settings_path.clone().or_else(Settings::config_path) {
+        match self.settings_path.clone() {
             Some(path) => crate::desktop::elide_path(&path, 2),
-            None => "there is no home directory to keep settings in".to_string(),
+            None => "settings are not being kept in a file".to_string(),
         }
     }
 
@@ -11571,8 +11596,7 @@ impl StudioHost for Session {
         let dir = self
             .settings_path
             .as_deref()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .or_else(Settings::config_dir);
+            .and_then(|path| path.parent().map(Path::to_path_buf));
         let Some(dir) = dir else {
             self.message = Some("there is no home directory to keep settings in".to_string());
             return;
@@ -16423,10 +16447,7 @@ impl Session {
     /// Where the previews are kept: beside the settings, or beside a
     /// session's own settings path.
     fn previews_path(&self) -> Option<PathBuf> {
-        let dir = match &self.settings_path {
-            Some(path) => path.parent().map(Path::to_path_buf),
-            None => Settings::config_dir(),
-        }?;
+        let dir = self.settings_path.as_ref()?.parent()?.to_path_buf();
         Some(crate::preview_index::PreviewIndex::path_in(&dir))
     }
 
