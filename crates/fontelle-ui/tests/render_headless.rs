@@ -6798,6 +6798,22 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     ];
     words.extend(graphics_lines.iter().cloned());
     words.extend(graphics_buttons.iter().cloned());
+    // F91: what a joiner's computer has not got.
+    let missing = vec![
+        fontelle_ui::document::MissingItem {
+            what: "Serum 2 \u{2014} VST3, Xfer Records".to_string(),
+            detail: "not installed here \u{2014} the instrument Bass".to_string(),
+        },
+        fontelle_ui::document::MissingItem {
+            what: "Glass \u{2014} soundfont".to_string(),
+            detail: "Alice\u{2019}s computer does not have it either".to_string(),
+        },
+    ];
+    words.push(fontelle_ui::canvas::MISSING_HERE.to_string());
+    words.push(fontelle_ui::canvas::missing_more_words(1));
+    for item in &missing {
+        words.extend([item.what.clone(), item.detail.clone()]);
+    }
     for word in &words {
         labels.ensure(word, &theme.font, &mut text);
     }
@@ -6906,6 +6922,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             code: Some("UL22A6"),
             peers: &peers,
             status,
+            missing: &[],
         }),
         ..Default::default()
     });
@@ -6926,6 +6943,48 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         "Carol is view only and her switch is not lit"
     );
     assert!(!lit(panel.rows[0].view_only), "Bob's switch is lit");
+
+    // A joiner missing a plugin and a soundfont: listed, under a heading,
+    // what and where (F91).
+    let lacking = shoot(Notices {
+        sharing: Some(0),
+        share: Some(ShareNotice {
+            role: ShareRole::Joined,
+            code: None,
+            peers: &peers,
+            status,
+            missing: &missing,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&lacking, "share-panel-missing", W, H);
+    let listed = fontelle_ui::canvas::share_panel_layout_with(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Joined,
+        peers.len(),
+        missing.len(),
+    );
+    assert!(
+        ink(&lacking, &bare, listed.missing_title) > 20,
+        "no heading over what is missing"
+    );
+    // A short window: as many as fit, and the rest counted.
+    assert!(!listed.missing.is_empty());
+    if listed.missing.len() < missing.len() {
+        assert!(
+            ink(&lacking, &bare, listed.missing_more) > 20,
+            "the ones that did not fit are not counted"
+        );
+    }
+    for (what, detail) in &listed.missing {
+        assert!(
+            ink(&lacking, &bare, *what) > 20,
+            "a missing thing not named"
+        );
+        assert!(ink(&lacking, &bare, *detail) > 20, "nor where it is used");
+    }
 
     // The join's question: a scrim, the words, and the safe answer weighted.
     let asked = shoot(Notices {

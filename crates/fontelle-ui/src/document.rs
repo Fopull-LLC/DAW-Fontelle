@@ -1024,6 +1024,18 @@ pub struct SessionView {
     pub view_only: bool,
     /// One line for the panel: who is fetching what, or why it ended.
     pub status: String,
+    /// What the song uses that this computer has not got — plugins, and
+    /// files that could not be had — each with where the song uses it.
+    pub missing: Vec<MissingItem>,
+}
+
+/// One thing the open song uses that is not on this computer, as the Share
+/// panel lists it: *what* ("Serum 2 — VST3, Xfer Records") and *where, and
+/// why* ("not installed here — the instrument Bass").
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MissingItem {
+    pub what: String,
+    pub detail: String,
 }
 
 /// A question a session asks, with more answers than the confirm card has.

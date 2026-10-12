@@ -21,7 +21,7 @@ pub(crate) mod join;
 #[cfg(test)]
 mod tests;
 
-pub use files::FetchQuestion;
+pub use files::{FetchQuestion, Trouble};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -396,6 +396,11 @@ impl Collab {
     /// How far along the file `hash` is, while it is on its way here.
     pub fn fetching(&self, hash: u64) -> Option<f32> {
         self.files.progress(hash)
+    }
+
+    /// Why the file `hash` is not here and not coming, if that is so.
+    pub fn file_trouble(&self, hash: u64) -> Option<files::Trouble> {
+        self.files.trouble(hash)
     }
 
     /// The files waiting on the person before they are fetched.

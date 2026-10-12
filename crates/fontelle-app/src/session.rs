@@ -608,6 +608,9 @@ pub struct Session {
     /// How many times the graph has been built — what a burst of somebody
     /// else's edits costs a shared song (`graph_builds`).
     graph_builds: u64,
+    /// The plugins a shared song uses that are not installed here and have
+    /// been said — `None` until the song's first look (F91).
+    missing_plugins_said: Option<std::collections::BTreeSet<String>>,
     /// The question a stray clip raised in lane-style, while it stands.
     lane_question: Option<fontelle_model::LaneConflict>,
     /// The stray clips already known about — asked of, or there when the
@@ -1599,6 +1602,7 @@ impl Session {
             selected_lane: None,
             lanes_unsettled: None,
             graph_builds: 0,
+            missing_plugins_said: None,
             lane_question: None,
             known_conflicts: Vec::new(),
             routing_question: false,
@@ -2463,6 +2467,7 @@ impl Session {
         }
         self.history.set_mint_space(None);
         self.history.open_outbox();
+        self.start_saying_missing_plugins();
         let mut transport = transport;
         if let Some(wake) = &self.wake {
             transport.set_wake(wake.clone());
@@ -2743,6 +2748,7 @@ impl Session {
                     self.dirty = true;
                     self.patch_cache = None;
                     self.rebuild_graph();
+                    self.say_new_missing_plugins();
                     self.touch();
                 }
                 Effect::Say(line) => {
@@ -2785,6 +2791,7 @@ impl Session {
     /// message overwrites: a song that sounds different here and nobody said
     /// why reads as the session being broken.
     fn say_missing_plugins(&mut self) {
+        self.start_saying_missing_plugins();
         let mut missing: Vec<String> = Vec::new();
         let states: Vec<fontelle_types::PluginState> = self
             .project
@@ -2826,6 +2833,151 @@ impl Session {
              machine, and its settings are kept for the others.",
             if missing.len() == 1 { "it" } else { "them" }
         ));
+    }
+
+    /// Every plugin the open song plays that this computer has not got, one
+    /// entry a plugin, with each place the song uses it.
+    fn missing_plugins(&self) -> Vec<(fontelle_types::PluginState, Vec<String>)> {
+        let mut missing: Vec<(fontelle_types::PluginState, Vec<String>)> = Vec::new();
+        let mut note = |state: &fontelle_types::PluginState, place: String| {
+            if self.plugins.scan().find(&state.key).is_some() {
+                return;
+            }
+            match missing.iter_mut().find(|(s, _)| s.key == state.key) {
+                Some((_, places)) => {
+                    if !places.contains(&place) {
+                        places.push(place);
+                    }
+                }
+                None => missing.push((state.clone(), vec![place])),
+            }
+        };
+        for channel in self.project.channels.values() {
+            if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin)
+                && let Some(state) = &channel.plugin
+            {
+                note(state, format!("the instrument {}", channel.name));
+            }
+        }
+        // The strips in the mixer's order, the master among them.
+        let mut tracks = self.project.mixer.ordered_tracks();
+        for track in self.project.mixer.tracks.keys() {
+            if !tracks.contains(&track) {
+                tracks.push(track);
+            }
+        }
+        for track in tracks {
+            let strip = &self.project.mixer.tracks[track];
+            for insert in &strip.inserts {
+                if let Some(state) = &insert.plugin {
+                    note(state, format!("an effect on {}", strip.name));
+                }
+            }
+        }
+        missing
+    }
+
+    /// What the open song uses that this computer has not got, for the
+    /// Share panel (F91): each plugin, by name, format and maker, with every
+    /// place the song plays it; and each file a shared song names that could
+    /// not be had, with why.
+    ///
+    /// > *"if there are plugins missing, it should tell you which plugins."*
+    pub fn missing_here(&self) -> Vec<fontelle_ui::document::MissingItem> {
+        use fontelle_ui::document::MissingItem;
+        let mut items: Vec<MissingItem> = self
+            .missing_plugins()
+            .into_iter()
+            .map(|(state, places)| {
+                let mut what = format!("{} \u{2014} {}", state.name, state.key.format.label());
+                if let Some(vendor) = &state.vendor {
+                    what.push_str(", ");
+                    what.push_str(vendor);
+                }
+                MissingItem {
+                    what,
+                    detail: format!("not installed here \u{2014} {}", places.join("; ")),
+                }
+            })
+            .collect();
+        let Some(collab) = self.collab.as_ref() else {
+            return items;
+        };
+        let from = collab
+            .host_name()
+            .map(|host| format!("{host}\u{2019}s computer"))
+            .unwrap_or_else(|| "the computer it came from".to_string());
+        let place = crate::collab::files::Place {
+            bundle: self.bundle.clone(),
+            banks: self.library_dirs(),
+        };
+        for entry in crate::collab::files::missing(&self.project, &place.with(&self.project)) {
+            use crate::collab::Trouble;
+            let why = match collab.file_trouble(entry.hash) {
+                Some(Trouble::Asking) => "waiting for your yes to fetch it".to_string(),
+                Some(Trouble::Declined) => "you chose not to fetch it".to_string(),
+                Some(Trouble::NotThere) => format!("{from} does not have it either"),
+                Some(Trouble::Damaged) => "it arrived damaged".to_string(),
+                None => continue,
+            };
+            let name = crate::library::sound_name(std::path::Path::new(
+                entry
+                    .file_name
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&entry.file_name),
+            ));
+            items.push(MissingItem {
+                what: format!("{name} \u{2014} {}", file_kind(entry.kind)),
+                detail: format!("{why} \u{2014} what plays it is silent here"),
+            });
+        }
+        items
+    }
+
+    /// From now on, a plugin this computer has not got that arrives in the
+    /// song is said ([`say_new_missing_plugins`](Self::say_new_missing_plugins));
+    /// the ones the song has already are said as it opens, or not at all.
+    fn start_saying_missing_plugins(&mut self) {
+        if !crate::plugin_slots(&self.project).is_empty() {
+            self.plugins.scan_once();
+        }
+        self.missing_plugins_said = Some(
+            self.missing_plugins()
+                .into_iter()
+                .map(|(state, _)| format!("{}:{}", state.key.format.label(), state.key.id))
+                .collect(),
+        );
+    }
+
+    /// A plugin somebody put in the shared song that this computer has not
+    /// got is said the moment it arrives, once (F91): it is silent here, and
+    /// nothing else would say why.
+    fn say_new_missing_plugins(&mut self) {
+        if self.missing_plugins_said.is_none() || crate::plugin_slots(&self.project).is_empty() {
+            return;
+        }
+        self.plugins.scan_once();
+        let mut fresh = Vec::new();
+        for (state, places) in self.missing_plugins() {
+            let key = format!("{}:{}", state.key.format.label(), state.key.id);
+            let said = self.missing_plugins_said.as_mut().expect("checked");
+            if said.insert(key) {
+                fresh.push(format!(
+                    "{} ({}{}) is not installed here \u{2014} {} is silent on this computer, \
+                     and the others still hear it.",
+                    state.name,
+                    state.key.format.label(),
+                    state
+                        .vendor
+                        .as_ref()
+                        .map(|v| format!(", {v}"))
+                        .unwrap_or_default(),
+                    places.join("; ")
+                ));
+            }
+        }
+        self.session_notices.extend(fresh);
     }
 
     /// The join's question, while it is waiting for an answer.
@@ -5014,6 +5166,17 @@ impl Session {
             let Some(written) = written else {
                 continue;
             };
+            // What the plugin cannot say of itself stays as the song had it:
+            // who makes it (F91), and the MPE switch, which is the player's
+            // and was reset to off at every save and backup — on a shared
+            // song a change nobody could reach by an edit.
+            let mut state = state;
+            if let Some(old) = written.as_ref() {
+                state.mpe = old.mpe;
+                if state.vendor.is_none() {
+                    state.vendor = old.vendor.clone();
+                }
+            }
             let before = written.replace(state.clone());
             // Written outside any edit: a shared copy keeps it from being
             // taken back when the copy is made again (§5.2).
@@ -9963,77 +10126,9 @@ impl StudioHost for Session {
     }
 
     fn session(&self) -> fontelle_ui::document::SessionView {
-        use fontelle_ui::document::{SessionPeer, SessionRole, SessionView};
-        if self.sharing.is_some() {
-            return SessionView {
-                role: SessionRole::Starting,
-                status: "Asking the relay for a code\u{2026}".to_string(),
-                ..SessionView::default()
-            };
-        }
-        let Some(collab) = self.collab.as_ref() else {
-            return SessionView::default();
-        };
-        if let Some(why) = collab.ended() {
-            return SessionView {
-                status: why.to_string(),
-                ..SessionView::default()
-            };
-        }
-        let host = collab.host_name().unwrap_or_default().to_string();
-        // A joiner lists who is sharing first, in the host's colour (F61):
-        // the host is not one of the peers the session hands out.
-        let mut peers: Vec<SessionPeer> = Vec::new();
-        if !collab.is_host() && !host.is_empty() {
-            peers.push(SessionPeer {
-                peer: 0,
-                name: host.clone(),
-                colour: 0,
-                view_only: false,
-            });
-        }
-        peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
-            peer: p.peer,
-            name: p.name,
-            colour: p.colour,
-            view_only: p.view_only,
-        }));
-        let role = if collab.is_host() {
-            SessionRole::Hosting
-        } else if collab.is_live() {
-            SessionRole::Joined
-        } else {
-            SessionRole::Joining
-        };
-        let status = match role {
-            SessionRole::Hosting if peers.is_empty() => {
-                "Give somebody the code \u{2014} they join from their start menu".to_string()
-            }
-            SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
-            SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
-            SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
-            _ => {
-                let missing = self.missing_files().len();
-                if collab.view_only() {
-                    format!("{host} has made the song view only for you")
-                } else if missing > 0 {
-                    format!(
-                        "Waiting for {missing} file{} from {host}",
-                        if missing == 1 { "" } else { "s" }
-                    )
-                } else {
-                    format!("{host} is sharing this song")
-                }
-            }
-        };
-        SessionView {
-            role,
-            code: collab.code(),
-            host,
-            peers,
-            view_only: collab.view_only(),
-            status,
-        }
+        let mut view = self.session_view();
+        view.missing = self.missing_here();
+        view
     }
 
     fn share_song(&mut self) -> Result<(), String> {
@@ -16468,4 +16563,92 @@ fn fell_back_words(
         status.fell_back.as_deref().unwrap_or("no reason given"),
         status.host
     )
+}
+
+/// What a file the song uses is, in a word or two for the panel.
+fn file_kind(kind: fontelle_types::AssetKind) -> &'static str {
+    use fontelle_types::AssetKind;
+    match kind {
+        AssetKind::Sf2 | AssetKind::Sf3 => "soundfont",
+        AssetKind::Sfz => "SFZ instrument",
+        AssetKind::Sample => "sound",
+    }
+}
+
+impl Session {
+    /// The Share panel's view, but for what is missing (`missing_here`).
+    fn session_view(&self) -> fontelle_ui::document::SessionView {
+        use fontelle_ui::document::{SessionPeer, SessionRole, SessionView};
+        if self.sharing.is_some() {
+            return SessionView {
+                role: SessionRole::Starting,
+                status: "Asking the relay for a code\u{2026}".to_string(),
+                ..SessionView::default()
+            };
+        }
+        let Some(collab) = self.collab.as_ref() else {
+            return SessionView::default();
+        };
+        if let Some(why) = collab.ended() {
+            return SessionView {
+                status: why.to_string(),
+                ..SessionView::default()
+            };
+        }
+        let host = collab.host_name().unwrap_or_default().to_string();
+        // A joiner lists who is sharing first, in the host's colour (F61):
+        // the host is not one of the peers the session hands out.
+        let mut peers: Vec<SessionPeer> = Vec::new();
+        if !collab.is_host() && !host.is_empty() {
+            peers.push(SessionPeer {
+                peer: 0,
+                name: host.clone(),
+                colour: 0,
+                view_only: false,
+            });
+        }
+        peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
+            peer: p.peer,
+            name: p.name,
+            colour: p.colour,
+            view_only: p.view_only,
+        }));
+        let role = if collab.is_host() {
+            SessionRole::Hosting
+        } else if collab.is_live() {
+            SessionRole::Joined
+        } else {
+            SessionRole::Joining
+        };
+        let status = match role {
+            SessionRole::Hosting if peers.is_empty() => {
+                "Give somebody the code \u{2014} they join from their start menu".to_string()
+            }
+            SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
+            SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
+            SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
+            _ => {
+                let missing = self.missing_files().len();
+                if collab.view_only() {
+                    format!("{host} has made the song view only for you")
+                } else if missing > 0 {
+                    format!(
+                        "Waiting for {missing} file{} from {host}",
+                        if missing == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("{host} is sharing this song")
+                }
+            }
+        };
+        SessionView {
+            role,
+            code: collab.code(),
+            host,
+            peers,
+            view_only: collab.view_only(),
+            status,
+            missing: Vec::new(),
+        }
+    }
 }

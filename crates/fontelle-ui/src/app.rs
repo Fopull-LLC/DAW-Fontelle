@@ -3408,6 +3408,7 @@ impl WindowApp {
                         code: self.session.code.as_deref(),
                         peers: &self.session.peers,
                         status: &self.session.status,
+                        missing: &self.session.missing,
                     }),
                     question: self.session_question.as_ref().map(|q| {
                         crate::render::QuestionNotice {
@@ -8202,6 +8203,18 @@ impl WindowApp {
                 crate::canvas::share_panel_words(self.session.role, &self.session.peers);
             let (first, second) = crate::canvas::status_lines(&self.session.status);
             words.extend([first.to_string(), second.to_string()]);
+            if !self.session.missing.is_empty() {
+                words.push(crate::canvas::MISSING_HERE.to_string());
+                for item in &self.session.missing {
+                    words.extend([item.what.clone(), item.detail.clone()]);
+                }
+                let listed = self.share_panel_layout().missing.len();
+                if listed < self.session.missing.len() {
+                    words.push(crate::canvas::missing_more_words(
+                        self.session.missing.len() - listed,
+                    ));
+                }
+            }
             for word in &words {
                 want(&mut self.labels, &mut self.text, word);
             }
@@ -22897,12 +22910,13 @@ impl WindowApp {
     }
 
     fn share_panel_layout(&self) -> crate::canvas::SharePanelLayout {
-        crate::canvas::share_panel_layout(
+        crate::canvas::share_panel_layout_with(
             self.layout.window,
             self.bar.share,
             &self.options.theme.metrics,
             self.session.role,
             self.session.peers.len(),
+            self.session.missing.len(),
         )
     }
 

@@ -54,6 +54,19 @@ struct Upload {
     of: u32,
 }
 
+/// Why a file the song uses is not on this computer and is not coming.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trouble {
+    /// Waiting for the person's yes (a soundfont, or a big file).
+    Asking,
+    /// The person said not now.
+    Declined,
+    /// The computer it was asked of has not got it either.
+    NotThere,
+    /// It came, and was not what it said it was.
+    Damaged,
+}
+
 #[derive(Default)]
 pub(crate) struct Files {
     /// Not asked for yet, smallest first, and who to ask.
@@ -63,6 +76,9 @@ pub(crate) struct Files {
     held: Vec<(AssetEntry, PeerId)>,
     /// Asked about and turned down, or not there to be had.
     declined: Vec<u64>,
+    /// Why each of `declined` is not here, for the panel's list of what is
+    /// missing (F91).
+    why_not: BTreeMap<u64, Trouble>,
     received: Vec<u64>,
     uploads: BTreeMap<PeerId, VecDeque<Upload>>,
     /// Asked of this studio before it had them itself: sent when they land.
@@ -104,8 +120,19 @@ impl Files {
             self.wanted.extend(held);
             self.wanted.make_contiguous().sort_by_key(|(e, _)| e.size);
         } else {
-            self.declined.extend(held.iter().map(|(e, _)| e.hash));
+            for (entry, _) in &held {
+                self.declined.push(entry.hash);
+                self.why_not.insert(entry.hash, Trouble::Declined);
+            }
         }
+    }
+
+    /// Why `hash` is not here and not on its way, if that is so.
+    pub fn trouble(&self, hash: u64) -> Option<Trouble> {
+        if self.held.iter().any(|(e, _)| e.hash == hash) {
+            return Some(Trouble::Asking);
+        }
+        self.why_not.get(&hash).copied()
     }
 
     /// How far along `hash` is, if it is on its way or waiting to be.
@@ -316,6 +343,7 @@ impl Files {
             Err(why) => {
                 let _ = std::fs::remove_file(&fetching.part);
                 self.declined.push(hash);
+                self.why_not.insert(hash, Trouble::Damaged);
                 Err(format!("\u{201c}{name}\u{201d} could not be kept: {why}"))
             }
         }
@@ -367,6 +395,7 @@ impl Files {
         let fetching = self.fetching.take_if(|f| f.entry.hash == hash)?;
         let _ = std::fs::remove_file(&fetching.part);
         self.declined.push(hash);
+        self.why_not.insert(hash, Trouble::NotThere);
         for (peer, _) in self.owed.iter().filter(|(_, h)| *h == hash) {
             send(transport, *peer, &Msg::AssetMissing { hash });
         }

@@ -674,6 +674,9 @@ fn forget_plugin_states(value: &mut serde_json::Value) {
                 {
                     state.remove("blob");
                     state.remove("params");
+                    // Who makes it is what the adding machine's scan said,
+                    // carried for a machine without it (F91); not the song.
+                    state.remove("vendor");
                 }
                 forget_plugin_states(inner);
             }

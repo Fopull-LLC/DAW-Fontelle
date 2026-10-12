@@ -245,3 +245,48 @@ fn a_status_sentence_gets_two_lines_broken_at_its_dash() {
         ("Bob is here with you", "")
     );
 }
+
+// ------------------------------------------------------ what is missing ---
+
+/// F91, Ty: *"if there are plugins missing, it should tell you which
+/// plugins."* The panel lists what the song uses that this computer has not
+/// got under a heading of its own — two lines each, what and where — above
+/// the status, inside the panel, apart from everything pressable; and what
+/// does not fit is counted ("and 3 more"), never run off the panel.
+#[test]
+fn what_is_missing_is_listed_on_the_panel_and_cut_to_what_fits() {
+    use fontelle_ui::canvas::share_panel_layout_with;
+    for window in [wide(), narrow()] {
+        for role in [ShareRole::Joined, ShareRole::Hosting, ShareRole::Alone] {
+            let l = share_panel_layout_with(window, anchor(window), &metrics(), role, 2, 2);
+            assert!(!l.missing_title.is_empty(), "{role:?}: a heading");
+            assert_eq!(l.missing.len(), 2, "{role:?} at {window:?}");
+            for (what, detail) in &l.missing {
+                for r in [*what, *detail] {
+                    assert!(!r.is_empty() && within(r, l.frame), "{r:?} escapes");
+                    assert!(r.y >= l.missing_title.bottom() - 0.5);
+                    assert!(r.bottom() <= l.status.y + 0.5, "above the status");
+                    for (p, _) in pressables(&l) {
+                        assert!(!r.intersects(&p), "{r:?} under {p:?}");
+                    }
+                }
+                assert!(detail.y >= what.bottom() - 0.5, "what, then where");
+            }
+            assert!(l.missing_more.is_empty(), "everything fits");
+        }
+        let none =
+            share_panel_layout_with(window, anchor(window), &metrics(), ShareRole::Joined, 2, 0);
+        assert!(none.missing_title.is_empty() && none.missing.is_empty());
+    }
+    let crowded = share_panel_layout_with(
+        narrow(),
+        anchor(narrow()),
+        &metrics(),
+        ShareRole::Joined,
+        2,
+        60,
+    );
+    assert!(crowded.missing.len() < 60);
+    assert!(!crowded.missing_more.is_empty(), "the rest are counted");
+    assert!(within(crowded.missing_more, crowded.frame));
+}
