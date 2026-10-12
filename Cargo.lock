@@ -1328,6 +1328,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontelle-asio-host"
+version = "0.26.3"
+dependencies = [
+ "fontelle-audio-ipc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fontelle-assets"
 version = "0.26.3"
 dependencies = [

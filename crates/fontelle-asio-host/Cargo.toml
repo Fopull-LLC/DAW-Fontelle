@@ -1,0 +1,33 @@
+[package]
+name = "fontelle-asio-host"
+description = "fontelle-asio: a small separate program that hosts an ASIO driver for Fontelle and exchanges audio with it through shared memory. GPL-3.0, because Steinberg's ASIO SDK is used under its GPLv3 option."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Not the workspace's MIT OR Apache-2.0: this program is a translation of
+# parts of Steinberg's ASIO SDK, which Steinberg offers under GPLv3
+# ("General Public License (GPL) Version 3", no "or later"). It is a program
+# of its own (`LICENSE` beside this file), Fontelle never links it, and it
+# never loads Fontelle's code or anyone's plugins — the two exchange plain
+# data (`docs/asio.md`).
+license = "GPL-3.0-only"
+publish = false
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fontelle-asio"
+path = "src/main.rs"
+
+[dependencies]
+fontelle-audio-ipc = { path = "../fontelle-audio-ipc" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Media",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -10,6 +10,7 @@ members = [
     "crates/fontelle-host",
     "crates/fontelle-engine",
     "crates/fontelle-audio-ipc",
+    "crates/fontelle-asio-host",
     "crates/fontelle-midi",
     "crates/fontelle-assets",
     "crates/fontelle-analysis",
