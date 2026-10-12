@@ -35,8 +35,8 @@ confidence-threshold = 0.8
 # program that hosts an ASIO driver, which uses Steinberg's ASIO SDK under
 # the SDK's GPLv3 option (docs/asio.md). Fontelle never links it and it never
 # loads Fontelle's code; the two exchange plain data. Every crate it uses is
-# one of the permissive licences above. If anything ever depends on it, the
-# `deny` below fails.
+# one of the permissive licences above. Nothing may depend on it:
+# `crates/fontelle-asio-host/tests/separate.rs` fails if anything does.
 exceptions = [
     { name = "fontelle-asio-host", allow = ["GPL-3.0-only"] },
 ]
@@ -48,11 +48,6 @@ wildcards = "deny"
 # with one version for the whole of it does; that is not the wildcard this
 # check exists to catch, and none of these crates is published.
 allow-wildcard-paths = true
-# The GPL helper is a program, never a library of Fontelle's: a crate that
-# depends on it would put GPL code into an MIT/Apache build.
-deny = [
-    { crate = "fontelle-asio-host", wrappers = [] },
-]
 
 [advisories]
 yanked = "deny"
