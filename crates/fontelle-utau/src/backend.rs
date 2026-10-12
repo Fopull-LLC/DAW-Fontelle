@@ -223,19 +223,24 @@ impl Backend for UtauBackend {
                 },
                 SettingInfo {
                     id: SETTING_EXPRESSION.into(),
-                    name: "Expression (scoops, overshoot, a late vibrato on long notes)".into(),
+                    // Scoops into phrases, overshoot after leaps, a late
+                    // vibrato on long notes.
+                    name: "Expression".into(),
                     min: 0.0,
                     max: 100.0,
                     default: DEFAULT_EXPRESSION,
                     unit: "%".into(),
+                    choices: Vec::new(),
                 },
                 SettingInfo {
                     id: SETTING_BREATH.into(),
-                    name: "Breath (before phrases, and on the release)".into(),
+                    // Before phrases, and on the release.
+                    name: "Breath".into(),
                     min: 0.0,
                     max: 100.0,
                     default: DEFAULT_BREATH,
                     unit: "%".into(),
+                    choices: Vec::new(),
                 },
             ],
             note_options,
