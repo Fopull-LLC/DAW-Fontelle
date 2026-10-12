@@ -47,7 +47,7 @@ which plugins."*
 - **What a shared song still does not carry**: plan §18, G1–G7 (a plugin's
   own-window state, files plugins loaded, presets, singers — next, on
   `feature/collab-singers`).
-- Tests: `fontelle-app/tests/collab_latency.rs` (8, three studios with
+- Tests: `fontelle-app/tests/collab_latency.rs` (7, three studios with
   latency and jitter), `fontelle-app` `collab::tests` (4),
   `tests/collab.rs` (+2), `fontelle-model/tests/wire.rs` (slot test now
   follows its slot), `fontelle-net` transport jitter (+1),
