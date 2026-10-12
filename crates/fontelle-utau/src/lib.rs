@@ -21,6 +21,7 @@
 pub mod bank;
 pub mod cache;
 pub mod dict;
+pub mod expression;
 pub mod kana;
 pub mod oto;
 pub mod phonemize;
@@ -32,6 +33,6 @@ pub mod world;
 mod backend;
 
 pub use backend::{
-    NOTE_OPTION_COLOUR, OUTPUT_RATE, SETTING_MODULATION, SETTING_PHONEMIZER, UtauBackend,
-    UtauSession, sing_with,
+    NOTE_OPTION_COLOUR, OUTPUT_RATE, SETTING_BREATH, SETTING_EXPRESSION, SETTING_MODULATION,
+    SETTING_PHONEMIZER, UtauBackend, UtauSession, sing_with,
 };

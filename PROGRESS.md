@@ -75,6 +75,57 @@ blank"*; he had agreed to Japanese terms he could not read.
 
 
 **As of 2026-10-07 — the Fontelle Singer and each singer engine
+**As of 2026-10-11 — UTAU singing that sounds sung: expression on the
+pitch, joins without jumps, breaths and breathy releases.** Branch
+`feature/utau-natural` (from `feature/vocal-track` 312e75d), not merged,
+not bumped. Ty, of Kasane Teto's English bank after the English fixes: *"i
+definitely think it sounds better ... but i still think it could be more
+natural sounding."*
+
+- **Expression** (`fontelle_utau::expression::pitch_line`, setting
+  `expression`, 0–100 %, default 100): on top of the written line, a
+  scoop from 35 cents below into each phrase, an overshoot after a leap
+  (10 % of the interval, at most 40 cents, settling in ~0.2 s) with a
+  small dip the other way before it, a vibrato that grows late on notes
+  of 0.5 s or more (5.6 Hz, 18–30 cents, fading into the next note), a
+  small fall at the end of a run, and a few cents of slow drift. The
+  same idea as UTAU's Mode2 curves and OpenUtau's default vibrato; the
+  shapes are ours. A vibrato or glide the writer set is sung as written.
+  Deterministic.
+- **Joins** (`render::assemble`): where two sung units crossfade and both
+  are voiced, their difference in 16 log-spaced bands is shared out: each
+  meets the other halfway at the crossfade and relaxes back to its own
+  sound over 150 ms. Level always (±10 dB); colour too (±6 dB) when the
+  two are the same sound (shape difference under 3 dB RMS), so a vowel
+  change is not blurred. Two recordings of one vowel 9 dB apart no longer
+  step.
+- **Breath** (setting `breath`, 0–100 %, default 60): before a phrase,
+  and after any rest of 0.3 s or more, a bank's breath (`br`, `breath`,
+  `息`, `息1`) is taken, at most 0.4 s, ending just inside the first
+  consonant. Not a phoneme of the note. The end of a run goes out on an
+  aspirated release (aperiodicity raised through the release fade).
+- `RENDER_VERSION` 2, so cached takes are sung again. `utau_sing` takes
+  `lyric:midi:seconds`, `R:0:seconds` rests and `FONTELLE_UTAU_SETTINGS`.
+- **Tests** (written first, seen failing): `fontelle-utau` `natural.rs`
+  (11: the line with and without expression, vibrato, leaps, scoop and
+  fall, writer's vibrato kept, the setting end to end, a 9 dB join, a
+  breath taken and not taken, short rests, the aspirated release).
+  `sing.rs` now pins `expression` to 0 in its helper: it checks the
+  written pitch. `fontelle-utau`, `fontelle-diffsinger`, `fontelle-vocal`
+  pass (`end_to_end` needs `cargo build -p fontelle-testsinger` first, as
+  before). `real_banks` (ignored, 10 real banks) all in tune.
+  Preflight clear.
+- **Renders** (this machine only): `/mnt/disks/6tb/FontelleTestData/
+  renders/teto/index.html`, before/after on Teto's English bank and a
+  personally tuned copy of it (re-timed oto, even loudness, breaths),
+  which stays local under her terms.
+- **Not done**: the expression shapes were set by measurement and by
+  looking at spectrograms, not by ear on this machine (no sound may be
+  played here); a per-note "no auto vibrato" switch (today only the
+  setting turns it off); exhale breaths at phrase ends (only the
+  aspirated release).
+
+**As of 2026-10-07, latest — the Fontelle Singer and each singer engine
 are instruments of their own; a bigger singer picker; one face per bank.**
 Branch `feature/vocal-track`, not merged, not bumped. `docs/vocal-plan.md`
 §2.3 says how. Ty: *"split generic vocals and [the paid engine] into
