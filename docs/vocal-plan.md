@@ -291,6 +291,70 @@ try to force it to speak english" (Kasane Teto's English bank).
   - Yamine Renri's English needs its own dictionary format and stays "la".
   - "Teto" itself is not in CMUdict.
 
+### 2.5 The vocal instrument panel (2026-10-09)
+
+> *"theres no instrument visuals for each yet, please go and create the
+> generic vocal plugin instrument fully ... it should have its own visuals
+> and knobs and stuff in the instrument that people would expect and [the
+> engine instrument] also shouldnt be blank."*
+
+- **Opening a vocal track's instrument** (the rack, the instrument window)
+  shows the **singer panel** (`canvas::singer_panel_layout`,
+  `render::singer_panel`, `fontelle_app::singer_panel`): a stage with the
+  singer — a 132 px portrait under a spotlight, "FONTELLE SINGER · UTAU
+  VOICEBANK", the name, author and folder, a chip a language (choosing it
+  sets the track's language, one undo), the terms chip (opens the terms
+  dialog), *Change singer…* (the picker), *▶ Sample* (the bank's sample),
+  *Open <engine>*, *Voicebanks…* — over cards of controls, two columns
+  when there is room, scrolling when not.
+- **The cards**: **Voice** — gender (formant, ±600 cents), breathiness,
+  tension, voicing, each an amount added to that lane over the whole track,
+  then the backend's own lanes (a DiffSinger bank's energy,
+  expressiveness, each speaker's share) as their value where the part
+  draws nothing; **Expression** — auto vibrato (on, depth, rate, delay,
+  fade in/out, "notes over" a length), a default glide (on, time, shape),
+  consonant speed (×0.5–×2 on every note's own) — with a picture of the
+  line a note is sung on; **Performance** — the backend's declared
+  settings (UTAU's phonemizer and modulation; DiffSinger's sampling steps
+  and natural pitch) and the default of each per-note option (voice
+  colour / speaker); **Output** — the channel's volume and pan.
+- **What the voice ignores is greyed and its card says why** ("重音テト
+  doesn't use tension"); the value is kept for the next singer.
+- **Stored on the channel**: `Channel::vocal_style: VocalStyle` (lanes,
+  vibrato, glide, consonant speed, settings/extra/options by backend),
+  every field defaulting to "as the notes say", only what differs written,
+  left out of the file untouched (old songs load and write back
+  unchanged); a styled song is format 3. One command, `SetVocalStyle`
+  (wire form appended), a knob's drag one undo step.
+- **Reaching the singer** (`phrases_with`): a note without its own vibrato
+  gets the auto vibrato when it is at least "notes over" long; a note
+  after another in the phrase without its own glide gets the default
+  glide; velocities are scaled; lane offsets ride on drawn lanes (or are
+  a lane of their own); a backend lane's base fills where nothing is
+  drawn; the style's settings sit under the part's own; a note's options
+  default to the style's. All of it is in the render key. No backend
+  changed: they read what `Phrase` already carried. `SettingInfo` gained
+  `choices` (additive, serde default) so a list setting is drawn as one.
+- **Addresses** (INVARIANT 7): `vocal/lane/<lane>`, `vocal/vibrato/*`,
+  `vocal/glide/*`, `vocal/consonant_speed`, `vocal/setting/<id>`,
+  `vocal/extra/<id>`, `vocal/option/<id>`; Alt-click resets, typing a
+  value sets. They are not automation targets — a change over time is a
+  lane under the roll, and the knob menu says so; volume and pan automate
+  as on any channel.
+- **Engines**: one with a window of its own (ABI 2 `has_editor`) *is* that
+  window — opening the instrument opens it, the way a plugin's own editor
+  replaces the knob grid. One without gets the same panel, of what it
+  declares (its settings, lanes and options; Voice and Expression greyed
+  where it honours nothing, as an ABI-1 engine does).
+- **Terms you can read**: a bank whose terms are not in the reader's
+  language (`catalogue::reads_as`, by script) is matched to its Find
+  singers entry (`catalogue::match_bank`: same kind, `installs_as` names or
+  the entry's first two words in the folder or name), and the terms dialog
+  puts the entry's English summary over the original, with a
+  *Translate…* row that opens the original in Google Translate in the
+  browser (`catalogue::translate_url`, only on that press). The Installed
+  page's row shows the summary too.
+
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
 Producers coming from OpenUtau, UTAU, Vocaloid or Synthesizer V should find
@@ -440,7 +504,9 @@ the fallback; `<data>/fontelle/singers-index.json` replaces it when present
         "sha256": "64 hex digits",
         "size": 123456789                  // bytes
       },
-      "page": "https://…"                  // the author's page for it
+      "page": "https://…",                 // the author's page for it
+      "installs_as": ["重音テト"]           // optional: names its bank installs as
+
     }
   ]
 }

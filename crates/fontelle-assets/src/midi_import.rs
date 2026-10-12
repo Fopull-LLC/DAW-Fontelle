@@ -644,6 +644,7 @@ pub fn read_midi(
             ab: Default::default(),
             gain_db: 0.0,
             vocal: None,
+            vocal_style: Default::default(),
         });
         let lane = project.lanes.insert(Lane {
             name: label.clone(),

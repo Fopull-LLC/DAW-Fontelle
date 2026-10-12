@@ -167,6 +167,14 @@ pub struct Channel {
     /// every song written before voices existed reads and writes unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vocal: Option<crate::VocalVoice>,
+    /// **How it sings** when a note or a lane says nothing: the vocal
+    /// instrument panel's settings (`crate::VocalStyle`) — the voice's
+    /// offsets, auto vibrato, a default glide, the backend's own settings.
+    /// Kept whatever instrument the channel is, like [`vocal`](Self::vocal).
+    /// Left out of the file while untouched, so a song from before the
+    /// panel reads and writes back unchanged.
+    #[serde(default, skip_serializing_if = "crate::VocalStyle::is_default")]
+    pub vocal_style: crate::VocalStyle,
 }
 
 /// A channel's A/B pair: which slot is playing, and the other's patch.

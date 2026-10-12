@@ -9264,6 +9264,41 @@ impl StudioHost for Session {
         let Some(id) = self.channel_ids().get(index).copied() else {
             return false;
         };
+        // A singer engine with a window of its own is that window, the way a
+        // plugin's own editor is the plugin: *"[the engine instrument] also
+        // shouldnt be blank"*. One without a window gets the panel.
+        if let Some(channel) = self.project.channels.get(id)
+            && channel.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+        {
+            let Some(engine) = channel
+                .vocal
+                .as_ref()
+                .and_then(|v| v.engine_instrument())
+                .map(str::to_string)
+            else {
+                return false;
+            };
+            let has_editor = self
+                .vocal
+                .instruments()
+                .iter()
+                .any(|i| i.engine.as_deref() == Some(engine.as_str()) && i.has_editor);
+            if !has_editor {
+                return false;
+            }
+            if self.vocal.editor_open() {
+                return true;
+            }
+            let opened = self.vocal.open_editor(&self.project, id, self.clip);
+            self.touch();
+            return match opened {
+                Ok(_) => true,
+                Err(e) => {
+                    self.message = Some(e);
+                    false
+                }
+            };
+        }
         self.open_plugin_editor(crate::PluginSlot::Channel(id))
     }
 
@@ -9678,6 +9713,18 @@ impl StudioHost for Session {
 
     fn take_vocal_selection(&mut self) -> Option<Vec<NoteId>> {
         self.vocal_select.take()
+    }
+
+    fn singer_panel(&self) -> Option<fontelle_ui::document::SingerPanelView> {
+        let channel = self.selected_channel_id()?;
+        self.vocal
+            .panel(&self.project, channel)
+            .map(|(header, _)| header)
+    }
+
+    fn translate_terms(&mut self, text: &str) {
+        let url = fontelle_vocal::catalogue::translate_url(text, crate::vocal::READER_LANGUAGE);
+        fontelle_ui::document::StudioHost::open_url(self, &url);
     }
 
     fn open_singer_editor(&mut self) -> Result<String, String> {
@@ -12901,6 +12948,15 @@ impl StudioHost for Session {
     fn instrument(&self) -> Option<InstrumentView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
+        // A vocal track's instrument is its singer's panel: the voice, the
+        // expression a note without its own gets, the bank's settings and
+        // the output (`crate::singer_panel`) — never blank.
+        if channel.instrument == Some(fontelle_types::InstrumentKind::Vocal) {
+            let (_, mut view) = self.vocal.panel(&self.project, channel_id)?;
+            let automated = fontelle_model::automated_targets(&self.project);
+            view.mark_automated(|address| automated.contains(address));
+            return Some(view);
+        }
         // A channel playing a plugin draws the plugin's own parameters. The
         // panel is the same panel — see `instrument::describe_plugin`.
         if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin) {
@@ -13210,6 +13266,32 @@ impl StudioHost for Session {
                 return;
             }
             _ => {}
+        }
+
+        // A control on a vocal track's instrument panel: the channel's
+        // style, one command (a drag merges into one undo step), and the
+        // phrases sung again from it.
+        if address.as_str().starts_with("vocal/") {
+            let Some(channel) = self.project.channels.get(channel_id) else {
+                return;
+            };
+            if channel.instrument != Some(fontelle_types::InstrumentKind::Vocal) {
+                return;
+            }
+            let voice = channel.vocal.clone();
+            let caps = self.vocal.capabilities_of(voice.as_ref());
+            let backend = voice.map(|v| v.engine).unwrap_or_default();
+            let mut style = channel.vocal_style.clone();
+            if !crate::singer_panel::set(&mut style, &caps, &backend, address.as_str(), value)
+                || style == channel.vocal_style
+            {
+                return;
+            }
+            self.run(Box::new(fontelle_model::SetVocalStyle::new(
+                channel_id, style,
+            )));
+            self.touch();
+            return;
         }
 
         // A knob on a hosted plugin's panel. Written to the document as the
@@ -16143,11 +16225,31 @@ impl Session {
         fontelle_core::patch_params::value(&loaded.patch, address.as_str())
     }
 
+    /// What the selected vocal track's voice answers to, and its backend,
+    /// when `address` is one of its instrument panel's controls.
+    fn vocal_panel_voice(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<(fontelle_sing::Capabilities, String)> {
+        if !address.as_str().starts_with("vocal/") {
+            return None;
+        }
+        let channel = self.project.channels.get(self.selected_channel_id()?)?;
+        let voice = channel.vocal.as_ref();
+        Some((
+            self.vocal.capabilities_of(voice),
+            voice.map(|v| v.engine.clone()).unwrap_or_default(),
+        ))
+    }
+
     /// The value the Init patch has for `address` — *Reset to default*.
     pub fn instrument_param_default_value(
         &self,
         address: &fontelle_types::ParamAddress,
     ) -> Option<f32> {
+        if let Some((caps, backend)) = self.vocal_panel_voice(address) {
+            return crate::singer_panel::default_value(&caps, &backend, address.as_str());
+        }
         let init = fontelle_core::flopsynth::flopsynth_init();
         fontelle_core::patch_params::value(&init, address.as_str())
     }
@@ -16255,6 +16357,9 @@ impl Session {
     ) -> Option<f32> {
         use fontelle_ui::canvas::{ParamKind, parse_typed};
         let text = text.trim();
+        if let Some((caps, backend)) = self.vocal_panel_voice(address) {
+            return crate::singer_panel::from_text(&caps, &backend, address.as_str(), text);
+        }
         if let Some(typed) = parse_typed(text)
             && let Some(value) = self.instrument_param_from_typed(address, &typed)
         {

@@ -121,6 +121,7 @@ pub fn capabilities() -> Capabilities {
             max: 1.0,
             default: 0.0,
             unit: String::new(),
+            choices: Vec::new(),
         }],
         note_options: vec![NoteOptionInfo {
             id: COLOUR_OPTION.into(),

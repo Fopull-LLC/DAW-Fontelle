@@ -357,6 +357,8 @@ pub enum TermsRow {
     Info,
     Agree,
     Cancel,
+    /// Opens the terms through a translation site in the browser.
+    Translate,
 }
 
 /// Words wrapped to `width` characters.
@@ -388,6 +390,60 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     out
+}
+
+/// What the Translate row says. A menu row has no tooltip, so the row
+/// itself says what pressing it does and where the text goes.
+pub const TRANSLATE_TERMS: &str =
+    "Translate\u{2026} \u{2014} opens these terms in Google Translate in your browser";
+
+/// [`terms_menu_rows`] for terms the user may not read: `summary` (the
+/// Find singers index's English summary of the same singer's terms) first,
+/// said to be a summary, then the original as its author wrote it, and —
+/// with `translate` — a row that opens the original in a translation site.
+/// With neither, exactly [`terms_menu_rows`].
+///
+/// > Ty agreed to Kasane Teto's terms, which are Japanese, without being
+/// > able to read them.
+pub fn terms_menu_rows_with(
+    name: &str,
+    terms: &str,
+    summary: Option<&str>,
+    translate: bool,
+) -> Vec<(MenuEntry, TermsRow)> {
+    let mut rows = terms_menu_rows(name, terms);
+    let mut at = 1;
+    if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
+        let mut added = vec![(
+            MenuEntry::disabled("In English, from the Find singers index (a summary):"),
+            TermsRow::Info,
+        )];
+        added.extend(
+            wrap(summary, 70)
+                .into_iter()
+                .map(|line| (MenuEntry::disabled(line), TermsRow::Info)),
+        );
+        added.push((
+            MenuEntry::disabled("As its author wrote them:").after_rule(),
+            TermsRow::Info,
+        ));
+        at += added.len();
+        rows.splice(1..1, added);
+    }
+    if translate {
+        let agree = rows
+            .iter()
+            .position(|(_, r)| *r == TermsRow::Agree)
+            .unwrap_or(rows.len().max(at));
+        rows.insert(
+            agree,
+            (
+                MenuEntry::new(TRANSLATE_TERMS).after_rule(),
+                TermsRow::Translate,
+            ),
+        );
+    }
+    rows
 }
 
 /// A voicebank's terms, whole, and the choice to agree — what is asked

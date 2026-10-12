@@ -92,6 +92,7 @@ impl Rig {
             ab: Default::default(),
             gain_db: 0.0,
             vocal: None,
+            vocal_style: Default::default(),
         });
         self.channels.insert(channel, node(node_number));
         let mut notes = Arena::default();

@@ -1028,6 +1028,9 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<(String, TextStyle)> {
         out.push((r.id.clone(), PICKER_TEXT_STYLE));
         out.push((installed_line(r), PICKER_TEXT_STYLE));
         out.push((initial(&r.name), PORTRAIT_INITIAL_STYLE));
+        if let Some(note) = installed_terms_note(r) {
+            out.push((note, PICKER_TEXT_STYLE));
+        }
     }
     for r in page.catalogue {
         out.push((r.name.clone(), PICKER_NAME_STYLE));
@@ -1038,7 +1041,7 @@ pub fn page_strings(page: &VoicebankPage) -> Vec<(String, TextStyle)> {
     out
 }
 
-fn initial(name: &str) -> String {
+pub(crate) fn initial(name: &str) -> String {
     name.chars()
         .next()
         .map(|c| c.to_uppercase().to_string())
@@ -1180,7 +1183,7 @@ pub fn draw_voicebank_page(
                             // The folder under the name, as on the picker's card.
                             (r.id != r.name).then(|| r.id.clone()),
                             installed_line(r),
-                            None,
+                            installed_terms_note(r),
                             terms,
                             "Uninstall",
                             false,
@@ -1427,7 +1430,14 @@ fn card_folder(s: &crate::document::SingerChoice) -> Option<&str> {
     s.folder.as_deref().filter(|f| *f != s.name)
 }
 
-fn chip(scene: &mut Scene, labels: &Labels, rect: Rect, text: &str, fill: Color, ink: Color) {
+pub(crate) fn chip(
+    scene: &mut Scene,
+    labels: &Labels,
+    rect: Rect,
+    text: &str,
+    fill: Color,
+    ink: Color,
+) {
     fill_rect_rounded(scene, rect, 4.0, fill);
     if let Some(t) = labels.get_styled(text, PICKER_BADGE_STYLE) {
         draw_text_clipped(
@@ -1670,4 +1680,18 @@ pub fn draw_vocal_overlays(scene: &mut Scene, theme: &Theme, labels: &Labels, o:
     if let Some(picker) = &o.picker {
         draw_singer_picker(scene, theme, labels, o.portraits, picker);
     }
+}
+
+/// The line an installed bank's row gets when its terms are not in the
+/// user's language: the Find singers index's English summary when the bank
+/// is one it knows, else where to translate them. `None` for terms the
+/// user reads.
+pub fn installed_terms_note(r: &VoicebankRow) -> Option<String> {
+    if !r.terms_foreign {
+        return None;
+    }
+    Some(match &r.terms_summary {
+        Some(summary) => format!("Terms in English (index summary): {summary}"),
+        None => "Terms not in English \u{2014} Read terms\u{2026} to translate them".to_string(),
+    })
 }

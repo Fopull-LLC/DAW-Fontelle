@@ -129,7 +129,7 @@ impl InstrumentView {
 }
 
 /// Where every control is.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct InstrumentLayout {
     pub body: Rect,
     /// The instrument's name, drawn as a **field** across the top rather than

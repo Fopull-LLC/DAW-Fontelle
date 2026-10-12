@@ -152,6 +152,7 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let clip = project.clips.insert(Clip {
         name: None,

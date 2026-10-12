@@ -432,15 +432,19 @@ impl Bank {
             max: 100.0,
             default: DEFAULT_STEPS as f32,
             unit: String::new(),
+            choices: Vec::new(),
         }];
         if self.pitch.is_some() {
             settings.push(SettingInfo {
                 id: SETTING_NATURAL_PITCH.into(),
-                name: "Pitch from the voice's own model where nothing is drawn".into(),
+                name: "Natural pitch".into(),
                 min: 0.0,
                 max: 1.0,
                 default: 1.0,
                 unit: String::new(),
+                // Off: the notes' own line; on: the voice's pitch model
+                // where nothing is drawn.
+                choices: vec!["Off".into(), "On".into()],
             });
         }
         let phonemes = self

@@ -1275,11 +1275,38 @@ fn each_singer_instrument_has_its_own_row_and_its_own_big_picker() {
                 .or_else(|| Some(portrait_file("qixuan-page2", 120, false))),
         ),
     ];
+    // Teto's English bank's terms are Japanese: the row carries the index's
+    // English summary.
+    let mut installed = installed;
+    installed[1].terms_foreign = true;
+    installed[1].terms_summary = Some(
+        "Free to download and use; the library itself may not be redistributed or sold.".into(),
+    );
+    // And its terms dialog: the summary over the original, and Translate.
+    let entries: Vec<_> = fontelle_ui::canvas::terms_menu_rows_with(
+        "重音テト",
+        "重音テトの音声ライブラリーは無料でご利用いただけます。再配布・販売は禁止です。",
+        installed[1].terms_summary.as_deref(),
+        true,
+    )
+    .into_iter()
+    .map(|(e, _)| e)
+    .collect();
+    let menu = picker_menu(&theme, entries);
+    shoot(
+        &song,
+        Shot {
+            menu: Some(menu),
+            ..Shot::default()
+        },
+        "terms-translate",
+    );
     for (scale, tag) in [(1.0, "100"), (1.5, "150")] {
         shoot(
             &song,
             Shot {
                 page: Some((VoicebankTab::Installed, installed.clone(), Vec::new())),
+
                 scale,
                 ..Shot::default()
             },

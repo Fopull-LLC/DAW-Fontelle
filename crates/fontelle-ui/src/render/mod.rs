@@ -17,6 +17,7 @@
 mod analyze;
 mod analyze_pages;
 mod bridge;
+pub mod singer_panel;
 pub mod vocal;
 
 pub use analyze::{AnalyzeChrome, analyze_style, lay_out_analyze, shape_analyze};
@@ -2946,6 +2947,10 @@ pub fn draw_editor_window(
         EditorWindowChrome::EmptyInstrument(said) => {
             draw_label(scene, labels, said, layout.body, m, p.text_muted)
         }
+        EditorWindowChrome::Singer(singer) => {
+            singer_panel::draw_singer_panel(scene, theme, labels, singer)
+        }
+
         EditorWindowChrome::Flopsynth(flopsynth) => {
             draw_flopsynth(scene, theme, labels, flopsynth);
             draw_flopsynth_overlays(scene, theme, labels, flopsynth);
@@ -3615,6 +3620,10 @@ pub struct PresetBarChrome<'a> {
 #[allow(clippy::large_enum_variant)]
 pub enum EditorWindowChrome<'a> {
     Instrument(Option<InstrumentChrome<'a>>),
+    /// **A vocal track's instrument** (`docs/vocal-plan.md` §2.5): the
+    /// singer on a stage over cards of controls. Its own variant for the
+    /// reason Flopsynth's is one — a stage with a portrait is not a grid.
+    Singer(singer_panel::SingerChrome<'a>),
     /// A channel with nothing to show, saying what it is waiting for — see
     /// [`no_instrument_text`].
     EmptyInstrument(&'a str),
@@ -7697,122 +7706,139 @@ fn draw_instrument(
         }
         let hot = chrome.active == Some((*group, *index));
         let lit = hot || chrome.hover == Some((*group, *index));
-        if lit {
-            fill_rect_rounded(scene, *cell, m.corner_radius, p.row_accidental);
+        draw_param_cell(scene, theme, labels, param, *cell, hot, lit);
+    }
+}
+
+/// One control in its cell: the caption over it, the dial, switch, list or
+/// button, and the read-out under it — the knob grid's and the singer
+/// panel's alike, so a knob means the same thing on both.
+pub(crate) fn draw_param_cell(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    param: &crate::canvas::InstrumentParam,
+    cell: Rect,
+    hot: bool,
+    lit: bool,
+) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let cell = &cell;
+    if lit {
+        fill_rect_rounded(scene, *cell, m.corner_radius, p.row_accidental);
+    }
+
+    // The caption over the control, the read-out under it.
+    // Two lines of text and the rest to the control: a dial squeezed into
+    // a third of the cell is a smudge, not a knob.
+    let line = m.row_height.min(cell.height * 0.26);
+    let caption = Rect::new(cell.x, cell.y, cell.width, line);
+    let readout = Rect::new(cell.x, cell.bottom() - line, cell.width, line);
+    let control = Rect::new(
+        cell.x,
+        caption.bottom(),
+        cell.width,
+        (readout.y - caption.bottom()).max(0.0),
+    );
+
+    for (rect, caption_text, ink) in [
+        (caption, param.label.as_str(), p.text_muted),
+        (
+            readout,
+            param.display.as_str(),
+            if hot { p.accent } else { p.text },
+        ),
+    ] {
+        if let Some(text) = labels.get(caption_text) {
+            draw_text_clipped(
+                scene,
+                text,
+                rect,
+                rect.x + ((rect.width - text.width) / 2.0).max(1.0),
+                rect.y + (rect.height - text.height) / 2.0,
+                ink,
+            );
         }
+    }
 
-        // The caption over the control, the read-out under it.
-        // Two lines of text and the rest to the control: a dial squeezed into
-        // a third of the cell is a smudge, not a knob.
-        let line = m.row_height.min(cell.height * 0.26);
-        let caption = Rect::new(cell.x, cell.y, cell.width, line);
-        let readout = Rect::new(cell.x, cell.bottom() - line, cell.width, line);
-        let control = Rect::new(
-            cell.x,
-            caption.bottom(),
-            cell.width,
-            (readout.y - caption.bottom()).max(0.0),
-        );
-
-        for (rect, caption_text, ink) in [
-            (caption, param.label.as_str(), p.text_muted),
-            (
-                readout,
-                param.display.as_str(),
-                if hot { p.accent } else { p.text },
-            ),
-        ] {
-            if let Some(text) = labels.get(caption_text) {
+    match &param.kind {
+        ParamKind::Knob => draw_knob(scene, theme, control, param.value, hot, param.automated),
+        ParamKind::Switch => {
+            let on = param.value >= 0.5;
+            let chip = control.inset((control.height * 0.25).min(control.width * 0.3));
+            fill_rect_rounded(
+                scene,
+                chip,
+                chip.height / 2.0,
+                if on { p.accent } else { p.border },
+            );
+            // A switch has no groove to recolour, so the ring goes round
+            // the chip. Same statement as a knob's, in the one shape a
+            // two-position control has.
+            if param.automated {
+                stroke_rect_rounded(
+                    scene,
+                    chip.inset(-2.0),
+                    (chip.height / 2.0) + 2.0,
+                    AUTOMATION_RING_WIDTH,
+                    p.param_automated,
+                );
+            }
+        }
+        // A button: its word in a chip.
+        ParamKind::Action => {
+            let chip = control.inset(1.0);
+            fill_rect_rounded(scene, chip, 4.0, p.border);
+            if let Some(text) = labels.get_small(&param.display) {
                 draw_text_clipped(
                     scene,
                     text,
-                    rect,
-                    rect.x + ((rect.width - text.width) / 2.0).max(1.0),
-                    rect.y + (rect.height - text.height) / 2.0,
-                    ink,
+                    chip,
+                    chip.x + ((chip.width - text.width) / 2.0).max(1.0),
+                    chip.y + (chip.height - text.height) / 2.0,
+                    p.text,
                 );
             }
         }
-
-        match &param.kind {
-            ParamKind::Knob => draw_knob(scene, theme, control, param.value, hot, param.automated),
-            ParamKind::Switch => {
-                let on = param.value >= 0.5;
-                let chip = control.inset((control.height * 0.25).min(control.width * 0.3));
+        ParamKind::Choice(options) => {
+            // A row of pips saying where in the list you are: a chip that
+            // only shows the current option gives no sense of how many
+            // there are or how far round you have gone.
+            let chosen = choice_index(&param.kind, param.value);
+            let count = options.len().max(1);
+            let pip = (control.width / (count as f32 * 2.0)).clamp(2.0, 7.0);
+            let span = pip * (2 * count - 1) as f32;
+            let y = control.y + (control.height - pip) / 2.0;
+            for n in 0..count {
+                let x = control.x + (control.width - span) / 2.0 + n as f32 * pip * 2.0;
                 fill_rect_rounded(
                     scene,
-                    chip,
-                    chip.height / 2.0,
-                    if on { p.accent } else { p.border },
+                    Rect::new(x, y, pip, pip),
+                    pip / 2.0,
+                    if n == chosen { p.accent } else { p.border },
                 );
-                // A switch has no groove to recolour, so the ring goes round
-                // the chip. Same statement as a knob's, in the one shape a
-                // two-position control has.
-                if param.automated {
-                    stroke_rect_rounded(
-                        scene,
-                        chip.inset(-2.0),
-                        (chip.height / 2.0) + 2.0,
-                        AUTOMATION_RING_WIDTH,
-                        p.param_automated,
-                    );
-                }
             }
-            // A button: its word in a chip.
-            ParamKind::Action => {
-                let chip = control.inset(1.0);
-                fill_rect_rounded(scene, chip, 4.0, p.border);
-                if let Some(text) = labels.get_small(&param.display) {
-                    draw_text_clipped(
-                        scene,
-                        text,
-                        chip,
-                        chip.x + ((chip.width - text.width) / 2.0).max(1.0),
-                        chip.y + (chip.height - text.height) / 2.0,
-                        p.text,
-                    );
-                }
-            }
-            ParamKind::Choice(options) => {
-                // A row of pips saying where in the list you are: a chip that
-                // only shows the current option gives no sense of how many
-                // there are or how far round you have gone.
-                let chosen = choice_index(&param.kind, param.value);
-                let count = options.len().max(1);
-                let pip = (control.width / (count as f32 * 2.0)).clamp(2.0, 7.0);
-                let span = pip * (2 * count - 1) as f32;
-                let y = control.y + (control.height - pip) / 2.0;
-                for n in 0..count {
-                    let x = control.x + (control.width - span) / 2.0 + n as f32 * pip * 2.0;
-                    fill_rect_rounded(
-                        scene,
-                        Rect::new(x, y, pip, pip),
-                        pip / 2.0,
-                        if n == chosen { p.accent } else { p.border },
-                    );
-                }
-                // Round the whole row of pips, for the reason the switch's
-                // goes round its chip.
-                if param.automated {
-                    let row = Rect::new(
-                        control.x + (control.width - span) / 2.0 - 3.0,
-                        y - 3.0,
-                        span + 6.0,
-                        pip + 6.0,
-                    );
-                    stroke_rect_rounded(
-                        scene,
-                        row,
-                        (pip + 6.0) / 2.0,
-                        AUTOMATION_RING_WIDTH,
-                        p.param_automated,
-                    );
-                }
+            // Round the whole row of pips, for the reason the switch's
+            // goes round its chip.
+            if param.automated {
+                let row = Rect::new(
+                    control.x + (control.width - span) / 2.0 - 3.0,
+                    y - 3.0,
+                    span + 6.0,
+                    pip + 6.0,
+                );
+                stroke_rect_rounded(
+                    scene,
+                    row,
+                    (pip + 6.0) / 2.0,
+                    AUTOMATION_RING_WIDTH,
+                    p.param_automated,
+                );
             }
         }
     }
 }
-
 /// One dial: a track, and an arc from the bottom-left round to where the value
 /// is.
 ///

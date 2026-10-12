@@ -41,6 +41,7 @@ fn a_project() -> (Project, fontelle_types::ChannelId) {
         gain_db: 0.0,
         ab: Default::default(),
         vocal: None,
+        vocal_style: Default::default(),
     });
     (project, channel)
 }

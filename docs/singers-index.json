@@ -6,6 +6,7 @@
       "id": "kasane-teto.utau",
       "name": "Kasane Teto (UTAU)",
       "kind": "utau",
+      "installs_as": ["重音テト", "重音テト（かさねてと）音声ライブラリー"],
       "languages": ["ja", "en"],
       "author": "TWINDRILL",
       "terms": {
@@ -156,6 +157,7 @@
       "id": "kiritan.diffsinger",
       "name": "Tohoku Kiritan (DiffSinger)",
       "kind": "diffsinger",
+      "installs_as": ["東北きりたん"],
       "languages": ["ja", "zh"],
       "author": "BaiShuoQwQ",
       "terms": {

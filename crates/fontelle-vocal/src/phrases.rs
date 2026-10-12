@@ -265,6 +265,16 @@ pub fn phrases_with(
         Some(v) => (v.engine.clone(), v.singer.clone(), v.language.clone()),
         None => (String::new(), String::new(), "en".to_string()),
     };
+    // The instrument's own settings: what a note or lane that says nothing
+    // is sung with (the vocal instrument panel).
+    let style = &this.vocal_style;
+    let auto_vibrato = style.vibrato.filter(|a| a.enabled);
+    let auto_glide = style.glide.filter(|g| g.enabled).map(|g| g.portamento);
+    let no_values = BTreeMap::new();
+    let no_options = BTreeMap::new();
+    let style_extra = style.extra.get(&backend).unwrap_or(&no_values);
+    let style_settings = style.settings.get(&backend).unwrap_or(&no_values);
+    let style_options = style.options.get(&backend).unwrap_or(&no_options);
     let syllable = fontelle_model::lyrics::default_syllable(&language);
 
     struct Sounding<'a> {
@@ -366,6 +376,17 @@ pub fn phrases_with(
     // this backend's own that any pass has drawn.
     let mut standard: BTreeSet<Lane> = BTreeSet::new();
     let mut extra: BTreeSet<String> = BTreeSet::new();
+    // And every lane the instrument moves: an offset is a lane of its own
+    // where the part draws none, a base one wherever it differs from the
+    // backend's default.
+    standard.extend(
+        style
+            .lanes
+            .iter()
+            .filter(|(_, v)| v.abs() > 1e-6)
+            .map(|(lane, _)| *lane),
+    );
+    extra.extend(style_extra.keys().cloned());
     for pass in &passes {
         if let Some(part) = pass.part {
             standard.extend(part.lanes.keys().copied());
@@ -382,12 +403,21 @@ pub fn phrases_with(
     };
     let sample_rate = tempo.sample_rate_hz();
     let tick_at = |seconds: f64| tempo.sample_to_tick((seconds * sample_rate).round() as i64);
-    let sample = |key: &LaneKey, neutral: f32, from: f64, to: f64| -> Option<Curve> {
+    // `fill` is the value where nothing is drawn, `offset` is added to
+    // every value, and a curve that stays at `neutral` all through is no
+    // curve at all.
+    let sample = |key: &LaneKey,
+                  fill: f32,
+                  offset: f32,
+                  neutral: f32,
+                  from: f64,
+                  to: f64|
+     -> Option<Curve> {
         let count = (((to - from) / CURVE_STEP).ceil().max(0.0) as usize) + 1;
         let mut values = Vec::with_capacity(count);
         let mut any = false;
         for i in 0..count {
-            let v = lane_at(&passes, key, tick_at(from + i as f64 * CURVE_STEP), neutral);
+            let v = lane_at(&passes, key, tick_at(from + i as f64 * CURVE_STEP), fill) + offset;
             any |= (v - neutral).abs() > 1e-6;
             values.push(v);
         }
@@ -410,7 +440,10 @@ pub fn phrases_with(
         let to = last_end + CURVE_TAIL;
         let mut curves = BTreeMap::new();
         for lane in &standard {
-            if let Some(c) = sample(&LaneKey::Standard(*lane), lane.neutral(), from, to) {
+            let neutral = lane.neutral();
+            let offset = style.lanes.get(lane).copied().unwrap_or(0.0);
+            let key = LaneKey::Standard(*lane);
+            if let Some(c) = sample(&key, neutral, offset, neutral, from, to) {
                 curves.insert(*lane, c);
             }
         }
@@ -420,7 +453,9 @@ pub fn phrases_with(
                 backend: backend.clone(),
                 id: id.clone(),
             };
-            if let Some(c) = sample(&key, extra_neutral(id), from, to) {
+            let neutral = extra_neutral(id);
+            let fill = style_extra.get(id).copied().unwrap_or(neutral);
+            if let Some(c) = sample(&key, fill, 0.0, neutral, from, to) {
                 extra_curves.insert(id.clone(), c);
             }
         }
@@ -436,7 +471,8 @@ pub fn phrases_with(
                 language: language.clone(),
                 notes: current
                     .iter()
-                    .map(|(i, s, e)| {
+                    .enumerate()
+                    .map(|(at, (i, s, e))| {
                         let n = &notes[*i];
                         let lyric = if n.note.lyric.trim().is_empty() {
                             syllable.to_string()
@@ -446,22 +482,45 @@ pub fn phrases_with(
                         let pitch = f32::from(n.key) + f32::from(n.fine) / 100.0;
                         let mut sung =
                             fontelle_sing::PhraseNote::new(s - origin, e - s, pitch, lyric);
-                        sung.velocity = fontelle_model::consonant_speed(n.note.velocity);
+                        sung.velocity = fontelle_model::consonant_speed(n.note.velocity)
+                            * style.consonant_speed;
                         if let Some(voice) = &n.note.voice {
                             sung.phonemes.clone_from(&voice.phonemes);
                             sung.vibrato = voice.vibrato;
                             sung.portamento = voice.portamento;
                             sung.options = voice.options_for(&backend);
                         }
+                        // What the instrument gives a note that says
+                        // nothing itself: a vibrato when it is long enough,
+                        // a glide when there is a note before it in the
+                        // phrase to glide from, its default options.
+                        if sung.vibrato.is_none()
+                            && let Some(auto) = auto_vibrato
+                            && (e - s) >= f64::from(auto.min_length)
+                        {
+                            sung.vibrato = Some(auto.vibrato);
+                        }
+                        if sung.portamento.is_none() && at > 0 {
+                            sung.portamento = auto_glide;
+                        }
+                        for (id, value) in style_options {
+                            sung.options
+                                .entry(id.clone())
+                                .or_insert_with(|| value.clone());
+                        }
                         sung
                     })
                     .collect(),
                 curves,
                 extra_curves,
-                settings: part
-                    .and_then(|p| p.settings.get(&backend))
-                    .cloned()
-                    .unwrap_or_default(),
+                // The instrument's settings, with the part's own over them.
+                settings: {
+                    let mut settings = style_settings.clone();
+                    if let Some(own) = part.and_then(|p| p.settings.get(&backend)) {
+                        settings.extend(own.iter().map(|(k, v)| (k.clone(), *v)));
+                    }
+                    settings
+                },
                 state: part.and_then(|p| p.state.get(&backend)).cloned(),
                 // Identity, left out of the render key (see `content_hash`).
                 start: origin,

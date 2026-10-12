@@ -391,7 +391,10 @@ impl Project {
             }
             _ => false,
         });
-        if expression || !self.frozen.is_empty() {
+        // The instrument panel's settings are expression too: a format-2
+        // build would open the song and sing it without them.
+        let styled = self.channels.values().any(|c| !c.vocal_style.is_default());
+        if expression || styled || !self.frozen.is_empty() {
             3
         } else if sings || words {
             2

@@ -1088,3 +1088,230 @@ impl Command for SetVocalState {
                 .map_or(0, Vec::len)
     }
 }
+
+// ------------------------------------------------------------ the style
+//
+// What the Fontelle Singer's instrument panel sets for a whole track. A
+// part's notes and lanes say how *this* phrase is sung; the style is how
+// the track's singer sings when a note or a lane says nothing — the
+// instrument's own defaults, the way a patch is a synthesiser's. On the
+// channel, like the patch, so every clip on the track (and every clip
+// drawn later) sings with it, and a duplicated track keeps it.
+
+/// Auto vibrato: what a note with no vibrato of its own is given, when it
+/// is long enough to want one (Synthesizer V's and Vocaloid's "vibrato on
+/// notes longer than").
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AutoVibrato {
+    /// Off keeps the settings for when it is turned back on.
+    pub enabled: bool,
+    pub vibrato: Vibrato,
+    /// Seconds: a shorter note is left alone.
+    pub min_length: f32,
+}
+
+impl AutoVibrato {
+    /// Notes shorter than this keep still: a quaver at 120 bpm.
+    pub const MIN_LENGTH: f32 = 0.25;
+}
+
+impl Default for AutoVibrato {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            vibrato: Vibrato::default(),
+            min_length: Self::MIN_LENGTH,
+        }
+    }
+}
+
+/// The glide a note with none of its own is given from the note before.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AutoGlide {
+    pub enabled: bool,
+    pub portamento: Portamento,
+}
+
+impl Default for AutoGlide {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            portamento: Portamento {
+                length: 0.06,
+                position: 0.5,
+                shape: fontelle_sing::GlideShape::S,
+            },
+        }
+    }
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// How a vocal track's singer sings by default: the Fontelle Singer
+/// panel's knobs (an engine's panel uses the same, for what it declares).
+///
+/// Every field defaults to "as the notes and the voice say", and only what
+/// differs from that is written, so a track never touched writes nothing
+/// and a song from before the panel opens as it sang.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VocalStyle {
+    /// The Voice section: an amount added to a standard lane over the whole
+    /// track (gender in cents, breathiness, tension, voicing) — on what the
+    /// part draws, or as the lane where it draws nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<SungLane, f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vibrato: Option<AutoVibrato>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glide: Option<AutoGlide>,
+    /// Multiplies every note's own consonant speed (its velocity).
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub consonant_speed: f32,
+    /// A backend's declared settings for the whole track, by backend then
+    /// id; a part's own setting is sung over it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, BTreeMap<String, f32>>,
+    /// A backend's own lanes' values where the part draws nothing, by
+    /// backend then lane id (a DiffSinger bank's expressiveness, a speaker's
+    /// share of the mix).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, BTreeMap<String, f32>>,
+    /// A backend's per-note options for notes that choose none (the voice
+    /// colour), by backend then option id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Default for VocalStyle {
+    fn default() -> Self {
+        Self {
+            lanes: BTreeMap::new(),
+            vibrato: None,
+            glide: None,
+            consonant_speed: 1.0,
+            settings: BTreeMap::new(),
+            extra: BTreeMap::new(),
+            options: BTreeMap::new(),
+        }
+    }
+}
+
+// Every number in a style is finite (`SetVocalStyle` refuses anything
+// else), as `NoteVoice`'s are.
+impl Eq for VocalStyle {}
+
+impl VocalStyle {
+    /// Nothing set: the notes and the voice as they are.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whether every number in it is a number.
+    pub fn is_finite(&self) -> bool {
+        let vibrato = self.vibrato.is_none_or(|a| {
+            let v = a.vibrato;
+            [
+                v.depth,
+                v.rate,
+                v.delay,
+                v.fade_in,
+                v.fade_out,
+                a.min_length,
+            ]
+            .iter()
+            .all(|x| x.is_finite())
+        });
+        let glide = self
+            .glide
+            .is_none_or(|g| g.portamento.length.is_finite() && g.portamento.position.is_finite());
+        vibrato
+            && glide
+            && self.consonant_speed.is_finite()
+            && self.lanes.values().all(|v| v.is_finite())
+            && self
+                .settings
+                .values()
+                .chain(self.extra.values())
+                .flat_map(BTreeMap::values)
+                .all(|v| v.is_finite())
+    }
+}
+
+/// A vocal track's whole style, set (one knob turned is the whole style
+/// with that knob changed). A drag's writes merge into one undo step.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetVocalStyle {
+    channel: ChannelId,
+    style: VocalStyle,
+    previous: Option<VocalStyle>,
+}
+
+impl SetVocalStyle {
+    pub fn new(channel: ChannelId, style: VocalStyle) -> Self {
+        Self {
+            channel,
+            style,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetVocalStyle {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetVocalStyle(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if !self.style.is_finite() {
+            return Err(CommandError("a singer setting is not a number".into()));
+        }
+        let Some(channel) = doc.channels.get_mut(self.channel) else {
+            return Err(CommandError("that channel is not there".into()));
+        };
+        let before = std::mem::replace(&mut channel.vocal_style, self.style.clone());
+        self.previous.get_or_insert(before);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetVocalStyle::new(self.channel, previous.clone())),
+            None => Box::new(NotApplied::new("changing how a singer sings")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Change the singer's instrument settings"
+    }
+
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if next.channel != self.channel {
+            return false;
+        }
+        self.style.clone_from(&next.style);
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        let size = |s: &VocalStyle| {
+            48 * (s.lanes.len()
+                + s.settings.values().map(BTreeMap::len).sum::<usize>()
+                + s.extra.values().map(BTreeMap::len).sum::<usize>()
+                + s.options.values().map(BTreeMap::len).sum::<usize>())
+        };
+        std::mem::size_of::<Self>() + size(&self.style) + self.previous.as_ref().map_or(0, size)
+    }
+}

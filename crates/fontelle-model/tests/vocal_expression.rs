@@ -62,6 +62,7 @@ fn fixture() -> Fixture {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: Some(VocalVoice::new("fontelle-utau", "utau:Teto", "ja")),
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane".into(),

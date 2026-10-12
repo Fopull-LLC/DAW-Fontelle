@@ -123,6 +123,12 @@ pub struct CatalogueSinger {
     /// The author's page for it.
     #[serde(default)]
     pub page: Option<String>,
+    /// Names its bank installs as — the `character.txt` name, the folder
+    /// the package makes — for telling an installed bank is this one when
+    /// its own name is in another script (see [`match_bank`]). Format 1
+    /// grows by keys, so an index without it reads as before.
+    #[serde(default)]
+    pub installs_as: Vec<String>,
 }
 
 /// How a singer is got.
@@ -360,4 +366,141 @@ impl DownloadWatch {
         }
         found
     }
+}
+
+// ------------------------------------------------------- reading terms
+//
+// > Ty agreed to Kasane Teto's terms, which are Japanese, without being
+// > able to read them.
+//
+// A bank's own terms are kept and shown as its author wrote them; when
+// they are not in the reader's language, the index's English summary of
+// the same singer is put beside them, and a Translate link hands the text
+// to a translation site in the browser — only when asked.
+
+/// Lower-case letters and digits only: how two spellings of one name are
+/// compared ("Kasane Teto" and "KasaneTeto_tougou").
+fn squashed(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// The catalogue entry an installed bank is, by the names it goes by — its
+/// display name, its folder, its author's name for it. An entry's
+/// [`installs_as`](CatalogueSinger::installs_as) names match whole; else
+/// its name before any bracket matches when the bank's name or folder
+/// starts with or contains its first two words run together ("Hitsuboku
+/// Kumi" in `Hitsuboku_Kumi_CHN`). Only an entry of the same kind: a
+/// singer's UTAU bank does not borrow its DiffSinger bank's terms.
+pub fn match_bank<'a>(
+    catalogue: &'a Catalogue,
+    kind: CatalogueKind,
+    names: &[&str],
+) -> Option<&'a CatalogueSinger> {
+    let names: Vec<String> = names
+        .iter()
+        .map(|n| squashed(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    let same_kind = || catalogue.singers.iter().filter(move |s| s.kind == kind);
+    if let Some(s) = same_kind().find(|s| {
+        s.installs_as
+            .iter()
+            .map(|a| squashed(a))
+            .any(|a| !a.is_empty() && names.contains(&a))
+    }) {
+        return Some(s);
+    }
+    // The longest key that fits wins, so "Kasane Teto English" would beat
+    // "Kasane Teto" for an English bank if the index had both.
+    same_kind()
+        .filter_map(|s| {
+            let base = s.name.split(['(', '[']).next().unwrap_or(&s.name);
+            let words: Vec<&str> = base.split_whitespace().collect();
+            let key = squashed(&words[..words.len().min(2)].concat());
+            // A one-letter key would match half the folder names there are.
+            (key.chars().count() >= 4 && names.iter().any(|n| n.contains(&key)))
+                .then_some((key.len(), s))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, s)| s)
+}
+
+/// Whether `text` reads as written in `language` (a BCP 47 tag), judged by
+/// its script: English is Latin letters, Japanese kana or kanji, Chinese
+/// Han, Korean hangul. A text with nothing to read is read. A name in
+/// another script inside an English sentence is still English: it is the
+/// share of the letters that decides.
+pub fn reads_as(text: &str, language: &str) -> bool {
+    #[derive(PartialEq)]
+    enum Script {
+        Latin,
+        Kana,
+        Han,
+        Hangul,
+        Other,
+    }
+    let script = |c: char| match c as u32 {
+        0x3040..=0x30ff | 0x31f0..=0x31ff | 0xff66..=0xff9f => Script::Kana,
+        0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x20000..=0x2fa1f => Script::Han,
+        0x1100..=0x11ff | 0x3130..=0x318f | 0xac00..=0xd7af => Script::Hangul,
+        _ if c.is_ascii_alphabetic() => Script::Latin,
+        0xc0..=0x24f => Script::Latin,
+        _ => Script::Other,
+    };
+    let letters: Vec<Script> = text
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .map(script)
+        .collect();
+    if letters.is_empty() {
+        return true;
+    }
+    let share = |want: &[Script]| {
+        letters.iter().filter(|s| want.contains(s)).count() as f32 / letters.len() as f32
+    };
+    let primary = language.split(['-', '_']).next().unwrap_or(language);
+    let ours = match primary {
+        "ja" => share(&[Script::Kana, Script::Han]),
+        "zh" => share(&[Script::Han]),
+        "ko" => share(&[Script::Hangul, Script::Han]),
+        // Every language written in Latin letters: English, Spanish, ...
+        _ => share(&[Script::Latin]),
+    };
+    ours >= 0.6
+}
+
+/// The longest URL [`translate_url`] makes: browsers and the site take
+/// more, but a desktop's "open this link" goes through a command line.
+pub const TRANSLATE_URL_MAX: usize = 7000;
+
+/// A link that opens `text` translated into `to` on a translation site
+/// (Google Translate), the original language detected there. Cut to what a
+/// URL can carry, never inside a character.
+pub fn translate_url(text: &str, to: &str) -> String {
+    let head = format!(
+        "https://translate.google.com/?sl=auto&tl={}&op=translate&text=",
+        to.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect::<String>()
+    );
+    let mut url = head;
+    for c in text.trim().chars() {
+        let mut buf = [0u8; 4];
+        let mut piece = String::new();
+        for b in c.encode_utf8(&mut buf).bytes() {
+            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                piece.push(b as char);
+            } else {
+                piece.push_str(&format!("%{b:02X}"));
+            }
+        }
+        if url.len() + piece.len() > TRANSLATE_URL_MAX {
+            break;
+        }
+        url.push_str(&piece);
+    }
+    url
 }

@@ -321,6 +321,13 @@ pub struct SettingInfo {
     pub max: f32,
     pub default: f32,
     pub unit: String,
+    /// A setting that is one of a list rather than a number: the name of
+    /// each whole value from `min` up (`choices[0]` is `min`), so an
+    /// instrument panel draws a list a user can read ("Japanese VCV")
+    /// instead of a knob reading 2. Empty for a number. Added after ABI 2
+    /// shipped, so an engine that never sends it reads as a number.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

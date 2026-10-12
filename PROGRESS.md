@@ -19,7 +19,62 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-07, latest — the Fontelle Singer and each singer engine
+**As of 2026-10-11, latest — the Fontelle Singer is a complete instrument
+with its own panel; engine instruments are never blank; terms you can
+read.** Branch `feature/vocal-track`, not merged, not bumped.
+`docs/vocal-plan.md` §2.5 says how. Ty: *"theres no instrument visuals for
+each yet, please go and create the generic vocal plugin instrument fully
+... it should have its own visuals and knobs and stuff in the instrument
+that people would expect and [the engine instrument] also shouldnt be
+blank"*; he had agreed to Japanese terms he could not read.
+
+- **The singer panel** (the instrument window of a vocal track): a stage
+  (portrait under a spotlight, instrument and kind, name, author/folder,
+  language chips, terms chip, Change singer…, ▶ Sample, Open <engine>,
+  Voicebanks…) over cards — Voice (gender, breath, tension, voicing; the
+  backend's own lanes), Expression (auto vibrato with depth/rate/delay/
+  fades/"notes over", default glide time/shape, consonant speed, a
+  picture of the line sung), Performance (declared settings: UTAU
+  phonemizer and modulation, DiffSinger steps and natural pitch; voice
+  colour/speaker default), Output (volume, pan). Ignored controls are
+  faded with why under their card. Two columns when wide, scrolls when
+  not; long controls take a double cell. `canvas::singer_panel`,
+  `render::singer_panel`, `fontelle_app::singer_panel`; the knobs are the
+  ordinary `InstrumentView`, so drag, fine drag, Alt-click reset, typed
+  values and drop-downs all work as on every panel.
+- **Format**: `Channel::vocal_style: VocalStyle` (additive, default
+  skipped, old songs unchanged; styled songs format 3); `SetVocalStyle`
+  appended to the wire; `SettingInfo::choices` (additive, serde default);
+  `CatalogueSinger::installs_as` (index format 1 grows by a key).
+- **Reaching the singer**: `phrases_with` applies the style (auto vibrato
+  on long notes without their own, glide on notes after another, scaled
+  consonant speed, lane offsets, extra-lane bases, settings under the
+  part's, option defaults); in the render key; backends unchanged.
+- **Engines**: an engine with a window opens it as its instrument (like a
+  plugin's own editor); one without gets the panel of what it declares.
+- **Terms**: `catalogue::{reads_as, match_bank, translate_url}`; the terms
+  dialog shows the index's English summary over the original and a
+  *Translate…* row (Google Translate in the browser, only on press); the
+  Installed row shows the summary.
+- Vocal knobs are not automation targets (render inputs; a change over
+  time is a roll lane — the knob's right-click says so). Volume/pan are.
+- Tests (first, seen failing, unless said): `fontelle-model`
+  `vocal_style.rs` (9); `fontelle-vocal` `style.rs` (7; two fixed after
+  for the pre-existing lead-in), `terms_reading.rs` (4); `fontelle-ui`
+  `singer_panel.rs` (6), `terms_menu.rs` (2), `vocal_edit_headless.rs`
+  (+`terms-translate` shot, written after); `fontelle-app`
+  `singer_panel.rs` (11), `singer_panel_shots.rs` (1, written after;
+  needs `FONTELLE_TEST_VOICEBANKS`, dumps `singer-panel-{utau,diffsinger,
+  engine}`).
+- **Not done**: the window's new presses (stage buttons, language chips,
+  scroll) were compiled and covered through the canvas functions, not
+  driven on a display; no level meter on the Output card (the panel is
+  redrawn on revision, not per frame); preview quality is fixed (only
+  DiffSinger's final steps are a setting); brightness has no standard
+  lane, so it appears only where a backend declares it.
+
+
+**As of 2026-10-07 — the Fontelle Singer and each singer engine
 are instruments of their own; a bigger singer picker; one face per bank.**
 Branch `feature/vocal-track`, not merged, not bumped. `docs/vocal-plan.md`
 §2.3 says how. Ty: *"split generic vocals and [the paid engine] into

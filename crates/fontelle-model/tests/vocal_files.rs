@@ -76,6 +76,7 @@ fn vocal_channel(project: &mut Project) -> ChannelId {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: Some(VocalVoice::new("fontelle-utau", "Teto", "ja")),
+        vocal_style: Default::default(),
     })
 }
 

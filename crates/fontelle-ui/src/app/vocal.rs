@@ -1166,7 +1166,12 @@ impl WindowApp {
         let Some(s) = singers.get(singer) else {
             return Vec::new();
         };
-        crate::canvas::terms_menu_rows(&s.name, s.terms.as_deref().unwrap_or(""))
+        crate::canvas::terms_menu_rows_with(
+            &s.name,
+            s.terms.as_deref().unwrap_or(""),
+            s.terms_summary.as_deref(),
+            s.terms_foreign,
+        )
     }
 
     pub(super) fn choose_singer_terms(
@@ -1179,6 +1184,15 @@ impl WindowApp {
         let Some((_, row)) = self.singer_terms_rows(singer).into_iter().nth(index) else {
             return;
         };
+        if row == TermsRow::Translate {
+            if let Some(doc) = &mut self.options.document
+                && let Some(terms) = doc.singers().get(singer).and_then(|s| s.terms.clone())
+            {
+                doc.translate_terms(&terms);
+                self.status = "Opened the terms in Google Translate, in your browser".to_string();
+            }
+            return;
+        }
         if row != TermsRow::Agree {
             if row == TermsRow::Cancel {
                 self.status =
@@ -1217,7 +1231,12 @@ impl WindowApp {
             return Vec::new();
         };
         if let Some(r) = page.installed.iter().find(|r| r.id == id) {
-            return crate::canvas::terms_menu_rows(&r.name, r.terms.as_deref().unwrap_or(""));
+            return crate::canvas::terms_menu_rows_with(
+                &r.name,
+                r.terms.as_deref().unwrap_or(""),
+                r.terms_summary.as_deref(),
+                r.terms_foreign,
+            );
         }
         if let Some(r) = page.catalogue.iter().find(|r| r.id == id) {
             let text = format!(
@@ -1235,6 +1254,19 @@ impl WindowApp {
         let Some((_, row)) = self.bank_terms_rows(id).into_iter().nth(index) else {
             return;
         };
+        if row == TermsRow::Translate {
+            let terms = self
+                .vocal_edit
+                .page
+                .as_ref()
+                .and_then(|p| p.installed.iter().find(|r| r.id == id))
+                .and_then(|r| r.terms.clone());
+            if let (Some(terms), Some(doc)) = (terms, &mut self.options.document) {
+                doc.translate_terms(&terms);
+                self.status = "Opened the terms in Google Translate, in your browser".to_string();
+            }
+            return;
+        }
         if row == TermsRow::Agree
             && let Some(doc) = &mut self.options.document
         {
@@ -1397,6 +1429,97 @@ impl WindowApp {
 }
 
 impl WindowApp {
+    // ------------------------------------------------ the singer panel
+
+    /// A press on the singer panel's stage (its buttons, a language chip,
+    /// the terms, the portrait). Whether it landed on one — a press on a
+    /// control is the knob grid's.
+    pub(super) fn press_singer_panel(&mut self, x: f32, y: f32) -> bool {
+        use crate::canvas::{SingerPanelButton as B, SingerPanelHit as H};
+        let Some(hit) = crate::canvas::singer_panel_hit(&self.singer_layout, x, y) else {
+            return false;
+        };
+        let Some(view) = self.singer_panel.clone() else {
+            return false;
+        };
+        let Some(channel) = self.options.document.as_ref().map(|d| d.selected_channel()) else {
+            return false;
+        };
+        match hit {
+            H::Button(B::ChangeSinger) | H::Portrait => {
+                // The picker is the studio's: it opens over the main window,
+                // which is brought forward to show it.
+                self.open_singer_picker(channel);
+                if let Some(live) = &self.live {
+                    live.window.focus_window();
+                }
+                self.status = "Choose a singer in the studio window".to_string();
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            H::Button(B::Sample) => {
+                if let Some(bank) = &view.bank {
+                    self.preview_voicebank_sample(bank);
+                }
+            }
+            H::Button(B::OpenEditor) => self.toggle_singer_editor(),
+            H::Button(B::Voicebanks) => {
+                self.open_voicebank_page(VoicebankTab::Installed);
+                if let Some(live) = &self.live {
+                    live.window.focus_window();
+                }
+            }
+            H::Language(n) => {
+                let Some(singer) = &view.singer else {
+                    return true;
+                };
+                let Some(tag) = singer.languages.get(n) else {
+                    return true;
+                };
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_singer(
+                        channel,
+                        Some(fontelle_model::VocalVoice::new(
+                            singer.engine.clone(),
+                            singer.id.clone(),
+                            tag.clone(),
+                        )),
+                    );
+                }
+                self.status = format!(
+                    "{} sings this track in {}",
+                    singer.name,
+                    crate::canvas::language_name(tag)
+                );
+                self.refresh_studio();
+            }
+            H::Terms => {
+                let Some(singer) = &view.singer else {
+                    return true;
+                };
+                let index = self.options.document.as_ref().and_then(|doc| {
+                    doc.singers()
+                        .iter()
+                        .position(|s| s.engine == singer.engine && s.id == singer.id)
+                });
+                if let Some(index) = index {
+                    let bounds = self
+                        .editors
+                        .iter()
+                        .find(|e| e.kind == EditorKind::Instrument)
+                        .map_or(self.singer_layout.body, |e| e.panel.body);
+                    let target = MenuTarget::SingerTerms {
+                        channel,
+                        singer: index,
+                        language: view.language.clone(),
+                    };
+                    self.open_menu(target, x, y, bounds);
+                }
+            }
+        }
+        self.redraw_editor(EditorKind::Instrument);
+        true
+    }
+
     // ------------------------------------------------------- the picker
 
     /// Opens the singer picker for `channel`: a grid of cards, the search

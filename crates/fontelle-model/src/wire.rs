@@ -33,6 +33,7 @@ use crate::study::{
 };
 use crate::vocal::{
     SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
+    SetVocalStyle,
 };
 use crate::vocal_files::{FreezeVocal, ImportVocal, UnfreezeVocal, UnimportVocal};
 
@@ -232,6 +233,7 @@ edits!(
     UnimportVocal,
     FreezeVocal,
     UnfreezeVocal,
+    SetVocalStyle,
 );
 
 impl Edit {

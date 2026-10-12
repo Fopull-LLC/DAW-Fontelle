@@ -54,6 +54,7 @@ fn add_channel(project: &mut Project, name: &str) -> ChannelId {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     })
 }
 

@@ -119,6 +119,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let lane_id = project.lanes.insert(Lane {
         name: "lane".into(),

@@ -1465,6 +1465,17 @@ pub struct WindowApp {
     /// The selected channel's instrument, read with the rest of the studio's
     /// lists rather than once a frame.
     instrument: Option<InstrumentView>,
+    /// The selected vocal track's singer — the stage over its instrument
+    /// panel (`docs/vocal-plan.md` §2.5). When `Some`, the instrument window
+    /// is the singer panel and [`instrument`](Self::instrument) is its knobs.
+    singer_panel: Option<crate::document::SingerPanelView>,
+    /// Where the singer panel's stage and cards are; its `controls` are
+    /// what `instrument_layout` holds while it shows.
+    singer_layout: crate::canvas::SingerPanelLayout,
+    /// How far the singer panel is scrolled down.
+    singer_scroll: f32,
+    /// Which piece of the singer panel's stage the pointer is over.
+    singer_hover: Option<crate::canvas::SingerPanelHit>,
     /// What the selected channel is, for what its window says when it has
     /// nothing to show (`render::no_instrument_text`).
     selected_kind: Option<fontelle_types::InstrumentKind>,
@@ -2402,6 +2413,10 @@ impl WindowApp {
             tab: EditorTab::Roll,
             tabs: editor_tabs(layout.panel.header, &options.theme.metrics),
             instrument: None,
+            singer_panel: None,
+            singer_layout: Default::default(),
+            singer_scroll: 0.0,
+            singer_hover: None,
             selected_kind: None,
             instrument_layout: InstrumentLayout {
                 name: crate::layout::Rect::ZERO,
@@ -5608,7 +5623,10 @@ impl WindowApp {
                     .map(|view| crate::layout::flopsynth_window_size(view.scale))
             })
             .flatten();
+        // A vocal track's instrument is the singer panel, its own shape.
+        let singer = kind == EditorKind::Instrument && self.singer_panel.is_some();
         let (w, h) = match (flop_size, tune, notepad, disgusting_beat) {
+            _ if singer => crate::canvas::SINGER_PANEL_SIZE,
             (Some(size), _, _, _) => size,
             (_, true, _, _) => crate::layout::TUNE_SIZE,
             (_, _, true, _) => crate::layout::NOTEPAD_SIZE,
@@ -5733,6 +5751,18 @@ impl WindowApp {
                     None => "Flopsynth".to_string(),
                 }
             }
+            // A vocal track's window is named for its instrument: "Fontelle
+            // Singer — Lead vocal".
+            EditorKind::Instrument if self.singer_panel.is_some() => {
+                let instrument = self
+                    .singer_panel
+                    .as_ref()
+                    .map_or("", |v| v.instrument.as_str());
+                match self.channels.get(self.selected_channel) {
+                    Some(channel) => format!("{instrument} \u{2014} {}", channel.name),
+                    None => instrument.to_string(),
+                }
+            }
             EditorKind::Instrument => match self.channels.get(self.selected_channel) {
                 Some(channel) => format!("{} \u{2014} {}", kind.title(), channel.name),
                 None => kind.title().to_string(),
@@ -5824,9 +5854,22 @@ impl WindowApp {
                             ..Default::default()
                         },
                     };
-                    self.instrument_layout = match &self.instrument {
-                        Some(view) => instrument_layout(body, &m, view),
-                        None => InstrumentLayout {
+                    self.instrument_layout = match (&self.instrument, &self.singer_panel) {
+                        // The singer panel: its cells, in its cards — the
+                        // gestures read `instrument_layout` either way.
+                        (Some(view), Some(singer)) => {
+                            self.singer_layout = crate::canvas::singer_panel_layout(
+                                body,
+                                &m,
+                                singer,
+                                view,
+                                self.singer_scroll,
+                            );
+                            self.singer_scroll = self.singer_layout.scroll;
+                            self.singer_layout.controls.clone()
+                        }
+                        (Some(view), None) => instrument_layout(body, &m, view),
+                        (None, _) => InstrumentLayout {
                             name: crate::layout::Rect::ZERO,
                             body,
                             keys: Vec::new(),
@@ -6084,6 +6127,12 @@ impl WindowApp {
                     // Only the instrument window has a list to scroll (its
                     // presets); the effect and clip panels are laid out to fit
                     // and have nothing to scroll once a menu is closed.
+                    // The singer panel scrolls when it is taller than its
+                    // window — three rows of knobs a notch would be too far.
+                    if kind == EditorKind::Instrument && self.singer_panel.is_some() {
+                        self.singer_scroll = (self.singer_scroll - steps * 40.0).max(0.0);
+                        self.relayout_editors();
+                    }
                     if kind == EditorKind::Instrument {
                         if self.wheel_flopsynth_control(x, y, steps) {
                             self.redraw_editor(kind);
@@ -6373,6 +6422,32 @@ impl WindowApp {
                 // right-click makes an automation lane for it.
                 MouseButton::Right => self.press_flopsynth_menu(x, y),
             },
+            EditorKind::Instrument if self.singer_panel.is_some() => match button {
+                MouseButton::Left => {
+                    if !self.press_singer_panel(x, y) && self.singer_layout.body.contains(x, y) {
+                        self.press_instrument(x, y);
+                    }
+                }
+                MouseButton::Right => {
+                    // Volume and pan are automated like any channel's. The
+                    // singer's own knobs are what it is *asked* to sing, a
+                    // render's input rather than a sound's: a change over
+                    // time is a lane drawn under the roll, which is said.
+                    let address = instrument_hit(&self.instrument_layout, x, y)
+                        .and_then(|(g, p)| self.instrument.as_ref()?.param(g, p))
+                        .map(|param| param.address.as_str().to_string());
+                    match address {
+                        Some(a) if a.starts_with("vocal/") => {
+                            self.status = "To change this over time, draw it in a lane \
+                                           under the piano roll"
+                                .to_string();
+                            self.tree.invalidate(BROWSER);
+                        }
+                        Some(_) => self.press_instrument_menu(x, y),
+                        None => {}
+                    }
+                }
+            },
             EditorKind::Instrument => match button {
                 MouseButton::Left => self.press_instrument(x, y),
                 // *"i want to be able to right click on a knob and select
@@ -6451,6 +6526,10 @@ impl WindowApp {
             }
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
+                self.singer_hover = self
+                    .singer_panel
+                    .as_ref()
+                    .and_then(|_| crate::canvas::singer_panel_hit(&self.singer_layout, x, y));
             }
             // DisgustingBeat's lanes, checked first for the same reason.
             EditorKind::Effect if self.disgusting_beat.is_some() => {
@@ -6742,6 +6821,22 @@ impl WindowApp {
                         .flop_motion
                         .value(FlopMotion::Bubble, std::time::Instant::now())
                         .unwrap_or(1.0),
+                })
+            }
+            EditorKind::Instrument if self.singer_panel.is_some() && self.instrument.is_some() => {
+                let (Some(view), Some(controls)) =
+                    (self.singer_panel.as_ref(), self.instrument.as_ref())
+                else {
+                    return;
+                };
+                EditorWindowChrome::Singer(crate::render::singer_panel::SingerChrome {
+                    layout: self.singer_layout.clone(),
+                    view,
+                    controls,
+                    portraits: &self.vocal_edit.portraits,
+                    hover: self.hover_param,
+                    active: self.knob.map(|(which, _, _)| which),
+                    hover_hit: self.singer_hover,
                 })
             }
             EditorKind::Instrument if self.instrument.is_none() => {
@@ -7175,6 +7270,19 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
+        let singer_panel = doc.singer_panel();
+        // A singer's face is decoded once, here, so the frame only peeks.
+        if let Some(path) = singer_panel
+            .as_ref()
+            .and_then(|v| v.singer.as_ref())
+            .and_then(|s| s.image.as_deref())
+        {
+            self.vocal_edit.portraits.get(path);
+        }
+        if singer_panel.is_some() != self.singer_panel.is_some() {
+            self.singer_scroll = 0.0;
+        }
+        self.singer_panel = singer_panel;
         self.selected_kind = doc.channel_kind(doc.selected_channel());
         self.flopsynth = doc.flopsynth_showing(
             self.flop_page,
@@ -8547,8 +8655,18 @@ impl WindowApp {
                 .ensure(crate::canvas::curve_label(shape), &font, &mut self.text);
         }
 
+        // The singer panel's own words, at their own sizes.
+        if self.is_editor_open(EditorKind::Instrument)
+            && let (Some(view), Some(controls)) = (&self.singer_panel, &self.instrument)
+        {
+            for (s, style) in crate::render::singer_panel::singer_panel_strings(view, controls) {
+                self.labels.ensure_styled(&s, &font, style, &mut self.text);
+            }
+        }
+
         // Both panels of knobs: the instrument's, and the one an effect that is
         // not an EQ opens. Same shape, same captions to shape.
+
         for view in [
             self.is_editor_open(EditorKind::Instrument)
                 .then(|| self.instrument.clone())

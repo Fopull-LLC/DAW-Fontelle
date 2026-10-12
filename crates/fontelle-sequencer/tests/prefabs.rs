@@ -74,6 +74,7 @@ fn a_rig() -> Rig {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(a_lane(0));
     let other = project.lanes.insert(a_lane(1));

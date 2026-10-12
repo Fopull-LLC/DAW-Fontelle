@@ -267,6 +267,7 @@ impl Command for AddChannel {
             ab: Default::default(),
             gain_db: 0.0,
             vocal: None,
+            vocal_style: Default::default(),
         };
 
         match self.created {
@@ -4888,6 +4889,7 @@ impl Command for ImportParts {
                 ab: Default::default(),
                 gain_db: 0.0,
                 vocal: None,
+                vocal_style: Default::default(),
             };
             let channel_id = match previous {
                 Some(ids) => {

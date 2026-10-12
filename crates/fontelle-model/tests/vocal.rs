@@ -58,6 +58,7 @@ fn fixture(vocal: bool) -> Fixture {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: vocal.then(|| VocalVoice::new("Some Engine", "alto", "en")),
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane".into(),

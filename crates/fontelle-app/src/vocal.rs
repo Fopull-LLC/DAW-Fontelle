@@ -20,10 +20,10 @@ use fontelle_model::{ClipSource, Project, TempoMap, VocalVoice};
 use fontelle_sing::{Lane, Transport};
 use fontelle_types::{ChannelId, ClipId, InstrumentKind, NoteId, Tick};
 use fontelle_ui::document::{
-    CatalogueRow, SingerChoice, SingerInstrument, SingerKind, VocalPhraseView, VocalRenderState,
-    VocalView, VoicebankRow,
+    CatalogueRow, SingerChoice, SingerInstrument, SingerKind, SingerPanelView, VocalPhraseView,
+    VocalRenderState, VocalView, VoicebankRow,
 };
-use fontelle_vocal::catalogue::{Catalogue, DownloadWatch, Get};
+use fontelle_vocal::catalogue::{Catalogue, CatalogueKind, DownloadWatch, Get};
 use fontelle_vocal::{
     BuiltinBackend, Phrase, PhraseState, SingerRegistry, VocalRenderer, Wanted, phrases_with,
     table_for, voicebanks,
@@ -54,6 +54,33 @@ pub(crate) fn takes_dir_here(bundle: Option<&Path>) -> Option<PathBuf> {
         &|key| std::env::var(key).ok(),
         crate::settings::Platform::here(),
     )
+}
+
+/// The language the user reads terms in: the language Fontelle's own words
+/// are in. A bank's terms in another are offered with the index's English
+/// summary and a Translate row.
+pub const READER_LANGUAGE: &str = "en";
+
+/// The Find singers index's English summary of an installed bank's terms,
+/// when the index knows the bank (by its name or folder, the same kind).
+fn summary_for(
+    catalogue: &Catalogue,
+    kind: voicebanks::PackageKind,
+    names: &[&str],
+) -> Option<String> {
+    let kind = match kind {
+        voicebanks::PackageKind::Utau => CatalogueKind::Utau,
+        voicebanks::PackageKind::DiffSinger => CatalogueKind::DiffSinger,
+        voicebanks::PackageKind::Dependency => CatalogueKind::Dependency,
+    };
+    fontelle_vocal::catalogue::match_bank(catalogue, kind, names)
+        .map(|s| s.terms.summary.clone())
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Whether `terms` are in a language other than the reader's.
+fn foreign(terms: Option<&str>) -> bool {
+    terms.is_some_and(|t| !fontelle_vocal::catalogue::reads_as(t, READER_LANGUAGE))
 }
 
 /// The longest an export waits for the last final take before giving up.
@@ -426,6 +453,7 @@ impl VocalSession {
         // and its row agree — *"the singer select menu and installed singers
         // menus do not display the same the picture is missing on some"*.
         let installed = voicebanks::list(&self.voicebanks_dir());
+        let catalogue = self.catalogue();
         self.registry()
             .voices()
             .into_iter()
@@ -438,17 +466,24 @@ impl VocalSession {
                     )
                 });
                 let mut folder = None;
+                let mut summary = None;
+                let mut bank_terms = None;
                 if let Some(Some(bank)) = bank {
                     folder = Some(bank.id.clone());
+                    summary = summary_for(&catalogue, bank.kind, &[&bank.name, &bank.id]);
+                    bank_terms = bank.terms.clone();
                     v.info.name = bank.name.clone();
                     if let Some(face) = &bank.info.portrait {
                         v.info.image = Some(face.display().to_string());
                     }
                 }
-                (v, folder)
+                let terms_foreign = foreign(v.info.terms.as_deref().or(bank_terms.as_deref()));
+                (v, folder, summary, terms_foreign)
             })
-            .map(|(v, folder)| SingerChoice {
+            .map(|(v, folder, terms_summary, terms_foreign)| SingerChoice {
                 folder,
+                terms_summary,
+                terms_foreign,
                 terms_agreed: self.terms_agreed(&v.backend, &v.info.id, v.info.terms.as_deref()),
                 engine: v.backend,
                 engine_name: v.backend_name,
@@ -1187,6 +1222,7 @@ impl VocalSession {
 
     pub fn voicebank_rows(&self) -> Vec<VoicebankRow> {
         let dir = self.voicebanks_dir();
+        let catalogue = self.catalogue();
         voicebanks::list(&dir)
             .into_iter()
             .chain(voicebanks::dependencies(&dir))
@@ -1205,6 +1241,8 @@ impl VocalSession {
                 path: b.path.display().to_string(),
                 languages: b.info.languages.clone(),
                 sample: b.info.sample.as_ref().map(|p| p.display().to_string()),
+                terms_summary: summary_for(&catalogue, b.kind, &[&b.name, &b.id]),
+                terms_foreign: foreign(b.terms.as_deref()),
             })
             .collect()
     }
@@ -1419,5 +1457,99 @@ impl VocalSession {
     /// Why `channel` cannot sing, when it cannot.
     pub fn problem_of(&self, channel: ChannelId) -> Option<String> {
         self.parts.get(&channel).and_then(|p| p.problem.clone())
+    }
+
+    /// What `voice` answers to (default, nothing, for no voice).
+    pub fn capabilities_of(&self, voice: Option<&VocalVoice>) -> fontelle_sing::Capabilities {
+        voice
+            .filter(|v| !v.singer.is_empty())
+            .map(|v| self.registry().capabilities(v))
+            .unwrap_or_default()
+    }
+
+    /// Vocal channel `channel`'s instrument panel: who sings it (the stage)
+    /// and its controls (`crate::singer_panel`). `None` for a channel that
+    /// is not a vocal track.
+    pub fn panel(
+        &self,
+        project: &Project,
+        channel: ChannelId,
+    ) -> Option<(SingerPanelView, fontelle_ui::canvas::InstrumentView)> {
+        let c = project.channels.get(channel)?;
+        if c.instrument != Some(InstrumentKind::Vocal) {
+            return None;
+        }
+        let voice = c.vocal.as_ref();
+        let instrument = Self::instrument_name(voice);
+        let engine = voice
+            .and_then(|v| v.engine_instrument())
+            .map(str::to_string);
+        let chosen = voice.filter(|v| !v.singer.is_empty());
+        let singer = chosen.and_then(|v| {
+            self.singers()
+                .into_iter()
+                .find(|s| s.engine == v.engine && s.id == v.singer)
+        });
+        let row = singer
+            .as_ref()
+            .and_then(|s| s.folder.as_deref())
+            .and_then(|id| self.voicebank_rows().into_iter().find(|r| r.id == id));
+        let has_editor = engine.as_deref().is_some_and(|e| {
+            self.instruments()
+                .iter()
+                .any(|i| i.engine.as_deref() == Some(e) && i.has_editor)
+        });
+        let message = match (chosen, &singer) {
+            (None, _) => Some(format!(
+                "Choose a singer \u{2014} {instrument} sings once one is chosen"
+            )),
+            (Some(v), None) => Some(format!(
+                "\u{201c}{}\u{201d} is not installed here \u{2014} its notes and settings are kept",
+                v.singer
+            )),
+            _ => self.problem_of(channel),
+        };
+        // Who ignores a control: the singer by name on the Fontelle Singer
+        // (it is the bank that does), the engine by name otherwise.
+        let who = match (&engine, &singer) {
+            (None, Some(s)) => s.name.clone(),
+            _ => instrument.clone(),
+        };
+        let caps = self.capabilities_of(chosen);
+        let backend = voice.map(|v| v.engine.clone()).unwrap_or_default();
+        let (controls, greyed) = crate::singer_panel::describe(
+            &c.name,
+            &caps,
+            &backend,
+            &who,
+            &c.vocal_style,
+            c.gain_db,
+            c.pan,
+        );
+        let header = SingerPanelView {
+            instrument,
+            engine,
+            language: voice.map(|v| v.language.clone()).unwrap_or_default(),
+            author: row.as_ref().and_then(|r| r.author.clone()),
+            bank: row.as_ref().map(|r| r.id.clone()),
+            sample: row.as_ref().is_some_and(|r| r.sample.is_some()),
+            has_editor,
+            editor_open: self.editor_open(),
+            greyed,
+            message,
+            singer,
+            vibrato: c
+                .vocal_style
+                .vibrato
+                .filter(|a| a.enabled)
+                .map(|a| a.vibrato),
+            glide: c
+                .vocal_style
+                .glide
+                .filter(|g| g.enabled)
+                .map(|g| g.portamento),
+        };
+
+        Some((header, controls))
     }
 }

@@ -190,27 +190,25 @@ impl Backend for UtauBackend {
             settings: vec![
                 SettingInfo {
                     id: SETTING_PHONEMIZER.into(),
-                    name: format!(
-                        "Phonemizer (0 automatic: {}; {})",
-                        kind.name(),
-                        Phonemizer::ALL
-                            .iter()
-                            .map(|p| format!("{} {}", p.setting_value(), p.name()))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
+                    name: "Phonemizer".into(),
                     min: 0.0,
                     max: Phonemizer::ALL.len() as f32,
                     default: 0.0,
                     unit: String::new(),
+                    // 0 is automatic (what the bank's aliases look like),
+                    // then each phonemizer at its `setting_value`.
+                    choices: std::iter::once(format!("Automatic ({})", kind.name()))
+                        .chain(Phonemizer::ALL.iter().map(|p| p.name().to_string()))
+                        .collect(),
                 },
                 SettingInfo {
                     id: SETTING_MODULATION.into(),
-                    name: "Modulation (the recording's own pitch movement)".into(),
+                    name: "Modulation".into(),
                     min: 0.0,
                     max: 100.0,
                     default: 0.0,
                     unit: "%".into(),
+                    choices: Vec::new(),
                 },
             ],
             note_options,

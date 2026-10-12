@@ -790,6 +790,7 @@ mod tests {
             ab: Default::default(),
             gain_db: 0.0,
             vocal: None,
+            vocal_style: Default::default(),
         });
 
         let lane_id = project.lanes.insert(Lane {

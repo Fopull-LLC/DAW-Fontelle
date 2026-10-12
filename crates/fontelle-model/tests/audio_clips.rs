@@ -203,6 +203,7 @@ fn editing_a_clip_that_is_not_audio_is_refused_rather_than_replacing_it() {
                 ab: Default::default(),
                 gain_db: 0.0,
                 vocal: None,
+                vocal_style: Default::default(),
             }),
             notes: Default::default(),
             vocal: None,

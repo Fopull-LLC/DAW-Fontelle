@@ -211,6 +211,7 @@ fn a_channel_can_play_a_plugin() {
         named_keys: false,
         ab: Default::default(),
         vocal: None,
+        vocal_style: Default::default(),
     });
     let mut history = History::new();
     history
@@ -251,6 +252,7 @@ fn a_channels_plugin_parameter_is_written_and_undone() {
         named_keys: false,
         ab: Default::default(),
         vocal: None,
+        vocal_style: Default::default(),
     });
     let mut history = History::new();
     history

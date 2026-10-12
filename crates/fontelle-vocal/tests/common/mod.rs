@@ -47,6 +47,7 @@ pub fn channel(name: &str, voice: Option<VocalVoice>) -> Channel {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: voice,
+        vocal_style: Default::default(),
     }
 }
 

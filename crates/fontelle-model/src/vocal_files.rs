@@ -194,6 +194,7 @@ impl Command for ImportVocal {
                         ab: Default::default(),
                         gain_db: 0.0,
                         vocal: voice.clone(),
+                        vocal_style: Default::default(),
                     };
                     let channel_id = match previous {
                         Some(ids) => {

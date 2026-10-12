@@ -81,9 +81,10 @@ pub use tools::{
     RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
 };
 pub use vocal::{
-    BUILTIN_ENGINE_PREFIX, LaneCurve, LaneKey, LaneSpec, NoteVoice, SetLyrics, SetNoteVoices,
-    SetSinger, SetVocalLane, SetVocalSettings, SetVocalState, VocalPart, VocalVoice,
-    consonant_speed, is_builtin_engine, lane_spec, velocity_for_speed,
+    AutoGlide, AutoVibrato, BUILTIN_ENGINE_PREFIX, LaneCurve, LaneKey, LaneSpec, NoteVoice,
+    SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
+    SetVocalStyle, VocalPart, VocalStyle, VocalVoice, consonant_speed, is_builtin_engine,
+    lane_spec, velocity_for_speed,
 };
 pub use vocal_files::{
     FreezeVocal, FrozenVocal, ImportVocal, MadeVocal, UnfreezeVocal, UnimportVocal,

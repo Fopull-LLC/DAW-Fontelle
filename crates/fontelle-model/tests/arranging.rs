@@ -60,6 +60,7 @@ fn a_project() -> (Project, ChannelId, LaneId) {
         ab: Default::default(),
         gain_db: -3.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(Lane {
         name: "Lane 1".into(),

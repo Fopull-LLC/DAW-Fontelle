@@ -29,6 +29,7 @@ mod roll_scale;
 mod scrollbar;
 mod settings_page;
 mod share;
+mod singer_panel;
 mod singer_picker;
 mod text_entry;
 mod timeline;
@@ -222,8 +223,8 @@ pub use disgusting_beat::{
 };
 pub use glide::{Glide, wheel_travel};
 pub use lyrics::{
-    LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, TermsRow, language_name, line_text,
-    neighbour, singer_menu_rows, terms_menu_rows,
+    LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, TRANSLATE_TERMS, TermsRow, language_name,
+    line_text, neighbour, singer_menu_rows, terms_menu_rows, terms_menu_rows_with,
 };
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
@@ -277,6 +278,11 @@ pub use share::{
     PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG, STOP_SHARING, ShareHit,
     SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout, peer_colour,
     share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
+};
+pub use singer_panel::{
+    CARD_HEADING, FOOTNOTE_HEIGHT, SINGER_PANEL_PAD, SINGER_PANEL_SIZE, SINGER_PICTURE_HEIGHT,
+    SINGER_PORTRAIT, SingerPanelButton, SingerPanelHit, SingerPanelLayout, TERMS_CHIP_WIDTH,
+    language_chip_width, singer_footnote, singer_panel_hit, singer_panel_layout,
 };
 pub use singer_picker::{
     PORTRAIT_SIZE, PickerCard, PickerGroup, PickerHit, PickerMove, SingerPickerLayout,

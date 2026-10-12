@@ -60,6 +60,7 @@ fn compile_in(clip_length: Tick, notes: Vec<Note>) -> fontelle_types::CompiledTi
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),

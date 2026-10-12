@@ -92,6 +92,12 @@ pub struct SingerChoice {
     /// A voicebank's folder in the voicebanks folder, shown under its
     /// name (the Installed page shows the same); `None` for an engine's.
     pub folder: Option<String>,
+    /// The Find singers index's English summary of these terms, when the
+    /// singer is one the index knows.
+    pub terms_summary: Option<String>,
+    /// The terms are written in a language the user does not read, so the
+    /// terms dialog offers the summary and a Translate row.
+    pub terms_foreign: bool,
 }
 
 /// What the built-in instrument is called — the one that sings free UTAU
@@ -122,6 +128,43 @@ impl SingerInstrument {
             has_editor: false,
         }
     }
+}
+
+/// The top of a vocal track's instrument panel: who sings it, and what
+/// can be done about that — the singer's stage over the panel's knobs
+/// (`canvas::singer_panel_layout`). The knobs themselves are
+/// [`StudioHost::instrument`]'s, so every control on it is addressed,
+/// dragged, reset and typed into the way every other instrument's is.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SingerPanelView {
+    /// The instrument: "Fontelle Singer", or an engine by its short name.
+    pub instrument: String,
+    /// `None` for the Fontelle Singer; else the engine's name, as a song
+    /// stores it.
+    pub engine: Option<String>,
+    /// Who sings, as the picker's card has them (portrait, name, kind,
+    /// languages, terms); `None` when nobody is chosen or installed.
+    pub singer: Option<SingerChoice>,
+    /// The language the track sings in (a BCP 47 tag).
+    pub language: String,
+    /// Who made the voice, when the bank says.
+    pub author: Option<String>,
+    /// The installed bank's folder (what ▶ Sample and the terms read).
+    pub bank: Option<String>,
+    /// The bank names a sample to listen to.
+    pub sample: bool,
+    /// The engine has a window of its own (ABI 2's `has_editor`).
+    pub has_editor: bool,
+    pub editor_open: bool,
+    /// Controls this voice does not use, by address, and why — drawn
+    /// greyed, the reason under their section.
+    pub greyed: Vec<(String, String)>,
+    /// Why the track is silent, or what to do first: "Choose a singer".
+    pub message: Option<String>,
+    /// The auto vibrato and default glide the track gives notes without
+    /// their own, when they are on — drawn as the Expression card's picture.
+    pub vibrato: Option<fontelle_sing::Vibrato>,
+    pub glide: Option<fontelle_sing::Portamento>,
 }
 
 /// A note's sung phonemes, each with where it starts (seconds from the
@@ -169,6 +212,11 @@ pub struct VoicebankRow {
     pub languages: Vec<String>,
     /// A sample to listen to, when the bank names one.
     pub sample: Option<String>,
+    /// The Find singers index's English summary of its terms, when the bank
+    /// is one the index knows.
+    pub terms_summary: Option<String>,
+    /// Its terms are written in a language the user does not read.
+    pub terms_foreign: bool,
 }
 
 /// One singer in the Find singers catalogue.
@@ -3791,6 +3839,16 @@ pub trait StudioHost: DocumentHost {
     fn take_vocal_selection(&mut self) -> Option<Vec<NoteId>> {
         None
     }
+
+    /// The selected channel's singer, when it is a vocal track: the top of
+    /// its instrument panel (the knobs are [`instrument`](Self::instrument)'s).
+    fn singer_panel(&self) -> Option<SingerPanelView> {
+        None
+    }
+
+    /// Opens a singer's terms through a translation site in the browser —
+    /// only ever because the user asked (the terms dialog's Translate row).
+    fn translate_terms(&mut self, _text: &str) {}
 
     /// Opens the selected vocal track's engine window. Says what happened.
     fn open_singer_editor(&mut self) -> Result<String, String> {

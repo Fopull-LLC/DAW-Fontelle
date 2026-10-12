@@ -56,6 +56,7 @@ fn fixture(notes: Vec<Note>) -> (Project, ClipId, Vec<NoteId>) {
         ab: Default::default(),
         gain_db: 0.0,
         vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
