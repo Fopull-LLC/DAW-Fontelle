@@ -2948,3 +2948,91 @@ fn a_knob_kept_on_the_joiner_survives_his_copy_being_made_again() {
         "and so is his plugin"
     );
 }
+
+/// Ty: *"if there are plugins missing, it should tell you which plugins."*
+/// The joiner's Share panel lists every plugin the song uses that this
+/// computer has not got — its name, its format, who makes it, and which
+/// instruments and tracks play through it — and one somebody adds while the
+/// session is on is said as it arrives, and listed too.
+#[test]
+fn a_joiner_is_shown_which_plugins_are_missing_and_where_the_song_uses_them() {
+    let dir = scratch("missing-panel");
+    let mut host = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.set_channel_plugin(0, 0);
+    host.save().unwrap();
+    let channel = host.channels()[0].name.clone();
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+    assert!(pair.joiner.collab_live());
+
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(
+        missing[0].what.contains("Fontelle Test Sine"),
+        "{missing:?}"
+    );
+    assert!(missing[0].what.contains("CLAP"), "{missing:?}");
+    assert!(
+        missing[0].what.contains("Fopull LLC"),
+        "who makes it: {missing:?}"
+    );
+    assert!(missing[0].detail.contains(&channel), "where: {missing:?}");
+    assert!(
+        pair.host.session().missing.is_empty(),
+        "the host has everything its song uses"
+    );
+
+    // Alice puts a plugin effect on the master while Bob is in.
+    pair.joiner.take_session_notices();
+    pair.host.add_plugin_insert(0, 0);
+    pair.settle();
+    let said = pair.joiner.take_session_notices().join(" ");
+    assert!(
+        said.contains("Fontelle Test Gain"),
+        "said as it arrives: {said}"
+    );
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(
+        missing
+            .iter()
+            .any(|m| m.what.contains("Fontelle Test Gain") && m.detail.contains("Master")),
+        "{missing:?}"
+    );
+}
+
+/// A file that could not be had is listed too, with why: the host has not
+/// got it either.
+#[test]
+fn a_file_that_could_not_be_sent_is_listed_with_why() {
+    let dir = scratch("missing-file");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.drop_file_at(&a_tone(&dir.join("desktop"), "kick.wav", 0.2, 60.0), 0)
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    // Gone from Alice's computer before Bob asks for it.
+    let bundle = pair.host.bundle_path().unwrap().to_path_buf();
+    for entry in std::fs::read_dir(bundle.join("assets")).unwrap().flatten() {
+        std::fs::remove_file(entry.path()).unwrap();
+    }
+    std::fs::remove_dir_all(dir.join("desktop")).unwrap();
+    pair.answer(JoinAnswer::Copy);
+    pair.settle();
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(missing[0].what.contains("kick"), "{missing:?}");
+    assert!(missing[0].detail.contains("Alice"), "whose: {missing:?}");
+}

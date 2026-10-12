@@ -47,67 +47,83 @@ impl NotApplied {
     }
 }
 
-/// Refuses an edit aimed at an insert or a send that is not the one it was
-/// made against (`docs/collab-plan.md` §5.2).
+/// Where the insert or send an edit is aimed at is now (`docs/collab-plan.md`
+/// §5.2, §18 F90).
 ///
 /// The window names an insert by its place in the chain, and a place is only
 /// a name while nobody else is moving things: on a shared song another
 /// person's insert can land in front of it, and "slot 2" is then the
 /// neighbour. So a command learns the id of what it found there the first
 /// time it is applied — on the machine whose rows the place was counted
-/// against — and every later apply (a redo, the other end of a wire) checks
-/// the place still holds it. Refuse rather than clamp (INVARIANT 9).
-fn claim(
+/// against — and every later apply (a redo, the other end of a wire) looks
+/// for **that** insert: at its place if it is still there, wherever it went
+/// if it moved, and refused only if it is gone.
+///
+/// It used to refuse whenever the place held another — never the neighbour,
+/// which was right, but also never the insert it meant: Ty's friend switched
+/// off his EQ while Ty dragged the delay above it, the switch was refused and
+/// "taken back", and he switched it off again. Following the id is neither a
+/// clamp nor a guess (INVARIANT 9): it is the same insert.
+fn locate(
+    ids: impl Iterator<Item = PersistentId>,
+    index: usize,
     expected: &mut Option<PersistentId>,
-    found: PersistentId,
     what: &str,
-) -> Result<(), CommandError> {
-    match expected {
-        Some(id) if *id != found => Err(CommandError(format!(
-            "that {what} has moved since this edit was made"
-        ))),
-        _ => {
-            *expected = Some(found);
-            Ok(())
+) -> Result<usize, CommandError> {
+    let ids: Vec<PersistentId> = ids.collect();
+    match *expected {
+        None => {
+            let found = ids
+                .get(index)
+                .ok_or_else(|| CommandError(format!("no {what} {index} on that track")))?;
+            *expected = Some(*found);
+            Ok(index)
         }
+        Some(id) if ids.get(index) == Some(&id) => Ok(index),
+        Some(id) => ids
+            .iter()
+            .position(|other| *other == id)
+            .ok_or_else(|| CommandError(format!("that {what} has been taken away"))),
     }
 }
 
-/// The insert at `index` on `track`, if it is still the one `expected`
-/// names — see [`claim`].
+/// The insert on `track` this edit names — see [`locate`].
 fn insert_mut<'a>(
     doc: &'a mut Project,
     track: MixerTrackId,
     index: usize,
     expected: &mut Option<PersistentId>,
 ) -> Result<&'a mut crate::EffectSlot, CommandError> {
-    let slot = doc
+    let inserts = &mut doc
         .mixer
         .tracks
         .get_mut(track)
         .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
-        .inserts
-        .get_mut(index)
-        .ok_or_else(|| CommandError(format!("no insert {index}")))?;
-    claim(expected, slot.id, "insert")?;
-    Ok(slot)
+        .inserts;
+    let at = locate(
+        inserts.iter().map(|slot| slot.id),
+        index,
+        expected,
+        "insert",
+    )?;
+    Ok(&mut inserts[at])
 }
 
-/// The send at `index` on `track`, if it is still the one `expected` names.
+/// The send on `track` this edit names — see [`locate`].
 fn send_mut<'a>(
     doc: &'a mut Project,
     track: MixerTrackId,
     index: usize,
     expected: &mut Option<PersistentId>,
 ) -> Result<&'a mut Send, CommandError> {
-    let send = doc
+    let sends = &mut doc
         .mixer
         .tracks
         .get_mut(track)
-        .and_then(|track| track.sends.get_mut(index))
-        .ok_or_else(|| CommandError("no such send".into()))?;
-    claim(expected, send.id, "send")?;
-    Ok(send)
+        .ok_or_else(|| CommandError("no such send".into()))?
+        .sends;
+    let at = locate(sends.iter().map(|send| send.id), index, expected, "send")?;
+    Ok(&mut sends[at])
 }
 
 impl Command for NotApplied {
@@ -1998,12 +2014,12 @@ impl Command for RemoveSend {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let found = track
-            .sends
-            .get(self.index)
-            .ok_or_else(|| CommandError("no such send".into()))?
-            .id;
-        claim(&mut self.slot, found, "send")?;
+        self.index = locate(
+            track.sends.iter().map(|send| send.id),
+            self.index,
+            &mut self.slot,
+            "send",
+        )?;
         let removed = track.sends.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -7426,12 +7442,12 @@ impl Command for RemoveInsert {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let found = track
-            .inserts
-            .get(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {} on that track", self.index)))?
-            .id;
-        claim(&mut self.slot, found, "insert")?;
+        self.index = locate(
+            track.inserts.iter().map(|slot| slot.id),
+            self.index,
+            &mut self.slot,
+            "insert",
+        )?;
         let removed = track.inserts.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -7561,7 +7577,15 @@ impl Command for MoveInsert {
         if self.from == self.to {
             return Err(CommandError("that is where it already is".to_string()));
         }
-        claim(&mut self.slot, track.inserts[self.from].id, "insert")?;
+        self.from = locate(
+            track.inserts.iter().map(|slot| slot.id),
+            self.from,
+            &mut self.slot,
+            "insert",
+        )?;
+        if self.from == self.to {
+            return Err(CommandError("that is where it already is".to_string()));
+        }
         let slot = track.inserts.remove(self.from);
         track.inserts.insert(self.to, slot);
         Ok(())

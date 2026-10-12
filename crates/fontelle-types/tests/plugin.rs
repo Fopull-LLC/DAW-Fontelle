@@ -54,6 +54,7 @@ fn a_plugin_slot_round_trips_through_json() {
         ],
         blob: Some("QUJD".to_string()),
         mpe: false,
+        vendor: Some("Fopull LLC".to_string()),
     };
     let json = serde_json::to_string(&state).unwrap();
     let read: PluginState = serde_json::from_str(&json).unwrap();

@@ -19,6 +19,39 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-11, latest — a shared song stops doubling, taking back and
+over-shooting edits; what is missing is named.** Branch `fix/collab-sync`
+(from v0.26.1), not merged, not bumped. Ty, from a session with a friend:
+*"glitchy and laggy ... moving around things often over or undershoots ...
+my actions are constantly taken back like im trying to delete this one clip
+but it keeps immediately reappearing ... adding an effect made it add 2
+versions of that effect ... if there are plugins missing, it should tell you
+which plugins."*
+
+- **Root causes** (collab plan §18 F86–F92, each reproduced and seen failing
+  first): a joiner settled its own edit's answer after two early returns, so
+  one disagreement left it pending for good and every later edit of its own
+  was applied twice (an effect twice, 12 beats of drag landing 24, a deleted
+  clip back for good) — F87; one disagreement asked for the whole song at
+  every edit (10 → 1, F88); edits re-minted what they made inside in
+  whichever space the applying machine minted, so a cut's notes had other ids
+  on the host and the next move of one was refused (F89); take trims healed
+  outside the stream on the host only — a tempo change was a drift (F86);
+  insert edits refused when somebody reordered the chain (F90); a burst of
+  20 edits was 20 graph rebuilds (F92).
+- **Missing plugins and files** (F91): the Share panel lists what this
+  computer has not got — name, format, maker, where the song uses it, and why
+  a file could not be had — and a plugin added mid-session is said as it
+  arrives. `PluginState::vendor` (serde default, out of the hash). A save no
+  longer resets a plugin's MPE switch.
+- **What a shared song still does not carry**: plan §18, G1–G7 (a plugin's
+  own-window state, files plugins loaded, presets, singers — next, on
+  `feature/collab-singers`).
+- Tests: `fontelle-app/tests/collab_latency.rs` (8, three studios with
+  latency and jitter), `fontelle-app` `collab::tests` (4),
+  `tests/collab.rs` (+2), `fontelle-model/tests/wire.rs` (slot test now
+  follows its slot), `fontelle-net` transport jitter (+1),
+  `fontelle-ui/tests/share_panel.rs` (+1), headless `share-panel-missing`.
 **As of 2026-10-11, latest — the Fontelle Singer is a complete instrument
 with its own panel; engine instruments are never blank; terms you can
 read.** Branch `feature/vocal-track`, not merged, not bumped.

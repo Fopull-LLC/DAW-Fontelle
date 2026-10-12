@@ -78,6 +78,8 @@ pub struct ShareNotice<'a> {
     pub code: Option<&'a str>,
     pub peers: &'a [crate::document::SessionPeer],
     pub status: &'a str,
+    /// What the song uses that this computer has not got (F91).
+    pub missing: &'a [crate::document::MissingItem],
 }
 
 /// A question with its answers, the safe one first and weighted. See
@@ -2330,7 +2332,14 @@ fn draw_share_panel(
     use crate::canvas::{COPY_CODE, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
     let p = &theme.palette;
     let m = &theme.metrics;
-    let l = crate::canvas::share_panel_layout(window, anchor, m, share.role, share.peers.len());
+    let l = crate::canvas::share_panel_layout_with(
+        window,
+        anchor,
+        m,
+        share.role,
+        share.peers.len(),
+        share.missing.len(),
+    );
     if l.frame.is_empty() {
         return;
     }
@@ -2405,6 +2414,26 @@ fn draw_share_panel(
     }
     if !l.nobody.is_empty() {
         draw_line(scene, labels, NOBODY_YET, l.nobody, p.text_muted);
+    }
+    // What this computer has not got: the heading in the alarm colour a
+    // missing plugin's slot is drawn in, each thing in the text colour and
+    // where and why beneath it, muted.
+    if !l.missing_title.is_empty() {
+        draw_line(
+            scene,
+            labels,
+            crate::canvas::MISSING_HERE,
+            l.missing_title,
+            p.meter_peak,
+        );
+    }
+    for ((what, detail), item) in l.missing.iter().zip(share.missing) {
+        draw_line(scene, labels, &item.what, *what, p.text);
+        draw_line(scene, labels, &item.detail, *detail, p.text_muted);
+    }
+    if !l.missing_more.is_empty() {
+        let more = crate::canvas::missing_more_words(share.missing.len() - l.missing.len());
+        draw_line(scene, labels, &more, l.missing_more, p.text_muted);
     }
     let (first, second) = crate::canvas::status_lines(share.status);
     let line = l.status.height / 2.0;

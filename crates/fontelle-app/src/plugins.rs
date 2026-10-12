@@ -625,7 +625,9 @@ impl PluginRack {
     /// A fresh [`PluginState`] naming one of the scanned plugins, by its place
     /// in a list the window was given.
     pub fn state_for(&self, plugin: &fontelle_host::PluginInfo) -> PluginState {
-        PluginState::new(plugin.key.clone(), plugin.name.clone())
+        let mut state = PluginState::new(plugin.key.clone(), plugin.name.clone());
+        state.vendor = (!plugin.vendor.trim().is_empty()).then(|| plugin.vendor.trim().to_string());
+        state
     }
 
     /// The plugin open in `slot`, if there is one.

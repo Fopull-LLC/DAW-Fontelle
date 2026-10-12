@@ -88,6 +88,21 @@ pub fn fit_window(tempo: &TempoMap, clip: &mut Clip) {
     }
 }
 
+/// [`fit_window`] on every clip of `project`, against its tempo box.
+///
+/// The part of the studio's healing (`Session::heal_audio_clips`, run at
+/// every republish) that needs nothing but the song: a shared song runs it
+/// after every edit it applies, on every copy, before the copies' hashes are
+/// compared — healed only where the studio republished, the host's song and
+/// a joiner's copy of it parted at the first tempo change under a take
+/// (`docs/collab-plan.md` §18, F86).
+pub fn fit_windows(project: &mut crate::Project) {
+    let tempo = project.tempo_map.clone();
+    for clip in project.clips.values_mut() {
+        fit_window(&tempo, clip);
+    }
+}
+
 /// Brings an audio clip written by an older build up to the rules above:
 /// tells it how long its file is, when it did not know, and fits a window
 /// clip's trim to its block.

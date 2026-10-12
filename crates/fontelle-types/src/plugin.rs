@@ -210,6 +210,12 @@ pub struct PluginState {
     /// spread over fifteen channels as however it plays those.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mpe: bool,
+    /// Who makes it, as the plugin said when it was put in the song — so a
+    /// computer without it can say where to get it (*"Serum 2 — VST3, Xfer
+    /// Records"*), the other moment the plugin is not there to ask.
+    /// Descriptive only: kept out of the shared song's hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
 }
 
 impl PluginState {
@@ -220,6 +226,7 @@ impl PluginState {
             params: Vec::new(),
             blob: None,
             mpe: false,
+            vendor: None,
         }
     }
 

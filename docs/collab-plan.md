@@ -1314,6 +1314,52 @@ failing.
 | F78 | *Open.* While the host's link is being got back the panel's code is hidden (the relay will not take joins to it) and only a toast says why; the joiner's panel says nothing while it rejoins | A *Reconnecting…* status on both panels | — |
 | F79 | *Open.* *Remove* asks the transport to drop the person, and the relay client has no way to: the removed studio leaves on its own (it is told), a modified one stays connected with every edit refused | With L6 (locking a code), or a per-peer kick in the relay protocol — the engine's to add | — |
 
+### v0.26.2 — Ty's session: glitchy, laggy, taken back, twice
+
+Ty, 2026-10-11, after a session with a friend: *"my moving around things
+often over or undershoots where im trying to drag it and my actions are
+constantly taken back like im trying to delete this one clip but it keeps
+immediately reappearing. my actions are also doubling often like adding an
+effect made it add 2 versions of that effect ... if there are plugins
+missing, it should tell you which plugins."* Every row was reproduced first
+(three studios over `MemoryHub` with latency and jitter —
+`tests/collab_latency.rs`; a joiner's copy made to disagree —
+`collab::tests`), seen failing, then fixed.
+
+| # | Finding | Answer | Proof |
+|---|---|---|---|
+| F86 | The studio fits a take's trim to its block at every republish (`heal_audio_clips`), outside any edit: on the host's song, never on a joiner's copy of it. A tempo change under a take was a drift at the next edit, and a fresh copy | `trim::fit_windows` runs on every copy at the same point of the stream: after the host applies a proposal, before its own edits' hash, after a joiner applies an edit | `a_take_edited_by_everybody_stays_one_song` (strict; drifted at the cut after a tempo change) |
+| F87 | A joiner settled the answer to its own edit only after two early returns (an edit its copy already had; one that did not apply to its copy). One that came back by either stayed pending for good, and every later answer to its own edits was then taken for somebody else's: put into the copy **and** again on top of it. Measured: an effect added once was there twice; three drags of four beats went 24 beats, not 12; a clip the host deleted came back for good, and deleting it again was refused and "taken back". Also: a pending edit that stopped applying was dropped (its undo entry and all, "taken back") while still on its way — and the host, its song moved on again, applied it after all | Answers settled first, by number (`Joiner::answered`); nothing answered is ever put on again; an edit answered out of order or in a form other than ours makes the screen again from the host's song; a pending edit that does not apply for now is kept off the screen until the host answers (`Pending::shown`) | `an_effect_added_once_is_there_once_after_a_disagreement`, `a_drag_after_a_disagreement_lands_where_it_was_dropped`, `a_clip_deleted_stays_deleted_after_a_disagreement`, `three_studios_with_undo_explore` |
+| F88 | A copy that disagreed asked for the whole song again at every edit landing while the first fresh copy was on its way: 10 edits, 10 songs down the wire | One request until the copy arrives (`Joiner::resyncing`) | `a_disagreement_asks_for_one_fresh_copy_not_one_an_edit` (10 → 1) |
+| F89 | An edit applied anywhere but where it was made minted what it made *inside* (a cut's notes, an imported part's notes) wherever that machine minted: the host in the dense space, a joiner in its own, a joiner's rebuilt screen in the dense one. A joiner's cut had other note ids on the host; his next move of one was refused ("taken back"), the host's next edit of one landed on nothing | Every edit is applied in its author's space (`apply_as`), on the host and on every copy, and a joiner's pending edits are put on again in its own | `notes_in_a_clip_a_joiner_cut_are_the_same_notes_everywhere`, `whatever_a_joiner_does_lands_as_the_same_song_everywhere` |
+| F90 | An insert or send edit (bypass, remove, reorder, a parameter, a preset) named its slot by place and refused when the place held another: switching off an EQ while somebody dragged the delay above it was "taken back" | The edit follows its slot's own id to wherever it went, and refuses only when the slot is gone (`commands::locate`; §19) | `an_effect_switched_off_while_somebody_reorders_the_chain_is_still_switched_off`, `a_slot_command_follows_its_slot_and_refuses_when_it_is_gone` |
+| F91 | A plugin the song uses that a joiner has not got was said once, in a toast, by name only; one added during the session was never said; a file that could not be had was said once and forgotten. A plugin's maker was nowhere in the song | The Share panel lists *Missing on this computer*: each plugin with its format and maker (`PluginState::vendor`, kept out of the hash) and every place the song plays it, and each file that could not be had with why; a plugin that arrives during the session is said as it arrives. Found on the way: a save or backup reset a plugin's MPE switch (a change no edit could reach; on a shared song a drift) — kept now | `a_joiner_is_shown_which_plugins_are_missing_and_where_the_song_uses_them`, `a_file_that_could_not_be_sent_is_listed_with_why`, `what_is_missing_is_listed_on_the_panel_and_cut_to_what_fits`, headless `share-panel-missing` |
+| F92 | A burst of edits landing in one turn rebuilt the joiner's whole graph once an edit (every soundfont reloaded): 20 edits, 20 rebuilds | `Changed` once a turn | `a_burst_of_edits_is_one_rebuild_of_the_graph` (20 → 1) |
+
+**What a shared song still does not carry** (the audit Ty asked for; each is
+open):
+
+- **G1** A plugin's own state changed in the plugin's own window after the
+  join: it is read off the plugin at a save or backup into each machine's own
+  copy, outside the stream (§5.2), and never crosses. A knob turned from
+  Fontelle's panel does cross.
+- **G2** Files a plugin loaded (an LV2 sampler's `atom:Path`, collected into
+  `assets/plugin-files/`): not in `Project::files`, so not in the manifest, so
+  never sent — the joiner's sampler opens empty. A CLAP or VST 3 plugin's
+  paths are inside its own bytes and cannot be found at all.
+- **G3** Plugins themselves (not transferable; now named, F91).
+- **G4** Singers (voicebanks) — `feature/collab-singers`.
+- **G5** A preset file a channel names (the sound is in the song, so it
+  plays; the preset itself is not sent).
+- **G6** A take's file length learnt from the library at a republish
+  (`trim::heal`'s first half, songs from older builds only) is still written
+  outside the stream.
+- **G7** The playhead and transport (L2), cursors and drags in flight (L1),
+  each person's view, selection and undo — by design.
+- A held gesture still holds the stream: while the host keeps a drag or a
+  knob down, nobody's edits are ordered (F17). That is the remaining lag.
+
+
 ### Later — §14
 
 | # | Item | Design |
@@ -1577,6 +1623,18 @@ with the reason. The text above is left as it was planned.
 - **Out of this patch, next**: L5 (verified names with a fopull account join
   token — needs the account module in the studio) and L7 (end-to-end
   encryption under the relay). F78 and F79 are open.
+
+**After Ty's session of 2026-10-11** (§18's F86–F92).
+
+- **An insert or send edit follows its slot's id** (§5.2 said refuse when
+  the place holds another). It still never lands on the neighbour; it lands
+  on its own slot wherever that went, and refuses only when the slot is gone.
+- **The host's form of a joiner's edit replaces the joiner's** when they
+  differ (§5.5 step 2 said so; Phase 1 had only popped it).
+- **Edits are applied in their author's mint space everywhere**, not only
+  where they were made (F55 gave each person a space; F89).
+- **Takes' trims are fitted on every copy in the stream** (F86): the healing
+  the studio does at a republish was a mutation outside it.
 
 **After Ty and Lore's session** (§18's F82–F85).
 
