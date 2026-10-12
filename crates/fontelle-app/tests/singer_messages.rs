@@ -87,7 +87,12 @@ fn one_bank(_: &Path) -> Arc<dyn Backend> {
 
 fn studio(name: &str, make: fn(&Path) -> Arc<dyn Backend>) -> Session {
     let dir = scratch(name);
-    let mut session = common::a_session_in(common::a_clip_project(4), None);
+    // A saved song: its takes are kept in it, not in the cache every test
+    // shares (a take sung by an earlier run would be found there).
+    let project = common::a_clip_project(4);
+    let bundle = dir.join("Song.fontelle");
+    fontelle_app::save_project(&project, &bundle).unwrap();
+    let mut session = common::a_session_in(project, Some(bundle));
     session.set_singer_folders(vec![dir.join("no-engines")]);
     session.set_voicebanks(
         dir.join("voicebanks"),
@@ -262,4 +267,47 @@ fn a_missing_vocoder_is_said_on_the_panel_and_installing_it_sings() {
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+}
+
+fn strict_and_open(_: &Path) -> Arc<dyn Backend> {
+    let voice = |id: &str, terms: Option<&str>| VoiceInfo {
+        id: id.into(),
+        name: id.trim_start_matches("utau/").into(),
+        languages: vec!["ja".into()],
+        lowest: 48,
+        highest: 72,
+        research_only: false,
+        terms: terms.map(str::to_string),
+        image: None,
+    };
+    Arc::new(Runtime(vec![
+        voice(
+            "utau/Strict",
+            Some("Ask the author before publishing anything."),
+        ),
+        voice("utau/Open", None),
+    ]))
+}
+
+/// A new track does not start singing a bank whose terms were never read:
+/// it takes one whose terms were agreed (or that has none) when there is
+/// one. Terms are asked before a bank first sings (`docs/vocal-plan.md`
+/// §2.2) — through the picker; a new track went round it.
+#[test]
+fn a_new_track_starts_with_a_bank_whose_terms_are_settled() {
+    let mut session = studio("terms", strict_and_open);
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    assert_eq!(
+        session.vocal_voice(index).map(|v| v.singer),
+        Some("utau/Open".to_string())
+    );
+    session.agree_singer_terms("fontelle-utau", "utau/Strict");
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    assert_eq!(
+        session.vocal_voice(index).map(|v| v.singer),
+        Some("utau/Strict".to_string()),
+        "agreed: the first again"
+    );
 }

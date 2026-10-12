@@ -373,7 +373,20 @@ impl VocalSession {
     /// The voice a new vocal track starts with: the first free voicebank,
     /// else the first engine singer that is not research-only, else any.
     pub fn default_voice(&self) -> Option<VocalVoice> {
-        self.registry().default_voice()
+        // A voicebank whose terms are settled, else as before (a
+        // voicebank before an engine's singer).
+        let settled = |v: &fontelle_vocal::RegistryVoice| v.built_in && self.terms_settled(v);
+        self.registry()
+            .default_voice_where(&settled)
+            .or_else(|| self.registry().default_voice())
+    }
+
+    /// Whether a voice may sing without asking first: its terms agreed to
+    /// here, or none to agree to. A new track starts with such a voice
+    /// when there is one — terms are asked before a bank first sings, and
+    /// a new track must not go round the question.
+    fn terms_settled(&self, v: &fontelle_vocal::RegistryVoice) -> bool {
+        self.terms_agreed(&v.backend, &v.info.id, v.info.terms.as_deref())
     }
 
     /// The voice `instrument` (`None`: the Fontelle Singer; else an
@@ -384,7 +397,10 @@ impl VocalSession {
         instrument: Option<&str>,
         language: Option<&str>,
     ) -> Option<VocalVoice> {
-        self.registry().default_voice_for(instrument, language)
+        let settled = |v: &fontelle_vocal::RegistryVoice| self.terms_settled(v);
+        self.registry()
+            .default_voice_among(instrument, language, &settled)
+            .or_else(|| self.registry().default_voice_for(instrument, language))
     }
 
     /// The instruments a vocal track can be: the Fontelle Singer, then each

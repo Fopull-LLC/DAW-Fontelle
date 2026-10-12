@@ -289,6 +289,17 @@ impl SingerRegistry {
         instrument: Option<&str>,
         language: Option<&str>,
     ) -> Option<VocalVoice> {
+        self.default_voice_among(instrument, language, &|_| true)
+    }
+
+    /// [`default_voice_for`](Self::default_voice_for) among the voices
+    /// `keep` lets through (those whose terms are settled, say).
+    pub fn default_voice_among(
+        &self,
+        instrument: Option<&str>,
+        language: Option<&str>,
+        keep: &dyn Fn(&RegistryVoice) -> bool,
+    ) -> Option<VocalVoice> {
         let voices: Vec<RegistryVoice> = self
             .voices()
             .into_iter()
@@ -296,6 +307,7 @@ impl SingerRegistry {
                 None => v.built_in,
                 Some(engine) => !v.built_in && v.backend == engine,
             })
+            .filter(|v| keep(v))
             .collect();
         let sings =
             |v: &&RegistryVoice| language.is_some_and(|l| v.info.languages.iter().any(|x| x == l));
@@ -341,7 +353,13 @@ impl SingerRegistry {
     /// The voice a new vocal track starts with: the first free voicebank,
     /// else the first engine singer that is not research-only, else any.
     pub fn default_voice(&self) -> Option<VocalVoice> {
-        let voices = self.voices();
+        self.default_voice_where(&|_| true)
+    }
+
+    /// [`default_voice`](Self::default_voice) among the voices `keep` lets
+    /// through.
+    pub fn default_voice_where(&self, keep: &dyn Fn(&RegistryVoice) -> bool) -> Option<VocalVoice> {
+        let voices: Vec<RegistryVoice> = self.voices().into_iter().filter(|v| keep(v)).collect();
         let pick = voices
             .iter()
             .find(|v| v.built_in && !v.info.research_only)
