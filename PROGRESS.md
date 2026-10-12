@@ -74,6 +74,15 @@ singer plugin right now and making sure thats really polished and good."*
   it may not need; levels are not kept on disk; light-theme section
   colours are fixed; the window's new presses (Find singers…) were not
   driven on a display.
+- **Tests**: new `fontelle-app` `singer_messages.rs` (6), `singer_walk.rs`
+  (6, ignored); `vocal_files.rs` (+4), `vocal_track.rs` (+1),
+  `vocal_studio.rs` (+1 assertion); `fontelle-vocal` `level.rs` (7),
+  `scheduler.rs` (+2); `fontelle-utau` `cjk.rs` (+1), `phonemize.rs` (+1);
+  `fontelle-diffsinger` `reading.rs` (+1), `bank.rs` (+1 assertion);
+  `fontelle-vocal-files` `ust.rs` (+1), `ustx.rs` (+1); `fontelle-ui`
+  `singer_panel.rs` (+1), `vocal_corner.rs` (2), `vocal_headless.rs` (+1
+  shot). Whole workspace (`--no-fail-fast`, 607 binaries): 6613 passed,
+  0 failed, 40 ignored. Preflight all clear.
 - **Note for whoever shares the build folder**: two worktrees of this
   workspace in one `CARGO_TARGET_DIR` take each other's artifacts (cargo
   judges a path crate fresh by mtime): clippy here used `main`'s
