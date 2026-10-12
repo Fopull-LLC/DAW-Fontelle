@@ -1,11 +1,11 @@
 //! Settings written by a newer build still load here, and survive a save.
 //!
 //! Found on this machine: a preview build starred an instrument this release
-//! has never heard of — `{"instrument": "Vocal"}` in `favorites` — and the
+//! has never heard of — `{"instrument": "Theremin"}` in `favorites` — and the
 //! release, reading `settings.json`, refused the whole file over that one
 //! entry and started on **defaults**: every folder, every star, every
 //! rebinding gone for as long as the release ran (`these settings could not
-//! be read: unknown variant `Vocal``). Worse, its first save would have
+//! be read: unknown variant `Theremin``). Worse, its first save would have
 //! written the defaults over the file.
 //!
 //! So an entry this build cannot read is set aside **on its own** — a
@@ -26,7 +26,7 @@ const FROM_A_NEWER_BUILD: &str = r#"{
   "theme": null,
   "favorites": [
     {"instrument": "Osc3"},
-    {"instrument": "Vocal"},
+    {"instrument": "Theremin"},
     {"effect": "Reverb"}
   ],
   "keybinds": {"play": "Ctrl+P"},
@@ -69,7 +69,7 @@ fn what_it_could_not_read_is_written_back_as_it_was() {
     let saved: serde_json::Value = serde_json::from_str(&settings.to_json()).unwrap();
     let favorites = saved["favorites"].as_array().expect("a list");
     assert!(
-        favorites.contains(&serde_json::json!({"instrument": "Vocal"})),
+        favorites.contains(&serde_json::json!({"instrument": "Theremin"})),
         "the newer build's star survives: {favorites:?}"
     );
     assert_eq!(favorites.len(), 3);
@@ -110,7 +110,7 @@ fn unstarring_here_keeps_the_newer_builds_stars() {
     let saved: serde_json::Value = serde_json::from_str(&settings.to_json()).unwrap();
     let favorites = saved["favorites"].as_array().unwrap();
     assert_eq!(favorites.len(), 2);
-    assert!(favorites.contains(&serde_json::json!({"instrument": "Vocal"})));
+    assert!(favorites.contains(&serde_json::json!({"instrument": "Theremin"})));
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn loading_from_a_file_keeps_everything_and_says_nothing_went_wrong() {
     assert_eq!(settings.favorites.len(), 2);
     settings.save_to(&path).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("Vocal") && text.contains("singers_dir"));
+    assert!(text.contains("Theremin") && text.contains("singers_dir"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
