@@ -433,3 +433,41 @@ fn a_built_in_voice_is_found_among_the_installed_banks() {
     assert_eq!(find("plain", None).as_deref(), Some("plain"));
     assert_eq!(find("utau/Nobody", None), None);
 }
+
+/// Banks that call themselves the same are told apart: Teto's 単独音 and
+/// 統合 libraries are both 重音テト音声ライブラリー, and the picker showed two
+/// cards of one name. A name nobody else has is left alone; two of one
+/// kind are told apart by folder; two of different kinds by kind.
+#[test]
+fn banks_of_one_name_are_told_apart_by_kind_or_folder() {
+    use fontelle_vocal::voicebanks::told_apart;
+    let teto = "重音テト音声ライブラリー";
+    let names = told_apart(&[
+        (teto, "UTAU", "KasaneTeto_tandoku_100619"),
+        ("Yoko", "DiffSinger", "Yoko_DiffSinger"),
+        (teto, "UTAU", "KasaneTeto_tougou_110401"),
+        ("Ritsu", "UTAU", "NamineRitsu_VCV"),
+        ("Ritsu", "DiffSinger", "NamineRitsu_DiffSinger"),
+    ]);
+    assert_eq!(
+        names,
+        vec![
+            format!("{teto} (KasaneTeto_tandoku_100619)"),
+            "Yoko".to_string(),
+            format!("{teto} (KasaneTeto_tougou_110401)"),
+            "Ritsu (UTAU)".to_string(),
+            "Ritsu (DiffSinger)".to_string(),
+        ]
+    );
+    // Three of one name, two of them one kind: the folder for all three,
+    // so no two lines read alike.
+    let names = told_apart(&[
+        ("Ritsu", "UTAU", "a"),
+        ("Ritsu", "UTAU", "b"),
+        ("Ritsu", "DiffSinger", "c"),
+    ]);
+    assert_eq!(names, vec!["Ritsu (a)", "Ritsu (b)", "Ritsu (c)"]);
+    // Names that differ only in spacing at the ends are one name.
+    let names = told_apart(&[("Kumi ", "UTAU", "x"), ("Kumi", "DiffSinger", "y")]);
+    assert_eq!(names, vec!["Kumi (UTAU)", "Kumi (DiffSinger)"]);
+}

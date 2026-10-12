@@ -593,3 +593,72 @@ fn foreign_terms_come_with_the_index_summary() {
     assert!(card.terms_foreign);
     assert!(card.terms_summary.is_some());
 }
+
+/// Two installed banks that call themselves the same — Teto's 単独音 and
+/// 統合 libraries are both 重音テト音声ライブラリー — are told apart by their
+/// folders wherever a singer is named: the picker's cards, the Installed
+/// page, the panel's stage and the arrangement's caption.
+#[test]
+fn two_banks_of_one_name_are_told_apart_everywhere() {
+    let dir = scratch("one-name");
+    let voicebanks = dir.join("voicebanks");
+    let name = "\u{91cd}\u{97f3}\u{30c6}\u{30c8}\u{97f3}\u{58f0}\u{30e9}\u{30a4}\u{30d6}\u{30e9}\u{30ea}\u{30fc}";
+    for folder in ["KasaneTeto_tandoku", "KasaneTeto_tougou"] {
+        let inner = voicebanks.join(folder).join(name);
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("oto.ini"), b"a.wav=- a,20,100,-200,50,30\n").unwrap();
+        std::fs::write(inner.join("character.txt"), format!("name={name}\n")).unwrap();
+    }
+    let project = common::a_clip_project(4);
+    let bundle = dir.join("Song.fontelle");
+    fontelle_app::save_project(&project, &bundle).unwrap();
+    let mut session = common::a_session_in(project, Some(bundle));
+    session.set_singer_folders(vec![dir.join("no-engines")]);
+    session.set_voicebanks(voicebanks, fontelle_vocal::builtin_backends());
+
+    let cards: Vec<String> = session.singers().into_iter().map(|s| s.name).collect();
+    assert_eq!(cards.len(), 2, "{cards:?}");
+    assert_ne!(cards[0], cards[1], "two cards of one name");
+    for folder in ["KasaneTeto_tandoku", "KasaneTeto_tougou"] {
+        assert!(
+            cards
+                .iter()
+                .any(|c| c.starts_with(name) && c.contains(folder)),
+            "{folder}: {cards:?}"
+        );
+    }
+    let rows: Vec<String> = session.voicebanks().into_iter().map(|r| r.name).collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_ne!(rows[0], rows[1], "two Installed rows of one name");
+    assert!(rows.iter().all(|r| r.starts_with(name)), "{rows:?}");
+
+    // The second chosen on a track: its stage and its caption say which.
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    let tougou = session
+        .singers()
+        .into_iter()
+        .find(|s| s.name.contains("KasaneTeto_tougou"))
+        .unwrap();
+    session.set_singer(
+        index,
+        Some(fontelle_model::VocalVoice::new(
+            &tougou.engine,
+            &tougou.id,
+            "ja",
+        )),
+    );
+    draw(&mut session, 0, 64, "la");
+    let stage = session.singer_panel().and_then(|p| p.singer).unwrap();
+    assert_eq!(stage.name, tougou.name);
+    let caption = session
+        .clips()
+        .into_iter()
+        .map(|c| c.name)
+        .find(|n| n.contains(name))
+        .expect("the clip is captioned with its singer");
+    assert!(caption.contains("KasaneTeto_tougou"), "{caption}");
+    let roll = session.vocal_view().unwrap().caption;
+    assert!(roll.contains("KasaneTeto_tougou"), "{roll}");
+}

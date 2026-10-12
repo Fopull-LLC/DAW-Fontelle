@@ -130,6 +130,10 @@ pub(crate) struct VocalSession {
     builtins: Option<Vec<BuiltinBackend>>,
     engines: OnceLock<Arc<SingerEngines>>,
     registry: OnceLock<Arc<SingerRegistry>>,
+    /// What each voice is called, `(backend, id)` to name, two of one name
+    /// told apart ([`VocalState::voice_names`]); made again with the
+    /// registry.
+    names: OnceLock<HashMap<(String, String), String>>,
     /// The engine window, while one is open.
     editor: Option<EngineWindow>,
     /// Open engine windows on no screen (tests).
@@ -266,6 +270,7 @@ impl VocalSession {
             builtins: None,
             engines: OnceLock::new(),
             registry: OnceLock::new(),
+            names: OnceLock::new(),
             editor: None,
             headless_editors: false,
             selection: Vec::new(),
@@ -311,6 +316,7 @@ impl VocalSession {
         self.folders = Some(folders);
         self.engines = OnceLock::new();
         self.registry = OnceLock::new();
+        self.names = OnceLock::new();
         self.editor = None;
         self.parts.clear();
     }
@@ -321,6 +327,7 @@ impl VocalSession {
         self.voicebanks = Some(folder);
         self.builtins = Some(builtins);
         self.registry = OnceLock::new();
+        self.names = OnceLock::new();
         self.agreed = OnceLock::new();
         self.parts.clear();
     }
@@ -356,6 +363,7 @@ impl VocalSession {
     /// Reads the voicebanks again (after an install or an uninstall).
     fn rescan(&mut self) {
         self.registry = OnceLock::new();
+        self.names = OnceLock::new();
         self.revision += 1;
         // What failed may sing now (a vocoder it lacked was installed).
         if let Some(renderer) = &self.renderer
@@ -522,6 +530,11 @@ impl VocalSession {
                 (v, folder, summary, terms_foreign)
             })
             .map(|(v, folder, terms_summary, terms_foreign)| SingerChoice {
+                name: self
+                    .voice_names()
+                    .get(&(v.backend.clone(), v.info.id.clone()))
+                    .cloned()
+                    .unwrap_or(v.info.name),
                 folder,
                 terms_summary,
                 terms_foreign,
@@ -529,7 +542,6 @@ impl VocalSession {
                 engine: v.backend,
                 engine_name: v.backend_name,
                 id: v.info.id,
-                name: v.info.name,
                 languages: v.info.languages,
                 research_only: v.info.research_only,
                 kind: match v.kind {
@@ -612,11 +624,67 @@ impl VocalSession {
 
     fn singer_name(&self, voice: &VocalVoice) -> Option<(String, bool, Option<String>)> {
         let backend = self.registry().backend(&voice.engine)?;
+        let names = self.voice_names();
         backend
             .voices()
             .into_iter()
             .find(|v| v.id == voice.singer)
-            .map(|v| (v.name, v.research_only, v.image))
+            .map(|v| {
+                let name = names
+                    .get(&(voice.engine.clone(), v.id.clone()))
+                    .cloned()
+                    .unwrap_or(v.name);
+                (name, v.research_only, v.image)
+            })
+    }
+
+    /// What every voice anybody could choose is called: a voicebank by the
+    /// name the Installed page shows, and two of one name told apart by
+    /// kind or folder (`voicebanks::told_apart`) — Teto's 単独音 and 統合
+    /// libraries both call themselves 重音テト音声ライブラリー. Read once per
+    /// scan of the voicebanks.
+    fn voice_names(&self) -> &HashMap<(String, String), String> {
+        self.names.get_or_init(|| {
+            let installed = voicebanks::list(&self.voicebanks_dir());
+            let voices = self.registry().voices();
+            let named: Vec<(String, String, String)> = voices
+                .iter()
+                .map(|v| {
+                    let bank = v
+                        .built_in
+                        .then(|| {
+                            voicebanks::bank_for_voice(
+                                &installed,
+                                &v.info.id,
+                                v.info.image.as_deref().map(Path::new),
+                            )
+                        })
+                        .flatten();
+                    match bank {
+                        Some(b) => (b.name.clone(), v.kind.label().to_string(), b.id.clone()),
+                        // An engine's voices are told apart by the engine.
+                        None => (
+                            v.info.name.clone(),
+                            if v.built_in {
+                                v.kind.label().to_string()
+                            } else {
+                                v.backend_name.clone()
+                            },
+                            v.info.id.clone(),
+                        ),
+                    }
+                })
+                .collect();
+            let refs: Vec<(&str, &str, &str)> = named
+                .iter()
+                .map(|(n, k, f)| (n.as_str(), k.as_str(), f.as_str()))
+                .collect();
+            voices
+                .iter()
+                .zip(voicebanks::told_apart(&refs))
+                .map(|(v, name)| ((v.backend.clone(), v.info.id.clone()), name))
+                .collect()
+        })
     }
 
     fn renderer(&mut self) -> Arc<Mutex<VocalRenderer>> {
@@ -1392,16 +1460,27 @@ impl VocalSession {
     pub fn voicebank_rows(&self) -> Vec<VoicebankRow> {
         let dir = self.voicebanks_dir();
         let catalogue = self.catalogue();
-        voicebanks::list(&dir)
+        let banks: Vec<voicebanks::Installed> = voicebanks::list(&dir)
             .into_iter()
             .chain(voicebanks::dependencies(&dir))
-            .map(|b| VoicebankRow {
+            .collect();
+        // Two of one name told apart, as the picker tells them.
+        let names = voicebanks::told_apart(
+            &banks
+                .iter()
+                .map(|b| (b.name.as_str(), b.kind.label(), b.id.as_str()))
+                .collect::<Vec<_>>(),
+        );
+        banks
+            .iter()
+            .zip(names)
+            .map(|(b, name)| VoicebankRow {
                 id: if b.kind == voicebanks::PackageKind::Dependency {
                     format!("{}/{}", voicebanks::DEPENDENCIES, b.id)
                 } else {
                     b.id.clone()
                 },
-                name: b.name.clone(),
+                name,
                 kind: b.kind.label().to_string(),
                 author: b.info.author.clone(),
                 portrait: b.info.portrait.as_ref().map(|p| p.display().to_string()),

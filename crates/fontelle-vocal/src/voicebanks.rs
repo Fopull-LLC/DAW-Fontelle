@@ -725,3 +725,27 @@ pub fn uninstall(voicebanks: &Path, id: &str) -> Result<(), String> {
     }
     std::fs::remove_dir_all(&path).map_err(|e| e.to_string())
 }
+
+/// What to call each of `entries` — `(name, kind, folder)` — so no two
+/// read alike: its own name, unless another has the same one (Teto's
+/// 単独音 and 統合 libraries both call themselves 重音テト音声ライブラリー);
+/// then the name with its kind in brackets when the kind alone tells the
+/// ones of that name apart, else with its folder.
+pub fn told_apart(entries: &[(&str, &str, &str)]) -> Vec<String> {
+    entries
+        .iter()
+        .map(|(name, kind, folder)| {
+            let name = name.trim();
+            let same: Vec<&(&str, &str, &str)> =
+                entries.iter().filter(|e| e.0.trim() == name).collect();
+            if same.len() < 2 {
+                return name.to_string();
+            }
+            let kinds_differ = same
+                .iter()
+                .all(|e| same.iter().filter(|o| o.1 == e.1).count() == 1);
+            let what = if kinds_differ { kind } else { folder };
+            format!("{name} ({what})")
+        })
+        .collect()
+}
