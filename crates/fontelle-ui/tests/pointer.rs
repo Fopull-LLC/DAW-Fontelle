@@ -174,6 +174,7 @@ impl Rig {
             timeline: &self.timeline,
             timeline_bar: &self.timeline_bar,
             timeline_view: &self.timeline_view,
+            timeline_tool: fontelle_ui::canvas::TimelineTool::Draw,
             clips: &self.clips,
             instrument: &self.instrument,
             instrument_view: Some(&self.instrument_view),
@@ -485,4 +486,18 @@ fn a_fade_handle_offers_a_sideways_drag_and_its_node_an_up_and_down_one() {
     assert_eq!(r.at(x, y), Pointer::ResizeX, "the out handle");
     let (x, y) = centre(anatomy.node_in.expect("a fade has a node"));
     assert_eq!(r.at(x, y), Pointer::ResizeY, "the node");
+}
+
+#[test]
+fn the_arrangement_brush_says_it_paints_over_empty_bars_and_clips() {
+    // *"no brush tool in the arrangement"* — and once there is one, the
+    // pointer says it is on, over empty bars and over a clip it would paint
+    // on from. A grip is still a grip.
+    let r = rig();
+    let mut scene = r.scene(EditorTab::Roll, None);
+    let grid = r.timeline.grid;
+    let (x, y) = (grid.right() - 20.0, grid.bottom() - 6.0);
+    assert_eq!(pointer_at(&scene, x, y), Pointer::Default, "the pencil");
+    scene.timeline_tool = fontelle_ui::canvas::TimelineTool::Paint;
+    assert_eq!(pointer_at(&scene, x, y), Pointer::Paint);
 }

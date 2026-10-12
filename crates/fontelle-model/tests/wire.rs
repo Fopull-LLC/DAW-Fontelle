@@ -360,6 +360,9 @@ fn every_command() -> Vec<(&'static str, Make)> {
             )
         }),
         ("RemoveChannel", |s| Box::new(RemoveChannel::new(s.drums))),
+        ("DeleteChannel", |s| {
+            Box::new(fontelle_model::DeleteChannel::new(s.drums))
+        }),
         ("DuplicateChannel", |s| {
             Box::new(DuplicateChannel::new(s.keys))
         }),
@@ -1173,6 +1176,10 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"FreezeVocal":{"channel":{"idx":1,"version":1},"row_name":"V (frozen)","data":{"asset":{"id":{"idx":1,"version":1},"path":"renders/V (frozen).wav","content_hash":0,"size":0,"kind":"Sample"},"source_start":0,"source_end":48000,"sample_rate":48000},"start":0,"length":960,"at_row":1,"made":null}}"#,
             "FreezeVocal",
+        ),
+        (
+            r#"{"DeleteChannel":{"channel":{"idx":1,"version":1},"removed":null}}"#,
+            "DeleteChannel",
         ),
     ];
     for (json, tag) in pinned {

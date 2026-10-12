@@ -3036,3 +3036,67 @@ fn a_file_that_could_not_be_sent_is_listed_with_why() {
     assert!(missing[0].what.contains("kick"), "{missing:?}");
     assert!(missing[0].detail.contains("Alice"), "whose: {missing:?}");
 }
+
+/// A paint stroke crosses the wire as the one gesture it is: Bob's sixteen
+/// hats arrive at Alice's as the stroke, and his one Ctrl+Z takes the
+/// stroke back on both. And what each block shows is read off its notes on
+/// either side, so the caption agrees however the clip's notes arrived.
+#[test]
+fn a_joiners_paint_stroke_lands_whole_and_comes_back_whole() {
+    let mut pair = Pair::joined("paint-stroke", 3);
+    let source = open_clip(&pair.joiner);
+    let before = pair.host.clips().len();
+    let bar = PPQN * 4;
+    for at in 2..6 {
+        pair.joiner.arrange(ArrangeEdit::Paint {
+            source: Some(source),
+            lane: 0,
+            start: bar * at,
+        });
+    }
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+    assert_eq!(pair.host.clips().len(), before + 4);
+    let names = |session: &Session| {
+        let mut names: Vec<_> = session.clips().into_iter().map(|c| c.name).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&pair.host), names(&pair.joiner));
+
+    pair.joiner.undo();
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        pair.host.clips().len(),
+        before,
+        "one undo, the whole stroke"
+    );
+}
+
+/// Deleting an instrument takes its notes, not the clips it shares — on
+/// both sides: Bob's copy of the clip drawn with the deleted instrument
+/// keeps the other one's notes, as Alice's does.
+#[test]
+fn deleting_an_instrument_lands_the_same_for_a_joiner() {
+    let mut pair = Pair::joined("delete-channel", 3);
+    let clip = open_clip(&pair.host);
+    pair.host.add_channel().expect("a second instrument");
+    pair.host.end_gesture();
+    pair.host.open_clip(clip);
+    pair.host.select_channel(1);
+    draw(&mut pair.host, 0, 50);
+    pair.settle();
+    pair.same();
+
+    pair.host.remove_channel(0);
+    pair.host.end_gesture();
+    pair.settle();
+    pair.same();
+    assert!(
+        pair.joiner.clips().iter().any(|c| c.id == clip),
+        "the clip with the second instrument's note is still there"
+    );
+    assert_eq!(notes_of(&pair.joiner, clip).len(), 1);
+}

@@ -1379,6 +1379,13 @@ pub trait StudioHost: DocumentHost {
     /// back the clip it made.
     ///
     /// *"clips that you can basically draw into your arrangement."*
+    /// One step of a paint stroke with prefab `index` picked: a place, as
+    /// [`draw_prefab`](Self::draw_prefab) makes, but folded into the
+    /// stroke's one undo entry like `ArrangeEdit::Paint`'s copies.
+    fn paint_prefab(&mut self, index: usize, lane: usize, start: Tick) -> Option<ClipId> {
+        self.draw_prefab(index, lane, start)
+    }
+
     fn draw_prefab(&mut self, _index: usize, _lane: usize, _start: Tick) -> Option<ClipId> {
         None
     }
@@ -3576,6 +3583,11 @@ pub trait StudioHost: DocumentHost {
     }
     /// Opens `clip` in the piano roll, selecting the channel that owns it.
     fn open_clip(&mut self, clip: ClipId);
+    /// A second click on `clip`, already open: selects the next channel
+    /// that plays in it, in rack order and round again. A clip with one
+    /// instrument, an empty one, or one that is not notes leaves the rack
+    /// where it is. See `fontelle_model::ClipChannels`.
+    fn cycle_clip_channel(&mut self, _clip: ClipId) {}
 
     // --- audio clips (TDD §15.1) ---
     /// One audio clip's properties, for the editor to show and change.

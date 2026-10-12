@@ -9,7 +9,7 @@
 //! Two halves. The **catalogue**, [`KEYBIND_SECTIONS`], is the one place the
 //! bindings are written down for a person: the window's `key` and `global_key`
 //! match on them and the tooltips name a few, but until this there was no way
-//! to find out that `A` toggles a slide or that Alt frees a drag from the grid
+//! to find out that `S` bends a note or that Alt frees a drag from the grid
 //! except by reading the source. `tests/keybinds.rs` holds the catalogue to
 //! the bindings the window actually answers, so the two cannot drift apart
 //! silently. The **sheet**, [`keybinds_layout`], is the card the catalogue is
@@ -154,7 +154,6 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::SliceTool),
             act(Action::RollSnap),
             act(Action::Stretch),
-            act(Action::Slide),
             act(Action::LaneProperty),
             act(Action::Ghosts),
         ],
@@ -312,6 +311,10 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             fixed(
                 "Shift",
                 "Fine drag on a knob, fader or the tempo; a note along one axis",
+            ),
+            fixed(
+                "Shift+brush stroke",
+                "The brush paints across rows, not only the one it began on",
             ),
             fixed("Alt", "Drag free of the grid"),
             fixed(

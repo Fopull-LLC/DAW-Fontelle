@@ -220,7 +220,7 @@ pub const GUIDE: &[GuideSection] = &[
                     "Lanes and clips",
                     &[
                         "The arrangement is the song from left to right. Double-click an empty spot to draw a clip of the chosen instrument; drag a clip to move it, and drag its right edge to make it longer. Shift and that edge makes it loop.",
-                        "Ctrl+B cuts clips at the marker, Ctrl+D duplicates, Delete removes. Ctrl and the wheel zooms.",
+                        "Ctrl+B cuts clips at the marker, Ctrl+D duplicates, Delete removes. B is the brush: drag along a lane to lay copies of the clip you chose, Shift to cross lanes. Click the open clip again to step through the instruments in it. Ctrl and the wheel zooms.",
                     ],
                     Some(Arrangement),
                 ),
@@ -246,7 +246,7 @@ pub const GUIDE: &[GuideSection] = &[
                 page(
                     "The piano roll",
                     &[
-                        "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool.",
+                        "Open a clip to edit its notes here. With the pencil, click to add a note and drag a note to move it; drag its right edge to set its length, and right-click it to delete it. E selects, and Ctrl drags a box around notes with any tool. B paints a run of notes along one row; hold Shift to cross rows.",
                         "The chooser beside the tools sets the grid (G steps through it), and scale dims the notes outside a key. Tools holds transpose, legato, arpeggiate, and MIDI import and export.",
                     ],
                     Some(Editor),
