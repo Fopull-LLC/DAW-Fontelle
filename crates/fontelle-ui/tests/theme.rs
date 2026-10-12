@@ -575,3 +575,37 @@ fn a_v8_theme_gains_the_scale_inks_and_they_read_apart() {
         assert!(apart(p.row_scale_root, p.row_out_of_scale) >= 30);
     }
 }
+
+/// v12 made the singer panel's section inks (Voice, Expression,
+/// Performance, Output) tokens: they were fixed colours, chosen for the
+/// two shipped themes, and a theme with a mid-grey or pale stage had no
+/// say. A v11 file gains them from the shipped theme its own ground is
+/// nearer — the dark one's inks are a smudge on paper.
+#[test]
+fn a_v11_theme_gains_the_singer_panels_section_inks() {
+    for (base, light) in [
+        (Theme::dark_default(), false),
+        (Theme::light_default(), true),
+    ] {
+        let mut json: serde_json::Value =
+            serde_json::from_str(&base.to_json()).expect("valid JSON");
+        json["format_version"] = serde_json::json!(11);
+        let palette = json["palette"].as_object_mut().unwrap();
+        for key in [
+            "singer_voice",
+            "singer_expression",
+            "singer_performance",
+            "singer_output",
+        ] {
+            palette.remove(key).expect("v12 added this");
+        }
+        let migrated = Theme::from_json(&json.to_string()).expect("a v11 theme must still open");
+        assert_eq!(migrated.format_version, THEME_FORMAT_VERSION);
+        assert_eq!(migrated.palette, base.palette, "light: {light}");
+    }
+    let (d, l) = (
+        Theme::dark_default().palette,
+        Theme::light_default().palette,
+    );
+    assert_ne!(d.singer_voice, l.singer_voice, "the light one has its own");
+}

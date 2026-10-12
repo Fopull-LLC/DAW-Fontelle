@@ -6,7 +6,7 @@ shares the whole look. Settings ▸ Appearance chooses, imports and saves them;
 your own live in the `themes` folder beside `settings.json`.
 
 The format is `crates/fontelle-ui/src/theme/mod.rs` (`THEME_FORMAT_VERSION`
-11). Every palette token is required — a theme missing one is refused rather
+12). Every palette token is required — a theme missing one is refused rather
 than drawn with a hole in it — and an unknown key is refused by name. A file
 from a newer Fontelle is refused by its version.
 
@@ -14,7 +14,7 @@ from a newer Fontelle is refused by its version.
 
 ```json
 {
-  "format_version": 11,
+  "format_version": 12,
   "name": "Tide",
   "description": "One line, shown with the name.",
   "palette": { "window": "#0c1018", "panel": "#141a26c4", "...": "..." },
@@ -69,7 +69,10 @@ Settings ▸ Appearance shows *fit*, *size* and *position* under any section
 that has a picture.
 
 A version 10 file still reads: each section's one picture becomes one
-`image` layer.
+`image` layer. Version 12 added the singer panel's section inks,
+`singer_voice`, `singer_expression`, `singer_performance` and
+`singer_output` (each card's nameplate and edge); a version 11 file gains
+the shipped dark theme's, or the light theme's when its panels are pale.
 
 ## Writing a shader
 

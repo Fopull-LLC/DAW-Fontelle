@@ -54,14 +54,14 @@ pub struct SingerChrome<'a> {
     pub hover_hit: Option<SingerPanelHit>,
 }
 
-/// Each section's colour, by its name; others the accent.
-fn section_ink(name: &str, accent: Color) -> Color {
+/// Each section's colour, by its name, from the theme; others the accent.
+fn section_ink(name: &str, p: &crate::theme::Palette) -> Color {
     match name {
-        "Voice" => Color::rgba(0xe0, 0x6c, 0x9f, 0xff),
-        "Expression" => Color::rgba(0x3f, 0xb8, 0xaf, 0xff),
-        "Performance" => Color::rgba(0x8f, 0x74, 0xe6, 0xff),
-        "Output" => Color::rgba(0xe0, 0xa4, 0x4c, 0xff),
-        _ => accent,
+        "Voice" => p.singer_voice,
+        "Expression" => p.singer_expression,
+        "Performance" => p.singer_performance,
+        "Output" => p.singer_output,
+        _ => p.accent,
     }
 }
 
@@ -349,7 +349,7 @@ fn draw_card(
     if card.bottom() < l.body.y || card.y > l.body.bottom() {
         return;
     }
-    let ink = section_ink(&group.name, p.accent);
+    let ink = section_ink(&group.name, p);
     fill_rect_vertical(
         scene,
         card,

@@ -94,6 +94,10 @@ fn inks(i: &Inks, light: bool) -> Palette {
         mod_macro: base.mod_macro,
         mod_note: base.mod_note,
         mod_performance: base.mod_performance,
+        singer_voice: base.singer_voice,
+        singer_expression: base.singer_expression,
+        singer_performance: base.singer_performance,
+        singer_output: base.singer_output,
     }
 }
 

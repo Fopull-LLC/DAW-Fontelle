@@ -41,7 +41,7 @@ mod looks;
 ///
 /// Its own number, separate from the project's and the patch's: a colour token
 /// added to the chrome has nothing to do with either.
-pub const THEME_FORMAT_VERSION: u32 = 11;
+pub const THEME_FORMAT_VERSION: u32 = 12;
 
 /// What a theme file is called: `Midnight.fontelletheme`. The same JSON as
 /// ever — the name is so a file says what it is when it is sent to someone.
@@ -249,6 +249,16 @@ pub struct Palette {
     pub mod_macro: Color,
     pub mod_note: Color,
     pub mod_performance: Color,
+
+    // --- the singer panel's sections (theme format v12) ---
+    /// The ink of each of the Fontelle Singer panel's cards — its
+    /// nameplate, its edge, the vibrato picture on the Expression card —
+    /// so the four sections are told apart at a glance. A look's own: a
+    /// rose that reads on charcoal is a smudge on paper.
+    pub singer_voice: Color,
+    pub singer_expression: Color,
+    pub singer_performance: Color,
+    pub singer_output: Color,
 }
 
 impl Palette {
@@ -1215,6 +1225,12 @@ impl Theme {
                 mod_macro: Color::rgb(0xe0, 0xa4, 0x3a),
                 mod_note: Color::rgb(0x5d, 0xc2, 0x7a),
                 mod_performance: Color::rgb(0xe0, 0x6a, 0x9a),
+                // Rose, teal, violet and amber: what the panel was drawn in
+                // before they were tokens.
+                singer_voice: Color::rgb(0xe0, 0x6c, 0x9f),
+                singer_expression: Color::rgb(0x3f, 0xb8, 0xaf),
+                singer_performance: Color::rgb(0x8f, 0x74, 0xe6),
+                singer_output: Color::rgb(0xe0, 0xa4, 0x4c),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -1273,6 +1289,12 @@ impl Theme {
                 mod_macro: Color::rgb(0xa8, 0x6a, 0x10),
                 mod_note: Color::rgb(0x2e, 0x8a, 0x3a),
                 mod_performance: Color::rgb(0xb0, 0x3a, 0x6a),
+                // The same four hues, deep enough to stand out (3:1) from
+                // the light cards they sit on.
+                singer_voice: Color::rgb(0xb0, 0x30, 0x6a),
+                singer_expression: Color::rgb(0x17, 0x76, 0x6e),
+                singer_performance: Color::rgb(0x62, 0x43, 0xc0),
+                singer_output: Color::rgb(0x8f, 0x5a, 0x0c),
             },
             metrics: METRICS,
             font: FontTokens {
@@ -1548,6 +1570,40 @@ fn migrate(mut json: serde_json::Value, mut from: u32) -> Result<serde_json::Val
             }
         }
         from = 11;
+    }
+
+    if from == 11 {
+        // v12 made the singer panel's section inks tokens. A v11 file was
+        // written when they were fixed: it gains the inks of the shipped
+        // theme its own ground is nearer, so a pale look does not get the
+        // dark one's.
+        let light = json
+            .get("palette")
+            .and_then(|p| p.get("panel"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|c| Color::parse(c).ok())
+            .is_some_and(|c| {
+                let [r, g, b, _] = c.0;
+                0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b) > 127.5
+            });
+        let base = if light {
+            Theme::light_default().palette
+        } else {
+            Theme::dark_default().palette
+        };
+        if let Some(palette) = json.get_mut("palette").and_then(|p| p.as_object_mut()) {
+            for (key, value) in [
+                ("singer_voice", base.singer_voice),
+                ("singer_expression", base.singer_expression),
+                ("singer_performance", base.singer_performance),
+                ("singer_output", base.singer_output),
+            ] {
+                palette
+                    .entry(key)
+                    .or_insert_with(|| serde_json::json!(value.to_hex()));
+            }
+        }
+        from = 12;
     }
 
     if from != THEME_FORMAT_VERSION {

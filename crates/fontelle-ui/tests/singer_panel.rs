@@ -332,3 +332,105 @@ fn a_singer_not_installed_here_is_named_and_offers_find_singers() {
         "{strings:?}"
     );
 }
+
+/// The section inks are the theme's: a look that gives the Voice card
+/// magenta draws its nameplate magenta (they were fixed colours, the same
+/// on any ground).
+#[test]
+fn each_cards_nameplate_is_drawn_in_the_themes_section_ink() {
+    use fontelle_ui::render::singer_panel::{SingerChrome, singer_panel_strings};
+    use fontelle_ui::render::{EditorWindowChrome, Headless, draw_editor_window};
+    use fontelle_ui::text::{Labels, TextContext};
+    use fontelle_ui::theme::Color;
+    if cfg!(windows) && std::env::var_os("CI").is_some() {
+        eprintln!("skipping: no GPU on this runner");
+        return;
+    }
+    let mut headless = match Headless::new() {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("skipping: no usable GPU adapter ({e})");
+            return;
+        }
+    };
+    let mut theme = Theme::light_default();
+    let inks = [
+        Color::rgb(0xff, 0x00, 0xff),
+        Color::rgb(0x00, 0x80, 0x00),
+        Color::rgb(0x00, 0x00, 0xff),
+        Color::rgb(0xc0, 0x60, 0x00),
+    ];
+    theme.palette.singer_voice = inks[0];
+    theme.palette.singer_expression = inks[1];
+    theme.palette.singer_performance = inks[2];
+    theme.palette.singer_output = inks[3];
+    let (w, h) = fontelle_ui::canvas::SINGER_PANEL_SIZE;
+    let panel = fontelle_ui::layout::editor_window_layout(w as f32, h as f32, &theme.metrics);
+    let view = header(true, false);
+    let controls = controls();
+    let layout = singer_panel_layout(panel.body, &theme.metrics, &view, &controls, 0.0);
+    let mut text = TextContext::new();
+    let mut labels = Labels::new();
+    for (s, style) in singer_panel_strings(&view, &controls) {
+        labels.ensure_styled(&s, &theme.font, style, &mut text);
+    }
+    let title = text.layout("Fontelle Singer", &theme.font, None);
+    let portraits = fontelle_ui::portrait::Portraits::default();
+    let mut scene = fontelle_ui::vello::Scene::new();
+    draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &EditorWindowChrome::Singer(SingerChrome {
+            layout: layout.clone(),
+            view: &view,
+            controls: &controls,
+            portraits: &portraits,
+            hover: None,
+            active: None,
+            hover_hit: None,
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    let pixels = headless
+        .render(&scene, w, h, theme.palette.window)
+        .expect("the panel renders");
+    if let Ok(dir) = std::env::var("FONTELLE_UI_DUMP") {
+        let file = std::fs::File::create(
+            std::path::Path::new(&dir).join("singer-panel-section-tokens.png"),
+        )
+        .unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    let mut seen = 0;
+    for (g, card) in &layout.cards {
+        if card.bottom() > h as f32 {
+            continue;
+        }
+        let (x, y) = (
+            card.x + 14.0,
+            card.y + fontelle_ui::canvas::CARD_HEADING / 2.0,
+        );
+        let i = ((y as u32 * w + x as u32) * 4) as usize;
+        let got = [pixels[i], pixels[i + 1], pixels[i + 2]];
+        let want = inks[*g].0;
+        let near = got
+            .iter()
+            .zip(&want)
+            .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 8);
+        assert!(near, "card {g}: {got:?}, not {want:?}");
+        seen += 1;
+    }
+    assert!(seen >= 2, "the cards are on the panel");
+}
