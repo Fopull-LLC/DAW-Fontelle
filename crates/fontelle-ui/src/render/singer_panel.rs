@@ -235,9 +235,11 @@ fn draw_stage(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Singer
     );
 
     // The words.
+    // Each drawn a third of the way to the theme's text, so it reads on a
+    // light theme's stage as well as a dark one's.
     let kind_ink = match view.singer.as_ref().map(|s| s.kind) {
-        Some(SingerKind::Utau) => Color::rgba(0x6f, 0xa8, 0xf0, 0xff),
-        Some(SingerKind::DiffSinger) => Color::rgba(0xb0, 0x8c, 0xf5, 0xff),
+        Some(SingerKind::Utau) => mix(Color::rgba(0x6f, 0xa8, 0xf0, 0xff), p.text, 0.33),
+        Some(SingerKind::DiffSinger) => mix(Color::rgba(0xb0, 0x8c, 0xf5, 0xff), p.text, 0.33),
         _ => p.accent,
     };
     for (rect, text, style, ink) in [
@@ -248,7 +250,7 @@ fn draw_stage(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &Singer
             details(view),
             PICKER_TEXT_STYLE,
             if view.message.is_some() {
-                Color::rgba(0xf0, 0xb0, 0x5a, 0xff)
+                mix(Color::rgba(0xf0, 0xb0, 0x5a, 0xff), p.text, 0.33)
             } else {
                 p.text_muted
             },

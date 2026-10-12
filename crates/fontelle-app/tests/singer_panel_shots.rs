@@ -222,6 +222,12 @@ fn the_singer_panel_with_real_banks_and_an_engine() {
     let message = session.singer_panel().unwrap().message.unwrap_or_default();
     assert!(message.contains("Find singers"), "{message}");
     shoot(&session, &mut headless, "singer-panel-missing");
+    shoot_in(
+        &session,
+        &mut headless,
+        "singer-panel-missing-light",
+        Theme::light_default(),
+    );
 
     // A first track with no voicebank installed at all.
     let empty = std::env::temp_dir().join(format!("fontelle-panel-empty-{}", std::process::id()));
