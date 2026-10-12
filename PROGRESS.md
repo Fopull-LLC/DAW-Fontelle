@@ -19,6 +19,64 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-12, latest — the singer polish's deferred six, done.**
+Branch `feature/vocal-track`, not merged, not bumped. What §2.6 of
+`docs/vocal-plan.md` left with a recommendation, each test first:
+
+- **A voice's level is kept on disk** (`fontelle_vocal::leveled_kept`,
+  `…/fontelle/levels/` beside the UTAU analyses), keyed by the content of
+  the files it is sung from (`Backend::voice_files`, new, default none:
+  a bank's folder and its vocoder's; paths, lengths, small files whole,
+  big ones sampled at three places) and the runtime's version. A
+  DiffSinger bank's first phrase in a session, models open: 1.0–1.6 s
+  became 0.43–0.61 s (all eleven banks); UTAU, analyses warm: ~470 ms
+  became 10–90 ms (the folder's fingerprint).
+- **A reopened song sung already loads no singer**
+  (`VocalRenderer::warm_unless_sung`): a voice is warmed unless every
+  phrase it has has its final take in memory or on disk; the first edit
+  warms it. Canary DS, 40 phrases: reopened and idle +618 MB became
+  +3 MB; all final in ~110 ms either way; the first edit after reopening
+  is heard in 2.1 s (was 1.0 s: the models now load with it).
+- **DiffSinger previews**: measured per model (Canary DS, a 4.8 s
+  phrase): vocoder ~680 ms, acoustic ~360 ms (4 steps), pitch ~100 ms,
+  the rest a few ms each. A model asked what it was just asked answers
+  from memory (`Model::run`, the last 6 runs, ≤ 24 MB): a dynamics edit's
+  preview ~1.1 s → ~5 ms; breathiness, voicing, tension, gender and
+  energy re-run only the acoustic model and vocoder (~10–20 % off). The
+  run's poll is 0.5 ms (a 5 ms floor on each small model). Not taken:
+  previews at 2 acoustic steps (15–20 % faster, measurably further from
+  the final on some banks; 1 step broke two), ONNX thread counts (the
+  default was best), a cheaper vocoder (no bank in the library ships one), and
+  — reasoned, not tried — two half-phrase vocoder runs spliced (the
+  sine source's phase would jump at the join).
+- **The singer panel's section inks are theme tokens** (theme format
+  v12: `singer_voice`, `singer_expression`, `singer_performance`,
+  `singer_output`); the light theme has deeper ones (3:1 on its cards,
+  held for every built-in by `builtin_themes.rs`); a v11 file gains the
+  inks of the shipped theme its panels are nearer.
+- **Two banks of one name are told apart** (`voicebanks::told_apart`):
+  by kind when that tells them apart, else by folder — in the picker's
+  cards and the Installed page (the bank's own name on the name line, its
+  folder under it in the text's ink), the stage (its kind and folder
+  lines), the roll's and the arrangement's captions, greyed-control notes.
+- **The stage's presses driven through the window's own path**
+  (`fontelle_ui::Windowless`: the studio's window with no window; the
+  editor window's moved/pressed/released and the studio's release are
+  functions of their own). Found: a language chip's "… sings this track
+  in English" was never seen — the refresh after the edit wrote over it.
+- **Tests**: `fontelle-vocal` `level.rs` (+2), `voicebanks.rs` (+1),
+  `real_voicebanks.rs` (+1, ignored); `fontelle-diffsinger` `models.rs`
+  (+2), `backend.rs` (+1), `real_bank.rs` (+1, ignored); `fontelle-utau`
+  `sing.rs` (+1); `fontelle-ui` `theme.rs` (+1), `builtin_themes.rs`
+  (+1), `singer_panel.rs` (+1, pixels), `vocal_edit_headless.rs` (+1);
+  `fontelle-app` `vocal_files.rs` (+1), `singer_panel.rs` (+3),
+  `singer_walk.rs` (memory and the first edit after reopening).
+- **Note**: `real_bank.rs`'s Chinese and multi-speaker tests fail on this
+  library before and after (they take the first English bank, Canary);
+  its determinism test failed before (ONNX Runtime's threads do not
+  give bit-identical runs) and passes now only because the second run is
+  answered from memory.
+
 **As of 2026-10-12, latest — the Fontelle Singer walked end to end with
 fourteen real banks and polished for release.** Branch
 `feature/vocal-track`, not merged, not bumped. Ty: *"prioritize the public

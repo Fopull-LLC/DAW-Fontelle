@@ -384,29 +384,32 @@ fourteen real banks (`fontelle-app/tests/singer_walk.rs`, ignored, needs
 | The roll's corner: a long message ran off the roll | broken into lines of 72 characters |
 | The stage's kind line and message faint on the light theme | drawn a third of the way to the theme's text |
 
-**Deferred, with a recommendation:**
+**Deferred, and then done (2026-10-12, the same day):**
 
-- *Levelling is a fixed gain per voice, from one reference phrase.* Good
-  enough to put banks within 6 dB. A per-voice loudness kept on disk
-  (beside the UTAU analysis cache) would save the reference render each
-  session (~0.5 s of a DiffSinger bank's first phrase); do it if the first
-  phrase still feels slow.
-- *A reopened song warms its voices* even when every take is on disk —
-  a DiffSinger bank's models (hundreds of MB) load though nothing needs
-  singing until an edit. Recommend: warm only voices with a phrase that is
-  not on disk, or on the first edit.
-- *DiffSinger previews* take 0.7–1.7 s at 4 steps on this machine; most of
-  it is the vocoder. A preview at a lower sample rate or a shorter
-  vocoder pass is the next lever, if Ty wants edits heard faster.
-- *The singer panel's section colours* (rose, teal, violet, amber) are
-  fixed rather than theme tokens; they read on both shipped themes. A
-  user theme with a mid-grey stage would need tokens.
-- *The window's new presses* (*Find singers…* on the stage) were compiled
-  and covered through the canvas functions, not driven on a display.
-- *Two banks with the same character name* (Teto's 単独音 and 統合 both
-  call themselves 重音テト（かさねてと）音声ライブラリー) are told apart only
-  by the folder line on their cards. Showing the folder (or the bank's
-  kind: CV/VCV) beside the name when two names collide would help.
+- *Levels kept on disk* beside the UTAU analyses, by the voice's files'
+  content and the runtime's version (`leveled_kept`,
+  `Backend::voice_files`): a DiffSinger bank's first phrase 1.0–1.6 s →
+  0.43–0.61 s with its models open.
+- *A reopened song* warms only voices with a phrase not sung yet
+  (`warm_unless_sung`); the first edit warms the rest. Idle after reopen
+  +618 MB → +3 MB (Canary DS, 40 phrases).
+- *DiffSinger previews*: most of a preview is the vocoder (~680 of
+  ~1150 ms for a 4.8 s phrase) and the acoustic model (~360). A model
+  answers a run it was just asked from memory, so a lane edit re-runs
+  only what the lane reaches (dynamics: nothing, ~5 ms; breathiness,
+  gender…: acoustic and vocoder). Fewer acoustic steps (2: 15–20 %
+  faster, further from the final on some banks) and thread counts were
+  measured and not taken; a split vocoder run was considered and not
+  tried (its source's phase jumps at the join). Still open: a lighter
+  vocoder, should a bank ship one.
+- *Section inks* are theme tokens (format v12), the light theme's deeper.
+- *The window's presses* are driven through its own input path in tests
+  (`fontelle_ui::Windowless`).
+- *Two banks of one name* are told apart by kind or folder everywhere a
+  singer is named (`voicebanks::told_apart`).
+
+Still open from the walk: auto loudness is a fixed gain per voice, not a
+meter.
 
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 

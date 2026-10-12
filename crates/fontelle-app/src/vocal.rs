@@ -675,15 +675,37 @@ impl VocalSession {
                     }
                 })
                 .collect();
-            let refs: Vec<(&str, &str, &str)> = named
-                .iter()
-                .map(|(n, k, f)| (n.as_str(), k.as_str(), f.as_str()))
-                .collect();
-            voices
-                .iter()
-                .zip(voicebanks::told_apart(&refs))
-                .map(|(v, name)| ((v.backend.clone(), v.info.id.clone()), name))
-                .collect()
+            // Told apart within an instrument: the Fontelle Singer's banks
+            // among themselves, each engine's voices among its own — two
+            // engines' voices are already named with their instrument
+            // wherever they are shown (its picker, "Engine · Alto").
+            let instrument = |v: &fontelle_vocal::RegistryVoice| {
+                if v.built_in {
+                    String::new()
+                } else {
+                    v.backend.clone()
+                }
+            };
+            let mut names = HashMap::new();
+            let instruments: std::collections::BTreeSet<String> =
+                voices.iter().map(instrument).collect();
+            for which in instruments {
+                let members: Vec<usize> = (0..voices.len())
+                    .filter(|i| instrument(&voices[*i]) == which)
+                    .collect();
+                let refs: Vec<(&str, &str, &str)> = members
+                    .iter()
+                    .map(|i| {
+                        let (n, k, f) = &named[*i];
+                        (n.as_str(), k.as_str(), f.as_str())
+                    })
+                    .collect();
+                for (i, name) in members.iter().zip(voicebanks::told_apart(&refs)) {
+                    let v = &voices[*i];
+                    names.insert((v.backend.clone(), v.info.id.clone()), name);
+                }
+            }
+            names
         })
     }
 
