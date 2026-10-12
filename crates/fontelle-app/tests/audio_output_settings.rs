@@ -169,3 +169,127 @@ fn the_choice_is_kept_in_the_settings_file_and_an_older_file_has_none() {
     let read = Settings::from_json(older).expect("a version 8 file still reads");
     assert_eq!(read.audio_output, AudioOutputSettings::default());
 }
+
+// ------------------------------------------------ Windows's clicks, 2026-10 ---
+
+fn studio_with(dir: &std::path::Path, output: AudioOutputSettings) -> fontelle_app::Session {
+    let settings = Settings {
+        audio_output: output,
+        ..Settings::default()
+    };
+    std::fs::write(dir.join("settings.json"), settings.to_json()).unwrap();
+    studio(dir)
+}
+
+/// *"clicky/crackly audio on Windows"*: whose click it was, and how busy the
+/// audio thread is, said under the output — a device that drops buffers
+/// wants another backend, a Fontelle that is late wants a larger buffer.
+#[test]
+fn the_output_says_how_busy_it_is_with_whose_dropouts_beside_it() {
+    let dir = scratch("load");
+    let session = studio(&dir);
+    let heading = row(&session, "Audio output");
+    let load = row(&session, "Processing load");
+    assert!(load > heading);
+    assert_eq!(load, row(&session, "Dropouts") + 1, "beside the dropouts");
+    assert_eq!(session.settings()[load].detail, "Not open");
+    let help = fontelle_app::settings::SettingRow::Dropouts.help();
+    assert!(help.contains("device") && help.contains("late"), "{help}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn asio_offers_the_drivers_own_panel_and_its_own_buffer() {
+    let dir = scratch("asio");
+    let session = studio_with(
+        &dir,
+        AudioOutputSettings {
+            host: Some(fontelle_engine::ASIO_HELPER_HOST.to_string()),
+            ..AudioOutputSettings::default()
+        },
+    );
+    let panel = row(&session, "Driver settings");
+    assert_eq!(panel, row(&session, "Output device") + 1);
+    let (buffers, chosen) = choice(&session, "Buffer size");
+    assert_eq!(chosen, 0);
+    assert_eq!(buffers[0], "The driver's own (set in its control panel)");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // Any other backend has no such row.
+    let dir = scratch("no-asio");
+    let session = studio(&dir);
+    assert!(
+        !session
+            .settings()
+            .iter()
+            .any(|r| r.name == "Driver settings"),
+        "only under ASIO"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn each_backend_of_fontelles_own_says_what_its_automatic_is() {
+    for (host, automatic) in [
+        (
+            fontelle_engine::WASAPI_LOW_LATENCY_HOST,
+            fontelle_engine::LOW_LATENCY_AUTOMATIC,
+        ),
+        (
+            fontelle_engine::WASAPI_EXCLUSIVE_HOST,
+            fontelle_engine::EXCLUSIVE_AUTOMATIC,
+        ),
+    ] {
+        let dir = scratch("wasapi");
+        let session = studio_with(
+            &dir,
+            AudioOutputSettings {
+                host: Some(host.to_string()),
+                ..AudioOutputSettings::default()
+            },
+        );
+        let (buffers, _) = choice(&session, "Buffer size");
+        assert!(
+            buffers[0].starts_with(&format!("Automatic ({automatic} frames")),
+            "{host}: {buffers:?}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn where_asio_is_offered_steinbergs_mark_is_named_as_theirs() {
+    let help = fontelle_app::settings::SettingRow::AudioBackend.help();
+    if cfg!(windows) {
+        assert!(
+            help.contains("ASIO is a registered trademark of Steinberg Media Technologies GmbH"),
+            "{help}"
+        );
+    }
+    assert!(fontelle_engine::ASIO_HELPER_HOST.starts_with("ASIO\u{ae}"));
+}
+
+#[test]
+fn the_word_about_dropouts_names_whose_they_were_and_the_cure_for_that() {
+    let late = fontelle_engine::OutputHealth {
+        late: 9,
+        device_xruns: 1,
+        ..Default::default()
+    };
+    let said = fontelle_app::dropout_words(&late);
+    assert!(said.contains("Fontelle was late with 9"), "{said}");
+    assert!(said.contains("larger buffer"), "{said}");
+
+    let device = fontelle_engine::OutputHealth {
+        late: 0,
+        device_xruns: 12,
+        ..Default::default()
+    };
+    let said = fontelle_app::dropout_words(&device);
+    assert!(said.contains("device dropped 12"), "{said}");
+    assert!(said.contains("another backend"), "{said}");
+    assert!(
+        !said.contains("larger buffer"),
+        "not the cure for this: {said}"
+    );
+}

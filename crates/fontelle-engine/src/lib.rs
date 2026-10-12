@@ -6,6 +6,7 @@
 mod analyze_capture;
 mod audio_input;
 mod device;
+mod device_format;
 mod disgusting_beat_channel;
 mod disgusting_beat_tap;
 mod effect_channel;
@@ -16,6 +17,7 @@ mod key_tap;
 mod live;
 mod nodes;
 mod output;
+mod output_asio;
 mod pipewire;
 mod plugin_node;
 #[cfg(target_os = "linux")]
@@ -26,12 +28,15 @@ mod study_player;
 mod timeline_channel;
 mod transport;
 mod tune_tap;
+#[cfg(windows)]
+mod wasapi;
 
 pub use analyze_capture::{
     AnalyzeCapture, AnalyzeCaptureEvent, AnalyzeCaptureNode, AnalyzeTapPoint,
 };
 pub use audio_input::{InputCapture, InputReader, InputTap, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
+pub use device_format::DeviceFormat;
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,
 };
@@ -55,9 +60,11 @@ pub use nodes::{
     VoiceMeter, insert_latency_samples, max_insert_latency_samples,
 };
 pub use output::{
-    AudioOutput, CallbackSlot, DEFAULT_OUTPUT_BUFFER, OutputChoice, OutputStats, OutputStatus,
-    default_output_host_name, latency_label, output_buffer_sizes, output_device_names,
-    output_host_names,
+    ASIO_HELPER_HOST, AudioOutput, CallbackSlot, DEFAULT_OUTPUT_BUFFER, EXCLUSIVE_AUTOMATIC,
+    LOW_LATENCY_AUTOMATIC, OutputChoice, OutputHealth, OutputStats, OutputStatus,
+    WASAPI_EXCLUSIVE_HOST, WASAPI_LOW_LATENCY_HOST, asio_driver_names, asio_helper_path,
+    default_output_host_name, latency_label, low_latency_period, open_asio_panel,
+    output_buffer_sizes, output_device_names, output_host_names,
 };
 #[cfg(target_os = "linux")]
 pub use pipewire::PipeWireInput;

@@ -492,8 +492,9 @@ fn every_button_row_says_on_its_button_what_a_press_does() {
                 continue;
             }
             // Nor has the sample rate, which is said and not set: the studio
-            // runs at one rate (`audio_output_settings.rs`).
-            if row == SettingRow::SampleRate {
+            // runs at one rate (`audio_output_settings.rs`). Nor the
+            // processing load, which is the output's to say.
+            if row == SettingRow::SampleRate || row == SettingRow::AudioLoad {
                 assert!(caption.is_empty());
                 continue;
             }

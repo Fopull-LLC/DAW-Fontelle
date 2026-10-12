@@ -1,12 +1,14 @@
 //! The real shared memory and doorbells, two mappings of one name in one
 //! process — what the helper and Fontelle each hold.
 
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::atomic::Ordering;
+#[cfg(any(windows, target_os = "linux"))]
 use std::time::{Duration, Instant};
 
-use fontelle_audio_ipc::{
-    Bells, ClientSide, Exchange, HelperSide, Layout, Region, State, Wake, channel_name,
-};
+use fontelle_audio_ipc::channel_name;
+#[cfg(any(windows, target_os = "linux"))]
+use fontelle_audio_ipc::{Bells, ClientSide, Exchange, HelperSide, Layout, Region, State, Wake};
 
 #[test]
 fn names_are_per_process_and_per_exchange() {

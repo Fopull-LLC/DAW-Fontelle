@@ -641,6 +641,14 @@ fn play_or_render(
         // The same switch the graph is playing through, so the button on the
         // bar and the node in the schedule are one thing.
         .with_metronome(realised.metronome.clone());
+        // The output's counts, under the meter.
+        let host = match output
+            .as_ref()
+            .and_then(|o| o.lock().ok().map(|o| o.stats()))
+        {
+            Some(stats) => host.with_output_stats(stats),
+            None => host,
+        };
         // The studio the window drives. It used to be built only when the
         // project had a note clip for the roll to open, and that gate is what
         // made the window open **empty** — no rack, no browser, no arrangement

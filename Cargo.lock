@@ -1393,6 +1393,7 @@ dependencies = [
  "audio_thread_priority",
  "cpal",
  "fontelle-assets",
+ "fontelle-audio-ipc",
  "fontelle-core",
  "fontelle-dsp",
  "fontelle-fx",
@@ -1406,6 +1407,7 @@ dependencies = [
  "serde_json",
  "slotmap",
  "triple_buffer",
+ "windows",
 ]
 
 [[package]]

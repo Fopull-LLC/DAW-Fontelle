@@ -5,6 +5,11 @@
 //! boundary (spawn, shared block, doorbells, the text lines, every way of
 //! ending) works end to end.
 
+// A shared block of memory between processes is Windows's and Linux's here
+// (`fontelle-audio-ipc`'s `os`); the helper is a Windows program, and Linux
+// is where it is developed.
+#![cfg(any(windows, target_os = "linux"))]
+
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};

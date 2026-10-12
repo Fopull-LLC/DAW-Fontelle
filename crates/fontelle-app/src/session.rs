@@ -585,6 +585,10 @@ pub struct Session {
     /// Whether the dropouts have been pointed out this run — once, and not
     /// again until the count is reset.
     dropouts_said: bool,
+    /// The dropout counts last written to the log, and when: a line when
+    /// they move, no more than every few seconds, so a bug report says
+    /// whose clicks they were and when.
+    audio_logged: (u64, u64, Option<std::time::Instant>),
     /// The folder the Import tab is browsing, and what is in it.
     ///
     /// One bank rather than two, rebuilt when the kind changes: only one of
@@ -871,6 +875,12 @@ impl Session {
                 output.stats().clear_xruns();
             }
             self.dropouts_said = false;
+            self.audio_logged = (0, 0, None);
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::DriverPanel {
+            self.open_driver_panel();
             self.touch();
             return;
         }
@@ -1603,6 +1613,7 @@ impl Session {
             output: None,
             output_lists: std::cell::RefCell::new(None),
             dropouts_said: false,
+            audio_logged: (0, 0, None),
             import_bank: FileBank::default(),
             // Sounds, and the Import tab, are where a session starts: *"make
             // it start out opened on the audio import tab by default instead
@@ -3837,7 +3848,7 @@ impl Session {
         let fell_back = output
             .lock()
             .ok()
-            .and_then(|o| o.status().cloned())
+            .and_then(|o| o.status())
             .filter(|status| status.fell_back.is_some());
         if let Some(status) = fell_back {
             self.message = Some(fell_back_words(&self.settings, &status));
@@ -3887,7 +3898,9 @@ impl Session {
     }
 
     /// The output's dropouts, and a device that went away: the first is
-    /// pointed out once, the second is answered by opening the default.
+    /// pointed out once — saying whose they were, since the cure for one is
+    /// not the cure for the other — and logged as they come; the second is
+    /// answered by opening the output again, or the default.
     fn watch_output(&mut self) {
         let Some(output) = self.output.clone() else {
             return;
@@ -3897,21 +3910,75 @@ impl Session {
         };
         let stats = output.stats();
         if stats.lost() {
-            let said = match output.reopen(&self.settings.audio_output.choice()) {
+            let why = output.loss_reason();
+            let said = match output.reopen_after_loss(&self.settings.audio_output.choice()) {
+                Ok(status) if status.fell_back.is_some() => {
+                    fell_back_words(&self.settings, &status)
+                }
                 Ok(status) => format!("The audio output went away; playing through {status}"),
                 Err(e) => format!("The audio output went away and nothing else opened: {e}"),
             };
+            eprintln!(
+                "fontelle: audio output lost{}; {said}",
+                why.map(|w| format!(" ({w})")).unwrap_or_default()
+            );
             self.message = Some(said);
             return;
         }
+        let health = stats.health();
+        let (device, late, at) = self.audio_logged;
+        if (health.device_xruns, health.late) != (device, late)
+            && at.is_none_or(|at| at.elapsed() >= AUDIO_LOG_EVERY)
+        {
+            let through = output
+                .status()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "nothing".to_string());
+            eprintln!("fontelle: audio: {} \u{b7} {through}", health.log_line());
+            self.audio_logged = (
+                health.device_xruns,
+                health.late,
+                Some(std::time::Instant::now()),
+            );
+        }
         if !self.dropouts_said && stats.xruns() >= DROPOUTS_WORTH_SAYING {
             self.dropouts_said = true;
-            self.message = Some(format!(
-                "The sound card ran dry {} times \u{2014} a larger buffer in Settings \
-                 \u{2192} Audio output stops the crackles",
-                stats.xruns()
-            ));
+            self.message = Some(dropout_words(&health));
         }
+    }
+
+    /// The Driver settings row: the ASIO driver's own panel, through the
+    /// helper playing it, or a helper of its own when nothing plays through
+    /// it yet.
+    fn open_driver_panel(&mut self) {
+        let through_output = self
+            .output
+            .as_ref()
+            .and_then(|o| o.lock().ok().map(|mut o| o.open_driver_panel()));
+        let opened = match through_output {
+            Some(Ok(())) => Ok(()),
+            _ => {
+                let driver = self
+                    .settings
+                    .audio_output
+                    .device
+                    .clone()
+                    .or_else(|| fontelle_engine::asio_driver_names().into_iter().next());
+                match driver {
+                    Some(driver) => fontelle_engine::open_asio_panel(&driver),
+                    None => Err("no ASIO driver is installed".to_string()),
+                }
+            }
+        };
+        self.settings_toast = Some(match opened {
+            Ok(()) => (
+                "The driver's control panel is opening; a buffer or rate changed there \
+                 applies by itself"
+                    .to_string(),
+                false,
+            ),
+            Err(e) => (format!("The driver's panel would not open: {e}"), false),
+        });
     }
 
     /// How long an input that would not open waits before it is tried
@@ -10571,16 +10638,31 @@ impl StudioHost for Session {
                         .as_ref()
                         .and_then(|o| o.lock().ok()?.status().map(|s| s.to_string()))
                         .unwrap_or_else(|| "Not open".to_string()),
-                    crate::settings::SettingRow::Dropouts => {
-                        match self
-                            .output
-                            .as_ref()
-                            .and_then(|o| Some(o.lock().ok()?.stats().xruns()))
-                        {
-                            None | Some(0) => "None".to_string(),
-                            Some(n) => n.to_string(),
-                        }
-                    }
+                    crate::settings::SettingRow::Dropouts => self
+                        .output
+                        .as_ref()
+                        .and_then(|o| Some(o.lock().ok()?.stats().health()))
+                        .map(|h| h.dropouts_label())
+                        .unwrap_or_else(|| "None".to_string()),
+                    crate::settings::SettingRow::AudioLoad => self
+                        .output
+                        .as_ref()
+                        .and_then(|o| {
+                            let o = o.lock().ok()?;
+                            o.status()?;
+                            Some(o.stats().health())
+                        })
+                        .map(|h| {
+                            let mut said = h.load_label();
+                            if let Some(ns) = h.handoff_ns {
+                                said.push_str(&format!(
+                                    ", ASIO handoff {} \u{b5}s",
+                                    (ns + 500) / 1000
+                                ));
+                            }
+                            said
+                        })
+                        .unwrap_or_else(|| "Not open".to_string()),
                     // Whether it is in force in this process, and whether it
                     // can be at all.
                     crate::settings::SettingRow::CompatibleGraphics => {
@@ -16714,6 +16796,29 @@ struct OutputLists {
 /// How many dropouts are worth a word: a handful happen opening a device or
 /// when the machine wakes up, and are not crackle.
 const DROPOUTS_WORTH_SAYING: u64 = 8;
+
+/// How often, at most, moving dropout counts are written to the log.
+const AUDIO_LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// What to say once the dropouts are worth a word: whose they were, and the
+/// cure for that — a larger buffer for Fontelle's, another backend for the
+/// device's.
+pub fn dropout_words(health: &fontelle_engine::OutputHealth) -> String {
+    if health.late >= health.device_xruns {
+        format!(
+            "Fontelle was late with {} audio buffers \u{2014} a larger buffer in Settings \
+             \u{2192} Audio output stops the crackles",
+            health.late
+        )
+    } else {
+        format!(
+            "The audio device dropped {} buffers while Fontelle was on time \u{2014} a driver \
+             or USB problem; try another backend in Settings \u{2192} Audio output (WASAPI \
+             low latency or exclusive, or ASIO)",
+            health.device_xruns
+        )
+    }
+}
 
 /// What to say when the output chosen would not open and the default did.
 fn fell_back_words(

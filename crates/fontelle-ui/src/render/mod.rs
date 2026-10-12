@@ -6130,6 +6130,28 @@ fn draw_meter(
             );
         }
     }
+
+    // How busy the audio thread is, under the lanes: the meter's green, its
+    // red from three quarters of each buffer on, where a click is near. And
+    // a red mark once any buffer was lost, until Settings clears the count
+    // — which says whose they were.
+    if let Some(load) = view.audio_load {
+        let strip = crate::transport::load_strip(meter);
+        let colour = if load >= 0.75 { p.meter_peak } else { p.meter };
+        fill_rect(
+            scene,
+            Rect::new(
+                strip.x,
+                strip.y,
+                strip.width * load.clamp(0.0, 1.0),
+                strip.height,
+            ),
+            colour,
+        );
+    }
+    if view.audio_dropouts > 0 {
+        fill_rect(scene, crate::transport::dropout_mark(meter), p.meter_peak);
+    }
 }
 
 /// The piano roll (TDD §16.4).

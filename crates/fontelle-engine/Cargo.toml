@@ -26,6 +26,10 @@ rtrb = "0.4.0"
 triple_buffer = "9.0.0"
 audio_thread_priority = "0.37.0"
 rubato = "5.0.0"
+# The shared-memory protocol to the separate ASIO helper (`output_asio.rs`,
+# docs/asio.md). MIT/Apache; the helper itself is a GPL program Fontelle
+# only ever starts, never links.
+fontelle-audio-ipc = { path = "../fontelle-audio-ipc" }
 
 # Linux only: the PipeWire ALSA plugin is opened directly for capture — see
 # `pipewire.rs`. Every other platform captures through `cpal` alone.
@@ -38,6 +42,24 @@ libc = "0.2.189"
 # (a client in Rust; PipeWire answers it as pipewire-pulse). cpal's own
 # PipeWire host needs libpipewire's headers to build and is left out.
 cpal = { version = "0.18.2", features = ["jack", "pulseaudio"] }
+
+# Fontelle's own WASAPI modes (`wasapi.rs`): exclusive, and IAudioClient3's
+# low-latency shared mode, neither of which cpal offers. Already in the tree
+# under cpal, at this version.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Win32_Devices_Properties",
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
 
 [dev-dependencies]
 fontelle-assets = { path = "../fontelle-assets" }

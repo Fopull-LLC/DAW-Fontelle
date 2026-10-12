@@ -41,6 +41,8 @@ fn view() -> TransportView {
         reduction_db: 0.0,
         armed: false,
         metronome: false,
+        audio_load: None,
+        audio_dropouts: 0,
     }
 }
 

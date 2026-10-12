@@ -29,6 +29,8 @@ fn view() -> TransportView {
         loop_range_samples: (0, 0),
         peaks: [0.0, 0.0],
         reduction_db: 0.0,
+        audio_load: None,
+        audio_dropouts: 0,
         armed: false,
         metronome: false,
     }

@@ -54,7 +54,7 @@ fn the_song_carries_on_through_a_change_of_device_and_a_missing_one_falls_back()
             return;
         }
     };
-    let status = output.status().cloned().expect("open");
+    let status = output.status().expect("open");
     let why = status
         .fell_back
         .clone()

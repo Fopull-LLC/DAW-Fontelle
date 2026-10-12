@@ -503,6 +503,76 @@ fn the_meter_fills_with_the_level_it_is_given() {
     );
 }
 
+/// Windows users' clicks are of two kinds, and the bar says which is
+/// happening without a trip to Settings: a strip under the meter for how
+/// much of each buffer rendering takes, and a mark once buffers were lost.
+#[test]
+fn the_meter_shows_how_busy_the_audio_is_and_that_buffers_were_lost() {
+    use fontelle_ui::transport::{dropout_mark, load_strip};
+    let half = TransportView {
+        audio_load: Some(0.5),
+        ..live_view()
+    };
+    let dropped = TransportView {
+        audio_load: Some(0.1),
+        audio_dropouts: 3,
+        ..live_view()
+    };
+    let (Some(unknown), Some(half), Some(dropped)) = (
+        shoot_with(Theme::dark_default(), live_view(), [Meter::new(); 2]),
+        shoot_with(Theme::dark_default(), half, [Meter::new(); 2]),
+        shoot_with(Theme::dark_default(), dropped, [Meter::new(); 2]),
+    ) else {
+        return;
+    };
+    let strip = load_strip(half.bar.meter);
+    assert!(strip.width > 40.0 && strip.height >= 2.0, "{strip:?}");
+    assert!(half.bar.meter.contains(strip.x + 1.0, strip.y + 1.0));
+    let y = (strip.y + strip.height / 2.0) as u32;
+    let lit = |shot: &Shot, from: f32, to: f32| {
+        (from.ceil() as u32..to.floor() as u32)
+            .filter(|&px| {
+                let c = shot.at(px, y);
+                near(c, shot.theme.palette.meter) || near(c, shot.theme.palette.meter_peak)
+            })
+            .count()
+    };
+    let quarter = strip.width / 4.0;
+    assert_eq!(
+        lit(&unknown, strip.x, strip.right()),
+        0,
+        "no load known, no strip"
+    );
+    assert!(
+        lit(&half, strip.x + 1.0, strip.x + quarter) as f32 >= quarter - 3.0,
+        "half the strip is lit"
+    );
+    assert_eq!(
+        lit(&half, strip.right() - quarter, strip.right() - 1.0),
+        0,
+        "and not the far end"
+    );
+
+    let mark = dropout_mark(dropped.bar.meter);
+    assert!(
+        dropped.bar.meter.contains(mark.x + 1.0, mark.y + 1.0),
+        "{mark:?}"
+    );
+    let (mx, my) = (
+        (mark.x + mark.width / 2.0) as u32,
+        (mark.y + mark.height / 2.0) as u32,
+    );
+    assert!(
+        near(dropped.at(mx, my), dropped.theme.palette.meter_peak),
+        "lost buffers are marked: {:?}",
+        dropped.at(mx, my)
+    );
+    assert!(
+        !near(half.at(mx, my), half.theme.palette.meter_peak),
+        "and only then"
+    );
+}
+
 // ------------------------------------------------------ the piano roll -----
 
 fn note(start: Tick, length: Tick, key: u8) -> Note {

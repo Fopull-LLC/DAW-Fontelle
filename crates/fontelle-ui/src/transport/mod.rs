@@ -81,6 +81,14 @@ pub struct TransportView {
     pub peaks: [f32; 2],
     /// How hard the master limiter worked, in positive decibels.
     pub reduction_db: f32,
+    /// How much of each audio buffer rendering takes, smoothed (1.0 is all
+    /// of it); `None` when the output says nothing. Drawn as a strip under
+    /// the meter ([`load_strip`]).
+    pub audio_load: Option<f32>,
+    /// Buffers lost since the count was last cleared (Settings → Audio
+    /// output → Dropouts), the device's and Fontelle's together. Any at all
+    /// is a mark beside the strip ([`dropout_mark`]).
+    pub audio_dropouts: u64,
 }
 
 impl TransportView {
@@ -100,6 +108,8 @@ impl TransportView {
             loop_range_samples: (0, 0),
             peaks: [0.0; 2],
             reduction_db: 0.0,
+            audio_load: None,
+            audio_dropouts: 0,
         }
     }
 
@@ -1002,4 +1012,18 @@ pub fn count_in_samples(samples_per_beat: Sample, beats: u32) -> Sample {
     let longest = LONGEST_COUNT_IN_SECONDS * ASSUMED_RATE;
     let allowed = (longest / samples_per_beat).clamp(1, i64::from(beats));
     samples_per_beat.saturating_mul(allowed)
+}
+
+/// Where the audio load strip goes: under the meter's two lanes, in the
+/// margin the meter leaves below them.
+pub fn load_strip(meter: Rect) -> Rect {
+    // The same box `draw_meter` puts the lanes in.
+    let lanes = meter.inset(meter.height * 0.25);
+    Rect::new(lanes.x, lanes.bottom() + 2.0, lanes.width, 2.0).clamped()
+}
+
+/// Where the lost-buffers mark goes: just past the strip's end.
+pub fn dropout_mark(meter: Rect) -> Rect {
+    let strip = load_strip(meter);
+    Rect::new(strip.right() + 2.0, strip.y - 1.0, 4.0, 4.0).clamped()
 }

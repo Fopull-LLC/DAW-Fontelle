@@ -58,7 +58,7 @@ pub use realise::{
     apply_send_controls, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,
     realise_previewing, realise_reusing, realise_with, set_channel_patch,
 };
-pub use session::Session;
+pub use session::{Session, dropout_words};
 pub use window::EngineHost;
 
 /// Why `--play-sf2` couldn't produce a usable path.

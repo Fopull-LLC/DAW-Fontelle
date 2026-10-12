@@ -537,6 +537,38 @@ pub fn buffer_label(frames: Option<u32>) -> String {
     }
 }
 
+/// [`buffer_label`] for the backend `host`: each of Fontelle's own says
+/// what its Automatic is — ASIO's is the driver's own size, set in its
+/// control panel, which is what a person with an interface expects.
+pub fn buffer_label_for(host: Option<&str>, frames: Option<u32>) -> String {
+    let automatic = |frames: u32| {
+        format!(
+            "Automatic ({frames} frames, {})",
+            fontelle_engine::latency_label(frames, crate::SAMPLE_RATE)
+        )
+    };
+    match (host, frames) {
+        (Some(fontelle_engine::ASIO_HELPER_HOST), None) => {
+            "The driver's own (set in its control panel)".to_string()
+        }
+        (Some(fontelle_engine::WASAPI_LOW_LATENCY_HOST), None) => {
+            automatic(fontelle_engine::LOW_LATENCY_AUTOMATIC)
+        }
+        (Some(fontelle_engine::WASAPI_EXCLUSIVE_HOST), None) => {
+            automatic(fontelle_engine::EXCLUSIVE_AUTOMATIC)
+        }
+        _ => buffer_label(frames),
+    }
+}
+
+/// The backend row's help line. Where ASIO can be chosen, Steinberg's mark
+/// is named as theirs (their usage guidelines, §15).
+const BACKEND_HELP: &str = if cfg!(windows) {
+    "How the studio plays. ASIO is a registered trademark of Steinberg Media Technologies GmbH"
+} else {
+    "The audio system the studio plays through"
+};
+
 /// Which shape a velocity is read through — the file's spelling of
 /// [`fontelle_midi::VelocityCurve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -620,9 +652,15 @@ pub enum SettingRow {
     SampleRate,
     /// What is open now, as the engine says it. A button: open it again.
     OutputNow,
-    /// Dropouts the backend reported since the output opened. A button:
-    /// start the count again.
+    /// Dropouts since the output opened, by whose they were: the device's
+    /// or Fontelle's (late). A button: start the count again.
     Dropouts,
+    /// How much of each buffer rendering takes, and the worst recent one.
+    /// Nothing to press; the value says it.
+    AudioLoad,
+    /// The ASIO driver's own control panel. A button; listed only while ASIO
+    /// is the backend chosen.
+    DriverPanel,
     /// A section title. Nothing to set, and a click does nothing — it is what
     /// says which of these settings belong together. It is deliberately *not*
     /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
@@ -708,7 +746,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 52] = [
+pub const SETTING_ROWS: [SettingRow; 53] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -717,6 +755,7 @@ pub const SETTING_ROWS: [SettingRow; 52] = [
     SettingRow::SampleRate,
     SettingRow::OutputNow,
     SettingRow::Dropouts,
+    SettingRow::AudioLoad,
     SettingRow::Heading("MIDI input"),
     SettingRow::VelocityCurve,
     SettingRow::FixedVelocity,
@@ -808,6 +847,13 @@ pub fn setting_rows_with(
     let mut rows = Vec::with_capacity(SETTING_ROWS.len() + settings.plugin_dirs.len());
     for row in SETTING_ROWS {
         rows.push(row);
+        // The driver's own panel is ASIO's: where its buffer, its rate and
+        // its inputs are set.
+        if row == SettingRow::AudioDevice
+            && settings.audio_output.host.as_deref() == Some(fontelle_engine::ASIO_HELPER_HOST)
+        {
+            rows.push(SettingRow::DriverPanel);
+        }
         if let SettingRow::Backdrop(panel) = row
             && has_picture(panel)
         {
@@ -934,6 +980,8 @@ impl SettingRow {
             Self::SampleRate => "Sample rate",
             Self::OutputNow => "Playing through",
             Self::Dropouts => "Dropouts",
+            Self::AudioLoad => "Processing load",
+            Self::DriverPanel => "Driver settings",
             Self::VelocityCurve => "Velocity curve",
             Self::FixedVelocity => "Fixed velocity",
             Self::VelocityMin => "Velocity min",
@@ -1028,11 +1076,17 @@ impl SettingRow {
                 .device
                 .clone()
                 .unwrap_or_else(|| "System default".to_string()),
-            Self::AudioBuffer => buffer_label(settings.audio_output.buffer_frames),
+            Self::AudioBuffer => buffer_label_for(
+                settings.audio_output.host.as_deref(),
+                settings.audio_output.buffer_frames,
+            ),
             Self::SampleRate => format!("{} kHz", crate::SAMPLE_RATE / 1000),
             // The session's, which holds the output.
             Self::OutputNow => "Not open".to_string(),
             Self::Dropouts => "None".to_string(),
+            // The output's, which the session holds.
+            Self::AudioLoad => "Not open".to_string(),
+            Self::DriverPanel => "The driver's own window".to_string(),
             Self::VelocityCurve => midi.velocity_curve.label().to_string(),
             Self::FixedVelocity => midi.fixed_velocity.to_string(),
             Self::VelocityMin => midi.velocity_min.to_string(),
@@ -1167,6 +1221,7 @@ impl SettingRow {
             Self::ImportTheme => "Import\u{2026}",
             Self::OutputNow => "Restart",
             Self::Dropouts => "Reset",
+            Self::DriverPanel => "Open",
             // "Remove" when one is set; the session knows, and says so.
             Self::Backdrop(_) => "Choose\u{2026}",
             Self::SaveTheme => "Save\u{2026}",
@@ -1192,7 +1247,7 @@ impl SettingRow {
     pub fn help(self) -> &'static str {
         match self {
             Self::Heading(_) => "",
-            Self::AudioBackend => "The audio system the studio plays through",
+            Self::AudioBackend => BACKEND_HELP,
             Self::AudioDevice => {
                 "Which output plays the studio; System default follows your desktop"
             }
@@ -1204,7 +1259,13 @@ impl SettingRow {
             }
             Self::OutputNow => "What is open now; Restart opens it again",
             Self::Dropouts => {
-                "Times the sound card ran dry since the output opened; a larger buffer helps"
+                "From the device: try another backend; late ones are Fontelle's: a larger buffer helps"
+            }
+            Self::AudioLoad => {
+                "How much of each buffer the studio takes to make; near 100% it clicks"
+            }
+            Self::DriverPanel => {
+                "The ASIO driver's own settings: its buffer size, sample rate and inputs"
             }
             Self::VelocityCurve => "How hard you play maps to how loud a note is",
             Self::FixedVelocity => "Every note at this velocity, with the Fixed curve",
@@ -1278,6 +1339,8 @@ impl SettingRow {
             | Self::SampleRate
             | Self::OutputNow
             | Self::Dropouts
+            | Self::AudioLoad
+            | Self::DriverPanel
             | Self::Folder(_)
             | Self::PresetFolder
             | Self::PluginFolder
@@ -1381,7 +1444,11 @@ impl SettingRow {
             Self::AudioBackend | Self::AudioDevice | Self::AudioBuffer => {
                 SettingControlKind::Choice
             }
-            Self::SampleRate | Self::OutputNow | Self::Dropouts => SettingControlKind::Button,
+            Self::SampleRate
+            | Self::OutputNow
+            | Self::Dropouts
+            | Self::AudioLoad
+            | Self::DriverPanel => SettingControlKind::Button,
             Self::VelocityCurve
             | Self::ChannelFilter
             | Self::SongRouting
@@ -1630,7 +1697,7 @@ impl SettingRow {
                 "not found",
             )),
             Self::AudioBuffer => {
-                let mut options = vec![buffer_label(None)];
+                let mut options = vec![buffer_label_for(output.host.as_deref(), None)];
                 options.extend(OUTPUT_BUFFER_SIZES.iter().map(|f| buffer_label(Some(*f))));
                 let at = match output.buffer_frames {
                     None => 0,

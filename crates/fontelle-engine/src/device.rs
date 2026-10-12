@@ -422,7 +422,6 @@ impl AudioDevice {
         )?;
         let status = output
             .status()
-            .cloned()
             .ok_or_else(|| DeviceError("the output did not open".into()))?;
         self.output = Some(output);
         Ok(status)

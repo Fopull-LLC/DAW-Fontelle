@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use fontelle_engine::{MasterMeter, Metronome, Transport, TransportState};
+use fontelle_engine::{MasterMeter, Metronome, OutputStats, Transport, TransportState};
 use fontelle_model::TempoMap;
 use fontelle_types::PPQN;
 use fontelle_ui::{TransportHost, TransportView};
@@ -33,6 +33,9 @@ pub struct EngineHost {
     sample_rate: u32,
     /// The click's switch, shared with the graph that is playing.
     metronome: Option<Arc<Metronome>>,
+    /// The output's counts, for the load strip and the dropout mark under
+    /// the meter. The same `Arc` across a change of device.
+    output_stats: Option<Arc<OutputStats>>,
     /// Armed: the next press of play records rather than plays.
     ///
     /// **Window state, not the transport's.** `TransportState` has three
@@ -58,6 +61,7 @@ impl EngineHost {
             length_samples,
             sample_rate,
             metronome: None,
+            output_stats: None,
             armed: false,
         }
     }
@@ -66,6 +70,13 @@ impl EngineHost {
     /// drawn and does nothing, which is why the window asks for it.
     pub fn with_metronome(mut self, metronome: Arc<Metronome>) -> Self {
         self.metronome = Some(metronome);
+        self
+    }
+
+    /// Gives the host the output's counts, which the bar shows under the
+    /// meter: how busy the audio thread is, and whether buffers were lost.
+    pub fn with_output_stats(mut self, stats: Arc<OutputStats>) -> Self {
+        self.output_stats = Some(stats);
         self
     }
 }
@@ -97,6 +108,8 @@ impl TransportHost for EngineHost {
                 peaks.get(1).copied().unwrap_or(0.0),
             ],
             reduction_db: self.master.take_max_reduction_db(),
+            audio_load: self.output_stats.as_ref().map(|s| s.health().load),
+            audio_dropouts: self.output_stats.as_ref().map_or(0, |s| s.xruns()),
         }
     }
 
