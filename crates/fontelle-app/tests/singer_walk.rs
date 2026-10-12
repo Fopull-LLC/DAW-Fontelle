@@ -114,6 +114,18 @@ fn pump_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool
     started.elapsed()
 }
 
+/// This process's resident memory, MB (0 where it cannot be read).
+fn resident_mb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse::<f64>().ok())
+        })
+        .map_or(0.0, |kb| kb / 1024.0)
+}
+
 fn heard(state: VocalRenderState) -> bool {
     matches!(state, VocalRenderState::Preview | VocalRenderState::Final)
 }
@@ -462,6 +474,10 @@ fn a_long_song_stays_responsive_and_reopens_sung() {
     });
     let total = started.elapsed();
     DocumentHost::save(&mut session).unwrap();
+    // The first studio is closed: what the reopened one holds is its own.
+    drop(session);
+    std::thread::sleep(Duration::from_millis(500));
+    let rss_closed = resident_mb();
 
     // Reopened: a new studio on the saved song plays from the disk.
     let project = fontelle_app::open_project(&bundle).unwrap().project;
@@ -476,15 +492,43 @@ fn a_long_song_stays_responsive_and_reopens_sung() {
         let st = states(s);
         !st.is_empty() && st.iter().all(|x| *x == VocalRenderState::Final)
     });
+    // The window idles over the reopened song: what it holds then.
+    let idle = Instant::now();
+    while idle.elapsed() < Duration::from_secs(8) {
+        reopened.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let rss_idle = resident_mb();
+    // The first edit after reopening, heard.
+    let before = states(&reopened);
+    let phrase_ids: Vec<NoteId> = reopened
+        .notes()
+        .iter()
+        .filter(|(_, n)| !n.lyric.is_empty())
+        .map(|(id, _)| id)
+        .collect();
+    reopened.edit(RollEdit::Move {
+        ids: vec![phrase_ids[0]],
+        tick_delta: 0,
+        key_delta: 1,
+    });
+    reopened.end_gesture();
+    let first_edit = pump_until(&mut reopened, "first edit after reopening", |s| {
+        let st = states(s);
+        st.len() == before.len() && st.iter().all(|x| heard(*x))
+    });
     println!(
         "{folder}: 40 phrases previewed in {:.1} s ({finals_left} finals left); \
          an edit heard in {:.0} ms while finals render; a storm of 20 edits settled \
-         in {:.1} s; all final after {:.1} s; reopened all final in {:.0} ms",
+         in {:.1} s; all final after {:.1} s; reopened all final in {:.0} ms; \
+         resident {rss_closed:.0} MB closed, {rss_idle:.0} MB reopened and idle; \
+         first edit after reopening heard in {:.0} ms",
         previews.as_secs_f64(),
         edit_heard.as_secs_f64() * 1000.0,
         settled.as_secs_f64(),
         total.as_secs_f64(),
         reopen.as_secs_f64() * 1000.0,
+        first_edit.as_secs_f64() * 1000.0,
     );
 }
 

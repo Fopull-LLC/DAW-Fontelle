@@ -355,6 +355,28 @@ impl VocalRenderer {
         self.shared.wake.notify_all();
     }
 
+    /// [`warm`](Self::warm), unless every one of `wanted` (the voice's
+    /// phrases) has its final take already, in memory or on disk: a song
+    /// reopened plays from its takes, and a DiffSinger bank's models
+    /// (hundreds of megabytes) are not loaded until a phrase needs singing
+    /// — the first edit warms it. A voice with no phrase yet is warmed (a
+    /// singer just chosen, notes about to be written).
+    pub fn warm_unless_sung(&mut self, backend: Arc<dyn Backend>, voice: &str, wanted: &[&Wanted]) {
+        let id = format!("{}\u{1f}{}\u{1f}{voice}", backend.name(), backend.version());
+        if self.warmed.contains(&id) {
+            return;
+        }
+        let store = self.shared.queue.lock().ok().and_then(|q| q.store.clone());
+        let sung = |w: &&Wanted| {
+            let fin = w.key(Quality::Final);
+            self.cache.contains_key(&fin.hash) || store.as_ref().is_some_and(|s| s.has(fin))
+        };
+        if !wanted.is_empty() && wanted.iter().all(sung) {
+            return;
+        }
+        self.warm(backend, voice);
+    }
+
     /// Forgets which phrases could not be sung: something they needed may
     /// have arrived (a voicebank or a vocoder installed), so the next
     /// [`want`](Self::want) tries them again.

@@ -731,22 +731,29 @@ impl VocalSession {
         // Each built-in voice on a track is warmed — loaded, its level
         // found — while the first notes are written (an engine's are not:
         // what an engine does at its first phrase is its own business).
-        let warm: Vec<(Arc<dyn fontelle_sing::Backend>, String)> = project
+        // A reopened song whose takes are all on disk loads nothing until
+        // a phrase needs singing (`warm_unless_sung`).
+        let warm: Vec<(ChannelId, Arc<dyn fontelle_sing::Backend>, String)> = project
             .channels
             .iter()
             .filter(|(id, _)| is_vocal(project, *id) && !project.is_frozen(*id))
-            .filter_map(|(_, c)| c.vocal.as_ref())
-            .filter(|v| !v.singer.is_empty() && SingerRegistry::is_builtin_key(&v.engine))
-            .filter_map(|v| {
+            .filter_map(|(id, c)| Some((id, c.vocal.as_ref()?)))
+            .filter(|(_, v)| !v.singer.is_empty() && SingerRegistry::is_builtin_key(&v.engine))
+            .filter_map(|(id, v)| {
                 let backend = self.registry().backend(&v.engine)?;
-                Some((backend, v.singer.clone()))
+                Some((id, backend, v.singer.clone()))
             })
             .collect();
         if !warm.is_empty()
             && let Ok(mut r) = self.renderer().lock()
         {
-            for (backend, voice) in warm {
-                r.warm(backend, &voice);
+            for (id, backend, voice) in warm {
+                let wanted: Vec<&Wanted> = self
+                    .parts
+                    .get(&id)
+                    .map(|p| p.wanted.iter().flatten().collect())
+                    .unwrap_or_default();
+                r.warm_unless_sung(backend, &voice, &wanted);
             }
         }
         let all: Vec<Wanted> = self

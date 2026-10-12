@@ -772,3 +772,167 @@ fn an_edit_is_heard_soon_after_it_is_made() {
         "best {best:?}"
     );
 }
+
+/// Everything a reopen test's singer was asked to sing.
+static REOPEN_HEARD: std::sync::Mutex<Vec<Phrase>> = std::sync::Mutex::new(Vec::new());
+/// How many sessions (a voicebank's models, for a DiffSinger bank) it made.
+static REOPEN_SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct Recorder;
+
+impl Backend for Recorder {
+    fn name(&self) -> &str {
+        "Hummer"
+    }
+    fn version(&self) -> String {
+        "1".into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        Hummer.voices()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn SingSession>, String> {
+        REOPEN_SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Box::new(Recording))
+    }
+}
+
+struct Recording;
+
+impl SingSession for Recording {
+    fn sing(
+        &mut self,
+        phrase: &Phrase,
+        quality: Quality,
+        seed: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Sung, SingError> {
+        REOPEN_HEARD.lock().unwrap().push(phrase.clone());
+        Hum.sing(phrase, quality, seed, cancelled)
+    }
+}
+
+fn recording_session(project: Project, bundle: &Path) -> Session {
+    let mut session = common::a_session_in(project, Some(bundle.to_path_buf()));
+    session.set_singer_folders(Vec::new());
+    session.set_voicebanks(
+        bundle.with_file_name("voicebanks"),
+        vec![BuiltinBackend {
+            key: "fontelle-utau",
+            kind: SingerKind::Utau,
+            make: |_| Arc::new(Recorder),
+        }],
+    );
+    session
+}
+
+fn all_final(session: &Session) -> bool {
+    session.vocal_view().is_some_and(|v| {
+        !v.phrases.is_empty()
+            && v.phrases
+                .iter()
+                .all(|p| p.state == fontelle_ui::document::VocalRenderState::Final)
+    })
+}
+
+fn pump_while(session: &mut Session, what: &str, until: impl Fn(&Session) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !until(session) {
+        assert!(std::time::Instant::now() < deadline, "{what}: never");
+        session.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A song reopened with every take on disk plays from the disk and loads
+/// no singer: warming a DiffSinger bank loaded hundreds of megabytes of
+/// models that nothing needed until an edit. The first edit warms it.
+#[test]
+fn a_reopened_song_sung_already_loads_no_singer_until_an_edit() {
+    let dir = scratch("reopen-cold");
+    let bundle = dir.join("Song.fontelle");
+    fontelle_app::save_project(&common::a_clip_project(4), &bundle).unwrap();
+    let mut session = recording_session(common::a_clip_project(4), &bundle);
+    session.add_singer_channel(None).unwrap();
+    let vocal = (0..session.channels().len())
+        .rev()
+        .find(|i| session.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    session.select_channel(vocal);
+    let mut ids = Vec::new();
+    for (beat, key) in [(0, 60), (1, 62), (4, 64)] {
+        ids.push(
+            session.edit(fontelle_ui::canvas::RollEdit::Add {
+                note: fontelle_model::Note {
+                    start: beat * PPQN,
+                    length: PPQN,
+                    key,
+                    velocity: 100,
+                    pan: 0,
+                    fine_pitch: 0,
+                    release: 0,
+                    mod_x: 0,
+                    mod_y: 0,
+                    slide: false,
+                    path: Vec::new(),
+                    channel: None,
+                    lyric: "a".into(),
+                    voice: None,
+                },
+            })[0],
+        );
+    }
+    session.end_gesture();
+    pump_while(&mut session, "sung", all_final);
+    DocumentHost::save(&mut session).unwrap();
+    drop(session);
+
+    REOPEN_HEARD.lock().unwrap().clear();
+    REOPEN_SESSIONS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let project = fontelle_app::open_project(&bundle).unwrap().project;
+    let mut reopened = recording_session(project, &bundle);
+    let vocal = (0..reopened.channels().len())
+        .rev()
+        .find(|i| reopened.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    reopened.select_channel(vocal);
+    pump_while(&mut reopened, "reopened from the disk", all_final);
+    // A while longer, as the window idles: still nothing loaded.
+    let idle = std::time::Instant::now();
+    while idle.elapsed() < std::time::Duration::from_millis(300) {
+        reopened.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        REOPEN_HEARD.lock().unwrap().is_empty(),
+        "sung on reopen: {:?}",
+        REOPEN_HEARD.lock().unwrap().len()
+    );
+    assert_eq!(
+        REOPEN_SESSIONS.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a session (the models) was opened on reopen"
+    );
+
+    // The first edit warms the voice and sings the phrase edited.
+    reopened.edit(fontelle_ui::canvas::RollEdit::Move {
+        ids: vec![ids[2]],
+        tick_delta: 0,
+        key_delta: 2,
+    });
+    reopened.end_gesture();
+    pump_while(&mut reopened, "the edit sung", all_final);
+    let reference = fontelle_vocal::reference_phrase(&Hummer.voices()[0]);
+    pump_while(&mut reopened, "warmed on the edit", |_| {
+        REOPEN_HEARD.lock().unwrap().contains(&reference)
+    });
+    let heard = REOPEN_HEARD.lock().unwrap();
+    assert!(
+        heard
+            .iter()
+            .any(|p| p.notes.iter().any(|n| n.pitch == 66.0)),
+        "the edited phrase was sung"
+    );
+}
