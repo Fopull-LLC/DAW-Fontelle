@@ -732,6 +732,16 @@ impl AudioOutput {
         }
     }
 
+    /// Something the backend said while it plays on that a person should
+    /// read — the ASIO helper's error about a control panel the driver does
+    /// not have. Each once.
+    pub fn take_note(&self) -> Option<String> {
+        match &self.stream {
+            Some(Stream::Asio(asio)) => asio.take_note(),
+            _ => None,
+        }
+    }
+
     /// The ASIO helper's process, while one plays.
     pub fn helper_pid(&self) -> Option<u32> {
         match &self.stream {

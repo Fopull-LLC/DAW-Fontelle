@@ -98,6 +98,29 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
 
+  # The ASIO helper on the platform it is for: built as it is released, and
+  # every test that needs no ASIO driver — the protocol, the conversions,
+  # the real program against its test clock, and Fontelle playing through it
+  # (docs/asio.md). There is no ASIO driver on a CI runner; what one does is
+  # Ty's checklist in docs/asio.md.
+  asio-helper:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: asio-helper
+      - run: cargo build --release --locked -p fontelle-asio-host
+      - name: The program says its protocol
+        shell: pwsh
+        run: |
+          $said = & target/release/fontelle-asio.exe --version
+          if ($said -ne "fontelle-asio`t1") { throw "said: $said" }
+          & target/release/fontelle-asio.exe list
+      - run: cargo test --locked -p fontelle-audio-ipc -p fontelle-asio-host
+      - run: cargo test --locked -p fontelle-engine --test output_asio_helper --test output_health --test device_format
+
   benches:
     runs-on: ubuntu-latest
     steps:

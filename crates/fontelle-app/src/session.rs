@@ -3925,6 +3925,10 @@ impl Session {
             self.message = Some(said);
             return;
         }
+        if let Some(note) = output.take_note() {
+            self.settings_toast = Some((note, false));
+            self.touch();
+        }
         let health = stats.health();
         let (device, late, at) = self.audio_logged;
         if (health.device_xruns, health.late) != (device, late)

@@ -111,7 +111,7 @@ fn kill(pid: u32) {
     let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
-fn until(within: Duration, what: impl Fn() -> bool) -> bool {
+fn until(within: Duration, mut what: impl FnMut() -> bool) -> bool {
     let end = Instant::now() + within;
     while Instant::now() < end {
         if what() {
@@ -180,8 +180,6 @@ fn fontelle_plays_through_the_asio_helper_and_carries_on_when_it_goes() {
             .is_some()),
         "the helper's handoff is read back"
     );
-    // The driver's own panel goes through the running helper.
-    assert_eq!(output.open_driver_panel(), Ok(()));
 
     // The driver resets and comes back with another buffer: the stream
     // carries on and the status says the new size.
@@ -208,6 +206,22 @@ fn fontelle_plays_through_the_asio_helper_and_carries_on_when_it_goes() {
     remove_env("FONTELLE_ASIO_TEST_CLOCK_RESET_FRAMES");
     assert!(!output.stats().lost(), "a reset is not a loss");
 
+    // The driver's own panel, asked for through the running helper: the
+    // test clock has none, and says so — once, as a note, while it plays on.
+    assert_eq!(output.open_driver_panel(), Ok(()));
+    let mut note = None;
+    assert!(
+        until(Duration::from_secs(3), || {
+            note = note.take().or_else(|| output.take_note());
+            note.is_some()
+        }),
+        "the helper's word about the panel reaches the window"
+    );
+    let note = note.unwrap();
+    assert!(note.contains("no control panel"), "{note}");
+    assert_eq!(output.take_note(), None, "said once");
+    assert!(!output.stats().lost(), "and it plays on");
+
     // The helper dies: noticed, said, and the next open does not go back
     // to it on its own.
     let pid = output.helper_pid().unwrap();
@@ -218,6 +232,10 @@ fn fontelle_plays_through_the_asio_helper_and_carries_on_when_it_goes() {
     );
     let why = output.loss_reason().expect("a reason");
     assert!(why.contains("fontelle-asio"), "{why}");
+    assert!(
+        why.contains("unexpectedly") && !why.contains("panel"),
+        "a crash is not blamed on the panel the driver lacked: {why}"
+    );
     match output.reopen_after_loss(&choice) {
         Ok(status) => {
             assert_ne!(status.host, ASIO_HELPER_HOST, "{status:?}");

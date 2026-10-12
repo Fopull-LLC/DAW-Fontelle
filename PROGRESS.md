@@ -19,6 +19,76 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-12, latest — ASIO on Windows through a separate GPLv3
+helper; WASAPI exclusive and low-latency; whose click it was.** Branch
+`feature/windows-audio` (from v0.26.3); not merged, not bumped, not run on
+real Windows yet — Ty's checklist is `docs/asio.md` §8. Users report
+clicky/crackly audio on Windows; Ty's call: ship ASIO under Steinberg's new
+GPLv3 option as a separate program, so Fontelle stays MIT/Apache and closed
+add-ons never load into a GPL process, and make plain Windows audio better.
+
+- **The licence** (`docs/asio.md` §1): ASIO SDK 2.3.4 (2025-10-15, sha256
+  `d5ebf0c2…`) is dual-licensed, "Steinberg ASIO License, or alternatively
+  … General Public License (GPL) Version 3" — so GPL-3.0-only. Only the
+  SDK's declarations are used, translated to Rust with Steinberg's notice;
+  no SDK file is compiled or fetched, so the Corresponding Source is this
+  repository at the tag (attached to each release as
+  `fontelle-asio-source-<v>.tar.gz`). Trademark: "ASIO®" at first use and
+  the attribution sentence; **no logo**, which Steinberg's guidelines would
+  want beside the backend list — a decision for Ty (§9).
+- **`fontelle-audio-ipc`** (MIT/Apache, new): the plain-data protocol, v1
+  — a 512-byte header and two slots each way of interleaved f32 in shared
+  memory, a per-buffer handshake with a deadline (75% of the buffer; late
+  is silence and counted, the driver never stalls), named auto-reset events
+  with a high-resolution timer on Windows, a futex on Linux; the helper's
+  text lines and command line; `GapDetector` and `LoadMeter`.
+- **`fontelle-asio-host` → `fontelle-asio.exe`** (GPL-3.0-only, new, own
+  `LICENSE`): finds drivers in `HKLM\SOFTWARE\ASIO`, loads one on a COM STA
+  main thread that pumps messages, sets the studio's rate (or refuses with
+  the rates it offers) and a buffer on the driver's steps, and per
+  `bufferSwitch` exchanges with Fontelle and converts to every ASIO sample
+  type. Handles reset requests (reopens, at the panel's new size), rate and
+  latency changes, overload/resync, a driver that stops calling, Fontelle
+  closing its end or vanishing (stdin, and its process on Windows). A test
+  clock (`FONTELLE_ASIO_TEST_CLOCK=1`, with knobs to skip, reset and stop)
+  stands in for a driver. `deny.toml` excepts this crate alone;
+  `tests/separate.rs` fails if anything depends on it.
+- **Fontelle's side**: three backends of its own on threads of their own,
+  all running `output::Renderer` (the old cpal closure body, extracted):
+  **ASIO® (via fontelle-asio helper)** (`output_asio.rs`; listed when the
+  helper is beside `fontelle.exe`; a helper that dies is said and the
+  default plays, not restarted on its own — `reopen_after_loss`), **WASAPI
+  (exclusive)** and **WASAPI (low latency)** (`wasapi.rs`, `windows` crate;
+  `IAudioClient3` at `low_latency_period`; `DeviceFormat` for integer
+  devices). `AudioOutput::status` is now owned and live (a driver's reset
+  shows its new buffer).
+- **Whose click** (`OutputStats`/`OutputHealth`): device dropouts apart
+  from Fontelle's late buffers, plus render load. Settings: *Dropouts* ("3
+  from the device, 1 late (Fontelle)"), *Processing load* ("12% (peak
+  40%), ASIO handoff 14 µs"), *Driver settings* (ASIO only); Automatic says
+  what it is per backend. Transport bar: a load strip under the meter and a
+  red mark once buffers were lost. The one-off message names the cure for
+  whichever it is; the session log gets a line as counts move.
+- **Packaging**: the Windows zip carries `fontelle-asio.exe`,
+  `fontelle-asio-README.txt`, `licenses/fontelle-asio/`; the release attaches
+  the helper's source; the updater carries the helper and its licences
+  along. CI: an `asio-helper` job on `windows-latest`.
+- **Measured** handoff (helper's own measure, release, 256 frames): 12 µs
+  median across two processes on Linux, 14 µs for the Windows build under
+  Wine; worst cases 70–410 µs on a loaded box at ordinary priority. Real
+  Windows: Settings shows it.
+- Tests (written first and seen failing, except where noted): ipc
+  `layout` (4), `handshake` (5), `diagnostics` (5), `control` (5), `os`
+  (3); helper `convert` (4), `sizes` (5), `process` (9, the real program
+  across processes), `separate` (3, written after); engine `output_health`
+  (4; `low_latency_period`'s test after its code), `device_format` (2),
+  `output_asio_helper` (1, end to end with the allocation guard, a reset,
+  a kill and the fallback); app `audio_output_settings` (+5; `dropout_words`
+  after), `updates` (+1), `input_settings` (AudioLoad joins the
+  no-caption rows); ui `render_headless` (+1, looked at). The ipc and helper
+  suites and the engine's helper test also pass as Windows builds under
+  Wine (headless, audio drivers off).
+
 **As of 2026-10-11, latest — the brush stays on its row and comes to the
 arrangement; a click on a clip means the instrument playing in it; the
 window fills a scaled display; no more triangle notes.** Branch

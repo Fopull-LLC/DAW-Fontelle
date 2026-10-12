@@ -152,8 +152,12 @@ pub fn open_asio_panel(driver: &str) -> Result<(), String> {
 struct View {
     /// Why the helper went, when it went on its own.
     gone: Option<String>,
-    /// Its last error line.
+    /// Its last error line. Only a reason it went if a `bye` followed: the
+    /// helper says an error and carries on for one that is not fatal (a
+    /// driver with no control panel).
     last_error: Option<String>,
+    /// An error the window has not said yet, while the helper plays on.
+    note: Option<String>,
 }
 
 /// A stream through the helper.
@@ -197,6 +201,11 @@ impl AsioStream {
         self.silent
             .load(Ordering::Relaxed)
             .then(|| "fontelle-asio stopped answering".to_string())
+    }
+
+    /// What the helper said that the window has not yet, while it plays on.
+    pub(crate) fn take_note(&self) -> Option<String> {
+        self.view.lock().ok()?.note.take()
     }
 
     pub(crate) fn open_panel(&self) -> Result<(), String> {
@@ -484,6 +493,7 @@ fn supervise(
                     let _ = first.send(Err(words.clone()));
                 }
                 if let Ok(mut view) = view.lock() {
+                    view.note = Some(words.clone());
                     view.last_error = Some(words);
                 }
             }
@@ -529,15 +539,17 @@ fn supervise(
     if stop.load(Ordering::Relaxed) {
         return;
     }
-    // Not asked to go: whatever it said last is why.
+    // Not asked to go. A helper that said goodbye said why (its error
+    // line, or the goodbye's own words); one that did not, crashed or was
+    // ended.
     let last_error = view.lock().ok().and_then(|v| v.last_error.clone());
-    let why = match (last_error, bye, code) {
-        (Some(error), _, _) => format!("fontelle-asio stopped: {error}"),
-        (None, Some(bye), _) => format!("fontelle-asio stopped: {bye}"),
-        (None, None, Some(code)) => {
+    let why = match (bye, last_error, code) {
+        (Some(_), Some(error), _) => format!("fontelle-asio stopped: {error}"),
+        (Some(bye), None, _) => format!("fontelle-asio stopped: {bye}"),
+        (None, _, Some(code)) => {
             format!("fontelle-asio stopped unexpectedly (exit code {code})")
         }
-        (None, None, None) => "fontelle-asio stopped unexpectedly".to_string(),
+        (None, _, None) => "fontelle-asio stopped unexpectedly".to_string(),
     };
     eprintln!("fontelle: {why}");
     if let Ok(mut view) = view.lock() {

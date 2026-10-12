@@ -97,6 +97,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked -p fontelle-app --target ${{ matrix.target }}
+      # The ASIO helper: a separate GPLv3 program (docs/asio.md), Windows
+      # only. Built from this same tag, so its source is this release's.
+      - name: Build the ASIO helper (windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked -p fontelle-asio-host --target ${{ matrix.target }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'
@@ -120,6 +125,14 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/fontelle.exe" "dist/$env:NAME/"
           Copy-Item LICENSE-MIT, LICENSE-APACHE, README.md "dist/$env:NAME/"
           Copy-Item -Recurse licenses "dist/$env:NAME/"
+          # The ASIO helper beside fontelle.exe, where Fontelle looks for it,
+          # with its GPLv3 licence, Steinberg's SDK terms and a word saying
+          # it is a separate program and where its source is. The updater
+          # carries all of it along (`updates.rs`, `install_asio_helper`).
+          Copy-Item "target/${{ matrix.target }}/release/fontelle-asio.exe" "dist/$env:NAME/"
+          Copy-Item packaging/windows/fontelle-asio-README.txt "dist/$env:NAME/"
+          New-Item -ItemType Directory -Force -Path "dist/$env:NAME/licenses/fontelle-asio" | Out-Null
+          Copy-Item crates/fontelle-asio-host/LICENSE, crates/fontelle-asio-host/STEINBERG-ASIO-SDK-LICENSE.txt "dist/$env:NAME/licenses/fontelle-asio/"
           Compress-Archive -Path "dist/$env:NAME" -DestinationPath "$env:NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -129,9 +142,32 @@ jobs:
             ${{ env.NAME }}.zip
           if-no-files-found: error
 
+  # The ASIO helper's source, attached to the release it was built in: the
+  # binary in the Windows zip is GPLv3, and its Corresponding Source is
+  # offered from the same place (GPLv3 §6(d)). The whole tree at this tag —
+  # the helper, the protocol crate, the workspace manifest and `Cargo.lock`
+  # that pins every dependency it was built with.
+  helper-source:
+    name: The ASIO helper's source
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git archive --format=tar.gz --prefix="fontelle-asio-source-$VERSION/" \
+            -o "fontelle-asio-source-$VERSION.tar.gz" HEAD
+          tar -tzf "fontelle-asio-source-$VERSION.tar.gz" | grep -q "crates/fontelle-asio-host/src/main.rs"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fontelle-asio-source-${{ needs.version.outputs.version }}
+          path: fontelle-asio-source-${{ needs.version.outputs.version }}.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish the release
-    needs: [version, ci, build]
+    needs: [version, ci, build, helper-source]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

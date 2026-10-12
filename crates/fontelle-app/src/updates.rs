@@ -452,7 +452,61 @@ fn unpack_and_swap(archive: &Path, exe: &Path, staging: &Path) -> Result<(), Str
     }
     // Gone where the platform allows it; `tidy` gets the rest next launch.
     std::fs::remove_file(&old).ok();
+    if let (Some(from), Some(to)) = (fresh.parent(), exe.parent()) {
+        install_asio_helper(from, to);
+    }
     Ok(())
+}
+
+/// The ASIO helper's program name, beside Fontelle's.
+fn helper_name() -> &'static str {
+    if cfg!(windows) {
+        "fontelle-asio.exe"
+    } else {
+        "fontelle-asio"
+    }
+}
+
+/// Brings `fontelle-asio`, the separate GPL program ASIO plays through, out
+/// of an unpacked release in `from` to beside Fontelle in `to`, with the word
+/// about it and its licences (docs/asio.md): without them ASIO would be gone
+/// after the first update, and GPLv3 asks that the licence travel with the
+/// program. Only the Windows download carries it; elsewhere this finds
+/// nothing and does nothing. Best effort: Fontelle itself is already
+/// updated, and a helper left at the old version still speaks the protocol
+/// or says it does not.
+fn install_asio_helper(from: &Path, to: &Path) {
+    let fresh = from.join(helper_name());
+    if !fresh.is_file() {
+        return;
+    }
+    let target = to.join(helper_name());
+    // Renamed aside first, as Fontelle is: a helper playing right now is a
+    // running program, which Windows will rename but not overwrite.
+    let old = target.with_extension("old");
+    std::fs::remove_file(&old).ok();
+    if target.exists() && std::fs::rename(&target, &old).is_err() {
+        return;
+    }
+    if std::fs::rename(&fresh, &target).is_err() {
+        std::fs::rename(&old, &target).ok();
+        return;
+    }
+    std::fs::remove_file(&old).ok();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+    let readme = "fontelle-asio-README.txt";
+    std::fs::copy(from.join(readme), to.join(readme)).ok();
+    let licences = Path::new("licenses").join("fontelle-asio");
+    if let Ok(entries) = std::fs::read_dir(from.join(&licences)) {
+        std::fs::create_dir_all(to.join(&licences)).ok();
+        for entry in entries.flatten() {
+            std::fs::copy(entry.path(), to.join(&licences).join(entry.file_name())).ok();
+        }
+    }
 }
 
 /// The binary inside an unpacked archive: at the top, or — as the release
@@ -492,6 +546,9 @@ pub fn launched_exe() -> Option<PathBuf> {
 /// Removes the previous binary an upgrade left beside `exe`, if one is there.
 pub fn tidy(exe: &Path) {
     std::fs::remove_file(exe.with_extension("old")).ok();
+    if let Some(dir) = exe.parent() {
+        std::fs::remove_file(dir.join(helper_name()).with_extension("old")).ok();
+    }
 }
 
 /// What the updater's network is: a URL in, the body out, and the bytes so

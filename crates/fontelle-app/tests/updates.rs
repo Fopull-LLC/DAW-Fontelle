@@ -696,3 +696,75 @@ fn the_binary_to_upgrade_is_the_one_launched_even_after_it_was_replaced() {
     assert_eq!(line("SECOND="), copy.display().to_string());
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The Windows download carries `fontelle-asio.exe`, the separate GPL
+/// program ASIO plays through, with its licence and a word about what it is
+/// (docs/asio.md). An upgrade brings all three: without the helper ASIO is
+/// gone after the first update, and GPLv3 asks that the licence go wherever
+/// the program does.
+#[test]
+fn the_asio_helper_and_its_licence_come_along_with_an_upgrade() {
+    let helper = if cfg!(windows) {
+        "fontelle-asio.exe"
+    } else {
+        "fontelle-asio"
+    };
+    let dir = scratch("helper");
+    let stem = "fontelle-9.9.9-x86_64-pc-windows-msvc";
+    let stage = dir.join("stage").join(stem);
+    std::fs::create_dir_all(stage.join("licenses/fontelle-asio")).unwrap();
+    std::fs::write(stage.join(BIN), "new build").unwrap();
+    std::fs::write(stage.join(helper), "new helper").unwrap();
+    std::fs::write(stage.join("fontelle-asio-README.txt"), "a separate program").unwrap();
+    std::fs::write(stage.join("licenses/fontelle-asio/LICENSE"), "GPLv3").unwrap();
+    std::fs::write(
+        stage.join("licenses/fontelle-asio/STEINBERG-ASIO-SDK-LICENSE.txt"),
+        "Steinberg",
+    )
+    .unwrap();
+    let archive = dir.join(format!("{stem}.tar.gz"));
+    let status = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir.join("stage"))
+        .arg(stem)
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let exe = bin.join(BIN);
+    std::fs::write(&exe, "old build").unwrap();
+    std::fs::write(bin.join(helper), "old helper").unwrap();
+
+    fontelle_app::updates::install(&archive, &exe).expect("installs");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new build");
+    assert_eq!(
+        std::fs::read_to_string(bin.join(helper)).unwrap(),
+        "new helper"
+    );
+    assert_eq!(
+        std::fs::read_to_string(bin.join("fontelle-asio-README.txt")).unwrap(),
+        "a separate program"
+    );
+    assert_eq!(
+        std::fs::read_to_string(bin.join("licenses/fontelle-asio/LICENSE")).unwrap(),
+        "GPLv3"
+    );
+    assert!(
+        bin.join("licenses/fontelle-asio/STEINBERG-ASIO-SDK-LICENSE.txt")
+            .is_file()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(bin.join(helper))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert!(mode & 0o111 != 0, "{mode:o}");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
