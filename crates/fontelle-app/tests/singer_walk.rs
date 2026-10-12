@@ -700,3 +700,143 @@ fn odd_libraries_say_what_is_wrong() {
         session.singer_panel().and_then(|p| p.message)
     );
 }
+
+/// How long the studio's own thread spends on an edit in a song of 300
+/// phrases (1,200 notes): the edit, the phrases worked out again, the view
+/// the roll draws.
+#[test]
+#[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
+fn an_edit_in_a_long_song_costs_the_studio_little() {
+    let Some((mut session, _)) = walk_session("cost", 400) else {
+        return;
+    };
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    let singer = session
+        .singers()
+        .into_iter()
+        .find(|s| s.folder.as_deref() == Some("KasaneTeto_tandoku_100619"))
+        .unwrap();
+    session.set_singer(
+        index,
+        Some(VocalVoice::new(&singer.engine, &singer.id, "ja")),
+    );
+    let mut notes = Vec::new();
+    for n in 0..1200 {
+        let phrase = n / 4;
+        let beat = f64::from(phrase * 5 + n % 4);
+        notes.push(fontelle_vocal_files::vocal_note(
+            (beat * PPQN as f64) as i64,
+            PPQN,
+            60 + (n % 5) as u8,
+            "ら",
+        ));
+    }
+    session.edit(RollEdit::Insert(notes));
+    session.end_gesture();
+    let ids: Vec<NoteId> = session.notes().iter().map(|(id, _)| id).collect();
+    let mut edits = Vec::new();
+    let mut views = Vec::new();
+    for k in 0..20 {
+        let t = Instant::now();
+        session.edit(RollEdit::Move {
+            ids: vec![ids[(k * 37) % ids.len()]],
+            tick_delta: 0,
+            key_delta: 1,
+        });
+        session.end_gesture();
+        session.pump();
+        edits.push(t.elapsed());
+        let t = Instant::now();
+        let view = session.vocal_view().unwrap();
+        views.push(t.elapsed());
+        assert_eq!(view.phrases.len(), 300);
+    }
+    edits.sort();
+    views.sort();
+    println!(
+        "300 phrases: an edit takes {:?} (median), {:?} (worst); the roll's view {:?} / {:?}",
+        edits[10], edits[19], views[10], views[19]
+    );
+}
+
+/// Lines as producers type them — hyphenated words, slurs, bracketed
+/// phonemes, more or fewer words than notes — on an English UTAU bank, an
+/// English DiffSinger bank and a Japanese bank: what each note gets and
+/// what it is sung as, printed.
+#[test]
+#[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
+fn typed_lines_land_on_notes_as_producers_expect() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "LIEE_English_ARPAsing",
+            "en",
+            &[
+                "a-ma-zing grace how sweet",
+                "oh - - yeah",
+                "[hh ah] lo",
+                "one two",
+                "one two three four five six seven eight nine ten",
+            ],
+        ),
+        (
+            "TIGER_DiffSinger_v106",
+            "en",
+            &["a-ma-zing grace how sweet", "oh - - yeah", "[hh ah] lo"],
+        ),
+        (
+            "KasaneTeto_tougou_110401",
+            "ja",
+            &["きらきらひかる", "さくら - さ", "[s a] く"],
+        ),
+    ];
+    for (folder, language, lines) in cases {
+        let Some((mut session, _)) = walk_session(&format!("lines-{folder}"), 8) else {
+            return;
+        };
+        session.add_singer_channel(None).unwrap();
+        let index = vocal_index(&session);
+        session.select_channel(index);
+        let singer = session
+            .singers()
+            .into_iter()
+            .find(|s| s.folder.as_deref() == Some(*folder))
+            .unwrap();
+        session.set_singer(
+            index,
+            Some(VocalVoice::new(&singer.engine, &singer.id, *language)),
+        );
+        let ids: Vec<NoteId> = (0..6)
+            .map(|b| draw(&mut session, f64::from(b), 1.0, 62 + (b % 3) as u8))
+            .collect();
+        for line in *lines {
+            let said = session.set_lyric_line(&ids, line);
+            pump_until(&mut session, "sung", |s| {
+                let st = states(s);
+                !st.is_empty()
+                    && st
+                        .iter()
+                        .all(|x| matches!(x, VocalRenderState::Final | VocalRenderState::Failed))
+            });
+            let view = session.vocal_view().unwrap();
+            let lyrics: Vec<String> = ids
+                .iter()
+                .map(|id| session.notes()[*id].lyric.clone())
+                .collect();
+            let sung: Vec<String> = ids
+                .iter()
+                .map(|id| {
+                    view.phonemes
+                        .iter()
+                        .find(|(n, _)| n == id)
+                        .map_or("·".into(), |(_, p)| p.clone())
+                })
+                .collect();
+            println!(
+                "{folder} {line:?}: {said:?}\n    {lyrics:?}\n    {sung:?}  {:?}",
+                view.message
+            );
+        }
+    }
+}

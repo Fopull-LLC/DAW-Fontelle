@@ -257,7 +257,7 @@ impl Backend for UtauBackend {
 
 /// Bumped when the same phrase would sing differently: part of
 /// [`Backend::version`], so cached takes are sung again.
-const RENDER_VERSION: u32 = 3;
+const RENDER_VERSION: u32 = 4;
 
 pub struct UtauSession {
     banks: Arc<Mutex<BTreeMap<String, Known>>>,

@@ -532,10 +532,9 @@ fn english_syllables(word: &str) -> (Vec<Content>, bool) {
 
 fn japanese_morae(ctx: &Ctx, text: &str, note: usize) -> (Vec<Content>, bool) {
     if let Some(inner) = bracketed(text) {
-        return (
-            vec![Content::Aliases(split_aliases(ctx, inner, note))],
-            false,
-        );
+        return bracketed_aliases(ctx, inner, note, |spelled| {
+            japanese_morae(ctx, spelled, note).0
+        });
     }
     let text = if text.is_empty() {
         default_syllable(false)
@@ -556,6 +555,30 @@ fn japanese_morae(ctx: &Ctx, text: &str, note: usize) -> (Vec<Content>, bool) {
         return (vec![Content::Mora("あ".into())], true);
     }
     (morae.into_iter().map(Content::Mora).collect(), false)
+}
+
+/// A bracketed lyric: the bank's aliases, as written. Any the bank does
+/// not have are left out and the note is marked guessed; when it has none
+/// of them, the sounds are read as the lyric they spell (`[s a]` is さ on a
+/// kana bank) — a note sung as nothing, with nothing said, was the
+/// alternative.
+fn bracketed_aliases(
+    ctx: &Ctx,
+    inner: &str,
+    note: usize,
+    spell: impl Fn(&str) -> Vec<Content>,
+) -> (Vec<Content>, bool) {
+    let aliases = split_aliases(ctx, inner, note);
+    let (have, lack): (Vec<String>, Vec<String>) =
+        aliases.into_iter().partition(|a| ctx.has(a, note));
+    if lack.is_empty() {
+        return (vec![Content::Aliases(have)], false);
+    }
+    if !have.is_empty() {
+        return (vec![Content::Aliases(have)], true);
+    }
+    let spelled: String = inner.split_whitespace().collect();
+    (spell(&spelled), true)
 }
 
 /// Bracketed aliases may contain spaces ("a か"): the longest run of
@@ -804,10 +827,9 @@ fn ko_default() -> fontelle_lang::hangul::Syllable {
 /// A Chinese or Korean lyric's syllables.
 fn cjk_syllables(ctx: &Ctx, text: &str, note: usize, kind: Phonemizer) -> (Vec<Content>, bool) {
     if let Some(inner) = bracketed(text) {
-        return (
-            vec![Content::Aliases(split_aliases(ctx, inner, note))],
-            false,
-        );
+        return bracketed_aliases(ctx, inner, note, |spelled| {
+            cjk_syllables(ctx, spelled, note, kind).0
+        });
     }
     let default = || match kind {
         Phonemizer::ZhCvvc => Content::Zh("la".into()),

@@ -380,3 +380,23 @@ fn english_cvvc_sings_x_sampa_syllables() {
     let plan = phonemize::plan(&b, &p, Phonemizer::EnCvvc);
     assert_eq!(units(&plan.units), [u("- ri", 0, 0), tail("i d-", 0, 940)]);
 }
+
+/// Bracketed phonemes a bank does not have as aliases: `[s a]` on Kasane
+/// Teto's Japanese bank was a note sung as nothing, with nothing said. It
+/// is read as the lyric its sounds spell ("sa": さ), and the note is
+/// marked as guessed so the roll flags it.
+#[test]
+fn bracketed_sounds_the_bank_lacks_are_read_as_a_lyric_and_flagged() {
+    let b = bank(&KANA);
+    let p = phrase(&[(0.0, 0.5, "[s a]")]);
+    let plan = phonemize::plan(&b, &p, Phonemizer::JaCv);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["さ"]);
+    assert_eq!(plan.guessed, [true]);
+    // Aliases it has are sung as written, not guessed.
+    let p = phrase(&[(0.0, 0.5, "[か]")]);
+    let plan = phonemize::plan(&b, &p, Phonemizer::JaCv);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["か"]);
+    assert_eq!(plan.guessed, [false]);
+}

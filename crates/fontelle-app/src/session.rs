@@ -10064,9 +10064,14 @@ impl StudioHost for Session {
         self.set_lyrics(&ordered, spread.lyrics)?;
         Ok(match spread.left_over {
             0 => format!("Lyrics on {count} notes"),
-            n => {
-                format!("Lyrics on {count} notes \u{2014} {n} more than there were notes left out")
-            }
+            1 => format!(
+                "Lyrics on {count} notes \u{2014} 1 more word than notes was left over; select \
+                 more notes to place it"
+            ),
+            n => format!(
+                "Lyrics on {count} notes \u{2014} {n} more words than notes were left over; \
+                 select more notes to place them"
+            ),
         })
     }
 

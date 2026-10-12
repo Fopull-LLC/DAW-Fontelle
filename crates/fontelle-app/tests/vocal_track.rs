@@ -308,3 +308,25 @@ fn a_guessed_word_is_marked_on_its_note() {
     assert!(view.guessed.contains(&odd), "{:?}", view.guessed);
     assert!(!view.guessed.contains(&known));
 }
+
+/// More words than notes: the toast says how many were left over and what
+/// to do, in words a person reads once ("4 more than there were notes left
+/// out" did not).
+#[test]
+fn a_line_longer_than_the_notes_says_what_was_left_over() {
+    let (mut session, _) = vocal_session("left-over", true);
+    let a = draw(&mut session, 0, 60);
+    let b = draw(&mut session, 1, 62);
+    let said = session
+        .set_lyric_line(&[a, b], "one two three four")
+        .unwrap();
+    assert_eq!(
+        said,
+        "Lyrics on 2 notes \u{2014} 2 more words than notes were left over; select more notes to place them"
+    );
+    let said = session.set_lyric_line(&[a, b], "one two three").unwrap();
+    assert!(
+        said.contains("1 more word than notes was left over"),
+        "{said}"
+    );
+}
