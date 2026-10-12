@@ -190,3 +190,33 @@ fn a_chinese_syllable_without_an_initial_joins_from_the_vowel_before() {
     let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
     assert_eq!(aliases, ["- wo", "- ai"]);
 }
+
+/// Hitsuboku Kumi records y- and w- syllables only from a vowel ("an yi")
+/// or a phrase's start ("- yi"), never bare. 一闪一闪 sang its second 一
+/// as nothing: "yi" was not there, so the note was skipped. Now the
+/// vowel-joined unit is sung (and no "an y" before it, which the joined
+/// unit already holds), and a syllable with no form at all falls back to
+/// its start rather than silence.
+#[test]
+fn a_syllable_recorded_only_from_a_vowel_is_sung_from_it() {
+    let b = bank(&[
+        "- yi", "shan", "an yi", "an y", "an R", "- shan", "- ma", "a R",
+    ]);
+    let p = phrase(
+        "zh",
+        &[
+            (0.0, 0.5, "yi"),
+            (0.5, 0.5, "shan"),
+            (1.0, 0.5, "yi"),
+            (1.5, 0.5, "shan"),
+        ],
+    );
+    let plan = phonemize::plan(&b, &p, Phonemizer::ZhCvvc);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["- yi", "shan", "an yi", "shan", "an R"]);
+    // Nothing but its start: sung from it, not left out.
+    let p = phrase("zh", &[(0.0, 0.5, "ma"), (0.5, 0.5, "ma")]);
+    let plan = phonemize::plan(&b, &p, Phonemizer::ZhCvvc);
+    let aliases: Vec<&str> = plan.units.iter().map(|u| u.alias.as_str()).collect();
+    assert_eq!(aliases, ["- ma", "- ma", "a R"]);
+}

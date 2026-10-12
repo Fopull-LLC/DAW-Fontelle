@@ -946,7 +946,15 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
                     cands.extend(names.cv.iter().map(|c| format!("{pv} {c}")));
                 }
                 cands.extend(names.cv.iter().cloned());
-                if names.onset.is_empty() && !start {
+                // Some banks record a syllable only from the vowel before
+                // it ("an yi": Hitsuboku Kumi's y- and w- syllables).
+                if !names.onset.is_empty()
+                    && let Some(pv) = &before
+                {
+                    cands.extend(names.cv.iter().map(|c| format!("{pv} {c}")));
+                }
+                // Its start, rather than a note sung as nothing.
+                if !start {
                     cands.extend(names.cv.iter().map(|c| format!("- {c}")));
                 }
                 let Some(cv) = ctx.first(&cands, e.note) else {
@@ -998,6 +1006,22 @@ fn syllabic(ctx: &Ctx, events: &[Event], plan: &mut Plan) {
             continue;
         };
         if next_names.onset.is_empty() {
+            continue;
+        }
+        // A next syllable sung from this vowel ("an yi") holds the
+        // transition itself.
+        if ctx.first(&next_names.cv, next.note).is_none()
+            && ctx
+                .first(
+                    &next_names
+                        .cv
+                        .iter()
+                        .map(|c| format!("{v} {c}"))
+                        .collect::<Vec<_>>(),
+                    next.note,
+                )
+                .is_some()
+        {
             continue;
         }
         let mut cands = vec![format!("{v} {}", next_names.onset)];

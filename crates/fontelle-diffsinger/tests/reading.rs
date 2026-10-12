@@ -428,3 +428,20 @@ fn a_dictionary_prefixed_for_a_model_that_is_not_lends_its_kinds() {
     };
     assert_eq!(r.read("world"), (s(&["w", "er", "l", "d"]), false));
 }
+
+/// Yoko's `dsdict-ja.yaml` says `entries:` twice (a short list, then the
+/// whole one) in flow style; the strict YAML reader refused the file
+/// ("duplicate field `entries`") and every Japanese phrase failed. Both
+/// lists are read, the later winning where they say the same word.
+#[test]
+fn a_dictionary_that_repeats_a_section_is_read_whole() {
+    let text = "symbols:\n- {symbol: ja/a, type: vowel}\n- {symbol: ja/k, type: stop}\n\
+                - {symbol: SP, type: vowel}\n\n\
+                entries:\n- {grapheme: \"R\", phonemes: [SP]}\n- {grapheme: \"か\", phonemes: [ja/a]}\n\n\
+                entries:\n- {grapheme: \"R\", phonemes: [SP]}\n- {grapheme: \"か\", phonemes: [ja/k, ja/a]}\n\
+                - {grapheme: \"あ\", phonemes: [ja/a]}\n";
+    let d = Dictionary::parse(text).unwrap();
+    assert_eq!(d.query("か").unwrap(), ["ja/k", "ja/a"]);
+    assert_eq!(d.query("あ").unwrap(), ["ja/a"]);
+    assert_eq!(d.query("R").unwrap(), ["SP"]);
+}

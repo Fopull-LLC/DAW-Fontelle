@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-diffsinger"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "fontelle-lang",
  "fontelle-sing",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-lang"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "sha2",
 ]
@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-sing"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-singer-abi"
-version = "0.26.2"
+version = "0.26.3"
 
 [[package]]
 name = "fontelle-testbridge"
@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-testsinger"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "fontelle-sing",
  "fontelle-singer-abi",
@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-utau"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-vocal"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "encoding_rs",
  "fontelle-diffsinger",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-vocal-files"
-version = "0.26.2"
+version = "0.26.3"
 dependencies = [
  "encoding_rs",
  "fontelle-model",

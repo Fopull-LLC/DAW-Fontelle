@@ -568,11 +568,26 @@ impl VocalSession {
             let phrases = phrases_with(project, id, tempo, &caps);
             let nobody = registry.voices().is_empty();
             let (backend, problem) = match &voice {
+                // The Fontelle Singer with no voicebank installed yet.
+                None if self.no_voicebank() => (None, Some(NO_VOICEBANK.to_string())),
                 None if nobody => (None, Some(self.no_engine_message())),
                 None => (None, Some("Choose a singer for this track".to_string())),
                 // An engine's instrument with nobody chosen yet.
                 Some(v) if v.singer.is_empty() => {
                     (None, Some("Choose a singer for this track".to_string()))
+                }
+                // A voicebank this computer does not have (a song from
+                // elsewhere): nothing is sent to fail, and the track says
+                // which bank and where to get it.
+                Some(v)
+                    if SingerRegistry::is_builtin_key(&v.engine)
+                        && registry.backend(&v.engine).is_some()
+                        && !registry
+                            .voices()
+                            .iter()
+                            .any(|r| r.backend == v.engine && r.info.id == v.singer) =>
+                {
+                    (None, Some(missing_voicebank(&v.singer)))
                 }
                 Some(v) => match registry.backend(&v.engine) {
                     Some(backend) => (Some(backend), None),
@@ -616,6 +631,27 @@ impl VocalSession {
             );
         }
         self.parts = parts;
+        // Each built-in voice on a track is warmed — loaded, its level
+        // found — while the first notes are written (an engine's are not:
+        // what an engine does at its first phrase is its own business).
+        let warm: Vec<(Arc<dyn fontelle_sing::Backend>, String)> = project
+            .channels
+            .iter()
+            .filter(|(id, _)| is_vocal(project, *id) && !project.is_frozen(*id))
+            .filter_map(|(_, c)| c.vocal.as_ref())
+            .filter(|v| !v.singer.is_empty() && SingerRegistry::is_builtin_key(&v.engine))
+            .filter_map(|v| {
+                let backend = self.registry().backend(&v.engine)?;
+                Some((backend, v.singer.clone()))
+            })
+            .collect();
+        if !warm.is_empty()
+            && let Ok(mut r) = self.renderer().lock()
+        {
+            for (backend, voice) in warm {
+                r.warm(backend, &voice);
+            }
+        }
         let all: Vec<Wanted> = self
             .parts
             .values()
@@ -1024,6 +1060,29 @@ impl VocalSession {
     fn no_engine_message(&self) -> String {
         no_engine_message(self.folders.clone())
     }
+
+    /// Whether the Fontelle Singer has runtimes but no voicebank to sing
+    /// with.
+    fn no_voicebank(&self) -> bool {
+        let registry = self.registry();
+        let runtimes = self.builtins.as_ref().map_or(true, |b| !b.is_empty());
+        runtimes && !registry.voices().iter().any(|v| v.built_in)
+    }
+}
+
+/// What a Fontelle Singer track with no voicebank installed says.
+const NO_VOICEBANK: &str = "No voicebank is installed yet \u{2014} find a free singer in \
+     Voicebanks \u{2192} Find singers, or drop a voicebank\u{2019}s .zip on the window";
+
+/// What a track says whose voicebank this computer does not have: the
+/// bank by its folder (not the runtime's `utau/` id), and where to get it.
+pub(crate) fn missing_voicebank(singer: &str) -> String {
+    let name = singer.strip_prefix("utau/").unwrap_or(singer);
+    format!(
+        "\u{201c}{name}\u{201d} is not installed on this computer, so this track is silent \
+         \u{2014} get it from Voicebanks \u{2192} Find singers, or choose another singer. \
+         Its notes and settings are kept."
+    )
 }
 
 fn no_engine_message(folders: Option<Vec<PathBuf>>) -> String {
@@ -1500,9 +1559,11 @@ impl VocalSession {
                 .any(|i| i.engine.as_deref() == Some(e) && i.has_editor)
         });
         let message = match (chosen, &singer) {
+            (None, _) if engine.is_none() && self.no_voicebank() => Some(NO_VOICEBANK.to_string()),
             (None, _) => Some(format!(
                 "Choose a singer \u{2014} {instrument} sings once one is chosen"
             )),
+            (Some(v), None) if engine.is_none() => Some(missing_voicebank(&v.singer)),
             (Some(v), None) => Some(format!(
                 "\u{201c}{}\u{201d} is not installed here \u{2014} its notes and settings are kept",
                 v.singer

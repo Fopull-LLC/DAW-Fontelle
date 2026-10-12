@@ -19,6 +19,7 @@
 //! free ones are found through [`catalogue`].
 
 pub mod catalogue;
+mod level;
 mod phrases;
 mod registry;
 mod render;
@@ -26,6 +27,7 @@ mod takes;
 pub mod voicebanks;
 mod zip;
 
+pub use level::{REFERENCE_SEED, leveled, reference_phrase};
 pub use phrases::{
     CURVE_LEAD, CURVE_TAIL, MAX_PHRASE_SECONDS, MIN_REST_SECONDS, NoteRef, Phrase, RenderKey,
     note_from_wire, note_wire_id, phrases_of, phrases_with, render_key,

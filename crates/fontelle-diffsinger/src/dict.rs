@@ -52,17 +52,23 @@ impl Dictionary {
         if text.trim().is_empty() {
             return Ok(Raw::default().build());
         }
-        let y: DictYaml = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
         let mut raw = Raw::default();
-        for s in y.symbols.unwrap_or_default() {
-            raw.symbols.push((s.symbol, s.kind.unwrap_or_default()));
-        }
-        for e in y.entries.unwrap_or_default() {
-            raw.entries
-                .push((e.grapheme, e.phonemes.unwrap_or_default()));
-        }
-        for r in y.replacements.unwrap_or_default() {
-            raw.replacements.push((r.from, r.to));
+        match serde_yaml_ng::from_str::<DictYaml>(text) {
+            Ok(y) => raw.take(y),
+            // A file that says a section twice (Yoko's `dsdict-ja.yaml` has
+            // two `entries:`): each top-level section read on its own, in
+            // order, so both lists count and the later one wins a word.
+            Err(e) => {
+                let sections = top_level_sections(text);
+                if sections.len() < 2 {
+                    return Err(e.to_string());
+                }
+                for section in sections {
+                    let y: DictYaml =
+                        serde_yaml_ng::from_str(section).map_err(|e| e.to_string())?;
+                    raw.take(y);
+                }
+            }
         }
         Ok(raw.build())
     }
@@ -134,7 +140,38 @@ struct Raw {
     replacements: Vec<(String, String)>,
 }
 
+/// `text` cut at each top-level key: `symbols:`, `entries:`, … each with
+/// what is under it.
+fn top_level_sections(text: &str) -> Vec<&str> {
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        let first = line.chars().next();
+        let top =
+            first.is_some_and(|c| !c.is_whitespace() && c != '-' && c != '#') && line.contains(':');
+        if top {
+            starts.push(at);
+        }
+        at += line.len();
+    }
+    starts.push(text.len());
+    starts.windows(2).map(|w| &text[w[0]..w[1]]).collect()
+}
+
 impl Raw {
+    fn take(&mut self, y: DictYaml) {
+        for s in y.symbols.unwrap_or_default() {
+            self.symbols.push((s.symbol, s.kind.unwrap_or_default()));
+        }
+        for e in y.entries.unwrap_or_default() {
+            self.entries
+                .push((e.grapheme, e.phonemes.unwrap_or_default()));
+        }
+        for r in y.replacements.unwrap_or_default() {
+            self.replacements.push((r.from, r.to));
+        }
+    }
+
     fn build(self) -> Dictionary {
         let mut symbols = HashMap::with_capacity(self.symbols.len() + 2);
         for (symbol, kind) in self.symbols {

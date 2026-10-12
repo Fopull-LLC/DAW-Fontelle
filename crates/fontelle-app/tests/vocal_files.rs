@@ -142,10 +142,14 @@ fn sung(project: &Project, channel: ChannelId) -> Vec<(i64, Vec<i64>, Vec<String
         let ClipSource::Notes(data) = &clip.source else {
             continue;
         };
-        if data.channel != channel {
+        let mut notes: Vec<_> = data
+            .notes
+            .values()
+            .filter(|n| n.channel_or(data.channel) == channel)
+            .collect();
+        if notes.is_empty() {
             continue;
         }
-        let mut notes: Vec<_> = data.notes.values().collect();
         notes.sort_by_key(|n| n.start);
         out.push((
             clip.start,
@@ -501,5 +505,141 @@ fn an_imported_ust_saved_for_a_look() {
         let bundle = Path::new(&out).join("Imported.fontelle");
         fontelle_app::save_project(session.project(), &bundle).unwrap();
         eprintln!("saved {}", bundle.display());
+    }
+}
+
+/// A vocal track added to a song whose open clip is another instrument's:
+/// its notes are written into that clip (a clip holds several instruments'
+/// notes), and they are sung. Rendering them, freezing the track and
+/// dropping a file on that row must find them there too — found walking
+/// the singer from a new song: "the clip in the piano roll is not a vocal
+/// clip".
+#[test]
+fn a_vocal_line_written_into_another_instruments_clip_renders_and_freezes() {
+    let (mut session, _dir) = session("shared-clip");
+    session.add_singer_channel(None).unwrap();
+    let index = (0..session.channels().len())
+        .rev()
+        .find(|i| session.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    session.select_channel(index);
+    let channel = vocal_channels(session.project())[0];
+    let open = session
+        .project()
+        .clips
+        .values()
+        .find_map(|c| match &c.source {
+            ClipSource::Notes(d) => Some(d.channel),
+            _ => None,
+        })
+        .unwrap();
+    assert_ne!(open, channel, "the open clip is the other instrument's");
+    for beat in [0, 1] {
+        session.edit(fontelle_ui::canvas::RollEdit::Add {
+            note: vocal_note(PPQN * beat, PPQN, 60, "la"),
+        });
+    }
+    assert_eq!(sung(session.project(), channel)[0].2.len(), 2, "sung");
+    let rows = session.project().lanes.len();
+    let said = session.render_vocal_selection_now().unwrap();
+    assert!(said.contains("Rendered"), "{said}");
+    let clips = audio_clips(session.project());
+    assert_eq!(clips.len(), 1);
+    assert_eq!(
+        clips[0].1.mixer_track,
+        session.project().channels[channel].mixer_track,
+        "routed to the vocal track's strip"
+    );
+    assert_eq!(session.project().lanes.len(), rows + 1, "a row below");
+    session.undo();
+
+    session.freeze_vocal_now(index).unwrap();
+    let project = session.project();
+    let frozen = project
+        .clips
+        .values()
+        .find(|c| matches!(c.source, ClipSource::Audio(_)))
+        .unwrap();
+    let row = project.lane_ids().iter().position(|l| *l == frozen.lane);
+    assert_eq!(row, Some(1), "right under the row the notes are on");
+    session.undo();
+
+    // A file dropped on that row goes into the vocal track.
+    let dir = scratch("shared-clip-file");
+    session
+        .drop_file_on(&ustx_file(&dir, 120.0), PPQN * 16, Some(0))
+        .unwrap();
+    assert_eq!(
+        vocal_channels(session.project()),
+        vec![channel],
+        "no second track"
+    );
+}
+
+/// What the listener below has been asked to sing.
+static HEARD: std::sync::Mutex<Vec<Phrase>> = std::sync::Mutex::new(Vec::new());
+
+struct Listener;
+
+impl Backend for Listener {
+    fn name(&self) -> &str {
+        "Listener"
+    }
+    fn version(&self) -> String {
+        "1".into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        Hummer.voices()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn SingSession>, String> {
+        Ok(Box::new(Listening))
+    }
+}
+
+struct Listening;
+
+impl SingSession for Listening {
+    fn sing(
+        &mut self,
+        phrase: &Phrase,
+        quality: Quality,
+        seed: u64,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Sung, SingError> {
+        HEARD.lock().unwrap().push(phrase.clone());
+        Hum.sing(phrase, quality, seed, cancelled)
+    }
+}
+
+/// A singer chosen is warmed while the first notes are being written: its
+/// reference phrase is sung in the background (a DiffSinger bank took 5 to
+/// 14 s to load before its first phrase was heard).
+#[test]
+fn a_chosen_singer_is_warmed_before_any_note_is_written() {
+    let dir = scratch("warm");
+    let project = common::a_clip_project(4);
+    let mut session = common::a_session_in(project, None);
+    session.set_singer_folders(Vec::new());
+    session.set_voicebanks(
+        dir.join("voicebanks"),
+        vec![BuiltinBackend {
+            key: "fontelle-utau",
+            kind: SingerKind::Utau,
+            make: |_| Arc::new(Listener),
+        }],
+    );
+    session.add_singer_channel(None).unwrap();
+    let reference = fontelle_vocal::reference_phrase(&Hummer.voices()[0]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !HEARD.lock().unwrap().contains(&reference) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the singer was never warmed"
+        );
+        session.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }

@@ -99,6 +99,7 @@ pub enum PhraseState {
     Failed(String),
 }
 
+#[derive(Clone)]
 struct Job {
     key: RenderKey,
     quality: Quality,
@@ -107,12 +108,25 @@ struct Job {
     start: f64,
     end: f64,
     cancel: Arc<AtomicU32>,
+    /// A voice's reference, sung to load it ([`VocalRenderer::warm`]):
+    /// after everything else, and its take kept nowhere.
+    warm: bool,
+}
+
+/// A job a worker is singing, kept whole so a final can step aside for a
+/// preview and be queued again.
+struct Running {
+    key: RenderKey,
+    cancel: Arc<AtomicU32>,
+    job: Job,
 }
 
 #[derive(Default)]
 struct Queue {
     jobs: Vec<Job>,
-    running: Vec<(RenderKey, Arc<AtomicU32>)>,
+    running: Vec<Running>,
+    /// How many worker threads sing.
+    workers: usize,
     done: Vec<(RenderKey, Result<Rendered, SingError>)>,
     playhead: f64,
     stop: bool,
@@ -131,7 +145,10 @@ impl Queue {
             } else {
                 1e9 + (playhead - job.end)
             };
-            (job.quality != Quality::Preview, distance)
+            (
+                job.warm as u8 * 2 + (job.quality != Quality::Preview) as u8,
+                distance,
+            )
         };
         (0..self.jobs.len()).min_by(|a, b| {
             let (qa, da) = rank(&self.jobs[*a]);
@@ -162,6 +179,8 @@ pub struct VocalRenderer {
     failed: HashMap<u64, String>,
     wanted: HashSet<u64>,
     stamp: u64,
+    /// Voices warmed already, by backend, version and voice.
+    warmed: HashSet<String>,
 }
 
 impl VocalRenderer {
@@ -169,7 +188,10 @@ impl VocalRenderer {
     /// through an engine instance of its own.
     pub fn new(workers: usize) -> Self {
         let shared = Arc::new(Shared {
-            queue: Mutex::new(Queue::default()),
+            queue: Mutex::new(Queue {
+                workers: workers.max(1),
+                ..Queue::default()
+            }),
             wake: Condvar::new(),
         });
         let workers = (0..workers.max(1))
@@ -188,6 +210,7 @@ impl VocalRenderer {
             failed: HashMap::new(),
             wanted: HashSet::new(),
             stamp: 0,
+            warmed: HashSet::new(),
         }
     }
 
@@ -265,17 +288,17 @@ impl VocalRenderer {
         let Ok(mut q) = self.shared.queue.lock() else {
             return;
         };
-        q.jobs.retain(|j| keys.contains(&j.key.hash));
-        for (key, cancel) in &q.running {
-            if !keys.contains(&key.hash) {
-                cancel.store(1, Ordering::Relaxed);
+        q.jobs.retain(|j| j.warm || keys.contains(&j.key.hash));
+        for r in &q.running {
+            if !r.job.warm && !keys.contains(&r.key.hash) {
+                r.cancel.store(1, Ordering::Relaxed);
             }
         }
         for (key, quality, w) in fresh {
             let queued = q.jobs.iter().any(|j| j.key == key)
                 || q.running
                     .iter()
-                    .any(|(k, c)| *k == key && c.load(Ordering::Relaxed) == 0);
+                    .any(|r| r.key == key && r.cancel.load(Ordering::Relaxed) == 0);
             if queued {
                 continue;
             }
@@ -287,10 +310,48 @@ impl VocalRenderer {
                 start: w.start,
                 end: w.end,
                 cancel: Arc::new(AtomicU32::new(0)),
+                warm: false,
             });
         }
+        step_aside(&mut q);
         drop(q);
         self.wanted = keys;
+        self.shared.wake.notify_all();
+    }
+
+    /// Sings `voice`'s reference phrase (`crate::reference_phrase`) when
+    /// nothing else is waiting, once per voice, keeping nothing: its models
+    /// are loaded and its level found before its first phrase is asked
+    /// for. A voice `backend` does not have is passed over.
+    pub fn warm(&mut self, backend: Arc<dyn Backend>, voice: &str) {
+        let id = format!("{}\u{1f}{}\u{1f}{voice}", backend.name(), backend.version());
+        if self.warmed.contains(&id) {
+            return;
+        }
+        let Some(info) = backend.voices().into_iter().find(|v| v.id == voice) else {
+            return;
+        };
+        self.warmed.insert(id);
+        let phrase = crate::reference_phrase(&info);
+        let key = render_key(
+            backend.name(),
+            &backend.version(),
+            &phrase,
+            Quality::Preview,
+        );
+        let end = phrase.notes.last().map_or(0.0, |n| n.end());
+        if let Ok(mut q) = self.shared.queue.lock() {
+            q.jobs.push(Job {
+                key,
+                quality: Quality::Preview,
+                backend,
+                phrase,
+                start: 0.0,
+                end,
+                cancel: Arc::new(AtomicU32::new(0)),
+                warm: true,
+            });
+        }
         self.shared.wake.notify_all();
     }
 
@@ -432,14 +493,54 @@ impl Drop for VocalRenderer {
         if let Ok(mut q) = self.shared.queue.lock() {
             q.stop = true;
             q.jobs.clear();
-            for (_, cancel) in &q.running {
-                cancel.store(1, Ordering::Relaxed);
+            for r in &q.running {
+                r.cancel.store(1, Ordering::Relaxed);
             }
         }
         self.shared.wake.notify_all();
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
+    }
+}
+
+/// Previews waiting with every worker busy on a final: as many finals as
+/// there are previews waiting step aside — cancelled, and queued again
+/// behind them — farthest from the playhead first. An edit is then heard
+/// in a preview's time, not after somebody else's final.
+fn step_aside(q: &mut Queue) {
+    let waiting = q
+        .jobs
+        .iter()
+        .filter(|j| j.quality == Quality::Preview && !j.warm)
+        .count();
+    let busy: Vec<usize> = (0..q.running.len())
+        .filter(|i| q.running[*i].cancel.load(Ordering::Relaxed) == 0)
+        .collect();
+    let free = q.workers.saturating_sub(busy.len());
+    if waiting <= free {
+        return;
+    }
+    let playhead = q.playhead;
+    let mut finals: Vec<usize> = busy
+        .into_iter()
+        // A warming job is loading what the previews need: it stays.
+        .filter(|i| q.running[*i].job.quality == Quality::Final && !q.running[*i].job.warm)
+        .collect();
+    let distance = |job: &Job| {
+        if job.end > playhead {
+            (job.start - playhead).max(0.0)
+        } else {
+            1e9 + (playhead - job.end)
+        }
+    };
+    finals.sort_by(|a, b| distance(&q.running[*b].job).total_cmp(&distance(&q.running[*a].job)));
+    for i in finals.into_iter().take(waiting - free) {
+        let r = &q.running[i];
+        r.cancel.store(1, Ordering::Relaxed);
+        let mut again = r.job.clone();
+        again.cancel = Arc::new(AtomicU32::new(0));
+        q.jobs.push(again);
     }
 }
 
@@ -460,7 +561,11 @@ fn work(shared: &Shared) {
                 }
                 if let Some(i) = q.pick() {
                     let job = q.jobs.swap_remove(i);
-                    q.running.push((job.key, Arc::clone(&job.cancel)));
+                    q.running.push(Running {
+                        key: job.key,
+                        cancel: Arc::clone(&job.cancel),
+                        job: job.clone(),
+                    });
                     break (job, q.store.clone());
                 }
                 q = match shared.wake.wait(q) {
@@ -479,13 +584,18 @@ fn work(shared: &Shared) {
                 return;
             };
             q.running
-                .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+                .retain(|r| !(r.key == job.key && Arc::ptr_eq(&r.cancel, &job.cancel)));
             q.done.push((job.key, Ok(take)));
             continue;
         }
         let id = format!("{}\u{1f}{}", job.backend.name(), job.backend.version());
+        let seed = if job.warm {
+            crate::REFERENCE_SEED
+        } else {
+            job.key.seed
+        };
         let sing = |session: &mut Box<dyn Session>| {
-            session.sing_flagged(&job.phrase, job.quality, job.key.seed, &job.cancel)
+            session.sing_flagged(&job.phrase, job.quality, seed, &job.cancel)
         };
         let result = match sessions.get_mut(&id) {
             Some(session) => sing(session),
@@ -512,7 +622,11 @@ fn work(shared: &Shared) {
                 return;
             };
             q.running
-                .retain(|(k, c)| !(*k == job.key && Arc::ptr_eq(c, &job.cancel)));
+                .retain(|r| !(r.key == job.key && Arc::ptr_eq(&r.cancel, &job.cancel)));
+            if job.warm {
+                // Sung to load the voice; nobody asked for the take.
+                continue;
+            }
             if let Err(SingError::Failed(_)) = &result {
                 // The same words will fail the same way at the other quality.
                 q.jobs.retain(|j| j.key.seed != job.key.seed);

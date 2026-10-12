@@ -131,6 +131,15 @@ fn time_signature(beats: u32, unit: u32) -> String {
     format!("{}/{}", (beats * unit).div_ceil(4), unit)
 }
 
+/// Whether vocal track `id` has notes in `data` (or `data` is its own).
+fn sings_in(data: &fontelle_model::NoteData, id: ChannelId) -> bool {
+    data.channel == id
+        || data
+            .notes
+            .values()
+            .any(|n| n.channel_or(data.channel) == id)
+}
+
 impl Session {
     fn is_vocal_channel_id(&self, id: ChannelId) -> bool {
         self.project
@@ -139,17 +148,35 @@ impl Session {
             .is_some_and(|c| c.instrument == Some(fontelle_types::InstrumentKind::Vocal))
     }
 
+    /// The vocal track that sings in `data`: `prefer` when it does, else
+    /// the clip's own channel when that is vocal, else the first vocal
+    /// track with notes in it. A clip holds several instruments' notes, so
+    /// a vocal line is often written into a clip another instrument began.
+    fn vocal_in(
+        &self,
+        data: &fontelle_model::NoteData,
+        prefer: Option<ChannelId>,
+    ) -> Option<ChannelId> {
+        if let Some(id) = prefer.filter(|id| self.is_vocal_channel_id(*id) && sings_in(data, *id)) {
+            return Some(id);
+        }
+        if self.is_vocal_channel_id(data.channel) {
+            return Some(data.channel);
+        }
+        data.notes
+            .values()
+            .map(|n| n.channel_or(data.channel))
+            .find(|id| self.is_vocal_channel_id(*id))
+    }
+
     /// The vocal track whose clips are on row `lane`, if any.
     fn vocal_on_row(&self, lane: fontelle_types::LaneId) -> Option<ChannelId> {
+        let prefer = self.selected_channel_id();
         self.project
             .clips
             .values()
             .find_map(|clip| match &clip.source {
-                ClipSource::Notes(data)
-                    if clip.lane == lane && self.is_vocal_channel_id(data.channel) =>
-                {
-                    Some(data.channel)
-                }
+                ClipSource::Notes(data) if clip.lane == lane => self.vocal_in(data, prefer),
                 _ => None,
             })
     }
@@ -185,7 +212,7 @@ impl Session {
                     return Err("that track is not a vocal track".to_string());
                 }
                 let lane = self.project.clips.values().find_map(|c| match &c.source {
-                    ClipSource::Notes(d) if d.channel == id => Some(c.lane),
+                    ClipSource::Notes(d) if sings_in(d, id) => Some(c.lane),
                     _ => None,
                 });
                 lane.map(|lane| (id, lane))
@@ -428,7 +455,7 @@ impl Session {
             .iter()
             .rposition(|lane| {
                 self.project.clips.values().any(|c| {
-                    c.lane == *lane && matches!(&c.source, ClipSource::Notes(d) if d.channel == id)
+                    c.lane == *lane && matches!(&c.source, ClipSource::Notes(d) if sings_in(d, id))
                 })
             })
             .map_or(rows.len(), |r| r + 1);
@@ -481,16 +508,21 @@ impl Session {
         let Some(ClipSource::Notes(data)) = data else {
             return Err("open a vocal clip in the piano roll first".to_string());
         };
-        let id = data.channel;
-        if !self.is_vocal_channel_id(id) {
-            return Err("the clip in the piano roll is not a vocal clip".to_string());
-        }
+        let Some(id) = self.vocal_in(&data, self.selected_channel_id()) else {
+            return Err(
+                "nothing in the clip in the piano roll is sung by a vocal track".to_string(),
+            );
+        };
         let selected: Vec<NoteId> = self
             .vocal
             .selection
             .iter()
             .copied()
-            .filter(|n| data.notes.contains_key(*n))
+            .filter(|n| {
+                data.notes
+                    .get(*n)
+                    .is_some_and(|note| note.channel_or(data.channel) == id)
+            })
             .collect();
         let wanted = |r: &fontelle_vocal::NoteRef| {
             r.clip == open && (selected.is_empty() || selected.contains(&r.note))
@@ -503,11 +535,9 @@ impl Session {
         // The stretch: the selected notes' (every pass of a looped clip).
         let tempo = fontelle_model::effective_tempo_map(&self.project);
         let mut span: Option<(Tick, Tick)> = None;
-        for (_, n) in data
-            .notes
-            .iter()
-            .filter(|(nid, _)| selected.is_empty() || selected.contains(nid))
-        {
+        for (_, n) in data.notes.iter().filter(|(nid, n)| {
+            n.channel_or(data.channel) == id && (selected.is_empty() || selected.contains(nid))
+        }) {
             let (s, e) = (clip.start + n.start, clip.start + n.start + n.length);
             span = Some(span.map_or((s, e), |(a, b)| (a.min(s), b.max(e))));
         }
