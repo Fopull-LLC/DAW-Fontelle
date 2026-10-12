@@ -25,6 +25,7 @@
 mod study;
 mod vocal_files;
 
+use fontelle_model::wire::SingerOffer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -640,6 +641,13 @@ pub struct Session {
     /// The plugins a shared song uses that are not installed here and have
     /// been said — `None` until the song's first look (F91).
     missing_plugins_said: Option<std::collections::BTreeSet<String>>,
+    /// The singers this host last said its song uses, by engine and voice
+    /// (F93): offered again only when that changes.
+    singers_said: Option<Vec<(String, String)>>,
+    /// A sent singer waiting on the person: its terms, and a yes or no.
+    singer_question: Option<fontelle_model::wire::SingerNeed>,
+    /// Sent singers asked about here, by hash: asked once.
+    singers_answered: std::collections::BTreeSet<u64>,
     /// The question a stray clip raised in lane-style, while it stands.
     lane_question: Option<fontelle_model::LaneConflict>,
     /// The stray clips already known about — asked of, or there when the
@@ -1635,6 +1643,9 @@ impl Session {
             lanes_unsettled: None,
             graph_builds: 0,
             missing_plugins_said: None,
+            singers_said: None,
+            singer_question: None,
+            singers_answered: std::collections::BTreeSet::new(),
             lane_question: None,
             known_conflicts: Vec::new(),
             routing_question: false,
@@ -2676,6 +2687,7 @@ impl Session {
         // (F56).
         self.library.set_mint_space(self.history.mint_space());
         self.collab_effects(effects);
+        self.share_singers();
     }
 
     /// Loads a file that has just arrived into whatever plays it: every clip
@@ -2787,7 +2799,11 @@ impl Session {
                     self.message = Some(line);
                     self.touch();
                 }
-                Effect::FileArrived(hash) => self.load_arrived(hash),
+                Effect::FileArrived(hash) => {
+                    if !self.install_arrived_singer(hash) {
+                        self.load_arrived(hash);
+                    }
+                }
                 Effect::Open(path) => {
                     let opened = match self.open_bundle(&path) {
                         Ok(opened) => opened,
@@ -2935,6 +2951,14 @@ impl Session {
         let Some(collab) = self.collab.as_ref() else {
             return items;
         };
+        let who = collab.host_name().unwrap_or("the host").to_string();
+        for need in collab.singers() {
+            if self.has_singer(&need.engine, &need.singer) {
+                continue;
+            }
+            let (what, detail) = crate::collab::singers::missing_words(need, &who);
+            items.push(MissingItem { what, detail });
+        }
         let from = collab
             .host_name()
             .map(|host| format!("{host}\u{2019}s computer"))
@@ -2980,6 +3004,130 @@ impl Session {
                 .map(|(state, _)| format!("{}:{}", state.key.format.label(), state.key.id))
                 .collect(),
         );
+    }
+
+    /// Whether this studio can sing as `engine`'s `singer`.
+    fn has_singer(&self, engine: &str, singer: &str) -> bool {
+        self.vocal
+            .registry()
+            .voices()
+            .iter()
+            .any(|v| v.backend == engine && v.info.id == singer)
+    }
+
+    /// The singers of a shared song (F93). A host says which its song uses
+    /// whenever that changes, packing what it may send; a joiner asks about
+    /// a sent one it has not got — its terms first.
+    ///
+    /// > *"collaborating doesn't share singer files currently like it does
+    /// > with sound fonts and audio so you cannot sync singers you don't
+    /// > share. please add this."*
+    fn share_singers(&mut self) {
+        let Some(collab) = self.collab.as_ref() else {
+            return;
+        };
+        if !collab.is_live() {
+            return;
+        }
+        if collab.is_host() {
+            let mut used: Vec<(String, String)> = self
+                .project
+                .channels
+                .values()
+                .filter_map(|c| c.vocal.as_ref())
+                .map(|v| (v.engine.clone(), v.singer.clone()))
+                .collect();
+            used.sort();
+            used.dedup();
+            if self.singers_said.as_ref() == Some(&used) {
+                return;
+            }
+            let (needs, packs) = crate::collab::singers::needs_of(&self.project, &self.vocal);
+            self.singers_said = Some(used);
+            if let Some(collab) = self.collab.as_mut() {
+                collab.offer_singers(needs, packs);
+            }
+            return;
+        }
+        if self.singer_question.is_some() {
+            return;
+        }
+        let ask = collab
+            .singers()
+            .iter()
+            .find(|need| {
+                matches!(&need.offer, SingerOffer::Send { hash, .. }
+                    if !self.singers_answered.contains(hash))
+                    && !self.has_singer(&need.engine, &need.singer)
+            })
+            .cloned();
+        if ask.is_some() {
+            self.singer_question = ask;
+            self.touch();
+        }
+    }
+
+    /// A packed singer has arrived whole: installed, its terms agreed here —
+    /// the person agreed before it was fetched — and the song sings with it.
+    /// `false` when `hash` was not a singer.
+    fn install_arrived_singer(&mut self, hash: u64) -> bool {
+        let Some(packed) = self.collab.as_ref().and_then(|c| c.singer_pack(hash)) else {
+            return false;
+        };
+        let Some(need) = self
+            .collab
+            .as_ref()
+            .and_then(|c| {
+                c.singers()
+                    .iter()
+                    .find(|n| matches!(n.offer, SingerOffer::Send { hash: h, .. } if h == hash))
+            })
+            .cloned()
+        else {
+            return true;
+        };
+        // Unpacked under the bank's own folder name — the name an install
+        // from a folder keeps.
+        let staging = self
+            .vocal
+            .voicebanks_dir()
+            .join(format!(".incoming-{hash:016x}"));
+        let name = match &need.offer {
+            SingerOffer::Send { file_name, .. } => file_name
+                .strip_suffix(".pack")
+                .unwrap_or(file_name)
+                .to_string(),
+            _ => need.name.clone(),
+        };
+        let folder = staging.join(crate::projects::safe_name(&name));
+        let installed = crate::collab::singers::unpack(&packed, &folder)
+            .map_err(|e| e.to_string())
+            .and_then(|()| self.vocal.install(&folder));
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_file(&packed);
+        match installed {
+            Ok(_) => {
+                let banks = fontelle_vocal::voicebanks::list(&self.vocal.voicebanks_dir());
+                if let Some(bank) =
+                    fontelle_vocal::voicebanks::bank_for_voice(&banks, &need.singer, None)
+                {
+                    self.vocal.agree_bank(&bank.id);
+                }
+                self.vocal.agree(&need.engine, &need.singer);
+                self.session_notices.push(format!(
+                    "{} arrived and is installed \u{2014} its terms agreed, and it sings.",
+                    need.name
+                ));
+                self.republish();
+                self.rebuild_graph();
+            }
+            Err(e) => self.session_notices.push(format!(
+                "{} arrived, and could not be installed: {e}",
+                need.name
+            )),
+        }
+        self.touch();
+        true
     }
 
     /// A plugin somebody put in the shared song that this computer has not
@@ -10864,6 +11012,44 @@ impl StudioHost for Session {
                 default: question.default,
             });
         }
+        if let Some(need) = &self.singer_question
+            && let SingerOffer::Send { size, terms, .. } = &need.offer
+        {
+            let from = self
+                .collab
+                .as_ref()
+                .and_then(|c| c.host_name())
+                .unwrap_or("The host");
+            let mut lines = vec![format!(
+                "{from}\u{2019}s song is sung by {}, which you don\u{2019}t have ({:.1} MB).",
+                need.name,
+                *size as f64 / 1_048_576.0
+            )];
+            match terms {
+                Some(terms) => {
+                    lines.push("Its author\u{2019}s terms:".to_string());
+                    let mut shown: String = terms.chars().take(600).collect();
+                    if shown.len() < terms.len() {
+                        shown.push('\u{2026}');
+                    }
+                    lines.extend(
+                        shown
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .take(8)
+                            .map(str::to_string),
+                    );
+                }
+                None => lines.push("Its author gives no terms with it.".to_string()),
+            }
+            lines.push("Agree to them, and fetch it? It sings once it is here.".to_string());
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines,
+                buttons: vec!["Agree and fetch".to_string(), "Not now".to_string()],
+                default: 0,
+            });
+        }
         self.fetch_question()
             .map(|question| fontelle_ui::document::SessionQuestion {
                 lines: question.lines,
@@ -10892,6 +11078,19 @@ impl StudioHost for Session {
                 .map(|(answer, _)| answer.clone())
                 .ok_or("there is no such answer")?;
             return self.answer_join(answer);
+        }
+        if let Some(need) = self.singer_question.take() {
+            if let SingerOffer::Send { hash, .. } = &need.offer {
+                self.singers_answered.insert(*hash);
+                if answer == 0
+                    && let Some(collab) = self.collab.as_mut()
+                {
+                    collab.fetch_singer(&need);
+                    self.message = Some(format!("Fetching {}\u{2026}", need.name));
+                }
+            }
+            self.touch();
+            return Ok(());
         }
         if self.fetch_question().is_some() {
             return self.answer_fetch(answer == 0);

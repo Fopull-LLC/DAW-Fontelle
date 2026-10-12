@@ -1720,6 +1720,13 @@ fn msg_variant_order_is_pinned() {
         }),
         19
     );
+    // F93: the singers a song uses, and how to get each.
+    assert_eq!(
+        tag(&Msg::Singers {
+            singers: Vec::new()
+        }),
+        20
+    );
 }
 
 /// §8.2 and F52: an edit rides inside a postcard message as the JSON the

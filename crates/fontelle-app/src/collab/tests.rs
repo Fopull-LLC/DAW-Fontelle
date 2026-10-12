@@ -211,6 +211,7 @@ fn a_clip(lane: fontelle_types::LaneId, channel: fontelle_types::ChannelId, star
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

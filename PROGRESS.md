@@ -19,6 +19,30 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-12, latest — singers travel with a shared song where their
+terms allow.** Branch `feature/collab-singers` (from `feature/vocal-track`,
+with `fix/collab-sync` merged in), not merged, not bumped. Ty:
+*"collaborating doesn't share singer files currently like it does with sound
+fonts and audio so you cannot sync singers you don't share."*
+
+- `Msg::Singers` (tag 20): the host says which singers its song uses and how
+  each is got; said again whenever that changes (collab plan §18, F93).
+- **The rule**: a Fontelle Singer bank is sent only when the catalogue says
+  its author lets it be passed on (`catalogue::Terms::redistribute`, new,
+  default unknown = not sent); otherwise the friend is told which bank and
+  the catalogue's download or the author's page. Research-only voices are
+  never sent; another engine's singer cannot be — the friend is told which
+  engine and which singer.
+- A sent bank: packed by Fontelle (`collab::singers::pack`/`unpack`, paths
+  checked, 8 GB cap), its terms shown in the question, fetched only on the
+  yes, installed through `VocalState::install`, agreed in both records, then
+  it sings. Everything missing is in the Share panel's list (F91's).
+- Not done: a take rendered on the host is not sent to a friend without the
+  singer (a frozen vocal is an audio clip, and is); a bank is packed on the
+  studio's own thread the first time it is offered.
+- Tests: `fontelle-app/tests/collab_singers.rs` (4), `collab::singers` (3),
+  `fontelle-model/tests/wire.rs` (tag 20).
+
 **As of 2026-10-11, latest — a shared song stops doubling, taking back and
 over-shooting edits; what is missing is named.** Branch `fix/collab-sync`
 (from v0.26.1), not merged, not bumped. Ty, from a session with a friend:
@@ -47,7 +71,7 @@ which plugins."*
 - **What a shared song still does not carry**: plan §18, G1–G7 (a plugin's
   own-window state, files plugins loaded, presets, singers — next, on
   `feature/collab-singers`).
-- Tests: `fontelle-app/tests/collab_latency.rs` (8, three studios with
+- Tests: `fontelle-app/tests/collab_latency.rs` (7, three studios with
   latency and jitter), `fontelle-app` `collab::tests` (4),
   `tests/collab.rs` (+2), `fontelle-model/tests/wire.rs` (slot test now
   follows its slot), `fontelle-net` transport jitter (+1),

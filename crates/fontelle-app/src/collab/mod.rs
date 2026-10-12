@@ -18,6 +18,7 @@
 
 pub(crate) mod files;
 pub(crate) mod join;
+pub(crate) mod singers;
 #[cfg(test)]
 mod tests;
 
@@ -27,7 +28,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead};
+use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead, SingerNeed, SingerOffer};
 use fontelle_model::{Command, History, Project};
 use fontelle_net::{Channel, Incoming, PeerId, SERVER, Transport};
 use fontelle_types::{ChannelId, PersistentId, PluginState};
@@ -398,6 +399,61 @@ impl Collab {
         self.files.progress(hash)
     }
 
+    /// The singers the song uses and how each is got (F93): the host's own
+    /// list, or what the host said.
+    pub fn singers(&self) -> &[SingerNeed] {
+        match &self.role {
+            Role::Host(host) => &host.singers,
+            Role::Joiner(joiner) => &joiner.singers,
+        }
+    }
+
+    /// The host says which singers its song uses, and offers the packed
+    /// banks it may send; said to everybody whenever the list changes.
+    pub fn offer_singers(&mut self, singers: Vec<SingerNeed>, packs: Vec<(u64, PathBuf)>) {
+        let Role::Host(host) = &mut self.role else {
+            return;
+        };
+        for (hash, path) in packs {
+            self.files.offer(hash, path);
+        }
+        if host.singers != singers {
+            host.singers = singers;
+            host.broadcast(
+                self.transport.as_mut(),
+                &Msg::Singers {
+                    singers: host.singers.clone(),
+                },
+            );
+        }
+    }
+
+    /// Fetches the singer `need`, whose terms the person has agreed to.
+    pub fn fetch_singer(&mut self, need: &SingerNeed) {
+        if let SingerOffer::Send {
+            hash,
+            size,
+            file_name,
+            ..
+        } = &need.offer
+        {
+            self.files.want_pack(
+                AssetEntry {
+                    hash: *hash,
+                    size: *size,
+                    file_name: file_name.clone(),
+                    kind: fontelle_types::AssetKind::Sample,
+                },
+                SERVER,
+            );
+        }
+    }
+
+    /// Where the packed singer `hash` landed, once it is here whole.
+    pub fn singer_pack(&self, hash: u64) -> Option<PathBuf> {
+        self.files.pack(hash).map(PathBuf::from)
+    }
+
     /// Why the file `hash` is not here and not coming, if that is so.
     pub fn file_trouble(&self, hash: u64) -> Option<files::Trouble> {
         self.files.trouble(hash)
@@ -735,6 +791,8 @@ struct Host {
     handled: BTreeMap<PersistentId, u64>,
     /// The space each join was given, so one back after a drop gets its own.
     spaces: BTreeMap<PersistentId, u16>,
+    /// The singers the song uses (F93), as last said.
+    singers: Vec<SingerNeed>,
 }
 
 struct HostPeer {
@@ -1084,6 +1142,15 @@ impl Host {
         if who.view_only {
             send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
         }
+        if !self.singers.is_empty() {
+            send(
+                turn.transport,
+                peer,
+                &Msg::Singers {
+                    singers: self.singers.clone(),
+                },
+            );
+        }
     }
 
     fn send_snapshot(&self, transport: &mut dyn Transport, peer: PeerId, doc: &Project) {
@@ -1246,6 +1313,8 @@ struct Joiner {
     peers: BTreeMap<u16, Peer>,
     /// The host refuses this studio's edits (F49).
     view_only: bool,
+    /// The singers the host's song uses (F93).
+    singers: Vec<SingerNeed>,
     /// Plugin states this studio kept of its own plugins, which a copy made
     /// again from the host's song must not take back — see
     /// [`Collab::plugin_kept_here`].
@@ -1275,6 +1344,7 @@ impl Joiner {
             next_local: 0,
             answered: 0,
             resyncing: false,
+            singers: Vec::new(),
             peers: BTreeMap::new(),
             view_only: false,
             kept_here: Vec::new(),
@@ -1493,6 +1563,7 @@ impl Joiner {
                 self.stage = Stage::Asking;
             }
             Msg::Refuse { reason } => return Some(reason),
+            Msg::Singers { singers } => self.singers = singers,
             Msg::SnapshotChunk { index, bytes, .. } => {
                 if index == 0 {
                     self.snapshot.clear();
