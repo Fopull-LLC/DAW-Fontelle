@@ -3033,6 +3033,8 @@ fn a_file_that_could_not_be_sent_is_listed_with_why() {
     assert_eq!(missing.len(), 1, "{missing:?}");
     assert!(missing[0].what.contains("kick"), "{missing:?}");
     assert!(missing[0].detail.contains("Alice"), "whose: {missing:?}");
+}
+
 /// A paint stroke crosses the wire as the one gesture it is: Bob's sixteen
 /// hats arrive at Alice's as the stroke, and his one Ctrl+Z takes the
 /// stroke back on both. And what each block shows is read off its notes on
