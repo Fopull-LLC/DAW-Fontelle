@@ -592,6 +592,7 @@ fn an_openutau_song_comes_in_sung_and_goes_back_out() {
 /// whose vocoder was never installed, one bank twice under two folders,
 /// and a bank deleted while a song sings it. What each says is printed.
 #[test]
+#[cfg(unix)]
 #[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
 fn odd_libraries_say_what_is_wrong() {
     let Some(source) = std::env::var_os("FONTELLE_TEST_VOICEBANKS").map(PathBuf::from) else {

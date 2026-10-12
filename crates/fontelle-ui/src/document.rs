@@ -238,7 +238,7 @@ pub struct CatalogueRow {
     pub sample: Option<String>,
     pub terms_summary: String,
     pub terms_url: String,
-    /// "yes", "no", "ask", "?" — what the author's terms say.
+    /// "yes", "no", "ask", "not said" — what the author's terms say.
     pub commercial: String,
     pub ai_training: String,
     pub credit: String,

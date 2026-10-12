@@ -1477,7 +1477,7 @@ impl VocalSession {
                 P::Yes => "yes",
                 P::No => "no",
                 P::Ask => "ask",
-                P::Unknown => "?",
+                P::Unknown => "not said",
             }
             .to_string()
         };

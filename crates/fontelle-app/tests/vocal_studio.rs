@@ -320,6 +320,8 @@ fn get_it_installs_the_bank_when_it_lands_in_downloads() {
     let rows = session.catalogue();
     assert_eq!(rows.len(), 1);
     assert!(!rows[0].direct);
+    // What the terms do not say is said in words, not as "?".
+    assert_eq!(rows[0].ai_training, "not said");
     let said = session.catalogue_get("teto").unwrap();
     assert!(said.contains("installs when it lands"), "{said}");
     assert!(session.catalogue()[0].waiting);
