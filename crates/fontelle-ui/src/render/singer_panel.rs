@@ -82,15 +82,17 @@ fn kicker(view: &SingerPanelView) -> String {
             kind_label(s.kind).to_uppercase()
         ),
         Some(s) if s.research_only => format!("{instrument} \u{b7} RESEARCH ONLY"),
+        None if view.missing.is_some() => format!("{instrument} \u{b7} NOT INSTALLED HERE"),
         _ => instrument,
     }
 }
 
 /// What the stage's big line says: the singer, or what to do.
 fn headline(view: &SingerPanelView) -> String {
-    match &view.singer {
-        Some(s) => s.name.clone(),
-        None => "No singer yet".to_string(),
+    match (&view.singer, &view.missing) {
+        (Some(s), _) => s.name.clone(),
+        (None, Some(missing)) => missing.clone(),
+        (None, None) => "No singer yet".to_string(),
     }
 }
 
@@ -144,6 +146,7 @@ pub fn singer_panel_strings(
         SingerPanelButton::Sample,
         SingerPanelButton::OpenEditor,
         SingerPanelButton::Voicebanks,
+        SingerPanelButton::FindSingers,
     ] {
         out.push((b.label(&view.instrument), PICKER_TEXT_STYLE));
     }

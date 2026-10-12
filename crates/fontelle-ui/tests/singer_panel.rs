@@ -293,3 +293,42 @@ fn nobody_singing_still_offers_a_singer() {
             .any(|(b, _)| *b == SingerPanelButton::ChangeSinger)
     );
 }
+
+/// A song from a computer with a bank this one has not got: the stage
+/// names that bank (it said "No singer yet", which is not so), and its
+/// button finds singers rather than listing the ones installed.
+#[test]
+fn a_singer_not_installed_here_is_named_and_offers_find_singers() {
+    let m = Theme::dark_default().metrics;
+    let view = SingerPanelView {
+        instrument: "Fontelle Singer".into(),
+        missing: Some("KasaneTeto_tougou_110401".into()),
+        find_first: true,
+        message: Some("Not installed on this computer".into()),
+        ..Default::default()
+    };
+    let l = singer_panel_layout(WIDE, &m, &view, &controls(), 0.0);
+    let buttons: Vec<SingerPanelButton> = l.buttons.iter().map(|(b, _)| *b).collect();
+    assert!(
+        buttons.contains(&SingerPanelButton::FindSingers),
+        "{buttons:?}"
+    );
+    assert!(!buttons.contains(&SingerPanelButton::Voicebanks));
+    assert_eq!(
+        SingerPanelButton::FindSingers.label(""),
+        "Find singers\u{2026}"
+    );
+    let strings = fontelle_ui::render::singer_panel::singer_panel_strings(&view, &controls());
+    assert!(
+        strings
+            .iter()
+            .any(|(s, style)| s == "KasaneTeto_tougou_110401"
+                && *style == fontelle_ui::render::singer_panel::SINGER_NAME_STYLE),
+        "{strings:?}"
+    );
+    assert!(!strings.iter().any(|(s, _)| s == "No singer yet"));
+    assert!(
+        strings.iter().any(|(s, _)| s.contains("NOT INSTALLED")),
+        "{strings:?}"
+    );
+}

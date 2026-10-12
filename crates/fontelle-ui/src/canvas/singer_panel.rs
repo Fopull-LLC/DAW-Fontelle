@@ -66,6 +66,9 @@ pub enum SingerPanelButton {
     OpenEditor,
     /// The Voicebanks page: install, find, uninstall.
     Voicebanks,
+    /// The Voicebanks page's Find singers tab: offered instead when there
+    /// is nothing installed to choose, or the track's singer is missing.
+    FindSingers,
 }
 
 impl SingerPanelButton {
@@ -76,6 +79,7 @@ impl SingerPanelButton {
             Self::Sample => "\u{25b6} Sample".to_string(),
             Self::OpenEditor => format!("Open {instrument}"),
             Self::Voicebanks => "Voicebanks\u{2026}".to_string(),
+            Self::FindSingers => "Find singers\u{2026}".to_string(),
         }
     }
 
@@ -219,7 +223,11 @@ fn buttons_for(view: &SingerPanelView) -> Vec<SingerPanelButton> {
         out.push(SingerPanelButton::OpenEditor);
     }
     if view.engine.is_none() {
-        out.push(SingerPanelButton::Voicebanks);
+        out.push(if view.find_first {
+            SingerPanelButton::FindSingers
+        } else {
+            SingerPanelButton::Voicebanks
+        });
     }
     out
 }

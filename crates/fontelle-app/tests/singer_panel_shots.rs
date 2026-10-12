@@ -64,7 +64,10 @@ fn dump(pixels: &[u8], name: &str, w: u32, h: u32) {
 
 /// Draws the selected channel's instrument window as the studio would.
 fn shoot(session: &Session, headless: &mut Headless, name: &str) -> Vec<u8> {
-    let theme = Theme::dark_default();
+    shoot_in(session, headless, name, Theme::dark_default())
+}
+
+fn shoot_in(session: &Session, headless: &mut Headless, name: &str, theme: Theme) -> Vec<u8> {
     let header = session.singer_panel().expect("a singer panel");
     let controls = session.instrument().expect("its controls");
     let (w, h) = SINGER_PANEL_SIZE;
@@ -115,6 +118,9 @@ fn shoot(session: &Session, headless: &mut Headless, name: &str) -> Vec<u8> {
         .render(&scene, w, h, theme.palette.window)
         .expect("the panel renders");
     dump(&pixels, name, w, h);
+    if header.singer.is_none() {
+        return pixels;
+    }
     // The portrait is a picture, not a flat square.
     let r = layout.portrait;
     let mut colours = std::collections::BTreeSet::new();
@@ -178,6 +184,12 @@ fn the_singer_panel_with_real_banks_and_an_engine() {
     set(&mut session, "vocal/vibrato/on", 1.0);
     set(&mut session, "vocal/glide/on", 1.0);
     shoot(&session, &mut headless, "singer-panel-utau");
+    shoot_in(
+        &session,
+        &mut headless,
+        "singer-panel-utau-light",
+        Theme::light_default(),
+    );
 
     // Qixuan's DiffSinger bank.
     let qixuan = pick(SingerKind::DiffSinger, "Qixuan_v2.7.0_DiffSinger_OpenUtau");
@@ -196,4 +208,32 @@ fn the_singer_panel_with_real_banks_and_an_engine() {
     let header = session.singer_panel().unwrap();
     assert!(!header.has_editor);
     shoot(&session, &mut headless, "singer-panel-engine");
+
+    // A song from a computer with a bank this one has not got.
+    session.set_singer_instrument(index, None);
+    session.set_singer(
+        index,
+        Some(fontelle_model::VocalVoice::new(
+            "fontelle-utau",
+            "utau/Somebody_Elses_Bank",
+            "ja",
+        )),
+    );
+    let message = session.singer_panel().unwrap().message.unwrap_or_default();
+    assert!(message.contains("Find singers"), "{message}");
+    shoot(&session, &mut headless, "singer-panel-missing");
+
+    // A first track with no voicebank installed at all.
+    let empty = std::env::temp_dir().join(format!("fontelle-panel-empty-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    let mut bare = common::a_session_in(common::a_clip_project(4), None);
+    bare.set_singer_folders(vec![empty.join("no-engines")]);
+    bare.set_voicebanks(empty.join("voicebanks"), fontelle_vocal::builtin_backends());
+    bare.add_singer_channel(None).unwrap();
+    let index = (0..bare.channels().len())
+        .rev()
+        .find(|i| bare.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    bare.select_channel(index);
+    shoot(&bare, &mut headless, "singer-panel-no-voicebank");
 }

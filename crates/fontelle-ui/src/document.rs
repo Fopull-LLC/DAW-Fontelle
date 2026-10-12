@@ -161,6 +161,13 @@ pub struct SingerPanelView {
     pub greyed: Vec<(String, String)>,
     /// Why the track is silent, or what to do first: "Choose a singer".
     pub message: Option<String>,
+    /// The singer the track names when it is not installed here (a song
+    /// from another computer), as it can be read: the stage's headline.
+    pub missing: Option<String>,
+    /// There is nothing here to choose yet (no voicebank installed, or the
+    /// track's is missing): the stage offers Find singers rather than the
+    /// list of what is installed.
+    pub find_first: bool,
     /// The auto vibrato and default glide the track gives notes without
     /// their own, when they are on — drawn as the Expression card's picture.
     pub vibrato: Option<fontelle_sing::Vibrato>,

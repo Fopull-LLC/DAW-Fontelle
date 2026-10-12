@@ -121,8 +121,10 @@ fn a_first_fontelle_singer_track_with_no_voicebank_says_where_to_find_one() {
     let message = session.vocal_view().unwrap().message.unwrap_or_default();
     assert!(message.contains("Find singers"), "{message}");
     assert!(!message.contains("engine"), "{message}");
-    let panel = session.singer_panel().unwrap().message.unwrap_or_default();
+    let view = session.singer_panel().unwrap();
+    let panel = view.message.clone().unwrap_or_default();
     assert!(panel.contains("Find singers"), "{panel}");
+    assert!(view.find_first, "the stage offers Find singers");
 }
 
 #[test]
@@ -160,10 +162,21 @@ fn a_song_whose_voicebank_is_not_here_names_it_and_where_to_get_it() {
         view.phrases
     );
     assert!(!message.contains("could not be sung"), "{message}");
-    let panel = session.singer_panel().unwrap().message.unwrap_or_default();
-    assert!(panel.contains("KasaneTeto_tougou_110401"), "{panel}");
+    // The stage names the bank, offers Find singers, and the controls are
+    // kept for it — not "the Fontelle Singer doesn't use vibrato".
+    let view = session.singer_panel().unwrap();
+    assert_eq!(view.missing.as_deref(), Some("KasaneTeto_tougou_110401"));
+    assert!(view.find_first);
+    let panel = view.message.clone().unwrap_or_default();
     assert!(!panel.contains("utau/"), "{panel}");
     assert!(panel.contains("Find singers"), "{panel}");
+    assert!(
+        view.greyed
+            .iter()
+            .all(|(_, why)| !why.contains("doesn't use")),
+        "{:?}",
+        view.greyed
+    );
     // The part is all still there.
     let notes = session
         .project()

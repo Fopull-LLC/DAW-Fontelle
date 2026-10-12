@@ -1468,6 +1468,12 @@ impl WindowApp {
                     live.window.focus_window();
                 }
             }
+            H::Button(B::FindSingers) => {
+                self.open_voicebank_page(VoicebankTab::Find);
+                if let Some(live) = &self.live {
+                    live.window.focus_window();
+                }
+            }
             H::Language(n) => {
                 let Some(singer) = &view.singer else {
                     return true;

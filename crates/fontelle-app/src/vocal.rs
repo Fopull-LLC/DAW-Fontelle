@@ -1153,10 +1153,16 @@ impl VocalSession {
 const NO_VOICEBANK: &str = "No voicebank is installed yet \u{2014} find a free singer in \
      Voicebanks \u{2192} Find singers, or drop a voicebank\u{2019}s .zip on the window";
 
+/// A voicebank's voice id as a person reads it: its folder, without the
+/// runtime's `utau/`.
+fn voicebank_label(singer: &str) -> String {
+    singer.strip_prefix("utau/").unwrap_or(singer).to_string()
+}
+
 /// What a track says whose voicebank this computer does not have: the
 /// bank by its folder (not the runtime's `utau/` id), and where to get it.
 pub(crate) fn missing_voicebank(singer: &str) -> String {
-    let name = singer.strip_prefix("utau/").unwrap_or(singer);
+    let name = voicebank_label(singer);
     format!(
         "\u{201c}{name}\u{201d} is not installed on this computer, so this track is silent \
          \u{2014} get it from Voicebanks \u{2192} Find singers, or choose another singer. \
@@ -1658,7 +1664,12 @@ impl VocalSession {
             (None, _) => Some(format!(
                 "Choose a singer \u{2014} {instrument} sings once one is chosen"
             )),
-            (Some(v), None) if engine.is_none() => Some(missing_voicebank(&v.singer)),
+            // Named on the stage's headline; this is the line under it.
+            (Some(_), None) if engine.is_none() => Some(
+                "Not installed on this computer \u{2014} get it from Find singers, or choose \
+                 another singer"
+                    .to_string(),
+            ),
             (Some(v), None) => Some(format!(
                 "\u{201c}{}\u{201d} is not installed here \u{2014} its notes and settings are kept",
                 v.singer
@@ -1675,7 +1686,13 @@ impl VocalSession {
         };
         let caps = self.capabilities_of(chosen);
         let backend = voice.map(|v| v.engine.clone()).unwrap_or_default();
-        let (controls, greyed) = crate::singer_panel::describe(
+        // A voicebank the song names that is not here.
+        let missing = match (chosen, &singer) {
+            (Some(v), None) if engine.is_none() => Some(voicebank_label(&v.singer)),
+            _ => None,
+        };
+        let find_first = engine.is_none() && (missing.is_some() || self.no_voicebank());
+        let (controls, mut greyed) = crate::singer_panel::describe(
             &c.name,
             &caps,
             &backend,
@@ -1684,6 +1701,16 @@ impl VocalSession {
             c.gain_db,
             c.pan,
         );
+        // With nobody to sing, nothing is "not used": the settings wait.
+        if singer.is_none() {
+            let why = match &missing {
+                Some(name) => format!("Kept for \u{201c}{name}\u{201d} until it is installed"),
+                None => "Kept for the singer you choose".to_string(),
+            };
+            for (_, w) in &mut greyed {
+                w.clone_from(&why);
+            }
+        }
         let header = SingerPanelView {
             instrument,
             engine,
@@ -1695,6 +1722,8 @@ impl VocalSession {
             editor_open: self.editor_open(),
             greyed,
             message,
+            missing,
+            find_first,
             singer,
             vibrato: c
                 .vocal_style
