@@ -338,6 +338,12 @@ impl VocalSession {
     fn rescan(&mut self) {
         self.registry = OnceLock::new();
         self.revision += 1;
+        // What failed may sing now (a vocoder it lacked was installed).
+        if let Some(renderer) = &self.renderer
+            && let Ok(mut r) = renderer.lock()
+        {
+            r.forget_failures();
+        }
     }
 
     /// The engines, loaded the first time anything asks — loading one runs
@@ -1574,6 +1580,22 @@ impl VocalSession {
         self.parts.get(&channel).and_then(|p| p.problem.clone())
     }
 
+    /// Why the first of `channel`'s phrases that could not be sung could
+    /// not — what the roll says under the notes, for the singer panel.
+    fn failure_of(&self, channel: ChannelId) -> Option<String> {
+        let part = self.parts.get(&channel)?;
+        let renderer = self.renderer.as_ref()?.lock().ok()?;
+        part.wanted
+            .iter()
+            .flatten()
+            .find_map(|w| match renderer.state(w) {
+                fontelle_vocal::PhraseState::Failed(why) => {
+                    Some(format!("A phrase could not be sung: {why}"))
+                }
+                _ => None,
+            })
+    }
+
     /// What `voice` answers to (default, nothing, for no voice).
     pub fn capabilities_of(&self, voice: Option<&VocalVoice>) -> fontelle_sing::Capabilities {
         voice
@@ -1624,7 +1646,9 @@ impl VocalSession {
                 "\u{201c}{}\u{201d} is not installed here \u{2014} its notes and settings are kept",
                 v.singer
             )),
-            _ => self.problem_of(channel),
+            _ => self
+                .problem_of(channel)
+                .or_else(|| self.failure_of(channel)),
         };
         // Who ignores a control: the singer by name on the Fontelle Singer
         // (it is the bank that does), the engine by name otherwise.

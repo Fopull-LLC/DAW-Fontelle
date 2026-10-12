@@ -355,6 +355,13 @@ impl VocalRenderer {
         self.shared.wake.notify_all();
     }
 
+    /// Forgets which phrases could not be sung: something they needed may
+    /// have arrived (a voicebank or a vocoder installed), so the next
+    /// [`want`](Self::want) tries them again.
+    pub fn forget_failures(&mut self) {
+        self.failed.clear();
+    }
+
     /// Collects what the workers sang. Returns how many takes landed — the
     /// app republishes the tables when it is not zero.
     pub fn poll(&mut self) -> usize {

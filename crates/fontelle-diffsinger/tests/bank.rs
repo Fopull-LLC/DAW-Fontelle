@@ -122,7 +122,10 @@ fn a_missing_vocoder_or_model_folder_is_a_problem_not_a_failure() {
     let (dir, _deps) = write_bank(&root);
     std::fs::remove_file(dir.join("dspitch/p.onnx")).unwrap();
     let bank = Bank::load(&dir, &[]).unwrap();
-    assert!(bank.vocoder.as_ref().unwrap_err().contains("test_vocoder"));
+    let why = bank.vocoder.as_ref().unwrap_err();
+    assert!(why.contains("test_vocoder"));
+    // Says what to do with it: the .oudep dropped on the window.
+    assert!(why.contains("drop"), "{why}");
     assert!(bank.pitch.is_none());
     assert!(!bank.problems.is_empty());
     // A bank without its acoustic model is not a bank.

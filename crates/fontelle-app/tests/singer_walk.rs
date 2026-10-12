@@ -587,3 +587,116 @@ fn an_openutau_song_comes_in_sung_and_goes_back_out() {
         reopen.as_secs_f64() * 1000.0
     );
 }
+
+/// Odd libraries, as they turn up on real computers: a DiffSinger bank
+/// whose vocoder was never installed, one bank twice under two folders,
+/// and a bank deleted while a song sings it. What each says is printed.
+#[test]
+#[ignore = "needs FONTELLE_TEST_VOICEBANKS"]
+fn odd_libraries_say_what_is_wrong() {
+    let Some(source) = std::env::var_os("FONTELLE_TEST_VOICEBANKS").map(PathBuf::from) else {
+        return;
+    };
+    let dir = scratch("odd");
+    let banks = dir.join("voicebanks");
+    std::fs::create_dir_all(&banks).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        // No Dependencies folder: DiffSinger banks have no vocoder.
+        symlink(
+            source.join("Qixuan_v2.7.0_DiffSinger_OpenUtau"),
+            banks.join("Qixuan_v2.7.0_DiffSinger_OpenUtau"),
+        )
+        .unwrap();
+        // Teto twice.
+        symlink(
+            source.join("KasaneTeto_tougou_110401"),
+            banks.join("Teto A"),
+        )
+        .unwrap();
+        symlink(
+            source.join("KasaneTeto_tougou_110401"),
+            banks.join("Teto B"),
+        )
+        .unwrap();
+        symlink(
+            source.join("KasaneTeto_tandoku_100619"),
+            banks.join("Doomed"),
+        )
+        .unwrap();
+    }
+    let bundle = dir.join("Song.fontelle");
+    let project = common::a_clip_project(8);
+    fontelle_app::save_project(&project, &bundle).unwrap();
+    let mut session = common::a_session_in(project, Some(bundle));
+    session.set_singer_folders(vec![dir.join("no-engines")]);
+    session.set_voicebanks(banks.clone(), fontelle_vocal::builtin_backends());
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    for s in session.singers() {
+        println!("singer {:?} / {} / folder {:?}", s.name, s.id, s.folder);
+    }
+    for r in session.voicebanks() {
+        println!("bank {} / {}", r.id, r.name);
+    }
+    let ids: Vec<NoteId> = (0..4)
+        .map(|b| draw(&mut session, f64::from(b), 1.0, 64))
+        .collect();
+    let try_singer = |session: &mut Session, folder: &str, language: &str| {
+        let singer = session
+            .singers()
+            .into_iter()
+            .find(|s| s.folder.as_deref() == Some(folder))
+            .unwrap_or_else(|| panic!("{folder}"));
+        session.set_singer(
+            index,
+            Some(VocalVoice::new(&singer.engine, &singer.id, language)),
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
+            session.pump();
+            let st = states(session);
+            if !st.is_empty()
+                && st
+                    .iter()
+                    .all(|x| matches!(x, VocalRenderState::Final | VocalRenderState::Failed))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let view = session.vocal_view().unwrap();
+        println!(
+            "{folder}: {:?} — roll says {:?}; panel says {:?}",
+            states(session),
+            view.message,
+            session.singer_panel().and_then(|p| p.message)
+        );
+    };
+    session.set_lyric_line(&ids, "la la la la").unwrap();
+    try_singer(&mut session, "Qixuan_v2.7.0_DiffSinger_OpenUtau", "zh");
+    try_singer(&mut session, "Teto B", "ja");
+    try_singer(&mut session, "Doomed", "ja");
+    // Deleted while it sings: the next edit.
+    std::fs::remove_file(banks.join("Doomed")).unwrap();
+    session.edit(RollEdit::Move {
+        ids: vec![ids[1]],
+        tick_delta: 0,
+        key_delta: 2,
+    });
+    session.end_gesture();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        session.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let view = session.vocal_view().unwrap();
+    println!(
+        "deleted: {:?} — roll says {:?}; panel says {:?}",
+        states(&session),
+        view.message,
+        session.singer_panel().and_then(|p| p.message)
+    );
+}

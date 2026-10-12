@@ -690,6 +690,7 @@ pub fn find_vocoder(
         }
     }
     Err(format!(
-        "the vocoder \"{name}\" this voicebank needs is not installed (install its .oudep)"
+        "the vocoder \"{name}\" this voicebank needs is not installed \u{2014} drop its .oudep \
+         (the bank\u{2019}s readme says where to get it) on the window to install it"
     ))
 }

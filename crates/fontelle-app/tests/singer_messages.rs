@@ -171,3 +171,95 @@ fn a_song_whose_voicebank_is_not_here_names_it_and_where_to_get_it() {
         .sum::<usize>();
     assert_eq!(notes, 1);
 }
+
+/// A DiffSinger bank whose vocoder is not installed: it fails, saying so.
+struct Needy(std::path::PathBuf);
+
+impl Backend for Needy {
+    fn name(&self) -> &str {
+        "Needy"
+    }
+    fn version(&self) -> String {
+        "1".into()
+    }
+    fn voices(&self) -> Vec<VoiceInfo> {
+        one_bank(&self.0).voices()
+    }
+    fn capabilities(&self, _voice: &str) -> Capabilities {
+        Capabilities::default()
+    }
+    fn session(&self) -> Result<Box<dyn SingSession>, String> {
+        Ok(Box::new(NeedySession(self.0.clone())))
+    }
+}
+
+struct NeedySession(std::path::PathBuf);
+
+impl SingSession for NeedySession {
+    fn sing(
+        &mut self,
+        phrase: &Phrase,
+        _quality: Quality,
+        _seed: u64,
+        _cancelled: &dyn Fn() -> bool,
+    ) -> Result<Sung, SingError> {
+        if !self.0.join("Dependencies").join("voc").is_dir() {
+            return Err(SingError::Failed(
+                "the vocoder \"voc\" this voicebank needs is not installed".into(),
+            ));
+        }
+        let end = phrase.notes.last().map_or(0.0, |n| n.end());
+        Ok(Sung {
+            sample_rate: 8_000,
+            samples: vec![0.1; (end * 8_000.0) as usize + 1],
+            ..Sung::default()
+        })
+    }
+}
+
+fn pump_for(session: &mut Session, ms: u64) {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < until {
+        session.pump();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// The singer panel says why a voice is silent, as the roll does — the
+/// missing vocoder was said under the notes only — and installing what
+/// was missing makes the track sing without an edit: a phrase that failed
+/// was never tried again until something about it changed.
+#[test]
+fn a_missing_vocoder_is_said_on_the_panel_and_installing_it_sings() {
+    let mut session = studio("vocoder", |dir| Arc::new(Needy(dir.to_path_buf())));
+    session.add_singer_channel(None).unwrap();
+    let index = vocal_index(&session);
+    session.select_channel(index);
+    let note = fontelle_vocal_files::vocal_note(0, PPQN, 60, "a");
+    session.edit(fontelle_ui::canvas::RollEdit::Add { note });
+    pump_for(&mut session, 400);
+    let view = session.vocal_view().unwrap();
+    assert_eq!(view.phrases[0].state, VocalRenderState::Failed);
+    let panel = session.singer_panel().unwrap().message.unwrap_or_default();
+    assert!(panel.contains("vocoder"), "the panel says why: {panel:?}");
+
+    // The vocoder, installed as its .oudep's folder would be.
+    let dep = scratch("vocoder-dep").join("voc");
+    std::fs::create_dir_all(&dep).unwrap();
+    std::fs::write(dep.join("vocoder.yaml"), "name: voc\n").unwrap();
+    std::fs::write(dep.join("oudep.yaml"), "id: voc\nname: voc\n").unwrap();
+    session.install_voicebank(&dep).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        session.pump();
+        let state = session.vocal_view().unwrap().phrases[0].state;
+        if state == VocalRenderState::Final {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still {state:?} after the vocoder was installed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
