@@ -224,6 +224,8 @@ pub struct SettingsPageChrome<'a> {
     pub focus: Option<usize>,
     /// The slider being dragged, if one is.
     pub dragging: Option<usize>,
+    /// A mark beside each row, parallel to `entries`; shorter is none.
+    pub badges: &'a [Option<crate::canvas::SettingBadge>],
 }
 
 /// The shortcuts sheet (`canvas::keybinds`), as the window draws it.
@@ -267,6 +269,8 @@ pub struct WelcomeChrome<'a> {
     /// What went wrong with the last press, if anything did. Shaped to the
     /// column like the update line.
     pub message: &'a TextLayout,
+    /// The ASIO credit's words, shaped to its room, when the layout has one.
+    pub asio_credit: Option<&'a TextLayout>,
 }
 
 /// A row from the browser in mid-air, and what letting go would do with it.
@@ -1900,13 +1904,26 @@ fn draw_settings_page(
                 p.grid_line.with_alpha(0x60),
             );
         }
+        // Another company's mark beside the control, where the host says
+        // its owner requires one — Steinberg's ASIO logo by the rows that
+        // offer ASIO (`crate::trademarks`). The words stop short of it.
+        let (mut label_rect, mut help_rect) = (row.label, row.help);
+        if let Some(Some(crate::canvas::SettingBadge::AsioCompatible)) =
+            chrome.badges.get(row.index)
+        {
+            let badge = crate::trademarks::settings_badge(row.rect, row.control);
+            crate::trademarks::draw_asio_logo(scene, badge);
+            let stop = (badge.x - 12.0 - label_rect.x).max(0.0);
+            label_rect.width = label_rect.width.min(stop);
+            help_rect.width = help_rect.width.min(stop);
+        }
         if let Some(text) = labels.get(&entry.name) {
             draw_text_clipped(
                 scene,
                 text,
-                row.label,
-                row.label.x,
-                centred_y(row.label, text.height),
+                label_rect,
+                label_rect.x,
+                centred_y(label_rect, text.height),
                 p.text,
             );
         }
@@ -1916,9 +1933,9 @@ fn draw_settings_page(
             draw_text_clipped(
                 scene,
                 text,
-                row.help,
-                row.help.x,
-                centred_y(row.help, text.height),
+                help_rect,
+                help_rect.x,
+                centred_y(help_rect, text.height),
                 p.text_muted,
             );
         }
@@ -2657,6 +2674,20 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
             crate::canvas::LEARN_DISMISS,
             dismiss,
             hot(WelcomeHit::DismissLearn),
+        );
+    }
+
+    // The ASIO credit: Steinberg's logo as their file has it, and the
+    // attribution beside it (`crate::trademarks`).
+    if let (Some(credit), Some(words)) = (l.asio_credit, chrome.asio_credit) {
+        crate::trademarks::draw_asio_logo(scene, credit.logo);
+        draw_text_clipped(
+            scene,
+            words,
+            credit.text,
+            credit.text.x,
+            credit.text.y + ((credit.text.height - words.height) / 2.0).max(0.0),
+            p.text_muted,
         );
     }
 

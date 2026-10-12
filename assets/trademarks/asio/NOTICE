@@ -1,0 +1,26 @@
+ASIO Compatible Logo — Steinberg's trademark, not Fontelle's
+=============================================================
+
+ASIO-compatible-logo-Steinberg-TM-BW.png is the ASIO Compatible Logo as
+Steinberg Media Technologies GmbH ships it in the ASIO SDK 2.3.4
+(ASIO-SDK_2.3.4_2025-10-15.zip, folder "Steinberg ASIO Logo Artwork"),
+copied byte for byte (sha256
+5b5c4aae4baeaed70da70966713e1dbd255977649f37df4c503752f2207a5c86, pinned by
+crates/fontelle-ui/tests/trademarks.rs). It is the form with the
+attribution beneath the logo that the Steinberg ASIO Usage Guidelines show
+as an official ASIO Compatible Logo (section 14).
+
+ASIO is a registered trademark of Steinberg Media Technologies GmbH.
+
+This file is NOT covered by Fontelle's licences: not MIT, not Apache-2.0,
+and not the GPLv3 of the separate fontelle-asio program. It is Steinberg's
+trademark, used here only as the Steinberg ASIO Usage Guidelines allow and
+require for a product that uses the ASIO SDK: unaltered, beside the plain-
+text "ASIO" where Fontelle offers ASIO output (Settings -> Audio output,
+Windows, with fontelle-asio present), in the start menu's credits, and in
+the documentation. Fontelle scales it to fit; it is never recoloured,
+cropped, rearranged or combined with another mark.
+
+If you reuse Fontelle's code, this file does not come with it: using the
+ASIO Compatible Logo is subject to Steinberg's guidelines (in the ASIO SDK,
+"Steinberg ASIO Usage Guidelines.pdf"; questions to reception@steinberg.de).

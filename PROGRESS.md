@@ -33,9 +33,16 @@ add-ons never load into a GPL process, and make plain Windows audio better.
   SDK's declarations are used, translated to Rust with Steinberg's notice;
   no SDK file is compiled or fetched, so the Corresponding Source is this
   repository at the tag (attached to each release as
-  `fontelle-asio-source-<v>.tar.gz`). Trademark: "ASIO®" at first use and
-  the attribution sentence; **no logo**, which Steinberg's guidelines would
-  want beside the backend list — a decision for Ty (§9).
+  `fontelle-asio-source-<v>.tar.gz`). Trademark (Ty: use the logo as the
+  guidelines ask): Steinberg's ASIO Compatible Logo, their file unaltered
+  in `assets/trademarks/asio/` (sha256 pinned, own NOTICE, outside every
+  Fontelle licence — `licenses/TRADEMARKS.md`, README), drawn untinted and
+  only scaled beside the Backend row and in the start menu's credit,
+  wherever ASIO is offered (Windows with the helper) and nowhere else;
+  "ASIO®" at first use, the attribution on its own **ASIO®** row, in the
+  credit, docs, release notes, the zip and the helper's README/`--help`.
+  Compiled only into Windows (and debug) builds. Every guideline and where
+  it is met: `docs/asio.md` §1.
 - **`fontelle-audio-ipc`** (MIT/Apache, new): the plain-data protocol, v1
   — a 512-byte header and two slots each way of interleaved f32 in shared
   memory, a per-buffer handshake with a deadline (75% of the buffer; late
@@ -84,8 +91,11 @@ add-ons never load into a GPL process, and make plain Windows audio better.
   (4; `low_latency_period`'s test after its code), `device_format` (2),
   `output_asio_helper` (1, end to end with the allocation guard, a reset,
   a kill and the fallback); app `audio_output_settings` (+5; `dropout_words`
-  after), `updates` (+1), `input_settings` (AudioLoad joins the
-  no-caption rows); ui `render_headless` (+1, looked at). The ipc and helper
+  after), `updates` (+1), `input_settings` (AudioLoad and the ASIO® row
+  join the no-caption rows), `asio_trademark` (1: the pinned file, the
+  notices, the badge and credit only where offered); ui `render_headless`
+  (+3, looked at: the load strip, the logo on the settings page in both
+  themes, the start menu credit). The ipc and helper
   suites and the engine's helper test also pass as Windows builds under
   Wine (headless, audio drivers off).
 

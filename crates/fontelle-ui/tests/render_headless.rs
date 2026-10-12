@@ -5227,12 +5227,24 @@ fn shoot_welcome_status(
 
     let (line, button) = fontelle_ui::canvas::update_line(&status, "0.1.0");
     let progress = fontelle_ui::canvas::update_progress(&status);
-    let welcome = welcome_layout(
-        layout.window,
+    let with_credit = ASIO_SHOWN.with(|c| c.get());
+    let welcome = fontelle_ui::canvas::with_asio_credit(
+        welcome_layout(
+            layout.window,
+            &theme.metrics,
+            recent.len(),
+            button.is_some() || progress.is_some(),
+        ),
         &theme.metrics,
-        recent.len(),
-        button.is_some() || progress.is_some(),
+        with_credit,
     );
+    let credit = welcome.asio_credit.map(|c| {
+        text.layout(
+            fontelle_ui::trademarks::ASIO_CREDIT,
+            &theme.font,
+            Some(c.text.width),
+        )
+    });
     // Everything the menu will look up, shaped — the same contract the
     // window keeps in `shape_labels`.
     let mut labels = Labels::new();
@@ -5310,6 +5322,7 @@ fn shoot_welcome_status(
                 recent,
                 hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),
                 message: &message,
+                asio_credit: credit.as_ref(),
             }),
             keybinds: None,
             help: None,
@@ -5758,7 +5771,41 @@ fn settings_page_rows() -> (
     let button = |caption: &str| SettingControl::Button {
         caption: caption.to_string(),
     };
-    let rows: Vec<(&str, &str, SettingControl, &str)> = vec![
+    let mut rows: Vec<(&str, &str, SettingControl, &str)> = Vec::new();
+    // Where ASIO is offered, the Audio output section comes first, its
+    // backend chosen as ASIO — what Steinberg's logo goes beside.
+    if ASIO_SHOWN.with(|c| c.get()) {
+        rows.extend([
+            ("Audio output", "", SettingControl::Heading, ""),
+            (
+                "Backend",
+                "ASIO\u{ae} (via fontelle-asio helper)",
+                SettingControl::Choice {
+                    options: vec![
+                        "Automatic (WASAPI)".into(),
+                        "ASIO\u{ae} (via fontelle-asio helper)".into(),
+                    ],
+                    chosen: 1,
+                },
+                "The audio system the studio plays through",
+            ),
+            (
+                "ASIO\u{ae}",
+                "",
+                SettingControl::Button {
+                    caption: String::new(),
+                },
+                "ASIO is a registered trademark of Steinberg Media Technologies GmbH",
+            ),
+            (
+                "Driver settings",
+                "The driver's own window",
+                button("Open"),
+                "The ASIO driver's own settings: its buffer size, sample rate and inputs",
+            ),
+        ]);
+    }
+    rows.extend([
         ("MIDI input", "", SettingControl::Heading, ""),
         (
             "Velocity curve",
@@ -5808,7 +5855,7 @@ fn settings_page_rows() -> (
             SettingControl::Switch { on: true },
             "The start menu asks for a newer Fontelle at launch",
         ),
-    ];
+    ]);
     let entries = rows
         .iter()
         .map(|(name, detail, _, _)| fontelle_ui::document::LibraryEntry::file(*name, *detail))
@@ -5816,6 +5863,164 @@ fn settings_page_rows() -> (
     let controls = rows.iter().map(|(_, _, c, _)| c.clone()).collect();
     let help = rows.iter().map(|(_, _, _, h)| h.to_string()).collect();
     (entries, controls, help)
+}
+
+thread_local! {
+    /// Whether the shots below are of a studio that offers ASIO: the
+    /// settings page gains its Audio output section with Steinberg's logo
+    /// beside the backend, and the start menu its credit.
+    static ASIO_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The logo beside the rows that offer ASIO, as the host says it.
+fn settings_page_badges(
+    entries: &[fontelle_ui::document::LibraryEntry],
+) -> Vec<Option<fontelle_ui::canvas::SettingBadge>> {
+    entries
+        .iter()
+        .map(|e| (e.name == "Backend").then_some(fontelle_ui::canvas::SettingBadge::AsioCompatible))
+        .collect()
+}
+
+/// How many pixels in `rect` are the logo's own black and white — what
+/// Steinberg's file is made of (its black is (12, 12, 12)), and what neither
+/// theme's card is.
+fn logo_pixels(pixels: &[u8], width: u32, rect: fontelle_ui::layout::Rect) -> (usize, usize) {
+    let (mut black, mut white) = (0, 0);
+    for y in rect.y.max(0.0) as u32..rect.bottom() as u32 {
+        for x in rect.x.max(0.0) as u32..rect.right() as u32 {
+            let i = ((y * width + x) * 4) as usize;
+            let [r, g, b] = [pixels[i], pixels[i + 1], pixels[i + 2]];
+            if r.max(g).max(b) <= 20 && r.abs_diff(b) <= 3 {
+                black += 1;
+            }
+            if r.min(g).min(b) >= 235 {
+                white += 1;
+            }
+        }
+    }
+    (black, white)
+}
+
+/// Steinberg's guidelines (§1(f), §2): where ASIO is switched on, the ASIO
+/// Compatible Logo beside the word — drawn as their file has it, scaled, not
+/// tinted, in both themes, and not over the row's words.
+#[test]
+fn where_asio_is_offered_steinbergs_logo_is_beside_it_on_the_settings_page() {
+    ASIO_SHOWN.with(|c| c.set(true));
+    for theme in [Theme::dark_default(), Theme::light_default()] {
+        let Some((pixels, theme, width, height)) = shoot_settings_page(theme.clone(), 0) else {
+            ASIO_SHOWN.with(|c| c.set(false));
+            return;
+        };
+        let (entries, controls, _) = settings_page_rows();
+        let badges = settings_page_badges(&entries);
+        let l = fontelle_ui::canvas::settings_page_layout(
+            fontelle_ui::layout::Rect::new(0.0, 0.0, width as f32, height as f32),
+            &theme.metrics,
+            &fontelle_ui::canvas::settings_sections(&controls),
+            0,
+            0.0,
+        );
+        let mut shown = 0;
+        for row in &l.rows {
+            let badge = fontelle_ui::trademarks::settings_badge(row.rect, row.control);
+            let (black, white) = logo_pixels(&pixels, width, badge);
+            if badges.get(row.index).copied().flatten().is_some() {
+                shown += 1;
+                assert!(badge.height >= 40.0, "{}: {badge:?}", theme.name);
+                let ratio = badge.width / badge.height;
+                assert!(
+                    (ratio - 474.0 / 443.0).abs() < 0.01,
+                    "its own proportions: {ratio}"
+                );
+                assert!(
+                    badge.right() <= row.control.x,
+                    "{badge:?} {:?}",
+                    row.control
+                );
+                assert!(
+                    badge.x >= row.label.x + 120.0,
+                    "{}: room left for the row's name: {badge:?}",
+                    theme.name
+                );
+                let area = (badge.width * badge.height) as usize;
+                assert!(
+                    black > area / 3,
+                    "{}: row {} — {black} of {area} pixels are the logo's black",
+                    theme.name,
+                    row.index
+                );
+                assert!(white > area / 20, "{}: {white} white", theme.name);
+            } else {
+                assert!(
+                    black < 10,
+                    "{}: row {} has no logo, yet {black} black pixels",
+                    theme.name,
+                    row.index
+                );
+            }
+        }
+        assert_eq!(shown, 1, "once, beside the backend");
+    }
+    ASIO_SHOWN.with(|c| c.set(false));
+}
+
+/// And in the credits (§1(e)): the start menu carries the logo and the
+/// attribution where ASIO is offered, and nothing of it where it is not.
+#[test]
+fn where_asio_is_offered_the_start_menu_credits_steinberg() {
+    ASIO_SHOWN.with(|c| c.set(true));
+    let credited = shoot_welcome_status(
+        Theme::dark_default(),
+        &recent_projects(),
+        fontelle_ui::UpdateStatus::UpToDate,
+        "start-menu-asio",
+    );
+    ASIO_SHOWN.with(|c| c.set(false));
+    let Some(shot) = credited else {
+        return;
+    };
+    let plain = fontelle_ui::canvas::with_asio_credit(
+        fontelle_ui::canvas::welcome_layout(shot.layout.window, &shot.theme.metrics, 2, false),
+        &shot.theme.metrics,
+        false,
+    );
+    assert!(plain.asio_credit.is_none());
+    let layout = fontelle_ui::canvas::with_asio_credit(
+        fontelle_ui::canvas::welcome_layout(shot.layout.window, &shot.theme.metrics, 2, false),
+        &shot.theme.metrics,
+        true,
+    );
+    let credit = layout.asio_credit.expect("a credit");
+    assert!(layout.frame.contains(credit.logo.x, credit.logo.y));
+    assert!(credit.logo.bottom() <= layout.footer.y, "above the footer");
+    assert!(
+        credit.text.x >= credit.logo.right(),
+        "the words beside the logo"
+    );
+    let (black, white) = logo_pixels(&shot.pixels, shot.width, credit.logo);
+    let area = (credit.logo.width * credit.logo.height) as usize;
+    assert!(black > area / 3, "{black} of {area}");
+    assert!(white > area / 20, "{white}");
+    // The words are drawn: the text ink somewhere in their room.
+    let ink = shot.theme.palette.text_muted;
+    let mut inked = 0;
+    for y in credit.text.y as u32..credit.text.bottom() as u32 {
+        for x in credit.text.x as u32..credit.text.right() as u32 {
+            if near(shot.at(x, y), ink) {
+                inked += 1;
+            }
+        }
+    }
+    assert!(inked > 40, "{inked} pixels of the credit's words");
+    // The recent rows it covers are dropped, not drawn under it.
+    assert!(
+        layout
+            .rows
+            .iter()
+            .all(|r| r.frame.bottom() <= credit.logo.y)
+    );
 }
 
 /// Which row the pointer is on in each section's dump.
@@ -5833,6 +6038,7 @@ fn settings_page_lit_row(section: usize) -> usize {
 fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, u32, u32)> {
     use fontelle_ui::canvas::{SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE};
     let (entries, controls, help) = settings_page_rows();
+    let badges = settings_page_badges(&entries);
     let (width, height) = (1100u32, 700u32);
     let shared = headless()?;
     let layout = window_layout(
@@ -5923,6 +6129,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
                 }),
                 focus: None,
                 dragging: None,
+                badges: &badges,
             }),
         },
     );

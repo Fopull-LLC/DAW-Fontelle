@@ -60,11 +60,13 @@ pub fn main(args: &[String]) -> i32 {
         },
         _ => {
             eprintln!(
-                "{HELPER_NAME} {}: hosts an ASIO driver for Fontelle.\n\
+                "{HELPER_NAME} {}: hosts an ASIO\u{ae} driver for Fontelle.\n\
                  usage: {HELPER_NAME} --version | list | panel --driver NAME | run …\n\
                  This program is started by Fontelle; see docs/asio.md in Fontelle's source.\n\
                  GPL-3.0-only. ASIO is a registered trademark of Steinberg Media Technologies \
-                 GmbH.",
+                 GmbH.\n\
+                 The ASIO Compatible Logo, which a terminal cannot show, is in Fontelle's \
+                 licenses/trademarks/asio/ and its Audio output settings.",
                 env!("CARGO_PKG_VERSION")
             );
             2

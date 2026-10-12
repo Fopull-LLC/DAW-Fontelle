@@ -133,6 +133,11 @@ jobs:
           Copy-Item packaging/windows/fontelle-asio-README.txt "dist/$env:NAME/"
           New-Item -ItemType Directory -Force -Path "dist/$env:NAME/licenses/fontelle-asio" | Out-Null
           Copy-Item crates/fontelle-asio-host/LICENSE, crates/fontelle-asio-host/STEINBERG-ASIO-SDK-LICENSE.txt "dist/$env:NAME/licenses/fontelle-asio/"
+          # Steinberg's ASIO Compatible Logo, which this build shows, and the
+          # notice that it is their trademark and none of Fontelle's licences
+          # covers it (licenses/TRADEMARKS.md).
+          New-Item -ItemType Directory -Force -Path "dist/$env:NAME/licenses/trademarks/asio" | Out-Null
+          Copy-Item assets/trademarks/asio/NOTICE, assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png "dist/$env:NAME/licenses/trademarks/asio/"
           Compress-Archive -Path "dist/$env:NAME" -DestinationPath "$env:NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -182,6 +187,13 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: Fontelle ${{ needs.version.outputs.version }}
+          # The Windows download plays through ASIO by way of fontelle-asio,
+          # so the notes carry Steinberg's logo and attribution (their usage
+          # guidelines; docs/asio.md §1).
+          body: |
+            <img src="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png" alt="ASIO Compatible Logo" width="110"/>
+
+            The Windows download can play through ASIO® drivers by way of `fontelle-asio.exe`, a separate GPLv3 program whose source is attached below as `fontelle-asio-source-${{ needs.version.outputs.version }}.tar.gz`. ASIO is a registered trademark of Steinberg Media Technologies GmbH.
           generate_release_notes: true
           files: |
             artifacts/fontelle-*

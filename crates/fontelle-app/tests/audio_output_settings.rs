@@ -259,13 +259,12 @@ fn each_backend_of_fontelles_own_says_what_its_automatic_is() {
 
 #[test]
 fn where_asio_is_offered_steinbergs_mark_is_named_as_theirs() {
-    let help = fontelle_app::settings::SettingRow::AudioBackend.help();
-    if cfg!(windows) {
-        assert!(
-            help.contains("ASIO is a registered trademark of Steinberg Media Technologies GmbH"),
-            "{help}"
-        );
-    }
+    // The row itself, and whether it is listed, are `asio_trademark.rs`'s.
+    let help = fontelle_app::settings::SettingRow::AsioTrademark.help();
+    assert_eq!(
+        help,
+        "ASIO is a registered trademark of Steinberg Media Technologies GmbH"
+    );
     assert!(fontelle_engine::ASIO_HELPER_HOST.starts_with("ASIO\u{ae}"));
 }
 

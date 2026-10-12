@@ -561,13 +561,13 @@ pub fn buffer_label_for(host: Option<&str>, frames: Option<u32>) -> String {
     }
 }
 
-/// The backend row's help line. Where ASIO can be chosen, Steinberg's mark
-/// is named as theirs (their usage guidelines, §15).
-const BACKEND_HELP: &str = if cfg!(windows) {
-    "How the studio plays. ASIO is a registered trademark of Steinberg Media Technologies GmbH"
-} else {
-    "The audio system the studio plays through"
-};
+/// The backend row's help line.
+const BACKEND_HELP: &str = "The audio system the studio plays through";
+
+/// Steinberg's attribution (their usage guidelines, §15), as the settings
+/// page writes it under "ASIO®" — a line, so without the sentence's stop.
+pub const ASIO_ATTRIBUTION_LINE: &str =
+    "ASIO is a registered trademark of Steinberg Media Technologies GmbH";
 
 /// Which shape a velocity is read through — the file's spelling of
 /// [`fontelle_midi::VelocityCurve`].
@@ -661,6 +661,10 @@ pub enum SettingRow {
     /// The ASIO driver's own control panel. A button; listed only while ASIO
     /// is the backend chosen.
     DriverPanel,
+    /// "ASIO®" and Steinberg's attribution, under the backend that carries
+    /// their logo (docs/asio.md §1). Words only; listed only where ASIO is
+    /// offered.
+    AsioTrademark,
     /// A section title. Nothing to set, and a click does nothing — it is what
     /// says which of these settings belong together. It is deliberately *not*
     /// the only thing saying so: see [`SettingRow::Transpose`]'s label.
@@ -847,6 +851,12 @@ pub fn setting_rows_with(
     let mut rows = Vec::with_capacity(SETTING_ROWS.len() + settings.plugin_dirs.len());
     for row in SETTING_ROWS {
         rows.push(row);
+        // Where ASIO is offered, Steinberg's attribution right under the
+        // backend that wears their logo — on a line of its own, so it is
+        // never cut short.
+        if row == SettingRow::AudioBackend && fontelle_engine::asio_helper_path().is_some() {
+            rows.push(SettingRow::AsioTrademark);
+        }
         // The driver's own panel is ASIO's: where its buffer, its rate and
         // its inputs are set.
         if row == SettingRow::AudioDevice
@@ -982,6 +992,7 @@ impl SettingRow {
             Self::Dropouts => "Dropouts",
             Self::AudioLoad => "Processing load",
             Self::DriverPanel => "Driver settings",
+            Self::AsioTrademark => "ASIO\u{ae}",
             Self::VelocityCurve => "Velocity curve",
             Self::FixedVelocity => "Fixed velocity",
             Self::VelocityMin => "Velocity min",
@@ -1087,6 +1098,7 @@ impl SettingRow {
             // The output's, which the session holds.
             Self::AudioLoad => "Not open".to_string(),
             Self::DriverPanel => "The driver's own window".to_string(),
+            Self::AsioTrademark => String::new(),
             Self::VelocityCurve => midi.velocity_curve.label().to_string(),
             Self::FixedVelocity => midi.fixed_velocity.to_string(),
             Self::VelocityMin => midi.velocity_min.to_string(),
@@ -1267,6 +1279,7 @@ impl SettingRow {
             Self::DriverPanel => {
                 "The ASIO driver's own settings: its buffer size, sample rate and inputs"
             }
+            Self::AsioTrademark => ASIO_ATTRIBUTION_LINE,
             Self::VelocityCurve => "How hard you play maps to how loud a note is",
             Self::FixedVelocity => "Every note at this velocity, with the Fixed curve",
             Self::VelocityMin => "What your softest touch plays",
@@ -1341,6 +1354,7 @@ impl SettingRow {
             | Self::Dropouts
             | Self::AudioLoad
             | Self::DriverPanel
+            | Self::AsioTrademark
             | Self::Folder(_)
             | Self::PresetFolder
             | Self::PluginFolder
@@ -1448,7 +1462,8 @@ impl SettingRow {
             | Self::OutputNow
             | Self::Dropouts
             | Self::AudioLoad
-            | Self::DriverPanel => SettingControlKind::Button,
+            | Self::DriverPanel
+            | Self::AsioTrademark => SettingControlKind::Button,
             Self::VelocityCurve
             | Self::ChannelFilter
             | Self::SongRouting

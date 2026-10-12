@@ -45,3 +45,7 @@ the GNU General Public License. You may redistribute it under the terms of
 that licence.
 
 ASIO is a registered trademark of Steinberg Media Technologies GmbH.
+The ASIO Compatible Logo, which a text file cannot show, is in
+licenses/trademarks/asio/ beside its NOTICE (Steinberg's mark, not covered
+by Fontelle's or this program's licence), and Fontelle shows it in
+Settings -> Audio output and in its start menu.

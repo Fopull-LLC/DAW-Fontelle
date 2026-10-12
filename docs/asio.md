@@ -1,5 +1,7 @@
 # ASIO® and better Windows audio
 
+<img src="../assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png" alt="ASIO Compatible Logo" width="140"/>
+
 *ASIO is a registered trademark of Steinberg Media Technologies GmbH.*
 
 Users on Windows reported clicky, crackly audio. Ty's decision
@@ -85,11 +87,30 @@ Usage Guidelines* (for SDK 2.3.4 or higher) ask, among other things:
 - §7, §10, §13: never "ASIO" in a company name or logo, never a variant like
   "ASIOd".
 
-What Fontelle does: "ASIO®" at its first use on the settings page (the
-backend's name), the attribution sentence in the backend row's help line on
-Windows, in this page, the README, the helper's README and its `--help`. **No
-logo is used**, as asked — which the guidelines read strictly would want
-beside the backend list (§1(f)); see *Gaps*.
+The guidelines set no size, clear space or colour; they ask for the logo
+unaltered (README), in one of §14's official forms, wherever the product is
+presented, and for the ® and the attribution. Fontelle uses Steinberg's own
+`ASIO-compatible-logo-Steinberg-TM-BW.png` — §14's form with the
+attribution beneath the logo — copied byte for byte to
+`assets/trademarks/asio/` (sha256 `5b5c4aae…`, pinned by
+`crates/fontelle-app/tests/asio_trademark.rs`), decoded without the tint
+Fontelle's own mark gets, and only ever scaled at its own proportions. It is
+Steinberg's trademark, not covered by any of Fontelle's licences: its
+`NOTICE`, `licenses/TRADEMARKS.md` and the README's licence section say so.
+It is compiled into Windows builds (and debug builds, for the tests); a
+released Linux or macOS Fontelle offers no ASIO and carries no mark of
+Steinberg's. Where each requirement is met:
+
+| Guideline | Asks | Where |
+|---|---|---|
+| README "Trademark and Logo Usage" | logos unaltered | Steinberg's file, byte for byte; drawn scaled only (`fontelle-ui/src/trademarks.rs`) |
+| §1(f), §2 | if ASIO is switched on by hand, the logo in every dialog that enables or configures it, adjacent to the word | Settings → Audio output: the logo beside the **Backend** row (once per page; the Driver settings row is on the same page), whenever ASIO is offered — Windows, with `fontelle-asio` beside Fontelle (`Session::setting_badges`; headless check `where_asio_is_offered_steinbergs_logo_is_beside_it_on_the_settings_page`) |
+| §1(e) | the logo in the About box or equivalent (help menu, splash) | the start menu — Fontelle's About — carries the logo and the credit "ASIO® output by fontelle-asio, a separate GPLv3 program. ASIO is a registered trademark of Steinberg Media Technologies GmbH." where ASIO is offered (headless check `where_asio_is_offered_the_start_menu_credits_steinberg`) |
+| §1(c) | the logo in all product documentation, or the attribution where it cannot go | this page and the README (the image); the Windows zip's `fontelle-asio-README.txt` and `fontelle-asio --help` (text: the attribution, and where the logo is); the logo itself in the zip under `licenses/trademarks/asio/` |
+| §1(b), §4, §11 | on web pages and posts naming ASIO | the GitHub release notes carry the logo and the attribution (`release.yml`); the README is the repository's page. Fopull's website (agent W's Fontelle page) and any video or post naming ASIO must carry it too — not in this repository |
+| §6 | "ASIO" in a product name only in plain text, logo in immediate proximity | "ASIO® (via fontelle-asio helper)" in plain text with the logo beside it; `fontelle-asio` is named beside the logo in the start menu credit and the docs |
+| §7, §10, §13 | no "ASIO" in a company name or logo, no variants | none: Fontelle's logo is its own; no "ASIOx" anywhere |
+| §15 | ® at first use; the attribution in credits and documentation | "ASIO®" at first use on the settings page (the backend's name), in the start menu, the README, this page, the helper's README and `--help`; the attribution on its own line under the backend (the **ASIO®** row, never cut short), in the credit, README, docs, NOTICE, helper README and `--help` |
 
 ### Why a separate program, and what its source is
 
@@ -398,12 +419,16 @@ file). Write down for each step what Settings → Audio output said in
 1. Unzip; check `fontelle-asio.exe`, `fontelle-asio-README.txt` and
    `licenses\fontelle-asio\LICENSE` + `STEINBERG-ASIO-SDK-LICENSE.txt` are
    in the folder.
-2. Start Fontelle → Settings → Audio output → Backend: the list has
-   **WASAPI (low latency)**, **WASAPI (exclusive)** and **ASIO® (via
-   fontelle-asio helper)**. Hover the Backend row: the help line ends with
-   the trademark sentence.
-3. Move `fontelle-asio.exe` away and restart: ASIO is not offered. Put it
-   back.
+2. Start Fontelle. The start menu shows Steinberg's ASIO Compatible Logo
+   at the foot of the recent list with the credit beside it. Settings →
+   Audio output → Backend: the list has **WASAPI (low latency)**, **WASAPI
+   (exclusive)** and **ASIO® (via fontelle-asio helper)**; the logo stands
+   beside the Backend row, black with its white letters (never tinted),
+   and the row under it, **ASIO®**, reads "ASIO is a registered trademark of
+   Steinberg Media Technologies GmbH" in full. Check both in the dark and the
+   light theme, and at the window sizes you use.
+3. Move `fontelle-asio.exe` away and restart: ASIO is not offered, and
+   neither the logo nor the credit appears anywhere. Put it back.
 
 **B. Your interface's own ASIO driver**
 
@@ -471,14 +496,12 @@ is a bug report.
   clippy-checked, and the IPC, the helper and Fontelle's side of it run
   under Wine; the ASIO driver calls and both WASAPI modes are only checked
   by section 8.
-- **The ASIO Compatible Logo is not shown.** Steinberg's guidelines (§1(f),
-  §2) want it in the dialog that switches ASIO on wherever "ASIO" is used;
-  the README says trademark use is optional under GPLv3 but must then follow
-  the rules. Options for Ty: add the unaltered logo (it ships in the SDK) to
-  the Audio output section; or rename the backend without the word
-  (e.g. "Interface driver (fontelle-asio)") and keep "ASIO" to documentation
-  with the attribution. The program's file name `fontelle-asio.exe` is the
-  same question (§6 allows "for ASIO" in product names, with the logo).
+- **The logo off this repository.** The website's Fontelle page, store
+  pages, videos and posts that name ASIO need the logo too (§4, §8, §11) —
+  agent W's and Ty's, not code here.
+- **The logo is small on the settings row** (as tall as the row, about 56
+  points): its built-in attribution is not readable at that size, which is
+  why the attribution also has a line of its own right under it.
 - **Output only, first two channels.** The protocol carries inputs and any
   channel count; Fontelle asks for stereo out only. Recording through ASIO,
   and choosing which output pair, are next.

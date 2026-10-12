@@ -37,6 +37,7 @@ pub mod sky;
 pub mod text;
 pub mod theme;
 pub mod tooltip;
+pub mod trademarks;
 pub mod transport;
 pub mod widget;
 

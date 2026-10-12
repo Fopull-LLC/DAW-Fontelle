@@ -1779,6 +1779,18 @@ pub trait StudioHost: DocumentHost {
         Vec::new()
     }
 
+    /// A mark beside each settings row, parallel to [`settings`](Self::settings)
+    /// — Steinberg's ASIO logo beside the rows that offer ASIO, which its
+    /// guidelines require. Empty is none anywhere.
+    fn setting_badges(&self) -> Vec<Option<crate::canvas::SettingBadge>> {
+        Vec::new()
+    }
+
+    /// Whether the start menu carries the ASIO credit: where ASIO is offered.
+    fn asio_credit(&self) -> bool {
+        false
+    }
+
     // --- the tour (`docs/ux-routing-and-learning-plan.md` §5) ---
     /// Opens the tour's song, fresh each time. The window then runs the tour
     /// over it.

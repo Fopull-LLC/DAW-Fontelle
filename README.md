@@ -181,6 +181,8 @@ reads.
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option —
 everything except one separate program:
 
+<img src="assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png" alt="ASIO Compatible Logo" width="110" align="right"/>
+
 **`fontelle-asio`** (`crates/fontelle-asio-host/`) is licensed **GPL-3.0-only**
 ([its own `LICENSE`](crates/fontelle-asio-host/LICENSE)). It hosts an ASIO®
 driver for Fontelle on Windows and is built with Steinberg's ASIO SDK under
@@ -193,6 +195,11 @@ Fontelle's code or any plugin. The protocol between them, which is
 MIT/Apache like the rest (`crates/fontelle-audio-ipc/`), is documented in
 [`docs/asio.md`](docs/asio.md). ASIO is a registered trademark of Steinberg
 Media Technologies GmbH.
+
+The ASIO Compatible Logo (`assets/trademarks/asio/`) is Steinberg's
+trademark, copied unaltered from their SDK and used as their guidelines
+require. **It is not covered by any of the licences above**; see its
+`NOTICE` and [`licenses/TRADEMARKS.md`](licenses/TRADEMARKS.md).
 
 The factory Grand Piano's recordings (`assets/flopsynth/samples/grand/`) are
 cut from the **Salamander Grand Piano** by Alexander Holm, published under

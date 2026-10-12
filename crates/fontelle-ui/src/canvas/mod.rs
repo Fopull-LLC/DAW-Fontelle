@@ -146,8 +146,8 @@ pub use preset_bar::{
     random_preset_row,
 };
 pub use settings_page::{
-    SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingsPageHit, SettingsPageLayout,
-    SettingsPageRow, SettingsSection, settings_page_hit, settings_page_layout,
+    SETTINGS_CLOSE, SETTINGS_EMPTY, SETTINGS_TITLE, SettingBadge, SettingsPageHit,
+    SettingsPageLayout, SettingsPageRow, SettingsSection, settings_page_hit, settings_page_layout,
     settings_page_row_height, settings_page_scroll_max, settings_page_scrolled, settings_sections,
 };
 /// Where a zoom should land, given the grid it is zooming and where the
@@ -296,7 +296,7 @@ pub use tune::{
 pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,
     NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING, REPOSITORY_LABEL,
-    REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WelcomeHit, WelcomeLayout,
-    transfer_fraction, transfer_text, update_line, update_progress, welcome_enter, welcome_hint,
-    welcome_hit, welcome_layout, with_learn, with_recovery,
+    REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WelcomeCredit, WelcomeHit,
+    WelcomeLayout, transfer_fraction, transfer_text, update_line, update_progress, welcome_enter,
+    welcome_hint, welcome_hit, welcome_layout, with_asio_credit, with_learn, with_recovery,
 };

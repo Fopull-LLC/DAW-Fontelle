@@ -139,6 +139,16 @@ pub struct WelcomeLayout {
     pub learn_text: Option<Rect>,
     /// …and a way to say no.
     pub learn_dismiss: Option<Rect>,
+    /// The ASIO credit — Steinberg's logo and the attribution — where ASIO
+    /// is offered. See [`with_asio_credit`].
+    pub asio_credit: Option<WelcomeCredit>,
+}
+
+/// A credit on the card: a mark and the words beside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WelcomeCredit {
+    pub logo: Rect,
+    pub text: Rect,
 }
 
 /// Lays the card out in `window`, with `recent` rows wanted and an update
@@ -318,7 +328,43 @@ pub fn welcome_layout(
         learn_card: None,
         learn_text: None,
         learn_dismiss: None,
+        asio_credit: None,
     }
+}
+
+/// How tall the ASIO credit is on the card.
+pub const CREDIT_HEIGHT: f32 = 64.0;
+
+/// Places the ASIO credit (`crate::trademarks`) at the foot of the recent
+/// column, above the tour's way in, when `show` — Steinberg's guidelines
+/// ask for the logo in a product's credits (§1(e)). The recent rows it
+/// would cover are dropped. Call after [`with_learn`].
+pub fn with_asio_credit(mut layout: WelcomeLayout, metrics: &Metrics, show: bool) -> WelcomeLayout {
+    let _ = metrics;
+    if !show {
+        return layout;
+    }
+    let x = layout.recent_heading.x;
+    let width = (layout.footer.right() - x).max(0.0);
+    let below = if let Some(card) = layout.learn_card {
+        card.y
+    } else if !layout.learn.is_empty() {
+        layout.learn.y
+    } else {
+        layout.footer.y
+    } - STACK_GAP;
+    let logo_w = crate::trademarks::asio_logo_width(CREDIT_HEIGHT);
+    let logo = Rect::new(x, below - CREDIT_HEIGHT, logo_w, CREDIT_HEIGHT).clamped();
+    let text = Rect::new(
+        logo.right() + BUTTON_GAP * 2.0,
+        logo.y,
+        (width - logo_w - BUTTON_GAP * 2.0).max(0.0),
+        CREDIT_HEIGHT,
+    )
+    .clamped();
+    layout.rows.retain(|row| row.frame.bottom() <= logo.y);
+    layout.asio_credit = Some(WelcomeCredit { logo, text });
+    layout
 }
 
 /// What the Learn button and the first-launch card say.

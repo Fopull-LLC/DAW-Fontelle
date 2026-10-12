@@ -1098,6 +1098,9 @@ struct Welcome {
     /// What the recover button says, while the host has something a crash
     /// would have lost — `DocumentHost::recovery_offer`.
     recover: Option<String>,
+    /// The ASIO credit's words, shaped to its room, where the host offers
+    /// ASIO — `StudioHost::asio_credit`.
+    credit: Option<TextLayout>,
 }
 
 #[derive(Debug)]
@@ -1961,6 +1964,8 @@ pub struct WindowApp {
     /// What each settings row is for, parallel to `settings` — the settings
     /// page's line under each name.
     settings_help: Vec<String>,
+    /// The marks beside settings rows — `StudioHost::setting_badges`.
+    settings_badges: Vec<Option<crate::canvas::SettingBadge>>,
     /// Whether the song is lane-style — the rack then has no route chips.
     lane_style: bool,
     /// Which settings row the arrow keys are on, once one has been pressed —
@@ -2569,6 +2574,7 @@ impl WindowApp {
             settings: Vec::new(),
             settings_controls: Vec::new(),
             settings_help: Vec::new(),
+            settings_badges: Vec::new(),
             lane_style: false,
             settings_focus: None,
             projects: Vec::new(),
@@ -2700,20 +2706,36 @@ impl WindowApp {
             .document
             .as_ref()
             .and_then(|doc| doc.recovery_offer());
+        let credit = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.asio_credit());
         let layout = crate::canvas::with_recovery(
-            crate::canvas::with_learn(
-                crate::canvas::welcome_layout(
-                    self.layout.window,
+            crate::canvas::with_asio_credit(
+                crate::canvas::with_learn(
+                    crate::canvas::welcome_layout(
+                        self.layout.window,
+                        &self.options.theme.metrics,
+                        recent.len(),
+                        button.is_some() || progress.is_some(),
+                    ),
                     &self.options.theme.metrics,
-                    recent.len(),
-                    button.is_some() || progress.is_some(),
+                    offer,
                 ),
                 &self.options.theme.metrics,
-                offer,
+                credit,
             ),
             recover.is_some(),
         );
         let line = self.text.layout(&line, font, Some(layout.update.width));
+        let credit = layout.asio_credit.map(|c| {
+            self.text.layout(
+                crate::trademarks::ASIO_CREDIT,
+                &self.options.theme.font,
+                Some(c.text.width),
+            )
+        });
         self.welcome = Some(Welcome {
             layout,
             title,
@@ -2726,6 +2748,7 @@ impl WindowApp {
             recent,
             message: TextLayout::default(),
             recover,
+            credit,
         });
         if let Some(hint) = self
             .welcome
@@ -2765,20 +2788,36 @@ impl WindowApp {
             .document
             .as_ref()
             .is_some_and(|doc| !doc.tour_offered());
+        let credit = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.asio_credit());
         if let Some(welcome) = &mut self.welcome {
             welcome.layout = crate::canvas::with_recovery(
-                crate::canvas::with_learn(
-                    crate::canvas::welcome_layout(
-                        window,
+                crate::canvas::with_asio_credit(
+                    crate::canvas::with_learn(
+                        crate::canvas::welcome_layout(
+                            window,
+                            metrics,
+                            welcome.recent.len(),
+                            welcome.button.is_some() || welcome.progress.is_some(),
+                        ),
                         metrics,
-                        welcome.recent.len(),
-                        welcome.button.is_some() || welcome.progress.is_some(),
+                        offer,
                     ),
                     metrics,
-                    offer,
+                    credit,
                 ),
                 welcome.recover.is_some(),
             );
+            welcome.credit = welcome.layout.asio_credit.map(|c| {
+                self.text.layout(
+                    crate::trademarks::ASIO_CREDIT,
+                    &self.options.theme.font,
+                    Some(c.text.width),
+                )
+            });
             welcome.hover =
                 crate::canvas::welcome_hit(&welcome.layout, self.cursor.0, self.cursor.1);
         }
@@ -3466,6 +3505,7 @@ impl WindowApp {
                         recent: &welcome.recent,
                         hover: welcome.hover,
                         message: &welcome.message,
+                        asio_credit: welcome.credit.as_ref(),
                     }),
                 keybinds: self.keybinds.map(|scroll| crate::render::KeybindsChrome {
                     scroll,
@@ -3506,6 +3546,7 @@ impl WindowApp {
                             Drag::SettingSlider(index) => Some(index),
                             _ => None,
                         },
+                        badges: &self.settings_badges,
                     }
                 }),
             },
@@ -7055,6 +7096,7 @@ impl WindowApp {
         self.settings = doc.settings();
         self.settings_controls = doc.setting_controls();
         self.settings_help = doc.setting_help();
+        self.settings_badges = doc.setting_badges();
         self.lane_style = doc.lane_style();
         if let Some(tour) = &self.tour
             && let Some(&(section, page)) = crate::canvas::tour_steps().get(tour.step)

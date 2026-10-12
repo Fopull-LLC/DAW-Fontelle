@@ -83,6 +83,15 @@ const ROW_GAP: f32 = 6.0;
 /// Under the header, before the body.
 const HEADER_GAP: f32 = 14.0;
 
+/// Something drawn on a settings row that is neither words nor a control:
+/// another company's mark, where its owner requires it beside the row
+/// (`crate::trademarks`). The host says which rows carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingBadge {
+    /// Steinberg's ASIO Compatible Logo, beside a row that offers ASIO.
+    AsioCompatible,
+}
+
 /// One row of the chosen section, where it is drawn.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SettingsPageRow {

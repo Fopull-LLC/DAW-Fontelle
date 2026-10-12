@@ -10800,6 +10800,26 @@ impl StudioHost for Session {
             .collect()
     }
 
+    /// Steinberg's ASIO logo beside the backend row, once, wherever ASIO is
+    /// offered — their usage guidelines want it in the dialog that switches
+    /// ASIO on (docs/asio.md §1). Offered means the helper is beside
+    /// Fontelle, which only the Windows download has.
+    fn setting_badges(&self) -> Vec<Option<fontelle_ui::canvas::SettingBadge>> {
+        let offered = fontelle_engine::asio_helper_path().is_some();
+        self.setting_rows()
+            .iter()
+            .map(|row| {
+                (offered && *row == crate::settings::SettingRow::AudioBackend)
+                    .then_some(fontelle_ui::canvas::SettingBadge::AsioCompatible)
+            })
+            .collect()
+    }
+
+    /// And in the start menu's credits, where it is offered.
+    fn asio_credit(&self) -> bool {
+        fontelle_engine::asio_helper_path().is_some()
+    }
+
     fn theme_revision(&self) -> u64 {
         self.theme_revision
     }
