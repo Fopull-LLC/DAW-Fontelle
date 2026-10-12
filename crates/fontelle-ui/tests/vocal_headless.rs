@@ -435,3 +435,19 @@ fn the_singer_picker_lists_singers_with_the_research_badge() {
     );
     shoot(&song, None, Some(&empty), "vocal-singer-picker-none");
 }
+
+/// A silent track's long message, drawn as plates the roll holds, right
+/// of its keyboard — not one plate running off the roll's left edge.
+#[test]
+fn a_long_silence_message_stays_inside_the_roll() {
+    let mut song = song();
+    song.view.message = Some(
+        "\u{201c}KasaneTeto_tougou_110401\u{201d} is not installed on this computer, so this \
+         track is silent \u{2014} get it from Voicebanks \u{2192} Find singers, or choose \
+         another singer. Its notes and settings are kept."
+            .to_string(),
+    );
+    // Looked at (`vocal-roll-missing`); the lines themselves are
+    // `vocal_corner.rs`'s.
+    let _ = shoot(&song, None, None, "vocal-roll-missing");
+}

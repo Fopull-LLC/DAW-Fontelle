@@ -160,20 +160,46 @@ pub fn caption_rect(grid: Rect, width: f32) -> Rect {
     Rect::new(grid.right() - w - 8.0, grid.y + 6.0, w, 20.0)
 }
 
+/// The longest a corner line is, in characters: about 500 px at the
+/// corner's size, which a roll holds beside its keyboard.
+pub const CORNER_LINE_CHARS: usize = 72;
+
 /// The lines the corner says under the chip: the research badge, why it is
-/// silent, how many words were guessed.
+/// silent, how many words were guessed — each broken at spaces into lines
+/// of at most [`CORNER_LINE_CHARS`].
 pub fn corner_lines(view: &VocalView) -> Vec<String> {
     let mut lines = Vec::new();
     if view.research_only {
         lines.push(RESEARCH_TEXT.to_string());
     }
     if let Some(message) = &view.message {
-        lines.push(message.clone());
+        lines.extend(broken(message, CORNER_LINE_CHARS));
     }
     if !view.guessed.is_empty() {
-        lines.push(guessed_line(view.guessed.len()));
+        lines.extend(broken(&guessed_line(view.guessed.len()), CORNER_LINE_CHARS));
     }
     lines
+}
+
+/// `text` in lines of at most `width` characters, broken at spaces (a word
+/// longer than a line is a line of its own).
+fn broken(text: &str, width: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        let fits = line.is_empty() || line.chars().count() + 1 + word.chars().count() <= width;
+        if !fits {
+            out.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    out
 }
 
 pub fn guessed_line(count: usize) -> String {
