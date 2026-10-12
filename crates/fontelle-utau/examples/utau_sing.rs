@@ -5,8 +5,10 @@
 //!     <bank folder> <out.wav> "さ:62 く:64 ら:66 -:64" [seconds per note] [preview|final]
 //! ```
 //!
-//! Each word is `lyric:midi`. Prints the bank, its detected phonemizer, what
-//! each note was sung as, timings, and each note's measured pitch error.
+//! Each word is `lyric:midi`, or `lyric:midi:seconds` for a note of its
+//! own length; `R:0:seconds` is a rest. `FONTELLE_UTAU_SETTINGS` sets the
+//! phrase's settings, e.g. `expression=0,breath=0`. Prints the bank, its
+//! detected phonemizer, what each note was sung as, and timings.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -46,12 +48,24 @@ fn main() {
         kind,
         t.elapsed()
     );
-    let notes: Vec<PhraseNote> = args[3]
-        .split_whitespace()
-        .enumerate()
-        .map(|(i, w)| {
-            let (lyric, pitch) = w.rsplit_once(':').unwrap_or((w, "60"));
-            PhraseNote::new(i as f64 * len, len, pitch.parse().unwrap_or(60.0), lyric)
+    let mut notes: Vec<PhraseNote> = Vec::new();
+    let mut at = 0.0;
+    for w in args[3].split_whitespace() {
+        let mut parts = w.split(':');
+        let lyric = parts.next().unwrap_or("a");
+        let pitch: f32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(60.0);
+        let secs: f64 = parts.next().and_then(|d| d.parse().ok()).unwrap_or(len);
+        if lyric != "R" {
+            notes.push(PhraseNote::new(at, secs, pitch, lyric));
+        }
+        at += secs;
+    }
+    let settings: BTreeMap<String, f32> = std::env::var("FONTELLE_UTAU_SETTINGS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            Some((k.trim().to_string(), v.trim().parse().ok()?))
         })
         .collect();
     let phrase = Phrase {
@@ -60,7 +74,7 @@ fn main() {
         notes: notes.clone(),
         curves: BTreeMap::new(),
         extra_curves: BTreeMap::new(),
-        settings: BTreeMap::new(),
+        settings,
         state: None,
         start: 0.0,
         note_ids: Vec::new(),

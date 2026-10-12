@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use fontelle_sing::{CURVE_STEP, Lane, Phrase, note_pitch};
+use fontelle_sing::{CURVE_STEP, Lane, Phrase};
 use rayon::prelude::*;
 
 use crate::bank::Voicebank;
@@ -32,6 +32,13 @@ pub struct Placed {
     pub consonant_scale: f64,
     /// Length of the sample in ms (for the cutoff).
     pub file_ms: f64,
+    /// Power gain (1 for a sung unit).
+    pub gain: f64,
+    /// A breath taken before a phrase, not a sung unit: no phoneme of its
+    /// note, never smoothed against its neighbours.
+    pub breath: bool,
+    /// The last unit of a run: its fade out is the voice's release.
+    pub release: bool,
 }
 
 impl Placed {
@@ -150,6 +157,9 @@ pub fn place(
             fade_out: 0.0,
             consonant_scale: scale,
             file_ms: ms,
+            gain: 1.0,
+            breath: false,
+            release: false,
         });
         tails.push(u.tail);
     }
@@ -167,6 +177,7 @@ pub fn place(
         if tails[i] {
             p.end = p.start + natural;
             p.fade_out = RELEASE.min(natural / 4.0);
+            p.release = true;
             continue;
         }
         match next {
@@ -182,6 +193,7 @@ pub fn place(
             _ => {
                 p.end = run_end(p.note);
                 p.fade_out = RELEASE.min((p.end - p.start) / 4.0);
+                p.release = true;
             }
         }
     }
@@ -194,6 +206,95 @@ pub fn place(
     placed
 }
 
+/// What a bank's breath is called, in the order looked for: the usual
+/// English names, then the Japanese 息 (Kasane Teto's extra library).
+pub const BREATH_ALIASES: [&str; 4] = ["br", "breath", "息", "息1"];
+/// A breath is taken only after a rest at least this long (or at the start
+/// of a phrase), lasts at most `BREATH_MAX`, and is heard at `BREATH_GAIN`
+/// (power) times the breath setting.
+const BREATH_MIN_REST: f64 = 0.3;
+const BREATH_MAX: f64 = 0.4;
+const BREATH_MIN: f64 = 0.12;
+const BREATH_GAIN: f64 = 1.0;
+
+/// The bank's breath for a note at `tone` in `colour`, if it has one.
+pub fn breath_entry<'a>(bank: &'a Voicebank, tone: u8, colour: &str) -> Option<&'a OtoEntry> {
+    BREATH_ALIASES
+        .iter()
+        .find_map(|a| bank.find(a, tone, colour))
+}
+
+/// `placed` with a breath before the start of each run that has room for
+/// one: the phrase's first, and any after a rest of at least
+/// [`BREATH_MIN_REST`]. It ends just inside the first unit, so the
+/// consonant comes out of the breath. `amount` 0..1; none at 0 or when the
+/// bank has no breath.
+///
+/// Ty: "breath/aspiration at phrase ends" — a phrase that starts from
+/// silence with no breath is one of the things that makes UTAU sound
+/// pasted together.
+pub fn add_breaths(
+    bank: &Voicebank,
+    placed: Vec<Placed>,
+    phrase: &Phrase,
+    file_ms: &dyn Fn(&Path) -> Option<f64>,
+    amount: f64,
+) -> Vec<Placed> {
+    if amount <= 0.0 {
+        return placed;
+    }
+    let notes = &phrase.notes;
+    let mut out: Vec<Placed> = Vec::with_capacity(placed.len() + 2);
+    let mut prev_end: Option<f64> = None;
+    for (r, p) in placed.iter().enumerate() {
+        let after_rest = r == 0
+            || (p.note > placed[r - 1].note
+                && p.note < notes.len()
+                && notes[p.note].start - notes[p.note - 1].end() >= BREATH_MIN_REST);
+        if after_rest && !p.breath {
+            let room = match prev_end {
+                None => BREATH_MAX,
+                Some(e) => p.start - e - 0.05,
+            };
+            let note = &notes[p.note];
+            let tone = note.pitch.round().clamp(0.0, 127.0) as u8;
+            let colour = note
+                .options
+                .get(crate::NOTE_OPTION_COLOUR)
+                .map(String::as_str)
+                .unwrap_or("");
+            if let Some(entry) = breath_entry(bank, tone, colour)
+                && let Some(ms) = file_ms(&entry.file)
+            {
+                let natural = (entry.end_ms(ms) - entry.offset) / 1000.0;
+                let len = natural.min(BREATH_MAX).min(room);
+                if len >= BREATH_MIN {
+                    let end = p.start + 0.02;
+                    let start = end - len;
+                    out.push(Placed {
+                        alias: entry.alias.clone(),
+                        note: p.note,
+                        entry: entry.clone(),
+                        start,
+                        anchor: start,
+                        end,
+                        fade_in: (len / 3.0).min(0.05),
+                        fade_out: 0.04,
+                        consonant_scale: 1.0,
+                        file_ms: ms,
+                        gain: BREATH_GAIN * amount.min(1.0),
+                        breath: true,
+                        release: false,
+                    });
+                }
+            }
+        }
+        prev_end = Some(prev_end.map_or(p.end, |e: f64| e.max(p.end)));
+        out.push(p.clone());
+    }
+    out
+}
+
 /// The shortest fade a unit gets at an edge, so nothing clicks.
 const MIN_FADE: f64 = 0.005;
 /// The fade at the end of a sung run.
@@ -204,6 +305,10 @@ pub struct Voicing<'a> {
     pub phrase: &'a Phrase,
     /// 0..1: how much of each recording's own pitch movement is kept.
     pub modulation: f64,
+    /// 0..1: the singer's expression on the written pitch.
+    pub expression: f64,
+    /// 0..1: breaths and aspirated releases.
+    pub breath: f64,
 }
 
 /// One unit's analysis, with the figures assembly needs.
@@ -241,7 +346,12 @@ pub fn assemble(
     // Frames on the curve grid, so frame j is the pitch curve's sample j.
     let t0 = (t0 / CURVE_STEP).floor() * CURVE_STEP;
     let nf = (((t1 - t0) / FRAME_PERIOD).ceil() as usize).max(1) + 1;
-    let pitch = note_pitch(&phrase.notes, t0, t0 + (nf - 1) as f64 * FRAME_PERIOD);
+    let pitch = crate::expression::pitch_line(
+        &phrase.notes,
+        t0,
+        t0 + (nf - 1) as f64 * FRAME_PERIOD,
+        voicing.expression,
+    );
     let lane = |l: Lane| phrase.curves.get(&l);
     let (bend, dynamics, breath, voicing_lane, tension, gender) = (
         lane(Lane::PitchBend),
@@ -252,6 +362,9 @@ pub fn assemble(
         lane(Lane::Gender),
     );
     let df = fs as f64 / fft_size as f64;
+    let joins = joins(placed, sources, fs, fft_size);
+    let bands = BandMap::new(bins, df);
+    let aspirate = 0.6 * voicing.breath.clamp(0.0, 1.0);
     let mut frames = Frames {
         fft_size,
         f0: vec![0.0; nf],
@@ -265,6 +378,7 @@ pub fn assemble(
         ap_bins: vec![0.0f32; bins],
         ap_bins2: vec![0.0f32; bins],
         warped: vec![0.0f64; bins],
+        band_gain: vec![0.0f64; BANDS],
     };
     frames
         .sp
@@ -279,17 +393,24 @@ pub fn assemble(
                 ap_bins,
                 ap_bins2,
                 warped,
+                band_gain,
             } = scr;
             let t = t0 + j as f64 * FRAME_PERIOD;
             total.iter_mut().for_each(|v| *v = 0.0);
             periodic.iter_mut().for_each(|v| *v = 0.0);
             let mut voiced_weight = 0.0;
             let mut dominant: Option<(f64, f64, f64)> = None; // (weight, src f0, median)
-            for (p, src) in placed.iter().zip(sources) {
-                let w = p.weight(t);
+            // How far into a release the voice is, 0..1.
+            let mut release = 0.0f64;
+            for (u, (p, src)) in placed.iter().zip(sources).enumerate() {
+                let w = p.weight(t) * p.gain;
                 if w <= 0.0 {
                     continue;
                 }
+                if p.release && p.fade_out > 0.0 && t > p.end - p.fade_out {
+                    release = release.max(((t - (p.end - p.fade_out)) / p.fade_out).min(1.0));
+                }
+                let corrected = joins[u].gains(t, band_gain);
                 let a = &src.analysis;
                 let x = p.source_ms(t) / 1000.0 / FRAME_PERIOD;
                 if x < 0.0 || a.frames() == 0 {
@@ -308,7 +429,11 @@ pub fn assemble(
                 // its share of the variance.
                 let level = f64::from(fs) / f64::from(a.fs);
                 for b in 0..bins.min(src_bins) {
-                    let s = level * (f64::from(si[b]) + (f64::from(sk[b]) - f64::from(si[b])) * fr);
+                    let mut s =
+                        level * (f64::from(si[b]) + (f64::from(sk[b]) - f64::from(si[b])) * fr);
+                    if corrected {
+                        s *= bands.gain(b, band_gain);
+                    }
                     total[b] += w * s;
                     if voiced {
                         let ap = f64::from(ap_bins[b])
@@ -383,6 +508,10 @@ pub fn assemble(
                     db *= 1.0 + voice;
                 }
                 ap = 10f64.powf(db.max(-80.0) / 20.0).min(1.0);
+                // The release goes out on breath, not on a cut of the buzz.
+                if release > 0.0 && aspirate > 0.0 {
+                    ap += (1.0 - ap) * aspirate * release;
+                }
                 ap_out[b] = ap as f32;
             }
             if voiced_weight > 0.0 && ap_out[0] < 0.999 {
@@ -409,4 +538,211 @@ struct Scratch {
     ap_bins: Vec<f32>,
     ap_bins2: Vec<f32>,
     warped: Vec<f64>,
+    band_gain: Vec<f64>,
+}
+
+/// Bands the join smoothing measures and corrects in, log-spaced.
+const BANDS: usize = 16;
+const BAND_LOW: f64 = 80.0;
+/// How long a join's correction takes to relax back to the recording's
+/// own level and colour, either side of the crossfade.
+const JOIN_RELAX: f64 = 0.15;
+/// The most a join corrects: overall, and in colour on top.
+const JOIN_LEVEL_MAX: f64 = 10.0;
+const JOIN_SHAPE_MAX: f64 = 6.0;
+/// A colour difference past this (RMS dB over the bands) is two different
+/// sounds meeting, a vowel change: only the level is matched then.
+const JOIN_SAME_SOUND: f64 = 3.0;
+
+/// Output bins to log-spaced bands and back.
+struct BandMap {
+    /// Each band's bins.
+    ranges: Vec<(usize, usize)>,
+    /// Each bin's place between band centres: (lower band, share of the
+    /// upper).
+    place: Vec<(usize, f64)>,
+}
+
+impl BandMap {
+    fn new(bins: usize, df: f64) -> Self {
+        let top = df * (bins - 1) as f64 * 0.95;
+        let edge = |k: usize| BAND_LOW * (top / BAND_LOW).powf(k as f64 / BANDS as f64);
+        let ranges: Vec<(usize, usize)> = (0..BANDS)
+            .map(|k| {
+                let a = (edge(k) / df).floor() as usize;
+                let b = ((edge(k + 1) / df).ceil() as usize).max(a + 1).min(bins);
+                (a.min(bins - 1), b)
+            })
+            .collect();
+        let centre = |k: usize| (edge(k) * edge(k + 1)).sqrt().ln();
+        let place = (0..bins)
+            .map(|b| {
+                let f = (b as f64 * df).max(1.0).ln();
+                if f <= centre(0) {
+                    return (0, 0.0);
+                }
+                for k in 0..BANDS - 1 {
+                    if f <= centre(k + 1) {
+                        return (k, (f - centre(k)) / (centre(k + 1) - centre(k)));
+                    }
+                }
+                (BANDS - 2, 1.0)
+            })
+            .collect();
+        BandMap { ranges, place }
+    }
+
+    /// Mean power per band, dB.
+    fn levels(&self, power: &[f64]) -> Vec<f64> {
+        self.ranges
+            .iter()
+            .map(|&(a, b)| {
+                let n = (b - a).max(1) as f64;
+                10.0 * (power[a..b].iter().sum::<f64>() / n).max(1e-20).log10()
+            })
+            .collect()
+    }
+
+    /// The power gain at bin `b` from per-band dB.
+    fn gain(&self, b: usize, band_db: &[f64]) -> f64 {
+        let (k, x) = self.place[b];
+        let db = band_db[k] + (band_db[k + 1] - band_db[k]) * x;
+        10f64.powf(db / 10.0)
+    }
+}
+
+/// A unit's corrections where it meets the units either side of it.
+#[derive(Default)]
+struct Join {
+    /// Joined from the unit before: full until `.0`, relaxing after.
+    incoming: Option<(f64, Vec<f64>)>,
+    /// Joined into the unit after: full from `.0`, relaxing before.
+    outgoing: Option<(f64, Vec<f64>)>,
+}
+
+impl Join {
+    /// Fills `out` with the band gains (dB) at `t`; false when there are
+    /// none.
+    fn gains(&self, t: f64, out: &mut [f64]) -> bool {
+        let ramp_in = self.incoming.as_ref().map(|(at, _)| {
+            if t <= *at {
+                1.0
+            } else {
+                (1.0 - (t - at) / JOIN_RELAX).max(0.0)
+            }
+        });
+        let ramp_out = self.outgoing.as_ref().map(|(at, _)| {
+            if t >= *at {
+                1.0
+            } else {
+                (1.0 - (at - t) / JOIN_RELAX).max(0.0)
+            }
+        });
+        let ri = ramp_in.unwrap_or(0.0);
+        let ro = ramp_out.unwrap_or(0.0);
+        if ri <= 0.0 && ro <= 0.0 {
+            return false;
+        }
+        for (k, o) in out.iter_mut().enumerate() {
+            *o = 0.0;
+            if let Some((_, c)) = &self.incoming {
+                *o += ri * c[k];
+            }
+            if let Some((_, c)) = &self.outgoing {
+                *o += ro * c[k];
+            }
+        }
+        true
+    }
+}
+
+/// A unit's power per output bin at phrase time `t`, and whether it is
+/// voiced there.
+fn unit_power(
+    p: &Placed,
+    src: &UnitSource,
+    t: f64,
+    bins: usize,
+    fs: u32,
+) -> Option<(Vec<f64>, bool)> {
+    let a = &src.analysis;
+    let x = p.source_ms(t) / 1000.0 / FRAME_PERIOD;
+    if x < 0.0 || a.frames() == 0 {
+        return None;
+    }
+    let i = (x.floor() as usize).min(a.frames() - 1);
+    let k = (i + 1).min(a.frames() - 1);
+    let fr = (x - i as f64).clamp(0.0, 1.0);
+    let (si, sk) = (a.sp_frame(i), a.sp_frame(k));
+    let level = f64::from(fs) / f64::from(a.fs);
+    let mut out = vec![1e-20; bins];
+    for (b, o) in out.iter_mut().enumerate().take(bins.min(a.bins())) {
+        *o = level * (f64::from(si[b]) + (f64::from(sk[b]) - f64::from(si[b])) * fr);
+    }
+    let near = if fr < 0.5 { i } else { k };
+    Some((out, a.f0[near] > 0.0))
+}
+
+/// Where two sung units crossfade, both voiced, the difference between
+/// them shared out: each meets the other halfway at the crossfade and
+/// relaxes back to its own sound over [`JOIN_RELAX`]. Two recordings of
+/// the same vowel sung at different levels, or with a different colour,
+/// no longer jump at the join.
+fn joins(placed: &[Placed], sources: &[&UnitSource], fs: u32, fft_size: usize) -> Vec<Join> {
+    let bins = fft_size / 2 + 1;
+    let map = BandMap::new(bins, fs as f64 / fft_size as f64);
+    let mut out: Vec<Join> = placed.iter().map(|_| Join::default()).collect();
+    let mut prev: Option<usize> = None;
+    for i in 0..placed.len() {
+        if placed[i].breath {
+            continue;
+        }
+        let Some(h) = prev.replace(i) else {
+            continue;
+        };
+        let (a, b) = (&placed[h], &placed[i]);
+        let (ws, we) = (b.start, a.end.min(b.start + b.fade_in.max(0.005)));
+        if we <= ws - 1e-9 {
+            continue;
+        }
+        let mut sum_a = vec![0.0; bins];
+        let mut sum_b = vec![0.0; bins];
+        // Where both are voiced (a recording's first frame may not read as
+        // voiced yet); at least two points of the five.
+        let mut voiced = 0;
+        for s in 0..5 {
+            let t = ws + (we - ws) * s as f64 / 4.0;
+            if let (Some((pa, true)), Some((pb, true))) = (
+                unit_power(a, sources[h], t, bins, fs),
+                unit_power(b, sources[i], t, bins, fs),
+            ) {
+                sum_a.iter_mut().zip(&pa).for_each(|(x, y)| *x += y);
+                sum_b.iter_mut().zip(&pb).for_each(|(x, y)| *x += y);
+                voiced += 1;
+            }
+        }
+        if voiced < 2 {
+            continue;
+        }
+        let (la, lb) = (map.levels(&sum_a), map.levels(&sum_b));
+        let diff: Vec<f64> = la.iter().zip(&lb).map(|(x, y)| x - y).collect();
+        let level = diff.iter().sum::<f64>() / BANDS as f64;
+        let shape: Vec<f64> = diff.iter().map(|d| d - level).collect();
+        let spread = (shape.iter().map(|d| d * d).sum::<f64>() / BANDS as f64).sqrt();
+        let level = level.clamp(-JOIN_LEVEL_MAX, JOIN_LEVEL_MAX);
+        let corr: Vec<f64> = shape
+            .iter()
+            .map(|d| {
+                let s = if spread <= JOIN_SAME_SOUND {
+                    d.clamp(-JOIN_SHAPE_MAX, JOIN_SHAPE_MAX)
+                } else {
+                    0.0
+                };
+                (level + s) / 2.0
+            })
+            .collect();
+        out[i].incoming = Some((we, corr.clone()));
+        out[h].outgoing = Some((ws, corr.iter().map(|c| -c).collect()));
+    }
+    out
 }

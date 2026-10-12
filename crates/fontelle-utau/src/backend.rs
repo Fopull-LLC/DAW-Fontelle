@@ -23,6 +23,17 @@ pub const OUTPUT_RATE: u32 = 44_100;
 pub const SETTING_PHONEMIZER: &str = "phonemizer";
 /// Setting: how much of the recording's own pitch movement is kept, %.
 pub const SETTING_MODULATION: &str = "modulation";
+/// Setting: how much of a singer's own expression is added to the written
+/// pitch (a scoop into a phrase, overshoot after a leap, a late vibrato on
+/// long notes, a small fall at the end), %.
+pub const SETTING_EXPRESSION: &str = "expression";
+/// Setting: how strongly breaths are taken before phrases and releases
+/// aspirated, %.
+pub const SETTING_BREATH: &str = "breath";
+/// The expression setting's default, %: on, as a singer sings.
+pub const DEFAULT_EXPRESSION: f32 = 100.0;
+/// The breath setting's default, %.
+pub const DEFAULT_BREATH: f32 = 60.0;
 /// Note option: the voice colour.
 pub const NOTE_OPTION_COLOUR: &str = "colour";
 
@@ -212,6 +223,22 @@ impl Backend for UtauBackend {
                     default: 0.0,
                     unit: "%".into(),
                 },
+                SettingInfo {
+                    id: SETTING_EXPRESSION.into(),
+                    name: "Expression (scoops, overshoot, a late vibrato on long notes)".into(),
+                    min: 0.0,
+                    max: 100.0,
+                    default: DEFAULT_EXPRESSION,
+                    unit: "%".into(),
+                },
+                SettingInfo {
+                    id: SETTING_BREATH.into(),
+                    name: "Breath (before phrases, and on the release)".into(),
+                    min: 0.0,
+                    max: 100.0,
+                    default: DEFAULT_BREATH,
+                    unit: "%".into(),
+                },
             ],
             note_options,
         }
@@ -227,7 +254,7 @@ impl Backend for UtauBackend {
 
 /// Bumped when the same phrase would sing differently: part of
 /// [`Backend::version`], so cached takes are sung again.
-const RENDER_VERSION: u32 = 1;
+const RENDER_VERSION: u32 = 2;
 
 pub struct UtauSession {
     banks: Arc<Mutex<BTreeMap<String, Known>>>,
@@ -298,6 +325,33 @@ fn sing(
             files.push(e.file.clone());
         }
     }
+    let setting = |id: &str, default: f32| {
+        f64::from(
+            phrase
+                .settings
+                .get(id)
+                .copied()
+                .unwrap_or(default)
+                .clamp(0.0, 100.0),
+        ) / 100.0
+    };
+    let breath = setting(SETTING_BREATH, DEFAULT_BREATH);
+    // The breaths a phrase may take, analysed with the rest.
+    if breath > 0.0 {
+        for n in &phrase.notes {
+            let tone = n.pitch.round().clamp(0.0, 127.0) as u8;
+            let colour = n
+                .options
+                .get(NOTE_OPTION_COLOUR)
+                .map(String::as_str)
+                .unwrap_or("");
+            if let Some(e) = render::breath_entry(bank, tone, colour)
+                && !files.contains(&e.file)
+            {
+                files.push(e.file.clone());
+            }
+        }
+    }
     // The cancel flag cannot cross threads, so it is read between batches.
     let mut analysed: Vec<(PathBuf, Option<Arc<UnitSource>>)> = Vec::new();
     let batch = rayon::current_num_threads().max(1);
@@ -325,6 +379,7 @@ fn sing(
             .map(|s| s.analysis.frames().saturating_sub(1) as f64 * FRAME_PERIOD * 1000.0)
     };
     let placed = render::place(bank, &plan, phrase, &file_ms);
+    let placed = render::add_breaths(bank, placed, phrase, &file_ms, breath);
     let unit_sources: Vec<&UnitSource> = placed
         .iter()
         .filter_map(|p| sources.get(&p.entry.file).map(|s| s.as_ref()))
@@ -341,14 +396,9 @@ fn sing(
     };
     let voicing = Voicing {
         phrase,
-        modulation: f64::from(
-            phrase
-                .settings
-                .get(SETTING_MODULATION)
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 100.0),
-        ) / 100.0,
+        modulation: setting(SETTING_MODULATION, 0.0),
+        expression: setting(SETTING_EXPRESSION, DEFAULT_EXPRESSION),
+        breath,
     };
     let (frames, t0) = render::assemble(&placed, &unit_sources, &voicing, fs, fft_size);
     let mut samples =
@@ -368,7 +418,7 @@ fn sing(
             guessed: plan.guessed.get(i).copied().unwrap_or(false),
         })
         .collect();
-    for p in &placed {
+    for p in placed.iter().filter(|p| !p.breath) {
         if let Some(n) = phonemes.get_mut(p.note) {
             n.phonemes.push(SungPhoneme {
                 symbol: p.alias.clone(),

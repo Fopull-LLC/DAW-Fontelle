@@ -13,7 +13,9 @@ use fontelle_sing::{
 };
 use fontelle_utau::bank::Voicebank;
 use fontelle_utau::cache::AnalysisCache;
-use fontelle_utau::{NOTE_OPTION_COLOUR, SETTING_PHONEMIZER, UtauBackend, sing_with};
+use fontelle_utau::{
+    NOTE_OPTION_COLOUR, SETTING_EXPRESSION, SETTING_PHONEMIZER, UtauBackend, sing_with,
+};
 
 const ALIASES: [&str; 8] = ["あ", "か", "さ", "ら", "い", "お", "- か", "a R"];
 
@@ -38,7 +40,9 @@ fn phrase(notes: &[(f64, f64, f32, &str)]) -> Phrase {
             .collect(),
         curves: BTreeMap::new(),
         extra_curves: BTreeMap::new(),
-        settings: BTreeMap::new(),
+        // The written pitch exactly: the singer's own expression on it is
+        // `natural.rs`'s.
+        settings: BTreeMap::from([(SETTING_EXPRESSION.to_string(), 0.0)]),
         state: None,
         start: 0.0,
         note_ids: Vec::new(),
