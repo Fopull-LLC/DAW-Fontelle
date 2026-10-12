@@ -165,7 +165,6 @@ fn every_roll_toolbar_control_explains_itself() {
         RollControl::Velocity,
         RollControl::Lane,
         RollControl::Ghost,
-        RollControl::Slide,
         RollControl::Root,
         RollControl::Scale,
     ];
@@ -194,6 +193,7 @@ fn every_roll_toolbar_control_explains_itself() {
 fn every_arrangement_toolbar_control_explains_itself() {
     for control in [
         TimelineControl::Draw,
+        TimelineControl::Paint,
         TimelineControl::Select,
         TimelineControl::Snap,
         TimelineControl::Repeat,
@@ -299,7 +299,7 @@ fn a_tip_is_one_short_line_rather_than_a_paragraph() {
             .filter_map(|h| h.tip()),
     );
     all.extend(
-        [RollControl::Snap, RollControl::Ghost, RollControl::Slide]
+        [RollControl::Snap, RollControl::Ghost]
             .iter()
             .filter_map(|c| c.tip()),
     );

@@ -105,6 +105,8 @@ pub struct PointerScene<'a> {
     /// The arrangement's toolbar, so its buttons say they are buttons.
     pub timeline_bar: &'a TimelineToolbar,
     pub timeline_view: &'a TimelineView,
+    /// The arrangement's tool, so the brush says it is on.
+    pub timeline_tool: crate::canvas::TimelineTool,
     pub clips: &'a [ClipInfo],
     pub instrument: &'a InstrumentLayout,
     pub instrument_view: Option<&'a InstrumentView>,
@@ -200,13 +202,18 @@ pub fn pointer_at(scene: &PointerScene<'_>, x: f32, y: f32) -> Pointer {
     if scene.layout.timeline.frame.contains(x, y) {
         // The press's own question, so the cursor promises what a press
         // there does — including the reach past a clip's edge.
-        return timeline_pointer(timeline_grab(
-            scene.timeline_view,
-            scene.timeline,
-            scene.clips,
-            x,
-            y,
-        ));
+        let hit = timeline_grab(scene.timeline_view, scene.timeline, scene.clips, x, y);
+        // The brush over empty bars and over a clip's body — both of which a
+        // press paints from. A grip or a fade is still what it always was.
+        if scene.timeline_tool == crate::canvas::TimelineTool::Paint
+            && matches!(
+                hit,
+                TimelineHit::Empty { .. } | TimelineHit::Clip(_, ClipPart::Body)
+            )
+        {
+            return Pointer::Paint;
+        }
+        return timeline_pointer(hit);
     }
 
     if editor_tab_at(scene.tabs, x, y).is_some() {

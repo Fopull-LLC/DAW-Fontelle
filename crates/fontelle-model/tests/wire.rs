@@ -353,6 +353,9 @@ fn every_command() -> Vec<(&'static str, Make)> {
             )
         }),
         ("RemoveChannel", |s| Box::new(RemoveChannel::new(s.drums))),
+        ("DeleteChannel", |s| {
+            Box::new(fontelle_model::DeleteChannel::new(s.drums))
+        }),
         ("DuplicateChannel", |s| {
             Box::new(DuplicateChannel::new(s.keys))
         }),
@@ -987,6 +990,10 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"SetStudyEdits":{"study":{"idx":1,"version":1},"edits":[],"before":null}}"#,
             "SetStudyEdits",
+        ),
+        (
+            r#"{"DeleteChannel":{"channel":{"idx":1,"version":1},"removed":null}}"#,
+            "DeleteChannel",
         ),
     ];
     for (json, tag) in pinned {

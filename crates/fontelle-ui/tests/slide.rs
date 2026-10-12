@@ -1,18 +1,29 @@
-//! Slide notes, from the roll's side (FL Studio's).
+//! FL-style slide notes — the triangles — can no longer be made.
 //!
-//! Reported from using the window: *"I want you to expand the functionality of
-//! the piano roll to encompass things like slide and portamento notes that
-//! function similarly to FL Studio."*
+//! Ty, 2026-10-01: *"currently i dont like slide notes, they have all the
+//! same limitations of fl studio slide notes."* A note slides by its own path
+//! now (S while drawing — `tests/note_paths.rs`), and the FL chip came off
+//! the toolbar then. The `A` key stayed, and so did a back door: clicking an
+//! old slide note made it the template, so every note drawn after it was a
+//! triangle too. Ty again, testing on Windows: *"you can still make triangle
+//! notes when we have a new system for slide notes already triangle notes
+//! should not exist."*
 //!
-//! What a slide *is* lives in `fontelle-core/tests/glide.rs` — one voice, two
-//! pitches, and the second arrived at rather than restarted — and what it
-//! compiles to in `fontelle-sequencer/tests/looping.rs`. This is the half that
-//! makes one: the chip that marks a selection, and the template that decides
-//! what the next note you draw will be.
+//! So nothing in the roll makes one. Slide notes **already in a song** still
+//! load, play and draw exactly as they did — `Note::slide` is in the file and
+//! on the wire, both append-only, and there is no faithful conversion to a
+//! path: an FL slide bends *whatever the channel is playing* to its key, which
+//! may be a chord, a note in another clip, or nothing at all, while a path
+//! belongs to one note. Converting would change how old songs sound; keeping
+//! them as they are changes nothing anybody wrote.
 
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
-use fontelle_ui::canvas::{PianoRoll, RollControl, RollEdit, RollView, SnapDivision};
+use fontelle_ui::canvas::{
+    Action, Keymap, MouseButton, PianoRoll, RollEdit, RollView, SnapDivision, Tool, key_to_y,
+    tick_to_x,
+};
+use fontelle_ui::layout::Rect;
 
 fn note(start: Tick, key: u8, slide: bool) -> Note {
     Note {
@@ -42,132 +53,77 @@ fn view() -> RollView {
     }
 }
 
-/// A roll over `notes`, with the first `selected` of them selected.
-fn roll(notes: &Arena<NoteId, Note>, selected: &[NoteId]) -> PianoRoll {
+fn grid() -> Rect {
+    Rect::new(60.0, 30.0, 800.0, 400.0)
+}
+
+fn at(view: &RollView, tick: Tick, key: u8) -> (f32, f32) {
+    (
+        tick_to_x(view, grid(), tick) + 3.0,
+        key_to_y(view, grid(), key) + 3.0,
+    )
+}
+
+/// What a press on empty grid draws, after first clicking the old slide note.
+fn drawn_after_clicking_a_slide(tool: Tool) -> Vec<Note> {
+    let mut notes: Arena<NoteId, Note> = Arena::default();
+    notes.insert(note(0, 60, true));
     let mut roll = PianoRoll::new(view());
-    roll.select(selected.to_vec());
-    let _ = notes;
-    roll
+    roll.tool = tool;
+    // Click the triangle: it becomes the template, as any clicked note does.
+    let (x, y) = at(&roll.view, 0, 60);
+    roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    roll.release();
+    // Then draw somewhere empty.
+    let (x, y) = at(&roll.view, PPQN * 2, 64);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    roll.release();
+    edits
+        .into_iter()
+        .filter_map(|edit| match edit {
+            RollEdit::Add { note } => Some(note),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
-fn a_fresh_roll_draws_ordinary_notes() {
-    let roll = PianoRoll::new(view());
-    assert!(!roll.drawing_slides());
+fn a_note_drawn_after_clicking_an_old_slide_note_is_an_ordinary_note() {
+    let drawn = drawn_after_clicking_a_slide(Tool::Draw);
+    assert_eq!(drawn.len(), 1);
+    assert!(!drawn[0].slide, "the pencil drew a triangle");
 }
 
 #[test]
-fn the_chip_with_nothing_selected_only_changes_what_you_will_draw() {
-    // "Turn slide on, then draw three of them" is the gesture people try
-    // first, and it has to work without selecting anything.
-    let notes: Arena<NoteId, Note> = Arena::default();
+fn nor_does_the_brush_paint_them() {
+    let drawn = drawn_after_clicking_a_slide(Tool::Paint);
+    assert_eq!(drawn.len(), 1);
+    assert!(!drawn[0].slide, "the brush painted a triangle");
+}
+
+#[test]
+fn a_template_handed_in_with_slide_on_draws_without_it() {
+    // A session restoring the roll's template from before this change.
     let mut roll = PianoRoll::new(view());
-
-    let edits = roll.toggle_slide(&notes);
-    assert!(edits.is_empty(), "nothing to edit: {edits:?}");
-    assert!(roll.drawing_slides());
-
-    let edits = roll.toggle_slide(&notes);
-    assert!(edits.is_empty());
-    assert!(!roll.drawing_slides(), "and it toggles back");
+    roll.set_template(note(0, 60, true));
+    assert!(!roll.template().slide);
 }
 
 #[test]
-fn the_chip_marks_the_selection() {
-    let mut notes = Arena::default();
-    let a = notes.insert(note(0, 60, false));
-    let b = notes.insert(note(PPQN, 64, false));
-    let mut roll = roll(&notes, &[a, b]);
-
-    let edits = roll.toggle_slide(&notes);
-    assert_eq!(
-        edits,
-        vec![RollEdit::SetSlide {
-            ids: vec![a, b],
-            slide: true
-        }]
-    );
-}
-
-#[test]
-fn a_selection_that_all_slides_already_is_turned_off() {
-    let mut notes = Arena::default();
-    let a = notes.insert(note(0, 60, true));
-    let b = notes.insert(note(PPQN, 64, true));
-    let mut roll = roll(&notes, &[a, b]);
-
-    let edits = roll.toggle_slide(&notes);
-    assert_eq!(
-        edits,
-        vec![RollEdit::SetSlide {
-            ids: vec![a, b],
-            slide: false
-        }]
-    );
-}
-
-#[test]
-fn a_mixed_selection_settles_on_slide_rather_than_flipping_each_note() {
-    // The same rule the arrangement's Mute button follows. Flipping each note
-    // against the others makes a mixed selection impossible to resolve: every
-    // press swaps which half is which.
-    let mut notes = Arena::default();
-    let a = notes.insert(note(0, 60, true));
-    let b = notes.insert(note(PPQN, 64, false));
-    let mut roll = roll(&notes, &[a, b]);
-
-    let edits = roll.toggle_slide(&notes);
-    assert_eq!(
-        edits,
-        vec![RollEdit::SetSlide {
-            ids: vec![a, b],
-            slide: true
-        }],
-        "not all of it slides, so all of it does now"
-    );
-}
-
-#[test]
-fn marking_a_selection_also_sets_what_you_will_draw_next() {
-    // Otherwise "make these slides, now draw another one" produces an
-    // ordinary note in the middle of a run of slides.
-    let mut notes = Arena::default();
-    let a = notes.insert(note(0, 60, false));
-    let mut roll = roll(&notes, &[a]);
-
-    roll.toggle_slide(&notes);
-    assert!(roll.drawing_slides());
-}
-
-#[test]
-fn a_selection_of_notes_that_are_gone_is_no_edit() {
-    // A selection can outlive the notes in it — an undo, or another panel
-    // deleting them — and an edit naming ids the document does not have is a
-    // command that fails at the far end.
-    let notes: Arena<NoteId, Note> = Arena::default();
-    let mut arena: Arena<NoteId, Note> = Arena::default();
-    let ghost = arena.insert(note(0, 60, false));
-    let mut roll = roll(&notes, &[ghost]);
-
-    assert!(roll.toggle_slide(&notes).is_empty());
-}
-
-/// Ty, 2026-10-01: *"currently i dont like slide notes, they have all the
-/// same limitations of fl studio slide notes."* A note slides by its own path
-/// now (S while drawing — `tests/note_paths.rs`), so the FL chip is off the
-/// toolbar. Slide notes already in a song still play, and the `A` key still
-/// marks them, for anyone who wants the old way.
-#[test]
-fn the_toolbar_no_longer_carries_the_slide_chip() {
-    use fontelle_ui::canvas::toolbar_layout;
-    use fontelle_ui::layout::Rect;
-    use fontelle_ui::theme::Theme;
-
-    let m = Theme::dark_default().metrics;
-    let bar = toolbar_layout(Rect::new(0.0, 0.0, 900.0, 26.0), &m);
+fn no_key_marks_a_slide_note_any_more() {
     assert!(
-        bar.items
-            .iter()
-            .all(|(control, _)| *control != RollControl::Slide)
+        Action::ALL.iter().all(|action| action.id() != "slide"),
+        "an action still toggles FL slide notes"
     );
+}
+
+#[test]
+fn a_settings_file_that_rebound_the_old_slide_key_still_loads_the_rest() {
+    // Saved by a build that had the action: the line is passed over, and the
+    // person's other bindings are kept.
+    let keymap = Keymap::with_overrides(&[
+        ("slide".to_string(), "Q".to_string()),
+        ("draw-tool".to_string(), "Y".to_string()),
+    ]);
+    assert_eq!(keymap.label(Action::DrawTool), "Y");
 }

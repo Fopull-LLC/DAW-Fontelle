@@ -258,6 +258,28 @@ pub struct Settings {
     /// ([`offer_compatible_graphics`]). Never answered is `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub never_ask_compatible_graphics: bool,
+    /// What this build could not read, kept **verbatim** to write back —
+    /// see [`Unread`]. Never in the file under its own name.
+    #[serde(skip)]
+    pub unread: Unread,
+}
+
+/// The entries of a settings file this build could not read, as the JSON
+/// they were, so a save writes them back untouched.
+///
+/// Found on the devbox: a preview build starred `{"instrument": "Vocal"}`,
+/// and the release refused the **whole file** over that one favourite and
+/// ran on defaults — every folder and star gone, and its next save would
+/// have written the defaults over them. Now an entry is set aside on its
+/// own: a favourite out of the list, a field out of the file (a name this
+/// build has never heard of, or a value it cannot read). Text rather than
+/// `serde_json::Value` so `Settings` stays `Eq`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unread {
+    /// Top-level fields, by name.
+    pub fields: std::collections::BTreeMap<String, String>,
+    /// Favourites, in the order they were in the list.
+    pub favorites: Vec<String>,
 }
 
 fn thirty() -> u16 {
@@ -326,6 +348,7 @@ impl Default for Settings {
             backdrops_when_unfocused: true,
             compatible_plugin_graphics: false,
             never_ask_compatible_graphics: false,
+            unread: Unread::default(),
         }
     }
 }
@@ -1971,9 +1994,36 @@ impl Settings {
     }
 
     pub fn to_json(&self) -> String {
+        use serde_json::Value;
         let mut settings = self.clone();
         settings.format_version = SETTINGS_FORMAT_VERSION;
-        serde_json::to_string_pretty(&settings).expect("Settings is always serialisable")
+        let mut json = serde_json::to_value(&settings).expect("Settings is always serialisable");
+        if let Value::Object(object) = &mut json {
+            // What this build could not read goes back as it came. A known
+            // field set aside is written back only while this build has left
+            // it at its default: a value somebody chose here is the value.
+            let defaults = serde_json::to_value(Settings::default()).unwrap_or(Value::Null);
+            for (key, text) in &self.unread.fields {
+                let Ok(raw) = serde_json::from_str::<Value>(text) else {
+                    continue;
+                };
+                let ours = object.get(key);
+                if ours.is_none() || ours == defaults.get(key) {
+                    object.insert(key.clone(), raw);
+                }
+            }
+            if !self.unread.favorites.is_empty()
+                && let Some(Value::Array(favorites)) = object.get_mut("favorites")
+            {
+                favorites.extend(
+                    self.unread
+                        .favorites
+                        .iter()
+                        .filter_map(|text| serde_json::from_str::<Value>(text).ok()),
+                );
+            }
+        }
+        serde_json::to_string_pretty(&json).expect("a JSON value always writes")
     }
 
     /// Reads settings, checking the version before the body — the same rule the
@@ -1998,8 +2048,49 @@ impl Settings {
                 newest: SETTINGS_FORMAT_VERSION,
             });
         }
-        serde_json::from_value(json)
-            .map_err(|e| SettingsError::Format(format!("these settings could not be read: {e}")))
+        let serde_json::Value::Object(mut object) = json else {
+            return Err(SettingsError::Format(
+                "this is not a settings object".to_string(),
+            ));
+        };
+        let mut unread = Unread::default();
+        // Favourites one by one: a star of a kind this build lacks is set
+        // aside rather than costing the list — or, as it did, the file.
+        if let Some(serde_json::Value::Array(items)) = object.get_mut("favorites") {
+            let (known, unknown): (Vec<_>, Vec<_>) = std::mem::take(items)
+                .into_iter()
+                .partition(|item| serde_json::from_value::<Favorite>(item.clone()).is_ok());
+            *items = known;
+            unread.favorites = unknown.iter().map(|item| item.to_string()).collect();
+        }
+        let whole = serde_json::Value::Object(object.clone());
+        if let Ok(mut settings) = serde_json::from_value::<Settings>(whole) {
+            settings.unread = unread;
+            return Ok(settings);
+        }
+        // Something else would not read. Field by field onto the defaults:
+        // each one this build can take is taken, and each it cannot — a name
+        // it has never heard of, a value of a kind it lacks — is set aside.
+        let serde_json::Value::Object(mut base) = serde_json::to_value(Settings::default())
+            .map_err(|e| SettingsError::Format(format!("the defaults would not write: {e}")))?
+        else {
+            return Err(SettingsError::Format(
+                "the defaults are not an object".into(),
+            ));
+        };
+        for (key, value) in object {
+            let mut candidate = base.clone();
+            candidate.insert(key.clone(), value.clone());
+            if serde_json::from_value::<Settings>(serde_json::Value::Object(candidate)).is_ok() {
+                base.insert(key, value);
+            } else {
+                unread.fields.insert(key, value.to_string());
+            }
+        }
+        let mut settings: Settings = serde_json::from_value(serde_json::Value::Object(base))
+            .map_err(|e| SettingsError::Format(format!("these settings could not be read: {e}")))?;
+        settings.unread = unread;
+        Ok(settings)
     }
 
     /// Reads `path`, **always producing usable settings**.
