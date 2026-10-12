@@ -76,7 +76,9 @@ use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 mod analyze;
 mod vocal;
 mod vocal_files;
+mod windowless;
 use vocal_files::{CHANNEL_MENU_ROWS, VOCAL_FROM_FILE};
+pub use windowless::Windowless;
 
 /// What can be on its way on the synth window (`motion.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1302,6 +1304,9 @@ pub struct WindowApp {
     /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
     /// At most one of each kind — see [`EditorKind`].
     editors: Vec<Editor>,
+    /// Editor panels laid out with no window behind them (`Windowless`, for
+    /// tests): their kind and body, laid out as an open window's are.
+    windowless: Vec<(EditorKind, crate::layout::Rect)>,
     /// The start menu, until something on it is chosen.
     welcome: Option<Welcome>,
     /// The keyboard shortcuts sheet, while it is up: how far it is scrolled.
@@ -2328,6 +2333,7 @@ impl WindowApp {
             renderers: Vec::new(),
             live: None,
             editors: Vec::new(),
+            windowless: Vec::new(),
             welcome: None,
             keybinds: None,
             keymap: options
@@ -4934,188 +4940,7 @@ impl ApplicationHandler for WindowApp {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 ..
-            } => {
-                let was_control = matches!(
-                    self.drag,
-                    Drag::Knob
-                        | Drag::FlopKnob
-                        | Drag::FlopWave(_)
-                        | Drag::FlopSteps(_)
-                        | Drag::FlopDraw(_)
-                        | Drag::FlopBars(_)
-                        | Drag::FlopVelocity(_)
-                        | Drag::FlopResponse(_)
-                        | Drag::FlopEnvNode
-                        | Drag::FlopShape
-                        | Drag::FlopRing
-                        | Drag::FlopMatrix(_)
-                        | Drag::FlopRackMix(_)
-                        | Drag::Fader(_)
-                        | Drag::Pan(_)
-                        | Drag::Tempo
-                        | Drag::EqHandle(_)
-                        | Drag::SendLevel(_)
-                        | Drag::SendKnob { .. }
-                        | Drag::InsertMix(_)
-                );
-                // A press on the tempo box that comes up where it went down
-                // is a **click**, and a click opens the box for typing; a
-                // press that travelled was the drag it has always been. The
-                // slop is a couple of pixels, because a hand at rest is not
-                // perfectly still.
-                if self.drag == Drag::Tempo
-                    && let Some((_, from_y)) = self.value_drag
-                    && (self.cursor.1 - from_y).abs() < TEMPO_CLICK_SLOP
-                {
-                    self.start_tempo_entry();
-                }
-                // An EQ band drag coalesces into one history entry while it
-                // runs; this is what tells the document it has stopped, the
-                // same handshake a note drag has.
-                if matches!(self.drag, Drag::EqHandle(_))
-                    && let Some(doc) = &mut self.options.document
-                {
-                    doc.end_gesture();
-                }
-                // A row carried up or down its chain is moved where it is let
-                // go, not while it travels: one edit and one undo entry for
-                // one drag.
-                if matches!(self.drag, Drag::InsertRow) {
-                    self.drop_insert_row();
-                }
-                if self.drag == Drag::Vocal {
-                    self.release_vocal_edit();
-                }
-                if matches!(self.drag, Drag::MoveStrip) {
-                    self.drop_strip();
-                }
-                if matches!(self.drag, Drag::Cable) {
-                    let (x, y) = self.cursor;
-                    self.drop_cable(x, y);
-                }
-                // A time selection lands where the button comes up, like a
-                // marquee: that is when it decides what it caught.
-                if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
-                    self.commit_selection();
-                }
-                // And a row carried out of the soundfont panel is acted on by
-                // **where it was let go** — see `Drag::BrowserRow` — unless
-                // it was let go outside this window with the synth window
-                // open, in which case it is held for a click in there: see
-                // `canvas::carry_release` for the desktop that makes that
-                // necessary.
-                if let Drag::BrowserRow(row) = self.drag {
-                    let (x, y) = self.cursor;
-                    match crate::canvas::carry_release(
-                        self.layout.window,
-                        (x, y),
-                        self.pointer_window.is_some(),
-                        self.editors
-                            .iter()
-                            .any(|e| e.kind == EditorKind::Instrument),
-                    ) {
-                        crate::canvas::CarryRelease::Drop => self.drop_browser_row(row, x, y),
-                        crate::canvas::CarryRelease::Hold => {
-                            self.held = Some(row);
-                            self.status = "Click an oscillator in the synth window to \
-                                           land the sound, Esc to let go"
-                                .to_string();
-                        }
-                        crate::canvas::CarryRelease::Cancel => {}
-                    }
-                }
-                self.drag = Drag::None;
-                // The chip goes with the drag — unless the row is held, when
-                // it stays on the pointer — and the region it floated over
-                // is repainted: it belongs to no widget, so nothing else
-                // would.
-                if self.held.is_none() && self.carry.take().is_some() {
-                    self.tree.invalidate_rect(self.layout.window);
-                    self.redraw_editor(EditorKind::Instrument);
-                }
-                self.end_edge_scroll();
-                // The press that shut a menu is spent; the next one opens it
-                // again. See `dismissed`.
-                self.dismissed = None;
-                self.knob = None;
-                self.flop_knob = None;
-                self.value_drag = None;
-                self.pointer_anchor = None;
-                if was_control {
-                    self.tree.invalidate(PANEL);
-                    self.tree.invalidate(TRANSPORT);
-                }
-                let (x, y) = self.cursor;
-                // Where the button came up is what a marquee needs: that is
-                // the moment it decides what it caught.
-                let grid = self.roll_layout.grid;
-                let edits = match &self.options.document {
-                    Some(doc) => self.roll.release_over(x, y, grid, doc.notes()),
-                    None => {
-                        self.roll.release();
-                        Vec::new()
-                    }
-                };
-                // The cut tool's whole edit lands here: a line half-drawn is
-                // not a cut.
-                self.apply_roll_edits(edits);
-                let beats = self.beats_per_bar();
-                // **Before** the release, because after it the gesture is gone:
-                // a marquee and a cut are both drawn by the canvas and known to
-                // nothing in the document, so the frame that clears them has to
-                // be asked for on their own account. Without this the stroke
-                // stays on screen after the button comes up — the same fault as
-                // the one that made it invisible during the drag, pointed the
-                // other way.
-                let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
-                let edits =
-                    self.timeline
-                        .release_over(x, y, &self.timeline_layout, &self.clips, beats);
-                // A click on a clip's name — down and up in one place.
-                let name_click = self
-                    .name_press
-                    .take()
-                    .filter(|(_, px, py)| (x - px).abs() <= 3.0 && (y - py).abs() <= 3.0)
-                    .map(|(id, _, _)| id);
-                // The cut tool's whole edit lands here, like the roll's: a
-                // line half-drawn is not a cut.
-                self.apply_arrange_edits(edits);
-                // A click on the clip that was already open: the rack steps
-                // to the next instrument playing in it. *"maybe cycle
-                // through?"* Not when the click was on the name, which is
-                // the clip's menu.
-                if let Some(clip) = self.timeline.take_cycle()
-                    && name_click.is_none()
-                    && let Some(doc) = &mut self.options.document
-                {
-                    doc.cycle_clip_channel(clip);
-                    self.roll.clear_selection();
-                    self.refresh_studio();
-                    self.tree.invalidate(RACK);
-                }
-                if overlay {
-                    self.tree.invalidate(TIMELINE);
-                }
-                // **Before** the release, and this order is the whole of it: a
-                // click's audition starts here, on the way up, and
-                // `Auditions::start` clears any release that was scheduled. Ask
-                // for the sound first and the release below schedules *its*
-                // stop; ask for it after and nothing ever stops it.
-                self.sound_roll_request();
-                self.stop_audition();
-                // One drag, one undo entry (§10.6). Only the caller knows the
-                // mouse came up, which is exactly why `History` cannot decide
-                // this for itself.
-                if let Some(doc) = &mut self.options.document {
-                    doc.end_gesture();
-                }
-                if let Some(id) = name_click {
-                    self.open_clip_menu(id, x, y);
-                }
-                self.tree.invalidate(PANEL);
-                self.update_cursor();
-                self.request_redraw_if_dirty();
-            }
+            } => self.studio_released(),
 
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -5823,6 +5648,7 @@ impl WindowApp {
             .editors
             .iter()
             .map(|e| (e.kind, e.panel.body))
+            .chain(self.windowless.iter().copied())
             .collect();
         for (kind, body) in bodies {
             match kind {
@@ -6027,20 +5853,11 @@ impl WindowApp {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = editor.window.scale_factor();
-                self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
-                self.pointer_window = Some(kind);
-                self.update_editor_hover(kind);
-                self.update_editor_cursor(kind);
-                // The same drag machinery the docked panels used: a knob, an
-                // EQ handle and an automation point are dragged against the
-                // layouts `relayout_editors` put in this window.
-                self.drag_pointer();
-                // A row held from the studio follows the pointer in here too,
-                // and the card under it lights.
-                if self.held.is_some() {
-                    self.refresh_carry();
-                }
-                self.redraw_editor(kind);
+                self.editor_pointer_moved(
+                    kind,
+                    (position.x / scale) as f32,
+                    (position.y / scale) as f32,
+                );
             }
 
             // A file dragged onto the window. The **only** way into Fontelle
@@ -6089,31 +5906,17 @@ impl WindowApp {
                 button,
                 ..
             } => {
-                let (x, y) = self.cursor;
                 let button = match button {
                     winit::event::MouseButton::Right => MouseButton::Right,
                     _ => MouseButton::Left,
                 };
-                // A menu opened on a knob is above this window's own panel,
-                // and a press that chose an entry is spent.
-                if self.menu.is_some() && self.press_menu(x, y) {
-                    self.redraw_editor(kind);
-                    return;
-                }
-                self.press_editor(kind, button, x, y);
-                self.redraw_editor(kind);
+                self.editor_pressed(kind, button);
             }
 
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 ..
-            } => {
-                if kind == EditorKind::Analyze {
-                    self.release_analyze();
-                }
-                self.release_controls();
-                self.redraw_editor(kind);
-            }
+            } => self.editor_released(kind),
 
             WindowEvent::MouseWheel { delta, .. } if kind == EditorKind::Analyze => {
                 let (dx, dy) = match delta {
@@ -6425,6 +6228,46 @@ impl WindowApp {
     }
 
     /// A press inside an editor window, routed by which editor it is.
+    /// The pointer moved to `(x, y)`, in points, in editor window `kind`.
+    fn editor_pointer_moved(&mut self, kind: EditorKind, x: f32, y: f32) {
+        self.cursor = (x, y);
+        self.pointer_window = Some(kind);
+        self.update_editor_hover(kind);
+        self.update_editor_cursor(kind);
+        // The same drag machinery the docked panels used: a knob, an
+        // EQ handle and an automation point are dragged against the
+        // layouts `relayout_editors` put in this window.
+        self.drag_pointer();
+        // A row held from the studio follows the pointer in here too,
+        // and the card under it lights.
+        if self.held.is_some() {
+            self.refresh_carry();
+        }
+        self.redraw_editor(kind);
+    }
+
+    /// A button went down in editor window `kind`, where the pointer is.
+    fn editor_pressed(&mut self, kind: EditorKind, button: MouseButton) {
+        let (x, y) = self.cursor;
+        // A menu opened on a knob is above this window's own panel, and a
+        // press that chose an entry is spent.
+        if self.menu.is_some() && self.press_menu(x, y) {
+            self.redraw_editor(kind);
+            return;
+        }
+        self.press_editor(kind, button, x, y);
+        self.redraw_editor(kind);
+    }
+
+    /// The button came up in editor window `kind`.
+    fn editor_released(&mut self, kind: EditorKind) {
+        if kind == EditorKind::Analyze {
+            self.release_analyze();
+        }
+        self.release_controls();
+        self.redraw_editor(kind);
+    }
+
     fn press_editor(&mut self, kind: EditorKind, button: MouseButton, x: f32, y: f32) {
         // A row held since its drag was let go outside the studio — the way
         // a sound reaches an oscillator on a desktop that keeps the pointer
@@ -8865,6 +8708,190 @@ impl WindowApp {
     // ------------------------------------------------------------- mouse ---
 
     /// One press, routed to whichever panel it landed in.
+    /// The button came up over the studio's own window.
+    fn studio_released(&mut self) {
+        let was_control = matches!(
+            self.drag,
+            Drag::Knob
+                | Drag::FlopKnob
+                | Drag::FlopWave(_)
+                | Drag::FlopSteps(_)
+                | Drag::FlopDraw(_)
+                | Drag::FlopBars(_)
+                | Drag::FlopVelocity(_)
+                | Drag::FlopResponse(_)
+                | Drag::FlopEnvNode
+                | Drag::FlopShape
+                | Drag::FlopRing
+                | Drag::FlopMatrix(_)
+                | Drag::FlopRackMix(_)
+                | Drag::Fader(_)
+                | Drag::Pan(_)
+                | Drag::Tempo
+                | Drag::EqHandle(_)
+                | Drag::SendLevel(_)
+                | Drag::SendKnob { .. }
+                | Drag::InsertMix(_)
+        );
+        // A press on the tempo box that comes up where it went down
+        // is a **click**, and a click opens the box for typing; a
+        // press that travelled was the drag it has always been. The
+        // slop is a couple of pixels, because a hand at rest is not
+        // perfectly still.
+        if self.drag == Drag::Tempo
+            && let Some((_, from_y)) = self.value_drag
+            && (self.cursor.1 - from_y).abs() < TEMPO_CLICK_SLOP
+        {
+            self.start_tempo_entry();
+        }
+        // An EQ band drag coalesces into one history entry while it
+        // runs; this is what tells the document it has stopped, the
+        // same handshake a note drag has.
+        if matches!(self.drag, Drag::EqHandle(_))
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.end_gesture();
+        }
+        // A row carried up or down its chain is moved where it is let
+        // go, not while it travels: one edit and one undo entry for
+        // one drag.
+        if matches!(self.drag, Drag::InsertRow) {
+            self.drop_insert_row();
+        }
+        if self.drag == Drag::Vocal {
+            self.release_vocal_edit();
+        }
+        if matches!(self.drag, Drag::MoveStrip) {
+            self.drop_strip();
+        }
+        if matches!(self.drag, Drag::Cable) {
+            let (x, y) = self.cursor;
+            self.drop_cable(x, y);
+        }
+        // A time selection lands where the button comes up, like a
+        // marquee: that is when it decides what it caught.
+        if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
+            self.commit_selection();
+        }
+        // And a row carried out of the soundfont panel is acted on by
+        // **where it was let go** — see `Drag::BrowserRow` — unless
+        // it was let go outside this window with the synth window
+        // open, in which case it is held for a click in there: see
+        // `canvas::carry_release` for the desktop that makes that
+        // necessary.
+        if let Drag::BrowserRow(row) = self.drag {
+            let (x, y) = self.cursor;
+            match crate::canvas::carry_release(
+                self.layout.window,
+                (x, y),
+                self.pointer_window.is_some(),
+                self.editors
+                    .iter()
+                    .any(|e| e.kind == EditorKind::Instrument),
+            ) {
+                crate::canvas::CarryRelease::Drop => self.drop_browser_row(row, x, y),
+                crate::canvas::CarryRelease::Hold => {
+                    self.held = Some(row);
+                    self.status = "Click an oscillator in the synth window to \
+                                           land the sound, Esc to let go"
+                        .to_string();
+                }
+                crate::canvas::CarryRelease::Cancel => {}
+            }
+        }
+        self.drag = Drag::None;
+        // The chip goes with the drag — unless the row is held, when
+        // it stays on the pointer — and the region it floated over
+        // is repainted: it belongs to no widget, so nothing else
+        // would.
+        if self.held.is_none() && self.carry.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+            self.redraw_editor(EditorKind::Instrument);
+        }
+        self.end_edge_scroll();
+        // The press that shut a menu is spent; the next one opens it
+        // again. See `dismissed`.
+        self.dismissed = None;
+        self.knob = None;
+        self.flop_knob = None;
+        self.value_drag = None;
+        self.pointer_anchor = None;
+        if was_control {
+            self.tree.invalidate(PANEL);
+            self.tree.invalidate(TRANSPORT);
+        }
+        let (x, y) = self.cursor;
+        // Where the button came up is what a marquee needs: that is
+        // the moment it decides what it caught.
+        let grid = self.roll_layout.grid;
+        let edits = match &self.options.document {
+            Some(doc) => self.roll.release_over(x, y, grid, doc.notes()),
+            None => {
+                self.roll.release();
+                Vec::new()
+            }
+        };
+        // The cut tool's whole edit lands here: a line half-drawn is
+        // not a cut.
+        self.apply_roll_edits(edits);
+        let beats = self.beats_per_bar();
+        // **Before** the release, because after it the gesture is gone:
+        // a marquee and a cut are both drawn by the canvas and known to
+        // nothing in the document, so the frame that clears them has to
+        // be asked for on their own account. Without this the stroke
+        // stays on screen after the button comes up — the same fault as
+        // the one that made it invisible during the drag, pointed the
+        // other way.
+        let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
+        let edits = self
+            .timeline
+            .release_over(x, y, &self.timeline_layout, &self.clips, beats);
+        // A click on a clip's name — down and up in one place.
+        let name_click = self
+            .name_press
+            .take()
+            .filter(|(_, px, py)| (x - px).abs() <= 3.0 && (y - py).abs() <= 3.0)
+            .map(|(id, _, _)| id);
+        // The cut tool's whole edit lands here, like the roll's: a
+        // line half-drawn is not a cut.
+        self.apply_arrange_edits(edits);
+        // A click on the clip that was already open: the rack steps
+        // to the next instrument playing in it. *"maybe cycle
+        // through?"* Not when the click was on the name, which is
+        // the clip's menu.
+        if let Some(clip) = self.timeline.take_cycle()
+            && name_click.is_none()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.cycle_clip_channel(clip);
+            self.roll.clear_selection();
+            self.refresh_studio();
+            self.tree.invalidate(RACK);
+        }
+        if overlay {
+            self.tree.invalidate(TIMELINE);
+        }
+        // **Before** the release, and this order is the whole of it: a
+        // click's audition starts here, on the way up, and
+        // `Auditions::start` clears any release that was scheduled. Ask
+        // for the sound first and the release below schedules *its*
+        // stop; ask for it after and nothing ever stops it.
+        self.sound_roll_request();
+        self.stop_audition();
+        // One drag, one undo entry (§10.6). Only the caller knows the
+        // mouse came up, which is exactly why `History` cannot decide
+        // this for itself.
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        if let Some(id) = name_click {
+            self.open_clip_menu(id, x, y);
+        }
+        self.tree.invalidate(PANEL);
+        self.update_cursor();
+        self.request_redraw_if_dirty();
+    }
+
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
         self.end_edge_scroll();

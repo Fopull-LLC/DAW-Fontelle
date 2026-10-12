@@ -662,3 +662,113 @@ fn two_banks_of_one_name_are_told_apart_everywhere() {
     let roll = session.vocal_view().unwrap().caption;
     assert!(roll.contains("KasaneTeto_tougou"), "{roll}");
 }
+
+/// The centre of the stage button `which`.
+fn button_at(
+    layout: &fontelle_ui::canvas::SingerPanelLayout,
+    which: fontelle_ui::canvas::SingerPanelButton,
+) -> (f32, f32) {
+    let r = layout
+        .buttons
+        .iter()
+        .find(|(b, _)| *b == which)
+        .map(|(_, r)| *r)
+        .unwrap_or_else(|| panic!("no {which:?} on the stage: {:?}", layout.buttons));
+    (r.x + r.width / 2.0, r.y + r.height / 2.0)
+}
+
+/// The stage's presses driven as the window delivers them — a click in
+/// the instrument panel's window, through the same path a mouse takes (no
+/// window opened: `fontelle_ui::Windowless`) — not only the layout's hit
+/// test: a language chip changes what the track sings, Voicebanks… opens
+/// the Installed page, Change singer… the picker (and a card in it
+/// chooses), and a knob dragged moves what the singer is asked.
+#[test]
+fn the_stages_presses_reach_the_studio_through_the_window() {
+    use fontelle_ui::canvas::{SINGER_PANEL_SIZE, SingerPanelButton as B, VoicebankTab};
+    let (mut session, _dir) = session("presses");
+    let index = track(&mut session, None);
+    let mut window = fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    );
+    let (w, h) = SINGER_PANEL_SIZE;
+    window.open_instrument_panel((w as f32, h as f32));
+    let layout = window.singer_layout().clone();
+
+    // The English chip.
+    let (_, chip) = layout.languages[1];
+    window.click_instrument_panel(chip.x + chip.width / 2.0, chip.y + chip.height / 2.0);
+    assert_eq!(
+        window.document().vocal_voice(index).map(|v| v.language),
+        Some("en".to_string())
+    );
+    assert!(window.status().contains("English"), "{}", window.status());
+    // And still says so once the edit has settled and the phrases are sung.
+    window.idle(std::time::Duration::from_millis(400));
+    assert!(window.status().contains("English"), "{}", window.status());
+
+    let (x, y) = button_at(&layout, B::Voicebanks);
+    window.click_instrument_panel(x, y);
+    assert_eq!(window.voicebank_page(), Some(VoicebankTab::Installed));
+    window.close_pages();
+
+    let (x, y) = button_at(&layout, B::ChangeSinger);
+    window.click_instrument_panel(x, y);
+    let cards = window.picker_cards();
+    assert!(!cards.is_empty(), "the picker is open with its cards");
+    // A card chosen in the studio's window closes the picker.
+    let card = cards[0];
+    window.click_studio(card.x + card.width / 2.0, card.y + card.height / 2.0);
+    assert!(window.picker_cards().is_empty(), "the picker closed");
+
+    // The Breath knob, dragged up.
+    let layout = window.singer_layout().clone();
+    let (g, n, cell) = layout
+        .controls
+        .cells
+        .iter()
+        .copied()
+        .find(|(g, n, _)| {
+            window.document().instrument().is_some_and(|v| {
+                v.groups[*g].params[*n].address.as_str() == "vocal/lane/breathiness"
+            })
+        })
+        .expect("a Breath knob");
+    let before = window.document().instrument().unwrap().groups[g].params[n].value;
+    let (x, y) = (cell.x + cell.width / 2.0, cell.y + cell.height / 2.0);
+    window.drag_instrument_panel((x, y), (x, y - 60.0));
+    let after = window.document().instrument().unwrap().groups[g].params[n].value;
+    assert!(after > before, "{before} -> {after}");
+}
+
+/// *Find singers…* on a track whose bank is not on this computer opens the
+/// voicebanks page on Find singers, through the window's own path.
+#[test]
+fn find_singers_on_the_stage_opens_find_singers_through_the_window() {
+    use fontelle_ui::canvas::{SINGER_PANEL_SIZE, SingerPanelButton as B, VoicebankTab};
+    let (mut session, _dir) = session("find-press");
+    let index = track(&mut session, None);
+    // A song from elsewhere: a bank this computer does not have.
+    let engine = session.vocal_voice(index).unwrap().engine;
+    session.set_singer(
+        index,
+        Some(fontelle_model::VocalVoice::new(
+            &engine,
+            "utau/Somebody_Else",
+            "ja",
+        )),
+    );
+    let mut window = fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    );
+    let (w, h) = SINGER_PANEL_SIZE;
+    window.open_instrument_panel((w as f32, h as f32));
+    let layout = window.singer_layout().clone();
+    let (x, y) = button_at(&layout, B::FindSingers);
+    window.click_instrument_panel(x, y);
+    assert_eq!(window.voicebank_page(), Some(VoicebankTab::Find));
+}

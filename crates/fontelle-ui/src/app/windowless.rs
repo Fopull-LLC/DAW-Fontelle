@@ -1,0 +1,136 @@
+//! The studio's window with no window behind it: presses, drags and
+//! releases delivered through the same functions a mouse's events reach
+//! (`editor_pointer_moved`, `editor_pressed`, `press`, …), so a test can
+//! see what a click on a button *does* — not only that the layout puts the
+//! button there. No event loop, no surface, no GPU: nothing is drawn.
+
+use super::{EditorKind, MouseButton, WindowApp, WindowOptions};
+use crate::canvas::{SingerPanelLayout, VoicebankTab};
+use crate::document::StudioHost;
+use crate::layout::{Rect, editor_window_layout};
+use crate::theme::Theme;
+
+/// See the module doc.
+pub struct Windowless {
+    app: WindowApp,
+}
+
+impl Windowless {
+    /// The studio over `document`, its window `size` points across.
+    pub fn new(document: Box<dyn StudioHost>, theme: Theme, size: (u32, u32)) -> Self {
+        let mut app = WindowApp::new(WindowOptions {
+            document: Some(document),
+            theme,
+            size,
+            ..WindowOptions::default()
+        });
+        app.refresh_studio();
+        Self { app }
+    }
+
+    /// The selected channel's instrument panel, open as its window would be
+    /// at `size` points.
+    pub fn open_instrument_panel(&mut self, size: (f32, f32)) {
+        let body = editor_window_layout(size.0, size.1, &self.app.options.theme.metrics).body;
+        self.app
+            .windowless
+            .retain(|(kind, _)| *kind != EditorKind::Instrument);
+        self.app.windowless.push((EditorKind::Instrument, body));
+        self.settle();
+    }
+
+    /// The singer panel as it is laid out now.
+    pub fn singer_layout(&self) -> &SingerPanelLayout {
+        &self.app.singer_layout
+    }
+
+    /// A left click at `(x, y)` in the instrument panel's window.
+    pub fn click_instrument_panel(&mut self, x: f32, y: f32) {
+        self.app.editor_pointer_moved(EditorKind::Instrument, x, y);
+        self.app
+            .editor_pressed(EditorKind::Instrument, MouseButton::Left);
+        self.app.editor_released(EditorKind::Instrument);
+        self.settle();
+    }
+
+    /// A left-button drag in the instrument panel's window, `from` to `to`.
+    pub fn drag_instrument_panel(&mut self, from: (f32, f32), to: (f32, f32)) {
+        let kind = EditorKind::Instrument;
+        self.app.editor_pointer_moved(kind, from.0, from.1);
+        self.app.editor_pressed(kind, MouseButton::Left);
+        for step in 1..=8 {
+            let t = step as f32 / 8.0;
+            self.app.editor_pointer_moved(
+                kind,
+                from.0 + (to.0 - from.0) * t,
+                from.1 + (to.1 - from.1) * t,
+            );
+        }
+        self.app.editor_released(kind);
+        self.settle();
+    }
+
+    /// A left click at `(x, y)` in the studio's own window.
+    pub fn click_studio(&mut self, x: f32, y: f32) {
+        self.app.cursor = (x, y);
+        self.app.press(winit::event::MouseButton::Left, x, y);
+        self.app.studio_released();
+        self.settle();
+    }
+
+    /// The window idling for `time`, as its loop does between events: the
+    /// document's work done and the view read again, every few
+    /// milliseconds.
+    pub fn idle(&mut self, time: std::time::Duration) {
+        let until = std::time::Instant::now() + time;
+        while std::time::Instant::now() < until {
+            self.settle();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Which tab of the voicebanks page is open, if it is.
+    pub fn voicebank_page(&self) -> Option<VoicebankTab> {
+        self.app.vocal_edit.page.as_ref().map(|p| p.tab)
+    }
+
+    /// Closes the voicebanks page and the singer picker.
+    pub fn close_pages(&mut self) {
+        self.app.vocal_edit.page = None;
+        self.app.close_singer_picker();
+    }
+
+    /// The singer picker's cards, while it is open.
+    pub fn picker_cards(&self) -> Vec<Rect> {
+        self.app
+            .vocal_edit
+            .picker
+            .as_ref()
+            .and_then(|p| p.layout.as_ref())
+            .map(|l| l.cards.iter().map(|c| c.frame).collect())
+            .unwrap_or_default()
+    }
+
+    /// What the status line says.
+    pub fn status(&self) -> &str {
+        &self.app.status
+    }
+
+    pub fn document(&self) -> &dyn StudioHost {
+        self.app
+            .options
+            .document
+            .as_deref()
+            .expect("a windowless studio has its document")
+    }
+
+    /// What a frame does before it is drawn: the document's work, and the
+    /// window's view of it read again.
+    fn settle(&mut self) {
+        if let Some(doc) = &mut self.app.options.document {
+            doc.pump();
+        }
+        self.app.refresh_studio();
+        self.app.relayout_editors();
+    }
+}

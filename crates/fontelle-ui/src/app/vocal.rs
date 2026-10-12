@@ -1491,12 +1491,16 @@ impl WindowApp {
                         )),
                     );
                 }
+                // The studio read again first: a refresh after an edit puts
+                // the browser's own line on the status bar, and this said
+                // nothing at all (found driving the press through the
+                // window's path, `Windowless`).
+                self.refresh_studio();
                 self.status = format!(
                     "{} sings this track in {}",
                     singer.name,
                     crate::canvas::language_name(tag)
                 );
-                self.refresh_studio();
             }
             H::Terms => {
                 let Some(singer) = &view.singer else {

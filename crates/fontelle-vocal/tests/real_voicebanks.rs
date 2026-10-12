@@ -115,7 +115,8 @@ fn a_kept_level_spares_the_first_phrase_its_reference() {
     // Analyses are kept across runs, as the studio keeps them: run twice
     // to time a UTAU bank's levelling with its samples analysed.
     let utau_cache = std::env::temp_dir().join("fontelle-kept-levels-analyses");
-    let make: [(&str, Box<dyn Fn() -> Arc<dyn fontelle_sing::Backend>>); 2] = [
+    type Make<'a> = Box<dyn Fn() -> Arc<dyn fontelle_sing::Backend> + 'a>;
+    let make: [(&str, Make); 2] = [
         (
             "diffsinger",
             Box::new(|| {
@@ -153,7 +154,7 @@ fn a_kept_level_spares_the_first_phrase_its_reference() {
                 .map(|i| PhraseNote::new(f64::from(i) * 0.5, 0.5, mid, lyric))
                 .collect();
             let phrase = Phrase::new(voice.id.clone(), language, notes);
-            let mut time = |kept: bool| {
+            let time = |kept: bool| {
                 let inner = make();
                 // Open the models / analyse the samples first: what is
                 // timed is the levelling alone.
