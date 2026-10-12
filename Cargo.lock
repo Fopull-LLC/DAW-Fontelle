@@ -1346,6 +1346,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fontelle-audio-ipc"
+version = "0.26.3"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "fontelle-bridge-abi"
 version = "0.26.3"
 

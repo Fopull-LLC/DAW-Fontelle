@@ -1,0 +1,24 @@
+[package]
+name = "fontelle-audio-ipc"
+description = "The plain-data protocol Fontelle and an out-of-process audio driver host (fontelle-asio) exchange audio through: a shared-memory block, a per-buffer handshake, the control lines, and the dropout and load accounting both sides keep."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# MIT OR Apache-2.0 like the rest of Fontelle: both sides of the protocol
+# link this crate, and one of them is GPL (`crates/fontelle-asio-host`), so
+# it has to be a licence both can take. Nothing in it is Steinberg's.
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

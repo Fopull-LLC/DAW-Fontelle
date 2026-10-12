@@ -9,6 +9,7 @@ members = [
     "crates/fontelle-sequencer",
     "crates/fontelle-host",
     "crates/fontelle-engine",
+    "crates/fontelle-audio-ipc",
     "crates/fontelle-midi",
     "crates/fontelle-assets",
     "crates/fontelle-analysis",
