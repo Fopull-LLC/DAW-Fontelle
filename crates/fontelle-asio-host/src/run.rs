@@ -325,6 +325,11 @@ fn run(args: &RunArgs) -> i32 {
                         break 'run "the driver's thread was lost".to_string();
                     };
                     device.close();
+                    if let Err(why) = device.reload() {
+                        say(&HelperLine::Error(why.clone()));
+                        pump.stop();
+                        break 'run why;
+                    }
                     // A preferred size that changed is the person's choice in
                     // the driver's panel; otherwise Fontelle's stands.
                     let before = info.preferred_frames;

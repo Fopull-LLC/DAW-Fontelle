@@ -50,6 +50,12 @@ pub trait Device {
     fn stop(&mut self) -> Option<Pump>;
     /// Undoes `open`.
     fn close(&mut self);
+    /// After `close`, lets the driver go entirely and loads it afresh — what
+    /// a reset request asks for (the SDK's host: stop, dispose, exit, init),
+    /// and what some drivers need before a new buffer size or rate holds.
+    fn reload(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     /// What the driver said since the last call.
     fn notices(&mut self) -> Vec<Notice>;
     /// The driver's latencies now, in frames: input, output.

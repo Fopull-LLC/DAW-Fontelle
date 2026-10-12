@@ -41,7 +41,7 @@ use windows::Win32::Media::Audio::{
 };
 use windows::Win32::Media::KernelStreaming::{KSDATAFORMAT_SUBTYPE_PCM, WAVE_FORMAT_EXTENSIBLE};
 use windows::Win32::Media::Multimedia::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, WAVE_FORMAT_IEEE_FLOAT};
-use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
+use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToStringAlloc};
 use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
     CoUninitialize, STGM_READ,
@@ -177,8 +177,10 @@ fn friendly_name(device: &IMMDevice) -> Option<String> {
     unsafe {
         let store = device.OpenPropertyStore(STGM_READ).ok()?;
         let key = &DEVPKEY_Device_FriendlyName as *const _ as *const PROPERTYKEY;
-        let value = store.GetValue(key).ok()?;
-        let text = PropVariantToStringAlloc(&value).ok()?;
+        let mut value = store.GetValue(key).ok()?;
+        let text = PropVariantToStringAlloc(&value);
+        let _ = PropVariantClear(&mut value);
+        let text = text.ok()?;
         let name = text.to_string().ok();
         CoTaskMemFree(Some(text.0 as *const _));
         name
@@ -621,8 +623,9 @@ fn play(
             let _ = device.render.ReleaseBuffer(frames as u32, 0);
         }
         // Late is the renderer's call (it times itself); remembered so a gap
-        // it caused is not blamed on the device.
-        was_late = t0.elapsed() >= period;
+        // it caused is not blamed on the device. Against what was rendered,
+        // which in shared mode may be more than one period.
+        was_late = t0.elapsed().as_secs_f64() >= frames as f64 / f64::from(rate);
         started = true;
     }
 }

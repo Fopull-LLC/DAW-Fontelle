@@ -579,10 +579,24 @@ impl Device for AsioDevice {
     }
 
     fn close(&mut self) {
-        if self.opened.take().is_some() {
+        if self.opened.take().is_some() && !self.driver.is_null() {
             // SAFETY: stopped, with buffers made.
             unsafe { self.call(|v, d| (v.dispose_buffers)(d)) };
         }
+    }
+
+    fn reload(&mut self) -> Result<(), String> {
+        let _ = self.stop();
+        self.close();
+        // Let go first: many drivers allow one instance at a time.
+        if !self.driver.is_null() {
+            // SAFETY: the driver object made in `load`, released once.
+            unsafe { self.call(|v, d| (v.release)(d)) };
+            self.driver = std::ptr::null_mut();
+        }
+        let mut fresh = AsioDevice::load(&self.name)?;
+        self.driver = std::mem::replace(&mut fresh.driver, std::ptr::null_mut());
+        Ok(())
     }
 
     fn notices(&mut self) -> Vec<Notice> {
@@ -687,6 +701,9 @@ impl AsioDevice {
 
 impl Drop for AsioDevice {
     fn drop(&mut self) {
+        if self.driver.is_null() {
+            return;
+        }
         let _ = self.stop();
         self.close();
         // SAFETY: the driver object made in `load`, released once.
