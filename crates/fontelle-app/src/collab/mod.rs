@@ -18,14 +18,17 @@
 
 pub(crate) mod files;
 pub(crate) mod join;
+pub(crate) mod singers;
+#[cfg(test)]
+mod tests;
 
-pub use files::FetchQuestion;
+pub use files::{FetchQuestion, Trouble};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead};
+use fontelle_model::wire::{AssetEntry, Edit, Msg, PROTOCOL, ProjectHead, SingerNeed, SingerOffer};
 use fontelle_model::{Command, History, Project};
 use fontelle_net::{Channel, Incoming, PeerId, SERVER, Transport};
 use fontelle_types::{ChannelId, PersistentId, PluginState};
@@ -396,6 +399,66 @@ impl Collab {
         self.files.progress(hash)
     }
 
+    /// The singers the song uses and how each is got (F93): the host's own
+    /// list, or what the host said.
+    pub fn singers(&self) -> &[SingerNeed] {
+        match &self.role {
+            Role::Host(host) => &host.singers,
+            Role::Joiner(joiner) => &joiner.singers,
+        }
+    }
+
+    /// The host says which singers its song uses, and offers the packed
+    /// banks it may send; said to everybody whenever the list changes.
+    pub fn offer_singers(&mut self, singers: Vec<SingerNeed>, packs: Vec<(u64, PathBuf)>) {
+        let Role::Host(host) = &mut self.role else {
+            return;
+        };
+        for (hash, path) in packs {
+            self.files.offer(hash, path);
+        }
+        if host.singers != singers {
+            host.singers = singers;
+            host.broadcast(
+                self.transport.as_mut(),
+                &Msg::Singers {
+                    singers: host.singers.clone(),
+                },
+            );
+        }
+    }
+
+    /// Fetches the singer `need`, whose terms the person has agreed to.
+    pub fn fetch_singer(&mut self, need: &SingerNeed) {
+        if let SingerOffer::Send {
+            hash,
+            size,
+            file_name,
+            ..
+        } = &need.offer
+        {
+            self.files.want_pack(
+                AssetEntry {
+                    hash: *hash,
+                    size: *size,
+                    file_name: file_name.clone(),
+                    kind: fontelle_types::AssetKind::Sample,
+                },
+                SERVER,
+            );
+        }
+    }
+
+    /// Where the packed singer `hash` landed, once it is here whole.
+    pub fn singer_pack(&self, hash: u64) -> Option<PathBuf> {
+        self.files.pack(hash).map(PathBuf::from)
+    }
+
+    /// Why the file `hash` is not here and not coming, if that is so.
+    pub fn file_trouble(&self, hash: u64) -> Option<files::Trouble> {
+        self.files.trouble(hash)
+    }
+
     /// The files waiting on the person before they are fetched.
     pub fn fetch_question(&self) -> Option<FetchQuestion> {
         self.files.question(self.options.pace)
@@ -451,7 +514,7 @@ impl Collab {
         let ahead = (self.options.pace / 4) as usize;
         self.files
             .pump(self.transport.as_mut(), &place.with(doc), ahead);
-        effects
+        once_changed(effects)
     }
 
     /// An edit left in the hand with nothing more coming is let go of, so it
@@ -605,6 +668,53 @@ impl Collab {
     }
 }
 
+/// `Changed` once, however many edits arrived in the turn: each one is a
+/// whole rebuild of the graph in the studio (every soundfont reloaded), and
+/// twenty edits landing in one turn were twenty rebuilds back to back — the
+/// "laggy" of Ty's report. Where the first one was is where it stays.
+fn once_changed(effects: Vec<Effect>) -> Vec<Effect> {
+    let mut seen = false;
+    effects
+        .into_iter()
+        .filter(|effect| {
+            if matches!(effect, Effect::Changed) {
+                let first = !seen;
+                seen = true;
+                first
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Applies `command` the way the studio that made it did: minting in its
+/// author's space (`fontelle_model::minting_in`, F55).
+///
+/// A command that makes things *inside* what it makes — a cut's two halves'
+/// notes, an imported part's notes — mints those afresh on every apply, and
+/// minted them wherever the machine applying it happened to: the joiner in
+/// its own space, the host in the dense one, a joiner's copy made again in
+/// the dense one too. The same note had two ids, the joiner's next move of
+/// it was refused by the host ("taken back"), and the host's next edit of it
+/// landed on nothing on the joiner's screen (F89). Applied in the author's
+/// space everywhere, the same edit makes the same ids everywhere.
+fn apply_as(
+    author: u16,
+    command: &mut dyn Command,
+    doc: &mut Project,
+) -> Result<(), fontelle_model::CommandError> {
+    let space = (author != 0).then_some(author);
+    fontelle_model::minting_in(space, || command.apply(doc))
+}
+
+/// Fits every take's trim to its block, as the studio's own healing does at
+/// each republish — but at the same point of the stream on every copy, so
+/// the host's song and a joiner's copy of it agree (F86).
+fn healed(doc: &mut Project) {
+    fontelle_model::trim::fit_windows(doc);
+}
+
 fn send(transport: &mut dyn Transport, to: PeerId, msg: &Msg) {
     transport.send(to, Channel::Reliable, &msg.to_bytes());
 }
@@ -659,20 +769,13 @@ impl Turn<'_> {
 }
 
 /// A drifted copy: a bug report in strict mode, a fresh snapshot otherwise.
-fn drifted(
-    options: &CollabOptions,
-    transport: &mut dyn Transport,
-    seq: u64,
-    ours: u64,
-    theirs: u64,
-) {
+fn drifted(options: &CollabOptions, seq: u64, ours: u64, theirs: u64) {
     let line = format!(
         "Fontelle: shared song drifted at edit {seq} (this copy {ours:016x}, host {theirs:016x}); \
          asking for a fresh copy"
     );
     assert!(!options.strict, "{line}");
     eprintln!("{line}");
-    send(transport, SERVER, &Msg::ResyncRequest);
 }
 
 // ================================================================== the host
@@ -688,6 +791,8 @@ struct Host {
     handled: BTreeMap<PersistentId, u64>,
     /// The space each join was given, so one back after a drop gets its own.
     spaces: BTreeMap<PersistentId, u16>,
+    /// The singers the song uses (F93), as last said.
+    singers: Vec<SingerNeed>,
 }
 
 struct HostPeer {
@@ -786,13 +891,21 @@ impl Host {
     /// was a drift and a fresh copy — 67 of them in Ty and Lore's session,
     /// the joiner each time one edit behind. The hash goes with the edit
     /// that leaves the hand empty.
-    fn send_mine(&mut self, transport: &mut dyn Transport, doc: &Project, history: &mut History) {
+    fn send_mine(
+        &mut self,
+        transport: &mut dyn Transport,
+        doc: &mut Project,
+        history: &mut History,
+    ) {
         let mine = history.take_outgoing();
         let count = mine.len();
         let whole = !history.gesture_in_hand();
         for (i, outgoing) in mine.into_iter().enumerate() {
             self.seq += 1;
-            let hash = (i + 1 == count && whole).then(|| doc.sync_hash());
+            let hash = (i + 1 == count && whole).then(|| {
+                healed(doc);
+                doc.sync_hash()
+            });
             self.broadcast(
                 transport,
                 &Msg::Applied {
@@ -926,8 +1039,9 @@ impl Host {
                 // The proposal as it came, ids and all: the joiner minted
                 // them in its own space, so they can be nobody else's (F55).
                 let mut command = edit.into_command();
-                match command.apply(doc) {
+                match apply_as(author, command.as_mut(), doc) {
                     Ok(()) => {
+                        healed(doc);
                         self.seq += 1;
                         let applied = command.to_edit();
                         // A file the edit names that is not here yet is the
@@ -1027,6 +1141,15 @@ impl Host {
         }
         if who.view_only {
             send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
+        }
+        if !self.singers.is_empty() {
+            send(
+                turn.transport,
+                peer,
+                &Msg::Singers {
+                    singers: self.singers.clone(),
+                },
+            );
         }
     }
 
@@ -1137,6 +1260,15 @@ struct Pending {
     /// The edit as applied here, ready to be applied again when the
     /// document is rebuilt under it.
     command: Box<dyn Command>,
+    /// Whether it is on the screen. One that no longer applies to the
+    /// host's song as this studio has it is left off — and kept, because it
+    /// is still on its way: the host decides, and its answer (or refusal)
+    /// is what takes it back, not a guess here. It used to be dropped,
+    /// its undo entry and all, and said to be taken back; then the host,
+    /// whose song had moved on again, applied it after all, and nothing
+    /// here ever showed it — a clip deleted on the joiner's screen came
+    /// back there and stayed.
+    shown: bool,
 }
 
 struct Joiner {
@@ -1169,9 +1301,20 @@ struct Joiner {
     seq: u64,
     pending: VecDeque<Pending>,
     next_local: u64,
+    /// The last of this studio's own edits the host has answered — applied
+    /// or refused, one by one in its order, or as a number after a drop
+    /// (`Msg::Resumed`). Nothing at or below it is pending, whatever else
+    /// went wrong: the host's song has it, or has refused it (F87).
+    answered: u64,
+    /// A fresh copy has been asked for and has not arrived: the copy here
+    /// is known not to be the host's, and asking again at every edit that
+    /// lands on it meanwhile only sends the whole song again (F88).
+    resyncing: bool,
     peers: BTreeMap<u16, Peer>,
     /// The host refuses this studio's edits (F49).
     view_only: bool,
+    /// The singers the host's song uses (F93).
+    singers: Vec<SingerNeed>,
     /// Plugin states this studio kept of its own plugins, which a copy made
     /// again from the host's song must not take back — see
     /// [`Collab::plugin_kept_here`].
@@ -1199,6 +1342,9 @@ impl Joiner {
             seq: 0,
             pending: VecDeque::new(),
             next_local: 0,
+            answered: 0,
+            resyncing: false,
+            singers: Vec::new(),
             peers: BTreeMap::new(),
             view_only: false,
             kept_here: Vec::new(),
@@ -1332,6 +1478,7 @@ impl Joiner {
                 local_seq: self.next_local,
                 entry: outgoing.entry,
                 command: outgoing.edit.into_command(),
+                shown: true,
             });
         }
     }
@@ -1378,6 +1525,7 @@ impl Joiner {
                     // Those the host has had are in the copy that follows
                     // (or were refused, and the copy is without them); the
                     // rest never reached it, and go again.
+                    self.answered = self.answered.max(handled);
                     self.pending.retain(|pending| pending.local_seq > handled);
                     for pending in &self.pending {
                         send(
@@ -1415,6 +1563,7 @@ impl Joiner {
                 self.stage = Stage::Asking;
             }
             Msg::Refuse { reason } => return Some(reason),
+            Msg::Singers { singers } => self.singers = singers,
             Msg::SnapshotChunk { index, bytes, .. } => {
                 if index == 0 {
                     self.snapshot.clear();
@@ -1430,7 +1579,8 @@ impl Joiner {
                         Ok(song) => {
                             self.confirmed = Some(song);
                             self.seq = seq;
-                            self.rebuild(doc, history, turn.notices);
+                            self.resyncing = false;
+                            self.rebuild(doc);
                             turn.effects.push(Effect::Changed);
                         }
                         Err(e) => return Some(format!("The song did not arrive whole: {e}")),
@@ -1450,6 +1600,7 @@ impl Joiner {
                 self.applied(turn, seq, author, author_seq, edit, hash, doc, history);
             }
             Msg::Refused { local_seq, reason } => {
+                self.answered = self.answered.max(local_seq);
                 if let Some(at) = self.pending.iter().position(|p| p.local_seq == local_seq) {
                     let refused = self.pending.remove(at).expect("just found");
                     history.forget(refused.entry);
@@ -1461,7 +1612,7 @@ impl Joiner {
                     } else {
                         taken_back(label, self.host_or_them())
                     });
-                    self.rebuild(doc, history, turn.notices);
+                    self.rebuild(doc);
                     turn.effects.push(Effect::Changed);
                 }
             }
@@ -1516,6 +1667,17 @@ impl Joiner {
     }
 
     /// The next edit in the host's order.
+    ///
+    /// **One of this studio's own edits coming back is settled first**,
+    /// whatever else is wrong with this message. It used to be settled last,
+    /// after two early returns — an edit the copy here had already been
+    /// given, and one that did not apply to the copy here — and an own edit
+    /// that came back by either of those stayed pending for good although
+    /// the host had it. Every later answer to an edit of this studio's then
+    /// met it at the head of `pending`, was taken for somebody else's, went
+    /// into the copy *and* stayed pending on top of it: an effect added once
+    /// was there twice, a clip dragged four beats went eight, a clip the host
+    /// deleted came back for good (Ty, 2026-10-11; F87).
     #[allow(clippy::too_many_arguments)]
     fn applied(
         &mut self,
@@ -1528,69 +1690,135 @@ impl Joiner {
         doc: &mut Project,
         history: &mut History,
     ) {
+        let mine = author == self.space && author_seq > 0;
+        // Whether the screen still shows the host's song with this studio's
+        // waiting edits on it, once this edit is in.
+        let mut screen_holds = true;
+        if mine {
+            self.answered = self.answered.max(author_seq);
+            match self.pending.front() {
+                Some(front) if front.local_seq == author_seq => {
+                    let front = self.pending.pop_front().expect("just looked");
+                    // The host made it from the state it had, which can be
+                    // a different state from this screen's: then what it
+                    // made differs, and the screen is made again from the
+                    // host's song (§5.5 step 2, "apply the host's form").
+                    // And one that was not on the screen is now.
+                    if !front.shown || front.command.to_edit().to_bytes() != edit.to_bytes() {
+                        screen_holds = false;
+                    }
+                }
+                _ => {
+                    // Not at the head: whatever was sent before it and is
+                    // still waiting never reached the host (it answers in
+                    // the order it was sent), and the screen is made again
+                    // from the host's song, which has this one.
+                    let host = self.host_or_them().to_string();
+                    let answered = self.answered;
+                    self.pending.retain(|pending| {
+                        let keep = pending.local_seq > answered;
+                        if !keep && pending.local_seq != author_seq {
+                            history.forget(pending.entry);
+                            turn.notices
+                                .push(taken_back(pending.command.label(), &host));
+                        }
+                        keep
+                    });
+                    screen_holds = false;
+                }
+            }
+        }
         if seq <= self.seq {
-            return; // already in the copy this studio was given
+            // Already in the copy this studio was given.
+            if !screen_holds {
+                self.rebuild(doc);
+                turn.effects.push(Effect::Changed);
+            }
+            return;
         }
         self.seq = seq;
         let confirmed = self
             .confirmed
             .as_mut()
             .expect("live means a confirmed copy");
-        if let Err(e) = edit.clone().into_command().apply(confirmed) {
+        if let Err(e) = apply_as(author, edit.clone().into_command().as_mut(), confirmed) {
             eprintln!("Fontelle: the host's edit {seq} did not apply to its own song here: {e}");
-            send(turn.transport, SERVER, &Msg::ResyncRequest);
+            self.resync(turn.transport);
+            if !screen_holds {
+                self.rebuild(doc);
+                turn.effects.push(Effect::Changed);
+            }
             return;
         }
-        if let Some(theirs) = hash {
+        healed(confirmed);
+        if let Some(theirs) = hash
+            && !self.resyncing
+        {
             let ours = confirmed.sync_hash();
             if ours != theirs {
-                drifted(turn.options, turn.transport, seq, ours, theirs);
+                drifted(turn.options, seq, ours, theirs);
+                self.resync(turn.transport);
             }
         }
 
-        let mine = author == self.space
-            && self
-                .pending
-                .front()
-                .is_some_and(|pending| pending.local_seq == author_seq);
         if mine {
-            // The host put it where this studio already had it.
-            self.pending.pop_front();
+            if !screen_holds {
+                self.rebuild(doc);
+                turn.effects.push(Effect::Changed);
+            }
             return;
         }
         if self.pending.is_empty() {
             // Nothing of ours in the way: the copy on screen is the host's.
-            if edit.clone().into_command().apply(doc).is_err() {
-                self.rebuild(doc, history, turn.notices);
+            if apply_as(author, edit.clone().into_command().as_mut(), doc).is_err() {
+                self.rebuild(doc);
+            } else {
+                healed(doc);
             }
         } else {
-            self.rebuild(doc, history, turn.notices);
+            self.rebuild(doc);
         }
         // A file somebody else's edit names comes from the host (§7.2).
         turn.want_files_of(&edit, SERVER, doc);
         turn.effects.push(Effect::Changed);
     }
 
+    /// Asks the host for a fresh copy of its song, once until it comes.
+    fn resync(&mut self, transport: &mut dyn Transport) {
+        if !self.resyncing {
+            self.resyncing = true;
+            send(transport, SERVER, &Msg::ResyncRequest);
+        }
+    }
+
     /// The document on screen, made again: the host's song, and this
-    /// studio's edits the host has not ordered yet on top of it. An edit that
-    /// no longer applies — somebody deleted what it was about — is dropped,
-    /// its undo entry with it, and said.
-    fn rebuild(&mut self, doc: &mut Project, history: &mut History, notices: &mut Vec<String>) {
+    /// studio's edits the host has not ordered yet on top of it — applied
+    /// where this studio mints, as they were the first time (F89). One that
+    /// does not apply any more — somebody changed what it was about — is
+    /// left off the screen and kept until the host answers it (`Pending::
+    /// shown`); one the host has already answered is never put on again
+    /// (F87).
+    fn rebuild(&mut self, doc: &mut Project) {
         let Some(confirmed) = &self.confirmed else {
             return;
         };
         let mut rebuilt = confirmed.clone();
-        let host = self.host_or_them().to_string();
-        self.pending
-            .retain_mut(|pending| match pending.command.apply(&mut rebuilt) {
+        let answered = self.answered;
+        let space = self.space;
+        self.pending.retain_mut(|pending| {
+            if pending.local_seq <= answered {
+                return false;
+            }
+            pending.shown = match apply_as(space, pending.command.as_mut(), &mut rebuilt) {
                 Ok(()) => true,
                 Err(e) => {
-                    history.forget(pending.entry);
-                    eprintln!("Fontelle: a pending edit no longer applies: {e}");
-                    notices.push(taken_back(pending.command.label(), &host));
+                    eprintln!("Fontelle: a pending edit does not apply for now: {e}");
                     false
                 }
-            });
+            };
+            true
+        });
+        healed(&mut rebuilt);
         // What this studio kept of its own plugins, where the host's song
         // has not changed them since: a plugin's state is each machine's
         // own (§5.2), and putting the song's older one back undid a knob
@@ -1657,13 +1885,8 @@ impl Joiner {
         let (_, seq) = self.snapshot_done?;
         let confirmed = self.confirmed.as_ref()?;
         if doc.sync_hash() != confirmed.sync_hash() {
-            drifted(
-                turn.options,
-                turn.transport,
-                seq,
-                doc.sync_hash(),
-                confirmed.sync_hash(),
-            );
+            drifted(turn.options, seq, doc.sync_hash(), confirmed.sync_hash());
+            self.resync(turn.transport);
         }
         self.seq = seq;
         self.stage = Stage::Live;

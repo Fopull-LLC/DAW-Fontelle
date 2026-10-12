@@ -250,6 +250,108 @@ impl NoteData {
     }
 }
 
+/// **Which instrument a clip means**, read off the notes that play in it —
+/// not the channel it was drawn with.
+///
+/// > *"clicking on that clip to select it does not select the instrument
+/// > thats actually playing in the channel rack instead it selects the
+/// > original instrument that was tied to that clip. this is bad ux."*
+///
+/// The home channel ([`NoteData::channel`]) stays what the file says: it is
+/// what a note with no channel of its own plays, and the file and the wire
+/// are append-only. Everything a person *sees* of a clip — which channel a
+/// click selects, the caption, the colour — is derived here at read time,
+/// so it follows the notes as they change, an undo, and an edit from
+/// somebody sharing the song, with nothing stored to go stale.
+///
+/// `rack` is the channels that exist, in the rack's order: a note naming a
+/// channel that has gone counts for nothing, and nothing here ever answers
+/// with a channel that is not in the rack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipChannels {
+    /// The channels with notes in the clip and how many, in rack order.
+    playing: Vec<(ChannelId, usize)>,
+    /// The home channel, when it is still in the rack.
+    home: Option<ChannelId>,
+}
+
+impl ClipChannels {
+    pub fn of(data: &NoteData, rack: &[ChannelId]) -> Self {
+        let mut counts: Vec<(ChannelId, usize)> = Vec::new();
+        for note in data.notes.values() {
+            let channel = note.channel_or(data.channel);
+            match counts.iter_mut().find(|(c, _)| *c == channel) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((channel, 1)),
+            }
+        }
+        let playing = rack
+            .iter()
+            .filter_map(|id| counts.iter().find(|(c, _)| c == id).copied())
+            .collect();
+        Self {
+            playing,
+            home: rack.contains(&data.channel).then_some(data.channel),
+        }
+    }
+
+    /// The channels with notes here and how many each has, in rack order.
+    pub fn playing(&self) -> &[(ChannelId, usize)] {
+        &self.playing
+    }
+
+    /// The channel the clip is **about**: the one with the most notes, the
+    /// higher in the rack on a tie — or, with no notes at all, the one it
+    /// was drawn with. What the block is captioned and coloured with.
+    ///
+    /// Most notes rather than the first written or the last edited: a drum
+    /// clip with one stray bass note in it is a drum clip, and the answer
+    /// does not change under the person between two looks at it. It does
+    /// not depend on the rack's selection either, so a block's caption never
+    /// flickers as somebody clicks around the rack.
+    pub fn face(&self) -> Option<ChannelId> {
+        let mut best: Option<(ChannelId, usize)> = None;
+        for &(channel, count) in &self.playing {
+            if best.is_none_or(|(_, most)| count > most) {
+                best = Some((channel, count));
+            }
+        }
+        best.map(|(channel, _)| channel).or(self.home)
+    }
+
+    /// How many channels play here besides [`face`](Self::face) — the
+    /// caption's `+n`.
+    pub fn others(&self) -> usize {
+        self.playing.len().saturating_sub(1)
+    }
+
+    /// What opening the clip selects in the rack, with `current` selected:
+    /// `current` itself when it plays here (you were writing that part —
+    /// picking the clip up must not throw you onto another), else the
+    /// [`face`](Self::face). `None` is "leave the rack alone", only ever for
+    /// an empty clip whose channel has gone.
+    pub fn on_open(&self, current: Option<ChannelId>) -> Option<ChannelId> {
+        if let Some(current) = current
+            && self.playing.iter().any(|(c, _)| *c == current)
+        {
+            return Some(current);
+        }
+        self.face()
+    }
+
+    /// What clicking the clip **again** selects: the next channel that plays
+    /// here after `current`, in rack order and round again — so a clip
+    /// holding drums, bass and keys is three clicks from any of them. From a
+    /// channel that plays nothing here, the [`face`](Self::face).
+    pub fn cycled(&self, current: Option<ChannelId>) -> Option<ChannelId> {
+        let at = current.and_then(|current| self.playing.iter().position(|(c, _)| *c == current));
+        match at {
+            Some(at) => Some(self.playing[(at + 1) % self.playing.len()].0),
+            None => self.face(),
+        }
+    }
+}
+
 /// One of a note's editable properties, named so a command and a lane can talk
 /// about the same thing.
 ///

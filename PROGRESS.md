@@ -19,6 +19,152 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-12, latest — singers travel with a shared song where their
+terms allow.** Branch `feature/collab-singers` (from `feature/vocal-track`,
+with `fix/collab-sync` merged in), not merged, not bumped. Ty:
+*"collaborating doesn't share singer files currently like it does with sound
+fonts and audio so you cannot sync singers you don't share."*
+
+- `Msg::Singers` (tag 20): the host says which singers its song uses and how
+  each is got; said again whenever that changes (collab plan §18, F93).
+- **The rule**: a Fontelle Singer bank is sent only when the catalogue says
+  its author lets it be passed on (`catalogue::Terms::redistribute`, new,
+  default unknown = not sent); otherwise the friend is told which bank and
+  the catalogue's download or the author's page. Research-only voices are
+  never sent; another engine's singer cannot be — the friend is told which
+  engine and which singer.
+- A sent bank: packed by Fontelle (`collab::singers::pack`/`unpack`, paths
+  checked, 8 GB cap), its terms shown in the question, fetched only on the
+  yes, installed through `VocalState::install`, agreed in both records, then
+  it sings. Everything missing is in the Share panel's list (F91's).
+- Not done: a take rendered on the host is not sent to a friend without the
+  singer (a frozen vocal is an audio clip, and is); a bank is packed on the
+  studio's own thread the first time it is offered.
+- Tests: `fontelle-app/tests/collab_singers.rs` (4), `collab::singers` (3),
+  `fontelle-model/tests/wire.rs` (tag 20).
+
+**As of 2026-10-11, latest — the brush stays on its row and comes to the
+arrangement; a click on a clip means the instrument playing in it; the
+window fills a scaled display; no more triangle notes.** Branch
+`fix/brush-and-clip-channel` (from v0.26.1), for a patch release; not
+merged, not bumped. Four reports from Ty.
+
+- **The roll's brush is locked to the row it was pressed on** (*"when
+  dragging out the brush left and right it should be locked to the lane
+  youre clicking ... hi hat patterns"*): `Gesture::Painting` carries the
+  press's `row`; **Shift**, read live, lets it follow the pointer as
+  before. Shift because it is already this window's one-axis modifier; Alt
+  is the grid/scale and Ctrl the marquee. On the tool's tip, the shortcuts
+  page ("Shift+brush stroke") and the guide.
+- **A brush on the arrangement** (*"no brush tool in the arrangement"*):
+  `TimelineTool::Paint` / `TimelineControl::Paint` (the roll's brush icon,
+  beside the pencil, `B` on either panel). A stroke lays copies of the clip
+  in hand (the pencil's Shift+click source) end to end — `anchor + k ×
+  length`, filling jumps, never over a clip already there or before bar 1;
+  pressed on a clip it takes that clip and paints on from it; with nothing
+  in hand it asks for the double-click's blank bar (or a prefab place on
+  the prefab tab). Locked to the lane unless Shift; right button erases;
+  Ctrl marquees; brush cursor. `ArrangeEdit::Paint`: the session puts the
+  first step through the history and **amends** every later one into that
+  entry (`Session::paint_step`, `Compound::parts` to find the id), so a
+  stroke is one undo and one edit to a shared song.
+- **A clip's instrument is read off its notes** (*"clicking on that clip
+  ... selects the original instrument that was tied to that clip"*):
+  `fontelle_model::ClipChannels` — the channels with notes in it, in rack
+  order. Opening keeps a selection that plays there, else picks the one
+  with the most notes (rack order on a tie); an empty clip is its home
+  channel; a deleted channel is never chosen. A second **click** (no drag,
+  no modifier, not the name) on the open note clip cycles through them in
+  rack order (`Timeline::take_cycle` → `StudioHost::cycle_clip_channel`).
+  The caption (`face +n`) and colour use the same reading. Derived at read
+  time: nothing stored changes, so undo, prefabs and collaborators' edits
+  all just work. Audio and automation clips are untouched.
+- **Windows HiDPI** (*"squishing everything into the top corner and
+  squishing my mouse offset in that direction too"*). Root cause: layout
+  and pointer were in logical points (both divided by the scale factor),
+  but the scene went to the renderer unscaled, one unit to one *physical*
+  pixel — invisible at 100 %, a window drawn into two thirds of itself at
+  Windows' 150 %, with clicks landing 1.5× further out than the drawing.
+  Not a manifest: winit makes the process per-monitor-v2 DPI aware.
+  `render::for_surface` scales the frame by the scale factor at both
+  places a frame meets a surface (studio and editor windows).
+- **Triangle notes cannot be made** (*"triangle notes should not
+  exist"*): the `A` key (`Action::Slide`), `toggle_slide`, `RollEdit::
+  SetSlide` and the dead `RollControl::Slide` are gone, and clicking an old
+  slide note no longer makes the template (so every later note) a slide.
+  Old songs keep theirs, playing and drawn as before: `Note::slide` is in
+  the file and on the wire, and an FL slide (bends whatever the channel is
+  playing) has no faithful mapping to a per-note path. A saved rebinding of
+  "slide" is passed over. Copy/paste and FL-score import keep the flag of
+  notes that already have it.
+- Tests (all written first and seen failing): `fontelle-model/tests/
+  clip_channel_choice.rs` (8), `fontelle-ui/tests/roll_paint_lock.rs` (6),
+  `arrange_paint.rs` (15), `arrange_clip_cycle.rs` (5), `hidpi.rs` (3),
+  `slide.rs` (rewritten, 5), `pointer.rs` (+1), headless
+  `arrange-paint-{dark,light}` and `hidpi-150`; `fontelle-app/tests/
+  arrange_paint.rs` (6), `multi_instrument_clips.rs` (+7, two updated: a
+  clip drawn with A and holding only B's notes is B's), `collab.rs` (+1, a
+  stroke crosses the wire whole), `shakedown.rs` (the slide note is now an
+  old song's). Windows untested on a device — reasoned, unit- and
+  pixel-tested here.
+- **Deleting an instrument takes its notes, not the clips it shares**:
+  `RemoveChannel` took every clip *drawn with* the channel, so Ty's clip
+  (drawn with A, written with B) went with A. `DeleteChannel` (+
+  `RestoreDeletedChannel`, appended to the wire's `Edit`, name pinned) takes
+  A's notes out of every clip and prefab; a clip goes only if nothing but A
+  was in it (or it was empty and drawn with A); one that keeps notes is
+  re-homed onto `ClipChannels::face`, places follow their prefab. Undo is
+  exact. The studio runs it; `RemoveChannel` is unchanged for old peers and
+  undo stacks. Tests: `fontelle-model/tests/delete_channel.rs` (6),
+  `multi_instrument_clips.rs` (+2), `collab.rs` (+1), `wire.rs`.
+- **Settings from a newer build load here** (a preview build's
+  `{"instrument": "Vocal"}` star made the release refuse the whole file and
+  run on defaults): `Settings::from_json` sets aside an unreadable favourite
+  on its own, and an unknown or unreadable field on its own (field by field
+  onto the defaults), in `Settings::unread`; `to_json` writes them back
+  verbatim — a known field only while this build has left it at its default.
+  A file from a newer *format version* is still refused, as before. Tests:
+  `settings_from_newer_builds.rs` (6).
+- **Tests no longer read or write the real `~/.config/fontelle`**:
+  `Session::new` starts on default settings and reads no file; `main` asks
+  for the user's (`with_user_settings`); a session with no settings path
+  saves nowhere, and its tour, previews and themes no longer fall back to
+  the config folder. `settings_isolation.rs` (1); the `live_take` failure
+  on the devbox was this.
+
+**As of 2026-10-11, latest — a shared song stops doubling, taking back and
+over-shooting edits; what is missing is named.** Branch `fix/collab-sync`
+(from v0.26.1), not merged, not bumped. Ty, from a session with a friend:
+*"glitchy and laggy ... moving around things often over or undershoots ...
+my actions are constantly taken back like im trying to delete this one clip
+but it keeps immediately reappearing ... adding an effect made it add 2
+versions of that effect ... if there are plugins missing, it should tell you
+which plugins."*
+
+- **Root causes** (collab plan §18 F86–F92, each reproduced and seen failing
+  first): a joiner settled its own edit's answer after two early returns, so
+  one disagreement left it pending for good and every later edit of its own
+  was applied twice (an effect twice, 12 beats of drag landing 24, a deleted
+  clip back for good) — F87; one disagreement asked for the whole song at
+  every edit (10 → 1, F88); edits re-minted what they made inside in
+  whichever space the applying machine minted, so a cut's notes had other ids
+  on the host and the next move of one was refused (F89); take trims healed
+  outside the stream on the host only — a tempo change was a drift (F86);
+  insert edits refused when somebody reordered the chain (F90); a burst of
+  20 edits was 20 graph rebuilds (F92).
+- **Missing plugins and files** (F91): the Share panel lists what this
+  computer has not got — name, format, maker, where the song uses it, and why
+  a file could not be had — and a plugin added mid-session is said as it
+  arrives. `PluginState::vendor` (serde default, out of the hash). A save no
+  longer resets a plugin's MPE switch.
+- **What a shared song still does not carry**: plan §18, G1–G7 (a plugin's
+  own-window state, files plugins loaded, presets, singers — next, on
+  `feature/collab-singers`).
+- Tests: `fontelle-app/tests/collab_latency.rs` (7, three studios with
+  latency and jitter), `fontelle-app` `collab::tests` (4),
+  `tests/collab.rs` (+2), `fontelle-model/tests/wire.rs` (slot test now
+  follows its slot), `fontelle-net` transport jitter (+1),
+  `fontelle-ui/tests/share_panel.rs` (+1), headless `share-panel-missing`.
 **As of 2026-10-11, latest — the Fontelle Singer is a complete instrument
 with its own panel; engine instruments are never blank; terms you can
 read.** Branch `feature/vocal-track`, not merged, not bumped.
@@ -804,7 +950,7 @@ the way bridges are. Nothing in this tree knows any particular engine.
   Enter wrote the word, Esc left it, and the singer chip opened the
   picker with both research-only voices badged.
 
-**As of 2026-10-06, latest — Analyze Musically keeps its own time; a
+**As of 2026-10-06, earlier — Analyze Musically keeps its own time; a
 flatten handle; a pro's pass over its edges.** Same branch
 (`feature/analyze-musically`), not merged, not bumped. Ty, trying the
 preview build: *"the playhead inside analyze musically only moves when the

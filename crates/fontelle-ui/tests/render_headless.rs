@@ -1286,9 +1286,11 @@ fn shoot_timeline_recording(
         .unwrap_or_else(Theme::dark_default);
     let ghost = GHOST.with(|slot| slot.get());
     let shared = headless()?;
+    // Laid out in points, as the window lays itself out on a scaled display.
+    let surface_scale = SURFACE_SCALE.with(|scale| scale.get());
     let layout = window_layout(
-        RW as f32,
-        RH as f32,
+        (f64::from(RW) / surface_scale) as f32,
+        (f64::from(RH) / surface_scale) as f32,
         &theme.metrics,
         DEFAULT_TIMELINE_HEIGHT,
     );
@@ -1379,7 +1381,7 @@ fn shoot_timeline_recording(
             browser: None,
             timeline: Some(TimelineChrome {
                 vocal_spans: &[],
-                tool: fontelle_ui::canvas::TimelineTool::default(),
+                tool: SHOT_TOOL.with(|tool| tool.get()),
                 stretch,
                 toolbar: fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics),
                 hover: None,
@@ -1432,10 +1434,16 @@ fn shoot_timeline_recording(
             vocal_overlay: None,
         },
     );
+    let mut frame = vello::Scene::new();
     let pixels = shared
         .lock()
         .expect("the shared renderer")
-        .render(&scene, RW, RH, theme.palette.window)
+        .render(
+            fontelle_ui::render::for_surface(&scene, surface_scale, &mut frame),
+            RW,
+            RH,
+            theme.palette.window,
+        )
         .expect("the scene must render");
     Some(TimelineShot {
         pixels,
@@ -6814,6 +6822,22 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     ];
     words.extend(graphics_lines.iter().cloned());
     words.extend(graphics_buttons.iter().cloned());
+    // F91: what a joiner's computer has not got.
+    let missing = vec![
+        fontelle_ui::document::MissingItem {
+            what: "Serum 2 \u{2014} VST3, Xfer Records".to_string(),
+            detail: "not installed here \u{2014} the instrument Bass".to_string(),
+        },
+        fontelle_ui::document::MissingItem {
+            what: "Glass \u{2014} soundfont".to_string(),
+            detail: "Alice\u{2019}s computer does not have it either".to_string(),
+        },
+    ];
+    words.push(fontelle_ui::canvas::MISSING_HERE.to_string());
+    words.push(fontelle_ui::canvas::missing_more_words(1));
+    for item in &missing {
+        words.extend([item.what.clone(), item.detail.clone()]);
+    }
     for word in &words {
         labels.ensure(word, &theme.font, &mut text);
     }
@@ -6923,6 +6947,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             code: Some("UL22A6"),
             peers: &peers,
             status,
+            missing: &[],
         }),
         ..Default::default()
     });
@@ -6943,6 +6968,48 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         "Carol is view only and her switch is not lit"
     );
     assert!(!lit(panel.rows[0].view_only), "Bob's switch is lit");
+
+    // A joiner missing a plugin and a soundfont: listed, under a heading,
+    // what and where (F91).
+    let lacking = shoot(Notices {
+        sharing: Some(0),
+        share: Some(ShareNotice {
+            role: ShareRole::Joined,
+            code: None,
+            peers: &peers,
+            status,
+            missing: &missing,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&lacking, "share-panel-missing", W, H);
+    let listed = fontelle_ui::canvas::share_panel_layout_with(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Joined,
+        peers.len(),
+        missing.len(),
+    );
+    assert!(
+        ink(&lacking, &bare, listed.missing_title) > 20,
+        "no heading over what is missing"
+    );
+    // A short window: as many as fit, and the rest counted.
+    assert!(!listed.missing.is_empty());
+    if listed.missing.len() < missing.len() {
+        assert!(
+            ink(&lacking, &bare, listed.missing_more) > 20,
+            "the ones that did not fit are not counted"
+        );
+    }
+    for (what, detail) in &listed.missing {
+        assert!(
+            ink(&lacking, &bare, *what) > 20,
+            "a missing thing not named"
+        );
+        assert!(ink(&lacking, &bare, *detail) > 20, "nor where it is used");
+    }
 
     // The join's question: a scrim, the words, and the safe answer weighted.
     let asked = shoot(Notices {
@@ -7184,6 +7251,71 @@ thread_local! {
     /// Whether the next timeline shot shapes and draws its clips' names.
     static CAPTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SHOT_THEME: std::cell::RefCell<Option<Theme>> = const { std::cell::RefCell::new(None) };
+    /// The display's scale for the next timeline shot: laid out in points,
+    /// drawn into `RW` × `RH` pixels.
+    static SURFACE_SCALE: std::cell::Cell<f64> = const { std::cell::Cell::new(1.0) };
+    /// The arrangement's tool in the next timeline shot.
+    static SHOT_TOOL: std::cell::Cell<fontelle_ui::canvas::TimelineTool> =
+        const { std::cell::Cell::new(fontelle_ui::canvas::TimelineTool::Draw) };
+}
+
+/// The arrangement's brush: its chip lit beside the pencil, and a row the
+/// brush laid — copies of the clip in hand, end to end along one lane. *"no
+/// brush tool in the arrangement."*
+#[test]
+fn the_arrangement_brush_is_on_its_toolbar_and_lit_when_chosen() {
+    use fontelle_ui::canvas::{TimelineControl, TimelineTool, timeline_toolbar_layout};
+    for (theme, name) in [
+        (Theme::dark_default(), "arrange-paint-dark"),
+        (Theme::light_default(), "arrange-paint-light"),
+    ] {
+        let hats = [0xd0, 0x9a, 0x4f, 0xff];
+        let mut clips = vec![a_clip(0, 0, PPQN * 4, hats)];
+        // The stroke: four copies along lane 2, whatever the hand did.
+        for bar in 1..5 {
+            clips.push(a_clip(1, PPQN * 4 * bar, PPQN * 4, hats));
+        }
+        for clip in &mut clips {
+            clip.name = "Hats".to_string();
+        }
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = Some(theme.clone()));
+        SHOT_TOOL.with(|tool| tool.set(TimelineTool::Paint));
+        CAPTIONS.with(|on| on.set(true));
+        let shot = shoot_timeline(&clips);
+        SHOT_TOOL.with(|tool| tool.set(TimelineTool::Draw));
+        CAPTIONS.with(|on| on.set(false));
+        SHOT_THEME.with(|slot| *slot.borrow_mut() = None);
+        let Some(shot) = shot else {
+            return;
+        };
+        dump_sized(&shot.pixels, name, RW, RH);
+        let chip = timeline_toolbar_layout(shot.layout.toolbar, &shot.theme.metrics)
+            .items
+            .into_iter()
+            .find(|(control, _)| *control == TimelineControl::Paint)
+            .map(|(_, rect)| rect)
+            .expect("the brush chip");
+        let found = shot.at((chip.x + 3.0) as u32, (chip.y + chip.height / 2.0) as u32);
+        assert!(
+            near(found, shot.theme.palette.accent),
+            "{name}: the brush is the live tool, found {found:?}"
+        );
+        // And the pencil beside it is not lit.
+        let pencil = timeline_toolbar_layout(shot.layout.toolbar, &shot.theme.metrics)
+            .items
+            .into_iter()
+            .find(|(control, _)| *control == TimelineControl::Draw)
+            .map(|(_, rect)| rect)
+            .expect("the pencil chip");
+        let found = shot.at(
+            (pencil.x + 3.0) as u32,
+            (pencil.y + pencil.height / 2.0) as u32,
+        );
+        assert!(
+            !near(found, shot.theme.palette.accent),
+            "{name}: one tool lit"
+        );
+    }
 }
 
 /// An empty arrangement, as the window draws it with the ghost of a first
@@ -8564,4 +8696,38 @@ fn analyze_musically_dumps_its_pages() {
             s.click_note(2, false);
         });
     }
+}
+
+/// The window on a 150 % display fills its surface, and a point in its
+/// layout is drawn where the pointer — divided by the same scale — finds it.
+/// Ty, on Windows: *"it's like it's squishing everything into the top corner
+/// and squishing my mouse offset in that direction too."* See `tests/hidpi.rs`
+/// for the root cause.
+#[test]
+fn on_a_150_percent_display_the_window_fills_its_surface() {
+    use fontelle_ui::canvas::clip_rect;
+    let hats = [0xd0, 0x9a, 0x4f, 0xff];
+    let clips = vec![a_clip(0, PPQN * 4, PPQN * 4, hats)];
+    SURFACE_SCALE.with(|scale| scale.set(1.5));
+    CAPTIONS.with(|on| on.set(true));
+    let shot = shoot_timeline(&clips);
+    SURFACE_SCALE.with(|scale| scale.set(1.0));
+    CAPTIONS.with(|on| on.set(false));
+    let Some(shot) = shot else {
+        return;
+    };
+    dump_sized(&shot.pixels, "hidpi-150", RW, RH);
+    // The clip's middle, in points, is in pixels one and a half times as far
+    // from the corner — which is where a pointer over it reports, once the
+    // window has divided by the scale.
+    let block = clip_rect(&shot.view, shot.layout.grid, &clips[0]);
+    let (x, y) = (
+        block.x + block.width / 2.0,
+        block.y + shot.view.lane_height / 2.0 + 6.0,
+    );
+    let found = shot.at((x * 1.5) as u32, (y * 1.5) as u32);
+    assert!(
+        near(found, Color(hats)),
+        "the clip is not under the pointer at ({x}, {y}) points: {found:?}"
+    );
 }

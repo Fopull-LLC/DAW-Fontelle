@@ -54,6 +54,19 @@ struct Upload {
     of: u32,
 }
 
+/// Why a file the song uses is not on this computer and is not coming.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trouble {
+    /// Waiting for the person's yes (a soundfont, or a big file).
+    Asking,
+    /// The person said not now.
+    Declined,
+    /// The computer it was asked of has not got it either.
+    NotThere,
+    /// It came, and was not what it said it was.
+    Damaged,
+}
+
 #[derive(Default)]
 pub(crate) struct Files {
     /// Not asked for yet, smallest first, and who to ask.
@@ -63,10 +76,18 @@ pub(crate) struct Files {
     held: Vec<(AssetEntry, PeerId)>,
     /// Asked about and turned down, or not there to be had.
     declined: Vec<u64>,
+    /// Why each of `declined` is not here, for the panel's list of what is
+    /// missing (F91).
+    why_not: BTreeMap<u64, Trouble>,
     received: Vec<u64>,
     uploads: BTreeMap<PeerId, VecDeque<Upload>>,
     /// Asked of this studio before it had them itself: sent when they land.
     owed: Vec<(PeerId, u64)>,
+    /// Packed singers this studio offers, by hash (F93): not the song's
+    /// files, so not found by looking in the song.
+    offered: BTreeMap<u64, PathBuf>,
+    /// Packed singers asked for, and where each landed.
+    packs: BTreeMap<u64, Option<PathBuf>>,
 }
 
 impl Files {
@@ -104,8 +125,19 @@ impl Files {
             self.wanted.extend(held);
             self.wanted.make_contiguous().sort_by_key(|(e, _)| e.size);
         } else {
-            self.declined.extend(held.iter().map(|(e, _)| e.hash));
+            for (entry, _) in &held {
+                self.declined.push(entry.hash);
+                self.why_not.insert(entry.hash, Trouble::Declined);
+            }
         }
+    }
+
+    /// Why `hash` is not here and not on its way, if that is so.
+    pub fn trouble(&self, hash: u64) -> Option<Trouble> {
+        if self.held.iter().any(|(e, _)| e.hash == hash) {
+            return Some(Trouble::Asking);
+        }
+        self.why_not.get(&hash).copied()
     }
 
     /// How far along `hash` is, if it is on its way or waiting to be.
@@ -232,9 +264,31 @@ impl Files {
         self.uploads.retain(|_, queue| !queue.is_empty());
     }
 
+    /// Offers the packed singer at `path` to whoever asks for `hash`.
+    pub fn offer(&mut self, hash: u64, path: PathBuf) {
+        self.offered.insert(hash, path);
+    }
+
+    /// Fetches a packed singer the person has agreed to: no question (the
+    /// terms were the question), and it lands in the cache, not the song.
+    pub fn want_pack(&mut self, entry: AssetEntry, from: PeerId) {
+        if self.packs.contains_key(&entry.hash) || self.knows(entry.hash) {
+            return;
+        }
+        self.packs.insert(entry.hash, None);
+        self.wanted.push_back((entry, from));
+        self.wanted.make_contiguous().sort_by_key(|(e, _)| e.size);
+    }
+
+    /// Where the packed singer `hash` landed, once it has.
+    pub fn pack(&self, hash: u64) -> Option<&Path> {
+        self.packs.get(&hash)?.as_deref()
+    }
+
     /// Somebody asked this studio for `hash`.
     pub fn asked(&mut self, transport: &mut dyn Transport, peer: PeerId, hash: u64, here: &Here) {
-        if let Some(path) = here.find(hash) {
+        let offered = self.offered.get(&hash).filter(|p| p.is_file()).cloned();
+        if let Some(path) = offered.or_else(|| here.find(hash)) {
             let size = std::fs::metadata(&path).map_or(0, |m| m.len());
             let of = size.div_ceil(CHUNK as u64).max(1) as u32;
             self.uploads.entry(peer).or_default().push_back(Upload {
@@ -289,10 +343,24 @@ impl Files {
                     Err("it arrived damaged".to_string())
                 }
             })
-            .and_then(|()| here.keep(&fetching.part, &fetching.entry));
+            .and_then(|()| {
+                if self.packs.contains_key(&hash) {
+                    // A singer: into the cache, to be installed once it is
+                    // whole — never into the song.
+                    let to = here.cache().join(format!("singer-{hash:016x}.pack"));
+                    std::fs::rename(&fetching.part, &to)
+                        .map(|()| to)
+                        .map_err(|e| e.to_string())
+                } else {
+                    here.keep(&fetching.part, &fetching.entry)
+                }
+            });
         match landed {
             Ok(path) => {
                 self.received.push(hash);
+                if let Some(landed) = self.packs.get_mut(&hash) {
+                    *landed = Some(path.clone());
+                }
                 // Anybody who asked this studio for it while it was coming.
                 let owed: Vec<PeerId> = self
                     .owed
@@ -316,6 +384,7 @@ impl Files {
             Err(why) => {
                 let _ = std::fs::remove_file(&fetching.part);
                 self.declined.push(hash);
+                self.why_not.insert(hash, Trouble::Damaged);
                 Err(format!("\u{201c}{name}\u{201d} could not be kept: {why}"))
             }
         }
@@ -367,6 +436,7 @@ impl Files {
         let fetching = self.fetching.take_if(|f| f.entry.hash == hash)?;
         let _ = std::fs::remove_file(&fetching.part);
         self.declined.push(hash);
+        self.why_not.insert(hash, Trouble::NotThere);
         for (peer, _) in self.owed.iter().filter(|(_, h)| *h == hash) {
             send(transport, *peer, &Msg::AssetMissing { hash });
         }

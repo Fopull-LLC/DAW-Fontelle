@@ -275,7 +275,9 @@ pub enum Action {
     Stretch,
     /// The piano roll's snap grid, cycled.
     RollSnap,
-    Slide,
+    // No `Slide`: the `A` key that marked FL slide notes went with them —
+    // *"triangle notes should not exist."* A settings file that rebound it
+    // reads back with the line passed over (`with_overrides`).
     LaneProperty,
     Ghosts,
     // --- editing ---
@@ -362,7 +364,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 69] = [
+    pub const ALL: [Self; 68] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -390,7 +392,6 @@ impl Action {
         Self::SliceTool,
         Self::Stretch,
         Self::RollSnap,
-        Self::Slide,
         Self::LaneProperty,
         Self::Ghosts,
         Self::SelectAll,
@@ -467,7 +468,6 @@ impl Action {
             // The old name, kept: a rebinding saved under it must read back.
             Self::Stretch => "snap-or-stretch",
             Self::RollSnap => "roll-snap",
-            Self::Slide => "slide",
             Self::LaneProperty => "lane-property",
             Self::Ghosts => "ghosts",
             Self::SelectAll => "select-all",
@@ -541,15 +541,12 @@ impl Action {
             Self::ZoomIn => "Zoom in, about the pointer",
             Self::ZoomOut => "Zoom out, about the pointer",
             Self::DrawTool => "Draw",
-            Self::PaintTool => "Paint (piano roll)",
+            Self::PaintTool => "Paint: notes along a row, or clips along a lane",
             Self::SelectTool => "Select",
             Self::DeleteTool => "Delete (piano roll)",
             Self::SliceTool => "Slice",
             Self::Stretch => "Stretch on or off (arrangement)",
             Self::RollSnap => "Next snap grid (piano roll)",
-            Self::Slide => {
-                "FL-style slide notes on or off (older; S while drawing slides one note)"
-            }
             Self::LaneProperty => "Next property lane: velocity, pan, pitch\u{2026}",
             Self::Ghosts => "Ghost notes from other clips",
             Self::SelectAll => "Select every note",
@@ -675,7 +672,6 @@ impl Action {
             Self::SliceTool => &["C"],
             Self::Stretch => &["S"],
             Self::RollSnap => &["G"],
-            Self::Slide => &["A"],
             Self::LaneProperty => &["L"],
             Self::Ghosts => &["O"],
             Self::SelectAll => &["Ctrl+A"],

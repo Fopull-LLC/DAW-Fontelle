@@ -2948,3 +2948,155 @@ fn a_knob_kept_on_the_joiner_survives_his_copy_being_made_again() {
         "and so is his plugin"
     );
 }
+
+/// Ty: *"if there are plugins missing, it should tell you which plugins."*
+/// The joiner's Share panel lists every plugin the song uses that this
+/// computer has not got — its name, its format, who makes it, and which
+/// instruments and tracks play through it — and one somebody adds while the
+/// session is on is said as it arrives, and listed too.
+#[test]
+fn a_joiner_is_shown_which_plugins_are_missing_and_where_the_song_uses_them() {
+    let dir = scratch("missing-panel");
+    let mut host = a_session().with_plugin_folders(vec![test_plugin_folder()]);
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.set_channel_plugin(0, 0);
+    host.save().unwrap();
+    let channel = host.channels()[0].name.clone();
+    let mut joiner = a_session().with_plugin_folders(vec![dir.join("bob-plugins")]);
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    pair.answer(JoinAnswer::Copy);
+    assert!(pair.joiner.collab_live());
+
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(
+        missing[0].what.contains("Fontelle Test Sine"),
+        "{missing:?}"
+    );
+    assert!(missing[0].what.contains("CLAP"), "{missing:?}");
+    assert!(
+        missing[0].what.contains("Fopull LLC"),
+        "who makes it: {missing:?}"
+    );
+    assert!(missing[0].detail.contains(&channel), "where: {missing:?}");
+    assert!(
+        pair.host.session().missing.is_empty(),
+        "the host has everything its song uses"
+    );
+
+    // Alice puts a plugin effect on the master while Bob is in.
+    pair.joiner.take_session_notices();
+    pair.host.add_plugin_insert(0, 0);
+    pair.settle();
+    let said = pair.joiner.take_session_notices().join(" ");
+    assert!(
+        said.contains("Fontelle Test Gain"),
+        "said as it arrives: {said}"
+    );
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 2, "{missing:?}");
+    assert!(
+        missing
+            .iter()
+            .any(|m| m.what.contains("Fontelle Test Gain") && m.detail.contains("Master")),
+        "{missing:?}"
+    );
+}
+
+/// A file that could not be had is listed too, with why: the host has not
+/// got it either.
+#[test]
+fn a_file_that_could_not_be_sent_is_listed_with_why() {
+    let dir = scratch("missing-file");
+    let mut host = a_session();
+    std::fs::create_dir_all(dir.join("alice")).unwrap();
+    host.set_projects_dir(Some(dir.join("alice")));
+    host.save_as("Song").unwrap();
+    host.drop_file_at(&a_tone(&dir.join("desktop"), "kick.wav", 0.2, 60.0), 0)
+        .unwrap();
+    host.save().unwrap();
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let mut pair = Pair::between(host, joiner, dir.clone(), 2, Cleanup(dir.clone()));
+    // Gone from Alice's computer before Bob asks for it.
+    let bundle = pair.host.bundle_path().unwrap().to_path_buf();
+    for entry in std::fs::read_dir(bundle.join("assets")).unwrap().flatten() {
+        std::fs::remove_file(entry.path()).unwrap();
+    }
+    std::fs::remove_dir_all(dir.join("desktop")).unwrap();
+    pair.answer(JoinAnswer::Copy);
+    pair.settle();
+    let missing = pair.joiner.session().missing;
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(missing[0].what.contains("kick"), "{missing:?}");
+    assert!(missing[0].detail.contains("Alice"), "whose: {missing:?}");
+}
+
+/// A paint stroke crosses the wire as the one gesture it is: Bob's sixteen
+/// hats arrive at Alice's as the stroke, and his one Ctrl+Z takes the
+/// stroke back on both. And what each block shows is read off its notes on
+/// either side, so the caption agrees however the clip's notes arrived.
+#[test]
+fn a_joiners_paint_stroke_lands_whole_and_comes_back_whole() {
+    let mut pair = Pair::joined("paint-stroke", 3);
+    let source = open_clip(&pair.joiner);
+    let before = pair.host.clips().len();
+    let bar = PPQN * 4;
+    for at in 2..6 {
+        pair.joiner.arrange(ArrangeEdit::Paint {
+            source: Some(source),
+            lane: 0,
+            start: bar * at,
+        });
+    }
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+    assert_eq!(pair.host.clips().len(), before + 4);
+    let names = |session: &Session| {
+        let mut names: Vec<_> = session.clips().into_iter().map(|c| c.name).collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&pair.host), names(&pair.joiner));
+
+    pair.joiner.undo();
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        pair.host.clips().len(),
+        before,
+        "one undo, the whole stroke"
+    );
+}
+
+/// Deleting an instrument takes its notes, not the clips it shares — on
+/// both sides: Bob's copy of the clip drawn with the deleted instrument
+/// keeps the other one's notes, as Alice's does.
+#[test]
+fn deleting_an_instrument_lands_the_same_for_a_joiner() {
+    let mut pair = Pair::joined("delete-channel", 3);
+    let clip = open_clip(&pair.host);
+    pair.host.add_channel().expect("a second instrument");
+    pair.host.end_gesture();
+    pair.host.open_clip(clip);
+    pair.host.select_channel(1);
+    draw(&mut pair.host, 0, 50);
+    pair.settle();
+    pair.same();
+
+    pair.host.remove_channel(0);
+    pair.host.end_gesture();
+    pair.settle();
+    pair.same();
+    assert!(
+        pair.joiner.clips().iter().any(|c| c.id == clip),
+        "the clip with the second instrument's note is still there"
+    );
+    assert_eq!(notes_of(&pair.joiner, clip).len(), 1);
+}

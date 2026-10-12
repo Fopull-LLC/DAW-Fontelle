@@ -131,6 +131,13 @@ pub struct SharePanelLayout {
     pub rows: Vec<PeerRowLayout>,
     /// Where [`NOBODY_YET`] goes when the room is empty.
     pub nobody: Rect,
+    /// The heading over what the song uses that this computer has not got
+    /// ([`MISSING_HERE`]); empty when nothing is missing (F91).
+    pub missing_title: Rect,
+    /// Each missing thing that fits: what it is, then where and why.
+    pub missing: Vec<(Rect, Rect)>,
+    /// "and 3 more", when not every one fits.
+    pub missing_more: Rect,
     /// Two lines: who is fetching what, why the share ended — broken at the
     /// sentence's dash ([`status_lines`]).
     pub status: Rect,
@@ -162,6 +169,14 @@ const PANEL_WIDTH: f32 = 320.0;
 const COPY_WIDTH: f32 = 64.0;
 const VIEW_ONLY_WIDTH: f32 = 64.0;
 
+/// The heading over the list of what the song uses that is not here.
+pub const MISSING_HERE: &str = "Missing on this computer";
+
+/// What the list says of the ones that did not fit.
+pub fn missing_more_words(more: usize) -> String {
+    format!("and {more} more")
+}
+
 /// Lays the panel out under `anchor` (the Share button), inside `window`,
 /// for `role` and `people` others in the room.
 pub fn share_panel_layout(
@@ -170,6 +185,19 @@ pub fn share_panel_layout(
     metrics: &Metrics,
     role: ShareRole,
     people: usize,
+) -> SharePanelLayout {
+    share_panel_layout_with(window, anchor, metrics, role, people, 0)
+}
+
+/// [`share_panel_layout`], with `missing` things the song uses that this
+/// computer has not got listed between the people and the status (F91).
+pub fn share_panel_layout_with(
+    window: Rect,
+    anchor: Rect,
+    metrics: &Metrics,
+    role: ShareRole,
+    people: usize,
+    missing: usize,
 ) -> SharePanelLayout {
     let row = metrics.row_height.max(1.0);
     let pad = metrics.panel_padding.max(1.0);
@@ -215,7 +243,29 @@ pub fn share_panel_layout(
     } else {
         0
     };
-    let height = fixed + fit as f32 * row;
+    // What is missing, in what room the people leave: a heading, two lines
+    // a thing, and a line counting the rest when they do not all fit.
+    let left = room - fit as f32 * row;
+    let heading = row + pad * 0.5;
+    let (listed, more) = if missing == 0 || left < heading + 2.0 * row {
+        (0, missing > 0 && left >= heading + row)
+    } else {
+        let all = ((left - heading) / (2.0 * row)).floor() as usize;
+        if all >= missing {
+            (missing, false)
+        } else {
+            (
+                (((left - heading - row) / (2.0 * row)).floor().max(0.0)) as usize,
+                true,
+            )
+        }
+    };
+    let missing_h = if listed > 0 || more {
+        heading + listed as f32 * 2.0 * row + if more { row } else { 0.0 }
+    } else {
+        0.0
+    };
+    let height = fixed + fit as f32 * row + missing_h;
     let frame = Rect::new(x, top, width, height)
         .intersection(&window)
         .clamped();
@@ -285,6 +335,27 @@ pub fn share_panel_layout(
         Rect::ZERO
     };
     y += fit as f32 * row;
+    let (missing_title, missing_rows, missing_more) = if missing_h > 0.0 {
+        let title = Rect::new(inner_x, y + pad * 0.5, inner_w, row);
+        let mut at = y + heading;
+        let mut rows = Vec::with_capacity(listed);
+        for _ in 0..listed {
+            rows.push((
+                Rect::new(inner_x, at, inner_w, row),
+                Rect::new(inner_x, at + row, inner_w, row),
+            ));
+            at += 2.0 * row;
+        }
+        let more = if more {
+            Rect::new(inner_x, at, inner_w, row)
+        } else {
+            Rect::ZERO
+        };
+        (title, rows, more)
+    } else {
+        (Rect::ZERO, Vec::new(), Rect::ZERO)
+    };
+    y += missing_h;
     let status = Rect::new(inner_x, y, inner_w, 2.0 * row);
     y += 2.0 * row + pad;
     let primary = Rect::new(inner_x, y, inner_w, button);
@@ -312,6 +383,12 @@ pub fn share_panel_layout(
             })
             .collect(),
         nobody: keep(nobody),
+        missing_title: keep(missing_title),
+        missing: missing_rows
+            .into_iter()
+            .map(|(what, detail)| (keep(what), keep(detail)))
+            .collect(),
+        missing_more: keep(missing_more),
         status: keep(status),
         primary: keep(primary),
         join: keep(join),

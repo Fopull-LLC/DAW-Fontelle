@@ -1223,11 +1223,6 @@ pub enum RollEdit {
         length: Tick,
         path: Vec<fontelle_model::PathPoint>,
     },
-    /// Marks notes as slide notes, or unmarks them.
-    SetSlide {
-        ids: Vec<NoteId>,
-        slide: bool,
-    },
     /// Cuts notes in two, each at its own tick — the cut tool. See
     /// [`slice_cuts`] for where the ticks come from, and why they differ per
     /// note on a diagonal stroke.
@@ -1455,7 +1450,7 @@ impl Tool {
     pub fn tip(self) -> &'static str {
         match self {
             Self::Draw => "Draw notes; drag one out to length",
-            Self::Paint => "Draw, and keep drawing as you sweep",
+            Self::Paint => "Paint notes along a row; hold Shift to cross rows",
             Self::Delete => "Erase notes you press or sweep over",
             Self::Select => "Select notes; drag on empty grid to marquee",
             Self::Slice => "Cut notes in two where you drag across them",
@@ -1506,13 +1501,6 @@ pub enum RollControl {
     Lane,
     /// Cycles the onion skin: which other instruments show through.
     Ghost,
-    /// Makes the selection **slide notes**, or ordinary ones again — and sets
-    /// what the next note you draw will be.
-    ///
-    /// A slide starts no voice: it bends whatever is already sounding to its
-    /// pitch, over its own length (FL Studio's). See
-    /// `fontelle_model::Note::slide`.
-    Slide,
     /// Switches the strip down the side between the keyboard and a list of
     /// names. The chip says which one is on — see [`KeyStyle`].
     Keys,
@@ -1539,7 +1527,6 @@ impl RollControl {
             Self::Velocity => "lane",
             Self::Lane => "vel",
             Self::Ghost => "skin",
-            Self::Slide => "slide",
             // The chip carries the view it will *give you*, like every other
             // read-out on this bar: what it says is what is on.
             Self::Keys => "keys",
@@ -1576,7 +1563,6 @@ impl RollControl {
             Self::Velocity => Icon::Sliders,
             // A slide is a *bend*: the glyph is the line that leaves one pitch
             // and arrives at another, which is what the note does.
-            Self::Slide => Icon::Route,
             // Snap says its division, the lane chip says its property, and the
             // onion skin says which channel — all three are values.
             // Snap says its division, the lane chip says its property, the
@@ -1611,7 +1597,6 @@ impl RollControl {
             Self::Velocity => "Show or hide the property lane",
             Self::Lane => "Which property the lane draws",
             Self::Ghost => "Show other instruments' notes behind these",
-            Self::Slide => "Slide notes: bend what is sounding, start nothing",
             Self::Keys => "The strip down the side: a keyboard, or a list of names",
             Self::Tools => "Transpose, adjust, randomize \u{2014} and import a file",
             Self::Root => "The key's root note",
@@ -1632,7 +1617,6 @@ impl RollControl {
             Self::Snap => Action::RollSnap,
             Self::Lane => Action::LaneProperty,
             Self::Ghost => Action::Ghosts,
-            Self::Slide => Action::Slide,
             Self::Tools => Action::ToolsPanel,
             Self::ZoomInX | Self::ZoomInY => Action::ZoomIn,
             Self::ZoomOutX | Self::ZoomOutY => Action::ZoomOut,
@@ -1859,6 +1843,12 @@ enum Gesture {
     /// Painting notes across cells as the pointer crosses them.
     Painting {
         last: (Tick, u8),
+        /// The row the press was on, which the stroke **stays on**: *"when
+        /// dragging out the brush left and right it should be locked to the
+        /// lane youre clicking in this makes it easier to draw things like
+        /// hi hat patterns."* Shift, read live, lets it follow the pointer
+        /// across rows as it used to.
+        row: u8,
     },
     /// Drawing in the property lane.
     Lane {
@@ -2107,7 +2097,10 @@ impl PianoRoll {
     /// Replaces the template outright. For a host restoring a session, and for
     /// the tests.
     pub fn set_template(&mut self, note: Note) {
-        self.template = note;
+        self.template = Note {
+            slide: false,
+            ..note
+        };
     }
 
     /// Takes `id`'s properties as the template, if it is still there.
@@ -2116,7 +2109,14 @@ impl PianoRoll {
     /// one, and letting go of a drag that drew or resized one.
     fn adopt(&mut self, notes: &Arena<NoteId, Note>, id: NoteId) {
         if let Some(note) = notes.get(id) {
-            self.template = note.clone();
+            // Everything but an FL slide flag: a note drawn after clicking
+            // an old triangle is an ordinary note. *"triangle notes should
+            // not exist"* — the ones a song already has keep playing, and
+            // nothing in the roll makes another.
+            self.template = Note {
+                slide: false,
+                ..note.clone()
+            };
         }
     }
 
@@ -2175,45 +2175,6 @@ impl PianoRoll {
 
     pub fn select_all(&mut self, notes: &Arena<NoteId, Note>) {
         self.selection = notes.keys().collect();
-    }
-
-    /// Whether the **next note drawn** will be a slide.
-    ///
-    /// The template's own flag, so a slide you draw is a slide the moment it
-    /// exists rather than an ordinary note you then have to convert — which is
-    /// the same rule every other property the template carries follows.
-    pub fn drawing_slides(&self) -> bool {
-        self.template.slide
-    }
-
-    /// Toggles the selection between slide and ordinary, and sets what the
-    /// next drawn note will be.
-    ///
-    /// Off when all of the selection already slides, on otherwise — the same
-    /// rule the arrangement's Mute button follows, so a mixed selection
-    /// settles rather than flipping each note against the others.
-    ///
-    /// With **nothing selected** it only changes the template, which is what
-    /// makes "turn slide on, then draw three of them" work.
-    pub fn toggle_slide(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
-        let selected: Vec<NoteId> = self
-            .selection
-            .iter()
-            .copied()
-            .filter(|id| notes.contains_key(*id))
-            .collect();
-        if selected.is_empty() {
-            self.template.slide = !self.template.slide;
-            return Vec::new();
-        }
-        let slide = !selected
-            .iter()
-            .all(|id| notes.get(*id).is_some_and(|note| note.slide));
-        self.template.slide = slide;
-        vec![RollEdit::SetSlide {
-            ids: selected,
-            slide,
-        }]
     }
 
     pub fn clear_selection(&mut self) {
@@ -2645,7 +2606,10 @@ impl PianoRoll {
                 // on the drag is fitted from the row the note is on.)
                 self.origin = (tick, key);
                 self.gesture = if self.tool == Tool::Paint {
-                    Gesture::Painting { last: (start, key) }
+                    Gesture::Painting {
+                        last: (start, key),
+                        row: key,
+                    }
                 } else {
                     Gesture::PendingAdd {
                         start,
@@ -2783,21 +2747,29 @@ impl PianoRoll {
                 Vec::new()
             }
 
-            Gesture::Painting { last } => {
+            Gesture::Painting { last, row } => {
                 let snap = self.live_snap();
                 let start = snap_tick(tick, snap, beats_per_bar);
-                let key = self.scaled_key(key);
+                // On the press's row unless Shift is held **now** — live, so
+                // a stroke can step off the row for a fill and come back.
+                let key = if self.modifiers.shift {
+                    self.scaled_key(key)
+                } else {
+                    row
+                };
                 if (start, key) == last {
                     return Vec::new();
                 }
                 // One note per cell crossed, and never on top of one that is
                 // already there — painting over an existing note in FL leaves
                 // one note, not a stack of them.
+                self.gesture = Gesture::Painting {
+                    last: (start, key),
+                    row,
+                };
                 if note_covers(notes, start, key) {
-                    self.gesture = Gesture::Painting { last: (start, key) };
                     return Vec::new();
                 }
-                self.gesture = Gesture::Painting { last: (start, key) };
                 vec![RollEdit::Add {
                     note: self.drawn_note(start, key, self.template_length()),
                 }]

@@ -274,10 +274,11 @@ pub use roll_scale::{
     scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
 };
 pub use share::{
-    COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, NOBODY_YET,
-    PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG, STOP_SHARING, ShareHit,
-    SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout, peer_colour,
-    share_dot, share_hit, share_panel_layout, share_panel_words, status_lines,
+    COPY_CODE, ChoicePromptLayout, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION, MISSING_HERE,
+    NOBODY_YET, PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG, STOP_SHARING, ShareHit,
+    SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout,
+    missing_more_words, peer_colour, share_dot, share_hit, share_panel_layout,
+    share_panel_layout_with, share_panel_words, status_lines,
 };
 pub use singer_panel::{
     CARD_HEADING, FOOTNOTE_HEIGHT, SINGER_PANEL_PAD, SINGER_PANEL_SIZE, SINGER_PICTURE_HEIGHT,

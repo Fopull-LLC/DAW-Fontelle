@@ -1296,7 +1296,7 @@ impl VocalSession {
 
     // ---------------------------------------------------- find singers
 
-    fn catalogue(&self) -> Catalogue {
+    pub(crate) fn catalogue(&self) -> Catalogue {
         let local = self
             .catalogue_path
             .clone()

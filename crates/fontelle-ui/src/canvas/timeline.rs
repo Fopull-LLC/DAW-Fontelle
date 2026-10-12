@@ -781,6 +781,9 @@ pub enum TimelineControl {
     /// Draw: a double-click on empty grid makes a clip, and Shift+click puts
     /// down a copy of the clip in hand.
     Draw,
+    /// Paint: drag along a row to lay copies of the clip in hand end to end
+    /// — [`TimelineTool::Paint`].
+    Paint,
     /// Select: a press on empty grid marquees, the way it always did.
     Select,
     /// Cut: a press on a clip divides it where you pressed.
@@ -828,6 +831,7 @@ impl TimelineControl {
     pub fn label(self) -> &'static str {
         match self {
             Self::Draw => "Draw",
+            Self::Paint => "Paint",
             Self::Select => "Sel",
             Self::Slice => "Cut",
             Self::Snap => "snap",
@@ -849,6 +853,8 @@ impl TimelineControl {
         use crate::icon::Icon;
         Some(match self {
             Self::Draw => Icon::Pencil,
+            // The roll's brush: one tool, one picture, wherever it is.
+            Self::Paint => Icon::Brush,
             Self::Select => Icon::Marquee,
             // A blade, not the scissors `Cut` uses: dividing a clip and taking
             // one away are two different things.
@@ -881,6 +887,7 @@ impl TimelineControl {
     pub fn tip(self) -> Option<&'static str> {
         Some(match self {
             Self::Draw => "Double-click empty bars for a clip, Shift+click for a copy",
+            Self::Paint => "Paint copies of the clip in hand; Shift crosses rows",
             Self::Select => "Select clips; drag on empty bars to marquee",
             Self::Slice => "Cut a clip in two where you click it",
             Self::Snap => "What clips snap to \u{2014} click to choose",
@@ -908,6 +915,7 @@ impl TimelineControl {
         use super::keymap::Action;
         Some(match self {
             Self::Draw => Action::DrawTool,
+            Self::Paint => Action::PaintTool,
             Self::Select => Action::SelectTool,
             Self::Slice => Action::SliceTool,
             Self::Stretch => Action::Stretch,
@@ -939,10 +947,11 @@ pub struct TimelineToolbar {
 /// The controls, left to right: what the grid is, then what to do to a clip,
 /// then how close you are looking. The same order as the roll's toolbar, for
 /// the same reason — the two panels are read the same way.
-const TIMELINE_TOOLBAR: [(TimelineControl, f32); 13] = [
+const TIMELINE_TOOLBAR: [(TimelineControl, f32); 14] = [
     // The tools first: they decide what every other press on the grid means,
-    // and the roll's toolbar is read the same way round.
+    // and the roll's toolbar is read the same way round — pencil, then brush.
     (TimelineControl::Draw, 26.0),
+    (TimelineControl::Paint, 26.0),
     (TimelineControl::Select, 26.0),
     (TimelineControl::Slice, 26.0),
     (TimelineControl::Snap, 62.0),
@@ -1768,6 +1777,22 @@ pub enum ArrangeEdit {
         lane: usize,
         start: Tick,
     },
+    /// One step of a **paint stroke**: a copy of `source` — or, with nothing
+    /// in hand, what the double-click draws (a blank bar on the rack's
+    /// selection, or a place for the prefab picked on the prefab tab) — on
+    /// `lane` at `start`.
+    ///
+    /// Its own edit rather than a run of [`Stamp`](Self::Stamp)s and
+    /// [`Add`](Self::Add)s because a stroke is **one gesture**: the host
+    /// folds every step into one undo entry, which a stamp — a gesture of
+    /// its own every time — must not do. And a painted copy is not opened
+    /// in the roll: a stroke of sixteen hats would otherwise move the roll
+    /// sixteen times under the hand.
+    Paint {
+        source: Option<ClipId>,
+        lane: usize,
+        start: Tick,
+    },
     /// An audio clip's fade at one end, as a **fraction of the block** —
     /// the canvas can see the block and not the file, and the host turns it
     /// into frames (TDD §15.2). Absolute, not a delta: a fade is *how far
@@ -2084,6 +2109,27 @@ enum Gesture {
     /// reason the roll's `Erasing` is — it asks the current clips what is
     /// under the pointer, so one already removed is simply not found again.
     Erasing,
+    /// The brush, laying copies along a row. See [`TimelineTool::Paint`].
+    Painting {
+        /// What each copy is of — `None` asks the host for a blank.
+        source: Option<ClipId>,
+        /// The row the press was on, which the stroke stays on unless Shift
+        /// is held.
+        row: usize,
+        /// Where the stroke's copies line up from, and how far apart they
+        /// are: the first copy's start and the clip's length. A copy goes
+        /// at `anchor + k * period`, so a stroke lays clips end to end on
+        /// the grid it began on.
+        anchor: Tick,
+        period: Tick,
+        /// The row and the `k` the pointer was last over, so a jump fills
+        /// what it skipped.
+        last: (usize, i64),
+        /// What this stroke has asked for, row, start and length. The host
+        /// has put them down by the next step, but the canvas does not count
+        /// on the window re-reading the clips between two pointer events.
+        painted: Vec<(usize, Tick, Tick)>,
+    },
 }
 
 /// What a press on empty grid means.
@@ -2099,6 +2145,14 @@ pub enum TimelineTool {
     /// selection. See `Timeline::press`.
     #[default]
     Draw,
+    /// **Paint**: press and drag along a row to lay copies of the clip in
+    /// hand end to end — FL's playlist paint tool. Ty: *"no brush tool in
+    /// the arrangement."*
+    ///
+    /// Locked to the row the press was on, the way the roll's brush is,
+    /// unless Shift is held. A press on a clip takes that clip in hand and
+    /// paints on from it. The right button erases, as with every tool.
+    Paint,
     /// A press on empty grid marquees.
     Select,
     /// **Cut**: a press on a clip divides it where you pressed.
@@ -2151,6 +2205,17 @@ pub struct Timeline {
     /// The last press asked for a stamp, and the copy it makes is not known
     /// yet. `clips_inserted` makes the copy the thing in hand.
     stamp_pending: bool,
+    /// The press was on the clip that was **already open**, and nothing has
+    /// moved since: if the button comes up like this it was a click, and a
+    /// second click on the open clip steps the rack to the next instrument
+    /// playing in it (`take_cycle`).
+    cycle_pending: Option<ClipId>,
+    /// A click on the open clip, waiting for the window to collect it — the
+    /// handshake `open` is.
+    cycle: Option<ClipId>,
+    /// Where the last press landed, in points — what says a click from a
+    /// drag.
+    pressed_at: (f32, f32),
     /// The edges a snap-off drag may land on, taken when it started — see
     /// [`Magnet`].
     magnet: Magnet,
@@ -2175,6 +2240,9 @@ impl Timeline {
             point_menu: None,
             stamp: None,
             stamp_pending: false,
+            cycle_pending: None,
+            cycle: None,
+            pressed_at: (0.0, 0.0),
             magnet: Magnet::default(),
             magnet_at: None,
         }
@@ -2322,6 +2390,8 @@ impl Timeline {
     ) -> Vec<ArrangeEdit> {
         self.magnet = Magnet::default();
         self.magnet_at = None;
+        self.cycle_pending = None;
+        self.pressed_at = (x, y);
         let hit = if button == MouseButton::Left {
             timeline_grab(&self.view, layout, clips, x, y)
         } else {
@@ -2491,9 +2561,48 @@ impl Timeline {
                 };
                 Vec::new()
             }
+            // The brush on a clip: that clip is the one in hand, and the
+            // stroke paints on from it — FL's paint tool, pressed on the
+            // pattern you want and dragged out. Ctrl is still the marquee's,
+            // and the grips and fades keep their own gestures.
+            TimelineHit::Clip(id, ClipPart::Body)
+                if self.tool == TimelineTool::Paint && !self.modifiers.ctrl =>
+            {
+                self.selection = vec![id];
+                self.stamp = Some(id);
+                self.clear_point_selection();
+                self.open = Some(id);
+                let Some(clip) = clips.iter().find(|c| c.id == id) else {
+                    self.gesture = Gesture::None;
+                    return Vec::new();
+                };
+                self.gesture = Gesture::Painting {
+                    source: Some(id),
+                    row: clip.lane,
+                    anchor: clip.start,
+                    period: clip.length.max(1),
+                    last: (clip.lane, 0),
+                    painted: Vec::new(),
+                };
+                Vec::new()
+            }
             TimelineHit::Clip(id, part) => {
                 if !self.selection.contains(&id) {
                     self.selection = vec![id];
+                }
+                // The open clip, clicked again: if the button comes up
+                // without the clip having moved, that is a request for the
+                // next instrument playing in it. *"maybe cycle through?"*
+                // Only a plain press on the body of a note clip — a grip, a
+                // modifier or another kind of clip is some other gesture.
+                if part == ClipPart::Body
+                    && !self.modifiers.shift
+                    && !self.modifiers.ctrl
+                    && clips
+                        .iter()
+                        .any(|c| c.id == id && c.open && c.kind == ClipKind::Notes)
+                {
+                    self.cycle_pending = Some(id);
                 }
                 // Chosen, so it is the thing in hand from here on.
                 self.stamp = Some(id);
@@ -2581,6 +2690,27 @@ impl Timeline {
                         grid: layout.grid,
                     };
                     return Vec::new();
+                }
+                // The brush: the first copy goes down here, and the drag
+                // that follows lays the rest. The clip in hand when it is
+                // still there; otherwise a blank bar on the rack's selection,
+                // which is the host's to make (`ArrangeEdit::Paint`).
+                if self.tool == TimelineTool::Paint {
+                    let source = self.stamp.filter(|id| clips.iter().any(|c| c.id == *id));
+                    let bar = PPQN * i64::from(beats_per_bar.max(1));
+                    let period = source
+                        .and_then(|id| clips.iter().find(|c| c.id == id))
+                        .map_or(bar, |clip| clip.length.max(1));
+                    let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                    self.gesture = Gesture::Painting {
+                        source,
+                        row: lane,
+                        anchor: start,
+                        period,
+                        last: (lane, 0),
+                        painted: Vec::new(),
+                    };
+                    return self.paint_cells(lane, 0, 0, clips);
                 }
                 self.gesture = Gesture::None;
                 // **A plain press makes nothing.** *"single clicking in the
@@ -2728,9 +2858,37 @@ impl Timeline {
         let (cx, cy) = clamp_to_grid(grid, x, y);
         let tick = timeline_x_to_tick(&self.view, grid, cx);
         let lane = y_to_lane(&self.view, grid, cy);
+        // A click is a press that stayed put; travel makes it a drag, and a
+        // drag on the open clip is moving it, not asking for an instrument.
+        if self.cycle_pending.is_some()
+            && ((x - self.pressed_at.0).abs() > CLICK_SLOP_PX
+                || (y - self.pressed_at.1).abs() > CLICK_SLOP_PX)
+        {
+            self.cycle_pending = None;
+        }
 
         match self.gesture.clone() {
             Gesture::None => Vec::new(),
+
+            // On the press's row, unless Shift is held **now**: read live, so
+            // a stroke can step onto another row for a fill and come back.
+            Gesture::Painting {
+                anchor,
+                period,
+                row,
+                last,
+                ..
+            } => {
+                let lane = if self.modifiers.shift { lane } else { row };
+                let k = (tick - anchor).div_euclid(period.max(1));
+                // Every copy between where the pointer was and where it is —
+                // one pointer event can cross several bars zoomed out — but
+                // only along one row: a Shift-stroke that changed rows paints
+                // where it landed, not a line across the rows between.
+                let from = if lane == last.0 { last.1 } else { k };
+                self.set_paint_last((lane, k));
+                self.paint_cells(lane, from, k, clips)
+            }
 
             // The raw pointer, not the clamped one: an erase dragged off the
             // grid must find nothing rather than rubbing out whatever sits at
@@ -3094,6 +3252,7 @@ impl Timeline {
     }
 
     pub fn release(&mut self) {
+        self.cycle_pending = None;
         self.gesture = Gesture::None;
         self.magnet = Magnet::default();
         self.magnet_at = None;
@@ -3113,6 +3272,12 @@ impl Timeline {
             self.gesture,
             Gesture::Resizing { .. } | Gesture::TrimmingStart { .. }
         )
+    }
+
+    /// Whether a paint stroke is in hand, so the window keeps the brush for
+    /// the whole of it rather than the hand a drag otherwise shows.
+    pub fn painting(&self) -> bool {
+        matches!(self.gesture, Gesture::Painting { .. })
     }
 
     /// A snap-off drag's delta, pulled onto a nearby edge unless Alt is held,
@@ -3169,10 +3334,76 @@ impl Timeline {
             }
             _ => {}
         }
+        // Down and up on the open clip without it moving: a click.
+        self.cycle = self.cycle_pending.take().or(self.cycle);
         self.gesture = Gesture::None;
         self.magnet = Magnet::default();
         self.magnet_at = None;
         edits
+    }
+
+    /// A click on the clip that was already open, if one has landed since
+    /// the last call — the window asks the document for the next instrument
+    /// playing in it (`StudioHost::cycle_clip_channel`). Handed over rather
+    /// than acted on, for the reason [`take_open`](Self::take_open) is.
+    pub fn take_cycle(&mut self) -> Option<ClipId> {
+        self.cycle.take()
+    }
+
+    /// The copies a paint stroke lays from `from` to `to` (in steps of the
+    /// stroke's period, either way round) on `lane`, skipping any that would
+    /// sit on a clip already there or on one this stroke has laid, and any
+    /// before the song.
+    fn paint_cells(
+        &mut self,
+        lane: usize,
+        from: i64,
+        to: i64,
+        clips: &[ClipInfo],
+    ) -> Vec<ArrangeEdit> {
+        let Gesture::Painting {
+            source,
+            anchor,
+            period,
+            painted,
+            ..
+        } = &mut self.gesture
+        else {
+            return Vec::new();
+        };
+        let ks: Vec<i64> = if from <= to {
+            (from..=to).collect()
+        } else {
+            (to..=from).rev().collect()
+        };
+        let mut edits = Vec::new();
+        for k in ks {
+            let start = *anchor + k * *period;
+            if start < 0 {
+                continue;
+            }
+            let end = start + *period;
+            let overlaps =
+                |(l, s, len): (usize, Tick, Tick)| l == lane && s < end && start < s + len;
+            if clips.iter().any(|c| overlaps((c.lane, c.start, c.length)))
+                || painted.iter().any(|p| overlaps(*p))
+            {
+                continue;
+            }
+            painted.push((lane, start, *period));
+            edits.push(ArrangeEdit::Paint {
+                source: *source,
+                lane,
+                start,
+            });
+        }
+        edits
+    }
+
+    fn set_paint_last(&mut self, now: (usize, i64)) {
+        if let Gesture::Painting { last, .. } = &mut self.gesture {
+            *last = now;
+        }
     }
 
     /// The shortest selected clip, which is what a resize is floored against.
@@ -3360,6 +3591,16 @@ impl Timeline {
     /// nothing must not clear it.
     pub fn clips_inserted(&mut self, ids: Vec<ClipId>) {
         if ids.is_empty() {
+            return;
+        }
+        // A stroke's copies are not chosen one by one: the selection and the
+        // clip in hand stay what they were, so the next stroke paints the
+        // same clip. A stroke of blanks leaves the blank in hand, so the next
+        // one paints it rather than another blank.
+        if let Gesture::Painting { source, .. } = &self.gesture {
+            if source.is_none() {
+                self.stamp = ids.first().copied();
+            }
             return;
         }
         // The copy a Shift+press just stamped is the thing in hand now —
@@ -3624,6 +3865,10 @@ pub fn lane_track_chip(header: Rect) -> Rect {
 // there, with the draw tool, is exactly the gesture it describes, and makes
 // the clip where the ghost was.
 
+/// How far a press may wander, in points, and still be a click — the roll's
+/// `CLICK_SLOP` for the same question.
+const CLICK_SLOP_PX: f32 = 3.0;
+
 /// How many bars the ghost spans.
 const GHOST_BARS: i64 = 2;
 
@@ -3656,6 +3901,7 @@ pub fn ghost_clip(
 pub fn ghost_clip_hint(tool: TimelineTool) -> &'static str {
     match tool {
         TimelineTool::Draw => "Double-click to draw a clip",
+        TimelineTool::Paint => "Drag along a row to paint clips",
         TimelineTool::Select | TimelineTool::Slice => "Press P, then double-click to draw a clip",
     }
 }

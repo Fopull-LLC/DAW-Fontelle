@@ -47,67 +47,83 @@ impl NotApplied {
     }
 }
 
-/// Refuses an edit aimed at an insert or a send that is not the one it was
-/// made against (`docs/collab-plan.md` §5.2).
+/// Where the insert or send an edit is aimed at is now (`docs/collab-plan.md`
+/// §5.2, §18 F90).
 ///
 /// The window names an insert by its place in the chain, and a place is only
 /// a name while nobody else is moving things: on a shared song another
 /// person's insert can land in front of it, and "slot 2" is then the
 /// neighbour. So a command learns the id of what it found there the first
 /// time it is applied — on the machine whose rows the place was counted
-/// against — and every later apply (a redo, the other end of a wire) checks
-/// the place still holds it. Refuse rather than clamp (INVARIANT 9).
-fn claim(
+/// against — and every later apply (a redo, the other end of a wire) looks
+/// for **that** insert: at its place if it is still there, wherever it went
+/// if it moved, and refused only if it is gone.
+///
+/// It used to refuse whenever the place held another — never the neighbour,
+/// which was right, but also never the insert it meant: Ty's friend switched
+/// off his EQ while Ty dragged the delay above it, the switch was refused and
+/// "taken back", and he switched it off again. Following the id is neither a
+/// clamp nor a guess (INVARIANT 9): it is the same insert.
+fn locate(
+    ids: impl Iterator<Item = PersistentId>,
+    index: usize,
     expected: &mut Option<PersistentId>,
-    found: PersistentId,
     what: &str,
-) -> Result<(), CommandError> {
-    match expected {
-        Some(id) if *id != found => Err(CommandError(format!(
-            "that {what} has moved since this edit was made"
-        ))),
-        _ => {
-            *expected = Some(found);
-            Ok(())
+) -> Result<usize, CommandError> {
+    let ids: Vec<PersistentId> = ids.collect();
+    match *expected {
+        None => {
+            let found = ids
+                .get(index)
+                .ok_or_else(|| CommandError(format!("no {what} {index} on that track")))?;
+            *expected = Some(*found);
+            Ok(index)
         }
+        Some(id) if ids.get(index) == Some(&id) => Ok(index),
+        Some(id) => ids
+            .iter()
+            .position(|other| *other == id)
+            .ok_or_else(|| CommandError(format!("that {what} has been taken away"))),
     }
 }
 
-/// The insert at `index` on `track`, if it is still the one `expected`
-/// names — see [`claim`].
+/// The insert on `track` this edit names — see [`locate`].
 fn insert_mut<'a>(
     doc: &'a mut Project,
     track: MixerTrackId,
     index: usize,
     expected: &mut Option<PersistentId>,
 ) -> Result<&'a mut crate::EffectSlot, CommandError> {
-    let slot = doc
+    let inserts = &mut doc
         .mixer
         .tracks
         .get_mut(track)
         .ok_or_else(|| CommandError(format!("no mixer track {track:?}")))?
-        .inserts
-        .get_mut(index)
-        .ok_or_else(|| CommandError(format!("no insert {index}")))?;
-    claim(expected, slot.id, "insert")?;
-    Ok(slot)
+        .inserts;
+    let at = locate(
+        inserts.iter().map(|slot| slot.id),
+        index,
+        expected,
+        "insert",
+    )?;
+    Ok(&mut inserts[at])
 }
 
-/// The send at `index` on `track`, if it is still the one `expected` names.
+/// The send on `track` this edit names — see [`locate`].
 fn send_mut<'a>(
     doc: &'a mut Project,
     track: MixerTrackId,
     index: usize,
     expected: &mut Option<PersistentId>,
 ) -> Result<&'a mut Send, CommandError> {
-    let send = doc
+    let sends = &mut doc
         .mixer
         .tracks
         .get_mut(track)
-        .and_then(|track| track.sends.get_mut(index))
-        .ok_or_else(|| CommandError("no such send".into()))?;
-    claim(expected, send.id, "send")?;
-    Ok(send)
+        .ok_or_else(|| CommandError("no such send".into()))?
+        .sends;
+    let at = locate(sends.iter().map(|send| send.id), index, expected, "send")?;
+    Ok(&mut sends[at])
 }
 
 impl Command for NotApplied {
@@ -476,6 +492,299 @@ impl Command for RestoreChannel {
 
     fn memory_cost(&self) -> usize {
         std::mem::size_of::<Self>() + self.clips.len() * std::mem::size_of::<Clip>()
+    }
+}
+
+/// What one note source kept when a channel was deleted from it: the notes
+/// taken out, and the home it had when it was moved onto another channel.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ThinnedNotes {
+    notes: Vec<(NoteId, Note)>,
+    home: Option<ChannelId>,
+}
+
+/// What [`DeleteChannel`] took, so its inverse can put all of it back.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeletedChannel {
+    channel: Channel,
+    /// Clips that held nothing but the channel, gone whole.
+    clips: Vec<(ClipId, Clip)>,
+    /// Clips that stayed, and what came out of each.
+    kept: Vec<(ClipId, ThinnedNotes)>,
+    /// Prefabs, the same.
+    prefabs: Vec<(PrefabId, ThinnedNotes)>,
+    listeners: Vec<(MixerTrackId, usize)>,
+}
+
+/// Deletes a channel, taking its **notes** out of every clip rather than
+/// every clip it was drawn with.
+///
+/// [`RemoveChannel`] took a clip whose home was the channel whatever else was
+/// in it — Ty's clip, drawn with one instrument and written with another,
+/// went with the first: *"play a different instrument in that same clip and
+/// remove the first one"*. Here a clip goes only if nothing but the channel
+/// was in it (or it was empty and drawn with it, as before); one that keeps
+/// other notes is moved onto the channel it is now about
+/// ([`ClipChannels::face`](crate::ClipChannels::face)), so what plays, what
+/// the block says and what a click selects all follow what is left. Prefabs
+/// lose the channel's notes the same way; a place goes when its prefab has
+/// nothing else.
+///
+/// A new command rather than a change to `RemoveChannel`, whose stored form
+/// is in undo stacks and on the wire already: an older peer's delete still
+/// lands as it always did.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeleteChannel {
+    channel: ChannelId,
+    removed: Option<DeletedChannel>,
+}
+
+impl DeleteChannel {
+    pub fn new(channel: ChannelId) -> Self {
+        Self {
+            channel,
+            removed: None,
+        }
+    }
+}
+
+/// Takes `gone`'s notes out of `data`, and moves its home off `gone` when
+/// what is left plays something in `rack`. `None` when nothing changed.
+fn thin_notes(data: &mut NoteData, gone: ChannelId, rack: &[ChannelId]) -> Option<ThinnedNotes> {
+    let taken: Vec<NoteId> = data
+        .notes
+        .iter()
+        .filter(|(_, note)| note.channel_or(data.channel) == gone)
+        .map(|(id, _)| id)
+        .collect();
+    let notes: Vec<(NoteId, Note)> = taken
+        .into_iter()
+        .filter_map(|id| data.notes.remove(id).map(|note| (id, note)))
+        .collect();
+    let mut home = None;
+    if data.channel == gone
+        && !data.notes.is_empty()
+        && let Some(face) = crate::ClipChannels::of(data, rack).face()
+    {
+        home = Some(data.channel);
+        data.channel = face;
+    }
+    (!notes.is_empty() || home.is_some()).then_some(ThinnedNotes { notes, home })
+}
+
+/// The inverse of [`thin_notes`].
+fn unthin_notes(data: &mut NoteData, thinned: &ThinnedNotes) -> Result<(), CommandError> {
+    if let Some(home) = thinned.home {
+        data.channel = home;
+    }
+    for (id, note) in &thinned.notes {
+        if !data.notes.insert_at(*id, note.clone()) {
+            return Err(CommandError("that note id is taken".into()));
+        }
+    }
+    Ok(())
+}
+
+impl Command for DeleteChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::DeleteChannel(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let gone = self.channel;
+        let Some(channel) = doc.channels.remove(gone) else {
+            return Err(CommandError(format!("no channel {gone:?} in this project")));
+        };
+        let rack: Vec<ChannelId> = doc.channels.keys().collect();
+
+        // Prefabs first: a place is judged by what its prefab still holds.
+        let mut prefabs = Vec::new();
+        let mut empty_prefabs = Vec::new();
+        for (id, prefab) in doc.prefabs.iter_mut() {
+            if let ClipSource::Notes(data) = &mut prefab.source {
+                if let Some(thinned) = thin_notes(data, gone, &rack) {
+                    prefabs.push((id, thinned));
+                }
+                if data.notes.is_empty() && data.channel == gone {
+                    empty_prefabs.push(id);
+                }
+            }
+        }
+
+        let mut clips = Vec::new();
+        let mut kept = Vec::new();
+        let ids: Vec<ClipId> = doc.clips.keys().collect();
+        for id in ids {
+            let clip = &doc.clips[id];
+            let ClipSource::Notes(data) = &clip.source else {
+                continue;
+            };
+            let held_gone = data
+                .notes
+                .values()
+                .any(|note| note.channel_or(data.channel) == gone);
+            let held_other = data
+                .notes
+                .values()
+                .any(|note| note.channel_or(data.channel) != gone);
+            // A place plays its prefab: it goes when the prefab is left with
+            // nothing and was the channel's, the way an empty clip drawn with
+            // the channel goes.
+            let place_empty = clip
+                .prefab_link
+                .as_ref()
+                .is_some_and(|link| empty_prefabs.contains(&link.prefab));
+            let goes = if clip.prefab_link.is_some() && !place_empty {
+                false
+            } else {
+                !held_other && (held_gone || data.channel == gone)
+            };
+            if goes {
+                if let Some(clip) = doc.clips.remove(id) {
+                    clips.push((id, clip));
+                }
+                continue;
+            }
+            let Some(ClipSource::Notes(data)) = doc.clips.get_mut(id).map(|c| &mut c.source) else {
+                continue;
+            };
+            let thinned = thin_notes(data, gone, &rack).or_else(|| {
+                // A place's own (empty) source names the prefab's home: it
+                // follows the prefab onto the channel that is left.
+                let link = doc.clips[id].prefab_link.as_ref()?;
+                let ClipSource::Notes(prefab) = &doc.prefabs.get(link.prefab)?.source else {
+                    return None;
+                };
+                let face = prefab.channel;
+                let ClipSource::Notes(data) = &mut doc.clips.get_mut(id)?.source else {
+                    return None;
+                };
+                (data.channel == gone && face != gone).then(|| {
+                    data.channel = face;
+                    ThinnedNotes {
+                        notes: Vec::new(),
+                        home: Some(gone),
+                    }
+                })
+            });
+            if let Some(thinned) = thinned {
+                kept.push((id, thinned));
+            }
+        }
+
+        let mut listeners = Vec::new();
+        for (track, strip) in doc.mixer.tracks.iter_mut() {
+            for (index, slot) in strip.inserts.iter_mut().enumerate() {
+                if slot.notes == Some(gone) {
+                    slot.notes = None;
+                    listeners.push((track, index));
+                }
+            }
+        }
+
+        self.removed = Some(DeletedChannel {
+            channel,
+            clips,
+            kept,
+            prefabs,
+            listeners,
+        });
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.removed {
+            Some(removed) => Box::new(RestoreDeletedChannel {
+                id: self.channel,
+                removed: removed.clone(),
+            }),
+            None => Box::new(NotApplied::new("deleting a channel")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Delete channel"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.removed.as_ref().map_or(0, |r| {
+                r.clips.len() * std::mem::size_of::<Clip>()
+                    + (r.kept.iter().map(|(_, t)| t.notes.len()).sum::<usize>()
+                        + r.prefabs.iter().map(|(_, t)| t.notes.len()).sum::<usize>())
+                        * std::mem::size_of::<Note>()
+            })
+    }
+}
+
+/// The inverse half of [`DeleteChannel`]. Not a user-facing command.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestoreDeletedChannel {
+    id: ChannelId,
+    removed: DeletedChannel,
+}
+
+impl Command for RestoreDeletedChannel {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::RestoreDeletedChannel(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let removed = &self.removed;
+        if !doc.channels.insert_at(self.id, removed.channel.clone()) {
+            return Err(CommandError("that channel id is taken".into()));
+        }
+        for (id, thinned) in &removed.prefabs {
+            if let Some(ClipSource::Notes(data)) = doc.prefabs.get_mut(*id).map(|p| &mut p.source) {
+                unthin_notes(data, thinned)?;
+            }
+        }
+        for (id, thinned) in &removed.kept {
+            if let Some(ClipSource::Notes(data)) = doc.clips.get_mut(*id).map(|c| &mut c.source) {
+                unthin_notes(data, thinned)?;
+            }
+        }
+        for (id, clip) in &removed.clips {
+            if !doc.clips.insert_at(*id, clip.clone()) {
+                return Err(CommandError("that clip id is taken".into()));
+            }
+        }
+        for (track, index) in &removed.listeners {
+            if let Some(strip) = doc.mixer.tracks.get_mut(*track)
+                && let Some(slot) = strip.inserts.get_mut(*index)
+            {
+                slot.notes = Some(self.id);
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        Box::new(DeleteChannel::new(self.id))
+    }
+
+    fn label(&self) -> &str {
+        "Restore channel"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>() + self.removed.clips.len() * std::mem::size_of::<Clip>()
     }
 }
 
@@ -1998,12 +2307,12 @@ impl Command for RemoveSend {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let found = track
-            .sends
-            .get(self.index)
-            .ok_or_else(|| CommandError("no such send".into()))?
-            .id;
-        claim(&mut self.slot, found, "send")?;
+        self.index = locate(
+            track.sends.iter().map(|send| send.id),
+            self.index,
+            &mut self.slot,
+            "send",
+        )?;
         let removed = track.sends.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -2609,6 +2918,12 @@ impl Compound {
 
     pub fn is_empty(&self) -> bool {
         self.parts.is_empty()
+    }
+
+    /// Its parts, in the order they were applied — how a caller that amended
+    /// a gesture (`History::amend`) finds what the last step minted.
+    pub fn parts(&self) -> &[Box<dyn Command>] {
+        &self.parts
     }
 
     /// Parts that have **already been applied**, joined after the fact — what
@@ -7426,12 +7741,12 @@ impl Command for RemoveInsert {
             .tracks
             .get_mut(self.track)
             .ok_or_else(|| CommandError(format!("no mixer track {:?}", self.track)))?;
-        let found = track
-            .inserts
-            .get(self.index)
-            .ok_or_else(|| CommandError(format!("no insert {} on that track", self.index)))?
-            .id;
-        claim(&mut self.slot, found, "insert")?;
+        self.index = locate(
+            track.inserts.iter().map(|slot| slot.id),
+            self.index,
+            &mut self.slot,
+            "insert",
+        )?;
         let removed = track.inserts.remove(self.index);
         self.removed.get_or_insert(removed);
         Ok(())
@@ -7561,7 +7876,15 @@ impl Command for MoveInsert {
         if self.from == self.to {
             return Err(CommandError("that is where it already is".to_string()));
         }
-        claim(&mut self.slot, track.inserts[self.from].id, "insert")?;
+        self.from = locate(
+            track.inserts.iter().map(|slot| slot.id),
+            self.from,
+            &mut self.slot,
+            "insert",
+        )?;
+        if self.from == self.to {
+            return Err(CommandError("that is where it already is".to_string()));
+        }
         let slot = track.inserts.remove(self.from);
         track.inserts.insert(self.to, slot);
         Ok(())

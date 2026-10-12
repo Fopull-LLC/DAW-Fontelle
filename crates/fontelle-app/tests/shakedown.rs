@@ -278,7 +278,10 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
                 release: 0,
                 mod_x: 0,
                 mod_y: 0,
-                slide: false,
+                // The last is an FL slide note, as an old song has them: the
+                // roll no longer makes one (*"triangle notes should not
+                // exist"*), and one already in a song still plays as it did.
+                slide: index == 3,
                 path: Vec::new(),
                 channel: None,
                 lyric: String::new(),
@@ -308,17 +311,6 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
         value: 64,
     });
     s.end_gesture();
-    // On a *different* note from the properties above, because a slide note
-    // does not start a voice — it bends the one already sounding — so it
-    // compiles to a `NoteSlide` and never appears as a note-on at all. Asking
-    // a slide note what its mod X compiled to is asking the wrong question,
-    // which this test did on its first run.
-    s.edit(RollEdit::SetSlide {
-        ids: vec![written[3]],
-        slide: true,
-    });
-    s.end_gesture();
-
     // --- 7. And the first clip loops, rather than being copied four times.
     s.arrange(ArrangeEdit::SetLoop {
         ids: vec![first],

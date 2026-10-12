@@ -206,6 +206,14 @@ struct HubState {
     /// xorshift64 state — deterministic loss decisions.
     rng: u64,
     seq: u64,
+    /// Fontelle's own: up to this many ticks more on each message, drawn
+    /// from `jitter_rng` — see [`MemoryHub::set_jitter`].
+    jitter: u64,
+    jitter_rng: u64,
+    /// When the last reliable message on each (from, to) link is due: a
+    /// reliable link is one ordered stream, so jitter never lets one pass
+    /// the message before it.
+    reliable_due: HashMap<(PeerId, PeerId), u64>,
     /// Inbox per endpoint (server or a client id).
     inbox: HashMap<PeerId, VecDeque<Queued>>,
     /// Newest delivered seq per (destination, source, channel) — sequenced drop.
@@ -236,8 +244,22 @@ impl HubState {
             return;
         }
         self.seq += 1;
+        let mut deliver_at = self.now + self.latency_ticks;
+        if self.jitter > 0 {
+            let mut x = self.jitter_rng;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.jitter_rng = x;
+            deliver_at += x % (self.jitter + 1);
+        }
+        if channel == Channel::Reliable {
+            let due = self.reliable_due.entry((from, to)).or_insert(0);
+            deliver_at = deliver_at.max(*due);
+            *due = deliver_at;
+        }
         let q = Queued {
-            deliver_at: self.now + self.latency_ticks,
+            deliver_at,
             from,
             channel,
             seq: self.seq,
@@ -260,10 +282,25 @@ impl HubState {
         let Some(q) = self.inbox.get_mut(&me) else {
             return out;
         };
-        // Uniform latency keeps fifo order, so a single front-scan suffices.
+        // Uniform latency keeps fifo order, so a single front-scan suffices;
+        // with jitter (Fontelle's own) anything due goes, in the order it is
+        // due, and the rest waits.
         let mut ready = Vec::new();
-        while q.front().is_some_and(|m| m.deliver_at <= now) {
-            ready.push(q.pop_front().unwrap());
+        if self.jitter == 0 {
+            while q.front().is_some_and(|m| m.deliver_at <= now) {
+                ready.push(q.pop_front().unwrap());
+            }
+        } else {
+            let mut waiting = VecDeque::new();
+            for m in q.drain(..) {
+                if m.deliver_at <= now {
+                    ready.push(m);
+                } else {
+                    waiting.push_back(m);
+                }
+            }
+            *q = waiting;
+            ready.sort_by_key(|m| (m.deliver_at, m.seq));
         }
         for m in ready {
             if m.channel == Channel::UnreliableSequenced {
@@ -304,6 +341,9 @@ impl MemoryHub {
                 tick_hz: 60.0,
                 rng: 0x9E37_79B9_7F4A_7C15,
                 seq: 0,
+                jitter: 0,
+                jitter_rng: 0x2545_F491_4F6C_DD1D,
+                reliable_due: HashMap::new(),
                 inbox: HashMap::new(),
                 delivered: HashMap::new(),
                 pending_joins: VecDeque::new(),
@@ -319,6 +359,17 @@ impl MemoryHub {
         let mut s = self.state.lock().unwrap();
         s.latency_ticks = latency_ticks;
         s.loss = loss.clamp(0.0, 1.0);
+    }
+
+    /// Fontelle's own: each message waits up to `ticks` more than the
+    /// latency, drawn from a generator seeded with `seed` (deterministic).
+    /// A reliable link still delivers in the order it was sent, as one QUIC
+    /// stream does; two links into one endpoint can pass each other — which
+    /// is what three studios on the relay see.
+    pub fn set_jitter(&self, ticks: u64, seed: u64) {
+        let mut s = self.state.lock().unwrap();
+        s.jitter = ticks;
+        s.jitter_rng = seed.max(1);
     }
 
     /// Advance the hub clock to the current gameplay tick (call once per tick,
@@ -448,5 +499,52 @@ mod tests {
         client.send(SERVER, Channel::UnreliableSequenced, b"c");
         let got = server.poll();
         assert_eq!(got.len(), 2, "in-order sequenced messages all deliver");
+    }
+
+    /// Fontelle's own: jitter delays each message by up to `jitter` more
+    /// ticks, and a reliable link still delivers in the order it was sent —
+    /// as a QUIC stream does — while messages from different senders to one
+    /// endpoint can pass each other.
+    #[test]
+    fn jitter_keeps_a_reliable_link_in_order_and_lets_links_pass() {
+        let hub = MemoryHub::new();
+        hub.set_conditions(2, 0.0);
+        hub.set_jitter(6, 7);
+        let mut server = hub.server_endpoint();
+        let mut a = hub.connect();
+        let mut b = hub.connect();
+        let _ = server.poll();
+        let mut got: Vec<(PeerId, u8)> = Vec::new();
+        let mut spread = std::collections::BTreeSet::new();
+        for i in 0..40u8 {
+            hub.set_now(u64::from(i));
+            a.send(SERVER, Channel::Reliable, &[i]);
+            b.send(SERVER, Channel::Reliable, &[i]);
+            for incoming in server.poll() {
+                if let Incoming::Message(from, _, bytes) = incoming {
+                    got.push((from, bytes[0]));
+                    spread.insert(u64::from(i) - u64::from(bytes[0]));
+                }
+            }
+        }
+        for t in 40..60 {
+            hub.set_now(t);
+            for incoming in server.poll() {
+                if let Incoming::Message(from, _, bytes) = incoming {
+                    got.push((from, bytes[0]));
+                }
+            }
+        }
+        for peer in [1, 2] {
+            let order: Vec<u8> = got.iter().filter(|g| g.0 == peer).map(|g| g.1).collect();
+            assert_eq!(order, (0..40).collect::<Vec<u8>>(), "in order, every one");
+        }
+        assert!(spread.len() > 2, "the delay varies: {spread:?}");
+        let firsts: Vec<PeerId> = got.iter().map(|g| g.0).collect();
+        assert!(
+            firsts.windows(2).any(|w| w[0] == 2 && w[1] == 1)
+                && firsts.windows(2).any(|w| w[0] == 1 && w[1] == 2),
+            "the two links interleave both ways"
+        );
     }
 }

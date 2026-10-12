@@ -190,7 +190,6 @@ fn the_defaults_are_the_bindings_the_window_has_always_had() {
     // roll's snap moved to G, and the ghosts to O (Ty, 2026-10-01).
     assert_eq!(bound(Action::Stretch), "S");
     assert_eq!(bound(Action::RollSnap), "G");
-    assert_eq!(bound(Action::Slide), "A");
     assert_eq!(bound(Action::LaneProperty), "L");
     assert_eq!(bound(Action::Ghosts), "O");
     assert_eq!(bound(Action::LegatoOrPlayMode), "Ctrl+L");

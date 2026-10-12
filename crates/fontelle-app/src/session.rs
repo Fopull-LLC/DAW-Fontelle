@@ -25,6 +25,7 @@
 mod study;
 mod vocal_files;
 
+use fontelle_model::wire::SingerOffer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -634,6 +635,19 @@ pub struct Session {
     /// generation and this moment, and the lanes have not been looked at
     /// since (`settle_lanes`).
     lanes_unsettled: Option<(u64, std::time::Instant)>,
+    /// How many times the graph has been built — what a burst of somebody
+    /// else's edits costs a shared song (`graph_builds`).
+    graph_builds: u64,
+    /// The plugins a shared song uses that are not installed here and have
+    /// been said — `None` until the song's first look (F91).
+    missing_plugins_said: Option<std::collections::BTreeSet<String>>,
+    /// The singers this host last said its song uses, by engine and voice
+    /// (F93): offered again only when that changes.
+    singers_said: Option<Vec<(String, String)>>,
+    /// A sent singer waiting on the person: its terms, and a yes or no.
+    singer_question: Option<fontelle_model::wire::SingerNeed>,
+    /// Sent singers asked about here, by hash: asked once.
+    singers_answered: std::collections::BTreeSet<u64>,
     /// The question a stray clip raised in lane-style, while it stands.
     lane_question: Option<fontelle_model::LaneConflict>,
     /// The stray clips already known about — asked of, or there when the
@@ -748,6 +762,9 @@ pub struct Session {
     /// clips through `&self`, and a cache that could only fill on a
     /// mutation would hand out blank blocks until the first edit.
     previews: std::cell::RefCell<HashMap<ClipId, CachedPreview>>,
+    /// A paint stroke is in the hand: its next step joins the history entry
+    /// its first made (`paint_step`). Let go of with the gesture.
+    paint_stroke: bool,
 }
 
 /// One audio clip's block picture and what it was built from.
@@ -1505,7 +1522,14 @@ impl Session {
         clip: ClipId,
         bundle: Option<PathBuf>,
     ) -> Self {
-        let (settings, error) = Settings::load();
+        // **Defaults, and nothing read.** The user's own file is the
+        // studio's to ask for (`with_user_settings`, in `main`); a session
+        // made any other way — every test — reads and writes no settings
+        // but the ones it is pointed at (`with_settings_path`). It used to
+        // read `~/.config/fontelle/settings.json` here, so a test passed or
+        // failed by what was on the machine running it: one did, when a
+        // preview build left a favourite this build could not read.
+        let settings = Settings::default();
         let plugin_dirs = settings.plugin_dirs.clone();
         let mut session = Self {
             project,
@@ -1627,6 +1651,11 @@ impl Session {
             arrival_row: 0,
             selected_lane: None,
             lanes_unsettled: None,
+            graph_builds: 0,
+            missing_plugins_said: None,
+            singers_said: None,
+            singer_question: None,
+            singers_answered: std::collections::BTreeSet::new(),
             lane_question: None,
             known_conflicts: Vec::new(),
             routing_question: false,
@@ -1649,10 +1678,11 @@ impl Session {
             preview_patch: None,
             random_state: 0,
             previewing: false,
-            message: error.map(|e| e.to_string()),
+            message: None,
             audition: None,
             roll_notes: Arena::default(),
             previews: std::cell::RefCell::new(HashMap::new()),
+            paint_stroke: false,
         };
         session.selected = session.channel_index_of_clip().unwrap_or(0);
         session.effective_tempo = session.tempo_for_scope();
@@ -1909,6 +1939,21 @@ impl Session {
             .map(|recovery| format!("Recover unsaved work in {}", recovery.name))
     }
 
+    /// The user's own settings, from the usual place
+    /// ([`Settings::config_path`]) — what the studio runs on. Before the
+    /// `with_*` that read settings (the MIDI input, the audio output).
+    pub fn with_user_settings(self) -> Self {
+        match Settings::config_path() {
+            Some(path) => {
+                let mut session = self.with_settings_path(path);
+                let dirs = session.settings.plugin_dirs.clone();
+                session.plugins.set_folders(dirs);
+                session
+            }
+            None => self,
+        }
+    }
+
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
         let (settings, error) = Settings::load_from(&path);
         self.preset_bank.set_user_dir(settings.user_preset_dir());
@@ -1934,7 +1979,6 @@ impl Session {
         settings_path
             .and_then(Path::parent)
             .map(Path::to_path_buf)
-            .or_else(Settings::config_dir)
             .unwrap_or_else(std::env::temp_dir)
             .join("themes")
     }
@@ -2236,10 +2280,13 @@ impl Session {
         self.touch();
     }
 
+    /// Writes the settings to the file this session was pointed at — and
+    /// with none, nowhere: a session with no settings file keeps them in
+    /// memory (see `Session::new`).
     fn save_settings(&self) -> std::io::Result<()> {
         match &self.settings_path {
             Some(path) => self.settings.save_to(path),
-            None => self.settings.save(),
+            None => Ok(()),
         }
     }
 
@@ -2491,6 +2538,7 @@ impl Session {
         }
         self.history.set_mint_space(None);
         self.history.open_outbox();
+        self.start_saying_missing_plugins();
         let mut transport = transport;
         if let Some(wake) = &self.wake {
             transport.set_wake(wake.clone());
@@ -2667,6 +2715,7 @@ impl Session {
         // (F56).
         self.library.set_mint_space(self.history.mint_space());
         self.collab_effects(effects);
+        self.share_singers();
     }
 
     /// Loads a file that has just arrived into whatever plays it: every clip
@@ -2737,6 +2786,12 @@ impl Session {
         self.collab.as_ref()?.fetching(hash)
     }
 
+    /// How many times this studio has built its graph, for a test to count
+    /// what a burst of somebody else's edits costs.
+    pub fn graph_builds(&self) -> u64 {
+        self.graph_builds
+    }
+
     /// The files that have arrived whole in this session, by hash.
     pub fn files_received(&self) -> Vec<u64> {
         self.collab
@@ -2765,13 +2820,18 @@ impl Session {
                     self.dirty = true;
                     self.patch_cache = None;
                     self.rebuild_graph();
+                    self.say_new_missing_plugins();
                     self.touch();
                 }
                 Effect::Say(line) => {
                     self.message = Some(line);
                     self.touch();
                 }
-                Effect::FileArrived(hash) => self.load_arrived(hash),
+                Effect::FileArrived(hash) => {
+                    if !self.install_arrived_singer(hash) {
+                        self.load_arrived(hash);
+                    }
+                }
                 Effect::Open(path) => {
                     let opened = match self.open_bundle(&path) {
                         Ok(opened) => opened,
@@ -2807,6 +2867,7 @@ impl Session {
     /// message overwrites: a song that sounds different here and nobody said
     /// why reads as the session being broken.
     fn say_missing_plugins(&mut self) {
+        self.start_saying_missing_plugins();
         let mut missing: Vec<String> = Vec::new();
         let states: Vec<fontelle_types::PluginState> = self
             .project
@@ -2848,6 +2909,283 @@ impl Session {
              machine, and its settings are kept for the others.",
             if missing.len() == 1 { "it" } else { "them" }
         ));
+    }
+
+    /// Every plugin the open song plays that this computer has not got, one
+    /// entry a plugin, with each place the song uses it.
+    fn missing_plugins(&self) -> Vec<(fontelle_types::PluginState, Vec<String>)> {
+        let mut missing: Vec<(fontelle_types::PluginState, Vec<String>)> = Vec::new();
+        let mut note = |state: &fontelle_types::PluginState, place: String| {
+            if self.plugins.scan().find(&state.key).is_some() {
+                return;
+            }
+            match missing.iter_mut().find(|(s, _)| s.key == state.key) {
+                Some((_, places)) => {
+                    if !places.contains(&place) {
+                        places.push(place);
+                    }
+                }
+                None => missing.push((state.clone(), vec![place])),
+            }
+        };
+        for channel in self.project.channels.values() {
+            if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin)
+                && let Some(state) = &channel.plugin
+            {
+                note(state, format!("the instrument {}", channel.name));
+            }
+        }
+        // The strips in the mixer's order, the master among them.
+        let mut tracks = self.project.mixer.ordered_tracks();
+        for track in self.project.mixer.tracks.keys() {
+            if !tracks.contains(&track) {
+                tracks.push(track);
+            }
+        }
+        for track in tracks {
+            let strip = &self.project.mixer.tracks[track];
+            for insert in &strip.inserts {
+                if let Some(state) = &insert.plugin {
+                    note(state, format!("an effect on {}", strip.name));
+                }
+            }
+        }
+        missing
+    }
+
+    /// What the open song uses that this computer has not got, for the
+    /// Share panel (F91): each plugin, by name, format and maker, with every
+    /// place the song plays it; and each file a shared song names that could
+    /// not be had, with why.
+    ///
+    /// > *"if there are plugins missing, it should tell you which plugins."*
+    pub fn missing_here(&self) -> Vec<fontelle_ui::document::MissingItem> {
+        use fontelle_ui::document::MissingItem;
+        let mut items: Vec<MissingItem> = self
+            .missing_plugins()
+            .into_iter()
+            .map(|(state, places)| {
+                let mut what = format!("{} \u{2014} {}", state.name, state.key.format.label());
+                if let Some(vendor) = &state.vendor {
+                    what.push_str(", ");
+                    what.push_str(vendor);
+                }
+                MissingItem {
+                    what,
+                    detail: format!("not installed here \u{2014} {}", places.join("; ")),
+                }
+            })
+            .collect();
+        let Some(collab) = self.collab.as_ref() else {
+            return items;
+        };
+        let who = collab.host_name().unwrap_or("the host").to_string();
+        for need in collab.singers() {
+            if self.has_singer(&need.engine, &need.singer) {
+                continue;
+            }
+            let (what, detail) = crate::collab::singers::missing_words(need, &who);
+            items.push(MissingItem { what, detail });
+        }
+        let from = collab
+            .host_name()
+            .map(|host| format!("{host}\u{2019}s computer"))
+            .unwrap_or_else(|| "the computer it came from".to_string());
+        let place = crate::collab::files::Place {
+            bundle: self.bundle.clone(),
+            banks: self.library_dirs(),
+        };
+        for entry in crate::collab::files::missing(&self.project, &place.with(&self.project)) {
+            use crate::collab::Trouble;
+            let why = match collab.file_trouble(entry.hash) {
+                Some(Trouble::Asking) => "waiting for your yes to fetch it".to_string(),
+                Some(Trouble::Declined) => "you chose not to fetch it".to_string(),
+                Some(Trouble::NotThere) => format!("{from} does not have it either"),
+                Some(Trouble::Damaged) => "it arrived damaged".to_string(),
+                None => continue,
+            };
+            let name = crate::library::sound_name(std::path::Path::new(
+                entry
+                    .file_name
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&entry.file_name),
+            ));
+            items.push(MissingItem {
+                what: format!("{name} \u{2014} {}", file_kind(entry.kind)),
+                detail: format!("{why} \u{2014} what plays it is silent here"),
+            });
+        }
+        items
+    }
+
+    /// From now on, a plugin this computer has not got that arrives in the
+    /// song is said ([`say_new_missing_plugins`](Self::say_new_missing_plugins));
+    /// the ones the song has already are said as it opens, or not at all.
+    fn start_saying_missing_plugins(&mut self) {
+        if !crate::plugin_slots(&self.project).is_empty() {
+            self.plugins.scan_once();
+        }
+        self.missing_plugins_said = Some(
+            self.missing_plugins()
+                .into_iter()
+                .map(|(state, _)| format!("{}:{}", state.key.format.label(), state.key.id))
+                .collect(),
+        );
+    }
+
+    /// Whether this studio can sing as `engine`'s `singer`.
+    fn has_singer(&self, engine: &str, singer: &str) -> bool {
+        self.vocal
+            .registry()
+            .voices()
+            .iter()
+            .any(|v| v.backend == engine && v.info.id == singer)
+    }
+
+    /// The singers of a shared song (F93). A host says which its song uses
+    /// whenever that changes, packing what it may send; a joiner asks about
+    /// a sent one it has not got — its terms first.
+    ///
+    /// > *"collaborating doesn't share singer files currently like it does
+    /// > with sound fonts and audio so you cannot sync singers you don't
+    /// > share. please add this."*
+    fn share_singers(&mut self) {
+        let Some(collab) = self.collab.as_ref() else {
+            return;
+        };
+        if !collab.is_live() {
+            return;
+        }
+        if collab.is_host() {
+            let mut used: Vec<(String, String)> = self
+                .project
+                .channels
+                .values()
+                .filter_map(|c| c.vocal.as_ref())
+                .map(|v| (v.engine.clone(), v.singer.clone()))
+                .collect();
+            used.sort();
+            used.dedup();
+            if self.singers_said.as_ref() == Some(&used) {
+                return;
+            }
+            let (needs, packs) = crate::collab::singers::needs_of(&self.project, &self.vocal);
+            self.singers_said = Some(used);
+            if let Some(collab) = self.collab.as_mut() {
+                collab.offer_singers(needs, packs);
+            }
+            return;
+        }
+        if self.singer_question.is_some() {
+            return;
+        }
+        let ask = collab
+            .singers()
+            .iter()
+            .find(|need| {
+                matches!(&need.offer, SingerOffer::Send { hash, .. }
+                    if !self.singers_answered.contains(hash))
+                    && !self.has_singer(&need.engine, &need.singer)
+            })
+            .cloned();
+        if ask.is_some() {
+            self.singer_question = ask;
+            self.touch();
+        }
+    }
+
+    /// A packed singer has arrived whole: installed, its terms agreed here —
+    /// the person agreed before it was fetched — and the song sings with it.
+    /// `false` when `hash` was not a singer.
+    fn install_arrived_singer(&mut self, hash: u64) -> bool {
+        let Some(packed) = self.collab.as_ref().and_then(|c| c.singer_pack(hash)) else {
+            return false;
+        };
+        let Some(need) = self
+            .collab
+            .as_ref()
+            .and_then(|c| {
+                c.singers()
+                    .iter()
+                    .find(|n| matches!(n.offer, SingerOffer::Send { hash: h, .. } if h == hash))
+            })
+            .cloned()
+        else {
+            return true;
+        };
+        // Unpacked under the bank's own folder name — the name an install
+        // from a folder keeps.
+        let staging = self
+            .vocal
+            .voicebanks_dir()
+            .join(format!(".incoming-{hash:016x}"));
+        let name = match &need.offer {
+            SingerOffer::Send { file_name, .. } => file_name
+                .strip_suffix(".pack")
+                .unwrap_or(file_name)
+                .to_string(),
+            _ => need.name.clone(),
+        };
+        let folder = staging.join(crate::projects::safe_name(&name));
+        let installed = crate::collab::singers::unpack(&packed, &folder)
+            .map_err(|e| e.to_string())
+            .and_then(|()| self.vocal.install(&folder));
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_file(&packed);
+        match installed {
+            Ok(_) => {
+                let banks = fontelle_vocal::voicebanks::list(&self.vocal.voicebanks_dir());
+                if let Some(bank) =
+                    fontelle_vocal::voicebanks::bank_for_voice(&banks, &need.singer, None)
+                {
+                    self.vocal.agree_bank(&bank.id);
+                }
+                self.vocal.agree(&need.engine, &need.singer);
+                self.session_notices.push(format!(
+                    "{} arrived and is installed \u{2014} its terms agreed, and it sings.",
+                    need.name
+                ));
+                self.republish();
+                self.rebuild_graph();
+            }
+            Err(e) => self.session_notices.push(format!(
+                "{} arrived, and could not be installed: {e}",
+                need.name
+            )),
+        }
+        self.touch();
+        true
+    }
+
+    /// A plugin somebody put in the shared song that this computer has not
+    /// got is said the moment it arrives, once (F91): it is silent here, and
+    /// nothing else would say why.
+    fn say_new_missing_plugins(&mut self) {
+        if self.missing_plugins_said.is_none() || crate::plugin_slots(&self.project).is_empty() {
+            return;
+        }
+        self.plugins.scan_once();
+        let mut fresh = Vec::new();
+        for (state, places) in self.missing_plugins() {
+            let key = format!("{}:{}", state.key.format.label(), state.key.id);
+            let said = self.missing_plugins_said.as_mut().expect("checked");
+            if said.insert(key) {
+                fresh.push(format!(
+                    "{} ({}{}) is not installed here \u{2014} {} is silent on this computer, \
+                     and the others still hear it.",
+                    state.name,
+                    state.key.format.label(),
+                    state
+                        .vendor
+                        .as_ref()
+                        .map(|v| format!(", {v}"))
+                        .unwrap_or_default(),
+                    places.join("; ")
+                ));
+            }
+        }
+        self.session_notices.extend(fresh);
     }
 
     /// The join's question, while it is waiting for an answer.
@@ -3183,7 +3521,7 @@ impl Session {
             .settings_path
             .as_ref()
             .and_then(|path| path.parent().map(|dir| dir.join("tour")))
-            .or_else(|| Settings::config_dir().map(|dir| dir.join("tour")))
+            .or_else(|| Some(std::env::temp_dir().join("fontelle-tour")))
             .ok_or("there is nowhere to keep the tour\u{2019}s song")?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.fontelle", crate::tour::TOUR_NAME));
@@ -4606,10 +4944,31 @@ impl Session {
     }
 
     fn channel_index_of_clip(&self) -> Option<usize> {
-        let ClipSource::Notes(data) = &self.project.clips.get(self.clip)?.source else {
-            return None;
-        };
-        self.channel_ids().iter().position(|id| *id == data.channel)
+        let face = self.clip_channels(self.clip)?.face()?;
+        self.channel_ids().iter().position(|id| *id == face)
+    }
+
+    /// Which channels play in `clip` — a place reads its prefab's notes —
+    /// against the rack as it is now. `None` for a clip that is not notes,
+    /// or not there. See `fontelle_model::ClipChannels`.
+    fn clip_channels(&self, clip: ClipId) -> Option<fontelle_model::ClipChannels> {
+        match self.project.clip_source(clip)?.as_ref() {
+            ClipSource::Notes(data) => {
+                Some(fontelle_model::ClipChannels::of(data, &self.channel_ids()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Selects `channel` in the rack, if it is there and not already the
+    /// selection; `None` leaves the rack alone.
+    fn select_channel_id(&mut self, channel: Option<ChannelId>) {
+        if let Some(channel) = channel
+            && let Some(index) = self.channel_ids().iter().position(|id| *id == channel)
+            && index != self.selected
+        {
+            self.select_channel(index);
+        }
     }
 
     /// Recompiles the timeline and hands the result to the audio thread.
@@ -5176,6 +5535,17 @@ impl Session {
             let Some(written) = written else {
                 continue;
             };
+            // What the plugin cannot say of itself stays as the song had it:
+            // who makes it (F91), and the MPE switch, which is the player's
+            // and was reset to off at every save and backup — on a shared
+            // song a change nobody could reach by an edit.
+            let mut state = state;
+            if let Some(old) = written.as_ref() {
+                state.mpe = old.mpe;
+                if state.vendor.is_none() {
+                    state.vendor = old.vendor.clone();
+                }
+            }
             let before = written.replace(state.clone());
             // Written outside any edit: a shared copy keeps it from being
             // taken back when the copy is made again (§5.2).
@@ -5224,6 +5594,7 @@ impl Session {
     }
 
     fn rebuild_graph(&mut self) {
+        self.graph_builds += 1;
         // Reusing the control surfaces, so a track's fader and meter outlive
         // the graph they were built with — see `realise::fader`.
         // The live input goes onto the armed track, so the strip you chose an
@@ -5363,6 +5734,58 @@ impl Session {
     fn let_go(&mut self) {
         self.settle_lanes(true);
         self.history.break_gesture();
+        self.paint_stroke = false;
+    }
+
+    /// One clip of a paint stroke, put down as **part of the stroke's one
+    /// undo entry**: the first step through `apply_for` like any clip, every
+    /// step after it amended into that entry (`History::amend`), so a stroke
+    /// of sixteen copies is one Ctrl+Z and — the entry being sent once, when
+    /// the gesture is let go of — one edit to anybody sharing the song.
+    ///
+    /// `AddClip` does not merge with itself, and should not: two clips drawn
+    /// by two double-clicks are two things to take back.
+    fn paint_step(&mut self, command: Box<dyn Command>) -> Option<ClipId> {
+        /// The clip a paint step minted: a copy's or a place's.
+        fn minted(command: &dyn Command) -> Option<ClipId> {
+            let any = command.as_any();
+            any.downcast_ref::<AddClip>()
+                .and_then(AddClip::id)
+                .or_else(|| {
+                    any.downcast_ref::<fontelle_model::AddPrefabInstance>()?
+                        .clip()
+                })
+        }
+        if !self.paint_stroke {
+            if let Err(e) = self.history.apply(command, &mut self.project) {
+                self.message = Some(e.to_string());
+                return None;
+            }
+            self.dirty = true;
+            if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+                self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+            }
+            self.touch();
+            self.paint_stroke = true;
+            return self.history.last_applied().and_then(minted);
+        }
+        if let Err(e) = self.history.amend(command, &mut self.project) {
+            self.message = Some(e.to_string());
+            return None;
+        }
+        self.dirty = true;
+        if self.project.lane_routing.mode == fontelle_model::RoutingMode::Lane {
+            self.lanes_unsettled = Some((self.history.generation(), std::time::Instant::now()));
+        }
+        self.touch();
+        // On top now: the entry the step joined, whose last part is it — or,
+        // when the entry had already gone out and could not be joined, the
+        // step on its own.
+        let top = self.history.last_applied()?;
+        minted(top).or_else(|| {
+            let joined = top.as_any().downcast_ref::<fontelle_model::Compound>()?;
+            minted(joined.parts().last()?.as_ref())
+        })
     }
 
     /// Lane-style's upkeep, once an edit has settled: every lane gets its
@@ -7576,12 +7999,6 @@ impl DocumentHost for Session {
                 self.let_go();
                 Vec::new()
             }
-            RollEdit::SetSlide { ids, slide } => {
-                self.run(Box::new(fontelle_model::SetNoteSlide::new(
-                    clip, ids, slide,
-                )));
-                Vec::new()
-            }
             RollEdit::SetProperty {
                 ids,
                 property,
@@ -8651,6 +9068,21 @@ impl StudioHost for Session {
             self.rack_tab = fontelle_ui::document::RackTab::Prefabs;
         }
         self.touch();
+    }
+
+    fn paint_prefab(&mut self, index: usize, lane: usize, start: Tick) -> Option<ClipId> {
+        let id = self.prefab_ids().get(index).copied()?;
+        let lane = self.lane_ids().get(lane).copied()?;
+        // A bar, as `draw_prefab`'s place is.
+        let length = fontelle_types::PPQN * 4;
+        let made = self.paint_step(Box::new(fontelle_model::AddPrefabInstance::new(
+            id,
+            lane,
+            start.max(0),
+            length,
+        )));
+        self.republish();
+        made
     }
 
     fn draw_prefab(&mut self, index: usize, lane: usize, start: Tick) -> Option<ClipId> {
@@ -10115,7 +10547,8 @@ impl StudioHost for Session {
             self.message = Some("a project needs at least one instrument".to_string());
             return;
         }
-        self.run(Box::new(fontelle_model::RemoveChannel::new(id)));
+        // Its **notes**, not every clip drawn with it — see `DeleteChannel`.
+        self.run(Box::new(fontelle_model::DeleteChannel::new(id)));
         self.let_go();
         self.channel_presets.remove(&id);
         self.patch_cache = None;
@@ -10623,77 +11056,9 @@ impl StudioHost for Session {
     }
 
     fn session(&self) -> fontelle_ui::document::SessionView {
-        use fontelle_ui::document::{SessionPeer, SessionRole, SessionView};
-        if self.sharing.is_some() {
-            return SessionView {
-                role: SessionRole::Starting,
-                status: "Asking the relay for a code\u{2026}".to_string(),
-                ..SessionView::default()
-            };
-        }
-        let Some(collab) = self.collab.as_ref() else {
-            return SessionView::default();
-        };
-        if let Some(why) = collab.ended() {
-            return SessionView {
-                status: why.to_string(),
-                ..SessionView::default()
-            };
-        }
-        let host = collab.host_name().unwrap_or_default().to_string();
-        // A joiner lists who is sharing first, in the host's colour (F61):
-        // the host is not one of the peers the session hands out.
-        let mut peers: Vec<SessionPeer> = Vec::new();
-        if !collab.is_host() && !host.is_empty() {
-            peers.push(SessionPeer {
-                peer: 0,
-                name: host.clone(),
-                colour: 0,
-                view_only: false,
-            });
-        }
-        peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
-            peer: p.peer,
-            name: p.name,
-            colour: p.colour,
-            view_only: p.view_only,
-        }));
-        let role = if collab.is_host() {
-            SessionRole::Hosting
-        } else if collab.is_live() {
-            SessionRole::Joined
-        } else {
-            SessionRole::Joining
-        };
-        let status = match role {
-            SessionRole::Hosting if peers.is_empty() => {
-                "Give somebody the code \u{2014} they join from their start menu".to_string()
-            }
-            SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
-            SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
-            SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
-            _ => {
-                let missing = self.missing_files().len();
-                if collab.view_only() {
-                    format!("{host} has made the song view only for you")
-                } else if missing > 0 {
-                    format!(
-                        "Waiting for {missing} file{} from {host}",
-                        if missing == 1 { "" } else { "s" }
-                    )
-                } else {
-                    format!("{host} is sharing this song")
-                }
-            }
-        };
-        SessionView {
-            role,
-            code: collab.code(),
-            host,
-            peers,
-            view_only: collab.view_only(),
-            status,
-        }
+        let mut view = self.session_view();
+        view.missing = self.missing_here();
+        view
     }
 
     fn share_song(&mut self) -> Result<(), String> {
@@ -10758,6 +11123,44 @@ impl StudioHost for Session {
                 default: question.default,
             });
         }
+        if let Some(need) = &self.singer_question
+            && let SingerOffer::Send { size, terms, .. } = &need.offer
+        {
+            let from = self
+                .collab
+                .as_ref()
+                .and_then(|c| c.host_name())
+                .unwrap_or("The host");
+            let mut lines = vec![format!(
+                "{from}\u{2019}s song is sung by {}, which you don\u{2019}t have ({:.1} MB).",
+                need.name,
+                *size as f64 / 1_048_576.0
+            )];
+            match terms {
+                Some(terms) => {
+                    lines.push("Its author\u{2019}s terms:".to_string());
+                    let mut shown: String = terms.chars().take(600).collect();
+                    if shown.len() < terms.len() {
+                        shown.push('\u{2026}');
+                    }
+                    lines.extend(
+                        shown
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .take(8)
+                            .map(str::to_string),
+                    );
+                }
+                None => lines.push("Its author gives no terms with it.".to_string()),
+            }
+            lines.push("Agree to them, and fetch it? It sings once it is here.".to_string());
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines,
+                buttons: vec!["Agree and fetch".to_string(), "Not now".to_string()],
+                default: 0,
+            });
+        }
         self.fetch_question()
             .map(|question| fontelle_ui::document::SessionQuestion {
                 lines: question.lines,
@@ -10786,6 +11189,19 @@ impl StudioHost for Session {
                 .map(|(answer, _)| answer.clone())
                 .ok_or("there is no such answer")?;
             return self.answer_join(answer);
+        }
+        if let Some(need) = self.singer_question.take() {
+            if let SingerOffer::Send { hash, .. } = &need.offer {
+                self.singers_answered.insert(*hash);
+                if answer == 0
+                    && let Some(collab) = self.collab.as_mut()
+                {
+                    collab.fetch_singer(&need);
+                    self.message = Some(format!("Fetching {}\u{2026}", need.name));
+                }
+            }
+            self.touch();
+            return Ok(());
         }
         if self.fetch_question().is_some() {
             return self.answer_fetch(answer == 0);
@@ -11499,9 +11915,9 @@ impl StudioHost for Session {
         // question a settings tab leaves somebody with, and the answer is a
         // path. Elided from the left like the bank's, because the end of a
         // path is the half that says where you are.
-        match self.settings_path.clone().or_else(Settings::config_path) {
+        match self.settings_path.clone() {
             Some(path) => crate::desktop::elide_path(&path, 2),
-            None => "there is no home directory to keep settings in".to_string(),
+            None => "settings are not being kept in a file".to_string(),
         }
     }
 
@@ -12162,8 +12578,7 @@ impl StudioHost for Session {
         let dir = self
             .settings_path
             .as_deref()
-            .and_then(|path| path.parent().map(Path::to_path_buf))
-            .or_else(Settings::config_dir);
+            .and_then(|path| path.parent().map(Path::to_path_buf));
         let Some(dir) = dir else {
             self.message = Some("there is no home directory to keep settings in".to_string());
             return;
@@ -14446,6 +14861,7 @@ impl StudioHost for Session {
 
     fn clips(&self) -> Vec<ClipInfo> {
         let lanes = self.lane_ids();
+        let rack = self.channel_ids();
         let colours = self.instrument_colours();
         // A deleted clip's picture goes with it; the cache is otherwise only
         // ever added to.
@@ -14476,7 +14892,12 @@ impl StudioHost for Session {
                     // with a clip name — a clip has none, and "what instrument
                     // is this" is what somebody scanning an arrangement asks.
                     ClipSource::Notes(data) => {
-                        home = Some(data.channel);
+                        // **What plays in it**, not what it was drawn with:
+                        // a clip whose notes are all the bass is the bass's
+                        // block, captioned and coloured so, whatever the
+                        // file's home channel says (`ClipChannels::face`).
+                        let channels = fontelle_model::ClipChannels::of(data, &rack);
+                        home = channels.face();
                         // The clip's own notes, in time order and **not**
                         // expanded across a loop's passes — the canvas tiles
                         // them the way it tiles the seams. See
@@ -14499,23 +14920,15 @@ impl StudioHost for Session {
                             })
                             .collect();
                         notes.sort_by_key(|note| (note.start, note.key));
-                        // Captioned with its home channel — and, when its
-                        // notes play others too, how many: "Drums +1" is a
-                        // clip with a bass line in it, which is worth
+                        // Captioned with the channel it is about — and, when
+                        // its notes play others too, how many: "Drums +1" is
+                        // a clip with a bass line in it, which is worth
                         // knowing from across the room.
-                        let mut name = self
-                            .project
-                            .channels
-                            .get(data.channel)
+                        let mut name = home
+                            .and_then(|face| self.project.channels.get(face))
                             .map(|channel| channel.name.clone())
                             .unwrap_or_else(|| "Clip".to_string());
-                        let others = data
-                            .channels()
-                            .iter()
-                            .filter(|c| {
-                                **c != data.channel && self.project.channels.contains_key(**c)
-                            })
-                            .count();
+                        let others = channels.others();
                         if others > 0 {
                             name = format!("{name} +{others}");
                         }
@@ -14774,6 +15187,72 @@ impl StudioHost for Session {
                 self.let_go();
                 self.republish();
                 self.touch();
+            }
+            // A step of a paint stroke: the stamp's copy, or the
+            // double-click's blank, folded into the stroke's one undo entry.
+            ArrangeEdit::Paint {
+                source,
+                lane,
+                start,
+            } => {
+                let Some(lane_id) = lanes.get(lane).or_else(|| lanes.last()).copied() else {
+                    self.message = Some("this project has no lanes to draw on".to_string());
+                    return Created {
+                        clips: created,
+                        points,
+                    };
+                };
+                let clip = match source {
+                    Some(source) => {
+                        let Some(original) = self.project.clips.get(source) else {
+                            self.message =
+                                Some("the clip to paint is not there any more".to_string());
+                            return Created {
+                                clips: created,
+                                points,
+                            };
+                        };
+                        Clip {
+                            lane: lane_id,
+                            start,
+                            ..original.clone()
+                        }
+                    }
+                    None => {
+                        // The double-click's blank: a bar of the rack's
+                        // selection — see `ArrangeEdit::Add`.
+                        let Some(channel) = self
+                            .selected_channel_id()
+                            .or_else(|| self.project.channels.keys().next())
+                        else {
+                            self.message = Some(
+                                "add an instrument first \u{2014} a clip has to play something"
+                                    .to_string(),
+                            );
+                            return Created {
+                                clips: created,
+                                points,
+                            };
+                        };
+                        Clip {
+                            name: None,
+                            lane: lane_id,
+                            start,
+                            length: PPQN * i64::from(self.project.beats_per_bar.max(1)),
+                            source: ClipSource::Notes(NoteData {
+                                channel,
+                                notes: Arena::default(),
+                                vocal: None,
+                            }),
+                            prefab_link: None,
+                            color: None,
+                            muted: false,
+                            loop_length: None,
+                        }
+                    }
+                };
+                created.extend(self.paint_step(Box::new(AddClip::new(clip))));
+                self.republish();
             }
             ArrangeEdit::Stamp {
                 source,
@@ -15040,34 +15519,31 @@ impl StudioHost for Session {
             return;
         }
         self.clip = clip;
-        // The rack follows a clip that holds **one** instrument, and only
-        // that one. It used to follow every clip, and that was a report: a
-        // clip holding several instruments could only ever be edited as the
-        // one it was captioned with. Then it followed none, and that was
-        // the next one — *"you could click your clips to already have the
-        // instrument selected to start editing instead of having to select
-        // the clip and the instrument in it"*. Both are right: a clip that
-        // plays one instrument is unambiguous about which one you mean, and
-        // a clip that plays several is not — opening the drum clip with the
-        // bass selected still means *write bass in here*. `channels()` is
-        // the same reading the caption's `+1` comes from, so the two agree
-        // about which clips hold several.
-        let one = self
-            .project
-            .clip_source(clip)
-            .and_then(|source| match source.as_ref() {
-                ClipSource::Notes(data) => match data.channels().as_slice() {
-                    [only] => Some(*only),
-                    _ => None,
-                },
-                _ => None,
-            });
-        if let Some(channel) = one
-            && let Some(index) = self.channel_ids().iter().position(|id| *id == channel)
-            && index != self.selected
-        {
-            self.select_channel(index);
-        }
+        // The rack follows **what plays in the clip** — read off its notes,
+        // never off the channel it was drawn with. Ty: *"clicking on that
+        // clip to select it does not select the instrument thats actually
+        // playing in the channel rack instead it selects the original
+        // instrument that was tied to that clip."* One instrument in it is
+        // that one; several keep a selection that already plays there (you
+        // were writing that part) and otherwise take the one with the most
+        // notes; an empty clip is the one it was drawn with. A second click
+        // steps through them (`cycle_clip_channel`). The caption and the
+        // colour read the same `ClipChannels`, so the block and the rack
+        // cannot disagree about what a clip is.
+        let current = self.selected_channel_id();
+        let wanted = self
+            .clip_channels(clip)
+            .and_then(|channels| channels.on_open(current));
+        self.select_channel_id(wanted);
+        self.touch();
+    }
+
+    fn cycle_clip_channel(&mut self, clip: ClipId) {
+        let current = self.selected_channel_id();
+        let wanted = self
+            .clip_channels(clip)
+            .and_then(|channels| channels.cycled(current));
+        self.select_channel_id(wanted);
         self.touch();
     }
 
@@ -17036,10 +17512,7 @@ impl Session {
     /// Where the previews are kept: beside the settings, or beside a
     /// session's own settings path.
     fn previews_path(&self) -> Option<PathBuf> {
-        let dir = match &self.settings_path {
-            Some(path) => path.parent().map(Path::to_path_buf),
-            None => Settings::config_dir(),
-        }?;
+        let dir = self.settings_path.as_ref()?.parent()?.to_path_buf();
         Some(crate::preview_index::PreviewIndex::path_in(&dir))
     }
 
@@ -17216,4 +17689,92 @@ fn fell_back_words(
         status.fell_back.as_deref().unwrap_or("no reason given"),
         status.host
     )
+}
+
+/// What a file the song uses is, in a word or two for the panel.
+fn file_kind(kind: fontelle_types::AssetKind) -> &'static str {
+    use fontelle_types::AssetKind;
+    match kind {
+        AssetKind::Sf2 | AssetKind::Sf3 => "soundfont",
+        AssetKind::Sfz => "SFZ instrument",
+        AssetKind::Sample => "sound",
+    }
+}
+
+impl Session {
+    /// The Share panel's view, but for what is missing (`missing_here`).
+    fn session_view(&self) -> fontelle_ui::document::SessionView {
+        use fontelle_ui::document::{SessionPeer, SessionRole, SessionView};
+        if self.sharing.is_some() {
+            return SessionView {
+                role: SessionRole::Starting,
+                status: "Asking the relay for a code\u{2026}".to_string(),
+                ..SessionView::default()
+            };
+        }
+        let Some(collab) = self.collab.as_ref() else {
+            return SessionView::default();
+        };
+        if let Some(why) = collab.ended() {
+            return SessionView {
+                status: why.to_string(),
+                ..SessionView::default()
+            };
+        }
+        let host = collab.host_name().unwrap_or_default().to_string();
+        // A joiner lists who is sharing first, in the host's colour (F61):
+        // the host is not one of the peers the session hands out.
+        let mut peers: Vec<SessionPeer> = Vec::new();
+        if !collab.is_host() && !host.is_empty() {
+            peers.push(SessionPeer {
+                peer: 0,
+                name: host.clone(),
+                colour: 0,
+                view_only: false,
+            });
+        }
+        peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
+            peer: p.peer,
+            name: p.name,
+            colour: p.colour,
+            view_only: p.view_only,
+        }));
+        let role = if collab.is_host() {
+            SessionRole::Hosting
+        } else if collab.is_live() {
+            SessionRole::Joined
+        } else {
+            SessionRole::Joining
+        };
+        let status = match role {
+            SessionRole::Hosting if peers.is_empty() => {
+                "Give somebody the code \u{2014} they join from their start menu".to_string()
+            }
+            SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
+            SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
+            SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
+            _ => {
+                let missing = self.missing_files().len();
+                if collab.view_only() {
+                    format!("{host} has made the song view only for you")
+                } else if missing > 0 {
+                    format!(
+                        "Waiting for {missing} file{} from {host}",
+                        if missing == 1 { "" } else { "s" }
+                    )
+                } else {
+                    format!("{host} is sharing this song")
+                }
+            }
+        };
+        SessionView {
+            role,
+            code: collab.code(),
+            host,
+            peers,
+            view_only: collab.view_only(),
+            status,
+            missing: Vec::new(),
+        }
+    }
 }

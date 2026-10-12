@@ -1266,6 +1266,11 @@ pub struct WindowApp {
     text: TextContext,
     tree: WidgetTree,
     scene: Scene,
+    /// The frame a surface is given: [`scene`](Self::scene), in points,
+    /// scaled to the surface's pixels — see [`crate::render::for_surface`].
+    /// Kept rather than made per frame, so its buffers are reused. Shared by
+    /// the studio and its editor windows, which are drawn one at a time.
+    surface_scene: Scene,
     context: RenderContext,
     /// One per device `RenderContext` has opened, indexed by its `dev_id`.
     renderers: Vec<Option<Renderer>>,
@@ -2318,6 +2323,7 @@ impl WindowApp {
             layout,
             tree: WidgetTree::new(),
             scene: Scene::new(),
+            surface_scene: Scene::new(),
             context: RenderContext::new(),
             renderers: Vec::new(),
             live: None,
@@ -3482,6 +3488,7 @@ impl WindowApp {
                         code: self.session.code.as_deref(),
                         peers: &self.session.peers,
                         status: &self.session.status,
+                        missing: &self.session.missing,
                     }),
                     question: self.session_question.as_ref().map(|q| {
                         crate::render::QuestionNotice {
@@ -3601,10 +3608,16 @@ impl WindowApp {
                 ms_since(started) - built
             );
         }
+        // In points until here; the surface is in pixels.
+        let frame = crate::render::for_surface(
+            &self.scene,
+            live.window.scale_factor(),
+            &mut self.surface_scene,
+        );
         if let Err(e) = renderer.render_to_texture(
             &device.device,
             &device.queue,
-            &self.scene,
+            frame,
             &live.surface.target_view,
             &RenderParams {
                 base_color: self.options.theme.palette.window.to_peniko(),
@@ -4087,6 +4100,7 @@ impl WindowApp {
                 Some(crate::canvas::FadeGrip::Handle) => Pointer::ResizeX,
                 Some(crate::canvas::FadeGrip::Node) => Pointer::ResizeY,
                 None if self.timeline.sizing_edge() => Pointer::ResizeX,
+                None if self.timeline.painting() => Pointer::Paint,
                 None => Pointer::Grabbing,
             }),
             Drag::Roll => Some(Pointer::Grabbing),
@@ -4243,6 +4257,7 @@ impl WindowApp {
             timeline: &self.timeline_layout,
             timeline_bar: &self.timeline_bar,
             timeline_view: &self.timeline.view,
+            timeline_tool: self.timeline.tool(),
             clips: &self.clips,
             instrument: &self.instrument_layout,
             instrument_view: self.instrument.as_ref(),
@@ -5065,6 +5080,19 @@ impl ApplicationHandler for WindowApp {
                 // The cut tool's whole edit lands here, like the roll's: a
                 // line half-drawn is not a cut.
                 self.apply_arrange_edits(edits);
+                // A click on the clip that was already open: the rack steps
+                // to the next instrument playing in it. *"maybe cycle
+                // through?"* Not when the click was on the name, which is
+                // the clip's menu.
+                if let Some(clip) = self.timeline.take_cycle()
+                    && name_click.is_none()
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.cycle_clip_channel(clip);
+                    self.roll.clear_selection();
+                    self.refresh_studio();
+                    self.tree.invalidate(RACK);
+                }
                 if overlay {
                     self.tree.invalidate(TIMELINE);
                 }
@@ -7081,11 +7109,17 @@ impl WindowApp {
                 return;
             }
         };
+        // Points to pixels, as the studio's frame is.
+        let frame = crate::render::for_surface(
+            &editor.scene,
+            editor.window.scale_factor(),
+            &mut self.surface_scene,
+        );
         if renderer
             .render_to_texture(
                 &device.device,
                 &device.queue,
-                &editor.scene,
+                frame,
                 &editor.surface.target_view,
                 &RenderParams {
                     // The bridge's ground is its own, dark under both
@@ -8435,6 +8469,18 @@ impl WindowApp {
                 crate::canvas::share_panel_words(self.session.role, &self.session.peers);
             let (first, second) = crate::canvas::status_lines(&self.session.status);
             words.extend([first.to_string(), second.to_string()]);
+            if !self.session.missing.is_empty() {
+                words.push(crate::canvas::MISSING_HERE.to_string());
+                for item in &self.session.missing {
+                    words.extend([item.what.clone(), item.detail.clone()]);
+                }
+                let listed = self.share_panel_layout().missing.len();
+                if listed < self.session.missing.len() {
+                    words.push(crate::canvas::missing_more_words(
+                        self.session.missing.len() - listed,
+                    ));
+                }
+            }
             for word in &words {
                 want(&mut self.labels, &mut self.text, word);
             }
@@ -16405,6 +16451,21 @@ impl WindowApp {
                         made.clips.extend(doc.draw_prefab(index, lane, start));
                         made
                     }
+                    // And the brush with nothing in hand paints places, one
+                    // undo for the stroke.
+                    (
+                        Some(index),
+                        crate::canvas::ArrangeEdit::Paint {
+                            source: None,
+                            lane,
+                            start,
+                        },
+                    ) => {
+                        let (lane, start) = (*lane, *start);
+                        let mut made = crate::document::Created::default();
+                        made.clips.extend(doc.paint_prefab(index, lane, start));
+                        made
+                    }
                     _ => doc.arrange(edit),
                 };
                 created.clips.extend(made.clips);
@@ -20911,28 +20972,10 @@ impl WindowApp {
             RollControl::Tools => self.toggle_tools_panel(),
             // The chip drops its list; `O` still steps.
             RollControl::Ghost => self.open_key_menu(MenuTarget::GhostMenu),
-            RollControl::Slide => self.toggle_slide(),
             RollControl::Keys => self.cycle_key_style(),
             RollControl::Root => self.open_key_menu(MenuTarget::KeyRoot),
             RollControl::Scale => self.open_key_menu(MenuTarget::KeyScale),
         }
-    }
-
-    /// Makes the selection slide notes, or ordinary ones — and decides what
-    /// the next note drawn will be. `A` and the toolbar chip both come here.
-    fn toggle_slide(&mut self) {
-        let edits = match &self.options.document {
-            Some(doc) => {
-                let notes = doc.notes();
-                self.roll.toggle_slide(notes)
-            }
-            None => Vec::new(),
-        };
-        self.apply_roll_edits(edits);
-        if let Some(doc) = &mut self.options.document {
-            doc.end_gesture();
-        }
-        self.tree.invalidate(PANEL);
     }
 
     /// Opens the lane chip's menu, or shuts it if it is already open.
@@ -22761,7 +22804,8 @@ impl WindowApp {
             Action::RackTab => self.toggle_rack_tab(),
             // Tools, from the FL keymap.
             Action::DrawTool => self.pick_tool(Tool::Draw, crate::canvas::TimelineTool::Draw),
-            Action::PaintTool => self.set_tool(Tool::Paint),
+            // The brush on both: *"no brush tool in the arrangement."*
+            Action::PaintTool => self.pick_tool(Tool::Paint, crate::canvas::TimelineTool::Paint),
             Action::SelectTool => self.pick_tool(Tool::Select, crate::canvas::TimelineTool::Select),
             Action::DeleteTool => self.set_tool(Tool::Delete),
             // Stretch on the arrangement. **Nothing in the roll**: S there
@@ -22804,7 +22848,6 @@ impl WindowApp {
             // `A` for a slide by default: `S` is the snap and every other
             // letter in the word is a tool. FL uses a right-click menu, which
             // this window does not have yet.
-            Action::Slide => self.toggle_slide(),
             // The Tools panel. `T` for tools, and no FL binding to clash with
             // — FL has no equivalent panel.
             Action::ToolsPanel => self.toggle_tools_panel(),
@@ -23022,9 +23065,10 @@ impl WindowApp {
     fn activate_timeline(&mut self, control: crate::canvas::TimelineControl) {
         use crate::canvas::TimelineControl as C;
         match control {
-            C::Draw | C::Select | C::Slice => {
+            C::Draw | C::Paint | C::Select | C::Slice => {
                 self.timeline.set_tool(match control {
                     C::Draw => crate::canvas::TimelineTool::Draw,
+                    C::Paint => crate::canvas::TimelineTool::Paint,
                     C::Select => crate::canvas::TimelineTool::Select,
                     _ => crate::canvas::TimelineTool::Slice,
                 });
@@ -23786,12 +23830,13 @@ impl WindowApp {
     }
 
     fn share_panel_layout(&self) -> crate::canvas::SharePanelLayout {
-        crate::canvas::share_panel_layout(
+        crate::canvas::share_panel_layout_with(
             self.layout.window,
             self.bar.share,
             &self.options.theme.metrics,
             self.session.role,
             self.session.peers.len(),
+            self.session.missing.len(),
         )
     }
 

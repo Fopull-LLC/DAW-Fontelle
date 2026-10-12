@@ -78,6 +78,8 @@ pub struct ShareNotice<'a> {
     pub code: Option<&'a str>,
     pub peers: &'a [crate::document::SessionPeer],
     pub status: &'a str,
+    /// What the song uses that this computer has not got (F91).
+    pub missing: &'a [crate::document::MissingItem],
 }
 
 /// A question with its answers, the safe one first and weighted. See
@@ -707,6 +709,30 @@ pub struct TransportChrome<'a> {
 /// Everything the window looks like is decided here, from data. That is what
 /// makes "the theme is ignored" and "the panel is in the wrong place" testable
 /// failures rather than things somebody has to notice.
+/// The frame as a surface takes it: `scene`, drawn in **logical points**,
+/// scaled up to the surface's **physical pixels** by the display's `scale`.
+///
+/// Every layout in the window is in points — the size it is laid out at is
+/// the surface's pixels over the scale, and the pointer is divided by the
+/// same scale — while the renderer draws one scene unit to one pixel. This
+/// is where the two meet. Without it a 150 % display (Windows' default on
+/// most laptops) drew the window into the top-left two thirds of itself and
+/// every click landed on what was drawn half as far again from the corner:
+/// *"it's like it's squishing everything into the top corner and squishing
+/// my mouse offset in that direction too."*
+///
+/// At 1:1, or handed a scale that is not a scale, the scene goes through as
+/// it is and nothing is copied; otherwise it is appended to `frame` under the
+/// one transform, and `frame` is what to render.
+pub fn for_surface<'a>(scene: &'a Scene, scale: f64, frame: &'a mut Scene) -> &'a Scene {
+    if !scale.is_finite() || scale <= 0.0 || (scale - 1.0).abs() < 1e-9 {
+        return scene;
+    }
+    frame.reset();
+    frame.append(scene, Some(Affine::scale(scale)));
+    frame
+}
+
 pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chrome: &Chrome<'_>) {
     scene.reset();
 
@@ -2330,7 +2356,14 @@ fn draw_share_panel(
     use crate::canvas::{COPY_CODE, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
     let p = &theme.palette;
     let m = &theme.metrics;
-    let l = crate::canvas::share_panel_layout(window, anchor, m, share.role, share.peers.len());
+    let l = crate::canvas::share_panel_layout_with(
+        window,
+        anchor,
+        m,
+        share.role,
+        share.peers.len(),
+        share.missing.len(),
+    );
     if l.frame.is_empty() {
         return;
     }
@@ -2405,6 +2438,26 @@ fn draw_share_panel(
     }
     if !l.nobody.is_empty() {
         draw_line(scene, labels, NOBODY_YET, l.nobody, p.text_muted);
+    }
+    // What this computer has not got: the heading in the alarm colour a
+    // missing plugin's slot is drawn in, each thing in the text colour and
+    // where and why beneath it, muted.
+    if !l.missing_title.is_empty() {
+        draw_line(
+            scene,
+            labels,
+            crate::canvas::MISSING_HERE,
+            l.missing_title,
+            p.meter_peak,
+        );
+    }
+    for ((what, detail), item) in l.missing.iter().zip(share.missing) {
+        draw_line(scene, labels, &item.what, *what, p.text);
+        draw_line(scene, labels, &item.detail, *detail, p.text_muted);
+    }
+    if !l.missing_more.is_empty() {
+        let more = crate::canvas::missing_more_words(share.missing.len() - l.missing.len());
+        draw_line(scene, labels, &more, l.missing_more, p.text_muted);
     }
     let (first, second) = crate::canvas::status_lines(share.status);
     let line = l.status.height / 2.0;
@@ -7988,6 +8041,7 @@ fn draw_timeline_toolbar(
             | TimelineControl::ZoomOut
             | TimelineControl::ZoomIn
             | TimelineControl::Draw
+            | TimelineControl::Paint
             | TimelineControl::Select
             | TimelineControl::Slice => true,
             TimelineControl::Paste => chrome.can_paste,
@@ -7998,6 +8052,7 @@ fn draw_timeline_toolbar(
         // to find out.
         let on = match control {
             TimelineControl::Draw => chrome.tool == crate::canvas::TimelineTool::Draw,
+            TimelineControl::Paint => chrome.tool == crate::canvas::TimelineTool::Paint,
             TimelineControl::Select => chrome.tool == crate::canvas::TimelineTool::Select,
             TimelineControl::Slice => chrome.tool == crate::canvas::TimelineTool::Slice,
             TimelineControl::Stretch => chrome.stretch,

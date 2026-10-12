@@ -82,6 +82,12 @@ pub struct Terms {
     /// Whether the author must be credited.
     #[serde(default)]
     pub credit: Permission,
+    /// Whether the bank may be passed on as it is — what a shared song
+    /// needs to send a friend the singer it uses. Only `yes` lets a studio
+    /// send it (`docs/collab-plan.md` §18, F93); anything else, unknown
+    /// included, sends the friend to `page` or `download` instead.
+    #[serde(default)]
+    pub redistribute: Permission,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
