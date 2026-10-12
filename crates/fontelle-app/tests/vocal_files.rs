@@ -722,3 +722,53 @@ fn an_imported_file_is_sung_by_the_bank_it_names() {
     assert!(said.contains("Nobody Here"), "{said}");
     assert!(said.contains("not installed"), "{said}");
 }
+
+/// A click's edit is heard soon: walked with real banks, a UTAU phrase was
+/// sung in about 25 ms and heard 225 ms after the edit — the rest was the
+/// wait for edits to settle. The best of five edits on an instant singer
+/// is heard well inside a fifth of a second.
+#[test]
+fn an_edit_is_heard_soon_after_it_is_made() {
+    let (mut session, _dir) = session("soon");
+    session.add_singer_channel(None).unwrap();
+    let index = (0..session.channels().len())
+        .rev()
+        .find(|i| session.channel_kind(*i) == Some(InstrumentKind::Vocal))
+        .unwrap();
+    session.select_channel(index);
+    let id = session.edit(fontelle_ui::canvas::RollEdit::Add {
+        note: vocal_note(0, PPQN, 60, "la"),
+    })[0];
+    let sung = |s: &Session| {
+        s.vocal_view().is_some_and(|v| {
+            !v.phrases.is_empty()
+                && v.phrases
+                    .iter()
+                    .all(|p| p.state == fontelle_ui::document::VocalRenderState::Final)
+        })
+    };
+    let settle = |session: &mut Session| {
+        let started = std::time::Instant::now();
+        while !sung(session) {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            session.pump();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        started.elapsed()
+    };
+    settle(&mut session);
+    let mut best = std::time::Duration::MAX;
+    for _ in 0..5 {
+        session.edit(fontelle_ui::canvas::RollEdit::Move {
+            ids: vec![id],
+            tick_delta: 0,
+            key_delta: 1,
+        });
+        session.end_gesture();
+        best = best.min(settle(&mut session));
+    }
+    assert!(
+        best < std::time::Duration::from_millis(170),
+        "best {best:?}"
+    );
+}

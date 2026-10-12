@@ -86,11 +86,12 @@ fn foreign(terms: Option<&str>) -> bool {
 /// The longest an export waits for the last final take before giving up.
 const EXPORT_WAIT: Duration = Duration::from_secs(600);
 
-/// How long after the last edit the engines are asked: a drag, or typing
-/// through a line, is many edits, and a phrase cancelled on every one of
-/// them is never sung. Engines take a second or two a phrase, so a fifth of
-/// a second of patience costs nothing anybody hears.
-const DEBOUNCE: Duration = Duration::from_millis(200);
+/// How long after the last edit the engines are asked: a drag is many
+/// edits a second, and a phrase cancelled on every one of them is never
+/// sung. A tenth of a second covers the frames of a drag; it was a fifth,
+/// which was nine tenths of the wait to hear a UTAU edit (sung in about
+/// 25 ms).
+const DEBOUNCE: Duration = Duration::from_millis(100);
 
 /// One vocal channel's part, as last worked out.
 struct Part {
