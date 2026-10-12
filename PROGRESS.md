@@ -70,7 +70,12 @@ Branch `feature/vocal-track`, not merged, not bumped. What §2.6 of
   `sing.rs` (+1); `fontelle-ui` `theme.rs` (+1), `builtin_themes.rs`
   (+1), `singer_panel.rs` (+1, pixels), `vocal_edit_headless.rs` (+1);
   `fontelle-app` `vocal_files.rs` (+1), `singer_panel.rs` (+3),
-  `singer_walk.rs` (memory and the first edit after reopening).
+  `singer_walk.rs` (memory and the first edit after reopening). Whole
+  workspace (`--no-fail-fast`, 607 binaries): 6627 passed, 1 failed, 42
+  ignored — the failure two engines' one-named voices told apart by
+  engine, though each is named with its instrument already; names are
+  now told apart within an instrument, and `fontelle-app` again (137
+  binaries): 1447 passed, 0 failed. Preflight all clear.
 - **Note**: `real_bank.rs`'s Chinese and multi-speaker tests fail on this
   library before and after (they take the first English bank, Canary);
   its determinism test failed before (ONNX Runtime's threads do not
