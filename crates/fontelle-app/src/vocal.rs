@@ -1162,7 +1162,7 @@ impl VocalSession {
     /// with.
     fn no_voicebank(&self) -> bool {
         let registry = self.registry();
-        let runtimes = self.builtins.as_ref().map_or(true, |b| !b.is_empty());
+        let runtimes = self.builtins.as_ref().is_none_or(|b| !b.is_empty());
         runtimes && !registry.voices().iter().any(|v| v.built_in)
     }
 }

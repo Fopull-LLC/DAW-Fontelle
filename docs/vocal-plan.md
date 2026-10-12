@@ -355,6 +355,59 @@ try to force it to speak english" (Kasane Teto's English bank).
   browser (`catalogue::translate_url`, only on that press). The Installed
   page's row shows the summary too.
 
+### 2.6 Release polish: the walk and the audit (2026-10-12)
+
+> *"prioritize the public singer plugin right now and making sure thats
+> really polished and good"*
+
+Walked as a producer from OpenUtau, Vocaloid or Synthesizer V would, with
+fourteen real banks (`fontelle-app/tests/singer_walk.rs`, ignored, needs
+`FONTELLE_TEST_VOICEBANKS`). What was found, and what became of it:
+
+| Found | Now |
+|---|---|
+| Render to clip: "the clip in the piano roll is not a vocal clip" for a vocal line written into another instrument's clip; freeze put its audio at the bottom; a file dropped on that row made a second track | the vocal track is found by the notes it plays (`vocal_in`, `sings_in`) |
+| Hitsuboku Kumi: the second 一 of 一闪一闪 sung as nothing (the bank has `an yi`, not `yi`) | sung from the vowel; a syllable with no form falls back to its start |
+| `[s a]` on a kana bank: silent, nothing said | aliases it has are sung; else the sounds are read as the lyric they spell (さ) and the note is flagged guessed |
+| Yoko DS: every Japanese phrase failed (`dsdict-ja.yaml` repeats `entries:`) | each top-level section read on its own when the whole will not parse |
+| Banks from -12 to -30 dBFS (18 dB apart) | built-in voices levelled from a reference phrase: -16 to -22 |
+| First sound on a DiffSinger bank 5–14 s after the first note | the chosen voice is warmed while notes are written (1.6 s when chosen first) |
+| An edit waited 2.8 s behind other phrases' finals | finals step aside for an edit's preview (1.8 s, all of it the preview) |
+| A UTAU edit heard 225 ms after it, 200 of them the debounce | debounce 100 ms: ~113 ms |
+| No voicebank: "No singer engine is installed — put one in <folder>" | "No voicebank is installed yet — find a free singer in Voicebanks → Find singers…", and a *Find singers…* button |
+| A song from elsewhere: the bank by its runtime id (`utau/…`), every phrase sent to fail, the panel said "No singer yet", cut off, and greyed every control as unused | the bank by its folder, nothing sent, the stage names it (NOT INSTALLED HERE) with *Find singers…*, the controls "kept for" it |
+| A missing vocoder said under the notes only; installing it left the track silent until an edit | said on the panel too; an install forgets failures |
+| A freeze of a track nothing on which could be sung: silence, "Froze" | refused with why; freezes, renders and exports say how many phrases are silent |
+| An imported song sung by whichever bank was first | by the bank it names (`singer:`, `VoiceDir`) when installed; the toast says who |
+| A new track started singing a bank whose terms were never read | a bank with settled terms first |
+| "4 more than there were notes left out"; `vel` on later phonemes named as if `vel` were unsupported | "4 more words than notes were left over; select more notes to place them"; "consonant speed (vel) on a note's later phonemes" |
+| The roll's corner: a long message ran off the roll | broken into lines of 72 characters |
+| The stage's kind line and message faint on the light theme | drawn a third of the way to the theme's text |
+
+**Deferred, with a recommendation:**
+
+- *Levelling is a fixed gain per voice, from one reference phrase.* Good
+  enough to put banks within 6 dB. A per-voice loudness kept on disk
+  (beside the UTAU analysis cache) would save the reference render each
+  session (~0.5 s of a DiffSinger bank's first phrase); do it if the first
+  phrase still feels slow.
+- *A reopened song warms its voices* even when every take is on disk —
+  a DiffSinger bank's models (hundreds of MB) load though nothing needs
+  singing until an edit. Recommend: warm only voices with a phrase that is
+  not on disk, or on the first edit.
+- *DiffSinger previews* take 0.7–1.7 s at 4 steps on this machine; most of
+  it is the vocoder. A preview at a lower sample rate or a shorter
+  vocoder pass is the next lever, if Ty wants edits heard faster.
+- *The singer panel's section colours* (rose, teal, violet, amber) are
+  fixed rather than theme tokens; they read on both shipped themes. A
+  user theme with a mid-grey stage would need tokens.
+- *The window's new presses* (*Find singers…* on the stage) were compiled
+  and covered through the canvas functions, not driven on a display.
+- *Two banks with the same character name* (Teto's 単独音 and 統合 both
+  call themselves 重音テト（かさねてと）音声ライブラリー) are told apart only
+  by the folder line on their cards. Showing the folder (or the bank's
+  kind: CV/VCV) beside the name when two names collide would help.
+
 ## 3. What the Fontelle Singer must do (parity with OpenUtau and Vocaloid)
 
 Producers coming from OpenUtau, UTAU, Vocaloid or Synthesizer V should find

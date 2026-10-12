@@ -166,6 +166,10 @@ impl Backend for Leveled {
     }
 }
 
+/// The inner session, asked to sing a phrase at a quality with a seed.
+type SingInner<'a> =
+    dyn FnMut(&mut dyn Session, &Phrase, Quality, u64) -> Result<Sung, SingError> + 'a;
+
 struct LeveledSession {
     inner: Box<dyn Session>,
     backend: Arc<dyn Backend>,
@@ -215,7 +219,7 @@ impl LeveledSession {
         phrase: &Phrase,
         quality: Quality,
         seed: u64,
-        sing: &mut dyn FnMut(&mut dyn Session, &Phrase, Quality, u64) -> Result<Sung, SingError>,
+        sing: &mut SingInner<'_>,
     ) -> Result<Sung, SingError> {
         let gain = match self.known(&phrase.voice) {
             Some(gain) => gain,

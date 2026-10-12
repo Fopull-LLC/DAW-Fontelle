@@ -19,6 +19,67 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**As of 2026-10-12, latest — the Fontelle Singer walked end to end with
+fourteen real banks and polished for release.** Branch
+`feature/vocal-track`, not merged, not bumped. Ty: *"prioritize the public
+singer plugin right now and making sure thats really polished and good."*
+`docs/vocal-plan.md` §2.6 has the audit.
+
+- **The walk** (`fontelle-app/tests/singer_walk.rs`, six `#[ignore]`d
+  tests, `FONTELLE_TEST_VOICEBANKS`; banks linked into scratch so nothing
+  is written beside them): a track, a singer, a melody with words, preview
+  then final, an edit, undo, render to a clip, loudness — per bank (UTAU
+  CV/VCV/X-SAMPA/ARPAsing/Chinese, DiffSinger ×7); a 40-phrase song (an
+  edit while finals render, a storm of edits and undos, reopened from its
+  takes); Joule's own OpenUtau demo song in and back out (MIDI, USTX,
+  freeze, reopen); odd libraries (no vocoder, one bank twice, a bank
+  deleted mid-song); typed lines; an edit's cost in 300 phrases.
+- **Found and fixed** (each test first, seen failing):
+  - Render to clip refused a vocal line written into another instrument's
+    clip; freeze put it at the bottom; a file dropped on that row made a
+    second track (`vocal_files.rs`).
+  - Hitsuboku Kumi sang the second 一 of 一闪一闪 as nothing (y-syllables
+    only from a vowel, "an yi"); `[s a]` on a kana bank was silent with
+    nothing said (`cjk.rs`, `phonemize.rs`; `RENDER_VERSION` 4).
+  - Yoko's `dsdict-ja.yaml` repeats `entries:`: every Japanese phrase
+    failed (`reading.rs`).
+  - Banks from -12 to -30 dBFS: built-in voices are **levelled** from a
+    reference phrase sung once per voice (`fontelle_vocal::leveled`,
+    single flight), now -16 to -22 (`level.rs`). Engines are not touched.
+  - A chosen voice is **warmed** (reference sung when idle, never
+    cancelled by previews), so models load while notes are written; an
+    edit's preview **steps ahead of other phrases' finals** (they are
+    cancelled and re-queued); the edit debounce is 100 ms, not 200
+    (`scheduler.rs`, `level.rs`, `vocal_files.rs`).
+  - Silent tracks say what to do: no voicebank → Find singers (not "put an
+    engine in <folder>"); a bank not on this computer is named by its
+    folder, nothing is sent to fail, the panel's stage names it with
+    *Find singers…*; a missing vocoder is said on the panel and installing
+    it sings without an edit (failures forgotten on install); a freeze of
+    nothing sung is refused with why; a freeze, render or export says how
+    many phrases are silent in it (`singer_messages.rs`, `singer_panel.rs`).
+  - An imported UST/USTX is sung by the bank it names (`VoiceDir`,
+    `singer:`), and the toast says who; a new track starts with a bank
+    whose terms are settled; left-over words and later-phoneme `vel` are
+    said plainly; the roll's corner wraps long messages; the stage's inks
+    read on the light theme.
+- **Measured** (this machine, loaded; UTAU analysis cache warm): a UTAU
+  edit heard in ~113 ms (was ~225), DiffSinger 0.7–1.7 s; a DiffSinger
+  edit while 40 finals render 1.8 s (was 2.8); first sound on a DiffSinger
+  bank 1.6 s when chosen before writing (cold 2.5–12 s, model load); a
+  reopened song all final in 0.1–0.2 s; an edit in 300 phrases 1.2 ms on
+  the studio's thread, the roll's view 5 ms.
+- **Not done** (§2.6 has each with a recommendation): auto loudness is a
+  fixed gain per voice, not a meter; warming a reopened song loads models
+  it may not need; levels are not kept on disk; light-theme section
+  colours are fixed; the window's new presses (Find singers…) were not
+  driven on a display.
+- **Note for whoever shares the build folder**: two worktrees of this
+  workspace in one `CARGO_TARGET_DIR` take each other's artifacts (cargo
+  judges a path crate fresh by mtime): clippy here used `main`'s
+  `fontelle-types`. Preflight and the suite ran in
+  `/mnt/disks/6tb/Repos/DAW-Fontelle-vocal-target`.
+
 **As of 2026-10-12, latest — singers travel with a shared song where their
 terms allow.** Branch `feature/collab-singers` (from `feature/vocal-track`,
 with `fix/collab-sync` merged in), not merged, not bumped. Ty:
