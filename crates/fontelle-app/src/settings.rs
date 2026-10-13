@@ -165,6 +165,13 @@ pub struct Settings {
     /// says the check is off rather than drawing nothing.
     #[serde(default = "yes")]
     pub check_for_updates: bool,
+    /// Whether that check also offers betas — test builds published before
+    /// the release they lead to (`updates::Channel`).
+    ///
+    /// Off by default and off in every file from before it existed: a beta
+    /// is something a person asks to test, never something they are handed.
+    #[serde(default)]
+    pub beta_updates: bool,
     /// Whether the first-run offer to install an extension has been answered
     /// — either way, so it is shown once and then not again
     /// (`docs/vst-plan.md` §4.2).
@@ -332,6 +339,7 @@ impl Default for Settings {
             keybinds: std::collections::BTreeMap::new(),
             recent_projects: Vec::new(),
             check_for_updates: true,
+            beta_updates: false,
             extensions_offered: false,
             flopsynth_scale_percent: 100,
             notepad_theme: None,
@@ -354,6 +362,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// Which releases the start menu's check may offer.
+    pub fn update_channel(&self) -> crate::updates::Channel {
+        if self.beta_updates {
+            crate::updates::Channel::Beta
+        } else {
+            crate::updates::Channel::Stable
+        }
+    }
+
     /// How much the window's backdrops may move. `reduce_motion` is the
     /// desktop's own switch (`desktop::reduce_motion`): with Effects never
     /// chosen, a desktop that asks for less motion starts Fontelle Still.
@@ -643,6 +660,8 @@ pub enum SettingRow {
     /// Whether the start menu asks GitHub for a newer release at launch
     /// (`updates.rs`). A switch: a click flips it, either direction.
     CheckForUpdates,
+    /// Whether that check offers betas too. A switch.
+    BetaUpdates,
     /// The open song's routing, rack-style or lane-style. A choice; the
     /// session answers its value, since it is the song's and not a setting.
     SongRouting,
@@ -708,7 +727,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 52] = [
+pub const SETTING_ROWS: [SettingRow; 53] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -779,6 +798,7 @@ pub const SETTING_ROWS: [SettingRow; 52] = [
     // other people.
     SettingRow::Heading("Updates"),
     SettingRow::CheckForUpdates,
+    SettingRow::BetaUpdates,
     // The song's own routing, and what a new one starts as — the one place
     // a per-project choice sits among settings that outlive projects, so it
     // says "this song" in its name (`docs/ux-routing-and-learning-plan.md`).
@@ -954,6 +974,7 @@ impl SettingRow {
             Self::RescanPlugins => "Rescan plugins",
             Self::CompatibleGraphics => "Compatible plugin graphics",
             Self::CheckForUpdates => "Check at launch",
+            Self::BetaUpdates => "Beta updates",
             Self::YourName => "Your name",
             Self::Relay => "Relay",
             Self::SongRouting => "Routing in this song",
@@ -1102,6 +1123,7 @@ impl SettingRow {
                 "Off"
             }
             .to_string(),
+            Self::BetaUpdates => if settings.beta_updates { "On" } else { "Off" }.to_string(),
             Self::YourName => settings.your_name(),
             // The song's, answered by the session; this is the default a row
             // shows with no song to ask.
@@ -1230,6 +1252,9 @@ impl SettingRow {
             Self::YourName => "What the people you share a project with see",
             Self::Relay => "Blank for Floptle Cloud, or a host:port of your own",
             Self::CheckForUpdates => "The start menu asks for a newer Fontelle at launch",
+            Self::BetaUpdates => {
+                "Also offer test builds before they are released \u{2014} new things, and new bugs"
+            }
             Self::SongRouting => {
                 "Rack-style: instruments choose tracks. Lane-style: each lane owns a track"
             }
@@ -1287,6 +1312,7 @@ impl SettingRow {
             | Self::Extension(_)
             | Self::CompatibleGraphics
             | Self::CheckForUpdates
+            | Self::BetaUpdates
             | Self::YourName
             | Self::Relay
             | Self::SongRouting
@@ -1400,7 +1426,9 @@ impl SettingRow {
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }
-            Self::CheckForUpdates | Self::CompatibleGraphics => SettingControlKind::Switch,
+            Self::CheckForUpdates | Self::BetaUpdates | Self::CompatibleGraphics => {
+                SettingControlKind::Switch
+            }
             Self::YourName | Self::Relay => SettingControlKind::Text,
             Self::PluginFolder
             | Self::PluginDir(_)

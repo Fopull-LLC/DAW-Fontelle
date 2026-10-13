@@ -19,7 +19,32 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-12, latest — the singer polish's deferred six, done.**
+**As of 2026-10-13, latest — Beta updates.** Branch
+`feature/beta-updates` (from v0.26.3); not merged, not bumped. Ty: *"make a
+beta update option for users so they will be able to have an option to
+recieve beta updates ... so we can release the asio update to beta and have
+people test it and if it goes well we bring it to stable."*
+
+- **Settings → Updates → Beta updates**, a switch under *Check at launch*,
+  off by default and off in every older settings file (`beta_updates`).
+  Flipping it writes the file and asks again at once, so the start menu's
+  line answers for the channel just chosen.
+- **`updates::Channel`**: stable asks `releases/latest` as before; beta
+  reads the listing (`RELEASES_URL`, 30 newest) and takes the newest
+  non-draft, betas included — so a tester is moved on to the release once
+  it ships. Stable refuses a pre-release by GitHub's flag *or* by its tag.
+  A beta build switched back to stable is up to date until the release it
+  was testing comes out: no downgrade.
+- **`Version` holds a pre-release** (`-alpha`, `-beta`, `-rc`, optional
+  `.N`), ordered as semver: `0.26.3 < 0.27.0-beta.1 < … < 0.27.0-rc.1 <
+  0.27.0`. Other labels still do not parse.
+- **Releasing a beta**: workspace version `0.27.0-beta.1`, tag
+  `v0.27.0-beta.1`. `release.yml` publishes any hyphenated tag as a
+  pre-release (pinned by a test); archive names carry the whole version.
+- Order matters: this switch has to reach people in a **stable** release
+  before a beta can be offered to anyone.
+
+**As of 2026-10-12 — the singer polish's deferred six, done.**
 Branch `feature/vocal-track`, not merged, not bumped. What §2.6 of
 `docs/vocal-plan.md` left with a recommendation, each test first:
 

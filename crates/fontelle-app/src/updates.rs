@@ -10,7 +10,9 @@
 //!
 //! GitHub Releases on the project's own repository, which is the one place
 //! a build is published from. `releases/latest` answers with the newest
-//! non-draft, non-prerelease tag and its attached files; the release
+//! non-draft, non-prerelease tag and its attached files — what the stable
+//! [`Channel`] asks. The beta channel reads the listing instead
+//! ([`RELEASES_URL`]), where the betas are too. Either way the release
 //! workflow (`.github/workflows/release.yml`) attaches one archive per
 //! target, named by [`asset_name`], and a `SHA256SUMS` beside them. Those two
 //! conventions are the whole contract between the workflow and this file,
@@ -54,6 +56,32 @@ pub const REPO: &str = "Fopull-LLC/DAW-Fontelle";
 /// Where the newest release is asked for.
 pub const LATEST_URL: &str = "https://api.github.com/repos/Fopull-LLC/DAW-Fontelle/releases/latest";
 
+/// Where the beta channel looks: the newest releases, pre-releases among
+/// them, newest first. Thirty is GitHub's page and far more than the gap
+/// between one stable release and the betas after it.
+pub const RELEASES_URL: &str =
+    "https://api.github.com/repos/Fopull-LLC/DAW-Fontelle/releases?per_page=30";
+
+/// Which releases a machine is offered.
+///
+/// > *"make a beta update option for users so they will be able to have an
+/// > option to recieve beta updates and then theyll be able to test stuff
+/// > not released as a stable update yet"*
+///
+/// A beta is a release tagged `vX.Y.Z-beta.N` and published as a GitHub
+/// pre-release (the release workflow does both from the tag). **Stable**
+/// never sees one. **Beta** sees betas *and* releases, and takes whichever
+/// is newest, so a tester is moved on to the release once it ships rather
+/// than left on the beta. Switching back to stable is not a downgrade: a
+/// beta is newer than the release before it, so the machine is up to date
+/// until the release it was testing comes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Channel {
+    #[default]
+    Stable,
+    Beta,
+}
+
 /// The page a person is sent to when the updater cannot do it for them.
 pub const RELEASES_PAGE: &str = "https://github.com/Fopull-LLC/DAW-Fontelle/releases";
 
@@ -65,16 +93,46 @@ pub const CHECKSUMS: &str = "SHA256SUMS";
 /// "checking".
 const TIMEOUT_SECONDS: u32 = 15;
 
-/// A release version: three numbers, nothing else.
+/// A release version: three numbers, and for a test build a stage and its
+/// number — `0.27.0-beta.1`.
 ///
-/// Pre-releases are deliberately not a version this type can hold — a
-/// `-beta` tag is not something the start menu should push at people, and
-/// refusing to parse it is simpler than ranking it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Only the three stages this project tags are readable (`alpha`, `beta`,
+/// `rc`), so a tag nobody meant as a release is still not one. The order is
+/// semver's: by the numbers, then a pre-release before the release it
+/// leads to, stage by stage and number by number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,
     pub patch: u32,
+    /// `None` for a release.
+    pub pre: Option<Pre>,
+}
+
+/// The pre-release part of a [`Version`]: `beta.1` is `Beta`, `Some(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pre {
+    pub stage: Stage,
+    /// `None` for a bare `-beta`, which comes before `-beta.1`.
+    pub number: Option<u32>,
+}
+
+/// The stages, in the order they come: declaration order is the order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stage {
+    Alpha,
+    Beta,
+    Rc,
+}
+
+impl Stage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Alpha => "alpha",
+            Self::Beta => "beta",
+            Self::Rc => "rc",
+        }
+    }
 }
 
 impl Version {
@@ -83,26 +141,99 @@ impl Version {
             major,
             minor,
             patch,
+            pre: None,
         }
     }
 
-    /// Reads `1.2.3` or `v1.2.3`. Anything else is `None`.
+    /// This version's `n`th beta: `Version::new(0, 27, 0).beta(1)` is
+    /// `0.27.0-beta.1`.
+    pub const fn beta(self, n: u32) -> Self {
+        self.at(Stage::Beta, n)
+    }
+
+    /// This version's `n`th release candidate.
+    pub const fn rc(self, n: u32) -> Self {
+        self.at(Stage::Rc, n)
+    }
+
+    const fn at(mut self, stage: Stage, n: u32) -> Self {
+        self.pre = Some(Pre {
+            stage,
+            number: Some(n),
+        });
+        self
+    }
+
+    /// Whether this is a test build rather than a release.
+    pub fn is_prerelease(&self) -> bool {
+        self.pre.is_some()
+    }
+
+    /// Reads `1.2.3`, `v1.2.3` or `v1.2.3-beta.4`. Anything else is `None`.
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.strip_prefix('v').unwrap_or(text);
-        let mut parts = text.split('.');
+        let (numbers, pre) = match text.split_once('-') {
+            Some((numbers, pre)) => (numbers, Some(Self::parse_pre(pre)?)),
+            None => (text, None),
+        };
+        let mut parts = numbers.split('.');
         let major = parts.next()?.parse().ok()?;
         let minor = parts.next()?.parse().ok()?;
         let patch = parts.next()?.parse().ok()?;
         if parts.next().is_some() {
             return None;
         }
-        Some(Self::new(major, minor, patch))
+        Some(Self {
+            pre,
+            ..Self::new(major, minor, patch)
+        })
+    }
+
+    fn parse_pre(text: &str) -> Option<Pre> {
+        let (stage, number) = match text.split_once('.') {
+            Some((stage, number)) => (stage, Some(number.parse().ok()?)),
+            None => (text, None),
+        };
+        let stage = match stage {
+            "alpha" => Stage::Alpha,
+            "beta" => Stage::Beta,
+            "rc" => Stage::Rc,
+            _ => return None,
+        };
+        Some(Pre { stage, number })
+    }
+}
+
+impl Ord for Version {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.major, self.minor, self.patch)
+            .cmp(&(other.major, other.minor, other.patch))
+            .then_with(|| match (&self.pre, &other.pre) {
+                (None, None) => std::cmp::Ordering::Equal,
+                // A release is after every pre-release of itself.
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(a), Some(b)) => a.cmp(b),
+            })
+    }
+}
+
+impl PartialOrd for Version {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
 impl std::fmt::Display for Version {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(pre) = &self.pre {
+            write!(f, "-{}", pre.stage.name())?;
+            if let Some(n) = pre.number {
+                write!(f, ".{n}")?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -132,6 +263,36 @@ impl Release {
     pub fn from_github_json(text: &str) -> Result<Self, String> {
         let json: serde_json::Value = serde_json::from_str(text)
             .map_err(|e| format!("the release listing was not JSON: {e}"))?;
+        Self::from_github_value(&json)
+    }
+
+    /// The newest release in GitHub's `releases` listing that `channel` may
+    /// offer: never a draft; on stable, never a pre-release — by GitHub's
+    /// flag *or* by the tag, so neither half of the workflow can leak a beta
+    /// to everybody. Entries whose tag is not a version are skipped.
+    pub fn newest_in_github_list(text: &str, channel: Channel) -> Result<Self, String> {
+        let json: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| format!("the release listing was not JSON: {e}"))?;
+        let Some(entries) = json.as_array() else {
+            return Err(match json.get("message").and_then(|m| m.as_str()) {
+                Some(message) => format!("no release found ({message})"),
+                None => "the release listing is not a list".to_string(),
+            });
+        };
+        let flag = |entry: &serde_json::Value, name: &str| {
+            entry.get(name).and_then(|f| f.as_bool()).unwrap_or(false)
+        };
+        entries
+            .iter()
+            .filter(|entry| !flag(entry, "draft"))
+            .filter(|entry| channel == Channel::Beta || !flag(entry, "prerelease"))
+            .filter_map(|entry| Self::from_github_value(entry).ok())
+            .filter(|release| channel == Channel::Beta || !release.version.is_prerelease())
+            .max_by_key(|release| release.version)
+            .ok_or_else(|| "no release has been published yet".to_string())
+    }
+
+    fn from_github_value(json: &serde_json::Value) -> Result<Self, String> {
         let tag = json
             .get("tag_name")
             .and_then(|t| t.as_str())
@@ -508,6 +669,10 @@ pub struct Updater {
     fetch: Arc<Fetcher>,
     target: String,
     enabled: bool,
+    channel: Channel,
+    /// What this binary is, compared against what is out: [`CURRENT`],
+    /// unless a test says otherwise.
+    current: Version,
 }
 
 impl Default for Updater {
@@ -538,7 +703,22 @@ impl Updater {
             fetch: Arc::new(fetch),
             target: target_triple(),
             enabled: true,
+            channel: Channel::Stable,
+            current: Version::parse(CURRENT).unwrap_or(Version::new(0, 0, 0)),
         }
+    }
+
+    /// Compares what is out against `version` rather than this build — for
+    /// tests, which need to be a beta, or an older release, to prove what
+    /// one is offered.
+    pub fn built_as(mut self, version: Version) -> Self {
+        self.current = version;
+        self
+    }
+
+    /// Which releases the next [`check`](Self::check) may offer.
+    pub fn set_channel(&mut self, channel: Channel) {
+        self.channel = channel;
     }
 
     /// Looks for another platform's archive — for tests, which run on one
@@ -570,16 +750,23 @@ impl Updater {
         let status = Arc::clone(&self.status);
         let release = Arc::clone(&self.release);
         let fetch = Arc::clone(&self.fetch);
+        let (channel, current) = (self.channel, self.current);
         std::thread::spawn(move || {
-            let answer = fetch(LATEST_URL, &mut |_, _| {})
+            let url = match channel {
+                Channel::Stable => LATEST_URL,
+                Channel::Beta => RELEASES_URL,
+            };
+            let answer = fetch(url, &mut |_, _| {})
                 .and_then(|bytes| {
                     String::from_utf8(bytes)
                         .map_err(|_| "the release listing was not text".to_string())
                 })
-                .and_then(|text| Release::from_github_json(&text));
+                .and_then(|text| match channel {
+                    Channel::Stable => Release::from_github_json(&text),
+                    Channel::Beta => Release::newest_in_github_list(&text, channel),
+                });
             let next = match answer {
                 Ok(latest) => {
-                    let current = Version::parse(CURRENT).unwrap_or(Version::new(0, 0, 0));
                     let next = if latest.version > current {
                         UpdateStatus::Available {
                             version: latest.version.to_string(),

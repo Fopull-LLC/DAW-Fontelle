@@ -245,3 +245,78 @@ fn the_start_menu_can_ask_whether_there_is_anywhere_to_put_a_new_project() {
     assert!(<Session as StudioHost>::has_projects_dir(&session));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// --- the beta channel ---
+
+#[test]
+fn beta_updates_are_a_switch_under_updates_and_off_until_chosen() {
+    use fontelle_app::settings::{SETTING_ROWS, SettingRow};
+    use fontelle_app::updates::Channel;
+    let at = |row| SETTING_ROWS.iter().position(|r| *r == row);
+    assert_eq!(
+        at(SettingRow::BetaUpdates),
+        at(SettingRow::CheckForUpdates).map(|i| i + 1),
+        "right under the launch check"
+    );
+    // An older file has no such field, and a person who never chose betas
+    // is not given one.
+    let old = r#"{"format_version": 5, "soundfont_dirs": [], "projects_dir": null, "theme": null}"#;
+    let mut settings = Settings::from_json(old).expect("an older file reads");
+    assert!(!settings.beta_updates);
+    assert_eq!(settings.update_channel(), Channel::Stable);
+    assert_eq!(SettingRow::BetaUpdates.value(&settings), "Off");
+    settings.beta_updates = true;
+    assert_eq!(SettingRow::BetaUpdates.value(&settings), "On");
+    assert_eq!(settings.update_channel(), Channel::Beta);
+    let back = Settings::from_json(&settings.to_json()).unwrap();
+    assert!(back.beta_updates);
+}
+
+#[test]
+fn switching_betas_on_writes_it_down_and_asks_again() {
+    use fontelle_app::settings::{SettingRow, setting_rows};
+    use fontelle_app::updates::{LATEST_URL, RELEASES_URL, Updater, Version};
+    use fontelle_ui::UpdateStatus;
+    // The network: the latest stable is this build, the list holds a beta.
+    let fetch: fontelle_app::updates::Fetcher = Box::new(move |url: &str, _| {
+        match url {
+        LATEST_URL => Ok(br#"{"tag_name":"v0.26.3","html_url":"https://example.test/stable","assets":[]}"#.to_vec()),
+        RELEASES_URL => Ok(br#"[{"tag_name":"v0.27.0-beta.1","draft":false,"prerelease":true,"html_url":"https://example.test/beta","assets":[]},{"tag_name":"v0.26.3","draft":false,"prerelease":false,"html_url":"https://example.test/stable","assets":[]}]"#.to_vec()),
+        other => Err(format!("no such url in the test: {other}")),
+    }
+    });
+    let updater = Updater::with_fetcher(fetch).built_as(Version::new(0, 26, 3));
+    let mut session = common::a_session_for(common::a_project_with_a_clip(4, 120.0, common::SR))
+        .with_updater(updater);
+    let settle = |session: &Session| {
+        let start = std::time::Instant::now();
+        loop {
+            let status = session.update_status();
+            if !matches!(status, UpdateStatus::Checking | UpdateStatus::Unchecked) {
+                return status;
+            }
+            assert!(start.elapsed().as_secs() < 10, "stuck at {status:?}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    session.check_for_updates();
+    assert_eq!(settle(&session), UpdateStatus::UpToDate);
+
+    let index = setting_rows(&Settings::default())
+        .iter()
+        .position(|r| *r == SettingRow::BetaUpdates)
+        .unwrap();
+    session.nudge_setting(index, 1);
+    let (settings, _) = Settings::load_from(session.settings_path().unwrap());
+    assert!(settings.beta_updates, "it is in the file");
+    // The start menu's line follows at once rather than at the next launch.
+    assert_eq!(
+        settle(&session),
+        UpdateStatus::Available {
+            version: "0.27.0-beta.1".to_string()
+        }
+    );
+    // And back off: the beta is no longer offered.
+    session.nudge_setting(index, -1);
+    assert_eq!(settle(&session), UpdateStatus::UpToDate);
+}

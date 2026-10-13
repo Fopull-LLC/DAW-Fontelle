@@ -961,6 +961,19 @@ impl Session {
             self.touch();
             return;
         }
+        if *row == crate::settings::SettingRow::BetaUpdates {
+            self.settings.beta_updates = !self.settings.beta_updates;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            // Asked again at once, so the start menu's line answers for the
+            // channel just chosen rather than the one before it. A disabled
+            // updater (the launch check is off) asks nothing.
+            self.updater.set_channel(self.settings.update_channel());
+            self.updater.check();
+            self.touch();
+            return;
+        }
         let before = self.settings.midi_input;
         row.nudge(&mut self.settings.midi_input, delta);
         if self.settings.midi_input == before {
@@ -2235,7 +2248,8 @@ impl Session {
 
     /// Gives the session the update check the launch decided on — the real
     /// one, or the disabled one when the settings say not to ask.
-    pub fn with_updater(mut self, updater: Updater) -> Self {
+    pub fn with_updater(mut self, mut updater: Updater) -> Self {
+        updater.set_channel(self.settings.update_channel());
         self.updater = updater;
         self
     }
@@ -11746,6 +11760,8 @@ impl StudioHost for Session {
                         self.settings.backdrops_when_unfocused
                     } else if *row == crate::settings::SettingRow::CompatibleGraphics {
                         self.settings.compatible_plugin_graphics
+                    } else if *row == crate::settings::SettingRow::BetaUpdates {
+                        self.settings.beta_updates
                     } else {
                         self.settings.check_for_updates
                     },

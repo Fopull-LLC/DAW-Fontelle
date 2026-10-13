@@ -11,6 +11,9 @@
 #
 #     git tag v0.2.0 && git push origin v0.2.0
 #
+# A beta is the same with a pre-release version — `0.27.0-beta.1` in
+# `Cargo.toml`, tag `v0.27.0-beta.1` — and goes only to Beta updates.
+#
 # The first job refuses a tag that does not match the version in the tree,
 # so the number the window shows, the tag and the archive names cannot
 # drift apart. And **nothing is published from a commit CI has not passed**
@@ -143,10 +146,15 @@ jobs:
           cd artifacts
           sha256sum fontelle-* > SHA256SUMS
           cat SHA256SUMS
+      # A hyphenated tag (`v0.27.0-beta.1`) is a beta: published as a
+      # pre-release, so `releases/latest` — the stable channel — never sees
+      # it, and only machines with Beta updates on are offered it
+      # (`updates::Channel`). `tests/updates.rs` pins this line.
       - uses: softprops/action-gh-release@v2
         with:
           name: Fontelle ${{ needs.version.outputs.version }}
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/fontelle-*
             artifacts/SHA256SUMS
