@@ -1,0 +1,31 @@
+[package]
+name = "fontelle-vocal-files"
+description = "Vocal song files in and out: UST, USTX, VSQX, MIDI with lyrics and MusicXML read into a vocal part (notes, lyrics, expression, lanes, tempo); MIDI with lyrics and USTX written back."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-model = { path = "../fontelle-model" }
+fontelle-sing = { path = "../fontelle-sing" }
+serde = { version = "1.0.229", features = ["derive"] }
+# USTX is OpenUtau's YAML; the same reader the DiffSinger runtime uses.
+serde_yaml_ng = "0.10.0"
+# VSQX and MusicXML: read-only trees, already in the lock.
+roxmltree = "0.20.0"
+# A UST written on a Japanese Windows is Shift-JIS.
+encoding_rs = "0.8"
+# Standard MIDI files, read and written — the crate the MIDI import uses.
+midly = { version = "0.5.3", default-features = false, features = ["std"] }
+# Compressed MusicXML (.mxl) is a zip; deflate as the voicebank reader does.
+miniz_oxide = "0.8.9"
+
+[dev-dependencies]
+midly = { version = "0.5.3", default-features = false, features = ["std"] }
+miniz_oxide = "0.8.9"
+encoding_rs = "0.8"

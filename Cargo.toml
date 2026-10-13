@@ -21,7 +21,15 @@ members = [
     "crates/fontelle-testlv2",
     "crates/fontelle-testvst3",
     "crates/fontelle-bridge-abi",
+    "crates/fontelle-singer-abi",
+    "crates/fontelle-sing",
+    "crates/fontelle-lang",
+    "crates/fontelle-utau",
+    "crates/fontelle-vocal",
+    "crates/fontelle-vocal-files",
+    "crates/fontelle-diffsinger",
     "crates/fontelle-testbridge",
+    "crates/fontelle-testsinger",
     "crates/fontelle-app",
     "xtask",
 ]
@@ -30,7 +38,7 @@ members = [
 # The product's version: one number for the whole workspace, which is what the
 # window shows, what a release is tagged as, and what the updater compares
 # against (`crates/fontelle-app/src/updates.rs`).
-version = "0.26.3"
+version = "0.27.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "MIT OR Apache-2.0"

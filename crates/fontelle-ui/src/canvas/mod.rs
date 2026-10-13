@@ -13,6 +13,7 @@ mod guide;
 mod instrument;
 mod keybinds;
 mod keymap;
+mod lyrics;
 mod menu;
 mod mixer;
 mod note_clipboard;
@@ -20,6 +21,7 @@ mod notepad;
 mod overlays;
 mod piano_roll;
 mod plugin_menu;
+mod preedit;
 mod prefabs;
 mod preset_bar;
 mod rack;
@@ -27,10 +29,15 @@ mod roll_scale;
 mod scrollbar;
 mod settings_page;
 mod share;
+mod singer_panel;
+mod singer_picker;
 mod text_entry;
 mod timeline;
 mod tools;
 mod tune;
+mod vocal_edit;
+mod vocal_pitch;
+mod voicebank_page;
 mod welcome;
 
 pub use audio_clip::{
@@ -67,7 +74,7 @@ pub use effect::{
 };
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
-    instrument_menu_rows, plugin_picker_rows,
+    instrument_menu_rows, plugin_picker_rows, singer_instrument_menu_rows,
 };
 pub use scrollbar::RowScrollbar;
 pub mod gestures;
@@ -129,6 +136,7 @@ pub use menu::{
     input_menu_entries, instrument_menu_entries, keep_starred_row_in_place, menu_matches,
     name_prompt_entries, thumbnail_points,
 };
+pub use menu::{VocalTrackChoice, vocal_track_menu_choice, vocal_track_menu_entries};
 pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
@@ -214,6 +222,10 @@ pub use disgusting_beat::{
     point_position, rate_caption, split_twin,
 };
 pub use glide::{Glide, wheel_travel};
+pub use lyrics::{
+    LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, TRANSLATE_TERMS, TermsRow, language_name,
+    line_text, neighbour, singer_menu_rows, terms_menu_rows, terms_menu_rows_with,
+};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
     MAX_STRIP_WIDTH, MIN_FADER_DB, MIN_PATCH_HEIGHT, MIN_SEND_DB, MIN_STRIP_WIDTH, MixerControl,
@@ -247,6 +259,7 @@ pub use piano_roll::{
     toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
     x_to_tick, y_to_key, zoom_x, zoom_y,
 };
+pub use preedit::{Composed, Preedit, compose};
 pub use prefabs::{
     PrefabHit, PrefabLayout, PrefabRow, prefab_hit, prefab_layout,
     scroll_to_show as prefab_scroll_to_show,
@@ -266,6 +279,16 @@ pub use share::{
     SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit, choice_prompt_layout,
     missing_more_words, peer_colour, share_dot, share_hit, share_panel_layout,
     share_panel_layout_with, share_panel_words, status_lines,
+};
+pub use singer_panel::{
+    CARD_HEADING, FOOTNOTE_HEIGHT, SINGER_PANEL_PAD, SINGER_PANEL_SIZE, SINGER_PICTURE_HEIGHT,
+    SINGER_PORTRAIT, SingerPanelButton, SingerPanelHit, SingerPanelLayout, TERMS_CHIP_WIDTH,
+    language_chip_width, singer_footnote, singer_panel_hit, singer_panel_layout,
+};
+pub use singer_picker::{
+    PORTRAIT_SIZE, PickerCard, PickerGroup, PickerHit, PickerMove, SingerPickerLayout,
+    picker_filter, picker_filter_for, picker_move, singer_picker_hit, singer_picker_layout,
+    singer_picker_layout_for,
 };
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use timeline::{
@@ -292,6 +315,22 @@ pub use tune::{
     VIEWPORT_FLOOR, VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class,
     target_class, trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_paste,
     tune_readout, tune_scale_text, tune_strings, viewport_points, viewport_rails,
+};
+pub use vocal_edit::{
+    CurveScale, DEFAULT_GLIDE, HANDLE_SIZE, LaneStroke, NoteHandle, PHONEME_ROW_HEIGHT,
+    PhonemeCell, PhonemeHit, StrokeMode, VOCAL_TAB_HEIGHT, VocalCurve, VocalNoteRow, VocalStrips,
+    VocalTab, apply_note_row, carve_vocal_strips, curve_scale, curve_value_y, curve_y_value,
+    drag_glide_position, drag_handle, note_handles, parse_phonemes, phoneme_cells, phoneme_hit,
+    phoneme_suggestions, retime_phoneme, vibrato_wave, vocal_note_menu_rows, vocal_tab_at,
+    vocal_tabs,
+};
+pub use vocal_pitch::{
+    PitchBase, PitchCommand, PitchStroke, drawn_pitch, follow_note, frame_notes, nearest_in_scale,
+    note_menu_anchor, pitch_edit_range, pitch_to_y, smooth_bend, snap_bend_to_scale, y_to_pitch,
+};
+pub use voicebank_page::{
+    PAGE_ROW_HEIGHT, PageHit, PageRow, VoicebankPageLayout, VoicebankTab, voicebank_page_hit,
+    voicebank_page_layout,
 };
 pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,

@@ -33,6 +33,8 @@ fn a_note(start: Tick, length: Tick, key: u8, velocity: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -51,6 +53,8 @@ fn add_channel(project: &mut Project, name: &str) -> ChannelId {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     })
 }
 
@@ -83,6 +87,7 @@ fn add_note_clip(
         source: ClipSource::Notes(NoteData {
             channel: home,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

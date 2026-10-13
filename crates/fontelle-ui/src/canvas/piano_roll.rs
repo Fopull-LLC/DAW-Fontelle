@@ -3464,6 +3464,8 @@ const BLANK_TEMPLATE: Note = Note {
     slide: false,
     path: Vec::new(),
     channel: None,
+    lyric: String::new(),
+    voice: None,
 };
 
 /// A pixel as a place in the music: a fractional tick and a fractional key,

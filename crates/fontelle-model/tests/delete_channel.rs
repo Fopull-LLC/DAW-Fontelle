@@ -38,6 +38,8 @@ fn a_channel(name: &str) -> Channel {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     }
 }
 
@@ -55,6 +57,8 @@ fn a_note(beat: i64, channel: Option<ChannelId>) -> Note {
         slide: false,
         path: Vec::new(),
         channel,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -100,6 +104,7 @@ fn clip(s: &mut Song, home: ChannelId, notes: &[Option<ChannelId>]) -> ClipId {
         source: ClipSource::Notes(NoteData {
             channel: home,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
@@ -182,8 +187,14 @@ fn a_prefab_loses_the_channels_notes_and_its_places_stay() {
     let mut notes = Arena::default();
     notes.insert(a_note(0, None));
     notes.insert(a_note(1, Some(b)));
-    let mut add =
-        fontelle_model::AddPrefab::new("Riff", ClipSource::Notes(NoteData { channel: a, notes }));
+    let mut add = fontelle_model::AddPrefab::new(
+        "Riff",
+        ClipSource::Notes(NoteData {
+            channel: a,
+            notes,
+            vocal: None,
+        }),
+    );
     add.apply(&mut s.project).unwrap();
     let prefab = add.prefab().unwrap();
     let mut place = fontelle_model::AddPrefabInstance::new(prefab, s.lane, 0, PPQN * 4);
@@ -210,8 +221,14 @@ fn a_place_for_a_prefab_of_nothing_but_the_channel_goes() {
     let a = s.a;
     let mut notes = Arena::default();
     notes.insert(a_note(0, None));
-    let mut add =
-        fontelle_model::AddPrefab::new("Hit", ClipSource::Notes(NoteData { channel: a, notes }));
+    let mut add = fontelle_model::AddPrefab::new(
+        "Hit",
+        ClipSource::Notes(NoteData {
+            channel: a,
+            notes,
+            vocal: None,
+        }),
+    );
     add.apply(&mut s.project).unwrap();
     let mut place =
         fontelle_model::AddPrefabInstance::new(add.prefab().unwrap(), s.lane, 0, PPQN * 4);

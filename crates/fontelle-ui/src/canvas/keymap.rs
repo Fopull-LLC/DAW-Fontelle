@@ -303,6 +303,21 @@ pub enum Action {
     PathPoint,
     /// Take the last point of the path back.
     PathPointBack,
+    /// Open the inline lyric field on the selected notes (a vocal track):
+    /// one note's word, or a whole line over several.
+    EditLyric,
+    /// The pitch pen on a vocal roll: draw the pitch line over the notes.
+    PitchPen,
+    /// Smooth the drawn pitch over the selected notes (or the time
+    /// selection, or the whole part).
+    SmoothPitch,
+    /// Move the drawn pitch's held stretches onto the song's scale.
+    SnapPitch,
+    /// Back to the pitch the notes make.
+    ResetPitch,
+    /// The note menu (vibrato, glide, phonemes, options), at the selected
+    /// note.
+    NoteMenu,
     // --- Analyze Musically (docs/analyze-musically-plan.md §3.5) ---
     /// Open Analyze Musically on the selected audio clip.
     AnalyzeClip,
@@ -343,10 +358,13 @@ pub enum Action {
     /// Marker tool.
     AnalyzeNoiseTool,
     AnalyzeMarkerTool,
+    /// The Voicebanks page — installed singers and Find singers — from
+    /// anywhere, a vocal track in the roll or not.
+    Voicebanks,
 }
 
 impl Action {
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 68] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -389,6 +407,12 @@ impl Action {
         Self::RemoveBand,
         Self::PathPoint,
         Self::PathPointBack,
+        Self::EditLyric,
+        Self::PitchPen,
+        Self::SmoothPitch,
+        Self::SnapPitch,
+        Self::ResetPitch,
+        Self::NoteMenu,
         Self::AnalyzeClip,
         Self::AnalyzeCopyNotes,
         Self::AnalyzeCopyScale,
@@ -408,6 +432,7 @@ impl Action {
         Self::AnalyzeZoomAll,
         Self::AnalyzeNoiseTool,
         Self::AnalyzeMarkerTool,
+        Self::Voicebanks,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -458,6 +483,12 @@ impl Action {
             Self::RemoveBand => "remove-band",
             Self::PathPoint => "path-point",
             Self::PathPointBack => "path-point-back",
+            Self::EditLyric => "edit-lyric",
+            Self::PitchPen => "pitch-pen",
+            Self::SmoothPitch => "smooth-pitch",
+            Self::SnapPitch => "snap-pitch-to-scale",
+            Self::ResetPitch => "reset-pitch",
+            Self::NoteMenu => "note-menu",
             Self::AnalyzeClip => "analyze-clip",
             Self::AnalyzeCopyNotes => "analyze-copy-notes",
             Self::AnalyzeCopyScale => "analyze-copy-scale",
@@ -477,6 +508,7 @@ impl Action {
             Self::AnalyzeZoomAll => "analyze-zoom-all",
             Self::AnalyzeNoiseTool => "analyze-noise-tool",
             Self::AnalyzeMarkerTool => "analyze-marker-tool",
+            Self::Voicebanks => "voicebanks",
         }
     }
 
@@ -530,6 +562,18 @@ impl Action {
             Self::RemoveBand => "Remove the selected EQ band",
             Self::PathPoint => "While drawing a note: a point here — then hold or slide on",
             Self::PathPointBack => "While drawing a note: take the last point back",
+            Self::EditLyric => "Type the lyric of the selected notes (vocal track)",
+            Self::PitchPen => {
+                "Pitch pen on a vocal roll: draw the pitch over the notes (Shift a line, right button back to the notes)"
+            }
+            Self::SmoothPitch => {
+                "Smooth the drawn pitch (selected notes, else the time selection, else all)"
+            }
+            Self::SnapPitch => "Snap the drawn pitch's held notes to the song's scale",
+            Self::ResetPitch => {
+                "Pitch back to the notes (selected notes, else the time selection, else all)"
+            }
+            Self::NoteMenu => "The note menu at the selected note: vibrato, glide, phonemes, pitch",
             Self::AnalyzeClip => {
                 "Analyze Musically: the selected audio clip's notes, key and chords"
             }
@@ -557,6 +601,7 @@ impl Action {
             Self::AnalyzeZoomAll => "Analyze Musically: show all of it",
             Self::AnalyzeNoiseTool => "Analyze Musically: the Noise tool (Clean)",
             Self::AnalyzeMarkerTool => "Analyze Musically: the Marker tool (Slice)",
+            Self::Voicebanks => "Voicebanks & Find singers: install and find free singers",
         }
     }
 
@@ -572,7 +617,8 @@ impl Action {
             | Self::Redo
             | Self::ExportWav
             | Self::ExportMidi
-            | Self::Help => Context::Global,
+            | Self::Help
+            | Self::Voicebanks => Context::Global,
             Self::RemoveBand
             | Self::AnalyzeCopyNotes
             | Self::AnalyzeCopyScale
@@ -643,6 +689,12 @@ impl Action {
             Self::RemoveBand => &["Delete", "Backspace"],
             Self::PathPoint => &["S"],
             Self::PathPointBack => &["Backspace"],
+            Self::EditLyric => &["Enter"],
+            Self::PitchPen => &["Shift+P"],
+            Self::SmoothPitch => &["Alt+S"],
+            Self::SnapPitch => &["Alt+Q"],
+            Self::ResetPitch => &["Alt+R"],
+            Self::NoteMenu => &["Alt+Enter"],
             Self::AnalyzeClip => &["Ctrl+Shift+A"],
             Self::AnalyzeCopyNotes => &["Ctrl+C"],
             Self::AnalyzeCopyScale => &["Ctrl+Shift+C"],
@@ -662,6 +714,7 @@ impl Action {
             Self::AnalyzeZoomAll => &["Shift+Z"],
             Self::AnalyzeNoiseTool => &["N"],
             Self::AnalyzeMarkerTool => &["K"],
+            Self::Voicebanks => &["Ctrl+Shift+Y"],
         }
     }
 

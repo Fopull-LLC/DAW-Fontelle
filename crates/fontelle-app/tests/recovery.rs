@@ -65,6 +65,8 @@ fn a_note(session: &mut Session) {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         },
     });
 }

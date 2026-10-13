@@ -97,3 +97,71 @@ fn an_empty_instrument_says_what_it_is_waiting_for() {
             .contains("plugin")
     );
 }
+
+// ------------------------------------------ singers as instruments
+
+fn engine(name: &str) -> fontelle_ui::document::SingerInstrument {
+    fontelle_ui::document::SingerInstrument {
+        engine: Some(format!("{name} (research only)")),
+        name: name.to_string(),
+        has_editor: true,
+    }
+}
+
+/// > *"i thought we agreed to split generic vocals and [the paid engine] into
+/// > separate addable instruments"*
+///
+/// The Fontelle Singer is a row, and so is each engine installed, by its
+/// own name, right after it.
+#[test]
+fn the_fontelle_singer_and_each_engine_are_rows_of_their_own() {
+    use fontelle_ui::canvas::{InstrumentRow, singer_instrument_menu_rows};
+    let engines = [engine("Engine One"), engine("Engine Two")];
+    let rows = singer_instrument_menu_rows(None, None, &[], &[], &engines);
+    let labels: Vec<&str> = rows.iter().map(|(e, _)| e.label.as_str()).collect();
+    let singer = labels
+        .iter()
+        .position(|l| *l == fontelle_ui::document::FONTELLE_SINGER)
+        .expect("a Fontelle Singer row");
+    assert_eq!(rows[singer].1, InstrumentRow::Kind(InstrumentKind::Vocal));
+    assert_eq!(labels[singer + 1], "Engine One");
+    assert_eq!(rows[singer + 1].1, InstrumentRow::Engine(0));
+    assert_eq!(labels[singer + 2], "Engine Two");
+    assert_eq!(rows[singer + 2].1, InstrumentRow::Engine(1));
+    assert!(
+        rows.iter()
+            .all(|(e, r)| e.enabled || *r == InstrumentRow::Heading)
+    );
+    assert!(!labels.iter().any(|l| l.contains("Vocal track")));
+}
+
+/// On a vocal track the instrument it is is marked and greyed — the
+/// Fontelle Singer or that engine — and the others are offered.
+#[test]
+fn a_vocal_tracks_own_instrument_is_marked_and_the_others_offered() {
+    use fontelle_ui::canvas::{InstrumentRow, singer_instrument_menu_rows};
+    let engines = [engine("Engine One"), engine("Engine Two")];
+    let find = |rows: &[(fontelle_ui::canvas::MenuEntry, InstrumentRow)], row: InstrumentRow| {
+        rows.iter().find(|(_, r)| *r == row).unwrap().0.clone()
+    };
+    let rows = singer_instrument_menu_rows(Some(InstrumentKind::Vocal), None, &[], &[], &engines);
+    let singer = find(&rows, InstrumentRow::Kind(InstrumentKind::Vocal));
+    assert!(!singer.enabled && singer.label.starts_with(CHOSEN_MARK));
+    assert!(find(&rows, InstrumentRow::Engine(1)).enabled);
+    let on_two = engines[1].engine.clone();
+    let rows = singer_instrument_menu_rows(
+        Some(InstrumentKind::Vocal),
+        on_two.as_deref(),
+        &[],
+        &[],
+        &engines,
+    );
+    assert!(find(&rows, InstrumentRow::Kind(InstrumentKind::Vocal)).enabled);
+    let two = find(&rows, InstrumentRow::Engine(1));
+    assert!(
+        !two.enabled && two.label.starts_with(CHOSEN_MARK),
+        "{:?}",
+        two.label
+    );
+    assert!(find(&rows, InstrumentRow::Engine(0)).enabled);
+}

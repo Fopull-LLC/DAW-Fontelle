@@ -38,6 +38,8 @@ fn note(start: i64, length: i64, key: u8, velocity: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -69,6 +71,7 @@ fn clip(project: &mut Project, lane: LaneId, channel: ChannelId, notes: Vec<Note
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

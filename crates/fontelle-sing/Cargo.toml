@@ -1,0 +1,16 @@
+[package]
+name = "fontelle-sing"
+description = "What a singer is asked to sing and what it answers: the contract every vocal backend (UTAU voicebanks, DiffSinger voicebanks, external singer engines) is driven through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }

@@ -30,6 +30,7 @@ mod transport;
 mod tune_tap;
 #[cfg(windows)]
 mod wasapi;
+mod vocal;
 
 pub use analyze_capture::{
     AnalyzeCapture, AnalyzeCaptureEvent, AnalyzeCaptureNode, AnalyzeTapPoint,
@@ -82,3 +83,4 @@ pub use study_player::{StudyAudio, StudyPlayer, StudyPlayerNode};
 pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};
 pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};
 pub use tune_tap::{TUNE_TRACE_FRAMES, TuneTap};
+pub use vocal::{SungPhrase, VocalNode, VocalPlayer, VocalTable};

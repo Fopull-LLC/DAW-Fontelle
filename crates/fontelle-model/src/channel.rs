@@ -156,6 +156,25 @@ pub struct Channel {
     /// scratch: a save writes what is playing, and a preset load drops it.
     #[serde(default, skip_serializing_if = "ChannelAb::is_fresh")]
     pub ab: ChannelAb,
+    /// **Who sings**, on a channel whose instrument is
+    /// [`InstrumentKind::Vocal`](fontelle_types::InstrumentKind::Vocal): the
+    /// engine, the singer and the language its notes' lyrics are in.
+    ///
+    /// Kept when the channel is switched to another instrument and back, the
+    /// way [`plugin`](Self::plugin) is. `None` on a vocal channel is a voice
+    /// not chosen yet — notes and lyrics are written all the same, and it
+    /// sings once one is. Defaulted and left out of the file when `None`, so
+    /// every song written before voices existed reads and writes unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal: Option<crate::VocalVoice>,
+    /// **How it sings** when a note or a lane says nothing: the vocal
+    /// instrument panel's settings (`crate::VocalStyle`) — the voice's
+    /// offsets, auto vibrato, a default glide, the backend's own settings.
+    /// Kept whatever instrument the channel is, like [`vocal`](Self::vocal).
+    /// Left out of the file while untouched, so a song from before the
+    /// panel reads and writes back unchanged.
+    #[serde(default, skip_serializing_if = "crate::VocalStyle::is_default")]
+    pub vocal_style: crate::VocalStyle,
 }
 
 /// A channel's A/B pair: which slot is playing, and the other's patch.

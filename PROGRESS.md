@@ -19,7 +19,189 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-12, latest — ASIO on Windows through a separate GPLv3
+**As of 2026-10-13, latest — Beta updates.** Branch
+`feature/beta-updates` (from v0.26.3); not merged, not bumped. Ty: *"make a
+beta update option for users so they will be able to have an option to
+recieve beta updates ... so we can release the asio update to beta and have
+people test it and if it goes well we bring it to stable."*
+
+- **Settings → Updates → Beta updates**, a switch under *Check at launch*,
+  off by default and off in every older settings file (`beta_updates`).
+  Flipping it writes the file and asks again at once, so the start menu's
+  line answers for the channel just chosen.
+- **`updates::Channel`**: stable asks `releases/latest` as before; beta
+  reads the listing (`RELEASES_URL`, 30 newest) and takes the newest
+  non-draft, betas included — so a tester is moved on to the release once
+  it ships. Stable refuses a pre-release by GitHub's flag *or* by its tag.
+  A beta build switched back to stable is up to date until the release it
+  was testing comes out: no downgrade.
+- **`Version` holds a pre-release** (`-alpha`, `-beta`, `-rc`, optional
+  `.N`), ordered as semver: `0.26.3 < 0.27.0-beta.1 < … < 0.27.0-rc.1 <
+  0.27.0`. Other labels still do not parse.
+- **Releasing a beta**: workspace version `0.27.0-beta.1`, tag
+  `v0.27.0-beta.1`. `release.yml` publishes any hyphenated tag as a
+  pre-release (pinned by a test); archive names carry the whole version.
+- Order matters: this switch has to reach people in a **stable** release
+  before a beta can be offered to anyone.
+
+**As of 2026-10-12 — the singer polish's deferred six, done.**
+Branch `feature/vocal-track`, not merged, not bumped. What §2.6 of
+`docs/vocal-plan.md` left with a recommendation, each test first:
+
+- **A voice's level is kept on disk** (`fontelle_vocal::leveled_kept`,
+  `…/fontelle/levels/` beside the UTAU analyses), keyed by the content of
+  the files it is sung from (`Backend::voice_files`, new, default none:
+  a bank's folder and its vocoder's; paths, lengths, small files whole,
+  big ones sampled at three places) and the runtime's version. A
+  DiffSinger bank's first phrase in a session, models open: 1.0–1.6 s
+  became 0.43–0.61 s (all eleven banks); UTAU, analyses warm: ~470 ms
+  became 10–90 ms (the folder's fingerprint).
+- **A reopened song sung already loads no singer**
+  (`VocalRenderer::warm_unless_sung`): a voice is warmed unless every
+  phrase it has has its final take in memory or on disk; the first edit
+  warms it. Canary DS, 40 phrases: reopened and idle +618 MB became
+  +3 MB; all final in ~110 ms either way; the first edit after reopening
+  is heard in 2.1 s (was 1.0 s: the models now load with it).
+- **DiffSinger previews**: measured per model (Canary DS, a 4.8 s
+  phrase): vocoder ~680 ms, acoustic ~360 ms (4 steps), pitch ~100 ms,
+  the rest a few ms each. A model asked what it was just asked answers
+  from memory (`Model::run`, the last 6 runs, ≤ 24 MB): a dynamics edit's
+  preview ~1.1 s → ~5 ms; breathiness, voicing, tension, gender and
+  energy re-run only the acoustic model and vocoder (~10–20 % off). The
+  run's poll is 0.5 ms (a 5 ms floor on each small model). Not taken:
+  previews at 2 acoustic steps (15–20 % faster, measurably further from
+  the final on some banks; 1 step broke two), ONNX thread counts (the
+  default was best), a cheaper vocoder (no bank in the library ships one), and
+  — reasoned, not tried — two half-phrase vocoder runs spliced (the
+  sine source's phase would jump at the join).
+- **The singer panel's section inks are theme tokens** (theme format
+  v12: `singer_voice`, `singer_expression`, `singer_performance`,
+  `singer_output`); the light theme has deeper ones (3:1 on its cards,
+  held for every built-in by `builtin_themes.rs`); a v11 file gains the
+  inks of the shipped theme its panels are nearer.
+- **Two banks of one name are told apart** (`voicebanks::told_apart`):
+  by kind when that tells them apart, else by folder — in the picker's
+  cards and the Installed page (the bank's own name on the name line, its
+  folder under it in the text's ink), the stage (its kind and folder
+  lines), the roll's and the arrangement's captions, greyed-control notes.
+- **The stage's presses driven through the window's own path**
+  (`fontelle_ui::Windowless`: the studio's window with no window; the
+  editor window's moved/pressed/released and the studio's release are
+  functions of their own). Found: a language chip's "… sings this track
+  in English" was never seen — the refresh after the edit wrote over it.
+- **Tests**: `fontelle-vocal` `level.rs` (+2), `voicebanks.rs` (+1),
+  `real_voicebanks.rs` (+1, ignored); `fontelle-diffsinger` `models.rs`
+  (+2), `backend.rs` (+1), `real_bank.rs` (+1, ignored); `fontelle-utau`
+  `sing.rs` (+1); `fontelle-ui` `theme.rs` (+1), `builtin_themes.rs`
+  (+1), `singer_panel.rs` (+1, pixels), `vocal_edit_headless.rs` (+1);
+  `fontelle-app` `vocal_files.rs` (+1), `singer_panel.rs` (+3),
+  `singer_walk.rs` (memory and the first edit after reopening). Whole
+  workspace (`--no-fail-fast`, 607 binaries): 6627 passed, 1 failed, 42
+  ignored — the failure two engines' one-named voices told apart by
+  engine, though each is named with its instrument already; names are
+  now told apart within an instrument, and `fontelle-app` again (137
+  binaries): 1447 passed, 0 failed. Preflight all clear.
+- **Note**: `real_bank.rs`'s Chinese and multi-speaker tests fail on this
+  library before and after (they take the first English bank, Canary);
+  its determinism test failed before (ONNX Runtime's threads do not
+  give bit-identical runs) and passes now only because the second run is
+  answered from memory.
+
+**As of 2026-10-12, latest — the Fontelle Singer walked end to end with
+fourteen real banks and polished for release.** Branch
+`feature/vocal-track`, not merged, not bumped. Ty: *"prioritize the public
+singer plugin right now and making sure thats really polished and good."*
+`docs/vocal-plan.md` §2.6 has the audit.
+
+- **The walk** (`fontelle-app/tests/singer_walk.rs`, six `#[ignore]`d
+  tests, `FONTELLE_TEST_VOICEBANKS`; banks linked into scratch so nothing
+  is written beside them): a track, a singer, a melody with words, preview
+  then final, an edit, undo, render to a clip, loudness — per bank (UTAU
+  CV/VCV/X-SAMPA/ARPAsing/Chinese, DiffSinger ×7); a 40-phrase song (an
+  edit while finals render, a storm of edits and undos, reopened from its
+  takes); Joule's own OpenUtau demo song in and back out (MIDI, USTX,
+  freeze, reopen); odd libraries (no vocoder, one bank twice, a bank
+  deleted mid-song); typed lines; an edit's cost in 300 phrases.
+- **Found and fixed** (each test first, seen failing):
+  - Render to clip refused a vocal line written into another instrument's
+    clip; freeze put it at the bottom; a file dropped on that row made a
+    second track (`vocal_files.rs`).
+  - Hitsuboku Kumi sang the second 一 of 一闪一闪 as nothing (y-syllables
+    only from a vowel, "an yi"); `[s a]` on a kana bank was silent with
+    nothing said (`cjk.rs`, `phonemize.rs`; `RENDER_VERSION` 4).
+  - Yoko's `dsdict-ja.yaml` repeats `entries:`: every Japanese phrase
+    failed (`reading.rs`).
+  - Banks from -12 to -30 dBFS: built-in voices are **levelled** from a
+    reference phrase sung once per voice (`fontelle_vocal::leveled`,
+    single flight), now -16 to -22 (`level.rs`). Engines are not touched.
+  - A chosen voice is **warmed** (reference sung when idle, never
+    cancelled by previews), so models load while notes are written; an
+    edit's preview **steps ahead of other phrases' finals** (they are
+    cancelled and re-queued); the edit debounce is 100 ms, not 200
+    (`scheduler.rs`, `level.rs`, `vocal_files.rs`).
+  - Silent tracks say what to do: no voicebank → Find singers (not "put an
+    engine in <folder>"); a bank not on this computer is named by its
+    folder, nothing is sent to fail, the panel's stage names it with
+    *Find singers…*; a missing vocoder is said on the panel and installing
+    it sings without an edit (failures forgotten on install); a freeze of
+    nothing sung is refused with why; a freeze, render or export says how
+    many phrases are silent in it (`singer_messages.rs`, `singer_panel.rs`).
+  - An imported UST/USTX is sung by the bank it names (`VoiceDir`,
+    `singer:`), and the toast says who; a new track starts with a bank
+    whose terms are settled; left-over words and later-phoneme `vel` are
+    said plainly; the roll's corner wraps long messages; the stage's inks
+    read on the light theme.
+- **Measured** (this machine, loaded; UTAU analysis cache warm): a UTAU
+  edit heard in ~113 ms (was ~225), DiffSinger 0.7–1.7 s; a DiffSinger
+  edit while 40 finals render 1.8 s (was 2.8); first sound on a DiffSinger
+  bank 1.6 s when chosen before writing (cold 2.5–12 s, model load); a
+  reopened song all final in 0.1–0.2 s; an edit in 300 phrases 1.2 ms on
+  the studio's thread, the roll's view 5 ms.
+- **Not done** (§2.6 has each with a recommendation): auto loudness is a
+  fixed gain per voice, not a meter; warming a reopened song loads models
+  it may not need; levels are not kept on disk; light-theme section
+  colours are fixed; the window's new presses (Find singers…) were not
+  driven on a display.
+- **Tests**: new `fontelle-app` `singer_messages.rs` (6), `singer_walk.rs`
+  (6, ignored); `vocal_files.rs` (+4), `vocal_track.rs` (+1),
+  `vocal_studio.rs` (+1 assertion); `fontelle-vocal` `level.rs` (7),
+  `scheduler.rs` (+2); `fontelle-utau` `cjk.rs` (+1), `phonemize.rs` (+1);
+  `fontelle-diffsinger` `reading.rs` (+1), `bank.rs` (+1 assertion);
+  `fontelle-vocal-files` `ust.rs` (+1), `ustx.rs` (+1); `fontelle-ui`
+  `singer_panel.rs` (+1), `vocal_corner.rs` (2), `vocal_headless.rs` (+1
+  shot). Whole workspace (`--no-fail-fast`, 607 binaries): 6613 passed,
+  0 failed, 40 ignored. Preflight all clear.
+- **Note for whoever shares the build folder**: two worktrees of this
+  workspace in one `CARGO_TARGET_DIR` take each other's artifacts (cargo
+  judges a path crate fresh by mtime): clippy here used `main`'s
+  `fontelle-types`. Preflight and the suite ran in
+  `/mnt/disks/6tb/Repos/DAW-Fontelle-vocal-target`.
+
+**As of 2026-10-12, latest — singers travel with a shared song where their
+terms allow.** Branch `feature/collab-singers` (from `feature/vocal-track`,
+with `fix/collab-sync` merged in), not merged, not bumped. Ty:
+*"collaborating doesn't share singer files currently like it does with sound
+fonts and audio so you cannot sync singers you don't share."*
+
+- `Msg::Singers` (tag 20): the host says which singers its song uses and how
+  each is got; said again whenever that changes (collab plan §18, F93).
+- **The rule**: a Fontelle Singer bank is sent only when the catalogue says
+  its author lets it be passed on (`catalogue::Terms::redistribute`, new,
+  default unknown = not sent); otherwise the friend is told which bank and
+  the catalogue's download or the author's page. Research-only voices are
+  never sent; another engine's singer cannot be — the friend is told which
+  engine and which singer.
+- A sent bank: packed by Fontelle (`collab::singers::pack`/`unpack`, paths
+  checked, 8 GB cap), its terms shown in the question, fetched only on the
+  yes, installed through `VocalState::install`, agreed in both records, then
+  it sings. Everything missing is in the Share panel's list (F91's).
+- Not done: a take rendered on the host is not sent to a friend without the
+  singer (a frozen vocal is an audio clip, and is); a bank is packed on the
+  studio's own thread the first time it is offered.
+- Tests: `fontelle-app/tests/collab_singers.rs` (4), `collab::singers` (3),
+  `fontelle-model/tests/wire.rs` (tag 20).
+
+**As of 2026-10-12 — ASIO on Windows through a separate GPLv3
 helper; WASAPI exclusive and low-latency; whose click it was.** Branch
 `feature/windows-audio` (from v0.26.3); not merged, not bumped, not run on
 real Windows yet — Ty's checklist is `docs/asio.md` §8. Users report
@@ -188,7 +370,6 @@ merged, not bumped. Four reports from Ty.
   the config folder. `settings_isolation.rs` (1); the `live_take` failure
   on the devbox was this.
 
-**As of 2026-10-06, earlier — Analyze Musically keeps its own time; a
 **As of 2026-10-11, latest — a shared song stops doubling, taking back and
 over-shooting edits; what is missing is named.** Branch `fix/collab-sync`
 (from v0.26.1), not merged, not bumped. Ty, from a session with a friend:
@@ -222,8 +403,792 @@ which plugins."*
   `tests/collab.rs` (+2), `fontelle-model/tests/wire.rs` (slot test now
   follows its slot), `fontelle-net` transport jitter (+1),
   `fontelle-ui/tests/share_panel.rs` (+1), headless `share-panel-missing`.
+**As of 2026-10-11, latest — the Fontelle Singer is a complete instrument
+with its own panel; engine instruments are never blank; terms you can
+read.** Branch `feature/vocal-track`, not merged, not bumped.
+`docs/vocal-plan.md` §2.5 says how. Ty: *"theres no instrument visuals for
+each yet, please go and create the generic vocal plugin instrument fully
+... it should have its own visuals and knobs and stuff in the instrument
+that people would expect and [the engine instrument] also shouldnt be
+blank"*; he had agreed to Japanese terms he could not read.
 
-**As of 2026-10-06, latest — Analyze Musically keeps its own time; a
+- **The singer panel** (the instrument window of a vocal track): a stage
+  (portrait under a spotlight, instrument and kind, name, author/folder,
+  language chips, terms chip, Change singer…, ▶ Sample, Open <engine>,
+  Voicebanks…) over cards — Voice (gender, breath, tension, voicing; the
+  backend's own lanes), Expression (auto vibrato with depth/rate/delay/
+  fades/"notes over", default glide time/shape, consonant speed, a
+  picture of the line sung), Performance (declared settings: UTAU
+  phonemizer and modulation, DiffSinger steps and natural pitch; voice
+  colour/speaker default), Output (volume, pan). Ignored controls are
+  faded with why under their card. Two columns when wide, scrolls when
+  not; long controls take a double cell. `canvas::singer_panel`,
+  `render::singer_panel`, `fontelle_app::singer_panel`; the knobs are the
+  ordinary `InstrumentView`, so drag, fine drag, Alt-click reset, typed
+  values and drop-downs all work as on every panel.
+- **Format**: `Channel::vocal_style: VocalStyle` (additive, default
+  skipped, old songs unchanged; styled songs format 3); `SetVocalStyle`
+  appended to the wire; `SettingInfo::choices` (additive, serde default);
+  `CatalogueSinger::installs_as` (index format 1 grows by a key).
+- **Reaching the singer**: `phrases_with` applies the style (auto vibrato
+  on long notes without their own, glide on notes after another, scaled
+  consonant speed, lane offsets, extra-lane bases, settings under the
+  part's, option defaults); in the render key; backends unchanged.
+- **Engines**: an engine with a window opens it as its instrument (like a
+  plugin's own editor); one without gets the panel of what it declares.
+- **Terms**: `catalogue::{reads_as, match_bank, translate_url}`; the terms
+  dialog shows the index's English summary over the original and a
+  *Translate…* row (Google Translate in the browser, only on press); the
+  Installed row shows the summary.
+- Vocal knobs are not automation targets (render inputs; a change over
+  time is a roll lane — the knob's right-click says so). Volume/pan are.
+- Tests (first, seen failing, unless said): `fontelle-model`
+  `vocal_style.rs` (9); `fontelle-vocal` `style.rs` (7; two fixed after
+  for the pre-existing lead-in), `terms_reading.rs` (4); `fontelle-ui`
+  `singer_panel.rs` (6), `terms_menu.rs` (2), `vocal_edit_headless.rs`
+  (+`terms-translate` shot, written after); `fontelle-app`
+  `singer_panel.rs` (11), `singer_panel_shots.rs` (1, written after;
+  needs `FONTELLE_TEST_VOICEBANKS`, dumps `singer-panel-{utau,diffsinger,
+  engine}`).
+- **Not done**: the window's new presses (stage buttons, language chips,
+  scroll) were compiled and covered through the canvas functions, not
+  driven on a display; no level meter on the Output card (the panel is
+  redrawn on revision, not per frame); preview quality is fixed (only
+  DiffSinger's final steps are a setting); brightness has no standard
+  lane, so it appears only where a backend declares it.
+
+
+**As of 2026-10-07 — the Fontelle Singer and each singer engine
+**As of 2026-10-11 — UTAU singing that sounds sung: expression on the
+pitch, joins without jumps, breaths and breathy releases.** Branch
+`feature/utau-natural` (from `feature/vocal-track` 312e75d), not merged,
+not bumped. Ty, of Kasane Teto's English bank after the English fixes: *"i
+definitely think it sounds better ... but i still think it could be more
+natural sounding."*
+
+- **Expression** (`fontelle_utau::expression::pitch_line`, setting
+  `expression`, 0–100 %, default 100): on top of the written line, a
+  scoop from 35 cents below into each phrase, an overshoot after a leap
+  (10 % of the interval, at most 40 cents, settling in ~0.2 s) with a
+  small dip the other way before it, a vibrato that grows late on notes
+  of 0.5 s or more (5.6 Hz, 18–30 cents, fading into the next note), a
+  small fall at the end of a run, and a few cents of slow drift. The
+  same idea as UTAU's Mode2 curves and OpenUtau's default vibrato; the
+  shapes are ours. A vibrato or glide the writer set is sung as written.
+  Deterministic.
+- **Joins** (`render::assemble`): where two sung units crossfade and both
+  are voiced, their difference in 16 log-spaced bands is shared out: each
+  meets the other halfway at the crossfade and relaxes back to its own
+  sound over 150 ms. Level always (±10 dB); colour too (±6 dB) when the
+  two are the same sound (shape difference under 3 dB RMS), so a vowel
+  change is not blurred. Two recordings of one vowel 9 dB apart no longer
+  step.
+- **Breath** (setting `breath`, 0–100 %, default 60): before a phrase,
+  and after any rest of 0.3 s or more, a bank's breath (`br`, `breath`,
+  `息`, `息1`) is taken, at most 0.4 s, ending just inside the first
+  consonant. Not a phoneme of the note. The end of a run goes out on an
+  aspirated release (aperiodicity raised through the release fade).
+- `RENDER_VERSION` 2, so cached takes are sung again. `utau_sing` takes
+  `lyric:midi:seconds`, `R:0:seconds` rests and `FONTELLE_UTAU_SETTINGS`.
+- **Tests** (written first, seen failing): `fontelle-utau` `natural.rs`
+  (11: the line with and without expression, vibrato, leaps, scoop and
+  fall, writer's vibrato kept, the setting end to end, a 9 dB join, a
+  breath taken and not taken, short rests, the aspirated release).
+  `sing.rs` now pins `expression` to 0 in its helper: it checks the
+  written pitch. `fontelle-utau`, `fontelle-diffsinger`, `fontelle-vocal`
+  pass (`end_to_end` needs `cargo build -p fontelle-testsinger` first, as
+  before). `real_banks` (ignored, 10 real banks) all in tune.
+  Preflight clear.
+- **Renders** (this machine only): `/mnt/disks/6tb/FontelleTestData/
+  renders/teto/index.html`, before/after on Teto's English bank and a
+  personally tuned copy of it (re-timed oto, even loudness, breaths),
+  which stays local under her terms.
+- **Not done**: the expression shapes were set by measurement and by
+  looking at spectrograms, not by ear on this machine (no sound may be
+  played here); a per-note "no auto vibrato" switch (today only the
+  setting turns it off); exhale breaths at phrase ends (only the
+  aspirated release).
+
+**As of 2026-10-07, latest — the Fontelle Singer and each singer engine
+are instruments of their own; a bigger singer picker; one face per bank.**
+Branch `feature/vocal-track`, not merged, not bumped. `docs/vocal-plan.md`
+§2.3 says how. Ty: *"split generic vocals and [the paid engine] into
+separate addable instruments, that can be changed between and it will
+still sing correctly"*, *"increase the scale of the singer select menu"*,
+*"the picture is missing on some in the installed section"*.
+
+- **Instruments**: New/Change instrument list *Fontelle Singer*
+  (`InstrumentKind::Vocal`, relabelled) and a row per engine loaded, named
+  before any bracket (`fontelle_vocal::instrument_name`; no engine named in
+  the tree). A track's instrument is its voice's backend
+  (`VocalVoice::engine_instrument`, `fontelle_model::is_builtin_engine`) —
+  nothing new stored, old songs open as what their voice names, the part
+  is untouched by a change. `StudioHost::{singer_instruments,
+  vocal_instrument, add_singer_channel, set_singer_instrument}`; a change is
+  one `Compound` (kind + patch when not vocal, the new instrument's singer
+  in the part's language via `SingerRegistry::default_voice_for`, a rename
+  when the name is still the old instrument's default). An engine with
+  nobody chosen is `VocalVoice{engine, singer: ""}` ("Choose a singer").
+  Channels are named for the instrument; the arrangement caption is
+  "Instrument · singer · words"; the roll's "Open <instrument>" chip is at
+  the singer chip's size.
+- **Pickers**: each instrument's shows only its own singers
+  (`canvas::picker_filter_for`, `singer_picker_layout_for`), with *Change
+  instrument…*; "No singer" keeps an engine's track the engine's. Cards
+  ≥ 300 × 192 with 128 px portraits, names 17 px, text 13 px, title 20 px,
+  columns by logical width (a larger UI scale gets fewer), footer wraps;
+  the Voicebanks page's rows match (128 px portraits, buttons under the
+  words when narrow).
+- **One face**: `voicebanks::list` describes a bank from the folder with
+  its files (`Installed::root` — Canary's and Teto's are a folder down,
+  which is why the page showed initials); `voicebanks::bank_for_voice` maps
+  a runtime's voice to its bank (picture path, folder id, `utau/<folder>`,
+  `utau/<folder> (<parent>)`), and the picker's card takes the bank's name,
+  picture and folder from it. Every real bank in the test folder maps
+  (`real_voicebanks.rs`, ignored).
+- Tests (first, seen failing, unless said): `fontelle-vocal` `registry.rs`
+  (+2), `voicebanks.rs` (+2), `real_voicebanks.rs` (+1 ignored, written
+  after); `fontelle-ui` `instrument_menu.rs` (+2), `singer_picker.rs` (+2),
+  `vocal_edit_headless.rs` (+1, written after; dumps `sep-add-instrument`,
+  `sep-picker-fontelle-{100,150}`, `sep-picker-engine-{100,150}`,
+  `sep-installed-{100,150}`, a 150 % UI scale drawn by scaling the scene);
+  `fontelle-app` `vocal_instruments.rs` (7: rows, adding each, switching
+  Fontelle Singer → ABI 1 → ABI 2 → back keeping notes/lyrics/lanes and
+  singing through each, one undo each, round trip, card = row).
+  Whole workspace (583 test binaries, `--no-fail-fast`, `XDG_DATA_HOME` at
+  a scratch folder): 6432 passed, 0 failed, 34 ignored. Preflight all
+  clear (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: the window's menu wiring (`app.rs`, the picker's
+  *Change instrument…*) was not driven on a display, only compiled and
+  covered through the canvas functions; engines report no short name of
+  their own (derived from the display name; an ABI-2 capabilities key
+  could carry one later); the engine picker has no "Open <engine>" button
+  (the roll's chip has it); terms on the Installed page are still read
+  from the bank's top folder.
+**As of 2026-10-08 — English that sounds like English on UTAU
+banks, and a library of free singers to try.** Branch
+`feature/vocal-singers` (from `feature/vocal-track` 6418754), not merged,
+not bumped. How it was built is in `docs/vocal-plan.md` §2.3.
+
+- **English CVVC (X-SAMPA)** (`fontelle-utau`): Ty said "the english
+  wording sounds off" on Kasane Teto's English bank. Final clusters were
+  dropped ("world" ended on `3 l`, "hand" on `{ n`), cluster samples were
+  never used, and every unstressed "uh" was `V`. The planner now does what
+  the bank is cut for:
+  - the longest joined onset (`- str`, `tw`, `bju`), else VCV (`@ hA`);
+  - `C C` pairs and released consonants between;
+  - endings over the whole cluster (`l d-`, `s kt-`).
+  It was rewritten in our own code after reading OpenUtau's EN X-SAMPA
+  phonemizer (MIT). The dictionary now keeps an unstressed AH as `ax`
+  (`data/make_cmudict.py`, hash re-pinned). A Salem-style bank (Joule EN
+  CVVC) is no longer taken for ARPAsing. A consonant shared across a word
+  boundary is sung once.
+- **Found by singing a 21-bank library through the registry:**
+  - (`fontelle-diffsinger`) English words a bank's dictionary lacks are
+    read from CMUdict; SPORE was silent and Nishiren sang "world" as ら.
+  - `en/`-prefixed dictionaries now serve unprefixed models.
+  - Vocoder noise is pooled per sample; Canary DS's RefineGAN crashed.
+    Duration and linguistic models get noise too (Yoko crashed).
+  - (`fontelle-utau`) A DiffSinger folder with an oto.ini is not a UTAU
+    bank. A Chinese or Korean syllable with no initial joins from the
+    vowel before (`ao a`).
+- **The library** (this machine only, no repo): see
+  `/mnt/disks/6tb/FontelleTestData/voicebanks/LIBRARY.md`. It lists 21
+  singers, symlinked into `~/.local/share/fontelle/voicebanks`, with terms
+  and quality notes. No terms were agreed for Ty. The verified ones went
+  into `docs/singers-index.json` (10 new entries, Get it only).
+- **Renders to compare**: `/mnt/disks/6tb/FontelleTestData/renders/english/
+  {before,after,diffsinger}/`.
+- **Tests** (written first and seen failing):
+  - `fontelle-utau`: `english.rs` (7), `text_rules.rs` (2 changed),
+    `bank.rs` (+1), `cjk.rs` (+1);
+  - `fontelle-diffsinger`: `reading.rs` (+2), `onnx_noise.rs` (+2).
+  - `fontelle-utau`, `fontelle-diffsinger` and `fontelle-vocal`: 159
+    passed, 0 failed.
+  - The workspace suite was stopped part-way: Ty was streaming, and the
+    lead asked that nothing open a window or play sound.
+  - Real banks (ignored tests, `FONTELLE_TEST_VOICEBANKS`):
+    `fontelle-vocal` `real_voicebanks` passes on all 21 voices; `fontelle-utau`
+    `real_banks` passes, all in tune.
+  - Preflight all clear.
+- **Not done**:
+  - X-SAMPA r-coloured vowels (`Ar`) and dark L.
+  - English VCCV's planner.
+  - Yamine Renri's own English dictionary format.
+  - Yoko DS renders very quietly (peak ~0.08); not looked into.
+  - No native Korean UTAU bank could be downloaded without a browser.
+
+**As of 2026-10-07, latest — voicebanks in the studio: portraits, a card
+picker, the Voicebanks page from anywhere, `.7z`/`.uar`, Chinese and Korean
+lyrics, takes kept on disk.** Branch `feature/vocal-banks` (from
+`feature/vocal-track` d942434), not merged, not bumped. `docs/vocal-plan.md`
+§2.2 says how it was built.
+
+- **Packages** (`fontelle_vocal::voicebanks`): `.7z` through `sevenz-rust2`
+  (Apache-2.0, pure Rust; LZMA/LZMA2/BCJ, deflate on the tree's `flate2`, no
+  encryption), `.uar` as UTAU's zip with `install.txt` (`folder=`,
+  `contentsdir=` honoured in any package — the real Teto packages carry
+  one); what a file is comes from its bytes (a `.7z` named `.zip`
+  installs), a RAR says to extract it first. Every 7z name is checked before
+  anything is written, as for zips. A bank's icon is `image`, before the
+  yaml's `portrait` (OpenUtau's backdrop).
+- **`fontelle-lang`** (new crate): Chinese characters → toneless pinyin
+  (`data/pinyin.txt`, each character's commonest reading from
+  mozillazg/pinyin-data — MIT, readings Unicode's Unihan `kMandarin`,
+  Unicode-3.0, both notices in `licenses/pinyin-data/`, listed in
+  `licenses/MODELS.md`, hash pinned by a test; rebuilt by
+  `data/make_pinyin.py`), common words read otherwise matched across notes
+  (`data/pinyin-words.txt`, written here), `长` sung `chang`, `行[hang]` to
+  say any reading. Hangul → onset/vowel/coda by Unicode's arithmetic,
+  romanised, a coda carried into a following vowel, stops nasalised before
+  ㄴ/ㅁ. `fontelle_model::lyrics` spreads a character or block a note (a
+  bracketed reading stays with its character); Korean's default syllable
+  is 라.
+- **DiffSinger**: a word in characters or hangul is read with its run of
+  notes (`phonemize::Script`), each syllable looked up (`ni`, `han`), else
+  sung as its parts (`zh/n zh/i`, `ko/h ko/a ko/n`). Qixuan and 琅 sang
+  我们一起去银行 with nothing guessed and 行 as `h ang`
+  (`real_bank.rs`, ignored).
+- **UTAU**: two phonemizers appended to the setting (7 and 8, so saved
+  values keep their meaning), detected from aliases: **Chinese CV/CVVC**
+  (pinyin aliases, `- ni`, VC `i h`, endings `ao R`) and **Korean CV/CVVC**
+  (hangul: a whole block when recorded, else the open syllable and a coda
+  unit `a k` before the note ends; VC `a r`; `ae R`). No Chinese or Korean
+  UTAU bank on this machine: fixtures only.
+- **Takes kept** (`fontelle_vocal::TakeStore`, `VocalRenderer::set_store`):
+  finals written by the render thread after it hands them over, to the
+  song's `cache/vocal/` (`fontelle_app::vocal_takes_dir`, the analysis
+  cache's rule; unsaved songs share the cache folder's `vocal/`): 16-bit
+  (scaled when louder than full scale), delta-coded, byte planes, deflated
+  (`miniz_oxide`, already in the tree), pitch and phonemes beside, key and
+  xxHash checked; 512 MB LRU (a load touches the file). A final on disk is
+  read back by a render thread and its preview never queued; a store set
+  later gets the finals already sung (a first save).
+- **Portraits** (`fontelle_ui::portrait`): BMP decoded here (1–32-bit,
+  bitfields, either row order), PNG/JPEG by the theme's decoders, WebP by
+  `image-webp` (MIT/Apache-2.0 — 琅's `lang.jpg` is a WebP); 256 px at most,
+  kept by path, drawn cropped and rounded.
+- **The picker** (`canvas::singer_picker`, `render::vocal::draw_singer_picker`):
+  a card grid over the window — portrait, name, kind badge, a chip per
+  language (choosing it), terms state, research-only; voicebanks above
+  engines; search (name, kind, language tag or name, engine); arrows by
+  layout, Tab through languages, Enter, Esc; No singer / Install / Voicebanks
+  below; unread terms still asked first (`WindowApp::choose_singer_row`, the
+  menu's old path). The menu (`MenuTarget::Singer`) is gone from the window;
+  `canvas::singer_menu_rows` stays, tested.
+- **The Voicebanks page from anywhere**: drawn as `Chrome::vocal_overlay`
+  (not the roll's), opened by the instrument menus' row and
+  `Action::Voicebanks` (Ctrl+Shift+Y, global, appended); installed rows show
+  languages, ▶ Sample (the bank's own sample through the Import tab's preview
+  voice, `DocumentHost::preview_voicebank_sample`) and Folder
+  (`reveal_voicebank`). The roll's singer chip shows the singer's face.
+- Tests (first, seen failing, unless said): `fontelle-vocal` `archives.rs`
+  (6), `takes.rs` (5), `voicebanks.rs` (+1); `fontelle-lang` `pinyin.rs`
+  (8), `hangul.rs` (5); `fontelle-diffsinger` `cjk.rs` (4) and
+  `real_bank.rs` (+1 ignored); `fontelle-utau` `cjk.rs` (5); `fontelle-model`
+  `vocal.rs` (+2, one changed); `fontelle-ui` `singer_picker.rs` (5),
+  `portraits.rs` (6 — the BMP ones passed on their first run, the decoder
+  having been written before the stub was compiled; WebP seen failing),
+  `vocal_picker.rs` (+1), `vocal_edit_headless.rs` (+1, dumps
+  `vocal3-picker`, `vocal3-picker-search`, `vocal3-corner`; real portraits
+  when `FONTELLE_TEST_VOICEBANKS` is set); `fontelle-app` `vocal_studio.rs`
+  (+2, written beside the app's plumbing). Whole workspace (568 test binaries, `--no-fail-fast`): 6327 passed, 6 failed —
+  all six in `fontelle-app/tests/vocal_track.rs`, which reads this machine's
+  real voicebanks folder (`~/.local/share/fontelle/voicebanks` now links the
+  test banks) and so picks a real bank first; with `XDG_DATA_HOME` at an
+  empty folder all 8 pass. That test should isolate its folder (not done
+  here: outside this branch's area).
+  Preflight all clear (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: the real studio was not driven on a display in this pass
+  (headless renders only); Find singers' rows play no sample (the catalogue's
+  `sample` is a URL); `.7z` names are UTF-16 in the format, so no encoding is
+  guessed; RAR is refused; Korean rules beyond liaison and nasalisation (ㄹ
+  after ㄴ, aspiration, tensing) are not applied — type the block that is
+  sung; Chinese tone sandhi and erhua are not read (toneless banks do not
+  need tones); polyphonic characters outside the word list read their
+  commonest reading; UTAU Chinese/Korean phonemizers are checked on fixtures
+  only; takes are kept for finals only, and per folder, not per song, when
+  unsaved; the take cache's size limit is a constant, not a setting.
+**As of 2026-10-07 — vocal song files in and out, freeze, and
+render to clip.** Branch `feature/vocal-import` (from `feature/vocal-track`
+d942434), not merged, not bumped. `docs/vocal-plan.md` §3.1 says what maps
+to what.
+
+- **`fontelle-vocal-files`** (new crate, pure): `ust::read` (Shift-JIS or
+  UTF-8; Mode2 and Mode1 pitch → the pitch-bend lane over the notes, VBR,
+  Velocity, Intensity, g/B flags), `ustx::read`/`write` (tracks, tempos,
+  glides, vibrato, VEL, phoneme overrides, curves → lanes, unknown curves
+  kept and written back), `vsqx::read` (v3 and v4 names, pre-measure,
+  locked phonemes, PIT×PBS/DYN/BRE/BRI/GEN), `midi::read`/`write`/
+  `has_lyrics` (lyric or karaoke text events on their notes, bends at the
+  RPN range), `musicxml::read`/`read_mxl` (sung parts, first voice, ties,
+  syllabic hyphens, slurs/extend → `-`, tempo, metre; our own small zip
+  reader). `VocalSong::unmapped` names what did not come. `clip_of` places a
+  part by beats from its first bar; `song_of_channel` reads a vocal track
+  back. New deps here: `roxmltree`, `serde_yaml_ng`, `midly` (all in the
+  tree already).
+- **Model**: `ImportVocal`/`UnimportVocal` (a vocal track per part, or onto
+  a vocal row; the file's tempo and bar inside the same command when asked),
+  `FreezeVocal`/`UnfreezeVocal`, `Project::frozen` (`FrozenVocal`; format 3,
+  left out when empty), `is_frozen`. Four wire variants appended and pinned.
+  `phrases_with` sings nothing for a frozen track.
+- **App** (`session/vocal_files.rs`): a vocal song dropped on the window is
+  imported before the MIDI path (a `.mid` only when it has words); on a
+  vocal row it goes into that track; an empty song takes the file's tempo,
+  otherwise the song's is kept — the toast says which and what was left
+  out. Export to MIDI with lyrics and USTX. Freeze/render run as a job
+  (`start_vocal_bounce`, the export's progress card: phrases sung, then
+  frames) through a `VocalNode` of their own with the channel's level and
+  pan; the render is routed to the track's own strip. *Render to audio* of a
+  row or clip now sings only the vocal tracks on it
+  (`VocalRenderPrep::retain_channels` — it used to sing every vocal track).
+- **Window**: a vocal track's rack menu has *Import vocal file…*, *Export
+  MIDI with lyrics…*, *Export USTX…*, *Freeze/Unfreeze track*, *Render
+  selection to clip*; the new instrument menu ends with *Vocal track from a
+  song file…*. Looked at on the real binary (nested Xwayland): an imported
+  Shift-JIS UST — its track, row, lyrics, tempo, the roll's vibrato waves,
+  glides and pitch lane.
+- Tests (all first, seen failing): `fontelle-vocal-files` ust (10), ustx
+  (7), vsqx (5), midi (5), musicxml (7), project (2); `fontelle-model`
+  `vocal_files.rs` (9) and `wire.rs` (+3 commands, +4 pinned);
+  `fontelle-vocal` `frozen.rs` (1); `fontelle-app` `vocal_files.rs` (10);
+  `fontelle-ui` `vocal_files_menu.rs` (2). Whole workspace: 6334 passed,
+  6 failed (570 binaries) — all six in `fontelle-app/tests/vocal_track.rs`,
+  which reads the real voicebanks folder: this machine has Japanese banks
+  installed, so the default singer sings `ら`, not `la` (not this branch's;
+  that test wants its own voicebanks folder). Preflight all clear
+  (fmt, clippy on Linux, Windows, macOS).
+- **Not done**: `.vpr` (Vocaloid 5), `.svp` (Synthesizer V), `.7z`/`.uar`;
+  a UST is read, not written; OpenUtau's phoneme timing deltas and voice
+  colours (`clr`), Vocaloid's CLE/OPE/POR, UTAU's resampler flags other than
+  g/B are named, not mapped; MusicXML brings one voice per part and the
+  first time signature only (the model has one bar length), with no way yet
+  to choose the voice; a `.mid` with words brings only its sung tracks;
+  imported OpenUtau curves map to Fontelle's ranges by best guess (gen
+  ±100 → ±600 cents; Vocaloid DYN 0/64/127 → −24/0/+6 dB); a frozen track's
+  part can still be edited (it is not sung until unfrozen) and the roll
+  does not say it is frozen; channel automation of level/pan is not in a
+  freeze; render to clip renders whole phrases cut to the selection.
+**As of 2026-10-07 — the vocal roll's pitch pen, from the keyboard.**
+Branch `feature/vocal-roll` (from `feature/vocal-track` d942434), not
+merged, not bumped. Roll and editing only; nothing in the model's wire
+forms changed.
+
+- **Pitch drawn on the grid** (`canvas::vocal_pitch`): **Shift+P** (or the
+  "✎ Pitch pen" chip beside "Note ▾") makes the grid a pencil for the
+  pitch line, over the notes; Shift draws a straight line, the right button
+  (or the Delete tool) puts a dragged stretch back on the notes; choosing
+  any roll tool leaves it. A stroke writes the pitch-bend lane as **where
+  the hand is minus the pitch the notes, glides and vibrato make**
+  (`PitchBase`, from the new `VocalView::note_line`, or the notes before
+  anything is sung), clamped to ±1200 cents; one stroke, one undo step.
+  **Smooth** (Alt+S), **Snap pitch to scale** (Alt+Q) and **Reset pitch**
+  (Alt+R), also rows of the note menu, work on the selected notes, else the
+  time selection, else the whole part, one undo step each. Snapping finds
+  the drawn line's held stretches (averaged over ~0.2 s, slower than
+  4 st/s, at least 50 ms), moves each by its median onto the nearest degree
+  of the song's scale (`RollScale::mask`; semitones with no key, and says
+  so), bends the moves between them to meet, and leaves undrawn notes
+  alone — vibrato and scoops kept. The roll draws three pitch lines apart:
+  what was sung (faint), the computed line (dashed accent), the drawn line
+  (amber, outlined).
+- **Note menu from the keyboard**: **Alt+Enter** opens it under the first
+  selected note (`note_menu_anchor`). All five keys are rebindable actions
+  (`pitch-pen`, `smooth-pitch`, `snap-pitch-to-scale`, `reset-pitch`,
+  `note-menu`) on the Shortcuts page's Vocal tracks section.
+- **The roll follows**: a vocal part opening frames its notes
+  (`frame_notes`: first note a little in, the keys around the middle, the
+  zoom kept); the lyric field brings its note into sight when Tab /
+  Shift+Tab (or Enter) opens it off screen (`follow_note`, a quarter in).
+- **IME composition shown** (`canvas::preedit`): `Ime::Preedit` is drawn in
+  the lyric and phoneme fields, spliced at the caret (over the selection),
+  underlined, with the IME's cursor; keys go to the IME while it composes
+  (an Enter that picks a kanji no longer keeps the field); the candidate
+  window is placed at the field (`set_ime_cursor_area`).
+- **Polish found on the way**: the phoneme field had no caret (it has one
+  now, and a selection); it opened at the row's left edge for a note with
+  nothing sung yet (now at the note's head); the pitch pen's pointer is the
+  pencil over notes too.
+- Tests first, seen failing: `fontelle-ui/tests/vocal_pitch.rs` (16:
+  strokes → lane values, line/reset, clamping, smoothing, scale snapping
+  math with vibrato and undrawn notes, ranges, framing, following, menu
+  anchor and rows), `vocal_keys.rs` (6: the keys, rebinding, preedit
+  state), `fontelle-app/tests/vocal_studio.rs` (+1: `note_line`).
+  Headless (`vocal_edit_headless.rs`, +2): `vocal3-pitch`,
+  `vocal3-preedit-lyric`, `vocal3-preedit-phoneme` — looked at.
+  Whole workspace (560 binaries, fresh target, the test plugins built):
+  6301 passed, 6 failed — all six in `fontelle-app/tests/vocal_track.rs`,
+  which reads this machine's real voicebanks folder
+  (`~/.local/share/fontelle/voicebanks`, where a DiffSinger bank is now
+  installed and agreed) and so gets that bank as the first singer instead
+  of the test singer: a test that leaks the machine's state, not this
+  branch (nothing here touches the registry). Preflight all clear.
+- **Not done**: not driven in the real binary on a display (no input tool
+  on this machine for `:99` this pass); snapping is to the song's key (a
+  clip has no scale of its own yet); no pitch-point (node) editing, only
+  freehand/line; the drawn line is not shown in the lane under the roll
+  while the pitch tab is open (it is drawn on the grid).
+
+**As of 2026-10-07, latest — the Fontelle Singer's integration: the part
+sings through `fontelle_sing`, voicebanks install, and an engine's own
+window edits the part.** Same branch (`feature/vocal-track`), not merged,
+not bumped. Ty's plan is `docs/vocal-plan.md` (§2.1, §4.1 and §5.1 say how
+it was built); the two voicebank runtimes (`fontelle-utau`,
+`fontelle-diffsinger`) are other branches, wired by one
+`fontelle_vocal::builtin_backends()` entry each.
+
+- **The part** (format **3**, written only when used; 2→3 empty):
+  `Note::voice` (phonemes with offsets in seconds, vibrato, glide, options
+  by backend; velocity read as consonant speed, OpenUtau's VEL) and
+  `NoteData::vocal` (standard lanes as tick points from the clip's start,
+  each backend's own lanes, settings, a base64 state blob — never pruned
+  when the singer changes). `LaneCurve::write/erase` keep what is outside a
+  stroke and simplify straight runs. Commands `SetNoteVoices`,
+  `SetVocalLane`, `SetVocalSettings`, `SetVocalState` (merge while a gesture
+  is in the hand; wire forms appended and pinned). A cut clip shifts its
+  second half's lanes.
+- **The pipeline** (`fontelle-vocal`): `phrases_with` builds
+  `fontelle_sing::Phrase` — expression, lanes sampled from whichever clip
+  pass plays, the backend's own lanes/settings/state, identity
+  (`start`, `note_ids`) left out of the render key, which hashes the whole
+  phrase. The scheduler drives `Backend`/`Session` through
+  `Session::sing_flagged` (added to the contract, defaulted) so an engine
+  gets the cancel flag itself. `SingerRegistry` puts built-ins (keys
+  `fontelle-*`, reserved) before engines; `voicebanks` installs
+  zip/oudep/folders (Shift-JIS/GBK/UTF-8 names chosen per archive, the bank's
+  root found under wrapping folders, zip-slip refused, nothing left half
+  done), reads terms and records acknowledgement; `catalogue` reads the Find
+  singers index (`docs/singers-index.json`, two entries checked at source:
+  Kasane Teto UTAU, Qixuan DiffSinger — both "Get it", their pages), verifies
+  downloads and watches Downloads. Our own zip reader (stored + deflate +
+  zip64, `miniz_oxide`); new deps `encoding_rs`, `sha2`, `slotmap` here.
+- **ABI 2, host side** (`fontelle_host`): `SingerEngine` is a
+  `fontelle_sing::Backend` (v1: notes and words, hand phonemes as a
+  bracketed lyric; v2: the phrase as JSON); capabilities and `has_editor`
+  asked once at load. `SingerEditor` opens an engine's window into a
+  `PluginWindow`, ticks it, answers `get_part`/`take_at` (phonemes report
+  with offsets) from what it was last shown, tells it when the part
+  changed, and queues `apply_edits` batches (checked whole) and transport
+  for the app, which applies each batch as one `Compound`
+  (`fontelle_app::vocal_part`). The lead's five notes from the closed
+  engine's author are in: phrase identity, `take_at` phonemes, `Settings`
+  merges, parent 0 and the seed documented in the ABI.
+- **`fontelle-testsinger` is two engines**: copied as a file whose name has
+  `abi2` in it (found with `dladdr` / `GetModuleFileNameW`) it is "Fontelle
+  Test Singer 2" — pitch bend, dynamics, breathiness (not gender), a
+  `growl` lane, a `brightness` setting, a `colour` option, timed phonemes —
+  with a window that paints a teal child window and edits the part on
+  lyric levers (`!poke`, `!bad`, `!play`, `!take`). **Never copy over a
+  loaded copy**: a test that loads twice must copy once (it segfaulted).
+- **The studio**: the picker groups "Fontelle Singer — free voicebanks"
+  (kind, language, terms still to read) above "Singer engines" (saying when
+  one has a window), with Install a voicebank… and Voicebanks & Find
+  singers…; an unread bank's terms are shown whole and agreed to first. The
+  vocal roll takes a phoneme row under the grid and a tab strip over the
+  lane: notes / pitch / dyn / breath / voice / tension / gender / the voice's
+  own, ignored ones struck through and saying why; the roll's tools draw
+  (pencil, Shift a line, eraser or right button to neutral), one undo per
+  stroke. A selected note shows its vibrato wave with delay/fade/depth/rate
+  handles and its glide handle (Shift moves its position); "Note ▾" opens
+  the note menu; the computed pitch line is drawn over the notes; the
+  phoneme row double-clicks into a field with the voice's phonemes as
+  suggestions (Tab takes one) and drags a start to retime. "Open <engine>"
+  beside the singer chip. The Voicebanks page (Installed / Find singers,
+  Esc or outside closes, wheel scrolls). Dropping a voicebank anywhere
+  installs it.
+- Tests: `fontelle-model/tests/vocal_expression.rs` (17) and `wire.rs`
+  (+4 commands, +4 pinned); `fontelle-host/tests/singers_v2.rs` (12);
+  `fontelle-testsinger/tests/engine.rs` (+2); `fontelle-vocal`
+  `expression.rs` (7), `registry.rs` (6), `voicebanks.rs` (11),
+  `catalogue.rs` (7), zip unit tests (2), `phrases.rs`/`scheduler.rs`/
+  `end_to_end.rs` ported; `fontelle-app/tests/vocal_studio.rs` (7);
+  `fontelle-ui` `vocal_expression.rs` (14), `vocal_picker.rs` (5),
+  `vocal_edit_headless.rs` (5, dumps `vocal2-*`). Tests first and seen
+  failing for the model, host ABI 2, the pipeline (phrases, registry,
+  voicebanks, catalogue) and the roll's pure pieces; the testsinger's own
+  table tests, the app's studio tests and the window plumbing
+  (`app/vocal.rs`) were written beside their code.
+- **Not done**: portraits are drawn as a coloured initial (no image
+  decoding on the page yet); `.7z` and `.uar` are watched for but not
+  unpacked; the picker is a menu, not a card with portraits; the note
+  menu has no keyboard shortcut (Note ▾ in the tab strip); pitch is bent in
+  the lane, not drawn directly on the grid (§3's pencil-the-pitch-line,
+  smooth, snap to scale are open); imports (UST/USTX/VSQX/MusicXML),
+  freeze and render-to-clip are open (§7.3); the Voicebanks page is only
+  reachable while a vocal track is in the roll; the full studio was not driven on
+  a real display in this pass; the engine window was, on its own: `cargo
+  run -p fontelle-host --example singer_editor -- <folder> "<engine>"` on a
+  nested Xwayland :99 opened the ABI 2 test singer's window in a
+  `PluginWindow`, it painted its teal child window into it and sent its
+  edit batch through `apply_edits`. Whole workspace: 6159 tests passed, 0
+  failed (537 binaries); preflight all clear (fmt, clippy on Linux, Windows,
+  macOS).
+
+**As of 2026-10-07 — `fontelle-utau`: the Fontelle Singer sings classic
+UTAU voicebanks.** Branch `feature/fontelle-utau` (a new crate only, plus
+its workspace entry), not merged. It implements `fontelle_sing::Backend`
+and `Session`; the integration on `feature/vocal-track` instantiates
+`UtauBackend::new(roots, Some(cache::default_cache_dir()))`. Nothing in
+`fontelle-sing` changed.
+
+- **Banks** (`bank`, `oto`, `text`): `character.txt` / `character.yaml`
+  (name, image, sample, author, web, `text_file_encoding`,
+  `default_phonemizer`, subbanks), `readme.txt` and any terms file beside
+  it (`利用規約`, `使用許諾…`, UTF-16 too) as `VoiceInfo::terms`; an
+  `oto.ini` in every subfolder (Shift-JIS, GBK or UTF-8, guessed by which
+  decoding reads as its own script; the bank's encoding is then used for
+  its readme, since a readme of kanji alone is valid in both);
+  `prefix.map` and yaml subbanks (multi-pitch, nearest range when a note is
+  outside them); voice colours from yaml colours, a suffix most aliases
+  come with (`か強`), or subfolders recorded with the same aliases —
+  offered as the note option `colour`. Files an oto names in another case
+  or Unicode form (macOS) are found. `.frq` averages steer F0 analysis.
+- **Phonemizers** (`phonemize`, `kana`, `dict`): Japanese CV, VCV (`a か`,
+  `- か`, endings `a R`), CVVC (`a k` before the next consonant, the next
+  CV's preutterance long, at most half the note), English ARPAsing
+  (diphones, consonants 60 ms / velocity before the beat, at most half the
+  syllable before), VCCV basics (`-rE`, `Ed-`, CC, VV) and English CVVC
+  in X-SAMPA (`- h@`, `@ l`, `loU`, `oU -`, Teto English's layout). Picked
+  from the aliases (or yaml `default_phonemizer`); the setting
+  `phonemizer` overrides (0 automatic, then 1–6 in `Phonemizer::ALL`
+  order, appended only). Lyric rules per the singer ABI: slurs hold (after
+  a rest they re-sing the vowel), several morae or syllables on a note
+  spread over its slurs or split it, `hel-` `lo` joins, `[aliases]` /
+  `[arpabet]` as written, hand phonemes with their timing. Kana, katakana
+  and romaji all read. English through CMUdict (BSD-2; a derived 0.8 MB
+  gzip in `data/`, hash pinned by a test, notice in
+  `data/CMUDICT-LICENSE` — **the release's `licenses/` should carry that
+  notice**; this branch did not touch it) and a letter-to-sound guess
+  (`guessed`).
+- **Resampler and wavtool, built in** (`world`, `render`): a WORLD-style
+  vocoder written here — YIN F0 (a coarse pass picks the register, the
+  real one searches an octave either side; `.frq` prior), CheapTrick
+  envelopes, band aperiodicity from each frame against the next period
+  (per band the best of seven period candidates and a gain, so drift and
+  crescendos are not noise), pulse synthesis through minimum-phase
+  filters, pulses sung in parallel chunks with per-pulse noise seeds
+  (deterministic whatever the thread count). Units are placed by UTAU's
+  rules (preutterance before the anchor, overlap crossfade, consonant at
+  most half the unit before, velocity `1/v` on consonant, preutterance and
+  overlap, endings at their own length, a rest ends the unit at the
+  note), then **assembled in the parameter domain**: consonant region at
+  its speed, the rest stretched (played as recorded and cut when the note
+  is shorter), units crossfaded in power with aperiodicity mixed
+  physically, one synthesis on the pitch line `note_pitch` + PitchBend
+  makes (vibrato, portamento) with optional modulation (the setting
+  `modulation`, the recording's own pitch movement, 0 by default).
+  Lanes honoured: PitchBend, Dynamics (dB), Breathiness, Voicing,
+  Tension (±12 dB tilt about 1 kHz), Gender (envelope warp, cents).
+  Preview sings at 22.05 kHz on the envelope's lower half (same bins in
+  Hz), Final at 44.1 kHz. `Sung` carries the F0 sung per 5 ms frame and
+  each note's aliases with their audible start.
+- **Cache** (`cache`): analyses in memory (768 MB LRU) and on disk under
+  `default_cache_dir()` (`$XDG_CACHE_HOME/fontelle/utau`, `~/Library/
+  Caches`, `%LOCALAPPDATA%`), keyed by the sample's SHA-256 with the
+  analysis version; envelopes at 0.01 dB in u16, zlib.
+- **Measured** on Kasane Teto (単独音, 統合 VCV, English) and Canary
+  ARPAsing (`real_banks.rs`, `#[ignore]`, `FONTELLE_TEST_VOICEBANKS`; banks
+  in `/mnt/disks/6tb/FontelleTestData/voicebanks`, never in git): every
+  note within 1 cent of its pitch by an independent autocorrelation
+  (one Canary note read an octave up by that estimator; the vocoder's own
+  reads it right), no clicks; resynthesis of the recordings within
+  0.5 dB in level, log-spectral distance 1.6–2.7 dB. Spectrograms of a
+  VCV run (あいうえお at G4 against the recording) show the same formant
+  transitions. Timings for a ~5 s,
+  six-note phrase (16 threads, measured while another agent's build kept
+  the load at 20–130, so ranges): **Final** cold (nothing analysed) 0.5–1.0 s,
+  analyses on disk 0.1–0.2 s, in memory 20–110 ms (20 ms when the machine
+  was quiet); **Preview** cold 0.2–0.7 s, warm 12–60 ms. One 4 s VCV sample
+  analyses in ~20 ms on 16 threads (150 ms on one).
+- `cargo run --release -p fontelle-utau --example utau_sing -- <bank>
+  out.wav "さ:62 く:64 ら:66"` sings a phrase and prints what was sung.
+- Tests (written first against stubs; the preview-level and setting checks
+  were added after): `bank.rs` (10), `text_rules.rs`
+  (6), `phonemize.rs` (16), `placement.rs` (8), `world.rs` (7), `sing.rs`
+  (8), `real_banks.rs` (1, ignored). Two fixtures were corrected on the
+  way, not the code: CMUdict reads "read" as r eh d (the VCCV test now
+  checks both readings), and the cache test asked for a sample its phrase
+  never sang.
+- Not done: UTAU per-note envelopes (p/v points) and flags beyond the
+  lanes; `.mrq`; Chinese/Korean/other phonemizers; X-SAMPA and VCCV are
+  basics (no CCV starts, few fallbacks); presamp.ini is not read; a word's
+  syllables are spread by vowel count, not stress.
+**As of 2026-10-07 — `fontelle-diffsinger`: the Fontelle Singer sings
+DiffSinger banks.** Branch `feature/fontelle-diffsinger`, a crate of its own
+(`docs/vocal-plan.md` §2), not merged. It implements `fontelle_sing::Backend`
+/ `Session` for community DiffSinger voicebanks in OpenUtau's layout, written
+from DiffSinger's published exporters and OpenUtau's documented layout only.
+Nothing outside the crate changed but the workspace members and the lock
+file; `fontelle-sing` is used as it is.
+
+- **Banks** (`bank.rs`, `config.rs`): `dsconfig.yaml` at the root and in
+  `dsdur/`, `dspitch/`, `dsvariance/` (a folder whose files are missing is a
+  listed problem, not a failure); `phonemes.txt`/`.json`, `languages.json`,
+  speakers (`.emb`, `hidden_size` f32s, matched across folders by suffix as
+  OpenUtau does), `character.txt`/`.yaml` (name, portrait, voice colours as
+  speakers), the readme/terms text. The vocoder: the bank's `dsvocoder/`,
+  else a dependency folder named after it, else one whose `oudep.yaml` id or
+  `vocoder.yaml` name is it; the mel layout is checked against the acoustic
+  model, a different log base converted.
+- **Reading** (`dict.rs`, `lyrics.rs`, `phonemize.rs`, `kana.rs`): `dsdict-
+  <lang>.yaml` then `dsdict.yaml` (dsdur, then root); a line scanner reads
+  the usual block layout (Qixuan's 27 MB English dictionary in well under a
+  second), anything else goes to `serde_yaml_ng`. The singer-abi lyric rules
+  (slurs spread a word's syllables, a slur after a rest re-sings the vowel,
+  `a-` joins, `[phonemes]`, empty is the default syllable); kana to Hepburn
+  romaji per mora; unknown words are guessed (typed phonemes, a compound of
+  dictionary words, else the default syllable) and reported `guessed`.
+  Phoneme edits replace their note's reading; their offsets are kept.
+- **Timing** (`timing.rs`): onsets end on the note start (squeezed into
+  half the note before when they do not fit), vowels to the next onset,
+  codas close the span, slurred notes extend it; consonant lengths from the
+  bank's duration model (DiffSinger words: vowel to vowel, a rest's silence
+  and onset a word of their own), divided by velocity. Frames are rounded at
+  boundaries, never zero.
+- **Running** (`models.rs`, `onnx.rs`, `render.rs`): `ort` 2.0.0-rc.13,
+  ONNX Runtime 1.28, linked statically from pyke's prebuilt build on Linux,
+  Windows MSVC and Apple-silicon macOS; loaded at run time on Intel macOS
+  and Windows GNU (no prebuilt build there). Duration → pitch (unless the
+  writer drew a bend, a vibrato or a glide, or turned `natural_pitch` off:
+  then `note_pitch` + bend) → variance (user lanes added as dB/tension
+  deltas) → acoustic (gender as key shift, velocity as speed, speakers per
+  frame with mix lanes) → vocoder → Dynamics as gain. Word-mode and
+  phoneme-mode encoders both fed. Preview: 4 steps everywhere; final: 20
+  acoustic (the `steps` setting), 20 variance, 10 pitch, depth = the bank's
+  `max_depth`. **Determinism**: ONNX Runtime seeds its random nodes from the
+  clock with no C API to reseed, so `onnx.rs` rewrites the graph in memory
+  (never on disk, weights copied byte for byte) to read each
+  `RandomNormal(Like)` from a noise input this crate fills from the seed.
+  Cancel polls during runs and terminates them (about 100 ms).
+- **Tests**: 65 tests on hand-written fixtures (configs, dictionaries,
+  lyrics, timing, frames, curves, noise, the ONNX rewrite on tiny models
+  built byte by byte, the backend over a fixture bank folder), and
+  `tests/real_bank.rs`, ignored unless `FONTELLE_TEST_VOICEBANKS` points at
+  banks (Qixuan v2.7.0 and 琅 were used; never in git). On a Ryzen 7
+  5800X3D, CPU: a 5 s English phrase in ~2.7 s final, ~1.0 s preview;
+  sung pitch within 2 cents of the notes (notes' line) and 15 cents (the
+  bank's pitch model); the same seed sings the same samples.
+  `cargo run --release -p fontelle-diffsinger --example render_phrase` writes
+  a phrase to a wav.
+- **Not done**: Chinese characters (lyrics must be pinyin) and Korean
+  hangul; English words outside a bank's dictionary are guessed, there is
+  no neural G2P; the predicted variance curves are not returned to the roll
+  (`Sung` has no place for them); partial retakes; tone shift through a
+  pitch-controllable vocoder; DirectML/CoreML; the `cuda` feature builds but
+  was not run here.
+
+**As of 2026-10-07 — the vocal track: a channel that sings.** Branch
+`feature/vocal-track` (from v0.26.1 and the two `fontelle-singer-abi`
+commits), not merged, not bumped. Ty wants to make a song with sung
+vocals; the singing comes from a **singer engine**, a shared library
+implementing `fontelle-singer-abi` and built elsewhere, found at run time
+the way bridges are. Nothing in this tree knows any particular engine.
+
+- **The contract** (`fontelle-singer-abi`, still ABI 1, doc additions
+  only): where engines are installed (a singers folder's own libraries,
+  and in a subfolder only the library named after it, so helper libraries
+  are never opened); `last_error` read on the failing call's thread right
+  after it; the version string read after an instance exists; phonemes
+  JSON keys a host does not know ignored, `guessed` understood; a slur
+  after a rest re-sings the vowel; notes reach an engine one at a time.
+- **Loading** (`fontelle_host::singer`): `SingerEngines::load` over
+  `singer_search_paths()` — `FONTELLE_SINGERS` (a path list), then
+  `<data>/fontelle/singers` by the settings' own folder rule
+  (`$XDG_DATA_HOME` or `~/.local/share`, macOS included; Windows
+  `%LOCALAPPDATA%`). An engine built for another ABI is listed as needing
+  a newer (or older) Fontelle and not loaded. In-process, like bridges.
+  `SingerInstance::render` sings a phrase with a cancel flag.
+  `cargo run -p fontelle-host --example singer_probe` lists and exercises
+  what is installed. `fontelle-testsinger` is a cdylib engine with no
+  voice in it (a soft vowel per note, a noise consonant before each
+  syllable, so audio starts before the phrase; a research-only singer;
+  `slowly` and `!fail` lyrics for tests; words over five letters come back
+  `guessed`).
+- **The document** (format **2**): `InstrumentKind::Vocal` (appended),
+  `Channel::vocal: Option<VocalVoice { engine, singer, language }>` and
+  `Note::lyric: String`, both defaulted and omitted when empty. A song is
+  written as format 1 unless it has a voice or a lyric
+  (`Project::format_needed`), so earlier builds keep opening everything
+  that does not sing; the 1→2 step is empty. Commands `SetLyrics` (each
+  note its own lyric, one undo, never merged) and `SetSinger` (voice and
+  language together), wire forms appended. `fontelle_model::lyrics`:
+  spreading a typed line (words, `a-ma-zing` a syllable each, `-` a
+  slur, `[phonemes]` one lyric, kana a mora each) and each language's
+  syllable (`la`, Japanese `ら`). `TempoMap::tick_to_seconds`.
+- **Rendering** (`fontelle-vocal`, new crate): `phrases_of` cuts a vocal
+  channel's part by the sequencer's own rules (mutes, solos, clip ends,
+  loops, prefabs; one voice — the later of overlapping notes wins) at
+  rests of 0.2 s, capped at 12 s, empty lyrics resolved. `render_key`
+  hashes engine, version, singer, language, quality and the phrase in its
+  own time; the seed comes from the same less the quality. `VocalRenderer`:
+  worker threads (at most two, an engine instance each), every preview
+  before any final, nearest the playhead first and behind it last, the
+  unwanted dropped or cancelled mid-render, takes cached by key (a move or
+  an undo sings nothing; a spare budget of ~256 MB kept for undo),
+  failures kept with their reason and not retried. `wait_for_final` for
+  exports.
+- **Playback** (`fontelle_engine::vocal`): `VocalNode` reads an
+  immutable `VocalTable` (phrases placed in song seconds) published
+  through a `VocalPlayer` mailbox; binary search to the playhead, linear
+  resampling to the device rate, equal-power crossfades where a lead-in
+  runs under the last tail, 4 ms fades at lone edges, channel level and
+  pan; silent when stopped or counting in. No allocation or free on the
+  audio thread (its own guarded test); the replaced table goes back for
+  the app to free.
+- **The studio** (`fontelle-app::vocal`): engines load on first need;
+  every edit re-derives phrases and what is wanted (asked 200 ms after
+  the last edit), every frame the playhead steers and landed takes are
+  published; `realise` builds a `VocalNode` per vocal channel keeping its
+  player across rebuilds. A vocal track added from the instrument menu
+  (it is in `InstrumentKind::ALL`, so every place instruments are added
+  offers it) arrives with the first installed singer in its first
+  language, in the same undo step. A drawn note sings the language's
+  syllable. The arrangement caption is "Singer · first words". **An
+  export waits for every final take** on the render thread, the progress
+  card counting phrases, then renders through players of its own.
+- **The window**: lyrics in the notes, phonemes under them, phrases
+  being sung hatched (in the roll and on the arrangement block), the sung
+  pitch faint over the notes, guessed words underlined, the singer chip
+  and research badge in the roll's corner (click: the picker). The lyric
+  field: double-click a note, or Enter on a selection (`EditLyric`,
+  rebindable); Enter keeps, Esc leaves, Tab / Shift+Tab move on; several
+  notes are one line spread on Enter; several words in one note's field
+  spread over the notes after it; IME commits go in. The singer picker
+  lists every singer in every language, badges research-only voices
+  ("research only — don't share"), names engines that failed to load and
+  says where one goes when none is installed.
+- Tests: `fontelle-testsinger/tests/engine.rs` (7),
+  `fontelle-host/tests/singers.rs` (9), `fontelle-model/tests/vocal.rs`
+  (15) and `wire.rs` (+2 commands, +2 pinned), `fontelle-engine/tests/
+  vocal_node.rs` (8), `vocal_node_no_allocation.rs` (1),
+  `fontelle-vocal/tests/phrases.rs` (9), `scheduler.rs` (6),
+  `end_to_end.rs` (1), `fontelle-app/tests/vocal_track.rs` (8),
+  `fontelle-ui/tests/vocal_roll.rs` (9), `vocal_headless.rs` (4, dumps
+  `vocal-roll*`, `vocal-singer-picker*`). Tests first for the model,
+  engine node, phrases, scheduler and the UI pieces; the host's
+  folder/version/guessed additions and the app's debounce were written
+  beside their tests in one pass after the engine side's notes arrived.
+  Checked against the real engine installed on this machine with
+  `singer_probe`.
+- **Not done** (said so on purpose): curve lanes for pitch, breath and
+  tension; phoneme overrides beyond the bracket syntax; instant re-pitch
+  while dragging (T0); freeze; a sample-layer fallback when no engine is
+  installed; crash isolation (an engine runs in-process); a disk cache of
+  takes (memory only — a reopened song sings again); the IME's preedit
+  is not drawn (only its commits); clip play mode (pattern) plays vocals
+  at song time only; a collaborator without the engine keeps the words
+  and is silent (takes are not shared); the CLI's `--render-wav` path
+  (`fontelle_app::bounce`, no session) does not sing — export from the
+  window; the roll does not scroll to frame a vocal part when it opens, nor
+  follow the lyric field when Tab moves it off screen.
+- Driven once on `Xwayland :99` with the real engine installed: the song
+  opened singing (pitch and phonemes drawn from its takes), the
+  arrangement hatched the phrases being re-sung after an edit, a drawn
+  note sang `la`, Enter and a double-click opened the field, typing and
+  Enter wrote the word, Esc left it, and the singer chip opened the
+  picker with both research-only voices badged.
+
+**As of 2026-10-06, earlier — Analyze Musically keeps its own time; a
 flatten handle; a pro's pass over its edges.** Same branch
 (`feature/analyze-musically`), not merged, not bumped. Ty, trying the
 preview build: *"the playhead inside analyze musically only moves when the

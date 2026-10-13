@@ -44,6 +44,8 @@ fn a_note(start: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -89,6 +91,8 @@ impl Rig {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
+            vocal_style: Default::default(),
         });
         self.channels.insert(channel, node(node_number));
         let mut notes = Arena::default();
@@ -98,7 +102,11 @@ impl Rig {
             lane: self.lane,
             start,
             length: BAR,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,

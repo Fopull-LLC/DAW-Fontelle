@@ -89,6 +89,7 @@ impl DeviceKind {
                 // says its instrument is named somewhere else. A preset for
                 // an actual plugin is `Self::Plugin`, which names which.
                 InstrumentKind::Plugin => "plugin".to_string(),
+                InstrumentKind::Vocal => "vocal".to_string(),
             },
             Self::Effect(kind) => format!(
                 "fx-{}",

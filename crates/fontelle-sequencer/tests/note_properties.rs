@@ -27,6 +27,8 @@ fn a_note(start: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -47,6 +49,8 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -69,6 +73,7 @@ fn compile(notes: Vec<Note>) -> fontelle_types::CompiledTimeline {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
@@ -170,6 +175,8 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(fontelle_model::Lane {
         name: "lane".into(),
@@ -190,6 +197,7 @@ fn a_looped_clip_repeats_the_properties_with_the_notes() {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: arena,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

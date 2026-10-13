@@ -1,0 +1,45 @@
+[package]
+name = "fontelle-vocal"
+description = "The vocal track's render pipeline: phrases from a part, a cache keyed by what is sung, a scheduler that sings ahead of the playhead through a singer engine, and the table the audio node plays."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+fontelle-types = { path = "../fontelle-types" }
+fontelle-model = { path = "../fontelle-model" }
+fontelle-host = { path = "../fontelle-host" }
+fontelle-engine = { path = "../fontelle-engine" }
+fontelle-singer-abi = { path = "../fontelle-singer-abi" }
+fontelle-sing = { path = "../fontelle-sing" }
+fontelle-utau = { path = "../fontelle-utau" }
+fontelle-diffsinger = { path = "../fontelle-diffsinger" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+# Voicebank archives: zips read here (names in Shift-JIS, GBK or UTF-8, so a
+# zip crate's own name handling would not do), inflated by the deflate
+# decoder already in the tree for PNGs.
+miniz_oxide = "0.8.9"
+# Shift-JIS and GBK, for archive names and for oto.ini / readme.txt written
+# on a Japanese or Chinese Windows. Pure Rust; (Apache-2.0 OR MIT) AND
+# BSD-3-Clause, all allowed by deny.toml.
+encoding_rs = "0.8"
+# A catalogue download is checked against the sha256 its index records —
+# the same crate the updater checks a release with.
+sha2 = "0.10.9"
+slotmap = "1.1.1"
+# `.7z` voicebank archives (§3): pure Rust, Apache-2.0. Only the readers —
+# LZMA/LZMA2 and the BCJ filters are always in; deflate rides on the
+# `flate2` already in the tree. No encryption, no C.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["deflate"] }
+twox-hash = { version = "2.1.4", default-features = false, features = ["xxhash64"] }
+
+[dev-dependencies]
+# Writes the small `.7z` archives the install tests read.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
+# Built for its side effect: the end-to-end test loads it as an engine.
+fontelle-testsinger = { path = "../fontelle-testsinger" }

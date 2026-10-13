@@ -46,6 +46,8 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -82,6 +84,7 @@ fn a_prefab(project: &mut Project, channel: ChannelId, name: &str) -> PrefabId {
         ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
     );
     add.apply(project).unwrap();
@@ -130,6 +133,7 @@ fn making_one_is_one_undo() {
                 ClipSource::Notes(NoteData {
                     channel,
                     notes: Arena::default(),
+                    vocal: None,
                 }),
             )),
             &mut project,
@@ -272,6 +276,7 @@ fn a_clip_that_references_a_prefab_says_where_its_edits_belong() {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
@@ -501,6 +506,7 @@ fn a_written_clip_becomes_a_prefab_in_place() {
         source: ClipSource::Notes(NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

@@ -15,7 +15,20 @@ use crate::project::{Project, ProjectMeta};
 ///
 /// **1** (2026-09-25, `docs/collab-plan.md` §4.1): a project has an id,
 /// markers are an arena, and every insert and send has an id of its own.
-pub const PROJECT_FORMAT_VERSION: u32 = 1;
+///
+/// **2** (2026-10-06): vocal tracks — a channel can be a voice
+/// (`InstrumentKind::Vocal`, `Channel::vocal`) and a note can carry a
+/// lyric. Nothing in a format-1 file changes meaning, so the step from 1 is
+/// empty; and a song with no voice in it is still *written* as 1
+/// ([`Project::format_needed`]), so builds from before voices keep opening
+/// everything that does not sing.
+///
+/// **3** (2026-10-07, `docs/vocal-plan.md` §2): a vocal part's expression —
+/// `Note::voice` (phonemes, vibrato, glide, options) and `NoteData::vocal`
+/// (lanes, each backend's lanes, settings and state). Both defaulted, so
+/// the step from 2 is empty, and a song that uses neither is still written
+/// as 2 (or 1).
+pub const PROJECT_FORMAT_VERSION: u32 = 3;
 
 /// The document inside a bundle.
 pub const PROJECT_FILE: &str = "project.json";
@@ -83,7 +96,7 @@ pub fn save_project(project: &Project, bundle: &Path) -> Result<(), StorageError
     }
 
     let mut project = project.clone();
-    project.meta.format_version = PROJECT_FORMAT_VERSION;
+    project.meta.format_version = project.format_needed();
     project.meta.app_version = env!("CARGO_PKG_VERSION").to_string();
     if project.meta.created.is_empty() {
         project.meta.created = now_iso8601();
@@ -218,6 +231,18 @@ fn migrate(mut json: serde_json::Value, from: u32) -> Result<serde_json::Value, 
     if version == 0 {
         json = v0_to_v1(json)?;
         version = 1;
+    }
+    if version == 1 {
+        // Format 2 only added what format 1 has none of (voices, lyrics),
+        // each defaulted: the document is already a format-2 one.
+        json["meta"]["format_version"] = serde_json::json!(2);
+        version = 2;
+    }
+    if version == 2 {
+        // Format 3 only added defaulted fields (a note's voice, a part's
+        // lanes); a format-2 document is already a format-3 one.
+        json["meta"]["format_version"] = serde_json::json!(3);
+        version = 3;
     }
     if version != PROJECT_FORMAT_VERSION {
         return Err(StorageError::Format(format!(

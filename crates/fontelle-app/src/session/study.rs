@@ -1805,6 +1805,7 @@ impl Session {
             source: ClipSource::Notes(fontelle_model::NoteData {
                 channel,
                 notes: arena,
+                vocal: None,
             }),
             prefab_link: None,
             color: None,

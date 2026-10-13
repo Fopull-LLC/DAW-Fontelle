@@ -165,7 +165,7 @@ fn no_clip(clip: ClipId) -> CommandError {
 /// for writing, which is why every note command goes through it: a second
 /// reading of `NoteHome` is a second chance to get "editing an instance edits
 /// the prefab" wrong.
-fn notes_of(
+pub(crate) fn notes_of(
     doc: &mut Project,
     home: crate::note::NoteHome,
 ) -> Result<&mut crate::note::NoteData, CommandError> {
@@ -282,6 +282,8 @@ impl Command for AddChannel {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
+            vocal_style: Default::default(),
         };
 
         match self.created {
@@ -1099,7 +1101,7 @@ fn a_lane(name: String) -> Lane {
 /// One function for the three commands that make rows (`AddLane`,
 /// `AddAudioClip`, `ImportParts`), because *"it always goes on a new lane at
 /// the very bottom"* was three copies of the bottom and none of the position.
-fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
+pub(crate) fn open_rows(doc: &mut Project, at: Option<usize>, count: usize) -> u32 {
     match at {
         Some(index) => {
             let mut order: Vec<(LaneId, u32)> = doc
@@ -5201,6 +5203,8 @@ impl Command for ImportParts {
                 named_keys: false,
                 ab: Default::default(),
                 gain_db: 0.0,
+                vocal: None,
+                vocal_style: Default::default(),
             };
             let channel_id = match previous {
                 Some(ids) => {
@@ -5246,6 +5250,7 @@ impl Command for ImportParts {
                 source: ClipSource::Notes(NoteData {
                     channel: channel_id,
                     notes,
+                    vocal: None,
                 }),
                 prefab_link: None,
                 color: None,
@@ -6603,6 +6608,17 @@ impl Command for SplitClip {
                 let (front, back) = split_notes(source, offset, original.loop_length);
                 head.notes = front;
                 tail.notes = back;
+                // A vocal part's lanes are in the clip's own ticks: the second
+                // half's start where its notes now start (a loop's by the
+                // phase the cut fell on, as its notes are rotated).
+                let shift = original
+                    .loop_length
+                    .filter(|p| *p > 0)
+                    .map_or(offset, |p| offset.rem_euclid(p));
+                tail.vocal = source
+                    .vocal
+                    .as_ref()
+                    .map(|part| Box::new(part.shifted(-shift)));
                 // **The piece you cut off stops being a loop.** Reported from
                 // using the window: *"we should do more of what garage band
                 // does where you split the cut section from the rest of the
@@ -10406,6 +10422,7 @@ impl Command for AddPrefabInstance {
             ClipSource::Notes(data) => ClipSource::Notes(NoteData {
                 channel: data.channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
             ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
                 target: data.target.clone(),
@@ -10780,6 +10797,7 @@ impl Command for RestorePrefab {
                 ClipSource::Notes(data) => ClipSource::Notes(NoteData {
                     channel: data.channel,
                     notes: Arena::default(),
+                    vocal: None,
                 }),
                 ClipSource::Automation(data) => ClipSource::Automation(crate::AutomationData {
                     target: data.target.clone(),
@@ -10875,6 +10893,7 @@ impl Command for MakePrefabFromClip {
         let emptied = ClipSource::Notes(NoteData {
             channel: data.channel,
             notes: Arena::default(),
+            vocal: None,
         });
 
         let prefab = Prefab {

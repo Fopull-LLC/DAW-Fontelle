@@ -43,6 +43,8 @@ fn a_note(at: i64, channel: Option<ChannelId>) -> Note {
         slide: false,
         path: Vec::new(),
         channel,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -51,6 +53,7 @@ fn clip(home: ChannelId, notes: &[(Option<ChannelId>, usize)]) -> NoteData {
     let mut data = NoteData {
         channel: home,
         notes: Arena::default(),
+        vocal: None,
     };
     let mut at = 0;
     for (channel, count) in notes {

@@ -88,6 +88,8 @@ fn a_song_played_by_a_plugin(dir: &Path) -> Session {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         },
     });
     session

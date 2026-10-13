@@ -852,3 +852,52 @@ pub fn automate_menu(name: &str) -> Vec<MenuEntry> {
         MenuEntry::new("Create automation clip").after_rule(),
     ]
 }
+
+/// What a row of a vocal track's own menu rows does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VocalTrackChoice {
+    /// Bring a UST, USTX, VSQX, MIDI or MusicXML file into this track.
+    Import,
+    /// Write the track out.
+    Export(crate::document::VocalFileFormat),
+    Freeze,
+    Unfreeze,
+    /// Render the roll's selection to a clip on a row below.
+    RenderSelection,
+}
+
+/// A vocal track's own rows on its rack menu, after the rack's own: the
+/// song files in and out (`docs/vocal-plan.md` §3, *Writing*), and freeze
+/// and render (*Hearing*). A frozen track's part is not sung, so there is
+/// no selection of it to render.
+pub fn vocal_track_menu_entries(frozen: bool) -> Vec<MenuEntry> {
+    vec![
+        MenuEntry::new("Import vocal file (UST, USTX, VSQX, MIDI, MusicXML)\u{2026}").after_rule(),
+        MenuEntry::new("Export MIDI with lyrics\u{2026}"),
+        MenuEntry::new("Export USTX\u{2026}"),
+        MenuEntry::new(if frozen {
+            "Unfreeze track"
+        } else {
+            "Freeze track"
+        }),
+        if frozen {
+            MenuEntry::disabled("Render selection to clip")
+        } else {
+            MenuEntry::new("Render selection to clip")
+        },
+    ]
+}
+
+/// What row `row` of [`vocal_track_menu_entries`] asks for.
+pub fn vocal_track_menu_choice(row: usize, frozen: bool) -> Option<VocalTrackChoice> {
+    use crate::document::VocalFileFormat;
+    Some(match row {
+        0 => VocalTrackChoice::Import,
+        1 => VocalTrackChoice::Export(VocalFileFormat::Midi),
+        2 => VocalTrackChoice::Export(VocalFileFormat::Ustx),
+        3 if frozen => VocalTrackChoice::Unfreeze,
+        3 => VocalTrackChoice::Freeze,
+        4 if !frozen => VocalTrackChoice::RenderSelection,
+        _ => return None,
+    })
+}

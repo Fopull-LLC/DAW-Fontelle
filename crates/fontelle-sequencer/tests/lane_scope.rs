@@ -28,6 +28,8 @@ fn a_note(start: i64, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -69,7 +71,11 @@ fn two_rows() -> (
             lane,
             start: 0,
             length: PPQN * 4,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,

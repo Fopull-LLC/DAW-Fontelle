@@ -38,3 +38,14 @@ The note decoding in `crates/fontelle-analysis/src/transcribe/notes.rs` is a
 port of basic-pitch's `note_creation.py` and the windowing in
 `transcribe/basic_pitch.rs` of `inference.py`, both Apache-2.0, credited in
 those files.
+
+## Data files
+
+| File | Upstream | Licence |
+|---|---|---|
+| `crates/fontelle-utau/data/cmudict.tsv.gz` (English pronunciations for UTAU ARPAsing banks) | [CMUdict](https://github.com/cmusphinx/cmudict) | BSD-2-Clause-style, Carnegie Mellon University; copied to [`cmudict/LICENSE`](cmudict/LICENSE), which binary redistributions must carry |
+| `crates/fontelle-lang/data/pinyin.txt` (each Chinese character's most common reading, toneless, for Chinese lyrics on UTAU and DiffSinger banks; rebuilt by `crates/fontelle-lang/data/make_pinyin.py`) | [mozillazg/pinyin-data](https://github.com/mozillazg/pinyin-data) at `9193766130af24d2ac54230be979b2e98ac66223` (2026-10-03): `kMandarin.txt`, `kMandarin_overwrite.txt`, `kMandarin_8105.txt`, tones dropped | MIT (mozillazg), copied to [`pinyin-data/LICENSE`](pinyin-data/LICENSE); its readings are Unicode's Unihan `kMandarin`, Unicode-3.0, copied to [`pinyin-data/UNICODE-LICENSE`](pinyin-data/UNICODE-LICENSE). Both notices ship with the binary |
+| `crates/fontelle-lang/data/pinyin-words.txt` (common words that read a character otherwise, `银行 yin hang`) | written for Fontelle | the workspace's own licence |
+
+Korean hangul needs no data: syllable blocks are taken apart by Unicode's
+own arithmetic (`crates/fontelle-lang/src/hangul.rs`).

@@ -31,6 +31,11 @@ use crate::study::{
     AddStudy, RemoveStudy, RestoreStudy, SetStudyClean, SetStudyEdits, SetStudyMarkers,
     SetStudyOriginal, SetStudyRender, SetStudyTakes,
 };
+use crate::vocal::{
+    SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
+    SetVocalStyle,
+};
+use crate::vocal_files::{FreezeVocal, ImportVocal, UnfreezeVocal, UnimportVocal};
 
 /// An edit that could not be read off the wire.
 #[derive(Debug)]
@@ -222,6 +227,18 @@ edits!(
     // shares (`DeleteChannel`). Appended: a name on the wire is forever.
     DeleteChannel,
     RestoreDeletedChannel,
+    // The vocal track (feature/vocal-track), after the v0.26.2 release.
+    SetLyrics,
+    SetSinger,
+    SetNoteVoices,
+    SetVocalLane,
+    SetVocalSettings,
+    SetVocalState,
+    ImportVocal,
+    UnimportVocal,
+    FreezeVocal,
+    UnfreezeVocal,
+    SetVocalStyle,
 );
 
 impl Edit {
@@ -408,6 +425,48 @@ pub enum Msg {
     Session {
         id: fontelle_types::PersistentId,
     },
+    // Singers (F93).
+    /// Host to everybody: every singer the song uses, and how somebody who
+    /// has not got one gets it — sent with the song, and again whenever the
+    /// song starts using another.
+    Singers {
+        singers: Vec<SingerNeed>,
+    },
+}
+
+/// A singer a shared song uses (`Msg::Singers`), as the song names it
+/// (`VocalVoice`'s engine and singer), with what a studio without it can do.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SingerNeed {
+    pub engine: String,
+    pub singer: String,
+    /// What it is called, for a person.
+    pub name: String,
+    pub offer: SingerOffer,
+}
+
+/// How a studio without a singer gets it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SingerOffer {
+    /// A Fontelle Singer bank whose terms let it be passed on: the host
+    /// sends it, packed, by this hash, once the person has read `terms` and
+    /// agreed.
+    Send {
+        hash: u64,
+        size: u64,
+        file_name: String,
+        terms: Option<String>,
+    },
+    /// A Fontelle Singer bank that may not be passed on (or nobody knows
+    /// whether it may): where to get it — the catalogue's download or the
+    /// author's page — when anybody knows.
+    GetIt { link: Option<String> },
+    /// A singer of another engine's: the engine has to be installed, and
+    /// cannot be sent.
+    Engine,
+    /// A voice made for research only, whose output must not be shared:
+    /// never sent.
+    ResearchOnly,
 }
 
 impl Msg {

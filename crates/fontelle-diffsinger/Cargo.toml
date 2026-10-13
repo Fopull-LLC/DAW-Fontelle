@@ -1,0 +1,42 @@
+[package]
+name = "fontelle-diffsinger"
+description = "The Fontelle Singer's DiffSinger runtime: sings community DiffSinger voicebanks in the OpenUtau layout (dsconfig.yaml, dsdict, variance/pitch/duration models, the bank's vocoder dependency) through ONNX Runtime, behind fontelle-sing's Backend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# ONNX Runtime's CUDA provider (the prebuilt CUDA 13 build). CPU is always
+# there and is what a session falls back to when CUDA cannot start.
+cuda = ["ort/cuda"]
+
+[dependencies]
+fontelle-sing = { path = "../fontelle-sing" }
+# Chinese characters to pinyin, hangul to its sounds.
+fontelle-lang = { path = "../fontelle-lang" }
+# CMUdict, for English words a bank's own dictionary lacks.
+fontelle-utau = { path = "../fontelle-utau" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# dsconfig.yaml, dsdict*.yaml, vocoder.yaml, oudep.yaml, character.yaml.
+serde_yaml_ng = "0.10.0"
+# ONNX Runtime. Pinned: an `ort` release candidate may change its API in a
+# patch number. See `src/models.rs` for the version and how it is linked.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "api-17"] }
+
+# Linked statically from pyke's prebuilt ONNX Runtime 1.28 where one exists:
+# Linux x86_64/aarch64, Windows MSVC, macOS arm64 — what CI and releases build.
+[target.'cfg(not(any(all(windows, target_env = "gnu"), all(target_os = "macos", target_arch = "x86_64"))))'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "api-17", "download-binaries", "tls-rustls"] }
+
+# No prebuilt build for Intel macOS (a release target) or Windows GNU (the
+# target the preflight lints from Linux): there ONNX Runtime is loaded at run
+# time, from ORT_DYLIB_PATH or the platform's usual library name.
+[target.'cfg(any(all(windows, target_env = "gnu"), all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "api-17", "load-dynamic"] }
+
+[dev-dependencies]

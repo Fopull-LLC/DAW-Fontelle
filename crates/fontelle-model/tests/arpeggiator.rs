@@ -31,6 +31,8 @@ fn a_chord() -> Vec<Note> {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         })
         .collect()
 }
@@ -278,6 +280,8 @@ fn two_chords_in_sequence_arpeggiate_separately() {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         });
     }
     let out = arpeggiated(&notes, spec());

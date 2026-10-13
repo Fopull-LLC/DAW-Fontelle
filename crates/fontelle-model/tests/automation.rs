@@ -339,6 +339,8 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     project.clips.insert(Clip {
         name: None,
@@ -348,6 +350,7 @@ fn a_note_clip_on_the_same_lane_is_ignored() {
         source: ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

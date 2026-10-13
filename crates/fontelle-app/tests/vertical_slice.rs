@@ -118,6 +118,8 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     let lane_id = project.lanes.insert(Lane {
         name: "lane".into(),
@@ -144,6 +146,8 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     });
     project.clips.insert(Clip {
         name: None,
@@ -153,6 +157,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         source: ClipSource::Notes(NoteData {
             channel: channel_id,
             notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

@@ -140,6 +140,8 @@ impl Rig {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
+            vocal_style: Default::default(),
         });
         fontelle_app::set_channel_patch(&mut self.project, channel, &patch, &self.library)
             .expect("a patch this build built must serialise");
@@ -162,13 +164,19 @@ impl Rig {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         });
         self.project.clips.insert(Clip {
             name: None,
             lane: self.lane,
             start: 0,
             length: PPQN * 8,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,
@@ -374,6 +382,8 @@ fn a_channel_with_no_instrument_keeps_its_place_but_nothing_answers_for_it() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     rig.hold_a_note(silent);
 

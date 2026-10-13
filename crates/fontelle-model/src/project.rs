@@ -224,6 +224,16 @@ impl TempoMap {
         }
     }
 
+    /// Where `tick` falls, in seconds from the top — unrounded, which is what
+    /// anything placed in seconds (a sung phrase) wants: a sample index is
+    /// only right for one rate.
+    pub fn tick_to_seconds(&self, tick: Tick) -> f64 {
+        let index = self.segment_at(tick);
+        let segment = &self.segments[index];
+        self.prefix_seconds[index]
+            + (tick - segment.start_tick) as f64 * seconds_per_tick(segment.bpm)
+    }
+
     pub fn tick_to_sample(&self, tick: Tick) -> Sample {
         let index = self.segment_at(tick);
         let segment = &self.segments[index];
@@ -339,9 +349,60 @@ pub struct Project {
     /// before studies has none, and needs no format bump to open.
     #[serde(default)]
     pub studies: Arena<fontelle_types::StudyId, fontelle_types::Study>,
+    /// The vocal tracks frozen to audio, and their renders
+    /// (`crate::FreezeVocal`). Defaulted and left out of the file when none
+    /// is, so a song that never froze is written as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen: Vec<crate::FrozenVocal>,
 }
 
 impl Project {
+    /// The oldest project format that can hold this song: **3** once a
+    /// vocal part has expression (a note's voice, a lane, a singer's
+    /// settings or state), **2** once it has a voice or a lyric in it, **1**
+    /// otherwise.
+    ///
+    /// What a save stamps, rather than always the newest: a song with no
+    /// vocal track in it is exactly what a format-1 build reads, and stamping
+    /// it 2 would lock everybody who tried this build out of their own songs
+    /// in the one they came from. A song that does sing is refused by such a
+    /// build by version ("upgrade Fontelle") rather than half-read.
+    pub fn format_needed(&self) -> u32 {
+        let sings = self.channels.values().any(|c| {
+            c.vocal.is_some() || c.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+        });
+        let sources = self
+            .clips
+            .values()
+            .map(|c| &c.source)
+            .chain(self.prefabs.values().map(|p| &p.source));
+        let words = sources.into_iter().any(|source| match source {
+            crate::ClipSource::Notes(data) => data.notes.values().any(|n| !n.lyric.is_empty()),
+            _ => false,
+        });
+        let sources = self
+            .clips
+            .values()
+            .map(|c| &c.source)
+            .chain(self.prefabs.values().map(|p| &p.source));
+        let expression = sources.into_iter().any(|source| match source {
+            crate::ClipSource::Notes(data) => {
+                data.vocal.is_some() || data.notes.values().any(|n| n.voice.is_some())
+            }
+            _ => false,
+        });
+        // The instrument panel's settings are expression too: a format-2
+        // build would open the song and sing it without them.
+        let styled = self.channels.values().any(|c| !c.vocal_style.is_default());
+        if expression || styled || !self.frozen.is_empty() {
+            3
+        } else if sings || words {
+            2
+        } else {
+            1
+        }
+    }
+
     /// The lanes, **in the order the arrangement stacks them**.
     ///
     /// One answer to "what is row 3", here rather than in whatever draws the
@@ -603,6 +664,7 @@ impl Project {
             view_state: ViewState::default(),
             lane_routing: crate::LaneRouting::default(),
             studies: Arena::default(),
+            frozen: Vec::new(),
         }
     }
 }

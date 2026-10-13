@@ -789,6 +789,8 @@ mod tests {
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
+            vocal_style: Default::default(),
         });
 
         let lane_id = project.lanes.insert(Lane {
@@ -815,6 +817,8 @@ mod tests {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         });
 
         project.clips.insert(Clip {
@@ -825,6 +829,7 @@ mod tests {
             source: ClipSource::Notes(NoteData {
                 channel: channel_id,
                 notes,
+                vocal: None,
             }),
             prefab_link: None,
             color: None,

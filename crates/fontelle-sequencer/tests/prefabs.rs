@@ -44,6 +44,8 @@ fn a_note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -71,6 +73,8 @@ fn a_rig() -> Rig {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     let lane = project.lanes.insert(a_lane(0));
     let other = project.lanes.insert(a_lane(1));
@@ -102,6 +106,7 @@ impl Rig {
             ClipSource::Notes(NoteData {
                 channel: self.channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
         );
         add.apply(&mut self.project).unwrap();
@@ -277,6 +282,7 @@ fn an_ordinary_clip_is_untouched_by_any_of_this() {
         source: ClipSource::Notes(NoteData {
             channel: rig.channel,
             notes,
+            vocal: None,
         }),
         prefab_link: None,
         color: None,

@@ -217,3 +217,29 @@ fn every_built_in_reads_back_from_its_own_file() {
         assert_eq!(back, theme, "{}", theme.name);
     }
 }
+
+/// The singer panel's four section inks (its nameplates, its cards' edges,
+/// the vibrato picture) are each look's own, and stand out from the card
+/// they sit on as a graphic must (WCAG 1.4.11, 3:1) — and from each other.
+#[test]
+fn every_built_in_s_singer_section_inks_read_on_its_cards() {
+    for theme in Theme::builtins() {
+        let p = &theme.palette;
+        let card = over_window(&theme, p.panel_header);
+        let inks = [
+            ("voice", p.singer_voice),
+            ("expression", p.singer_expression),
+            ("performance", p.singer_performance),
+            ("output", p.singer_output),
+        ];
+        for (name, ink) in inks {
+            let c = contrast(ink, card);
+            assert!(c >= 3.0, "{}: {name} on its card {c:.2}", theme.name);
+        }
+        for (i, (a, x)) in inks.iter().enumerate() {
+            for (b, y) in &inks[i + 1..] {
+                assert_ne!(x, y, "{}: {a} and {b} are one ink", theme.name);
+            }
+        }
+    }
+}

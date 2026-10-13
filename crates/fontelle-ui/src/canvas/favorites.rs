@@ -63,6 +63,11 @@ pub enum InstrumentRow {
     Kind(InstrumentKind),
     /// A starred plugin instrument, by position in the listing.
     Plugin(usize),
+    /// The Voicebanks page: singers for a vocal track, installed and found.
+    Voicebanks,
+    /// A singer engine's instrument, by position in the engines the menu
+    /// was built from. (The Fontelle Singer is `Kind(Vocal)`.)
+    Engine(usize),
 }
 
 /// What a row of the plugin picker means.
@@ -265,6 +270,51 @@ pub fn instrument_menu_rows(
         rule_above_first(&mut rest);
     }
     rows.extend(rest);
+    rows
+}
+
+/// The instrument menus with the singers as instruments: `Kind(Vocal)` is
+/// the Fontelle Singer, and each of `engines` (engine instruments only) a
+/// row of its own right after it. `current_engine` is the engine a vocal
+/// track's voice names, when `current` is `Vocal` and it is not the
+/// Fontelle Singer's.
+pub fn singer_instrument_menu_rows(
+    current: Option<InstrumentKind>,
+    current_engine: Option<&str>,
+    favorites: &[Favorite],
+    plugins: &[PluginListing],
+    engines: &[crate::document::SingerInstrument],
+) -> Vec<(MenuEntry, InstrumentRow)> {
+    // The Fontelle Singer is the current instrument only on a vocal track
+    // whose voice is not an engine's.
+    let singer_current = if current == Some(InstrumentKind::Vocal) && current_engine.is_some() {
+        None
+    } else {
+        current
+    };
+    let mut rows = instrument_menu_rows(singer_current, favorites, plugins);
+    // Each engine right after the Fontelle Singer's (last) row: the
+    // singers together.
+    let at = rows
+        .iter()
+        .rposition(|(_, row)| *row == InstrumentRow::Kind(InstrumentKind::Vocal))
+        .map_or(rows.len(), |at| at + 1);
+    let engine_rows = engines
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.engine.is_some())
+        .map(|(i, e)| {
+            let chosen = current == Some(InstrumentKind::Vocal)
+                && current_engine.is_some()
+                && e.engine.as_deref() == current_engine;
+            let entry = if chosen {
+                MenuEntry::disabled(format!("{CHOSEN_MARK}{}", e.name))
+            } else {
+                MenuEntry::new(e.name.clone())
+            };
+            (entry, InstrumentRow::Engine(i))
+        });
+    rows.splice(at..at, engine_rows);
     rows
 }
 

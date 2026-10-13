@@ -68,17 +68,29 @@ pub enum InstrumentKind {
     /// [`crate::PluginKey`]. Which is the same shape `SoundFont` has, one
     /// level up: choosing the kind is not choosing the sound.
     Plugin,
+    /// A **voice**: the channel's notes are sung, with the lyrics written on
+    /// them, by a singer from a singer engine (`fontelle-singer-abi`).
+    ///
+    /// Like `Plugin`, choosing the kind is not choosing the sound: who sings
+    /// and in which language is the channel's `vocal` (in `fontelle-model`),
+    /// and the engine that does it is installed beside Fontelle, not built
+    /// into it. With none installed the channel still takes notes and
+    /// lyrics; it is silent until a singer is there.
+    ///
+    /// Appended, never reordered: the name is what a song file says.
+    Vocal,
 }
 
 impl InstrumentKind {
     /// In the order a menu offers them: the soundfont player first, because it
     /// is what somebody opened this program to use.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::SoundFont,
         Self::Flopsynth,
         Self::DrumMachine,
         Self::Osc3,
         Self::Sampler,
+        Self::Vocal,
         Self::Plugin,
     ];
 
@@ -91,6 +103,9 @@ impl InstrumentKind {
             Self::DrumMachine => "Drum machine",
             Self::Flopsynth => "Flopsynth",
             Self::Plugin => "Plugin",
+            // The built-in singer; each singer engine installed is an
+            // instrument of its own beside it, named by the engine.
+            Self::Vocal => "Fontelle Singer",
         }
     }
 
@@ -103,6 +118,7 @@ impl InstrumentKind {
             Self::DrumMachine => "Drums",
             Self::Flopsynth => "Flopsynth",
             Self::Plugin => "Plugin",
+            Self::Vocal => "Fontelle Singer",
         }
     }
 
@@ -122,6 +138,7 @@ impl InstrumentKind {
             Self::Sampler => Some("Drop a sound on it"),
             Self::Osc3 | Self::DrumMachine | Self::Flopsynth => None,
             Self::Plugin => Some("Choose a plugin"),
+            Self::Vocal => Some("Choose a singer"),
         }
     }
 }

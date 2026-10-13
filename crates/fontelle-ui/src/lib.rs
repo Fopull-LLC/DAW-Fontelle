@@ -31,6 +31,7 @@ pub mod icon;
 pub mod layout;
 pub mod motion;
 pub mod pointer;
+pub mod portrait;
 pub mod render;
 pub mod skin;
 pub mod sky;
@@ -43,7 +44,7 @@ pub mod widget;
 
 pub use vello;
 
-pub use app::{WindowApp, WindowError, WindowOptions, run, run_window};
+pub use app::{WindowApp, WindowError, WindowOptions, Windowless, run, run_window};
 pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{

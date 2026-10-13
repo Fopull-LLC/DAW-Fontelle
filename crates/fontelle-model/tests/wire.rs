@@ -13,20 +13,23 @@ use fontelle_model::{
     AddMixerTrack, AddNotes, AddPluginInsert, AddPrefab, AddPrefabInstance, AddSend, ApplyPreset,
     ApplyTrackChain, Arena, AutomationData, AutomationPoint, Clip, ClipSource, Command, Compound,
     CopyChannelAb, CurveShape, DetachPrefab, DuplicateChannel, DuplicateClip, DuplicateMixerTrack,
-    Edit, EditLapse, EditNotepad, FlagTarget, History, ImportPart, ImportParts, MakePrefabFromClip,
-    MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane, MoveMixerTrack, MoveNotes,
-    NoteData, NoteProperty, NudgeNoteProperty, NumberTarget, PROJECT_FILE, PresetTarget, Project,
-    RemoveAutomationPoints, RemoveChannel, RemoveClip, RemoveInsert, RemoveLane, RemoveMarker,
-    RemoveMixerTrack, RemoveNotes, RemovePrefab, RemoveSend, RenameChannel, RenameClip, RenameLane,
-    RenameMixerTrack, RenamePrefab, RenameProject, ResizeClip, ResizeClips, ResizeNotes,
-    RestoreInsert, SetAudioClip, SetChannelKind, SetChannelPatch, SetChannelPlugin,
-    SetChannelRoute, SetClipLoop, SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey,
-    SetInsertMix, SetInsertNotes, SetInsertParam, SetKey, SetLoopRange, SetMixerOrder,
-    SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty,
-    SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve,
-    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
-    SplitClip, SwitchChannelAb, TrimClipStart, load_project, peek_meta, save_project,
+    Edit, EditLapse, EditNotepad, FlagTarget, History, ImportPart, ImportParts, LaneCurve, LaneKey,
+    MakePrefabFromClip, MoveAutomationPoints, MoveClip, MoveClips, MoveInsert, MoveLane,
+    MoveMixerTrack, MoveNotes, NoteData, NoteProperty, NoteVoice, NudgeNoteProperty, NumberTarget,
+    PROJECT_FILE, PresetTarget, Project, RemoveAutomationPoints, RemoveChannel, RemoveClip,
+    RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab,
+    RemoveSend, RenameChannel, RenameClip, RenameLane, RenameMixerTrack, RenamePrefab,
+    RenameProject, ResizeClip, ResizeClips, ResizeNotes, RestoreInsert, SetAudioClip,
+    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
+    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
+    SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor, SetNoteKeys, SetNoteLengths,
+    SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
+    SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
+    SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput, SetVocalLane, SetVocalSettings,
+    SetVocalState, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart, VocalVoice, load_project,
+    peek_meta, save_project,
 };
+use fontelle_model::{FreezeVocal, ImportVocal, UnfreezeVocal, VocalClipImport, VocalLanding};
 use fontelle_types::{
     AssetKind, AssetRef, AudioClipData, BandChannel, BandType, ChannelId, ClipId, DeviceKind,
     DisgustingBeatEdit, EffectConfig, EffectKind, EqBand, InstrumentKind, LaneId, MixerTrackId,
@@ -63,6 +66,8 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -200,6 +205,7 @@ fn a_studio() -> Studio {
             source: ClipSource::Notes(NoteData {
                 channel: keys,
                 notes: Arena::default(),
+                vocal: None,
             }),
             prefab_link: None,
             color: None,
@@ -272,6 +278,7 @@ fn a_studio() -> Studio {
             ClipSource::Notes(NoteData {
                 channel: keys,
                 notes: [a_note(0, 48)].into_iter().collect(),
+                vocal: None,
             }),
         ),
         &mut project,
@@ -561,6 +568,143 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("SetNoteVelocity", |s| {
             Box::new(SetNoteVelocity::new(s.notes_clip, s.notes.clone(), 64))
         }),
+        ("SetLyrics", |s| {
+            let words = vec!["a-".to_string(); s.notes.len()];
+            Box::new(SetLyrics::new(s.notes_clip, s.notes.clone(), words))
+        }),
+        ("SetSinger", |s| {
+            Box::new(SetSinger::new(
+                s.keys,
+                Some(VocalVoice::new("Engine", "alto", "en")),
+            ))
+        }),
+        ("SetNoteVoices", |s| {
+            Box::new(SetNoteVoices::new(
+                s.notes_clip,
+                vec![s.notes[0]],
+                vec![Some(NoteVoice {
+                    vibrato: Some(fontelle_sing::Vibrato::default()),
+                    ..NoteVoice::default()
+                })],
+                "Vibrato",
+            ))
+        }),
+        ("SetVocalLane", |s| {
+            let mut curve = LaneCurve::default();
+            curve.write(0, PPQN, 10, |_| 0.5, 0.0);
+            Box::new(SetVocalLane::new(
+                s.notes_clip,
+                LaneKey::Standard(fontelle_sing::Lane::Breathiness),
+                Some(curve),
+            ))
+        }),
+        ("SetVocalSettings", |s| {
+            Box::new(SetVocalSettings::new(
+                s.notes_clip,
+                "Engine",
+                std::collections::BTreeMap::from([("steps".to_string(), 4.0)]),
+            ))
+        }),
+        ("SetVocalState", |s| {
+            Box::new(SetVocalState::new(
+                s.notes_clip,
+                "Engine",
+                Some(vec![1, 2, 3]),
+            ))
+        }),
+        ("ImportVocal", |_| {
+            Box::new(
+                ImportVocal::new(
+                    "song.ustx",
+                    vec![VocalClipImport {
+                        name: "Lead".into(),
+                        start: PPQN,
+                        length: PPQN * 4,
+                        notes: vec![fontelle_model::Note {
+                            start: 0,
+                            length: PPQN,
+                            key: 60,
+                            velocity: 100,
+                            pan: 0,
+                            fine_pitch: 0,
+                            release: 0,
+                            mod_x: 0,
+                            mod_y: 0,
+                            slide: false,
+                            path: Vec::new(),
+                            channel: None,
+                            lyric: "la".into(),
+                            voice: None,
+                        }],
+                        vocal: None,
+                    }],
+                    VocalLanding::NewTracks {
+                        at: None,
+                        voice: Some(VocalVoice::new("Engine", "alto", "en")),
+                    },
+                )
+                .with_tempo(
+                    vec![fontelle_model::TempoSegment {
+                        start_tick: 0,
+                        bpm: 90.0,
+                    }],
+                    3,
+                ),
+            )
+        }),
+        ("FreezeVocal", |s| {
+            Box::new(Compound::new(
+                "Freeze",
+                vec![
+                    Box::new(SetChannelKind::new(s.keys, InstrumentKind::Vocal)),
+                    Box::new(FreezeVocal::new(
+                        s.keys,
+                        "Keys (frozen)",
+                        AudioClipData::whole(
+                            AssetRef {
+                                id: fontelle_types::AssetId::default(),
+                                path: "renders/Keys (frozen).wav".into(),
+                                content_hash: 0,
+                                size: 0,
+                                kind: AssetKind::Sample,
+                            },
+                            48_000,
+                            48_000,
+                        ),
+                        0,
+                        PPQN * 4,
+                        1,
+                    )),
+                ],
+            ))
+        }),
+        ("UnfreezeVocal", |s| {
+            Box::new(Compound::new(
+                "Freeze and unfreeze",
+                vec![
+                    Box::new(SetChannelKind::new(s.keys, InstrumentKind::Vocal)),
+                    Box::new(FreezeVocal::new(
+                        s.keys,
+                        "Keys (frozen)",
+                        AudioClipData::whole(
+                            AssetRef {
+                                id: fontelle_types::AssetId::default(),
+                                path: "renders/Keys (frozen).wav".into(),
+                                content_hash: 0,
+                                size: 0,
+                                kind: AssetKind::Sample,
+                            },
+                            48_000,
+                            48_000,
+                        ),
+                        0,
+                        PPQN * 4,
+                        1,
+                    )),
+                    Box::new(UnfreezeVocal::new(s.keys)),
+                ],
+            ))
+        }),
         ("SetNoteSlide", |s| {
             Box::new(SetNoteSlide::new(s.notes_clip, vec![s.notes[0]], true))
         }),
@@ -650,6 +794,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 source: ClipSource::Notes(NoteData {
                     channel: s.drums,
                     notes: Arena::default(),
+                    vocal: None,
                 }),
                 prefab_link: None,
                 color: None,
@@ -770,6 +915,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 ClipSource::Notes(NoteData {
                     channel: s.drums,
                     notes: [a_note(0, 36)].into_iter().collect(),
+                    vocal: None,
                 }),
             ))
         }),
@@ -990,6 +1136,46 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"SetStudyEdits":{"study":{"idx":1,"version":1},"edits":[],"before":null}}"#,
             "SetStudyEdits",
+        ),
+        (
+            r#"{"SetLyrics":{"home":{"Clip":{"idx":1,"version":1}},"ids":[{"idx":1,"version":1}],"lyrics":["la"],"previous":null,"label":"Set a note's lyric"}}"#,
+            "SetLyrics",
+        ),
+        (
+            r#"{"SetSinger":{"channel":{"idx":1,"version":1},"voice":{"engine":"E","singer":"s","language":"ja"},"previous":null}}"#,
+            "SetSinger",
+        ),
+        (
+            r#"{"SetNoteVoices":{"home":{"Clip":{"idx":1,"version":1}},"ids":[{"idx":1,"version":1}],"voices":[{"vibrato":{"depth":25.0,"rate":5.5,"delay":0.4,"fade_in":0.3,"fade_out":0.2}}],"previous":null,"label":"Vibrato"}}"#,
+            "SetNoteVoices",
+        ),
+        (
+            r#"{"SetVocalLane":{"home":{"Clip":{"idx":1,"version":1}},"key":{"Standard":"Breathiness"},"curve":[[0,0.5],[960,0.5]],"previous":null,"label":"Draw breathiness"}}"#,
+            "SetVocalLane",
+        ),
+        (
+            r#"{"SetVocalSettings":{"home":{"Clip":{"idx":1,"version":1}},"backend":"E","settings":{"steps":4.0},"previous":null}}"#,
+            "SetVocalSettings",
+        ),
+        (
+            r#"{"SetVocalState":{"home":{"Clip":{"idx":1,"version":1}},"backend":"E","state":"AQID","previous":null}}"#,
+            "SetVocalState",
+        ),
+        (
+            r#"{"ImportVocal":{"parts":[],"landing":{"NewTracks":{"at":null,"voice":null}},"made":[],"label":"Import song.ust"}}"#,
+            "ImportVocal",
+        ),
+        (
+            r#"{"UnimportVocal":{"made":[],"tempo":null,"label":"Import song.ust"}}"#,
+            "UnimportVocal",
+        ),
+        (
+            r#"{"UnfreezeVocal":{"channel":{"idx":1,"version":1}}}"#,
+            "UnfreezeVocal",
+        ),
+        (
+            r#"{"FreezeVocal":{"channel":{"idx":1,"version":1},"row_name":"V (frozen)","data":{"asset":{"id":{"idx":1,"version":1},"path":"renders/V (frozen).wav","content_hash":0,"size":0,"kind":"Sample"},"source_start":0,"source_end":48000,"sample_rate":48000},"start":0,"length":960,"at_row":1,"made":null}}"#,
+            "FreezeVocal",
         ),
         (
             r#"{"DeleteChannel":{"channel":{"idx":1,"version":1},"removed":null}}"#,
@@ -1540,6 +1726,13 @@ fn msg_variant_order_is_pinned() {
             id: PersistentId::new()
         }),
         19
+    );
+    // F93: the singers a song uses, and how to get each.
+    assert_eq!(
+        tag(&Msg::Singers {
+            singers: Vec::new()
+        }),
+        20
     );
 }
 

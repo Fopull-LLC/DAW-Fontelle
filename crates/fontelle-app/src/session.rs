@@ -23,7 +23,9 @@
 //! channel no longer needs the audio device restarted.
 
 mod study;
+mod vocal_files;
 
+use fontelle_model::wire::SingerOffer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -75,6 +77,11 @@ struct Bounce {
     floor: usize,
     path: PathBuf,
     sample_rate: u32,
+    /// The vocal tracks' final takes to wait for before rendering, and the
+    /// count of phrases sung so far for the progress card — `(done << 32) |
+    /// total`, zero while there is nothing to wait for.
+    vocals: Option<crate::vocal::VocalRenderPrep>,
+    singing: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Where a bounce's file ends.
@@ -105,12 +112,25 @@ enum AfterBounce {
         name: String,
         before: Vec<LaneId>,
     },
+    /// A vocal track's render: a freeze, or a selection onto its row.
+    Vocal(vocal_files::VocalAfter),
 }
 
 impl Bounce {
     /// Renders and writes the file, telling `progress` the frames done.
     /// Returns how many samples clipped.
     fn run(mut self, progress: &mut dyn FnMut(i64)) -> Result<usize, String> {
+        // An export of a song that sings waits for every phrase's final
+        // take: a preview is for hearing an edit soon, not for a file.
+        if let Some(vocals) = self.vocals.take() {
+            let singing = std::sync::Arc::clone(&self.singing);
+            vocals.wait_and_publish(&mut |done, total| {
+                singing.store(
+                    ((done as u64) << 32) | total as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            })?;
+        }
         let rendered = crate::render_offline_reporting(
             &self.timeline,
             &mut self.graph,
@@ -140,6 +160,8 @@ struct RunningJob {
     path: PathBuf,
     then: AfterBounce,
     worker: std::thread::JoinHandle<Result<usize, String>>,
+    /// The bounce's vocal count — see `Bounce::singing`.
+    singing: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// `<stem>.wav` in `renders`, or `<stem> 2.wav` and so on when that is taken.
@@ -481,6 +503,14 @@ pub struct Session {
     /// on the master of every graph built, so a rebuild neither silences it
     /// nor moves its playhead.
     study_player: std::sync::Arc<fontelle_engine::StudyPlayer>,
+    /// The vocal tracks: engines, phrases, the scheduler singing them and
+    /// the players the graph reads (`crate::vocal`).
+    vocal: crate::vocal::VocalSession,
+    /// Notes an engine's window asked to have selected, for the roll.
+    vocal_select: Option<Vec<NoteId>>,
+    /// What the next bounce waits for before it renders: the vocal tracks'
+    /// final takes. Set by `realise_for_render`, taken by the bounce.
+    render_vocals: Option<crate::vocal::VocalRenderPrep>,
     /// What it plays for the clip open in the window.
     preview: Option<crate::analyze::Preview>,
     /// What the Analyze Musically window is open on (`session/study.rs`).
@@ -615,6 +645,13 @@ pub struct Session {
     /// The plugins a shared song uses that are not installed here and have
     /// been said — `None` until the song's first look (F91).
     missing_plugins_said: Option<std::collections::BTreeSet<String>>,
+    /// The singers this host last said its song uses, by engine and voice
+    /// (F93): offered again only when that changes.
+    singers_said: Option<Vec<(String, String)>>,
+    /// A sent singer waiting on the person: its terms, and a yes or no.
+    singer_question: Option<fontelle_model::wire::SingerNeed>,
+    /// Sent singers asked about here, by hash: asked once.
+    singers_answered: std::collections::BTreeSet<u64>,
     /// The question a stray clip raised in lane-style, while it stands.
     lane_question: Option<fontelle_model::LaneConflict>,
     /// The stray clips already known about — asked of, or there when the
@@ -931,6 +968,19 @@ impl Session {
             if let Err(e) = self.save_settings() {
                 self.message = Some(format!("could not write settings: {e}"));
             }
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::BetaUpdates {
+            self.settings.beta_updates = !self.settings.beta_updates;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            // Asked again at once, so the start menu's line answers for the
+            // channel just chosen rather than the one before it. A disabled
+            // updater (the launch check is off) asks nothing.
+            self.updater.set_channel(self.settings.update_channel());
+            self.updater.check();
             self.touch();
             return;
         }
@@ -1581,6 +1631,9 @@ impl Session {
             analysis: None,
             analysis_keys: HashMap::new(),
             study_player: fontelle_engine::StudyPlayer::new(),
+            vocal: crate::vocal::VocalSession::new(),
+            vocal_select: None,
+            render_vocals: None,
             preview: None,
             analysis_target: None,
             render_job: None,
@@ -1624,6 +1677,9 @@ impl Session {
             lanes_unsettled: None,
             graph_builds: 0,
             missing_plugins_said: None,
+            singers_said: None,
+            singer_question: None,
+            singers_answered: std::collections::BTreeSet::new(),
             lane_question: None,
             known_conflicts: Vec::new(),
             routing_question: false,
@@ -2203,7 +2259,8 @@ impl Session {
 
     /// Gives the session the update check the launch decided on — the real
     /// one, or the disabled one when the settings say not to ask.
-    pub fn with_updater(mut self, updater: Updater) -> Self {
+    pub fn with_updater(mut self, mut updater: Updater) -> Self {
+        updater.set_channel(self.settings.update_channel());
         self.updater = updater;
         self
     }
@@ -2683,6 +2740,7 @@ impl Session {
         // (F56).
         self.library.set_mint_space(self.history.mint_space());
         self.collab_effects(effects);
+        self.share_singers();
     }
 
     /// Loads a file that has just arrived into whatever plays it: every clip
@@ -2794,7 +2852,11 @@ impl Session {
                     self.message = Some(line);
                     self.touch();
                 }
-                Effect::FileArrived(hash) => self.load_arrived(hash),
+                Effect::FileArrived(hash) => {
+                    if !self.install_arrived_singer(hash) {
+                        self.load_arrived(hash);
+                    }
+                }
                 Effect::Open(path) => {
                     let opened = match self.open_bundle(&path) {
                         Ok(opened) => opened,
@@ -2942,6 +3004,14 @@ impl Session {
         let Some(collab) = self.collab.as_ref() else {
             return items;
         };
+        let who = collab.host_name().unwrap_or("the host").to_string();
+        for need in collab.singers() {
+            if self.has_singer(&need.engine, &need.singer) {
+                continue;
+            }
+            let (what, detail) = crate::collab::singers::missing_words(need, &who);
+            items.push(MissingItem { what, detail });
+        }
         let from = collab
             .host_name()
             .map(|host| format!("{host}\u{2019}s computer"))
@@ -2987,6 +3057,130 @@ impl Session {
                 .map(|(state, _)| format!("{}:{}", state.key.format.label(), state.key.id))
                 .collect(),
         );
+    }
+
+    /// Whether this studio can sing as `engine`'s `singer`.
+    fn has_singer(&self, engine: &str, singer: &str) -> bool {
+        self.vocal
+            .registry()
+            .voices()
+            .iter()
+            .any(|v| v.backend == engine && v.info.id == singer)
+    }
+
+    /// The singers of a shared song (F93). A host says which its song uses
+    /// whenever that changes, packing what it may send; a joiner asks about
+    /// a sent one it has not got — its terms first.
+    ///
+    /// > *"collaborating doesn't share singer files currently like it does
+    /// > with sound fonts and audio so you cannot sync singers you don't
+    /// > share. please add this."*
+    fn share_singers(&mut self) {
+        let Some(collab) = self.collab.as_ref() else {
+            return;
+        };
+        if !collab.is_live() {
+            return;
+        }
+        if collab.is_host() {
+            let mut used: Vec<(String, String)> = self
+                .project
+                .channels
+                .values()
+                .filter_map(|c| c.vocal.as_ref())
+                .map(|v| (v.engine.clone(), v.singer.clone()))
+                .collect();
+            used.sort();
+            used.dedup();
+            if self.singers_said.as_ref() == Some(&used) {
+                return;
+            }
+            let (needs, packs) = crate::collab::singers::needs_of(&self.project, &self.vocal);
+            self.singers_said = Some(used);
+            if let Some(collab) = self.collab.as_mut() {
+                collab.offer_singers(needs, packs);
+            }
+            return;
+        }
+        if self.singer_question.is_some() {
+            return;
+        }
+        let ask = collab
+            .singers()
+            .iter()
+            .find(|need| {
+                matches!(&need.offer, SingerOffer::Send { hash, .. }
+                    if !self.singers_answered.contains(hash))
+                    && !self.has_singer(&need.engine, &need.singer)
+            })
+            .cloned();
+        if ask.is_some() {
+            self.singer_question = ask;
+            self.touch();
+        }
+    }
+
+    /// A packed singer has arrived whole: installed, its terms agreed here —
+    /// the person agreed before it was fetched — and the song sings with it.
+    /// `false` when `hash` was not a singer.
+    fn install_arrived_singer(&mut self, hash: u64) -> bool {
+        let Some(packed) = self.collab.as_ref().and_then(|c| c.singer_pack(hash)) else {
+            return false;
+        };
+        let Some(need) = self
+            .collab
+            .as_ref()
+            .and_then(|c| {
+                c.singers()
+                    .iter()
+                    .find(|n| matches!(n.offer, SingerOffer::Send { hash: h, .. } if h == hash))
+            })
+            .cloned()
+        else {
+            return true;
+        };
+        // Unpacked under the bank's own folder name — the name an install
+        // from a folder keeps.
+        let staging = self
+            .vocal
+            .voicebanks_dir()
+            .join(format!(".incoming-{hash:016x}"));
+        let name = match &need.offer {
+            SingerOffer::Send { file_name, .. } => file_name
+                .strip_suffix(".pack")
+                .unwrap_or(file_name)
+                .to_string(),
+            _ => need.name.clone(),
+        };
+        let folder = staging.join(crate::projects::safe_name(&name));
+        let installed = crate::collab::singers::unpack(&packed, &folder)
+            .map_err(|e| e.to_string())
+            .and_then(|()| self.vocal.install(&folder));
+        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_file(&packed);
+        match installed {
+            Ok(_) => {
+                let banks = fontelle_vocal::voicebanks::list(&self.vocal.voicebanks_dir());
+                if let Some(bank) =
+                    fontelle_vocal::voicebanks::bank_for_voice(&banks, &need.singer, None)
+                {
+                    self.vocal.agree_bank(&bank.id);
+                }
+                self.vocal.agree(&need.engine, &need.singer);
+                self.session_notices.push(format!(
+                    "{} arrived and is installed \u{2014} its terms agreed, and it sings.",
+                    need.name
+                ));
+                self.republish();
+                self.rebuild_graph();
+            }
+            Err(e) => self.session_notices.push(format!(
+                "{} arrived, and could not be installed: {e}",
+                need.name
+            )),
+        }
+        self.touch();
+        true
     }
 
     /// A plugin somebody put in the shared song that this computer has not
@@ -3166,6 +3360,83 @@ impl Session {
         self.rebuild_graph();
         self.touch();
         Ok(())
+    }
+
+    /// Loads singer engines from `folders` rather than Fontelle's own
+    /// singers folder — for tests, and for anybody keeping engines elsewhere.
+    pub fn set_singer_folders(&mut self, folders: Vec<PathBuf>) {
+        self.vocal.set_folders(folders);
+        self.republish();
+        self.touch();
+    }
+
+    /// The voicebanks folder and the Fontelle Singer's runtimes over it,
+    /// rather than Fontelle's own — for tests.
+    pub fn set_voicebanks(
+        &mut self,
+        folder: PathBuf,
+        builtins: Vec<fontelle_vocal::BuiltinBackend>,
+    ) {
+        self.vocal.set_voicebanks(folder, builtins);
+        self.republish();
+        self.touch();
+    }
+
+    /// Where Find singers reads its index and where Get it watches for the
+    /// download; pages are not opened in a browser — for tests.
+    pub fn set_catalogue_for_tests(&mut self, index: Option<PathBuf>, downloads: Option<PathBuf>) {
+        self.vocal.set_catalogue(index, downloads);
+        self.vocal.quiet_pages = true;
+    }
+
+    /// Opens engine windows on no screen — for tests.
+    pub fn set_headless_singer_editors(&mut self, headless: bool) {
+        self.vocal.headless_editors = headless;
+    }
+
+    /// Whether an engine's window is open.
+    pub fn singer_editor_open(&self) -> bool {
+        self.vocal.editor_open()
+    }
+
+    /// One frame of an engine's window: what it asked, applied — each batch
+    /// one undo step — and the transport moved.
+    fn pump_singer_editor(&mut self) {
+        if !self.vocal.editor_open() {
+            return;
+        }
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        let sr = f64::from(self.options.sample_rate.max(1));
+        let (playhead, playing) = self.transport.as_ref().map_or((0.0, false), |t| {
+            (t.position_sample().max(0) as f64 / sr, t.is_playing())
+        });
+        let asks = self
+            .vocal
+            .tick_editor(&self.project, &tempo, playhead, playing);
+        for command in asks.commands {
+            self.let_go();
+            self.run(command);
+            self.let_go();
+        }
+        for why in asks.refused {
+            self.message = Some(format!(
+                "The singer's window asked for an edit that could not be made: {why}"
+            ));
+        }
+        if let Some(select) = asks.select {
+            self.vocal_select = Some(select);
+        }
+        if let Some(transport) = &self.transport {
+            for t in asks.transport {
+                match t {
+                    fontelle_sing::Transport::Play => transport.play(),
+                    fontelle_sing::Transport::Stop => transport.stop(),
+                    fontelle_sing::Transport::Seek(seconds) => {
+                        transport.seek((seconds.max(0.0) * sr).round() as i64)
+                    }
+                }
+            }
+        }
     }
 
     /// Points the session at a projects folder and remembers it. For tests,
@@ -4090,6 +4361,15 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Clip(id),
         );
+        // Only this clip's track sings in it.
+        if let ClipSource::Notes(data) = &clip.source
+            && let Some(prep) = &mut self.render_vocals
+        {
+            let sings = data.channel;
+            prep.retain_channels(|c| c == sings);
+        } else if let Some(prep) = &mut self.render_vocals {
+            prep.retain_channels(|_| false);
+        }
         // From the song's zero and cut to the clip, for the reason a row's
         // bounce gives; cut where the drawn tempo puts it.
         let tempo = fontelle_model::effective_tempo_map(&self.project);
@@ -4110,6 +4390,8 @@ impl Session {
                 floor: 0,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Row {
                 index,
@@ -4196,6 +4478,20 @@ impl Session {
             },
             fontelle_sequencer::CompileScope::Lane(lane),
         );
+        // Only the vocal tracks with clips on this row sing in it.
+        let on_row: Vec<ChannelId> = self
+            .project
+            .clips
+            .values()
+            .filter(|c| c.lane == lane)
+            .filter_map(|c| match &c.source {
+                ClipSource::Notes(data) => Some(data.channel),
+                _ => None,
+            })
+            .collect();
+        if let Some(prep) = &mut self.render_vocals {
+            prep.retain_channels(|c| on_row.contains(&c));
+        }
         // Rendered from the song's zero and then cut to the range asked for:
         // a note that starts before the selection is still ringing inside it,
         // and starting the render at the selection would drop its front.
@@ -4225,6 +4521,8 @@ impl Session {
                 floor: 0,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Row {
                 index,
@@ -4260,7 +4558,8 @@ impl Session {
     /// ten seconds of silence and a wet one keeps every second of its
     /// reverb.
     pub fn export_wav_with(&mut self, export: ExportOptions) -> Result<String, String> {
-        let (bounce, then) = self.prepare_export(export)?;
+        let (mut bounce, then) = self.prepare_export(export)?;
+        bounce.vocals = self.render_vocals.take();
         let path = bounce.path.clone();
         let clipped = bounce.run(&mut |_| {});
         self.end_render();
@@ -4343,6 +4642,8 @@ impl Session {
                 floor: self.options.sample_rate as usize / 10,
                 path,
                 sample_rate: self.options.sample_rate,
+                vocals: None,
+                singing: Default::default(),
             },
             AfterBounce::Export,
         ))
@@ -4359,15 +4660,34 @@ impl Session {
         match then {
             AfterBounce::Export => {
                 self.touch();
-                Ok(match clipped {
+                let mut said = match clipped {
                     // Surfaced rather than swallowed, which is what §11 of the
                     // plan asks for: a bounce that clipped is one you want to
                     // know about before you send it anywhere.
                     0 => format!("exported {}", path.display()),
                     1 => format!("exported {} \u{2014} 1 clipped sample", path.display()),
                     n => format!("exported {} \u{2014} {n} clipped samples", path.display()),
-                })
+                };
+                // And for the same reason, a line that is silent in it.
+                let (mut unsung, mut why) = (0, None);
+                for id in self.channel_ids() {
+                    let (n, w) = self.vocal.unsung(id);
+                    unsung += n;
+                    if why.is_none() {
+                        why = w;
+                    }
+                }
+                if unsung > 0 {
+                    said.push_str(&format!(
+                        ". {unsung} vocal phrase{} could not be sung and {} silent in it: {}",
+                        if unsung == 1 { "" } else { "s" },
+                        if unsung == 1 { "is" } else { "are" },
+                        why.unwrap_or_default()
+                    ));
+                }
+                Ok(said)
             }
+            AfterBounce::Vocal(after) => self.finish_vocal(after, path),
             AfterBounce::Row {
                 index,
                 at,
@@ -4406,26 +4726,39 @@ impl Session {
     /// while the render runs has what is playing.
     fn realise_for_render(&mut self, options: RealiseOptions) -> Result<crate::Realised, String> {
         self.end_render();
-        if crate::plugin_slots(&self.project).is_empty() {
+        // The vocal tracks get players of their own for the render, filled
+        // once every phrase's final take is in: `Bounce::run` waits for them
+        // on the render's thread (`VocalRenderPrep`).
+        let (vocal_players, prep) = self.vocal.render_prep(&self.project);
+        self.render_vocals = prep.filter(|p| !p.is_empty());
+        if crate::plugin_slots(&self.project).is_empty() && vocal_players.is_empty() {
             return realise(&self.project, &self.library, options).map_err(|e| e.to_string());
         }
-        self.capture_plugin_states();
-        self.free_retired_graphs();
-        let wiring = self.plugins.lend_for_render(
-            &self.project,
-            f64::from(options.sample_rate),
-            options.block_size as u32,
-        );
-        if let Some(message) = self.plugins.take_message() {
-            self.message = Some(message);
-        }
+        let wiring = if crate::plugin_slots(&self.project).is_empty() {
+            HashMap::new()
+        } else {
+            self.capture_plugin_states();
+            self.free_retired_graphs();
+            let wiring = self.plugins.lend_for_render(
+                &self.project,
+                f64::from(options.sample_rate),
+                options.block_size as u32,
+            );
+            if let Some(message) = self.plugins.take_message() {
+                self.message = Some(message);
+            }
+            wiring
+        };
         let realised = crate::realise_hosting(
             &self.project,
             &self.library,
             options,
             &HashMap::new(),
             None,
-            &Default::default(),
+            &crate::realise::KeptTaps {
+                vocal: vocal_players,
+                ..Default::default()
+            },
             None,
             None,
             &wiring,
@@ -4459,7 +4792,9 @@ impl Session {
         if self.job.is_some() {
             return Err("a render is already running \u{2014} wait for it to finish".to_string());
         }
-        let (bounce, then) = prepare(self)?;
+        let (mut bounce, then) = prepare(self)?;
+        bounce.vocals = self.render_vocals.take();
+        let singing = std::sync::Arc::clone(&bounce.singing);
         let path = bounce.path.clone();
         let total = bounce.render_to.max(1);
         let done = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
@@ -4483,6 +4818,7 @@ impl Session {
             path,
             then,
             worker,
+            singing,
         });
         Ok(format!("{label}\u{2026}"))
     }
@@ -4494,6 +4830,15 @@ impl Session {
             return JobPoll::Idle;
         };
         if !job.worker.is_finished() {
+            // Waiting for the singer first: its own words and count.
+            let singing = job.singing.load(std::sync::atomic::Ordering::Relaxed);
+            let (sung, phrases) = (singing >> 32, singing & 0xffff_ffff);
+            if phrases > 0 && sung < phrases {
+                return JobPoll::Running(JobProgress {
+                    label: format!("Singing the vocals \u{2014} {sung} of {phrases} phrases"),
+                    fraction: Some((sung as f64 / phrases as f64) as f32),
+                });
+            }
             let done = job.done.load(std::sync::atomic::Ordering::Relaxed);
             return JobPoll::Running(JobProgress {
                 label: job.label.clone(),
@@ -4798,6 +5143,13 @@ impl Session {
         self.heal_audio_clips();
         let timeline = self.compiled();
         self.publisher.publish(timeline);
+        // The vocal tracks follow the song: phrases again, what is wanted of
+        // the engines, and the tables re-placed. In the song's own time
+        // whatever is playing — a phrase is sung once, wherever it is heard.
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        self.vocal
+            .set_takes_dir(crate::vocal::takes_dir_here(self.bundle.as_deref()));
+        self.vocal.sync(&self.project, &tempo);
     }
 
     /// The tempo map this session's [`scope`](Session::scope) plays by.
@@ -5380,6 +5732,7 @@ impl Session {
                 disgusting_beat: self.disgusting_beat_taps.clone(),
                 master: self.master_meter.clone(),
                 analyze: Some(self.analyze_captures.clone()),
+                vocal: self.vocal.players.clone(),
             },
             monitor.as_ref(),
             // Put back whatever the browser was letting you hear: the node is
@@ -5404,6 +5757,7 @@ impl Session {
                 self.tune_taps = realised.tune_taps;
                 self.disgusting_beat_taps = realised.disgusting_beat_taps;
                 self.analyze_captures = realised.analyze_captures;
+                self.vocal.players = realised.vocal_players;
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
@@ -6640,6 +6994,7 @@ impl Session {
                     source: ClipSource::Notes(fontelle_model::NoteData {
                         channel,
                         notes: arena,
+                        vocal: None,
                     }),
                     prefab_link: None,
                     color: None,
@@ -6726,7 +7081,10 @@ impl Session {
             // A plugin is not a patch and never becomes one: what a channel
             // playing one holds is a `PluginState` beside its patch, and the
             // browser is what fills it in.
-            InstrumentKind::SoundFont | InstrumentKind::Sampler | InstrumentKind::Plugin => None,
+            InstrumentKind::SoundFont
+            | InstrumentKind::Sampler
+            | InstrumentKind::Plugin
+            | InstrumentKind::Vocal => None,
         }
     }
 
@@ -7651,7 +8009,13 @@ impl DocumentHost for Session {
             // The roll hands over a whole note, properties and all: what you
             // draw is a copy of the last note you drew or clicked, which is
             // `PianoRoll::template`.
-            RollEdit::Add { note } => self.insert(clip, vec![note]),
+            RollEdit::Add { mut note } => {
+                // A drawn note on a vocal track sings the language's own
+                // syllable, not the word of the note the template was
+                // copied from (`insert` fills it in).
+                note.lyric.clear();
+                self.insert(clip, vec![note])
+            }
             RollEdit::Insert(notes) => self.insert(clip, notes),
             RollEdit::Remove(ids) => {
                 self.run(Box::new(RemoveNotes::new(clip, ids)));
@@ -8003,6 +8367,7 @@ impl Session {
             source: ClipSource::Notes(NoteData {
                 channel,
                 notes: Arena::default(),
+                vocal: None,
             }),
             prefab_link: None,
             color: None,
@@ -8048,12 +8413,27 @@ impl Session {
         // mixes instruments is saved exactly as it always was.
         let home = self.home_channel(clip);
         let selected = self.selected_channel_id();
+        // On a vocal track every note sings something: one written with no
+        // lyric gets the language's own syllable, so it shows and sings.
+        let syllable = selected
+            .and_then(|id| self.project.channels.get(id))
+            .filter(|c| c.instrument == Some(fontelle_types::InstrumentKind::Vocal))
+            .map(|c| {
+                fontelle_model::lyrics::default_syllable(
+                    c.vocal.as_ref().map_or("en", |v| v.language.as_str()),
+                )
+            });
         for note in &mut notes {
             note.channel = match (selected, home) {
                 (Some(selected), Some(home)) if selected == home => None,
                 (Some(selected), _) => Some(selected),
                 (None, _) => None,
             };
+            if let Some(syllable) = syllable
+                && note.lyric.trim().is_empty()
+            {
+                note.lyric = syllable.to_string();
+            }
         }
         // Through `apply_for` like every other command that hands its ids
         // back. It used to call `History::apply` itself, which made a **third**
@@ -8599,7 +8979,11 @@ impl StudioHost for Session {
                 soloed: channel.soloed,
                 // A channel playing a plugin has an instrument even though it
                 // has no patch: the plugin *is* the instrument (TDD §8.4).
-                has_instrument: channel.patch_data.is_some() || channel.plugin.is_some(),
+                // A vocal track's instrument is its singer.
+                has_instrument: channel.patch_data.is_some()
+                    || channel.plugin.is_some()
+                    || (channel.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+                        && channel.vocal.is_some()),
                 // What the row's route chip says. `None` is the master, which
                 // the chip writes out by name rather than as a blank.
                 route: self
@@ -8735,6 +9119,7 @@ impl StudioHost for Session {
         let source = ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         });
         let made = match self.apply_for::<fontelle_model::AddPrefab>(Box::new(
             fontelle_model::AddPrefab::new(name, source),
@@ -9414,6 +9799,41 @@ impl StudioHost for Session {
         let Some(id) = self.channel_ids().get(index).copied() else {
             return false;
         };
+        // A singer engine with a window of its own is that window, the way a
+        // plugin's own editor is the plugin: *"[the engine instrument] also
+        // shouldnt be blank"*. One without a window gets the panel.
+        if let Some(channel) = self.project.channels.get(id)
+            && channel.instrument == Some(fontelle_types::InstrumentKind::Vocal)
+        {
+            let Some(engine) = channel
+                .vocal
+                .as_ref()
+                .and_then(|v| v.engine_instrument())
+                .map(str::to_string)
+            else {
+                return false;
+            };
+            let has_editor = self
+                .vocal
+                .instruments()
+                .iter()
+                .any(|i| i.engine.as_deref() == Some(engine.as_str()) && i.has_editor);
+            if !has_editor {
+                return false;
+            }
+            if self.vocal.editor_open() {
+                return true;
+            }
+            let opened = self.vocal.open_editor(&self.project, id, self.clip);
+            self.touch();
+            return match opened {
+                Ok(_) => true,
+                Err(e) => {
+                    self.message = Some(e);
+                    false
+                }
+            };
+        }
         self.open_plugin_editor(crate::PluginSlot::Channel(id))
     }
 
@@ -9674,7 +10094,321 @@ impl StudioHost for Session {
         self.touch();
     }
 
+    fn singers(&self) -> Vec<fontelle_ui::document::SingerChoice> {
+        self.vocal.singers()
+    }
+
+    fn singer_problems(&self) -> Vec<String> {
+        self.vocal.problems()
+    }
+
+    fn singers_folder(&self) -> String {
+        self.vocal.folder_hint()
+    }
+
+    fn vocal_voice(&self, index: usize) -> Option<fontelle_model::VocalVoice> {
+        let id = self.channel_ids().get(index).copied()?;
+        let channel = self.project.channels.get(id)?;
+        (channel.instrument == Some(fontelle_types::InstrumentKind::Vocal))
+            .then(|| channel.vocal.clone())
+            .flatten()
+    }
+
+    fn set_singer(&mut self, index: usize, voice: Option<fontelle_model::VocalVoice>) {
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        if self.project.channels.get(id).and_then(|c| c.vocal.as_ref()) == voice.as_ref() {
+            return;
+        }
+        self.let_go();
+        self.run(Box::new(fontelle_model::SetSinger::new(id, voice)));
+        self.let_go();
+    }
+
+    fn set_lyrics(&mut self, ids: &[NoteId], lyrics: Vec<String>) -> Result<(), String> {
+        let home = self.note_target();
+        let before = self.history.generation();
+        self.let_go();
+        self.run(Box::new(fontelle_model::SetLyrics::new(
+            home,
+            ids.to_vec(),
+            lyrics,
+        )));
+        // Each commit its own step: Tab through a line, and Ctrl+Z takes
+        // back one word at a time.
+        self.let_go();
+        if self.history.generation() == before {
+            return Err(self
+                .message
+                .clone()
+                .unwrap_or_else(|| "the lyrics could not be set".to_string()));
+        }
+        Ok(())
+    }
+
+    fn set_lyric_line(&mut self, ids: &[NoteId], line: &str) -> Result<String, String> {
+        // In time order, whatever order they were selected in.
+        let mut ordered: Vec<NoteId> = ids
+            .iter()
+            .copied()
+            .filter(|id| self.notes().get(*id).is_some())
+            .collect();
+        ordered.sort_by_key(|id| {
+            let n = &self.notes()[*id];
+            (n.start, std::cmp::Reverse(n.key))
+        });
+        let spread = fontelle_model::lyrics::spread(line, ordered.len());
+        if spread.lyrics.is_empty() {
+            return Err("no words to spread".to_string());
+        }
+        ordered.truncate(spread.lyrics.len());
+        let count = ordered.len();
+        self.set_lyrics(&ordered, spread.lyrics)?;
+        Ok(match spread.left_over {
+            0 => format!("Lyrics on {count} notes"),
+            1 => format!(
+                "Lyrics on {count} notes \u{2014} 1 more word than notes was left over; select \
+                 more notes to place it"
+            ),
+            n => format!(
+                "Lyrics on {count} notes \u{2014} {n} more words than notes were left over; \
+                 select more notes to place them"
+            ),
+        })
+    }
+
+    fn vocal_view(&self) -> Option<fontelle_ui::document::VocalView> {
+        let channel = self.selected_channel_id()?;
+        let tempo = fontelle_model::effective_tempo_map(&self.project);
+        self.vocal.view(&self.project, channel, self.clip, &tempo)
+    }
+
+    fn vocal_revision(&self) -> u64 {
+        self.vocal.revision()
+    }
+
+    fn vocal_busy(&self) -> bool {
+        self.vocal.busy()
+    }
+
+    fn vocal_rendering_spans(&self) -> Vec<(ClipId, Vec<(Tick, Tick)>)> {
+        self.vocal.rendering_spans(&self.project)
+    }
+
+    fn set_note_voices(
+        &mut self,
+        ids: &[NoteId],
+        voices: Vec<Option<fontelle_model::NoteVoice>>,
+        label: &str,
+    ) -> Result<(), String> {
+        let home = self.note_target();
+        let before = self.history.generation();
+        self.run(Box::new(fontelle_model::SetNoteVoices::new(
+            home,
+            ids.to_vec(),
+            voices,
+            label,
+        )));
+        if self.history.generation() == before {
+            return Err(self
+                .message
+                .clone()
+                .unwrap_or_else(|| "the notes could not be changed".to_string()));
+        }
+        Ok(())
+    }
+
+    fn set_vocal_lane(
+        &mut self,
+        key: fontelle_model::LaneKey,
+        curve: Option<fontelle_model::LaneCurve>,
+    ) {
+        let home = self.note_target();
+        self.run(Box::new(fontelle_model::SetVocalLane::new(
+            home, key, curve,
+        )));
+    }
+
+    fn set_vocal_settings(
+        &mut self,
+        backend: &str,
+        settings: std::collections::BTreeMap<String, f32>,
+    ) {
+        let home = self.note_target();
+        self.run(Box::new(fontelle_model::SetVocalSettings::new(
+            home, backend, settings,
+        )));
+    }
+
+    fn end_vocal_gesture(&mut self) {
+        self.let_go();
+    }
+
+    fn set_vocal_selection(&mut self, ids: &[NoteId]) {
+        if self.vocal.selection != ids {
+            self.vocal.selection = ids.to_vec();
+        }
+    }
+
+    fn take_vocal_selection(&mut self) -> Option<Vec<NoteId>> {
+        self.vocal_select.take()
+    }
+
+    fn singer_panel(&self) -> Option<fontelle_ui::document::SingerPanelView> {
+        let channel = self.selected_channel_id()?;
+        self.vocal
+            .panel(&self.project, channel)
+            .map(|(header, _)| header)
+    }
+
+    fn translate_terms(&mut self, text: &str) {
+        let url = fontelle_vocal::catalogue::translate_url(text, crate::vocal::READER_LANGUAGE);
+        fontelle_ui::document::StudioHost::open_url(self, &url);
+    }
+
+    fn open_singer_editor(&mut self) -> Result<String, String> {
+        let channel = self
+            .selected_channel_id()
+            .ok_or("select a vocal track first")?;
+        let said = self.vocal.open_editor(&self.project, channel, self.clip)?;
+        self.touch();
+        Ok(said)
+    }
+
+    fn close_singer_editor(&mut self) {
+        self.vocal.close_editor();
+        self.touch();
+    }
+
+    fn agree_singer_terms(&mut self, engine: &str, singer: &str) {
+        self.vocal.agree(engine, singer);
+        self.touch();
+    }
+
+    fn voicebanks(&self) -> Vec<fontelle_ui::document::VoicebankRow> {
+        self.vocal.voicebank_rows()
+    }
+
+    fn voicebanks_folder(&self) -> String {
+        self.vocal.voicebanks_dir().display().to_string()
+    }
+
+    fn install_voicebank(&mut self, path: &std::path::Path) -> Result<String, String> {
+        let said = self.vocal.install(path)?;
+        self.republish();
+        self.touch();
+        Ok(said)
+    }
+
+    fn choose_and_install_voicebank(&mut self) -> Result<Option<String>, String> {
+        let start = fontelle_vocal::catalogue::downloads_dir();
+        match crate::desktop::choose_open_file(
+            "Install a voicebank",
+            start.as_deref(),
+            "*.zip *.7z *.uar *.oudep",
+        ) {
+            Ok(Some(path)) => self.install_voicebank(&path).map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn reveal_voicebanks_dir(&mut self) {
+        let dir = self.vocal.voicebanks_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
+    fn reveal_voicebank(&mut self, id: &str) {
+        let Some(dir) = self.vocal.voicebank_path(id) else {
+            self.message = Some(format!("{id} is not installed"));
+            return;
+        };
+        if let Err(e) = crate::desktop::reveal(&dir) {
+            self.message = Some(e);
+        }
+    }
+
+    fn preview_voicebank_sample(&mut self, id: &str) -> Result<f64, String> {
+        // The same preview voice the Import tab's listen uses: nothing is
+        // written to the document.
+        let path = self
+            .vocal
+            .voicebank_sample(id)
+            .ok_or_else(|| "this voicebank names no sample to listen to".to_string())?;
+        let (_name, patch, seconds) = self.sampler_patch(&path)?;
+        self.preview_patch = Some(patch);
+        self.previewing = true;
+        self.rebuild_graph();
+        Ok(seconds)
+    }
+
+    fn uninstall_voicebank(&mut self, id: &str) -> Result<String, String> {
+        let said = self.vocal.uninstall(id)?;
+        self.republish();
+        self.touch();
+        Ok(said)
+    }
+
+    fn agree_voicebank_terms(&mut self, id: &str) {
+        self.vocal.agree_bank(id);
+        self.touch();
+    }
+
+    fn catalogue(&self) -> Vec<fontelle_ui::document::CatalogueRow> {
+        self.vocal.catalogue_rows()
+    }
+
+    fn catalogue_get(&mut self, id: &str) -> Result<String, String> {
+        let said = self.vocal.catalogue_get(id)?;
+        self.touch();
+        Ok(said)
+    }
+
+    fn choose_and_import_vocal(
+        &mut self,
+        channel: Option<usize>,
+    ) -> Result<Option<String>, String> {
+        self.choose_vocal_file(channel)
+    }
+
+    fn export_vocal(
+        &mut self,
+        index: usize,
+        format: fontelle_ui::document::VocalFileFormat,
+    ) -> Result<String, String> {
+        self.export_vocal_chosen(index, format)
+    }
+
+    fn vocal_frozen(&self, index: usize) -> bool {
+        self.vocal_is_frozen(index)
+    }
+
+    fn freeze_vocal(&mut self, index: usize) -> Result<String, String> {
+        self.start_vocal_bounce(|s| s.prepare_freeze(index), "Freezing")
+    }
+
+    fn unfreeze_vocal(&mut self, index: usize) -> Result<String, String> {
+        self.unfreeze_vocal_now(index)
+    }
+
+    fn render_vocal_selection(&mut self) -> Result<String, String> {
+        self.start_vocal_bounce(|s| s.prepare_render_selection(), "Rendering")
+    }
+
     fn add_channel_of(&mut self, kind: fontelle_types::InstrumentKind) -> Result<(), String> {
+        // A vocal track is one of the singer instruments: whichever sings
+        // the first singer there is (a free voicebank before any engine).
+        if kind == fontelle_types::InstrumentKind::Vocal {
+            let engine = self
+                .vocal
+                .default_voice()
+                .and_then(|v| v.engine_instrument().map(str::to_string));
+            return self.add_singer_channel(engine.as_deref());
+        }
         // Named for what it is rather than "Channel N": a rack of "Sampler",
         // "3OSC", "SoundFont" tells you what you are looking at, and a rack of
         // "Channel 4" does not.
@@ -9685,6 +10419,17 @@ impl StudioHost for Session {
         );
         let patch = self.starter_patch(kind);
         let channel = self.new_channel_of(name, patch, kind)?;
+        // A vocal track arrives singing: the first singer installed, in
+        // its own language, as part of the same step as the channel.
+        if kind == fontelle_types::InstrumentKind::Vocal
+            && let Some(voice) = self.vocal.default_voice()
+            && let Err(e) = self.history.amend(
+                Box::new(fontelle_model::SetSinger::new(channel, Some(voice))),
+                &mut self.project,
+            )
+        {
+            self.message = Some(e.to_string());
+        }
         self.patch_cache = None;
         // On the status line through the session, like `set_channel_kind`.
         self.message = Some(match kind {
@@ -9703,6 +10448,105 @@ impl StudioHost for Session {
         Session::channel_kind(self, index)
     }
 
+    fn singer_instruments(&self) -> Vec<fontelle_ui::document::SingerInstrument> {
+        self.vocal.instruments()
+    }
+
+    fn add_singer_channel(&mut self, engine: Option<&str>) -> Result<(), String> {
+        use fontelle_types::InstrumentKind;
+        let voice = self.vocal.default_voice_for(engine, None).or_else(|| {
+            // An engine with no singer to offer is still its instrument.
+            engine.map(|e| fontelle_model::VocalVoice::new(e, "", "en"))
+        });
+        let instrument = crate::vocal::VocalSession::instrument_name(voice.as_ref());
+        // Named for the instrument: a rack of "Fontelle Singer 4" and "Some
+        // Engine 5" says which is which.
+        let name = format!("{instrument} {}", self.project.channels.len() + 1);
+        let patch = self.starter_patch(InstrumentKind::Vocal);
+        let channel = self.new_channel_of(name, patch, InstrumentKind::Vocal)?;
+        // It arrives singing, as part of the same step as the channel.
+        if let Some(voice) = voice
+            && let Err(e) = self.history.amend(
+                Box::new(fontelle_model::SetSinger::new(channel, Some(voice))),
+                &mut self.project,
+            )
+        {
+            self.message = Some(e.to_string());
+            return Ok(());
+        }
+        self.patch_cache = None;
+        self.message = Some(format!("New instrument: {instrument}"));
+        self.rebuild_graph();
+        self.touch();
+        Ok(())
+    }
+
+    fn set_singer_instrument(&mut self, index: usize, engine: Option<&str>) {
+        use fontelle_types::InstrumentKind;
+        let Some(id) = self.channel_ids().get(index).copied() else {
+            return;
+        };
+        let Some(channel) = self.project.channels.get(id) else {
+            return;
+        };
+        let vocal = channel.instrument == Some(InstrumentKind::Vocal);
+        let before = channel.vocal.clone();
+        // Already that instrument is not a change (nothing applied, no step).
+        if vocal && before.as_ref().and_then(|v| v.engine_instrument()) == engine {
+            return;
+        }
+        let old_name = channel.name.clone();
+        let old_instrument =
+            vocal.then(|| crate::vocal::VocalSession::instrument_name(before.as_ref()));
+        // The part stays as it is — one part format for every singer — and
+        // the new instrument sings it with one of its own singers, in the
+        // part's language when one sings that.
+        let language = before.as_ref().map(|v| v.language.as_str());
+        let voice = self.vocal.default_voice_for(engine, language).or_else(|| {
+            engine.map(|e| fontelle_model::VocalVoice::new(e, "", language.unwrap_or("en")))
+        });
+        let instrument = crate::vocal::VocalSession::instrument_name(voice.as_ref());
+        let mut parts: Vec<Box<dyn fontelle_model::Command>> = Vec::new();
+        if !vocal {
+            let patch = self.starter_patch(InstrumentKind::Vocal);
+            parts.push(Box::new(fontelle_model::SetChannelKind::new(
+                id,
+                InstrumentKind::Vocal,
+            )));
+            parts.push(Box::new(fontelle_model::SetChannelPatch::new(id, patch)));
+        }
+        parts.push(Box::new(fontelle_model::SetSinger::new(id, voice)));
+        // A track still called what its old instrument named it is renamed
+        // for the new one ("Fontelle Singer 4" → "Some Engine 4"); a name
+        // somebody gave it is theirs.
+        if let Some(rest) = old_instrument
+            .as_deref()
+            .and_then(|old| old_name.strip_prefix(old))
+            .or_else(|| old_name.strip_prefix("Vocal"))
+            .filter(|rest| rest.is_empty() || rest.trim().chars().all(|c| c.is_ascii_digit()))
+        {
+            parts.push(Box::new(fontelle_model::RenameChannel::new(
+                id,
+                format!("{instrument}{rest}"),
+            )));
+        }
+        self.let_go();
+        if let Err(e) = self.history.apply(
+            Box::new(fontelle_model::Compound::new("Choose instrument", parts)),
+            &mut self.project,
+        ) {
+            self.message = Some(e.to_string());
+            return;
+        }
+        self.let_go();
+        self.channel_presets.remove(&id);
+        self.patch_cache = None;
+        self.dirty = true;
+        self.message = Some(format!("Instrument is now {instrument}"));
+        self.rebuild_graph();
+        self.touch();
+    }
+
     fn set_channel_kind(&mut self, index: usize, kind: fontelle_types::InstrumentKind) {
         let Some(id) = self.channel_ids().get(index).copied() else {
             return;
@@ -9717,10 +10561,22 @@ impl StudioHost for Session {
         // The label and the instrument move together, in one entry: "make this
         // a sampler" is one thing somebody did and one press of Ctrl+Z.
         let patch = self.starter_patch(kind);
-        let parts: Vec<Box<dyn fontelle_model::Command>> = vec![
+        let mut parts: Vec<Box<dyn fontelle_model::Command>> = vec![
             Box::new(fontelle_model::SetChannelKind::new(id, kind)),
             Box::new(fontelle_model::SetChannelPatch::new(id, patch)),
         ];
+        // A channel turned into a vocal track gets a singer, unless it had
+        // one from before (kept, like a plugin is).
+        if kind == fontelle_types::InstrumentKind::Vocal
+            && self
+                .project
+                .channels
+                .get(id)
+                .is_some_and(|c| c.vocal.is_none())
+            && let Some(voice) = self.vocal.default_voice()
+        {
+            parts.push(Box::new(fontelle_model::SetSinger::new(id, Some(voice))));
+        }
         if let Err(e) = self.history.apply(
             Box::new(fontelle_model::Compound::new("Choose instrument", parts)),
             &mut self.project,
@@ -10375,6 +11231,44 @@ impl StudioHost for Session {
                 default: question.default,
             });
         }
+        if let Some(need) = &self.singer_question
+            && let SingerOffer::Send { size, terms, .. } = &need.offer
+        {
+            let from = self
+                .collab
+                .as_ref()
+                .and_then(|c| c.host_name())
+                .unwrap_or("The host");
+            let mut lines = vec![format!(
+                "{from}\u{2019}s song is sung by {}, which you don\u{2019}t have ({:.1} MB).",
+                need.name,
+                *size as f64 / 1_048_576.0
+            )];
+            match terms {
+                Some(terms) => {
+                    lines.push("Its author\u{2019}s terms:".to_string());
+                    let mut shown: String = terms.chars().take(600).collect();
+                    if shown.len() < terms.len() {
+                        shown.push('\u{2026}');
+                    }
+                    lines.extend(
+                        shown
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty())
+                            .take(8)
+                            .map(str::to_string),
+                    );
+                }
+                None => lines.push("Its author gives no terms with it.".to_string()),
+            }
+            lines.push("Agree to them, and fetch it? It sings once it is here.".to_string());
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines,
+                buttons: vec!["Agree and fetch".to_string(), "Not now".to_string()],
+                default: 0,
+            });
+        }
         self.fetch_question()
             .map(|question| fontelle_ui::document::SessionQuestion {
                 lines: question.lines,
@@ -10403,6 +11297,19 @@ impl StudioHost for Session {
                 .map(|(answer, _)| answer.clone())
                 .ok_or("there is no such answer")?;
             return self.answer_join(answer);
+        }
+        if let Some(need) = self.singer_question.take() {
+            if let SingerOffer::Send { hash, .. } = &need.offer {
+                self.singers_answered.insert(*hash);
+                if answer == 0
+                    && let Some(collab) = self.collab.as_mut()
+                {
+                    collab.fetch_singer(&need);
+                    self.message = Some(format!("Fetching {}\u{2026}", need.name));
+                }
+            }
+            self.touch();
+            return Ok(());
         }
         if self.fetch_question().is_some() {
             return self.answer_fetch(answer == 0);
@@ -10959,6 +11866,8 @@ impl StudioHost for Session {
                         self.settings.backdrops_when_unfocused
                     } else if *row == crate::settings::SettingRow::CompatibleGraphics {
                         self.settings.compatible_plugin_graphics
+                    } else if *row == crate::settings::SettingRow::BetaUpdates {
+                        self.settings.beta_updates
                     } else {
                         self.settings.check_for_updates
                     },
@@ -11564,6 +12473,12 @@ impl StudioHost for Session {
         // By extension, which is the only thing a drop carries. Each kind is
         // asked whether it is *its* file rather than the extension being
         // matched here, so adding one is a variant and nothing else.
+        // A vocal song — a UST, USTX, VSQX, MusicXML, or a MIDI file with
+        // lyrics — is sung: before the MIDI import, which would take a
+        // `.mid` with words as plain notes.
+        if fontelle_vocal_files::is_vocal_song(path) {
+            return self.import_vocal_file(path, at, row, None);
+        }
         if fontelle_types::FolderKind::Midi.accepts(path) {
             return self.import_midi_file(path, None);
         }
@@ -11596,7 +12511,7 @@ impl StudioHost for Session {
         }
         Err(format!(
             "{name} is not something Fontelle can open \u{2014} it reads .wav, .flac, .mp3, \
-             .ogg, .mid, .fsc and .sf2 files"
+             .ogg, .mid, .fsc, .sf2, and the vocal songs .ust, .ustx, .vsqx and .musicxml"
         ))
     }
 
@@ -12593,6 +13508,15 @@ impl StudioHost for Session {
     fn instrument(&self) -> Option<InstrumentView> {
         let channel_id = self.selected_channel_id()?;
         let channel = self.project.channels.get(channel_id)?;
+        // A vocal track's instrument is its singer's panel: the voice, the
+        // expression a note without its own gets, the bank's settings and
+        // the output (`crate::singer_panel`) — never blank.
+        if channel.instrument == Some(fontelle_types::InstrumentKind::Vocal) {
+            let (_, mut view) = self.vocal.panel(&self.project, channel_id)?;
+            let automated = fontelle_model::automated_targets(&self.project);
+            view.mark_automated(|address| automated.contains(address));
+            return Some(view);
+        }
         // A channel playing a plugin draws the plugin's own parameters. The
         // panel is the same panel — see `instrument::describe_plugin`.
         if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin) {
@@ -12902,6 +13826,32 @@ impl StudioHost for Session {
                 return;
             }
             _ => {}
+        }
+
+        // A control on a vocal track's instrument panel: the channel's
+        // style, one command (a drag merges into one undo step), and the
+        // phrases sung again from it.
+        if address.as_str().starts_with("vocal/") {
+            let Some(channel) = self.project.channels.get(channel_id) else {
+                return;
+            };
+            if channel.instrument != Some(fontelle_types::InstrumentKind::Vocal) {
+                return;
+            }
+            let voice = channel.vocal.clone();
+            let caps = self.vocal.capabilities_of(voice.as_ref());
+            let backend = voice.map(|v| v.engine).unwrap_or_default();
+            let mut style = channel.vocal_style.clone();
+            if !crate::singer_panel::set(&mut style, &caps, &backend, address.as_str(), value)
+                || style == channel.vocal_style
+            {
+                return;
+            }
+            self.run(Box::new(fontelle_model::SetVocalStyle::new(
+                channel_id, style,
+            )));
+            self.touch();
+            return;
         }
 
         // A knob on a hosted plugin's panel. Written to the document as the
@@ -14186,6 +15136,11 @@ impl StudioHost for Session {
                 // A clip somebody has named is called that, whatever it
                 // plays.
                 let name = clip.name.clone().unwrap_or(name);
+                // A vocal clip says who sings and what: "Alto · hello world".
+                let name = match self.vocal.caption(&self.project, id) {
+                    Some(sung) if clip.name.is_none() => sung,
+                    _ => name,
+                };
                 ClipInfo {
                     id,
                     lane: lanes.iter().position(|l| *l == clip.lane).unwrap_or(0),
@@ -14358,6 +15313,7 @@ impl StudioHost for Session {
                     source: ClipSource::Notes(NoteData {
                         channel,
                         notes: Arena::default(),
+                        vocal: None,
                     }),
                     prefab_link: None,
                     color: None,
@@ -14431,6 +15387,7 @@ impl StudioHost for Session {
                             source: ClipSource::Notes(NoteData {
                                 channel,
                                 notes: Arena::default(),
+                                vocal: None,
                             }),
                             prefab_link: None,
                             color: None,
@@ -14894,6 +15851,24 @@ impl StudioHost for Session {
                 self.rebuild_graph();
             }
         }
+        // The same for a vocal track the graph has no player for yet — a
+        // reopened song with one, or a channel turned into one by a
+        // collaborator's edit.
+        if self.vocal.needs_players(&self.project) {
+            self.rebuild_graph();
+        }
+        let playhead = self.transport.as_ref().map(|t| {
+            t.position_sample().max(0) as f64 / f64::from(self.options.sample_rate.max(1))
+        });
+        self.vocal.pump(playhead);
+        self.vocal.pump_installs();
+        if !self.vocal.messages.is_empty() {
+            self.message = self.vocal.messages.pop();
+            self.vocal.messages.clear();
+            self.republish();
+            self.touch();
+        }
+        self.pump_singer_editor();
         // Emptied every pass, so the ring never fills while a long take is
         // being played — the same rule the CLI's own recording loop follows.
         if let Some(capture) = &mut self.capture {
@@ -15871,11 +16846,31 @@ impl Session {
         fontelle_core::patch_params::value(&loaded.patch, address.as_str())
     }
 
+    /// What the selected vocal track's voice answers to, and its backend,
+    /// when `address` is one of its instrument panel's controls.
+    fn vocal_panel_voice(
+        &self,
+        address: &fontelle_types::ParamAddress,
+    ) -> Option<(fontelle_sing::Capabilities, String)> {
+        if !address.as_str().starts_with("vocal/") {
+            return None;
+        }
+        let channel = self.project.channels.get(self.selected_channel_id()?)?;
+        let voice = channel.vocal.as_ref();
+        Some((
+            self.vocal.capabilities_of(voice),
+            voice.map(|v| v.engine.clone()).unwrap_or_default(),
+        ))
+    }
+
     /// The value the Init patch has for `address` — *Reset to default*.
     pub fn instrument_param_default_value(
         &self,
         address: &fontelle_types::ParamAddress,
     ) -> Option<f32> {
+        if let Some((caps, backend)) = self.vocal_panel_voice(address) {
+            return crate::singer_panel::default_value(&caps, &backend, address.as_str());
+        }
         let init = fontelle_core::flopsynth::flopsynth_init();
         fontelle_core::patch_params::value(&init, address.as_str())
     }
@@ -15983,6 +16978,9 @@ impl Session {
     ) -> Option<f32> {
         use fontelle_ui::canvas::{ParamKind, parse_typed};
         let text = text.trim();
+        if let Some((caps, backend)) = self.vocal_panel_voice(address) {
+            return crate::singer_panel::from_text(&caps, &backend, address.as_str(), text);
+        }
         if let Some(typed) = parse_typed(text)
             && let Some(value) = self.instrument_param_from_typed(address, &typed)
         {

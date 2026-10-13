@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fontelle_app::updates::{
-    Release, Updater, Version, asset_name, expected_sha256, fetch_command, sha256_hex,
+    Channel, Release, Updater, Version, asset_name, expected_sha256, fetch_command, sha256_hex,
     target_triple, tidy,
 };
 use fontelle_ui::UpdateStatus;
@@ -60,12 +60,54 @@ fn a_version_reads_with_or_without_its_v() {
 
 #[test]
 fn what_is_not_a_release_version_is_not_offered() {
-    // Two parts is not a version this project tags; a pre-release is not
-    // something the start menu should push at people; junk is junk.
+    // Two parts is not a version this project tags; a pre-release label it
+    // does not use is not one either; junk is junk.
     assert_eq!(Version::parse("1.2"), None);
-    assert_eq!(Version::parse("1.2.3-beta.1"), None);
+    assert_eq!(Version::parse("1.2.3-banana.1"), None);
+    assert_eq!(Version::parse("1.2.3-beta.x"), None);
+    assert_eq!(Version::parse("1.2.3-"), None);
+    assert_eq!(Version::parse("1.2.3-beta.1.2"), None);
     assert_eq!(Version::parse("banana"), None);
     assert_eq!(Version::parse(""), None);
+}
+
+#[test]
+fn a_beta_version_reads_and_prints_as_its_tag() {
+    // > *"make a beta update option for users so they will be able to have
+    // > an option to recieve beta updates"*
+    //
+    // A beta is tagged `v0.27.0-beta.1`, which is also what Cargo calls the
+    // workspace while it is one, so the window, the tag and the archive
+    // names stay one number.
+    let beta = Version::parse("v0.27.0-beta.1").expect("a beta tag parses");
+    assert_eq!(beta, Version::new(0, 27, 0).beta(1));
+    assert!(beta.is_prerelease());
+    assert!(!Version::new(0, 27, 0).is_prerelease());
+    assert_eq!(beta.to_string(), "0.27.0-beta.1");
+    assert_eq!(
+        Version::parse("0.27.0-rc.2").map(|v| v.to_string()),
+        Some("0.27.0-rc.2".into())
+    );
+    assert_eq!(
+        Version::parse("0.27.0-alpha").map(|v| v.to_string()),
+        Some("0.27.0-alpha".into())
+    );
+}
+
+#[test]
+fn a_beta_comes_before_its_release_and_after_the_one_before() {
+    let v = Version::new;
+    assert!(v(0, 27, 0).beta(1) < v(0, 27, 0).beta(2));
+    assert!(v(0, 27, 0).beta(9) < v(0, 27, 0).beta(10), "numerically");
+    assert!(v(0, 27, 0).beta(2) < v(0, 27, 0).rc(1));
+    assert!(v(0, 27, 0).rc(1) < v(0, 27, 0));
+    assert!(v(0, 26, 3) < v(0, 27, 0).beta(1));
+    assert!(v(0, 27, 0).beta(5) < v(0, 27, 1).beta(1));
+    assert_eq!(
+        Version::parse("0.27.0-beta").unwrap(),
+        Version::parse("0.27.0-beta").unwrap()
+    );
+    assert!(Version::parse("0.27.0-beta").unwrap() < v(0, 27, 0).beta(1));
 }
 
 #[test]
@@ -128,6 +170,12 @@ fn the_archive_is_named_by_version_and_target() {
     assert_eq!(
         asset_name(Version::new(1, 0, 0), "aarch64-apple-darwin"),
         "fontelle-1.0.0-aarch64-apple-darwin.tar.gz"
+    );
+    // A beta's archive carries its whole version, as the workflow's
+    // `fontelle-${version}-${target}` spells it.
+    assert_eq!(
+        asset_name(Version::new(0, 27, 0).beta(1), "x86_64-pc-windows-msvc"),
+        "fontelle-0.27.0-beta.1-x86_64-pc-windows-msvc.zip"
     );
 }
 
@@ -767,4 +815,152 @@ fn the_asio_helper_and_its_licence_come_along_with_an_upgrade() {
         assert!(mode & 0o111 != 0, "{mode:o}");
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- the beta channel ---
+
+/// One entry of GitHub's `releases` listing — the same object
+/// `releases/latest` answers with, plus the two flags the listing is read by.
+fn listed(tag: &str, draft: bool, prerelease: bool) -> String {
+    format!(
+        r#"{{"tag_name":"{tag}","draft":{draft},"prerelease":{prerelease},"html_url":"https://github.com/Fopull-LLC/DAW-Fontelle/releases/tag/{tag}","assets":[]}}"#
+    )
+}
+
+fn listing(entries: &[String]) -> String {
+    format!("[{}]", entries.join(","))
+}
+
+#[test]
+fn the_stable_channel_never_takes_a_beta_or_a_draft_from_the_list() {
+    let json = listing(&[
+        listed("v0.28.0", true, false),
+        listed("v0.27.0-beta.1", false, true),
+        listed("v0.26.3", false, false),
+        listed("v0.26.2", false, false),
+    ]);
+    let stable = Release::newest_in_github_list(&json, Channel::Stable).unwrap();
+    assert_eq!(stable.version, Version::new(0, 26, 3));
+    let beta = Release::newest_in_github_list(&json, Channel::Beta).unwrap();
+    assert_eq!(beta.version, Version::new(0, 27, 0).beta(1));
+    assert_eq!(
+        beta.page,
+        "https://github.com/Fopull-LLC/DAW-Fontelle/releases/tag/v0.27.0-beta.1"
+    );
+}
+
+#[test]
+fn the_beta_channel_moves_on_to_the_release_once_it_is_out() {
+    // A beta tester is not left on a beta: when the release it was testing
+    // ships, that release is newer, and it is what they are offered.
+    let json = listing(&[
+        listed("v0.27.0-beta.2", false, true),
+        listed("v0.27.0", false, false),
+        listed("v0.27.0-beta.1", false, true),
+    ]);
+    let beta = Release::newest_in_github_list(&json, Channel::Beta).unwrap();
+    assert_eq!(beta.version, Version::new(0, 27, 0));
+}
+
+#[test]
+fn a_release_marked_prerelease_is_a_beta_whatever_its_tag_says() {
+    // The flag is what GitHub's own `releases/latest` goes by, so the
+    // listing goes by it too: a stable user is never offered what the
+    // release page calls a pre-release.
+    let json = listing(&[
+        listed("v0.27.0", false, true),
+        listed("v0.26.3", false, false),
+    ]);
+    let stable = Release::newest_in_github_list(&json, Channel::Stable).unwrap();
+    assert_eq!(stable.version, Version::new(0, 26, 3));
+}
+
+#[test]
+fn a_list_with_nothing_offerable_is_an_error_not_a_release() {
+    let json = listing(&[listed("v0.27.0-beta.1", false, true)]);
+    assert!(Release::newest_in_github_list(&json, Channel::Stable).is_err());
+    assert!(Release::newest_in_github_list("[]", Channel::Beta).is_err());
+    assert!(Release::newest_in_github_list(r#"{"message":"Not Found"}"#, Channel::Beta).is_err());
+    // A tag that is not a version is skipped, not fatal.
+    let json = listing(&[
+        listed("nightly", false, true),
+        listed("v0.26.3", false, false),
+    ]);
+    assert_eq!(
+        Release::newest_in_github_list(&json, Channel::Beta)
+            .unwrap()
+            .version,
+        Version::new(0, 26, 3)
+    );
+}
+
+/// An updater on `channel`, built as `current`, whose network serves
+/// `latest` as `releases/latest` and `list` as the releases listing.
+fn channel_updater(channel: Channel, current: Version, latest: &str, list: &str) -> Updater {
+    let served: Served = Arc::new(Mutex::new(vec![
+        (
+            fontelle_app::updates::LATEST_URL.to_string(),
+            Ok(github_json(latest, &[]).into_bytes()),
+        ),
+        (
+            fontelle_app::updates::RELEASES_URL.to_string(),
+            Ok(list.as_bytes().to_vec()),
+        ),
+    ]));
+    let mut updater = updater_serving(&served).built_as(current);
+    updater.set_channel(channel);
+    updater
+}
+
+#[test]
+fn a_beta_is_offered_only_to_the_beta_channel() {
+    let list = listing(&[
+        listed("v0.27.0-beta.1", false, true),
+        listed("v0.26.3", false, false),
+    ]);
+    let here = Version::new(0, 26, 3);
+    let stable = channel_updater(Channel::Stable, here, "v0.26.3", &list);
+    stable.check();
+    assert_eq!(wait_for(&stable, not_checking), UpdateStatus::UpToDate);
+    let beta = channel_updater(Channel::Beta, here, "v0.26.3", &list);
+    beta.check();
+    assert_eq!(
+        wait_for(&beta, not_checking),
+        UpdateStatus::Available {
+            version: "0.27.0-beta.1".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_beta_build_back_on_stable_waits_for_the_release_rather_than_going_back() {
+    // Switching beta off is not a downgrade: 0.26.3 is older than the beta
+    // this machine runs, so it is up to date until 0.27.0 ships.
+    let here = Version::new(0, 27, 0).beta(1);
+    let waiting = channel_updater(Channel::Stable, here, "v0.26.3", "[]");
+    waiting.check();
+    assert_eq!(wait_for(&waiting, not_checking), UpdateStatus::UpToDate);
+    let released = channel_updater(Channel::Stable, here, "v0.27.0", "[]");
+    released.check();
+    assert_eq!(
+        wait_for(&released, not_checking),
+        UpdateStatus::Available {
+            version: "0.27.0".to_string()
+        }
+    );
+}
+
+#[test]
+fn the_release_workflow_marks_a_hyphenated_tag_as_a_prerelease() {
+    // The other half of the contract: a `-beta.N` tag must be published as
+    // a pre-release, or `releases/latest` would hand it to every stable user.
+    let workflow = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/workflows/release.yml"
+    ))
+    .expect("the release workflow is in the tree");
+    assert!(
+        workflow.contains("prerelease: ${{ contains(github.ref_name, '-') }}"),
+        "release.yml must publish a hyphenated tag as a pre-release"
+    );
 }

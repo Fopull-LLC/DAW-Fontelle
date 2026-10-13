@@ -33,6 +33,15 @@ impl TextStyle {
         }
     }
 
+    /// A style as a constant: the size in tenths of a pixel and the weight
+    /// (400 normal, 500 medium).
+    pub const fn from_tenths(size_tenths: u32, weight: u16) -> Self {
+        Self {
+            size_tenths,
+            weight,
+        }
+    }
+
     pub fn size(self) -> f32 {
         self.size_tenths as f32 / 10.0
     }

@@ -11,6 +11,8 @@ repository.workspace = true
 
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
+# The vocal part's expression types are the singing contract's own.
+fontelle-sing = { path = "../fontelle-sing" }
 serde = { version = "1.0.229", features = ["derive"] }
 # `float_roundtrip`: without it serde_json's fast float parser can land a
 # ULP away from the number in the file, so a patch written and read back

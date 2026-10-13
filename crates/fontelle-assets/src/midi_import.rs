@@ -643,6 +643,8 @@ pub fn read_midi(
             named_keys: false,
             ab: Default::default(),
             gain_db: 0.0,
+            vocal: None,
+            vocal_style: Default::default(),
         });
         let lane = project.lanes.insert(Lane {
             name: label.clone(),
@@ -664,7 +666,11 @@ pub fn read_midi(
             lane,
             start: 0,
             length,
-            source: ClipSource::Notes(NoteData { channel, notes }),
+            source: ClipSource::Notes(NoteData {
+                channel,
+                notes,
+                vocal: None,
+            }),
             prefab_link: None,
             color: None,
             muted: false,
@@ -739,6 +745,8 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         slide: false,
         path: path_from_bends(start.start, (end - start.start).max(1), &start.bends),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     });
 }
 

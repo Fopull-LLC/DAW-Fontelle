@@ -12,6 +12,7 @@ mod command;
 mod commands;
 mod lane;
 mod lane_routing;
+pub mod lyrics;
 mod mixer;
 mod note;
 mod prefab;
@@ -22,6 +23,8 @@ mod stretch;
 mod study;
 mod tools;
 pub mod trim;
+mod vocal;
+mod vocal_files;
 pub mod wire;
 
 pub use arena::{Arena, minting_in};
@@ -76,6 +79,16 @@ pub use study::{
 pub use tools::{
     ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
     RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
+};
+pub use vocal::{
+    AutoGlide, AutoVibrato, BUILTIN_ENGINE_PREFIX, LaneCurve, LaneKey, LaneSpec, NoteVoice,
+    SetLyrics, SetNoteVoices, SetSinger, SetVocalLane, SetVocalSettings, SetVocalState,
+    SetVocalStyle, VocalPart, VocalStyle, VocalVoice, consonant_speed, is_builtin_engine,
+    lane_spec, velocity_for_speed,
+};
+pub use vocal_files::{
+    FreezeVocal, FrozenVocal, ImportVocal, MadeVocal, UnfreezeVocal, UnimportVocal,
+    VocalClipImport, VocalLanding,
 };
 pub use wire::{Edit, WireError};
 

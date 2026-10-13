@@ -413,6 +413,8 @@ fn read_note(record: &[u8], width: usize, ppq: u32, fine_written: bool) -> FscNo
             slide: flags & FL_SLIDE != 0,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         },
     }
 }

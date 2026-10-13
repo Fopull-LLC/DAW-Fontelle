@@ -194,6 +194,48 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
         ],
     },
     KeybindSection {
+        title: "Vocal tracks",
+        binds: &[
+            act(Action::EditLyric),
+            act(Action::Voicebanks),
+            fixed(
+                "Click the singer chip",
+                "Choose who sings: type to search, arrows between cards, Tab a language, Enter",
+            ),
+            act(Action::NoteMenu),
+            act(Action::PitchPen),
+            act(Action::SmoothPitch),
+            act(Action::SnapPitch),
+            act(Action::ResetPitch),
+            fixed("Double-click", "On a note of a vocal track: type its lyric"),
+            fixed(
+                "Tab / Shift+Tab",
+                "In a lyric: keep it and type the next / last note's",
+            ),
+            fixed("Enter / Esc", "In a lyric: keep it / leave it as it was"),
+            fixed(
+                "A line, several notes",
+                "Words spread a note each; a-ma-zing a syllable each; - holds",
+            ),
+            fixed(
+                "Drag in a lane",
+                "Draw it; Shift a straight line; right button or the eraser clears",
+            ),
+            fixed(
+                "Handles over a selected note",
+                "Vibrato delay, fades, depth, rate; the dot ahead: the glide (Shift moves it)",
+            ),
+            fixed(
+                "Double-click the phoneme row",
+                "Type a note's phonemes; Tab takes the suggestion; drag a start to retime",
+            ),
+            fixed(
+                "Drop a .zip, .7z, .uar, .oudep or folder",
+                "Installs a voicebank",
+            ),
+        ],
+    },
+    KeybindSection {
         title: "Mixer",
         binds: &[act(Action::MuteTrack), act(Action::SoloTrack)],
     },

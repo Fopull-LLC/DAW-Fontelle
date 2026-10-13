@@ -203,6 +203,7 @@ fn shoot_sized(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -589,6 +590,8 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         slide: false,
         path: Vec::new(),
         channel: None,
+        lyric: String::new(),
+        voice: None,
     }
 }
 
@@ -970,6 +973,7 @@ fn shoot_roll_everything(
                 scale: song_key.and_then(fontelle_ui::canvas::RollScale::of),
                 key: song_key,
                 key_root: song_key.map_or(0, |key| key.root),
+                vocal: None,
             }),
             rack: None,
             prefabs: None,
@@ -993,6 +997,7 @@ fn shoot_roll_everything(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -1445,6 +1450,7 @@ fn shoot_timeline_recording(
             prefabs: None,
             browser: None,
             timeline: Some(TimelineChrome {
+                vocal_spans: &[],
                 tool: SHOT_TOOL.with(|tool| tool.get()),
                 stretch,
                 toolbar: fontelle_ui::canvas::timeline_toolbar_layout(l.toolbar, &theme.metrics),
@@ -1495,6 +1501,7 @@ fn shoot_timeline_recording(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let mut frame = vello::Scene::new();
@@ -2290,6 +2297,7 @@ fn shoot_mixer_lit(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -2757,6 +2765,7 @@ fn shoot_rack_routed(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5052,6 +5061,7 @@ fn shoot_carry(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5328,6 +5338,7 @@ fn shoot_welcome_status(
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5616,6 +5627,7 @@ fn shoot_settings_controls() {
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -5741,6 +5753,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
             help: None,
             tour: None,
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -6131,6 +6144,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
                 dragging: None,
                 badges: &badges,
             }),
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -6312,6 +6326,7 @@ fn shoot_guide(
                 media: media.first().map(|(_, image)| image),
             }),
             settings_page: None,
+            vocal_overlay: None,
         },
     );
     let pixels = shared
@@ -6925,6 +6940,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
                 help: None,
                 tour: None,
                 settings_page: None,
+                vocal_overlay: None,
             },
         );
         shared
@@ -7150,6 +7166,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
                 help: None,
                 tour: None,
                 settings_page: None,
+                vocal_overlay: None,
             },
         );
         shared

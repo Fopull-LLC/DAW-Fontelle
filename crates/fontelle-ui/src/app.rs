@@ -74,6 +74,11 @@ use crate::transport::{
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
 mod analyze;
+mod vocal;
+mod vocal_files;
+mod windowless;
+use vocal_files::{CHANNEL_MENU_ROWS, VOCAL_FROM_FILE};
+pub use windowless::Windowless;
 
 /// What can be on its way on the synth window (`motion.rs`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -103,6 +108,9 @@ const TRACK_COLOUR_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    /// A vocal roll's lane stroke, expression handle or phoneme start —
+    /// which one is in `vocal_edit`.
+    Vocal,
     /// The open menu's scrollbar. How far down the thumb it was taken hold of
     /// is in `menu_grab` — a `Drag` is compared and a float is not a thing to
     /// compare, the same arrangement `flop_knob` has.
@@ -544,10 +552,25 @@ enum PluginPurpose {
 /// The record menu's last row: a take into a study of its own.
 pub const RECORD_INTO_ANALYZE: &str = "Record into Analyze Musically\u{2026}";
 
+/// The instrument menus' row that opens the Voicebanks page: a vocal
+/// track's singers are found from where instruments are chosen too.
+pub const VOICEBANKS_ROW: &str = "Voicebanks & Find singers\u{2026}";
+
 #[derive(Debug, Clone, PartialEq)]
 enum MenuTarget {
     /// A channel in the rack, by row.
     Channel(usize),
+    /// A voicebank's terms, before it first sings on `channel`: the singer
+    /// (an index into `singers()`) and the language chosen.
+    SingerTerms {
+        channel: usize,
+        singer: usize,
+        language: String,
+    },
+    /// An installed bank's (or a catalogue entry's) terms, by id.
+    BankTerms(String),
+    /// The note menu of a vocal roll's selection.
+    VocalNote,
     /// The mixer's *+ fx* row on this strip: which effect to put on the end
     /// of its chain. See [`crate::canvas::effect_menu_rows`].
     AddEffect(usize),
@@ -910,6 +933,9 @@ impl MenuTarget {
             // the main window.
             Self::SettingChoice(_) | Self::TourSection => None,
             Self::Channel(_)
+            | Self::SingerTerms { .. }
+            | Self::BankTerms(_)
+            | Self::VocalNote
             | Self::AddEffect(_)
             | Self::NewInstrument
             | Self::ChangeInstrument(_)
@@ -1281,6 +1307,9 @@ pub struct WindowApp {
     /// The floating editor windows that are open (TDD §7.2, §12, §13.4).
     /// At most one of each kind — see [`EditorKind`].
     editors: Vec<Editor>,
+    /// Editor panels laid out with no window behind them (`Windowless`, for
+    /// tests): their kind and body, laid out as an open window's are.
+    windowless: Vec<(EditorKind, crate::layout::Rect)>,
     /// The start menu, until something on it is chosen.
     welcome: Option<Welcome>,
     /// The keyboard shortcuts sheet, while it is up: how far it is scrolled.
@@ -1449,6 +1478,17 @@ pub struct WindowApp {
     /// The selected channel's instrument, read with the rest of the studio's
     /// lists rather than once a frame.
     instrument: Option<InstrumentView>,
+    /// The selected vocal track's singer — the stage over its instrument
+    /// panel (`docs/vocal-plan.md` §2.5). When `Some`, the instrument window
+    /// is the singer panel and [`instrument`](Self::instrument) is its knobs.
+    singer_panel: Option<crate::document::SingerPanelView>,
+    /// Where the singer panel's stage and cards are; its `controls` are
+    /// what `instrument_layout` holds while it shows.
+    singer_layout: crate::canvas::SingerPanelLayout,
+    /// How far the singer panel is scrolled down.
+    singer_scroll: f32,
+    /// Which piece of the singer panel's stage the pointer is over.
+    singer_hover: Option<crate::canvas::SingerPanelHit>,
     /// What the selected channel is, for what its window says when it has
     /// nothing to show (`render::no_instrument_text`).
     selected_kind: Option<fontelle_types::InstrumentKind>,
@@ -2048,6 +2088,24 @@ pub struct WindowApp {
     /// the way `field_widths` is for the prompt. `None` when nothing is
     /// being renamed.
     rename_marks: Option<crate::render::RenameMarks>,
+    /// The inline lyric field on a vocal track's notes, while it is open.
+    lyric: Option<crate::canvas::LyricEditor>,
+    /// Its caret and selection, measured in `shape_labels` like
+    /// `rename_marks`.
+    lyric_marks: Option<crate::render::RenameMarks>,
+    /// What the roll draws over a vocal track's notes; `None` off one.
+    vocal: Option<crate::document::VocalView>,
+    /// The host's vocal and studio revisions `vocal` was read at.
+    vocal_seen: (u64, u64),
+    /// Each vocal clip's stretches still being sung, for the arrangement.
+    vocal_spans: Vec<(
+        fontelle_types::ClipId,
+        Vec<(fontelle_types::Tick, fontelle_types::Tick)>,
+    )>,
+    /// Where the roll's singer chip is, measured in `shape_labels`.
+    vocal_caption: Option<crate::layout::Rect>,
+    /// The vocal roll's editing: lanes, handles, phonemes, the page.
+    vocal_edit: vocal::VocalEditing,
     /// Whether the caret is in its **on** half. Flipped on a timer, because a
     /// caret that does not blink is easy to read as a character.
     caret_on: bool,
@@ -2280,6 +2338,7 @@ impl WindowApp {
             renderers: Vec::new(),
             live: None,
             editors: Vec::new(),
+            windowless: Vec::new(),
             welcome: None,
             keybinds: None,
             keymap: options
@@ -2371,6 +2430,10 @@ impl WindowApp {
             tab: EditorTab::Roll,
             tabs: editor_tabs(layout.panel.header, &options.theme.metrics),
             instrument: None,
+            singer_panel: None,
+            singer_layout: Default::default(),
+            singer_scroll: 0.0,
+            singer_hover: None,
             selected_kind: None,
             instrument_layout: InstrumentLayout {
                 name: crate::layout::Rect::ZERO,
@@ -2630,6 +2693,13 @@ impl WindowApp {
             rename_entry: crate::canvas::TextEntry::default(),
             field_widths: std::collections::HashMap::new(),
             rename_marks: None,
+            lyric: None,
+            lyric_marks: None,
+            vocal: None,
+            vocal_seen: (u64::MAX, u64::MAX),
+            vocal_spans: Vec::new(),
+            vocal_caption: None,
+            vocal_edit: vocal::VocalEditing::default(),
             caret_on: true,
             caret_phase: 0.0,
             renaming: None,
@@ -3278,6 +3348,15 @@ impl WindowApp {
                     tools: &self.tools,
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
+                    vocal: self.vocal.as_ref().map(|view| {
+                        vocal::roll_vocal_of(
+                            &self.vocal_edit,
+                            view,
+                            self.lyric.as_ref(),
+                            self.lyric_marks,
+                            self.vocal_caption,
+                        )
+                    }),
                 }),
                 // Exactly one of the two: they are one panel with two tabs
                 // (`canvas::tab_strip`), and drawing both would put two lists
@@ -3356,6 +3435,7 @@ impl WindowApp {
                 timeline: (!self.layout.timeline.frame.is_empty()
                     && self.options.document.is_some())
                 .then(|| TimelineChrome {
+                    vocal_spans: &self.vocal_spans,
                     panel: self.layout.timeline,
                     layout: self.timeline_layout,
                     view: self.timeline.view,
@@ -3549,6 +3629,7 @@ impl WindowApp {
                         badges: &self.settings_badges,
                     }
                 }),
+                vocal_overlay: vocal::vocal_overlay_of(&self.vocal_edit),
             },
         );
 
@@ -3701,6 +3782,7 @@ impl WindowApp {
             .as_mut()
             .is_some_and(|doc| doc.pump_session());
         self.read_session();
+        self.refresh_vocal();
         // The tour's spotlight glides between steps.
         if self.tour_moving() {
             self.tree.invalidate_rect(self.layout.window);
@@ -3771,7 +3853,12 @@ impl WindowApp {
         // is rather than at the end of the name.
         // The notepad's caret blinks on the same clock, in its own window.
         let writing = self.notepad_typing && self.notepad.is_some();
-        if prompting || writing || self.renaming.is_some() || self.tempo_entry.is_some() {
+        if prompting
+            || writing
+            || self.renaming.is_some()
+            || self.tempo_entry.is_some()
+            || self.lyric.is_some()
+        {
             self.caret_phase += dt;
             if self.caret_phase >= CARET_BLINK_S {
                 self.caret_phase -= CARET_BLINK_S;
@@ -3781,6 +3868,8 @@ impl WindowApp {
                 }
                 if prompting {
                     self.tree.invalidate_rect(self.menu_at.1);
+                } else if self.lyric.is_some() {
+                    self.tree.invalidate(PANEL);
                 } else if self.tempo_entry.is_some() {
                     self.tree.invalidate(TRANSPORT);
                 } else {
@@ -4048,6 +4137,7 @@ impl WindowApp {
     fn drag_pointer_shape(&self) -> Option<Pointer> {
         match self.drag {
             Drag::None => None,
+            Drag::Vocal => Some(Pointer::Grabbing),
             // A fade keeps the cursor it was taken hold of with: the handle
             // is dragged along, the node up and down, and the pointer's
             // travel over the body must not turn either into a hand.
@@ -4235,6 +4325,15 @@ impl WindowApp {
             } else if self.cables.cable_at(x, y).is_some() {
                 wanted = Pointer::Grab;
             }
+        }
+        // The pitch pen is a pencil over the whole grid, notes included:
+        // a press there draws the pitch, never grabs a note.
+        if self.tab == EditorTab::Roll
+            && self.vocal_edit.pitch_pen
+            && self.drag == Drag::None
+            && self.roll_layout.grid.contains(x, y)
+        {
+            wanted = Pointer::Draw;
         }
         if wanted == self.pointer {
             return;
@@ -4882,185 +4981,7 @@ impl ApplicationHandler for WindowApp {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 ..
-            } => {
-                let was_control = matches!(
-                    self.drag,
-                    Drag::Knob
-                        | Drag::FlopKnob
-                        | Drag::FlopWave(_)
-                        | Drag::FlopSteps(_)
-                        | Drag::FlopDraw(_)
-                        | Drag::FlopBars(_)
-                        | Drag::FlopVelocity(_)
-                        | Drag::FlopResponse(_)
-                        | Drag::FlopEnvNode
-                        | Drag::FlopShape
-                        | Drag::FlopRing
-                        | Drag::FlopMatrix(_)
-                        | Drag::FlopRackMix(_)
-                        | Drag::Fader(_)
-                        | Drag::Pan(_)
-                        | Drag::Tempo
-                        | Drag::EqHandle(_)
-                        | Drag::SendLevel(_)
-                        | Drag::SendKnob { .. }
-                        | Drag::InsertMix(_)
-                );
-                // A press on the tempo box that comes up where it went down
-                // is a **click**, and a click opens the box for typing; a
-                // press that travelled was the drag it has always been. The
-                // slop is a couple of pixels, because a hand at rest is not
-                // perfectly still.
-                if self.drag == Drag::Tempo
-                    && let Some((_, from_y)) = self.value_drag
-                    && (self.cursor.1 - from_y).abs() < TEMPO_CLICK_SLOP
-                {
-                    self.start_tempo_entry();
-                }
-                // An EQ band drag coalesces into one history entry while it
-                // runs; this is what tells the document it has stopped, the
-                // same handshake a note drag has.
-                if matches!(self.drag, Drag::EqHandle(_))
-                    && let Some(doc) = &mut self.options.document
-                {
-                    doc.end_gesture();
-                }
-                // A row carried up or down its chain is moved where it is let
-                // go, not while it travels: one edit and one undo entry for
-                // one drag.
-                if matches!(self.drag, Drag::InsertRow) {
-                    self.drop_insert_row();
-                }
-                if matches!(self.drag, Drag::MoveStrip) {
-                    self.drop_strip();
-                }
-                if matches!(self.drag, Drag::Cable) {
-                    let (x, y) = self.cursor;
-                    self.drop_cable(x, y);
-                }
-                // A time selection lands where the button comes up, like a
-                // marquee: that is when it decides what it caught.
-                if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
-                    self.commit_selection();
-                }
-                // And a row carried out of the soundfont panel is acted on by
-                // **where it was let go** — see `Drag::BrowserRow` — unless
-                // it was let go outside this window with the synth window
-                // open, in which case it is held for a click in there: see
-                // `canvas::carry_release` for the desktop that makes that
-                // necessary.
-                if let Drag::BrowserRow(row) = self.drag {
-                    let (x, y) = self.cursor;
-                    match crate::canvas::carry_release(
-                        self.layout.window,
-                        (x, y),
-                        self.pointer_window.is_some(),
-                        self.editors
-                            .iter()
-                            .any(|e| e.kind == EditorKind::Instrument),
-                    ) {
-                        crate::canvas::CarryRelease::Drop => self.drop_browser_row(row, x, y),
-                        crate::canvas::CarryRelease::Hold => {
-                            self.held = Some(row);
-                            self.status = "Click an oscillator in the synth window to \
-                                           land the sound, Esc to let go"
-                                .to_string();
-                        }
-                        crate::canvas::CarryRelease::Cancel => {}
-                    }
-                }
-                self.drag = Drag::None;
-                // The chip goes with the drag — unless the row is held, when
-                // it stays on the pointer — and the region it floated over
-                // is repainted: it belongs to no widget, so nothing else
-                // would.
-                if self.held.is_none() && self.carry.take().is_some() {
-                    self.tree.invalidate_rect(self.layout.window);
-                    self.redraw_editor(EditorKind::Instrument);
-                }
-                self.end_edge_scroll();
-                // The press that shut a menu is spent; the next one opens it
-                // again. See `dismissed`.
-                self.dismissed = None;
-                self.knob = None;
-                self.flop_knob = None;
-                self.value_drag = None;
-                self.pointer_anchor = None;
-                if was_control {
-                    self.tree.invalidate(PANEL);
-                    self.tree.invalidate(TRANSPORT);
-                }
-                let (x, y) = self.cursor;
-                // Where the button came up is what a marquee needs: that is
-                // the moment it decides what it caught.
-                let grid = self.roll_layout.grid;
-                let edits = match &self.options.document {
-                    Some(doc) => self.roll.release_over(x, y, grid, doc.notes()),
-                    None => {
-                        self.roll.release();
-                        Vec::new()
-                    }
-                };
-                // The cut tool's whole edit lands here: a line half-drawn is
-                // not a cut.
-                self.apply_roll_edits(edits);
-                let beats = self.beats_per_bar();
-                // **Before** the release, because after it the gesture is gone:
-                // a marquee and a cut are both drawn by the canvas and known to
-                // nothing in the document, so the frame that clears them has to
-                // be asked for on their own account. Without this the stroke
-                // stays on screen after the button comes up — the same fault as
-                // the one that made it invisible during the drag, pointed the
-                // other way.
-                let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
-                let edits =
-                    self.timeline
-                        .release_over(x, y, &self.timeline_layout, &self.clips, beats);
-                // A click on a clip's name — down and up in one place.
-                let name_click = self
-                    .name_press
-                    .take()
-                    .filter(|(_, px, py)| (x - px).abs() <= 3.0 && (y - py).abs() <= 3.0)
-                    .map(|(id, _, _)| id);
-                // The cut tool's whole edit lands here, like the roll's: a
-                // line half-drawn is not a cut.
-                self.apply_arrange_edits(edits);
-                // A click on the clip that was already open: the rack steps
-                // to the next instrument playing in it. *"maybe cycle
-                // through?"* Not when the click was on the name, which is
-                // the clip's menu.
-                if let Some(clip) = self.timeline.take_cycle()
-                    && name_click.is_none()
-                    && let Some(doc) = &mut self.options.document
-                {
-                    doc.cycle_clip_channel(clip);
-                    self.roll.clear_selection();
-                    self.refresh_studio();
-                    self.tree.invalidate(RACK);
-                }
-                if overlay {
-                    self.tree.invalidate(TIMELINE);
-                }
-                // **Before** the release, and this order is the whole of it: a
-                // click's audition starts here, on the way up, and
-                // `Auditions::start` clears any release that was scheduled. Ask
-                // for the sound first and the release below schedules *its*
-                // stop; ask for it after and nothing ever stops it.
-                self.sound_roll_request();
-                self.stop_audition();
-                // One drag, one undo entry (§10.6). Only the caller knows the
-                // mouse came up, which is exactly why `History` cannot decide
-                // this for itself.
-                if let Some(doc) = &mut self.options.document {
-                    doc.end_gesture();
-                }
-                if let Some(id) = name_click {
-                    self.open_clip_menu(id, x, y);
-                }
-                self.tree.invalidate(PANEL);
-                self.update_cursor();
-                self.request_redraw_if_dirty();
-            }
+            } => self.studio_released(),
 
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -5090,6 +5011,16 @@ impl ApplicationHandler for WindowApp {
                     }
                     self.tree.invalidate_rect(self.layout.window);
                     self.update_hover();
+                } else if self.vocal_edit.picker.is_some() {
+                    self.scroll_singer_picker(dy);
+                } else if let Some(page) = &mut self.vocal_edit.page {
+                    page.scroll = (page.scroll - dy * 40.0).max(0.0);
+                    if let Some(layout) = &page.layout {
+                        page.scroll = page
+                            .scroll
+                            .min((layout.content_height - layout.list.height).max(0.0));
+                    }
+                    self.tree.invalidate_rect(self.layout.window);
                 } else if self.welcome.is_none() {
                     self.scroll_roll(dx, dy);
                 }
@@ -5125,6 +5056,35 @@ impl ApplicationHandler for WindowApp {
 
             // The compositor threw our pixels away, or is about to show them
             // again. Either way what we believe is on screen is no longer true.
+            // A finished composition from an input method — kana, hanzi —
+            // goes into the lyric being typed.
+            // What it is composing, shown in the field as it is composed.
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if self.lyric.is_some() || self.vocal_edit.field.is_some() {
+                    self.vocal_edit.preedit.set(&text, cursor);
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                if self.vocal_edit.preedit.is_active() {
+                    self.vocal_edit.preedit.clear();
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.vocal_edit.preedit.clear();
+                if self.phoneme_field_commit_text(&text) {
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                } else if let Some(editor) = &mut self.lyric {
+                    editor.commit_text(&text);
+                    self.tree.invalidate(PANEL);
+                    self.request_redraw_if_dirty();
+                }
+            }
+
             WindowEvent::Occluded(true) => {
                 self.sight.occluded = true;
             }
@@ -5557,7 +5517,10 @@ impl WindowApp {
                     .map(|view| crate::layout::flopsynth_window_size(view.scale))
             })
             .flatten();
+        // A vocal track's instrument is the singer panel, its own shape.
+        let singer = kind == EditorKind::Instrument && self.singer_panel.is_some();
         let (w, h) = match (flop_size, tune, notepad, disgusting_beat) {
+            _ if singer => crate::canvas::SINGER_PANEL_SIZE,
             (Some(size), _, _, _) => size,
             (_, true, _, _) => crate::layout::TUNE_SIZE,
             (_, _, true, _) => crate::layout::NOTEPAD_SIZE,
@@ -5682,6 +5645,18 @@ impl WindowApp {
                     None => "Flopsynth".to_string(),
                 }
             }
+            // A vocal track's window is named for its instrument: "Fontelle
+            // Singer — Lead vocal".
+            EditorKind::Instrument if self.singer_panel.is_some() => {
+                let instrument = self
+                    .singer_panel
+                    .as_ref()
+                    .map_or("", |v| v.instrument.as_str());
+                match self.channels.get(self.selected_channel) {
+                    Some(channel) => format!("{instrument} \u{2014} {}", channel.name),
+                    None => instrument.to_string(),
+                }
+            }
             EditorKind::Instrument => match self.channels.get(self.selected_channel) {
                 Some(channel) => format!("{} \u{2014} {}", kind.title(), channel.name),
                 None => kind.title().to_string(),
@@ -5714,6 +5689,7 @@ impl WindowApp {
             .editors
             .iter()
             .map(|e| (e.kind, e.panel.body))
+            .chain(self.windowless.iter().copied())
             .collect();
         for (kind, body) in bodies {
             match kind {
@@ -5773,9 +5749,22 @@ impl WindowApp {
                             ..Default::default()
                         },
                     };
-                    self.instrument_layout = match &self.instrument {
-                        Some(view) => instrument_layout(body, &m, view),
-                        None => InstrumentLayout {
+                    self.instrument_layout = match (&self.instrument, &self.singer_panel) {
+                        // The singer panel: its cells, in its cards — the
+                        // gestures read `instrument_layout` either way.
+                        (Some(view), Some(singer)) => {
+                            self.singer_layout = crate::canvas::singer_panel_layout(
+                                body,
+                                &m,
+                                singer,
+                                view,
+                                self.singer_scroll,
+                            );
+                            self.singer_scroll = self.singer_layout.scroll;
+                            self.singer_layout.controls.clone()
+                        }
+                        (Some(view), None) => instrument_layout(body, &m, view),
+                        (None, _) => InstrumentLayout {
                             name: crate::layout::Rect::ZERO,
                             body,
                             keys: Vec::new(),
@@ -5905,20 +5894,11 @@ impl WindowApp {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = editor.window.scale_factor();
-                self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
-                self.pointer_window = Some(kind);
-                self.update_editor_hover(kind);
-                self.update_editor_cursor(kind);
-                // The same drag machinery the docked panels used: a knob, an
-                // EQ handle and an automation point are dragged against the
-                // layouts `relayout_editors` put in this window.
-                self.drag_pointer();
-                // A row held from the studio follows the pointer in here too,
-                // and the card under it lights.
-                if self.held.is_some() {
-                    self.refresh_carry();
-                }
-                self.redraw_editor(kind);
+                self.editor_pointer_moved(
+                    kind,
+                    (position.x / scale) as f32,
+                    (position.y / scale) as f32,
+                );
             }
 
             // A file dragged onto the window. The **only** way into Fontelle
@@ -5967,31 +5947,17 @@ impl WindowApp {
                 button,
                 ..
             } => {
-                let (x, y) = self.cursor;
                 let button = match button {
                     winit::event::MouseButton::Right => MouseButton::Right,
                     _ => MouseButton::Left,
                 };
-                // A menu opened on a knob is above this window's own panel,
-                // and a press that chose an entry is spent.
-                if self.menu.is_some() && self.press_menu(x, y) {
-                    self.redraw_editor(kind);
-                    return;
-                }
-                self.press_editor(kind, button, x, y);
-                self.redraw_editor(kind);
+                self.editor_pressed(kind, button);
             }
 
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
                 ..
-            } => {
-                if kind == EditorKind::Analyze {
-                    self.release_analyze();
-                }
-                self.release_controls();
-                self.redraw_editor(kind);
-            }
+            } => self.editor_released(kind),
 
             WindowEvent::MouseWheel { delta, .. } if kind == EditorKind::Analyze => {
                 let (dx, dy) = match delta {
@@ -6033,6 +5999,12 @@ impl WindowApp {
                     // Only the instrument window has a list to scroll (its
                     // presets); the effect and clip panels are laid out to fit
                     // and have nothing to scroll once a menu is closed.
+                    // The singer panel scrolls when it is taller than its
+                    // window — three rows of knobs a notch would be too far.
+                    if kind == EditorKind::Instrument && self.singer_panel.is_some() {
+                        self.singer_scroll = (self.singer_scroll - steps * 40.0).max(0.0);
+                        self.relayout_editors();
+                    }
                     if kind == EditorKind::Instrument {
                         if self.wheel_flopsynth_control(x, y, steps) {
                             self.redraw_editor(kind);
@@ -6297,6 +6269,46 @@ impl WindowApp {
     }
 
     /// A press inside an editor window, routed by which editor it is.
+    /// The pointer moved to `(x, y)`, in points, in editor window `kind`.
+    fn editor_pointer_moved(&mut self, kind: EditorKind, x: f32, y: f32) {
+        self.cursor = (x, y);
+        self.pointer_window = Some(kind);
+        self.update_editor_hover(kind);
+        self.update_editor_cursor(kind);
+        // The same drag machinery the docked panels used: a knob, an
+        // EQ handle and an automation point are dragged against the
+        // layouts `relayout_editors` put in this window.
+        self.drag_pointer();
+        // A row held from the studio follows the pointer in here too,
+        // and the card under it lights.
+        if self.held.is_some() {
+            self.refresh_carry();
+        }
+        self.redraw_editor(kind);
+    }
+
+    /// A button went down in editor window `kind`, where the pointer is.
+    fn editor_pressed(&mut self, kind: EditorKind, button: MouseButton) {
+        let (x, y) = self.cursor;
+        // A menu opened on a knob is above this window's own panel, and a
+        // press that chose an entry is spent.
+        if self.menu.is_some() && self.press_menu(x, y) {
+            self.redraw_editor(kind);
+            return;
+        }
+        self.press_editor(kind, button, x, y);
+        self.redraw_editor(kind);
+    }
+
+    /// The button came up in editor window `kind`.
+    fn editor_released(&mut self, kind: EditorKind) {
+        if kind == EditorKind::Analyze {
+            self.release_analyze();
+        }
+        self.release_controls();
+        self.redraw_editor(kind);
+    }
+
     fn press_editor(&mut self, kind: EditorKind, button: MouseButton, x: f32, y: f32) {
         // A row held since its drag was let go outside the studio — the way
         // a sound reaches an oscillator on a desktop that keeps the pointer
@@ -6321,6 +6333,32 @@ impl WindowApp {
                 // The same rule §12.4 gives every other knob in the program:
                 // right-click makes an automation lane for it.
                 MouseButton::Right => self.press_flopsynth_menu(x, y),
+            },
+            EditorKind::Instrument if self.singer_panel.is_some() => match button {
+                MouseButton::Left => {
+                    if !self.press_singer_panel(x, y) && self.singer_layout.body.contains(x, y) {
+                        self.press_instrument(x, y);
+                    }
+                }
+                MouseButton::Right => {
+                    // Volume and pan are automated like any channel's. The
+                    // singer's own knobs are what it is *asked* to sing, a
+                    // render's input rather than a sound's: a change over
+                    // time is a lane drawn under the roll, which is said.
+                    let address = instrument_hit(&self.instrument_layout, x, y)
+                        .and_then(|(g, p)| self.instrument.as_ref()?.param(g, p))
+                        .map(|param| param.address.as_str().to_string());
+                    match address {
+                        Some(a) if a.starts_with("vocal/") => {
+                            self.status = "To change this over time, draw it in a lane \
+                                           under the piano roll"
+                                .to_string();
+                            self.tree.invalidate(BROWSER);
+                        }
+                        Some(_) => self.press_instrument_menu(x, y),
+                        None => {}
+                    }
+                }
             },
             EditorKind::Instrument => match button {
                 MouseButton::Left => self.press_instrument(x, y),
@@ -6400,6 +6438,10 @@ impl WindowApp {
             }
             EditorKind::Instrument => {
                 self.hover_param = instrument_hit(&self.instrument_layout, x, y);
+                self.singer_hover = self
+                    .singer_panel
+                    .as_ref()
+                    .and_then(|_| crate::canvas::singer_panel_hit(&self.singer_layout, x, y));
             }
             // DisgustingBeat's lanes, checked first for the same reason.
             EditorKind::Effect if self.disgusting_beat.is_some() => {
@@ -6691,6 +6733,22 @@ impl WindowApp {
                         .flop_motion
                         .value(FlopMotion::Bubble, std::time::Instant::now())
                         .unwrap_or(1.0),
+                })
+            }
+            EditorKind::Instrument if self.singer_panel.is_some() && self.instrument.is_some() => {
+                let (Some(view), Some(controls)) =
+                    (self.singer_panel.as_ref(), self.instrument.as_ref())
+                else {
+                    return;
+                };
+                EditorWindowChrome::Singer(crate::render::singer_panel::SingerChrome {
+                    layout: self.singer_layout.clone(),
+                    view,
+                    controls,
+                    portraits: &self.vocal_edit.portraits,
+                    hover: self.hover_param,
+                    active: self.knob.map(|(which, _, _)| which),
+                    hover_hit: self.singer_hover,
                 })
             }
             EditorKind::Instrument if self.instrument.is_none() => {
@@ -6999,6 +7057,11 @@ impl WindowApp {
             self.roll.lane_height,
             crate::canvas::keyboard_width_for(&self.key_map, self.key_style),
         );
+        self.vocal_edit.strips = if self.vocal.is_some() {
+            crate::canvas::carve_vocal_strips(&mut self.roll_layout)
+        } else {
+            crate::canvas::VocalStrips::default()
+        };
         self.roll_bar = toolbar_layout(self.roll_layout.toolbar, m);
         self.timeline_layout = timeline_layout(self.layout.timeline.body, m);
         self.timeline_bar = timeline_toolbar_layout(self.timeline_layout.toolbar, m);
@@ -7126,6 +7189,19 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
+        let singer_panel = doc.singer_panel();
+        // A singer's face is decoded once, here, so the frame only peeks.
+        if let Some(path) = singer_panel
+            .as_ref()
+            .and_then(|v| v.singer.as_ref())
+            .and_then(|s| s.image.as_deref())
+        {
+            self.vocal_edit.portraits.get(path);
+        }
+        if singer_panel.is_some() != self.singer_panel.is_some() {
+            self.singer_scroll = 0.0;
+        }
+        self.singer_panel = singer_panel;
         self.selected_kind = doc.channel_kind(doc.selected_channel());
         self.flopsynth = doc.flopsynth_showing(
             self.flop_page,
@@ -8510,8 +8586,18 @@ impl WindowApp {
                 .ensure(crate::canvas::curve_label(shape), &font, &mut self.text);
         }
 
+        // The singer panel's own words, at their own sizes.
+        if self.is_editor_open(EditorKind::Instrument)
+            && let (Some(view), Some(controls)) = (&self.singer_panel, &self.instrument)
+        {
+            for (s, style) in crate::render::singer_panel::singer_panel_strings(view, controls) {
+                self.labels.ensure_styled(&s, &font, style, &mut self.text);
+            }
+        }
+
         // Both panels of knobs: the instrument's, and the one an effect that is
         // not an EQ opens. Same shape, same captions to shape.
+
         for view in [
             self.is_editor_open(EditorKind::Instrument)
                 .then(|| self.instrument.clone())
@@ -8589,11 +8675,265 @@ impl WindowApp {
                 }
             }
         }
+
+        // A vocal track's words, phonemes, corner and lyric field — and the
+        // field's caret, measured at the size it is drawn.
+        self.vocal_caption = None;
+        self.lyric_marks = None;
+        self.vocal_edit.lyric_shown = None;
+        self.vocal_edit.lyric_underline = None;
+        if let (Some(view), Some(doc)) = (self.vocal.as_ref(), self.options.document.as_ref()) {
+            use crate::render::vocal::{LYRIC_STYLE, PHONEME_STYLE, caption_rect, strings};
+            let typed = self.lyric.as_ref().map(|e| e.entry().text().to_string());
+            let (words, small) = strings(view, doc.notes(), typed.as_deref());
+            for text in &words {
+                self.labels
+                    .ensure_styled(text, &font, LYRIC_STYLE, &mut self.text);
+            }
+            for text in &small {
+                self.labels
+                    .ensure_styled(text, &font, PHONEME_STYLE, &mut self.text);
+            }
+            let mut width = self
+                .labels
+                .get_styled(&view.caption, LYRIC_STYLE)
+                .map_or(0.0, |t| t.width);
+            // Room for the singer's face before the name.
+            if view
+                .portrait
+                .as_deref()
+                .is_some_and(|p| self.vocal_edit.portraits.get(p).is_some())
+            {
+                width += crate::render::vocal::CAPTION_PORTRAIT;
+            }
+            self.vocal_caption = Some(caption_rect(self.roll_layout.grid, width));
+            let font = font.clone();
+            self.shape_vocal_edit(&font);
+            if let Some(editor) = &self.lyric {
+                let shown = crate::canvas::compose(editor.entry(), &self.vocal_edit.preedit);
+                self.labels
+                    .ensure_styled(&shown.text, &font, LYRIC_STYLE, &mut self.text);
+                let text = shown.text.as_str();
+                let sized = crate::theme::FontTokens {
+                    family: font.family.clone(),
+                    size: LYRIC_STYLE.size(),
+                    line_height: 1.0,
+                    display: None,
+                };
+                let mut width_to = |at: usize| {
+                    if at == 0 {
+                        0.0
+                    } else {
+                        self.text
+                            .layout_weighted(&text[..at], &sized, None, LYRIC_STYLE.weight())
+                            .width
+                    }
+                };
+                self.lyric_marks = Some(crate::render::RenameMarks {
+                    caret_x: width_to(shown.caret),
+                    selection: shown
+                        .selection
+                        .map(|(from, to)| (width_to(from), width_to(to))),
+                    caret_on: self.caret_on,
+                });
+                self.vocal_edit.lyric_underline =
+                    shown.underline.map(|(a, b)| (width_to(a), width_to(b)));
+                self.vocal_edit.lyric_shown = Some(shown);
+            }
+            self.place_ime_cursor();
+        }
+        // The Voicebanks page and the singer picker open from anywhere.
+        let font_now = font.clone();
+        self.shape_vocal_overlays(&font_now);
     }
 
     // ------------------------------------------------------------- mouse ---
 
     /// One press, routed to whichever panel it landed in.
+    /// The button came up over the studio's own window.
+    fn studio_released(&mut self) {
+        let was_control = matches!(
+            self.drag,
+            Drag::Knob
+                | Drag::FlopKnob
+                | Drag::FlopWave(_)
+                | Drag::FlopSteps(_)
+                | Drag::FlopDraw(_)
+                | Drag::FlopBars(_)
+                | Drag::FlopVelocity(_)
+                | Drag::FlopResponse(_)
+                | Drag::FlopEnvNode
+                | Drag::FlopShape
+                | Drag::FlopRing
+                | Drag::FlopMatrix(_)
+                | Drag::FlopRackMix(_)
+                | Drag::Fader(_)
+                | Drag::Pan(_)
+                | Drag::Tempo
+                | Drag::EqHandle(_)
+                | Drag::SendLevel(_)
+                | Drag::SendKnob { .. }
+                | Drag::InsertMix(_)
+        );
+        // A press on the tempo box that comes up where it went down
+        // is a **click**, and a click opens the box for typing; a
+        // press that travelled was the drag it has always been. The
+        // slop is a couple of pixels, because a hand at rest is not
+        // perfectly still.
+        if self.drag == Drag::Tempo
+            && let Some((_, from_y)) = self.value_drag
+            && (self.cursor.1 - from_y).abs() < TEMPO_CLICK_SLOP
+        {
+            self.start_tempo_entry();
+        }
+        // An EQ band drag coalesces into one history entry while it
+        // runs; this is what tells the document it has stopped, the
+        // same handshake a note drag has.
+        if matches!(self.drag, Drag::EqHandle(_))
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.end_gesture();
+        }
+        // A row carried up or down its chain is moved where it is let
+        // go, not while it travels: one edit and one undo entry for
+        // one drag.
+        if matches!(self.drag, Drag::InsertRow) {
+            self.drop_insert_row();
+        }
+        if self.drag == Drag::Vocal {
+            self.release_vocal_edit();
+        }
+        if matches!(self.drag, Drag::MoveStrip) {
+            self.drop_strip();
+        }
+        if matches!(self.drag, Drag::Cable) {
+            let (x, y) = self.cursor;
+            self.drop_cable(x, y);
+        }
+        // A time selection lands where the button comes up, like a
+        // marquee: that is when it decides what it caught.
+        if matches!(self.drag, Drag::TimelineSelect | Drag::RollSelect) {
+            self.commit_selection();
+        }
+        // And a row carried out of the soundfont panel is acted on by
+        // **where it was let go** — see `Drag::BrowserRow` — unless
+        // it was let go outside this window with the synth window
+        // open, in which case it is held for a click in there: see
+        // `canvas::carry_release` for the desktop that makes that
+        // necessary.
+        if let Drag::BrowserRow(row) = self.drag {
+            let (x, y) = self.cursor;
+            match crate::canvas::carry_release(
+                self.layout.window,
+                (x, y),
+                self.pointer_window.is_some(),
+                self.editors
+                    .iter()
+                    .any(|e| e.kind == EditorKind::Instrument),
+            ) {
+                crate::canvas::CarryRelease::Drop => self.drop_browser_row(row, x, y),
+                crate::canvas::CarryRelease::Hold => {
+                    self.held = Some(row);
+                    self.status = "Click an oscillator in the synth window to \
+                                           land the sound, Esc to let go"
+                        .to_string();
+                }
+                crate::canvas::CarryRelease::Cancel => {}
+            }
+        }
+        self.drag = Drag::None;
+        // The chip goes with the drag — unless the row is held, when
+        // it stays on the pointer — and the region it floated over
+        // is repainted: it belongs to no widget, so nothing else
+        // would.
+        if self.held.is_none() && self.carry.take().is_some() {
+            self.tree.invalidate_rect(self.layout.window);
+            self.redraw_editor(EditorKind::Instrument);
+        }
+        self.end_edge_scroll();
+        // The press that shut a menu is spent; the next one opens it
+        // again. See `dismissed`.
+        self.dismissed = None;
+        self.knob = None;
+        self.flop_knob = None;
+        self.value_drag = None;
+        self.pointer_anchor = None;
+        if was_control {
+            self.tree.invalidate(PANEL);
+            self.tree.invalidate(TRANSPORT);
+        }
+        let (x, y) = self.cursor;
+        // Where the button came up is what a marquee needs: that is
+        // the moment it decides what it caught.
+        let grid = self.roll_layout.grid;
+        let edits = match &self.options.document {
+            Some(doc) => self.roll.release_over(x, y, grid, doc.notes()),
+            None => {
+                self.roll.release();
+                Vec::new()
+            }
+        };
+        // The cut tool's whole edit lands here: a line half-drawn is
+        // not a cut.
+        self.apply_roll_edits(edits);
+        let beats = self.beats_per_bar();
+        // **Before** the release, because after it the gesture is gone:
+        // a marquee and a cut are both drawn by the canvas and known to
+        // nothing in the document, so the frame that clears them has to
+        // be asked for on their own account. Without this the stroke
+        // stays on screen after the button comes up — the same fault as
+        // the one that made it invisible during the drag, pointed the
+        // other way.
+        let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
+        let edits = self
+            .timeline
+            .release_over(x, y, &self.timeline_layout, &self.clips, beats);
+        // A click on a clip's name — down and up in one place.
+        let name_click = self
+            .name_press
+            .take()
+            .filter(|(_, px, py)| (x - px).abs() <= 3.0 && (y - py).abs() <= 3.0)
+            .map(|(id, _, _)| id);
+        // The cut tool's whole edit lands here, like the roll's: a
+        // line half-drawn is not a cut.
+        self.apply_arrange_edits(edits);
+        // A click on the clip that was already open: the rack steps
+        // to the next instrument playing in it. *"maybe cycle
+        // through?"* Not when the click was on the name, which is
+        // the clip's menu.
+        if let Some(clip) = self.timeline.take_cycle()
+            && name_click.is_none()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.cycle_clip_channel(clip);
+            self.roll.clear_selection();
+            self.refresh_studio();
+            self.tree.invalidate(RACK);
+        }
+        if overlay {
+            self.tree.invalidate(TIMELINE);
+        }
+        // **Before** the release, and this order is the whole of it: a
+        // click's audition starts here, on the way up, and
+        // `Auditions::start` clears any release that was scheduled. Ask
+        // for the sound first and the release below schedules *its*
+        // stop; ask for it after and nothing ever stops it.
+        self.sound_roll_request();
+        self.stop_audition();
+        // One drag, one undo entry (§10.6). Only the caller knows the
+        // mouse came up, which is exactly why `History` cannot decide
+        // this for itself.
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        if let Some(id) = name_click {
+            self.open_clip_menu(id, x, y);
+        }
+        self.tree.invalidate(PANEL);
+        self.update_cursor();
+        self.request_redraw_if_dirty();
+    }
+
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
         self.drag = Drag::None;
         self.end_edge_scroll();
@@ -8736,6 +9076,14 @@ impl WindowApp {
         // drop-down and the name prompt it opens, which are menus above it.
         if self.settings_page.is_some() {
             self.press_settings_page(button, x, y);
+            return;
+        }
+        if self.vocal_edit.picker.is_some() {
+            self.press_singer_picker(x, y);
+            return;
+        }
+        if self.vocal_edit.page.is_some() {
+            self.press_voicebank_page(x, y);
             return;
         }
         if self.tools_panel.is_some() {
@@ -8966,6 +9314,14 @@ impl WindowApp {
             }
             return;
         }
+        // A vocal roll's own parts: the engine chip, the lane's tabs and
+        // strokes, the phoneme row, a note's expression handles.
+        if self.tab == EditorTab::Roll
+            && self.vocal.is_some()
+            && self.press_vocal_edit(button, x, y)
+        {
+            return;
+        }
         // The roll's chrome — the lane, its seam, the keyboard, the ruler —
         // answers to the left button only. The right button is the eraser
         // (see `canvas::piano_roll`'s `Gesture::Erasing`), and none of these
@@ -9096,6 +9452,7 @@ impl WindowApp {
         let (x, y) = self.cursor;
         match self.drag {
             Drag::None => {}
+            Drag::Vocal => self.drag_vocal_edit(),
             Drag::MenuScroll => self.drag_menu_scroll(y),
             Drag::ListScroll(list) => self.drag_list_scroll(list, y),
             Drag::Roll => self.drag_roll(),
@@ -15304,9 +15661,14 @@ impl WindowApp {
             }
             if kind == Some(crate::document::ClipKind::Notes) {
                 self.tab = EditorTab::Roll;
+                self.vocal_edit.frame_pending = true;
             }
             self.refresh_studio();
             self.relayout_panels();
+            // A vocal part opens framed on its notes; any other clip's
+            // pending frame is dropped.
+            self.frame_vocal_if_pending();
+            self.vocal_edit.frame_pending = false;
         }
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
@@ -16495,6 +16857,40 @@ impl WindowApp {
             && self
                 .double_click
                 .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        // A vocal track: the singer chip opens the picker; a click anywhere
+        // else keeps the lyric being typed; a double-click on a note types
+        // its word.
+        if self.vocal.is_some() {
+            if button == MouseButton::Left
+                && self.vocal_caption.is_some_and(|chip| chip.contains(x, y))
+            {
+                let index = doc.selected_channel();
+                self.open_singer_picker(index);
+                return;
+            }
+            if self.lyric.is_some() {
+                self.commit_open_lyric();
+            }
+            let Some(doc) = &self.options.document else {
+                return;
+            };
+            if doubled
+                && let crate::canvas::RollHit::Note(id, _) = crate::canvas::hit_test(
+                    &self.roll.view,
+                    self.roll_layout.grid,
+                    doc.notes(),
+                    x,
+                    y,
+                )
+            {
+                self.start_lyric(vec![id]);
+                self.tree.invalidate(PANEL);
+                return;
+            }
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
         let on_note = matches!(
             crate::canvas::hit_test(&self.roll.view, self.roll_layout.grid, doc.notes(), x, y),
             crate::canvas::RollHit::Note(..)
@@ -17739,13 +18135,61 @@ impl WindowApp {
         crate::canvas::effect_menu_rows(&self.favorites(), &plugins)
     }
 
-    /// The *New instrument* / *Change instrument* menu's rows.
+    /// The singer engines installed, each an instrument of its own beside
+    /// the Fontelle Singer — what `InstrumentRow::Engine` counts in.
+    fn singer_engines(&self) -> Vec<crate::document::SingerInstrument> {
+        self.options
+            .document
+            .as_ref()
+            .map(|doc| doc.singer_instruments())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.engine.is_some())
+            .collect()
+    }
+
+    /// The singer instrument an instrument menu's row is, when it is one:
+    /// the Fontelle Singer (`Kind(Vocal)`) or an engine's.
+    fn singer_row_instrument(
+        &self,
+        row: Option<crate::canvas::InstrumentRow>,
+    ) -> Option<crate::document::SingerInstrument> {
+        use crate::canvas::InstrumentRow;
+        match row? {
+            InstrumentRow::Kind(fontelle_types::InstrumentKind::Vocal) => {
+                Some(crate::document::SingerInstrument::fontelle_singer())
+            }
+            InstrumentRow::Engine(which) => self.singer_engines().get(which).cloned(),
+            _ => None,
+        }
+    }
+
+    /// The *New instrument* menu's rows (`channel` `None`), or *Change
+    /// instrument*'s for `channel`.
     fn instrument_rows(
         &self,
-        current: Option<fontelle_types::InstrumentKind>,
+        channel: Option<usize>,
     ) -> Vec<(crate::canvas::MenuEntry, crate::canvas::InstrumentRow)> {
         let plugins = self.plugin_listings(PluginPurpose::NewChannel);
-        crate::canvas::instrument_menu_rows(current, &self.favorites(), &plugins)
+        let doc = self.options.document.as_ref();
+        let current = channel.and_then(|c| doc.and_then(|doc| doc.channel_kind(c)));
+        let engine = channel
+            .and_then(|c| doc.and_then(|doc| doc.vocal_instrument(c)))
+            .flatten();
+        let mut rows = crate::canvas::singer_instrument_menu_rows(
+            current,
+            engine.as_deref(),
+            &self.favorites(),
+            &plugins,
+            &self.singer_engines(),
+        );
+        // A vocal track's singers are found here too, not only from a vocal
+        // track already in the roll.
+        rows.push((
+            crate::canvas::MenuEntry::new(VOICEBANKS_ROW).after_rule(),
+            crate::canvas::InstrumentRow::Voicebanks,
+        ));
+        rows
     }
 
     /// The plugin picker's rows, narrowed by what has been typed.
@@ -17782,15 +18226,11 @@ impl WindowApp {
                 EffectRow::Heading | EffectRow::PluginPicker => None,
             },
             MenuTarget::NewInstrument | MenuTarget::ChangeInstrument(_) => {
-                let current = match target {
-                    MenuTarget::ChangeInstrument(channel) => self
-                        .options
-                        .document
-                        .as_ref()
-                        .and_then(|doc| doc.channel_kind(*channel)),
+                let channel = match target {
+                    MenuTarget::ChangeInstrument(channel) => Some(*channel),
                     _ => None,
                 };
-                match self.instrument_rows(current).get(index)?.1 {
+                match self.instrument_rows(channel).get(index)?.1 {
                     InstrumentRow::Kind(kind) if kind != fontelle_types::InstrumentKind::Plugin => {
                         Some(Favorite::Instrument(kind))
                     }
@@ -17883,13 +18323,33 @@ impl WindowApp {
                     }),
                 ]
             }
+            MenuTarget::SingerTerms { singer, .. } => self
+                .singer_terms_rows(*singer)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::BankTerms(id) => self
+                .bank_terms_rows(id)
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
+            MenuTarget::VocalNote => self
+                .vocal_note_rows()
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             MenuTarget::Channel(index) => {
                 let plays = self
                     .channels
                     .get(*index)
                     .is_some_and(|channel| channel.has_instrument);
+                let sings = self.is_vocal_channel(*index);
                 let mut entries = vec![
-                    MenuEntry::new("Open instrument"),
+                    MenuEntry::new(if sings {
+                        "Choose singer\u{2026}"
+                    } else {
+                        "Open instrument"
+                    }),
                     MenuEntry::new("Change instrument..."),
                     MenuEntry::new("Rename"),
                     MenuEntry::new("Duplicate"),
@@ -17904,6 +18364,17 @@ impl WindowApp {
                         MenuEntry::disabled("Delete instrument")
                     },
                 ];
+                // A vocal track's own rows: its song files in and out, freeze,
+                // render (`app/vocal_files.rs`). A plugin channel is never a
+                // vocal track, so these and the MPE switch never meet.
+                if sings {
+                    let frozen = self
+                        .options
+                        .document
+                        .as_ref()
+                        .is_some_and(|doc| doc.vocal_frozen(*index));
+                    entries.extend(crate::canvas::vocal_track_menu_entries(frozen));
+                }
                 // A plugin that hears raw MIDI gets the MPE switch, last and
                 // ruled off: how a slide bends one note of a chord on a synth
                 // in its MPE mode (`docs/note-paths-plan.md` §6).
@@ -17990,6 +18461,8 @@ impl WindowApp {
                     .map(|(entry, _)| entry)
                     .collect();
                 entries[0] = MenuEntry::disabled("New instrument");
+                // Last: a vocal track made from a song file.
+                entries.push(MenuEntry::new(VOCAL_FROM_FILE).after_rule());
                 entries
             }
             MenuTarget::PluginPicker(purpose) => self
@@ -18291,17 +18764,11 @@ impl WindowApp {
                 entries.push(MenuEntry::new(crate::render::NEW_CATEGORY).after_rule());
                 entries
             }
-            MenuTarget::ChangeInstrument(index) => {
-                let current = self
-                    .options
-                    .document
-                    .as_ref()
-                    .and_then(|doc| doc.channel_kind(*index));
-                self.instrument_rows(current)
-                    .into_iter()
-                    .map(|(entry, _)| entry)
-                    .collect()
-            }
+            MenuTarget::ChangeInstrument(index) => self
+                .instrument_rows(Some(*index))
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             // A rename target and nothing else — a mixer strip's name is typed
             // over in place rather than through a menu, which is what *"just
             // be able to rename super quickly"* asks for. An empty list opens
@@ -18862,7 +19329,312 @@ impl WindowApp {
     fn open_chosen_instrument(&mut self) {
         self.refresh_studio();
         self.refresh_title();
+        // A vocal track has no instrument window: its instrument is a
+        // singer, chosen from a list, and its work is in the roll.
+        let selected = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.selected_channel());
+        if let Some(index) = selected
+            && self.is_vocal_channel(index)
+        {
+            self.show_tab(EditorTab::Roll);
+            self.open_singer_picker(index);
+            return;
+        }
         self.open_editor(EditorKind::Instrument);
+    }
+
+    // ----------------------------------------------------- vocal tracks ---
+
+    fn is_vocal_channel(&self, index: usize) -> bool {
+        self.options.document.as_ref().is_some_and(|doc| {
+            doc.channel_kind(index) == Some(fontelle_types::InstrumentKind::Vocal)
+        })
+    }
+
+    /// What choosing a row of the singer picker does — the menu's and the
+    /// card grid's alike: a voicebank whose terms are unread asks first.
+    pub(crate) fn choose_singer_row(
+        &mut self,
+        channel: usize,
+        row: Option<crate::canvas::SingerRow>,
+    ) {
+        match &row {
+            Some(crate::canvas::SingerRow::InstallVoicebank) => {
+                self.choose_and_install_voicebank();
+                return;
+            }
+            Some(crate::canvas::SingerRow::ManageVoicebanks) => {
+                self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                return;
+            }
+            Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                let unread = self.options.document.as_ref().is_some_and(|doc| {
+                    doc.singers()
+                        .get(*singer)
+                        .is_some_and(|s| s.terms.is_some() && !s.terms_agreed)
+                });
+                if unread {
+                    let (x, y) = self.cursor;
+                    let bounds = self.layout.window;
+                    let target = MenuTarget::SingerTerms {
+                        channel,
+                        singer: *singer,
+                        language: language.clone(),
+                    };
+                    self.open_menu(target, x, y, bounds);
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let singers = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.singers())
+            .unwrap_or_default();
+        let voice = match row {
+            Some(crate::canvas::SingerRow::Choose { singer, language }) => {
+                singers.get(singer).map(|s| {
+                    (
+                        Some(fontelle_model::VocalVoice::new(
+                            s.engine.clone(),
+                            s.id.clone(),
+                            language.clone(),
+                        )),
+                        format!(
+                            "{} sings this track, in {}",
+                            s.name,
+                            crate::canvas::language_name(&language)
+                        ),
+                    )
+                })
+            }
+            Some(crate::canvas::SingerRow::Nobody) => Some((
+                None,
+                "Nobody sings this track \u{2014} its notes and words are kept".to_string(),
+            )),
+            _ => None,
+        };
+        if let (Some((voice, said)), Some(doc)) = (voice, &mut self.options.document) {
+            doc.set_singer(channel, voice);
+            self.status = said;
+            self.refresh_studio();
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// Reads the vocal layer again when the host says it moved: an edit, or
+    /// a phrase that has just been sung.
+    fn refresh_vocal(&mut self) {
+        // The roll's selection, for an engine's window; and what that window
+        // asked to have selected.
+        if self.vocal.is_some()
+            && let Some(doc) = &mut self.options.document
+        {
+            let selection = self.roll.selection().to_vec();
+            doc.set_vocal_selection(&selection);
+            if let Some(ids) = doc.take_vocal_selection() {
+                self.roll.select(ids);
+                self.tree.invalidate(PANEL);
+            }
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let seen = (doc.vocal_revision(), doc.revision());
+        if seen == self.vocal_seen {
+            return;
+        }
+        self.vocal_seen = seen;
+        let had = self.vocal.is_some();
+        self.vocal = doc.vocal_view();
+        self.vocal_spans = doc.vocal_rendering_spans();
+        if self.vocal.is_none() && self.lyric.is_some() {
+            self.close_lyric();
+        }
+        // The vocal roll takes strips of its own: a roll that became (or
+        // stopped being) one is laid out again.
+        if had != self.vocal.is_some() {
+            self.relayout_panels();
+        }
+        if !had && self.vocal.is_some() {
+            self.vocal_edit.frame_pending = true;
+            self.frame_vocal_if_pending();
+        }
+        if self.vocal.is_none() {
+            self.vocal_edit.field = None;
+            self.vocal_edit.stroke = None;
+            self.vocal_edit.pitch_stroke = None;
+            self.vocal_edit.pitch_pen = false;
+        }
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(TIMELINE);
+    }
+
+    /// Opens the lyric field on `ids` — one note's word, or several notes'
+    /// line.
+    fn start_lyric(&mut self, ids: Vec<fontelle_types::NoteId>) {
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        if self.vocal.is_none() {
+            return;
+        }
+        let Some(editor) = crate::canvas::LyricEditor::open(doc.notes(), &ids) else {
+            self.status = "Select the notes to write words under, then press Enter".to_string();
+            return;
+        };
+        let guessed = self
+            .vocal
+            .as_ref()
+            .is_some_and(|v| editor.ids().iter().any(|id| v.guessed.contains(id)));
+        self.status = if editor.is_line() {
+            "Type the line \u{2014} Enter spreads it over the notes, a word each (a-ma-zing a syllable each, - holds)".to_string()
+        } else if guessed {
+            "The singer guessed how to say this word \u{2014} write it as [phonemes] to be sure"
+                .to_string()
+        } else {
+            "Type the lyric \u{2014} Tab for the next note, Shift+Tab the last, Enter to keep, Esc to leave it".to_string()
+        };
+        self.roll.select(editor.ids().to_vec());
+        // Tab walked the field off screen (or Enter opened it on a note
+        // scrolled away): the roll follows it, so the word being typed is
+        // always in sight.
+        let first = editor.ids()[0];
+        let width = if editor.is_line() { 220.0 } else { 72.0 };
+        self.lyric = Some(editor);
+        self.follow_lyric_note(first, width);
+        self.caret_on = true;
+        self.caret_phase = 0.0;
+        self.set_ime(true);
+        self.tree.invalidate(PANEL);
+    }
+
+    fn close_lyric(&mut self) {
+        self.lyric = None;
+        self.lyric_marks = None;
+        self.vocal_edit.preedit.clear();
+        self.vocal_edit.lyric_shown = None;
+        self.vocal_edit.lyric_underline = None;
+        self.set_ime(false);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// Lets the input method compose into the window while a lyric is typed
+    /// (Japanese is typed through one), and not otherwise.
+    fn set_ime(&self, on: bool) {
+        if let Some(live) = &self.live {
+            live.window.set_ime_allowed(on);
+        }
+    }
+
+    /// Keeps whatever is in the lyric field — a click elsewhere while typing.
+    fn commit_open_lyric(&mut self) {
+        let Some(editor) = self.lyric.take() else {
+            return;
+        };
+        let ids = editor.ids().to_vec();
+        let text = editor.entry().text().trim().to_string();
+        let line = editor.is_line();
+        self.commit_lyric(ids, text, line);
+        self.close_lyric();
+    }
+
+    /// Writes a committed lyric, one undo step. One note's field holding
+    /// several words spreads them over that note and the ones after it —
+    /// how a whole line is typed or pasted from its first note.
+    fn commit_lyric(&mut self, ids: Vec<fontelle_types::NoteId>, text: String, line: bool) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let words = fontelle_model::lyrics::tokens(&text).len();
+        let result = if line {
+            doc.set_lyric_line(&ids, &text)
+        } else if words > 1 {
+            let mut run = ids.clone();
+            while run.len() < words {
+                let Some(next) = run
+                    .last()
+                    .and_then(|at| crate::canvas::neighbour(doc.notes(), *at, true))
+                else {
+                    break;
+                };
+                run.push(next);
+            }
+            doc.set_lyric_line(&run, &text)
+        } else {
+            let unchanged = ids
+                .first()
+                .and_then(|id| doc.notes().get(*id))
+                .is_some_and(|n| n.lyric == text);
+            if unchanged {
+                Ok(String::new())
+            } else {
+                doc.set_lyrics(&ids, vec![text]).map(|()| String::new())
+            }
+        };
+        match result {
+            Ok(said) if !said.is_empty() => self.status = said,
+            Ok(_) => {}
+            Err(why) => self.status = why,
+        }
+        self.refresh_vocal();
+    }
+
+    /// A key while the lyric field is open. Whether it was taken.
+    fn lyric_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        if self.lyric.is_some() && self.vocal_edit.preedit.is_active() {
+            // The input method's keys while it composes.
+            return true;
+        }
+        let Some(mut editor) = self.lyric.take() else {
+            return false;
+        };
+        let Some(doc) = &self.options.document else {
+            self.lyric = Some(editor);
+            return false;
+        };
+        let ctrl = self.modifiers.control_key();
+        let shift = self.modifiers.shift_key();
+        let what = editor.key(
+            &event.logical_key,
+            ctrl,
+            shift,
+            &mut self.clipboard_text,
+            doc.notes(),
+        );
+        use crate::canvas::LyricKey;
+        match what {
+            LyricKey::Edited | LyricKey::Ignored => {
+                self.lyric = Some(editor);
+                self.caret_on = true;
+                self.caret_phase = 0.0;
+            }
+            LyricKey::Cancel => {
+                self.close_lyric();
+                self.status = "Lyric left as it was".to_string();
+            }
+            LyricKey::Commit { ids, text, line } => {
+                self.close_lyric();
+                self.commit_lyric(ids, text, line);
+            }
+            LyricKey::CommitAndMove {
+                ids,
+                text,
+                line,
+                to,
+            } => {
+                self.close_lyric();
+                self.commit_lyric(ids, text, line);
+                self.start_lyric(vec![to]);
+            }
+        }
+        self.tree.invalidate(PANEL);
+        true
     }
 
     /// Opens the window of the effect just added to the end of `strip`'s
@@ -18910,8 +19682,28 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.select_channel(*channel);
                 }
-                self.open_editor(EditorKind::Instrument);
+                if self.is_vocal_channel(*channel) {
+                    self.open_singer_picker(*channel);
+                } else {
+                    self.open_editor(EditorKind::Instrument);
+                }
             }
+            (
+                MenuTarget::SingerTerms {
+                    channel,
+                    singer,
+                    language,
+                },
+                index,
+            ) => {
+                let (channel, singer, language) = (*channel, *singer, language.clone());
+                self.choose_singer_terms(channel, singer, &language, index);
+            }
+            (MenuTarget::BankTerms(id), index) => {
+                let id = id.clone();
+                self.choose_bank_terms(&id, index);
+            }
+            (MenuTarget::VocalNote, index) => self.choose_vocal_note_row(index),
             // A menu of its own rather than three more rows here: the kinds
             // are one list (`MenuTarget::ChangeInstrument`) and both places
             // that offer them read it, so they cannot come to disagree.
@@ -18939,6 +19731,12 @@ impl WindowApp {
                 if let Some(doc) = &mut self.options.document {
                     doc.remove_channel(*channel);
                 }
+            }
+            (MenuTarget::Channel(channel), row)
+                if row >= CHANNEL_MENU_ROWS && self.is_vocal_channel(*channel) =>
+            {
+                let channel = *channel;
+                self.choose_vocal_track_row(channel, row - CHANNEL_MENU_ROWS);
             }
             // The MPE switch, offered after Delete for a plugin that hears
             // raw MIDI (`menu_entries`).
@@ -19586,10 +20384,40 @@ impl WindowApp {
                 }
                 self.finish_save_as(kind, &category);
             }
+            (MenuTarget::NewInstrument, index) if index == self.instrument_rows(None).len() => {
+                self.import_vocal_file_as_track();
+            }
             (MenuTarget::NewInstrument, index) => {
                 use crate::canvas::InstrumentRow;
-                let kind = match self.instrument_rows(None).get(index).map(|(_, row)| *row) {
+                let row = self.instrument_rows(None).get(index).map(|(_, row)| *row);
+                // A singer — the Fontelle Singer or an engine — is a vocal
+                // track of that instrument.
+                let singer = self.singer_row_instrument(row);
+                if let Some(instrument) = singer {
+                    let mut added = false;
+                    if let Some(doc) = &mut self.options.document {
+                        match doc.add_singer_channel(instrument.engine.as_deref()) {
+                            Ok(()) => {
+                                self.status = format!("New instrument: {}", instrument.name);
+                                self.rack_scroll = usize::MAX;
+                                added = true;
+                            }
+                            Err(e) => self.status = e,
+                        }
+                    }
+                    self.tree.invalidate(RACK);
+                    self.tree.invalidate(PANEL);
+                    if added {
+                        self.open_chosen_instrument();
+                    }
+                    return;
+                }
+                let kind = match row {
                     Some(InstrumentRow::Kind(kind)) => kind,
+                    Some(InstrumentRow::Voicebanks) => {
+                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                        return;
+                    }
                     // A starred plugin: what starring it was for.
                     Some(InstrumentRow::Plugin(which)) => {
                         let name = self
@@ -19644,17 +20472,28 @@ impl WindowApp {
             (MenuTarget::ChangeInstrument(channel), index) => {
                 use crate::canvas::InstrumentRow;
                 let channel = *channel;
-                let current = self
-                    .options
-                    .document
-                    .as_ref()
-                    .and_then(|doc| doc.channel_kind(channel));
-                let kind = match self
-                    .instrument_rows(current)
+                let row = self
+                    .instrument_rows(Some(channel))
                     .get(index)
-                    .map(|(_, row)| *row)
-                {
+                    .map(|(_, row)| *row);
+                // To another singer instrument: the same part, sung by it.
+                if let Some(instrument) = self.singer_row_instrument(row) {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.select_channel(channel);
+                        doc.set_singer_instrument(channel, instrument.engine.as_deref());
+                    }
+                    self.status = format!("Instrument is now {}", instrument.name);
+                    self.tree.invalidate(RACK);
+                    self.tree.invalidate(PANEL);
+                    self.open_chosen_instrument();
+                    return;
+                }
+                let kind = match row {
                     Some(InstrumentRow::Kind(kind)) => kind,
+                    Some(InstrumentRow::Voicebanks) => {
+                        self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+                        return;
+                    }
                     Some(InstrumentRow::Plugin(which)) => {
                         let name = self
                             .plugin_listings(PluginPurpose::ChangeChannel(channel))
@@ -20369,6 +21208,11 @@ impl WindowApp {
         use crate::canvas::CarryTarget;
         self.file_left();
         if self.options.document.is_none() {
+            return;
+        }
+        // A voicebank dropped anywhere on the window is installed.
+        let paths = self.install_dropped_voicebanks(paths);
+        if paths.is_empty() {
             return;
         }
         let (x, y) = self.cursor;
@@ -21151,6 +21995,32 @@ impl WindowApp {
     /// the same as a soundfont row. The note is held for the file's own length
     /// so the whole sound plays and then stops on its own; clicking another
     /// file, or anything else that auditions, replaces it.
+    /// Plays an installed voicebank's sample through the preview voice, as
+    /// [`preview_import`](Self::preview_import) plays a file.
+    pub(crate) fn preview_voicebank_sample(&mut self, id: &str) {
+        let seconds = match &mut self.options.document {
+            Some(doc) => doc.preview_voicebank_sample(id),
+            None => return,
+        };
+        let seconds = match seconds {
+            Ok(seconds) => seconds,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let ticks = self.options.document.as_ref().map_or(0, |doc| {
+            let per_tick = doc.seconds_per_tick();
+            if per_tick > 0.0 {
+                (seconds / per_tick) as fontelle_types::Tick
+            } else {
+                0
+            }
+        });
+        self.start_audition(60, ticks.max(1));
+        self.status = "Playing the voicebank's sample".to_string();
+    }
+
     fn preview_import(&mut self, index: usize) {
         let seconds = match &mut self.options.document {
             Some(doc) => doc.preview_import(index),
@@ -21605,6 +22475,9 @@ impl WindowApp {
                 }
             }
             Action::Help => self.open_help(),
+            Action::Voicebanks => {
+                self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
+            }
             _ => return false,
         }
         true
@@ -21720,6 +22593,22 @@ impl WindowApp {
             return;
         }
 
+        // The singer picker takes every key while it is open: its search is
+        // a field, its arrows move between cards.
+        if self.singer_picker_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
+        // A lyric being typed has the keyboard too: a "d" is a letter in a
+        // word, not the delete tool.
+        if self.phoneme_field_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
+        if self.lyric_key(event) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         // While a name is being typed, that has the keyboard: the same rule
         // the search box follows, and for the same reason.
         if self.rename_key(event) {
@@ -21999,6 +22888,30 @@ impl WindowApp {
                     self.cycle_snap();
                 }
             }
+            // The lyric field on the selected notes of a vocal track: one
+            // note's word, or a line over several.
+            Action::EditLyric => {
+                if self.tab == EditorTab::Roll && self.vocal.is_some() {
+                    let ids = self.roll.selection().to_vec();
+                    self.start_lyric(ids);
+                }
+            }
+            // The vocal roll's own keys, only while one is showing.
+            Action::PitchPen
+            | Action::SmoothPitch
+            | Action::SnapPitch
+            | Action::ResetPitch
+            | Action::NoteMenu => {
+                if self.tab == EditorTab::Roll && self.vocal.is_some() {
+                    match action {
+                        Action::PitchPen => self.toggle_pitch_pen(),
+                        Action::SmoothPitch => self.pitch_command(crate::canvas::PitchCommand::Smooth),
+                        Action::SnapPitch => self.pitch_command(crate::canvas::PitchCommand::Snap),
+                        Action::ResetPitch => self.pitch_command(crate::canvas::PitchCommand::Reset),
+                        _ => self.note_menu_from_key(),
+                    }
+                }
+            }
             Action::LaneProperty => self.cycle_lane_property(),
             Action::Ghosts => self.cycle_ghosts(),
             // `A` for a slide by default: `S` is the snap and every other
@@ -22039,6 +22952,7 @@ impl WindowApp {
             | Action::ExportWav
             | Action::ExportMidi
             | Action::Help
+            | Action::Voicebanks
             | Action::RemoveBand
             | Action::AnalyzeCopyNotes
             | Action::AnalyzeCopyScale
@@ -22597,6 +23511,8 @@ impl WindowApp {
 
     fn set_tool(&mut self, tool: Tool) {
         self.roll.tool = tool;
+        // Choosing a tool is leaving the pitch pen: the grid is the tool's.
+        self.vocal_edit.pitch_pen = false;
         self.tree.invalidate(PANEL);
     }
 
@@ -23326,7 +24242,12 @@ impl WindowApp {
         // **A bounce and "Saved!" hold the loop awake**: the one is read off
         // another thread and the other moves on its own, and neither is an
         // event this loop would wake for.
-        if self.job.is_some() || self.saved_at.is_some() || self.tour_moving() {
+        let singing = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.vocal_busy());
+        if self.job.is_some() || self.saved_at.is_some() || self.tour_moving() || singing {
             let frame = if self.saved_at.is_some() || self.tour_moving() {
                 std::time::Duration::from_millis(16)
             } else {

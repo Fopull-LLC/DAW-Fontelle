@@ -27,11 +27,14 @@ pub mod relaunch;
 pub mod sampling;
 mod session;
 pub mod settings;
+pub mod singer_panel;
 pub mod slices;
 pub mod themes;
 pub mod tour;
 pub mod tune;
 pub mod updates;
+mod vocal;
+pub mod vocal_part;
 mod window;
 
 use std::collections::HashMap;
@@ -59,6 +62,7 @@ pub use realise::{
     realise_previewing, realise_reusing, realise_with, set_channel_patch,
 };
 pub use session::{Session, dropout_words};
+pub use vocal::vocal_takes_dir;
 pub use window::EngineHost;
 
 /// Why `--play-sf2` couldn't produce a usable path.
@@ -192,6 +196,8 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             slide: false,
             path: Vec::new(),
             channel: None,
+            lyric: String::new(),
+            voice: None,
         });
     };
 
@@ -228,7 +234,11 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
         lane,
         start: 0,
         length: chord_start + chord_length,
-        source: ClipSource::Notes(NoteData { channel, notes }),
+        source: ClipSource::Notes(NoteData {
+            channel,
+            notes,
+            vocal: None,
+        }),
         prefab_link: None,
         color: None,
         muted: false,

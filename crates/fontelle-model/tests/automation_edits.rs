@@ -151,6 +151,8 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         named_keys: false,
         ab: Default::default(),
         gain_db: 0.0,
+        vocal: None,
+        vocal_style: Default::default(),
     });
     let clip = project.clips.insert(Clip {
         name: None,
@@ -160,6 +162,7 @@ fn adding_to_a_clip_that_is_not_automation_is_refused() {
         source: ClipSource::Notes(fontelle_model::NoteData {
             channel,
             notes: Arena::default(),
+            vocal: None,
         }),
         prefab_link: None,
         color: None,
