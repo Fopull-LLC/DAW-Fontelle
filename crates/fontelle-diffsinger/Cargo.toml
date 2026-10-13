@@ -13,6 +13,10 @@ repository.workspace = true
 # ONNX Runtime's CUDA provider (the prebuilt CUDA 13 build). CPU is always
 # there and is what a session falls back to when CUDA cannot start.
 cuda = ["ort/cuda"]
+# The glibc 2.38 / GCC 13 symbols the prebuilt ONNX Runtime asks for,
+# provided by Fontelle (`src/glibc_compat.rs`), so the Linux release links
+# on Ubuntu 22.04 and runs there. Only the release's Linux build sets it.
+old-glibc = []
 
 [dependencies]
 fontelle-sing = { path = "../fontelle-sing" }

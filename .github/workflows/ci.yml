@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `release/*` is a stable line kept apart from main while main carries a
+    # beta (`release/0.27`): its patch releases need a CI run to publish.
+    branches: [main, "release/*"]
   pull_request:
 
 env:
@@ -61,6 +63,38 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
+
+  # The Linux release is built on the oldest Ubuntu the runners offer, so it
+  # runs on Ubuntu 22.04, Debian 12 and Mint 21; the build below is on the
+  # newest. v0.27.0's Linux archive failed to link there and nothing before
+  # the tag had built on it: ONNX Runtime asked for glibc 2.38 symbols
+  # (`fontelle-diffsinger/src/glibc_compat.rs`). This is that build, and a
+  # check that the binary asks for nothing newer than the runner has.
+  linux-release-floor:
+    name: Linux release builds and runs on Ubuntu 22.04
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux audio/windowing dev libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libjack-jackd2-dev libudev-dev libxkbcommon-dev libwayland-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            liblilv-dev libdbus-1-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release-floor
+      - run: cargo build --release --locked -p fontelle-app --features old-glibc
+      - name: The binary asks for no newer glibc than this runner's
+        run: |
+          have=$(ldd --version | sed -n 1p | grep -oE '[0-9]+\.[0-9]+$')
+          want=$(objdump -T target/release/fontelle | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "runner glibc $have, binary needs $want"
+          [ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | tail -1)" = "$have" ]
+          target/release/fontelle --version
+      - name: DiffSinger runs ONNX Runtime through the provided symbols
+        run: cargo test --locked -p fontelle-diffsinger --features old-glibc
 
   build:
     strategy:

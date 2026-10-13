@@ -9,6 +9,10 @@ publish.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+# See `fontelle-diffsinger`'s: the release's Linux build on Ubuntu 22.04.
+old-glibc = ["fontelle-diffsinger/old-glibc"]
+
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
 fontelle-model = { path = "../fontelle-model" }
