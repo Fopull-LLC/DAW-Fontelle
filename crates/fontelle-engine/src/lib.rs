@@ -28,9 +28,9 @@ mod study_player;
 mod timeline_channel;
 mod transport;
 mod tune_tap;
+mod vocal;
 #[cfg(windows)]
 mod wasapi;
-mod vocal;
 
 pub use analyze_capture::{
     AnalyzeCapture, AnalyzeCaptureEvent, AnalyzeCaptureNode, AnalyzeTapPoint,
