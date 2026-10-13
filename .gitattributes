@@ -1,0 +1,4 @@
+# Data tables whose bytes a test pins (licenses/MODELS.md names each one):
+# checked out exactly as committed. Without this a Windows checkout turns
+# their line endings into CRLF and the table is not the one reviewed.
+crates/fontelle-lang/data/*.txt -text
