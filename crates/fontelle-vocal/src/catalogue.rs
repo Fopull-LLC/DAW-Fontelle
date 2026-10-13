@@ -348,9 +348,14 @@ impl DownloadWatch {
             if self.before.get(&path) == Some(&size) {
                 continue;
             }
-            let fresh = std::fs::metadata(&path)
-                .and_then(|m| m.modified())
-                .is_ok_and(|t| t >= self.since);
+            // A file that was not here when the watch began is new, whatever
+            // its date: Windows keeps the modified time of a file copied or
+            // moved in, so a bank dragged into Downloads arrives dated when
+            // it was made. Only a file that was already here is asked when.
+            let fresh = !self.before.contains_key(&path)
+                || std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t >= self.since);
             if !fresh {
                 continue;
             }

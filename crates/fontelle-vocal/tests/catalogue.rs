@@ -153,6 +153,26 @@ fn a_bank_landing_in_downloads_is_found_once_it_stops_growing() {
 }
 
 #[test]
+fn a_bank_copied_in_with_its_old_date_is_found_too() {
+    // Windows keeps a file's modified time when it is copied or moved, so a
+    // bank dragged into Downloads from elsewhere arrives dated last year.
+    // It was not there when the watch began: that is what makes it new.
+    // (Seen first as CI's Windows run never installing the test's copy.)
+    let dir = scratch("watch-old-date");
+    let mut watch = DownloadWatch::new(&dir, SystemTime::now(), None);
+    let bank = dir.join("teto.zip");
+    std::fs::write(&bank, b"whole").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&bank)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(365 * 24 * 3600))
+        .unwrap();
+    assert!(watch.poll().is_none());
+    assert_eq!(watch.poll(), Some(bank));
+}
+
+#[test]
 fn a_watch_that_knows_the_checksum_takes_only_that_file() {
     let dir = scratch("watch-sha");
     let sha = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string();
