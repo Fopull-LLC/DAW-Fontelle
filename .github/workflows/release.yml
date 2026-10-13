@@ -99,7 +99,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
-      - run: cargo build --release --locked -p fontelle-app --target ${{ matrix.target }}
+      # On Linux, Fontelle provides the few glibc 2.38 symbols the prebuilt
+      # ONNX Runtime asks for, so the build links on 22.04 and runs there
+      # (`fontelle-diffsinger/src/glibc_compat.rs`; CI's `linux-release-floor`).
+      - run: cargo build --release --locked -p fontelle-app --target ${{ matrix.target }} ${{ runner.os == 'Linux' && '--features old-glibc' || '' }}
 
       - name: Package (unix)
         if: runner.os != 'Windows'

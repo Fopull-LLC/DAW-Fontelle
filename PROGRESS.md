@@ -19,7 +19,40 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-13, latest — Beta updates.** Branch
+**As of 2026-10-13, latest — the Linux release links on Ubuntu 22.04
+again.** Branch `release/0.27` (from v0.27.1; `main` carries the
+0.28.0 beta). v0.27.0 and v0.27.1 were tagged but never published: the
+Linux archive failed to link on the release runner (ubuntu-22.04), because
+pyke's static ONNX Runtime 1.28 was built against glibc 2.38 / GCC 13 and
+asks for `__isoc23_strtol`, `__isoc23_strtoll`, `__isoc23_strtoull` and
+libstdc++'s `basic_string::_M_replace_cold` (char, wchar_t). CI builds on
+ubuntu-latest and never saw it. Ty: *"we should pick the option that leaves
+us with a overall better product all around."*
+
+- **`fontelle-diffsinger/src/glibc_compat.rs` provides the five**, under the
+  `old-glibc` feature (`fontelle-app` → `fontelle-vocal` →
+  `fontelle-diffsinger`), which only the release's Linux build and CI's new
+  floor job set. The C23 parsers are the old ones plus `0b` literals;
+  `_M_replace_cold` is libstdc++ 13's routine line for line (it reads
+  nothing of `this`). `tests/glibc_compat.rs` checks the parsers and every
+  shape of an overlapping replace against what `replace` must leave.
+- **Why this over the alternatives**: one file still, so an in-app update
+  from 0.26.x — whose updater replaces only the binary — brings DiffSinger
+  whole; the same ONNX Runtime on every platform; and the glibc floor stays
+  at 2.35 (Ubuntu 22.04, Debian 12, Mint 21). Building on 24.04 would have
+  dropped those; shipping Microsoft's shared library would have needed the
+  old updater to install a second file, which it cannot.
+- **CI `linux-release-floor`** (ubuntu-22.04): the release build with the
+  feature, a check that the binary asks for no newer glibc than the runner
+  has, `fontelle --version`, and the DiffSinger tests (which run ONNX
+  Runtime sessions). A new ONNX Runtime asking for more fails it by name.
+- CI also runs on pushes to `release/*`, so a stable patch can publish
+  while `main` is on a beta.
+- Also on this line since 0.27.0's tag: `.gitattributes` keeps the reading
+  tables' bytes on a Windows checkout (pinned hash), and a voicebank copied
+  into Downloads with its old date installs (Windows keeps a copy's mtime).
+
+**As of 2026-10-13 — Beta updates.** Branch
 `feature/beta-updates` (from v0.26.3); not merged, not bumped. Ty: *"make a
 beta update option for users so they will be able to have an option to
 recieve beta updates ... so we can release the asio update to beta and have

@@ -37,6 +37,8 @@ pub mod bank;
 pub mod config;
 pub mod curves;
 pub mod dict;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub mod glibc_compat;
 pub mod inventory;
 pub mod lyrics;
 pub mod models;

@@ -17,6 +17,10 @@ path = "src/main.rs"
 # Analyze Musically's voice denoiser (`fontelle-analysis/voice-denoise`):
 # off by default, as there; the Clean page shows its switch only when on.
 voice-denoise = ["fontelle-analysis/voice-denoise"]
+# The Linux release, built on Ubuntu 22.04 so it runs there: Fontelle
+# provides the few newer glibc/libstdc++ symbols ONNX Runtime asks for
+# (`fontelle-diffsinger/src/glibc_compat.rs`).
+old-glibc = ["fontelle-vocal/old-glibc"]
 
 [dependencies]
 fontelle-types = { path = "../fontelle-types" }
