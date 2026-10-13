@@ -769,7 +769,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 53] = [
+pub const SETTING_ROWS: [SettingRow; 54] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
