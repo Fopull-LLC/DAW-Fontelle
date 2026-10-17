@@ -19,7 +19,18 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-13, latest — the Linux release links on Ubuntu 22.04
+**As of 2026-10-17, latest — 0.28.0 brings the Windows audio beta to
+stable.** Asked: *"can you bring the beta update to stable"*. The workspace
+version goes from `0.28.0-beta.1` to `0.28.0` on top of the beta's own
+commit (`main` had nothing after the `v0.28.0-beta.1` tag; CI and the
+release were green on it, no open issues). Only `Cargo.toml` and
+`Cargo.lock` change, as for the beta. Tagging `v0.28.0` publishes it as a
+normal release (no hyphen, so not a pre-release), and testers on Beta
+updates are moved on to it too (`updates::Channel`). Still open from
+`docs/asio.md` §8: nothing in it was run on real Windows hardware by this
+machine — that checklist is the beta testers' and Ty's.
+
+**As of 2026-10-13 — the Linux release links on Ubuntu 22.04
 again.** Branch `release/0.27` (from v0.27.1; `main` carries the
 0.28.0 beta). v0.27.0 and v0.27.1 were tagged but never published: the
 Linux archive failed to link on the release runner (ubuntu-22.04), because
