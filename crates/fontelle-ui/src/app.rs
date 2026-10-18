@@ -108,6 +108,8 @@ const TRACK_COLOUR_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    /// Selecting text in the notepad's page by dragging across it.
+    NotepadSelect,
     /// A vocal roll's lane stroke, expression handle or phoneme start —
     /// which one is in `vocal_edit`.
     Vocal,
@@ -446,6 +448,10 @@ const PLUGIN_EDITOR_FRAME: std::time::Duration = std::time::Duration::from_milli
 /// How often a selection box held off the edge of its view moves the view on
 /// with no mouse movement to do it (`marquee_held_off_edge`). The distance is
 /// charged against the clock, so this is smoothness, not speed.
+/// A fader one point tall from 0 to 1, so `fader_y_of_db` and `fader_db_at`
+/// read as the fader's share of its travel — what a copied value is.
+const UNIT_TRACK: crate::layout::Rect = crate::layout::Rect::new(0.0, 0.0, 1.0, 1.0);
+
 const MARQUEE_SCROLL_FRAME: std::time::Duration = std::time::Duration::from_millis(16);
 
 /// What an oscillator's sound menu says with no audio folder to list.
@@ -608,6 +614,8 @@ enum MenuTarget {
         param: String,
         name: String,
     },
+    /// A knob on the audio clip editor: copy its value, paste one.
+    AudioKnob(crate::canvas::AudioField),
     /// The transport bar's tempo box. §12.3 names the tempo as automatable
     /// and it is a control like any other; the menu is how it becomes a lane.
     Tempo,
@@ -740,6 +748,8 @@ enum MenuTarget {
     /// this down. "Left and right" is how you walk a pad; this is how you
     /// jump to the chorus.
     NotepadPages,
+    /// A right-click on the notepad's page: cut, copy, paste, select all.
+    NotepadEdit,
     /// "Save as…" asking what to call it.
     PresetSaveName(EditorKind),
     /// And then which category to put it in — the device's own, plus a row
@@ -881,12 +891,12 @@ impl MenuTarget {
         match self {
             Self::InstrumentParam { .. } => Some(EditorKind::Instrument),
             Self::InsertParam { .. } => Some(EditorKind::Effect),
-            Self::AudioRow(_) => Some(EditorKind::AudioClip),
+            Self::AudioRow(_) | Self::AudioKnob(_) => Some(EditorKind::AudioClip),
             Self::ParamChoice { editor, .. } => Some(*editor),
             // Every one of these is opened from a bar in an editor window's
             // header, so it is that window that draws it.
             // The pad's footer is in its own window.
-            Self::NotepadPages => Some(EditorKind::Effect),
+            Self::NotepadPages | Self::NotepadEdit => Some(EditorKind::Effect),
             Self::AnalyzeScale
             | Self::AnalyzeWindowScale
             | Self::AnalyzeRender
@@ -1180,6 +1190,47 @@ pub fn run_window(options: WindowOptions) -> Result<WindowApp, WindowError> {
 /// Its own function because two windows ask it now — the main one and every
 /// floating editor — and a second copy of this match is a second place for a
 /// shape to go stale.
+/// A middle-click autoscroll under way (`crate::canvas::Autoscroll`).
+///
+/// > *"we're lacking a way for people to scroll without their scroll wheel
+/// > needing to turn ... clicking with the middle mouse and then that puts you
+/// > in a scroll mode inside the window you middle clicked in"* (2026-10-18)
+#[derive(Debug, Clone, Copy)]
+struct AutoscrollGesture {
+    scroll: crate::canvas::Autoscroll,
+    /// What it scrolls: whatever was under the pointer when the button went
+    /// down, for as long as it lasts.
+    target: AutoscrollTarget,
+    /// Where the pointer is, in the target's own window. Only moves while
+    /// the pointer is in that window; elsewhere it holds where it left.
+    cursor: (f32, f32),
+    /// When the middle button went down, and whether it is still down — a
+    /// tap latches, a hold ends with the release.
+    pressed: std::time::Instant,
+    held: bool,
+}
+
+/// What an autoscroll moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoscrollTarget {
+    Menu,
+    Keybinds,
+    Help,
+    Settings,
+    SingerPicker,
+    VoicebankPage,
+    Mixer,
+    Rack,
+    Browser {
+        presets: bool,
+    },
+    Timeline,
+    Roll,
+    /// A floating editor window: its menu, its notepad, or whatever its
+    /// wheel scrolls.
+    Editor(EditorKind),
+}
+
 fn system_cursor(wanted: Pointer) -> winit::window::CursorIcon {
     match wanted {
         Pointer::Default => winit::window::CursorIcon::Default,
@@ -1200,6 +1251,7 @@ fn system_cursor(wanted: Pointer) -> winit::window::CursorIcon {
         // `NoDrop` rather than `NotAllowed`: they are different pictures on
         // every desktop, and this one is about a *drop*.
         Pointer::Deny => winit::window::CursorIcon::NoDrop,
+        Pointer::Scroll => winit::window::CursorIcon::AllScroll,
     }
 }
 
@@ -1584,7 +1636,13 @@ pub struct WindowApp {
     flop_focus: Option<(usize, usize)>,
     /// A knob's value, copied from its menu (§3.3), normalised — so it
     /// pastes onto a knob of any range as the same share of the travel.
-    flop_clipboard: Option<f32>,
+    ///
+    /// **One for every knob in the program**, not only Flopsynth's: *"right
+    /// click knobs copy value and right click and paste value of that knob
+    /// either on the same knob or another knob flexibly"* (2026-10-18). An
+    /// effect's, an instrument's, the mixer's and a clip's knobs copy here
+    /// and paste from here too.
+    knob_clipboard: Option<f32>,
     /// The tip for what the pointer is on in Flopsynth's window, and when it
     /// arrived there — the studio's own tip is the studio's window's
     /// (`hover_tip`), and this one is drawn in the synth's.
@@ -2220,6 +2278,9 @@ pub struct WindowApp {
     /// Play starts here and a stop comes back here — see
     /// [`crate::transport::TransportAction`].
     marker: fontelle_types::Sample,
+    /// Where a ruler drag wants the playhead, not yet sent: a drag seeks once
+    /// a frame (`flush_scrub`), not once a pointer move — see `mark`.
+    scrub_to: Option<fontelle_types::Sample>,
     /// How tall the property lane was when it was last showing, so the button
     /// that hides it can put it back the size it was.
     lane_height_shown: f32,
@@ -2254,6 +2315,11 @@ pub struct WindowApp {
     /// counter is there so several moving things can coexist, and a caller
     /// that begins twice for one thing defeats it.
     animating: bool,
+    /// A middle-click autoscroll under way — see [`AutoscrollGesture`].
+    autoscroll: Option<AutoscrollGesture>,
+    /// Single, double and triple clicks in the notepad's page: a place, a
+    /// word, a line.
+    notepad_clicks: crate::pointer::ClickCount,
     /// The four scroll positions the wheel drives, gliding — see
     /// `canvas::Glide`. Ticks sideways in each canvas; rows down the
     /// arrangement and keys up the roll, both fractional.
@@ -2364,6 +2430,8 @@ impl WindowApp {
             carry_length_for: None,
             dropped: Vec::new(),
             pending_editors: Vec::new(),
+            autoscroll: None,
+            notepad_clicks: crate::pointer::ClickCount::default(),
             pointer_window: None,
             frames: 0,
             started: std::time::Instant::now(),
@@ -2465,7 +2533,7 @@ impl WindowApp {
             flop_motion_animating: false,
             flop_slot: None,
             flop_focus: None,
-            flop_clipboard: None,
+            knob_clipboard: None,
             flop_tip: None,
             flop_tip_since: std::time::Instant::now(),
             flop_tip_drawn: false,
@@ -2721,6 +2789,7 @@ impl WindowApp {
             tip_rect: crate::layout::Rect::ZERO,
             last_autosave: std::time::Instant::now(),
             marker: 0,
+            scrub_to: None,
             lane_height_shown: DEFAULT_LANE_HEIGHT,
             animating: false,
             glide_timeline_x: crate::canvas::Glide::at(0.0),
@@ -3838,7 +3907,7 @@ impl WindowApp {
         let dt = (now - self.last_tick).as_secs_f32().min(0.25);
         self.last_tick = now;
         // The wheel's glides, a frame further on.
-        let gliding = self.glide_views(dt);
+        let gliding = self.frame_motion(dt);
 
         // **The caret blinks**, and only while there is one. A caret that does
         // not blink is easy to read as a character; one that does is
@@ -4135,6 +4204,9 @@ impl WindowApp {
     /// `None` while nothing is held, and for the drags whose cursor is better
     /// decided by what is under the pointer.
     fn drag_pointer_shape(&self) -> Option<Pointer> {
+        if self.autoscroll.is_some() {
+            return Some(Pointer::Scroll);
+        }
         match self.drag {
             Drag::None => None,
             Drag::Vocal => Some(Pointer::Grabbing),
@@ -4155,6 +4227,7 @@ impl WindowApp {
             // resize cursor is the truth: a hand is.
             Drag::DisgustingBeatCurve | Drag::DisgustingBeatScene(_) => Some(Pointer::Grabbing),
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
+            Drag::NotepadSelect => Some(Pointer::Text),
             Drag::MenuScroll
             | Drag::ListScroll(_)
             | Drag::LaneGrip
@@ -4223,6 +4296,15 @@ impl WindowApp {
     /// left here is the one match onto winit's vocabulary.
     fn update_cursor(&mut self) {
         let (x, y) = self.cursor;
+        if self.autoscroll.is_some() {
+            if self.pointer != Pointer::Scroll {
+                self.pointer = Pointer::Scroll;
+                if let Some(live) = &self.live {
+                    live.window.set_cursor(system_cursor(Pointer::Scroll));
+                }
+            }
+            return;
+        }
         // A hand over anything on the sheet a press does something to.
         if self.keybinds.is_some() {
             use crate::canvas::KeybindsHit;
@@ -4893,23 +4975,7 @@ impl ApplicationHandler for WindowApp {
                 let Some(live) = &self.live else { return };
                 // Logical pixels, because that is what the layout is in.
                 let scale = live.window.scale_factor();
-                self.cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
-                self.pointer_window = None;
-                let started = std::time::Instant::now();
-                self.update_hover();
-                let hovered = ms_since(started);
-                self.drag_pointer();
-                if self.held.is_some() {
-                    self.refresh_carry();
-                }
-                if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
-                    eprintln!(
-                        "trace: pointer move {:.1} ms — hover {hovered:.1}, drag {:.1}",
-                        ms_since(started),
-                        ms_since(started) - hovered
-                    );
-                }
-                self.request_redraw_if_dirty();
+                self.pointer_moved((position.x / scale) as f32, (position.y / scale) as f32);
             }
 
             // The compositor took the pointer away mid-gesture — an alt-tab, a
@@ -4980,8 +5046,9 @@ impl ApplicationHandler for WindowApp {
 
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
+                button,
                 ..
-            } => self.studio_released(),
+            } => self.released(button),
 
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -5042,6 +5109,7 @@ impl ApplicationHandler for WindowApp {
                 self.timeline.set_modifiers(modifiers);
             }
 
+            WindowEvent::KeyboardInput { event, .. } if self.escapes_autoscroll(&event) => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 // A release matters to exactly one thing: the shortcuts
                 // sheet listening for a chord, which reads it on the way up.
@@ -5947,8 +6015,19 @@ impl WindowApp {
                 button,
                 ..
             } => {
+                // As in the studio: a click while autoscrolling only ends it,
+                // and the middle button starts one rather than clicking.
+                if self.autoscroll.is_some() {
+                    self.end_autoscroll();
+                    return;
+                }
                 let button = match button {
                     winit::event::MouseButton::Right => MouseButton::Right,
+                    winit::event::MouseButton::Middle => {
+                        let (x, y) = self.cursor;
+                        self.start_autoscroll(Some(kind), x, y);
+                        return;
+                    }
                     _ => MouseButton::Left,
                 };
                 self.editor_pressed(kind, button);
@@ -5956,10 +6035,15 @@ impl WindowApp {
 
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Middle,
+                ..
+            } => self.release_autoscroll(),
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
                 ..
             } => self.editor_released(kind),
 
-            WindowEvent::MouseWheel { delta, .. } if kind == EditorKind::Analyze => {
+            WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
                     winit::event::MouseScrollDelta::PixelDelta(position) => {
@@ -5967,60 +6051,7 @@ impl WindowApp {
                     }
                 };
                 let (x, y) = self.cursor;
-                if !self.wheel_menu(x, y, dy) {
-                    self.wheel_analyze(x, y, dx, dy);
-                }
-                self.redraw_editor(kind);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // The wheel only navigates — it never changes a value. Over an
-                // open menu it scrolls the menu; in the instrument window it
-                // scrolls the preset list. A knob or slider is set by dragging
-                // it, by an arrow key, or by typing into it, so that scrolling
-                // to look around a panel cannot nudge a control by accident.
-                let steps = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, lines) => lines,
-                    winit::event::MouseScrollDelta::PixelDelta(position) => {
-                        position.y as f32 / 40.0
-                    }
-                };
-                if steps != 0.0 {
-                    let (x, y) = self.cursor;
-                    // A menu opened from *this* window is drawn in front of
-                    // its panel, so the wheel is the menu's before it is a
-                    // knob's — the same rule `scroll_roll` follows for the
-                    // studio's own menus, and the reason the preset list was
-                    // a hundred and twenty-eight presets you could only ever
-                    // see the top section of.
-                    if self.wheel_menu(x, y, steps) {
-                        self.redraw_editor(kind);
-                        return;
-                    }
-                    // Only the instrument window has a list to scroll (its
-                    // presets); the effect and clip panels are laid out to fit
-                    // and have nothing to scroll once a menu is closed.
-                    // The singer panel scrolls when it is taller than its
-                    // window — three rows of knobs a notch would be too far.
-                    if kind == EditorKind::Instrument && self.singer_panel.is_some() {
-                        self.singer_scroll = (self.singer_scroll - steps * 40.0).max(0.0);
-                        self.relayout_editors();
-                    }
-                    if kind == EditorKind::Instrument {
-                        if self.wheel_flopsynth_control(x, y, steps) {
-                            self.redraw_editor(kind);
-                            return;
-                        }
-                        self.scroll_flopsynth_presets(x, y, steps);
-                        self.scroll_flopsynth_matrix(x, y, steps);
-                    }
-                    // And the notepad, whose page is the one thing in an
-                    // effect window that can outrun its room. Three lines a
-                    // notch, like every other list here.
-                    if kind == EditorKind::Effect && self.notepad.is_some() {
-                        self.scroll_notepad(steps * 3.0);
-                    }
-                }
-                self.redraw_editor(kind);
+                self.editor_wheel(kind, x, y, dx, dy);
             }
 
             // An editor window has its own modifiers to keep: it is a separate
@@ -6034,6 +6065,7 @@ impl WindowApp {
             // it, and a row listening there hears the chord pressed here,
             // releases included. Without this the page would appear behind
             // the editor and answer nothing typed at it.
+            WindowEvent::KeyboardInput { event, .. } if self.escapes_autoscroll(&event) => {}
             WindowEvent::KeyboardInput { event, .. } if self.keybinds.is_some() => {
                 self.keybinds_key(&event);
                 self.request_redraw_if_dirty();
@@ -6048,6 +6080,60 @@ impl WindowApp {
 
             _ => {}
         }
+    }
+
+    /// The wheel at `(x, y)` in editor window `kind`, `dx`/`dy` notches —
+    /// from a wheel, or a notch of middle-click autoscroll.
+    fn editor_wheel(&mut self, kind: EditorKind, x: f32, y: f32, dx: f32, dy: f32) {
+        if kind == EditorKind::Analyze {
+            if !self.wheel_menu(x, y, dy) {
+                self.wheel_analyze(x, y, dx, dy);
+            }
+            self.redraw_editor(kind);
+            return;
+        }
+        // The wheel only navigates — it never changes a value. Over an
+        // open menu it scrolls the menu; in the instrument window it
+        // scrolls the preset list. A knob or slider is set by dragging
+        // it, by an arrow key, or by typing into it, so that scrolling
+        // to look around a panel cannot nudge a control by accident.
+        let steps = dy;
+        if steps != 0.0 {
+            // A menu opened from *this* window is drawn in front of
+            // its panel, so the wheel is the menu's before it is a
+            // knob's — the same rule `scroll_roll` follows for the
+            // studio's own menus, and the reason the preset list was
+            // a hundred and twenty-eight presets you could only ever
+            // see the top section of.
+            if self.wheel_menu(x, y, steps) {
+                self.redraw_editor(kind);
+                return;
+            }
+            // Only the instrument window has a list to scroll (its
+            // presets); the effect and clip panels are laid out to fit
+            // and have nothing to scroll once a menu is closed.
+            // The singer panel scrolls when it is taller than its
+            // window — three rows of knobs a notch would be too far.
+            if kind == EditorKind::Instrument && self.singer_panel.is_some() {
+                self.singer_scroll = (self.singer_scroll - steps * 40.0).max(0.0);
+                self.relayout_editors();
+            }
+            if kind == EditorKind::Instrument {
+                if self.wheel_flopsynth_control(x, y, steps) {
+                    self.redraw_editor(kind);
+                    return;
+                }
+                self.scroll_flopsynth_presets(x, y, steps);
+                self.scroll_flopsynth_matrix(x, y, steps);
+            }
+            // And the notepad, whose page is the one thing in an
+            // effect window that can outrun its room. Three lines a
+            // notch, like every other list here.
+            if kind == EditorKind::Effect && self.notepad.is_some() {
+                self.scroll_notepad(steps * 3.0);
+            }
+        }
+        self.redraw_editor(kind);
     }
 
     /// A key pressed while an editor window has the keyboard.
@@ -6273,6 +6359,7 @@ impl WindowApp {
     fn editor_pointer_moved(&mut self, kind: EditorKind, x: f32, y: f32) {
         self.cursor = (x, y);
         self.pointer_window = Some(kind);
+        self.steer_autoscroll(Some(kind), x, y);
         self.update_editor_hover(kind);
         self.update_editor_cursor(kind);
         // The same drag machinery the docked panels used: a knob, an
@@ -6501,6 +6588,24 @@ impl WindowApp {
     /// should do and is how a value is moved by exactly one of its own units.
     fn press_audio_editor(&mut self, button: MouseButton, x: f32, y: f32) {
         use crate::canvas::AudioControl;
+        if button == MouseButton::Right {
+            // A knob's own menu: copy its value, paste one (`knob_menu`).
+            if let Some(field) = crate::canvas::audio_editor_hit(&self.audio_layout, x, y)
+                && matches!(
+                    crate::canvas::audio_row_control(field),
+                    AudioControl::Knob | AudioControl::Slider
+                )
+                && let Some(bounds) = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::AudioClip)
+                    .map(|editor| editor.panel.body)
+            {
+                self.open_menu(MenuTarget::AudioKnob(field), x, y, bounds);
+                self.redraw_editor(EditorKind::AudioClip);
+            }
+            return;
+        }
         if button != MouseButton::Left {
             return;
         }
@@ -6532,7 +6637,7 @@ impl WindowApp {
                     return;
                 };
                 crate::canvas::toggle_audio_row(&mut open.data, field);
-                self.write_audio_clip();
+                self.write_audio_clip(field);
             }
             AudioControl::Choice => self.open_audio_menu(field),
         }
@@ -6554,7 +6659,7 @@ impl WindowApp {
             return;
         };
         crate::canvas::set_audio_row_fraction(&mut open.data, field, t);
-        self.write_audio_clip();
+        self.write_audio_clip(field);
     }
 
     /// A knob drag on the audio clip editor: relative, up for more, with Shift
@@ -6568,7 +6673,7 @@ impl WindowApp {
             return;
         };
         crate::canvas::set_audio_row_fraction(&mut open.data, field, t);
-        self.write_audio_clip();
+        self.write_audio_clip(field);
     }
 
     /// The wheel over a row: one step of whatever that row is measured in.
@@ -6613,11 +6718,37 @@ impl WindowApp {
     /// The arrangement's block draws the fades and the trim, so it has to be
     /// re-read: the picture in the window and the picture on the timeline are
     /// the same picture.
-    fn write_audio_clip(&mut self) {
+    ///
+    /// **And to every other selected audio clip**, when the open one is part
+    /// of the selection: *"selecting multiple clips and then doing edits like
+    /// changing the track, changing the volume, pan, etc. all need to apply to
+    /// every selected clip in the selection not just the one you double
+    /// clicked to open its audio menu."* Only the row that changed (`field`)
+    /// is carried to the others — `copy_audio_field` — and all of them go to
+    /// the document as one edit, so a drag is one undo.
+    fn write_audio_clip(&mut self, field: crate::canvas::AudioField) {
         let Some(open) = &self.audio_clip else { return };
         let (id, data) = (open.id, open.data.clone());
+        let selection = self.timeline.selection();
+        let others: Vec<fontelle_types::ClipId> = if selection.contains(&id) {
+            selection.iter().copied().filter(|c| *c != id).collect()
+        } else {
+            Vec::new()
+        };
         if let Some(doc) = &mut self.options.document {
-            doc.set_audio_clip(id, data);
+            if others.is_empty() {
+                doc.set_audio_clip(id, data);
+            } else {
+                let mut items = vec![(id, data.clone())];
+                for other in others {
+                    // Note clips in the selection have no such row.
+                    if let Some(mut theirs) = doc.audio_clip(other) {
+                        crate::canvas::copy_audio_field(field, &data, &mut theirs);
+                        items.push((other, theirs));
+                    }
+                }
+                doc.set_audio_clips(items);
+            }
         }
         self.refresh_studio();
         self.redraw_editor(EditorKind::AudioClip);
@@ -8752,6 +8883,8 @@ impl WindowApp {
     /// One press, routed to whichever panel it landed in.
     /// The button came up over the studio's own window.
     fn studio_released(&mut self) {
+        // A ruler drag lands where it was let go, not a frame later.
+        self.flush_scrub();
         let was_control = matches!(
             self.drag,
             Drag::Knob
@@ -8934,7 +9067,347 @@ impl WindowApp {
         self.request_redraw_if_dirty();
     }
 
+    /// The pointer moved to `(x, y)`, in points, in the studio's window.
+    fn pointer_moved(&mut self, x: f32, y: f32) {
+        self.cursor = (x, y);
+        self.pointer_window = None;
+        self.steer_autoscroll(None, x, y);
+        let started = std::time::Instant::now();
+        self.update_hover();
+        let hovered = ms_since(started);
+        self.drag_pointer();
+        if self.held.is_some() {
+            self.refresh_carry();
+        }
+        if trace_frames() && ms_since(started) > TRACE_FRAME_MS {
+            eprintln!(
+                "trace: pointer move {:.1} ms — hover {hovered:.1}, drag {:.1}",
+                ms_since(started),
+                ms_since(started) - hovered
+            );
+        }
+        self.request_redraw_if_dirty();
+    }
+
+    /// A button came up in the studio's window.
+    ///
+    /// The button is asked about: a middle release ends a held autoscroll
+    /// and nothing else — it used to end whatever the left button was
+    /// dragging.
+    fn released(&mut self, button: winit::event::MouseButton) {
+        if button == winit::event::MouseButton::Middle {
+            self.release_autoscroll();
+            return;
+        }
+        self.studio_released();
+    }
+
+    /// One frame of what moves on its own — the wheel's glides — `dt`
+    /// seconds after the last. Whether anything is still moving.
+    fn frame_motion(&mut self, dt: f32) -> bool {
+        self.flush_scrub();
+        let scrolling = self.autoscroll_frame(dt);
+        self.glide_views(dt) || scrolling
+    }
+
+    /// Middle-click autoscroll begins at `(x, y)`: in the studio's window
+    /// (`window` is `None`) over whatever scrolls there, or in editor
+    /// window `window`. Over nothing that scrolls, nothing begins.
+    fn start_autoscroll(&mut self, window: Option<EditorKind>, x: f32, y: f32) {
+        let target = match window {
+            Some(kind) => Some(AutoscrollTarget::Editor(kind)),
+            None => self.autoscroll_target_at(x, y),
+        };
+        let Some(target) = target else {
+            return;
+        };
+        self.autoscroll = Some(AutoscrollGesture {
+            scroll: crate::canvas::Autoscroll::new((x, y)),
+            target,
+            cursor: (x, y),
+            pressed: std::time::Instant::now(),
+            held: true,
+        });
+        match window {
+            Some(kind) => self.update_editor_cursor(kind),
+            None => self.update_cursor(),
+        }
+    }
+
+    /// What the wheel would scroll at `(x, y)` in the studio's window — the
+    /// order `scroll_roll` and the wheel handler ask in.
+    fn autoscroll_target_at(&self, x: f32, y: f32) -> Option<AutoscrollTarget> {
+        use AutoscrollTarget as T;
+        if let Some((_, menu)) = &self.menu
+            && menu.frame.contains(x, y)
+        {
+            return Some(T::Menu);
+        }
+        if self.keybinds.is_some() {
+            return Some(T::Keybinds);
+        }
+        if self.help.is_some() {
+            return Some(T::Help);
+        }
+        if self.settings_page.is_some() {
+            return Some(T::Settings);
+        }
+        if self.vocal_edit.picker.is_some() {
+            return Some(T::SingerPicker);
+        }
+        if self.vocal_edit.page.is_some() {
+            return Some(T::VoicebankPage);
+        }
+        if self.welcome.is_some() {
+            return None;
+        }
+        if self.tab == EditorTab::Mixer && self.layout.panel.body.contains(x, y) {
+            return Some(T::Mixer);
+        }
+        if self.layout.rack.frame.contains(x, y) {
+            return Some(T::Rack);
+        }
+        if self.layout.browser.frame.contains(x, y) {
+            return Some(T::Browser {
+                presets: self.browser.presets.contains(x, y),
+            });
+        }
+        if self.layout.timeline.frame.contains(x, y) {
+            return Some(T::Timeline);
+        }
+        if self.options.document.is_some() && self.layout.panel.frame.contains(x, y) {
+            return Some(T::Roll);
+        }
+        None
+    }
+
+    /// The middle button came up: a tap leaves scroll mode on until the next
+    /// click, a hold ends here.
+    fn release_autoscroll(&mut self) {
+        let Some(gesture) = &mut self.autoscroll else {
+            return;
+        };
+        if !gesture.held {
+            return;
+        }
+        gesture.held = false;
+        let held = gesture.pressed.elapsed().as_secs_f32();
+        let cursor = gesture.cursor;
+        if !gesture.scroll.release(cursor, held) {
+            self.end_autoscroll();
+        }
+    }
+
+    /// Escape leaves autoscroll, and is spent on it. Ends it as a side
+    /// effect of the question, which is why it is asked in a match guard
+    /// only while there is an autoscroll to end.
+    fn escapes_autoscroll(&mut self, event: &winit::event::KeyEvent) -> bool {
+        if self.autoscroll.is_none()
+            || event.state != winit::event::ElementState::Pressed
+            || event.logical_key != winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+        {
+            return false;
+        }
+        self.end_autoscroll();
+        true
+    }
+
+    fn end_autoscroll(&mut self) {
+        let Some(gesture) = self.autoscroll.take() else {
+            return;
+        };
+        match gesture.target {
+            AutoscrollTarget::Editor(kind) => {
+                self.update_editor_cursor(kind);
+                self.redraw_editor(kind);
+            }
+            _ => {
+                self.update_cursor();
+                self.request_redraw_if_dirty();
+            }
+        }
+    }
+
+    /// The pointer moved to `(x, y)` in `window` (`None` is the studio's):
+    /// what the autoscroll steers by, when that is its window.
+    fn steer_autoscroll(&mut self, window: Option<EditorKind>, x: f32, y: f32) {
+        if let Some(gesture) = &mut self.autoscroll {
+            let its = match gesture.target {
+                AutoscrollTarget::Editor(kind) => Some(kind),
+                _ => None,
+            };
+            if its == window {
+                gesture.cursor = (x, y);
+            }
+        }
+    }
+
+    /// One frame of autoscroll, `dt` seconds on. Whether it is running.
+    ///
+    /// The arrangement and the roll move by the point, through the same
+    /// glides the wheel pushes; the lists move by the row, keeping what has
+    /// not added up to one (`Autoscroll::whole`).
+    fn autoscroll_frame(&mut self, dt: f32) -> bool {
+        use AutoscrollTarget as T;
+        let Some(gesture) = &mut self.autoscroll else {
+            return false;
+        };
+        let (px, py) = gesture.scroll.step(gesture.cursor, dt);
+        let (target, anchor) = (gesture.target, gesture.scroll.anchor);
+        if px == 0.0 && py == 0.0 {
+            return true;
+        }
+        let row = self.options.theme.metrics.row_height.max(1.0);
+        let whole = |app: &mut Self, travel: (f32, f32), step: (f32, f32)| {
+            app.autoscroll
+                .as_mut()
+                .map_or((0, 0), |g| g.scroll.whole(travel, step))
+        };
+        match target {
+            T::Timeline => {
+                let v = &self.timeline.view;
+                let (ppt, lane) = (
+                    f64::from(v.pixels_per_tick.max(0.0001)),
+                    f64::from(v.lane_height.max(1.0)),
+                );
+                self.glide_timeline_x.shift(f64::from(px) / ppt);
+                self.glide_timeline_y.shift(f64::from(py) / lane);
+                self.tree.invalidate(TIMELINE);
+            }
+            T::Roll => {
+                let v = &self.roll.view;
+                let (ppt, key) = (
+                    f64::from(v.pixels_per_tick.max(0.0001)),
+                    f64::from(v.key_height.max(1.0)),
+                );
+                self.glide_roll_x.shift(f64::from(px) / ppt);
+                // Down the screen is down the keyboard.
+                self.glide_roll_y.shift(-f64::from(py) / key);
+                self.tree.invalidate(PANEL);
+            }
+            T::Mixer => {
+                let strip = self.mixer_view.strip_width.max(1.0);
+                let (n, _) = whole(self, (px + py, 0.0), (strip, 1.0));
+                if n != 0 {
+                    let scrollable = self.mixer_strips.len().saturating_sub(1);
+                    self.mixer_scroll = scrolled(self.mixer_scroll, n, scrollable);
+                    self.relayout_panels();
+                    self.tree.invalidate(PANEL);
+                }
+            }
+            T::Rack => {
+                let (_, n) = whole(self, (0.0, py), (1.0, row));
+                if n != 0 {
+                    if self.rack_tab == crate::document::RackTab::Prefabs {
+                        self.prefab_scroll = scrolled(self.prefab_scroll, n, self.prefabs.len());
+                    } else {
+                        self.rack_scroll = scrolled(self.rack_scroll, n, self.channels.len());
+                    }
+                    self.relayout_panels();
+                    self.tree.invalidate(RACK);
+                }
+            }
+            T::Browser { presets } => {
+                let (_, n) = whole(self, (0.0, py), (1.0, row));
+                if n != 0 {
+                    if presets {
+                        self.preset_scroll = scrolled(self.preset_scroll, n, self.presets.len());
+                    } else {
+                        self.file_scroll = scrolled(self.file_scroll, n, self.browser_rows());
+                    }
+                    self.relayout_panels();
+                    self.tree.invalidate(BROWSER);
+                }
+            }
+            T::Menu => {
+                if let Some((_, menu)) = &mut self.menu {
+                    menu.scroll_by(py);
+                }
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            // The pages clamp what they are given, so the travel is added
+            // and the page's own function keeps it in range.
+            T::Keybinds => {
+                if let Some(scroll) = self.keybinds {
+                    let layout = self.keybinds_layout();
+                    self.keybinds =
+                        Some(crate::canvas::keybinds_scrolled(&layout, scroll + py, 0.0));
+                }
+                self.tree.invalidate_rect(self.layout.window);
+                self.update_hover();
+            }
+            T::Help => {
+                let layout = self.help_layout();
+                if let Some(help) = &mut self.help {
+                    help.scroll = crate::canvas::help_scrolled(&layout, help.scroll + py, 0.0);
+                }
+                self.tree.invalidate_rect(self.layout.window);
+                self.update_hover();
+            }
+            T::Settings => {
+                let layout = self.settings_page_layout();
+                if let Some(page) = &mut self.settings_page {
+                    page.scroll =
+                        crate::canvas::settings_page_scrolled(&layout, page.scroll + py, 0.0);
+                }
+                self.tree.invalidate_rect(self.layout.window);
+                self.update_hover();
+            }
+            T::SingerPicker => self.scroll_singer_picker(-py / 40.0),
+            T::VoicebankPage => {
+                if let Some(page) = &mut self.vocal_edit.page {
+                    page.scroll = (page.scroll + py).max(0.0);
+                    if let Some(layout) = &page.layout {
+                        page.scroll = page
+                            .scroll
+                            .min((layout.content_height - layout.list.height).max(0.0));
+                    }
+                }
+                self.tree.invalidate_rect(self.layout.window);
+            }
+            T::Editor(kind) => {
+                if let Some((_, menu)) = &mut self.menu
+                    && menu.frame.contains(anchor.0, anchor.1)
+                {
+                    menu.scroll_by(py);
+                } else if kind == EditorKind::Effect && self.notepad.is_some() {
+                    let line = self.notepad_layout.line_height.max(1.0);
+                    let (_, n) = whole(self, (0.0, py), (1.0, line));
+                    if n != 0 {
+                        self.scroll_notepad(-(n as f32));
+                    }
+                } else if kind == EditorKind::Instrument && self.singer_panel.is_some() {
+                    self.singer_scroll = (self.singer_scroll + py).max(0.0);
+                    self.relayout_editors();
+                } else {
+                    // Whatever the wheel scrolls there, a notch at a time.
+                    let (nx, ny) = whole(self, (px, py), (40.0, 40.0));
+                    if nx != 0 || ny != 0 {
+                        self.editor_wheel(kind, anchor.0, anchor.1, -(nx as f32), -(ny as f32));
+                    }
+                }
+                self.redraw_editor(kind);
+            }
+        }
+        true
+    }
+
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
+        // Any click while autoscrolling ends it, and is spent on that — the
+        // click that leaves scroll mode must not also draw a note.
+        if self.autoscroll.is_some() {
+            self.end_autoscroll();
+            return;
+        }
+        // The middle button scrolls whatever it went down on; it never
+        // starts a drag, and one already going with another button is left
+        // alone.
+        if button == winit::event::MouseButton::Middle {
+            if self.drag == Drag::None && self.held.is_none() {
+                self.start_autoscroll(None, x, y);
+            }
+            return;
+        }
         self.drag = Drag::None;
         self.end_edge_scroll();
         // A row held since a drag was let go outside the window: this click
@@ -9458,6 +9931,7 @@ impl WindowApp {
             Drag::Roll => self.drag_roll(),
             Drag::Lane => self.drag_lane(),
             Drag::LaneGrip => self.drag_lane_grip(y),
+            Drag::NotepadSelect => self.drag_notepad_select(x, y),
             Drag::RollRuler => self.mark_at_roll(x),
             Drag::BarRuler => self.mark_on_bar(x),
             Drag::Keys => self.audition_at(y),
@@ -11770,6 +12244,19 @@ impl WindowApp {
                 crate::canvas::NotepadHit::Theme => {
                     self.set_notepad_param("theme", theme.previous().index());
                 }
+                // The page's own menu — what a text editor's right-click
+                // offers. The selection stays as it was.
+                crate::canvas::NotepadHit::Page => {
+                    let bounds = self
+                        .editors
+                        .iter()
+                        .find(|editor| editor.kind == EditorKind::Effect)
+                        .map(|editor| editor.panel.frame)
+                        .unwrap_or(self.notepad_layout.body);
+                    self.notepad_typing = true;
+                    self.open_menu(MenuTarget::NotepadEdit, x, y, bounds);
+                    self.redraw_editor(EditorKind::Effect);
+                }
                 _ => {}
             }
             return;
@@ -11788,7 +12275,16 @@ impl WindowApp {
                     x,
                     y,
                 );
-                self.notepad_entry.place(at, self.modifiers.shift_key());
+                // One click places the caret and a drag from it selects; a
+                // second selects the word, a third the line.
+                match self.notepad_clicks.press(x, y, std::time::Instant::now()) {
+                    2 => crate::canvas::notepad_select_word(&mut self.notepad_entry, at),
+                    3 => crate::canvas::notepad_select_line(&mut self.notepad_entry, at, false),
+                    _ => {
+                        self.notepad_entry.place(at, self.modifiers.shift_key());
+                        self.drag = Drag::NotepadSelect;
+                    }
+                }
                 self.notepad_goal = None;
                 self.notepad_typing = true;
                 self.caret_on = true;
@@ -11828,6 +12324,84 @@ impl WindowApp {
             }
             crate::canvas::NotepadHit::Nothing => {}
         }
+    }
+
+    /// A drag across the notepad's page: the selection runs from where the
+    /// press was to the pointer. Past the top or bottom of the page it
+    /// scrolls, a line a move, so a selection can be longer than the window.
+    fn drag_notepad_select(&mut self, x: f32, y: f32) {
+        let text = self.notepad_layout.text;
+        if y < text.y {
+            self.scroll_notepad(1.0);
+        } else if y > text.bottom() {
+            self.scroll_notepad(-1.0);
+        }
+        let at = crate::canvas::notepad_index_at(
+            &self.notepad_layout,
+            self.notepad_entry.text(),
+            &self.notepad_rows,
+            self.notepad_scroll,
+            x,
+            y.clamp(text.y, text.bottom() - 1.0),
+        );
+        if at == self.notepad_entry.caret() {
+            return;
+        }
+        self.notepad_entry.place(at, true);
+        self.caret_on = true;
+        self.caret_phase = 0.0;
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// A row of the page's right-click menu.
+    fn choose_notepad_edit(&mut self, index: usize) {
+        let edited = match index {
+            0 => {
+                let taken = crate::canvas::notepad_cut(&mut self.notepad_entry);
+                self.clipboard_text.copy(&taken);
+                true
+            }
+            1 => {
+                let copied = crate::canvas::notepad_copy_text(&self.notepad_entry);
+                self.clipboard_text.copy(&copied);
+                false
+            }
+            2 => self.paste_into_notepad(),
+            3 => {
+                self.notepad_entry.select_all();
+                false
+            }
+            _ => false,
+        };
+        self.after_notepad_key(edited, true);
+    }
+
+    /// A paste into the pad: every line of it (`notepad_paste_text`), where
+    /// a field takes one. Whether anything went in.
+    fn paste_into_notepad(&mut self) -> bool {
+        let pasted = crate::canvas::notepad_paste_text(&self.clipboard_text.paste_raw());
+        if pasted.is_empty() {
+            return false;
+        }
+        self.notepad_entry.insert(&pasted);
+        true
+    }
+
+    /// After an edit or a move in the pad: written to the document (an edit
+    /// that `stops` is its own undo entry), or redrawn with the caret on.
+    fn after_notepad_key(&mut self, edited: bool, stops: bool) {
+        if edited {
+            self.write_notepad();
+            if stops {
+                self.break_notepad_gesture();
+            }
+        } else {
+            self.break_notepad_gesture();
+            self.relayout_notepad();
+            self.redraw_editor(EditorKind::Effect);
+        }
+        self.caret_on = true;
+        self.caret_phase = 0.0;
     }
 
     /// Steps one of the pad's two choosers, through the same path every other
@@ -11925,6 +12499,76 @@ impl WindowApp {
                 edited = true;
                 stops = true;
             }
+            // What a text editor does with whole lines and words — see the
+            // `notepad_*` editing functions. Each is its own undo entry.
+            Key::Named(NamedKey::ArrowUp) if self.modifiers.alt_key() => {
+                edited = crate::canvas::notepad_move_lines(&mut self.notepad_entry, -1);
+                stops = true;
+            }
+            Key::Named(NamedKey::ArrowDown) if self.modifiers.alt_key() => {
+                edited = crate::canvas::notepad_move_lines(&mut self.notepad_entry, 1);
+                stops = true;
+            }
+            Key::Named(NamedKey::Tab) => {
+                if shift {
+                    crate::canvas::notepad_outdent(&mut self.notepad_entry);
+                } else {
+                    crate::canvas::notepad_indent(&mut self.notepad_entry);
+                }
+                edited = true;
+                stops = true;
+            }
+            Key::Named(NamedKey::Backspace) if ctrl => {
+                crate::canvas::notepad_delete_word(&mut self.notepad_entry, false);
+                edited = true;
+            }
+            Key::Named(NamedKey::Delete) if ctrl => {
+                crate::canvas::notepad_delete_word(&mut self.notepad_entry, true);
+                edited = true;
+            }
+            // The whole page; on their own they are the row's ends.
+            Key::Named(NamedKey::Home) if ctrl => self.notepad_entry.home(shift),
+            Key::Named(NamedKey::End) if ctrl => self.notepad_entry.end(shift),
+            Key::Character(c) if ctrl => match c.to_lowercase().as_str() {
+                // With nothing selected, copy and cut take the line.
+                "c" => {
+                    let copied = crate::canvas::notepad_copy_text(&self.notepad_entry);
+                    self.clipboard_text.copy(&copied);
+                }
+                "x" => {
+                    let taken = crate::canvas::notepad_cut(&mut self.notepad_entry);
+                    self.clipboard_text.copy(&taken);
+                    edited = true;
+                    stops = true;
+                }
+                // A paste keeps its lines.
+                "v" => {
+                    edited = self.paste_into_notepad();
+                    stops = true;
+                }
+                "a" => self.notepad_entry.select_all(),
+                // Ctrl+L, again for the next line too.
+                "l" => {
+                    let more = self.notepad_entry.selection().is_some();
+                    let caret = self.notepad_entry.caret();
+                    crate::canvas::notepad_select_line(&mut self.notepad_entry, caret, more);
+                }
+                "d" => {
+                    crate::canvas::notepad_duplicate_line(&mut self.notepad_entry);
+                    edited = true;
+                    stops = true;
+                }
+                "k" if shift => {
+                    crate::canvas::notepad_delete_line(&mut self.notepad_entry);
+                    edited = true;
+                    stops = true;
+                }
+                // Undo, redo, save and the rest are the program's.
+                _ => {
+                    self.notepad_rows = rows;
+                    return false;
+                }
+            },
             Key::Named(NamedKey::ArrowUp) => {
                 crate::canvas::notepad_step_row(&mut self.notepad_entry, &rows, -1, goal, shift);
                 keeps_goal = true;
@@ -11995,24 +12639,13 @@ impl WindowApp {
         } else {
             self.notepad_goal = None;
         }
-        if edited {
-            self.write_notepad();
-            // A new line is a stop as well as a character: an undo should
-            // take back the line you just wrote rather than the whole verse.
-            if stops {
-                self.break_notepad_gesture();
-            }
-        } else {
-            // A caret moved by hand ends the run of typing too, so the next
-            // keystroke starts its own undo entry.
-            self.break_notepad_gesture();
-            self.relayout_notepad();
-            self.redraw_editor(EditorKind::Effect);
-        }
-        // The caret is put back on the moment anything happens, so it is
-        // never invisible at the instant you are looking for it.
-        self.caret_on = true;
-        self.caret_phase = 0.0;
+        // A new line is a stop as well as a character: an undo should take
+        // back the line you just wrote rather than the whole verse. A caret
+        // moved by hand ends the run of typing too, so the next keystroke
+        // starts its own undo entry; and the caret is put back on the moment
+        // anything happens, so it is never invisible at the instant you are
+        // looking for it.
+        self.after_notepad_key(edited, stops);
         true
     }
 
@@ -14650,7 +15283,7 @@ impl WindowApp {
             has_preset,
             routes: &routes,
             is_destination,
-            clipboard: self.flop_clipboard.is_some(),
+            clipboard: self.knob_clipboard.is_some(),
         })
     }
 
@@ -14760,13 +15393,13 @@ impl WindowApp {
                 self.lane_made();
             }
             Item::CopyValue => {
-                self.flop_clipboard = self
+                self.knob_clipboard = self
                     .flop_control_at_address(address)
                     .and_then(|which| self.flop_param(which))
                     .map(|param| param.value);
             }
             Item::PasteValue => {
-                let value = self.flop_clipboard;
+                let value = self.knob_clipboard;
                 set(self, value);
             }
         }
@@ -18431,15 +19064,29 @@ impl WindowApp {
             // to read.
             // The corrector's key and scale also copy and paste the key, in
             // plain words, to and from the piano roll's chooser — or anywhere.
-            MenuTarget::InsertParam { param, name } if self.tune_scale_param(param) => {
-                let mut entries = crate::canvas::automate_menu(name);
-                entries.push(MenuEntry::new("Copy scale"));
-                entries.push(MenuEntry::new("Paste scale"));
-                entries
+            // And every knob copies its value and pastes one (`knob_menu`).
+            MenuTarget::InsertParam { param, name } => {
+                crate::canvas::knob_menu(
+                    name,
+                    self.tune_scale_param(param),
+                    self.knob_clipboard.is_some(),
+                )
+                .0
             }
-            MenuTarget::InstrumentParam { name, .. }
-            | MenuTarget::InsertParam { name, .. }
-            | MenuTarget::AutomateMixer { name, .. } => crate::canvas::automate_menu(name),
+            MenuTarget::InstrumentParam { name, .. } | MenuTarget::AutomateMixer { name, .. } => {
+                crate::canvas::knob_menu(name, false, self.knob_clipboard.is_some()).0
+            }
+            // A clip's knob has no automation lane to make — the clip is the
+            // thing on the arrangement — so it is the value rows alone.
+            MenuTarget::AudioKnob(field) => vec![
+                MenuEntry::disabled(crate::canvas::audio_row_label(*field).to_string()),
+                MenuEntry::new("Copy value").after_rule(),
+                if self.knob_clipboard.is_some() {
+                    MenuEntry::new("Paste value")
+                } else {
+                    MenuEntry::disabled("Paste value")
+                },
+            ],
             MenuTarget::Tempo => crate::canvas::automate_menu("Tempo"),
             // The three instruments, in one order, from one list — so the two
             // menus that offer them cannot come to disagree about what there
@@ -18487,6 +19134,18 @@ impl WindowApp {
             // anything else that lists them cannot disagree. The page you are
             // on is greyed: it is where you already are, and a menu that let
             // you choose it would be a menu that did nothing.
+            MenuTarget::NotepadEdit => {
+                let some = self
+                    .notepad_entry
+                    .selection()
+                    .is_some_and(|(from, to)| to > from);
+                vec![
+                    MenuEntry::new(if some { "Cut" } else { "Cut line" }),
+                    MenuEntry::new(if some { "Copy" } else { "Copy line" }),
+                    MenuEntry::new("Paste"),
+                    MenuEntry::new("Select all").after_rule(),
+                ]
+            }
             MenuTarget::NotepadPages => match &self.notepad {
                 Some(view) => (0..view.pages)
                     .map(|page| {
@@ -19656,6 +20315,133 @@ impl WindowApp {
 
     /// What entry `index` of a menu about `target` does. The other half of
     /// [`menu_entries`](Self::menu_entries), and the two are read together.
+    /// A row of a knob's right-click menu (`knob_menu`): make its
+    /// automation lane, the corrector's scale rows, or copy its value and
+    /// paste one.
+    fn choose_knob_menu(&mut self, target: &MenuTarget, index: usize) {
+        use crate::canvas::KnobMenuRow as Row;
+        let scale =
+            matches!(target, MenuTarget::InsertParam { param, .. } if self.tune_scale_param(param));
+        let rows = crate::canvas::knob_menu("", scale, self.knob_clipboard.is_some()).1;
+        let Some(row) = rows.get(index).copied() else {
+            return;
+        };
+        match (row, target) {
+            (Row::Heading, _) => {}
+            (Row::Automate, MenuTarget::AutomateMixer { control, .. }) => {
+                use crate::canvas::MixerControl;
+                match *control {
+                    MixerControl::Gain(strip) => self.automate_track(strip, true),
+                    MixerControl::Pan(strip) => self.automate_track(strip, false),
+                    // A wet/dry is a control like any other, and sweeping one
+                    // is how an effect is brought in over a bar.
+                    MixerControl::InsertMix { strip, slot } => {
+                        self.automate_insert(strip, slot, fontelle_types::MIX, "wet/dry")
+                    }
+                }
+            }
+            (Row::Automate, MenuTarget::InsertParam { param, name }) => {
+                let (param, name) = (param.clone(), name.clone());
+                self.automate_insert_named(&param, &name);
+            }
+            (Row::Automate, MenuTarget::InstrumentParam { address, .. }) => {
+                let at = self.view.position_sample;
+                let address = address.clone();
+                if let Some(doc) = &mut self.options.document {
+                    doc.automate_instrument_param(&address, at);
+                }
+                // The lane is on the arrangement now, and that is where it is
+                // drawn in — *"then it appears in my timeline and im able to
+                // draw it"*.
+                self.lane_made();
+            }
+            (Row::CopyScale, _) => self.copy_tune_scale(),
+            (Row::PasteScale, _) => self.paste_tune_scale(),
+            (Row::CopyValue, _) => self.knob_clipboard = self.knob_value_of(target),
+            (Row::PasteValue, _) => {
+                if let Some(value) = self.knob_clipboard {
+                    self.paste_knob_value(target, value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Where the knob `target` names sits along its travel, 0 to 1.
+    fn knob_value_of(&self, target: &MenuTarget) -> Option<f32> {
+        match target {
+            MenuTarget::InsertParam { param, .. } => self
+                .insert_view
+                .as_ref()?
+                .groups
+                .iter()
+                .flat_map(|g| g.params.iter())
+                .find(|p| p.address.as_str() == param.as_str())
+                .map(|p| p.value),
+            MenuTarget::InstrumentParam { address, .. } => self
+                .instrument
+                .as_ref()?
+                .groups
+                .iter()
+                .flat_map(|g| g.params.iter())
+                .find(|p| p.address == *address)
+                .map(|p| p.value),
+            MenuTarget::AutomateMixer { control, .. } => {
+                use crate::canvas::MixerControl;
+                Some(match *control {
+                    MixerControl::Gain(strip) => {
+                        let db = self.mixer_strips.get(strip)?.gain_db;
+                        1.0 - crate::canvas::fader_y_of_db(UNIT_TRACK, db)
+                    }
+                    MixerControl::Pan(strip) => (self.mixer_strips.get(strip)?.pan + 1.0) / 2.0,
+                    MixerControl::InsertMix { strip, slot } => {
+                        self.mixer_strips.get(strip)?.inserts.get(slot)?.mix
+                    }
+                })
+            }
+            _ => None,
+        }
+        .map(|v| v.clamp(0.0, 1.0))
+    }
+
+    /// Sets the knob `target` names to `value` along its travel, as one undo.
+    fn paste_knob_value(&mut self, target: &MenuTarget, value: f32) {
+        let value = value.clamp(0.0, 1.0);
+        match target {
+            MenuTarget::InsertParam { param, .. } => {
+                let param = param.clone();
+                self.write_insert_param(&param, value);
+            }
+            MenuTarget::InstrumentParam { address, .. } => {
+                let address = address.clone();
+                self.set_param(&address, value);
+                self.redraw_editor(EditorKind::Instrument);
+            }
+            MenuTarget::AutomateMixer { control, .. } => {
+                use crate::canvas::MixerControl;
+                if let Some(doc) = &mut self.options.document {
+                    match *control {
+                        MixerControl::Gain(strip) => doc.set_track_gain_db(
+                            strip,
+                            crate::canvas::fader_db_at(UNIT_TRACK, 1.0 - value),
+                        ),
+                        MixerControl::Pan(strip) => doc.set_track_pan(strip, value * 2.0 - 1.0),
+                        MixerControl::InsertMix { strip, slot } => {
+                            doc.set_insert_mix(strip, slot, value)
+                        }
+                    }
+                }
+                self.refresh_studio();
+                self.refresh_title();
+                self.tree.invalidate(PANEL);
+            }
+            _ => return,
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+    }
+
     fn choose_menu(&mut self, target: &MenuTarget, index: usize) {
         match (target, index) {
             (MenuTarget::Clip(id), index) => {
@@ -20322,6 +21108,7 @@ impl WindowApp {
                 }
                 self.finish_track_save(&category);
             }
+            (MenuTarget::NotepadEdit, index) => self.choose_notepad_edit(index),
             (MenuTarget::NotepadPages, index) => {
                 self.show_notepad_page(index);
             }
@@ -20533,38 +21320,32 @@ impl WindowApp {
                 self.open_chosen_instrument();
             }
 
-            (MenuTarget::AutomateMixer { control, .. }, 1) => {
-                use crate::canvas::MixerControl;
-                match *control {
-                    MixerControl::Gain(strip) => self.automate_track(strip, true),
-                    MixerControl::Pan(strip) => self.automate_track(strip, false),
-                    // A wet/dry is a control like any other, and sweeping one
-                    // is how an effect is brought in over a bar.
-                    MixerControl::InsertMix { strip, slot } => {
-                        self.automate_insert(strip, slot, fontelle_types::MIX, "wet/dry")
+            (
+                MenuTarget::InsertParam { .. }
+                | MenuTarget::InstrumentParam { .. }
+                | MenuTarget::AutomateMixer { .. },
+                index,
+            ) => {
+                let target = target.clone();
+                self.choose_knob_menu(&target, index);
+            }
+            (MenuTarget::AudioKnob(field), 1) => {
+                self.knob_clipboard = self
+                    .audio_clip
+                    .as_ref()
+                    .and_then(|open| crate::canvas::audio_row_fraction(&open.data, *field));
+            }
+            (MenuTarget::AudioKnob(field), 2) => {
+                let field = *field;
+                if let Some(value) = self.knob_clipboard
+                    && let Some(open) = &mut self.audio_clip
+                {
+                    crate::canvas::set_audio_row_fraction(&mut open.data, field, value);
+                    self.write_audio_clip(field);
+                    if let Some(doc) = &mut self.options.document {
+                        doc.end_gesture();
                     }
                 }
-            }
-            (MenuTarget::InsertParam { param, name }, 1) => {
-                let (param, name) = (param.clone(), name.clone());
-                self.automate_insert_named(&param, &name);
-            }
-            (MenuTarget::InsertParam { param, .. }, 2) if self.tune_scale_param(param) => {
-                self.copy_tune_scale();
-            }
-            (MenuTarget::InsertParam { param, .. }, 3) if self.tune_scale_param(param) => {
-                self.paste_tune_scale();
-            }
-            (MenuTarget::InstrumentParam { address, .. }, 1) => {
-                let at = self.view.position_sample;
-                let address = address.clone();
-                if let Some(doc) = &mut self.options.document {
-                    doc.automate_instrument_param(&address, at);
-                }
-                // The lane is on the arrangement now, and that is where it is
-                // drawn in — *"then it appears in my timeline and im able to
-                // draw it"*.
-                self.lane_made();
             }
             (MenuTarget::Tempo, 1) => {
                 let at = self.view.position_sample;
@@ -20768,7 +21549,7 @@ impl WindowApp {
                 } else {
                     crate::canvas::choose_audio_row(&mut open.data, field, index);
                 }
-                self.write_audio_clip();
+                self.write_audio_clip(field);
             }
             // The metre chosen from the signature box's list.
             (MenuTarget::Signature, index) => {
@@ -21830,7 +22611,41 @@ impl WindowApp {
     }
 
     /// Puts the marker — and the playhead — at `sample`.
+    ///
+    /// **While a ruler is being dragged, the playhead waits for the frame.**
+    /// *"dragging the time bar in shared songs makes everything freeze and
+    /// the audio glitch out wildly"* (2026-10-18): every pointer move used to
+    /// seek the engine — which cuts every sounding voice and starts the
+    /// timeline over from there — and then run a whole frame's work on the
+    /// spot, and a mouse reports hundreds of moves a second. The marker moves
+    /// with the pointer; the seek is sent once a frame, to wherever the
+    /// pointer got to (`flush_scrub`), and once more on release.
     fn mark(&mut self, sample: fontelle_types::Sample) {
+        if matches!(
+            self.drag,
+            Drag::TimelineRuler | Drag::BarRuler | Drag::RollRuler
+        ) {
+            let sample = sample.max(0);
+            if sample != self.marker || self.scrub_to.is_none() {
+                self.marker = sample;
+                self.scrub_to = Some(sample);
+                self.tree.invalidate(TRANSPORT);
+                self.tree.invalidate(PANEL);
+                self.tree.invalidate(TIMELINE);
+            }
+            return;
+        }
+        self.seek_to(sample);
+    }
+
+    /// The seek a ruler drag has been holding, sent now.
+    fn flush_scrub(&mut self) {
+        if let Some(sample) = self.scrub_to.take() {
+            self.seek_to(sample);
+        }
+    }
+
+    fn seek_to(&mut self, sample: fontelle_types::Sample) {
         // Only skip when *both* are already there. Comparing the marker alone
         // means dragging the ruler back to the start of a song whose playhead
         // has run on leaves the playhead where it was, because the marker was
@@ -21851,7 +22666,16 @@ impl WindowApp {
         } else {
             self.marker = sample.max(0);
         }
-        self.tick();
+        // The playhead as the host now has it, so the next frame draws it
+        // there — read here rather than by running a whole frame (`tick`),
+        // which a drag used to do on every pointer move.
+        // Only the position: the frame compares the rest against what it saw
+        // last (a take ending, the transport stopping).
+        if let Some(host) = &mut self.options.host {
+            let now = host.view();
+            self.view.position_sample = now.position_sample;
+            self.view.position_beats = now.position_beats;
+        }
         self.tree.invalidate(TRANSPORT);
         self.tree.invalidate(PANEL);
     }
@@ -23216,9 +24040,9 @@ impl WindowApp {
         clip: &crate::document::ClipInfo,
         row: Option<crate::canvas::ClipMenuRow>,
     ) {
-        use crate::canvas::{ArrangeEdit, ClipMenuRow};
+        use crate::canvas::ClipMenuRow;
         let id = clip.id;
-        let edit = match row {
+        let edits = match row {
             None | Some(ClipMenuRow::Heading) => return,
             Some(ClipMenuRow::Rename) => {
                 self.ask_for_a_name_of(MenuTarget::ClipName(id), clip.name.clone());
@@ -23239,25 +24063,22 @@ impl WindowApp {
                 self.analyze_musically(id);
                 return;
             }
-            Some(ClipMenuRow::Duplicate) => ArrangeEdit::Duplicate {
-                ids: vec![id],
-                tick_offset: clip.length,
-            },
-            Some(ClipMenuRow::Delete) => ArrangeEdit::Remove(vec![id]),
-            Some(ClipMenuRow::Mute) => ArrangeEdit::SetMuted {
-                ids: vec![id],
-                muted: !clip.muted,
-            },
-            Some(ClipMenuRow::Loop) => ArrangeEdit::SetLoop {
-                ids: vec![id],
-                loop_length: if clip.loop_length.is_some() {
-                    None
-                } else {
-                    Some(clip.length)
-                },
-            },
+            // On the selection when this clip is in it, as everywhere else
+            // a selection is acted on — see `clip_menu_edits`.
+            Some(
+                row @ (ClipMenuRow::Duplicate
+                | ClipMenuRow::Delete
+                | ClipMenuRow::Mute
+                | ClipMenuRow::Loop),
+            ) => crate::canvas::clip_menu_edits(
+                row,
+                clip,
+                self.timeline.selection(),
+                &self.clips,
+                self.beats_per_bar(),
+            ),
         };
-        self.apply_arrange_edits(vec![edit]);
+        self.apply_arrange_edits(edits);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
         }

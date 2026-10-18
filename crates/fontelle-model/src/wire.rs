@@ -143,6 +143,7 @@ edits!(
     RemoveAudioClip,
     SetTrackInput,
     SetAudioClip,
+    SetAudioClips,
     ImportParts,
     UnimportParts,
     AddClip,

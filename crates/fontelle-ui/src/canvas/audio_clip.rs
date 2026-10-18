@@ -924,3 +924,52 @@ pub fn nudge_route(
     };
     clip.mixer_track = tracks[next as usize];
 }
+
+/// Carries the row `field` from `from` onto `to`, and nothing else.
+///
+/// How an edit on the panel reaches the rest of a selection: *"selecting
+/// multiple clips and then doing edits like changing the track, changing the
+/// volume, pan, etc. all need to apply to every selected clip"*. The one row
+/// is copied, never the whole list of numbers — each clip keeps its own file,
+/// trim and every other setting.
+///
+/// A switch is copied as on or off, not flipped, so a mixed selection ends up
+/// as the panel shows it. A fade is the same **time** long on each clip (its
+/// frames are at the clip's own rate) and never longer than the clip.
+pub fn copy_audio_field(field: AudioField, from: &AudioClipData, to: &mut AudioClipData) {
+    let fade_frames = |fade: Sample, to: &AudioClipData| -> Sample {
+        let frames = if from.sample_rate > 0 && to.sample_rate > 0 {
+            (fade as f64 * f64::from(to.sample_rate) / f64::from(from.sample_rate)).round()
+                as Sample
+        } else {
+            fade
+        };
+        frames.clamp(0, to.source_frames().max(0))
+    };
+    match field {
+        AudioField::Heading(_) => {}
+        AudioField::Route => to.mixer_track = from.mixer_track,
+        AudioField::Gain => to.gain_db = from.gain_db,
+        AudioField::Pan => to.pan = from.pan,
+        AudioField::Normalize => to.normalize = from.normalize,
+        AudioField::Stretch => to.stretch = from.stretch,
+        AudioField::Pitch => to.pitch_semitones = from.pitch_semitones,
+        AudioField::Speed => to.speed = from.speed,
+        AudioField::Reverse => to.reverse = from.reverse,
+        AudioField::Loop => to.loop_mode = from.loop_mode,
+        AudioField::FadeIn => to.fade_in.frames = fade_frames(from.fade_in.frames, to),
+        AudioField::FadeInCurve => {
+            to.fade_in.curve = from.fade_in.curve;
+            to.fade_in.tension = from.fade_in.tension;
+        }
+        AudioField::FadeOut => to.fade_out.frames = fade_frames(from.fade_out.frames, to),
+        AudioField::FadeOutCurve => {
+            to.fade_out.curve = from.fade_out.curve;
+            to.fade_out.tension = from.fade_out.tension;
+        }
+        AudioField::FilterShape => to.filter.shape = from.filter.shape,
+        AudioField::Cutoff => to.filter.cutoff_hz = from.filter.cutoff_hz,
+        AudioField::Resonance => to.filter.resonance = from.filter.resonance,
+        AudioField::Drive => to.filter.drive = from.filter.drive,
+    }
+}

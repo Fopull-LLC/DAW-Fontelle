@@ -171,3 +171,37 @@ fn the_offsets_default_to_nothing_so_every_old_view_reads_as_it_did() {
     assert_eq!(RollView::default().key_offset, 0.0);
     let _ = PPQN;
 }
+
+/// Middle-click autoscroll moves the view by the frame, already at its own
+/// pace: an easing on top of it would lag the pointer and keep going after
+/// the button came up. `shift` moves at once — the next step writes it —
+/// and leaves any wheel travel still owed where it was.
+#[test]
+fn a_shift_moves_at_once_and_stops_at_once() {
+    let mut glide = Glide::at(100.0);
+    glide.shift(25.0);
+    assert_eq!(
+        glide.step(0.016, 0.5),
+        Some(125.0),
+        "the whole shift, this frame"
+    );
+    assert_eq!(glide.step(0.016, 0.5), None, "and nothing after it");
+
+    // A wheel push still in flight keeps its remainder.
+    glide.push(50.0);
+    glide.shift(10.0);
+    let first = glide.step(0.016, 0.5).unwrap();
+    assert!(
+        first > 135.0 && first < 185.0,
+        "eased towards 185, got {first}"
+    );
+    for _ in 0..200 {
+        glide.step(0.016, 0.5);
+    }
+    assert_eq!(glide.position(), 185.0);
+
+    // And it keeps to the bounds.
+    let mut low = Glide::at(5.0);
+    low.shift(-20.0);
+    assert_eq!(low.step(0.016, 0.5), Some(0.0));
+}

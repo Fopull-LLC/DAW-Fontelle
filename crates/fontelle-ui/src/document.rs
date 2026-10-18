@@ -3633,6 +3633,13 @@ pub trait StudioHost: DocumentHost {
     /// hands back a whole list, and a call per field would be twenty that each
     /// have to agree about what "unchanged" means.
     fn set_audio_clip(&mut self, _clip: ClipId, _data: fontelle_types::AudioClipData) {}
+    /// Several clips' properties at once, as one edit — the editor over a
+    /// selection. By default one [`set_audio_clip`](Self::set_audio_clip) each.
+    fn set_audio_clips(&mut self, items: Vec<(ClipId, fontelle_types::AudioClipData)>) {
+        for (clip, data) in items {
+            self.set_audio_clip(clip, data);
+        }
+    }
     /// How long the piece is, in ticks — what the arrangement's ruler spans.
     fn song_length(&self) -> Tick;
     /// Where `position_sample` is in the *song*, as against

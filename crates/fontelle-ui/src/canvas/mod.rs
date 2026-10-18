@@ -2,6 +2,7 @@ mod analyze;
 mod analyze_pages;
 mod audio_clip;
 mod automation;
+mod autoscroll;
 mod browser;
 mod carry;
 mod disgusting_beat;
@@ -46,12 +47,13 @@ pub use audio_clip::{
     audio_row_chosen, audio_row_control, audio_row_control_rect, audio_row_fraction,
     audio_row_is_on, audio_row_label, audio_row_neutral, audio_row_tip, audio_row_value,
     audio_row_value_at, audio_slider_at, audio_slider_x_of, choose_audio_route, choose_audio_row,
-    nudge_audio_row, nudge_route, set_audio_row_fraction, toggle_audio_row,
+    copy_audio_field, nudge_audio_row, nudge_route, set_audio_row_fraction, toggle_audio_row,
 };
 pub use automation::{
     AutomationBlock, CURVE_SHAPES, automation_block, automation_polyline, block_tick_at,
     block_value_at, block_x_of_tick, block_y_of_value, curve_label, next_curve,
 };
+pub use autoscroll::{AUTOSCROLL_DEAD_ZONE, AUTOSCROLL_TAP_S, Autoscroll};
 pub use browser::{
     BrowserHit, BrowserLayout, BrowserList, BrowserMode, SettingControl, SettingPress,
     TAB_WORD_MIN_WIDTH, browser_file_share_at, browser_focus_step, browser_hit, browser_layout,
@@ -136,7 +138,9 @@ pub use menu::{
     input_menu_entries, instrument_menu_entries, keep_starred_row_in_place, menu_matches,
     name_prompt_entries, thumbnail_points,
 };
-pub use menu::{VocalTrackChoice, vocal_track_menu_choice, vocal_track_menu_entries};
+pub use menu::{
+    KnobMenuRow, VocalTrackChoice, knob_menu, vocal_track_menu_choice, vocal_track_menu_entries,
+};
 pub use overlays::{
     ConfirmLayout, JobCardLayout, SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE, SAVED_FLASH_SECONDS,
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
@@ -246,6 +250,11 @@ pub use notepad::{
     notepad_rows, notepad_scroll_to, notepad_scrollbar, notepad_step_page, notepad_step_row,
     notepad_text_px,
 };
+pub use notepad::{
+    notepad_copy_text, notepad_cut, notepad_delete_line, notepad_delete_word,
+    notepad_duplicate_line, notepad_indent, notepad_move_lines, notepad_outdent,
+    notepad_paste_text, notepad_select_line, notepad_select_word,
+};
 pub use piano_roll::{
     Audition, DEFAULT_LANE_HEIGHT, DrawDrag, EdgeScroll, KEYBOARD_WIDTH, KeyStyle, LANE_PROPERTIES,
     LaneMenu, LaneProperty, MAX_LANE_FRACTION, MIN_LANE_HEIGHT, Modifiers, MouseButton,
@@ -296,14 +305,14 @@ pub use timeline::{
     FadeEnd, FadeGrip, MAGNET_PX, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
     NOTE_PREVIEW_MIN_KEYS, Timeline, TimelineControl, TimelineHit, TimelineLayout, TimelineLine,
     TimelineTool, TimelineToolbar, TimelineView, arrival_row, clip_bands, clip_caption, clip_cuts,
-    clip_grip, clip_menu, clip_name_hit, clip_name_rect, clip_name_slot, clip_notes, clip_overlaps,
-    clip_rect, clip_waveform, clip_waveform_core, content_end, content_fraction, content_ticks,
-    fade_anatomy, fade_caption, fade_curve, fetching_caption, ghost_clip, ghost_clip_hint,
-    ghost_pulse, lane_scroll_to_show, lane_switches, lane_to_y, lane_track_chip, loop_marks,
-    slice_marks, time_selection, timeline_beat_labels, timeline_grab, timeline_grid_units,
-    timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x, timeline_toolbar_hit,
-    timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
-    timeline_zoom_y, visible_lanes, y_to_lane,
+    clip_grip, clip_menu, clip_menu_edits, clip_name_hit, clip_name_rect, clip_name_slot,
+    clip_notes, clip_overlaps, clip_rect, clip_waveform, clip_waveform_core, content_end,
+    content_fraction, content_ticks, fade_anatomy, fade_caption, fade_curve, fetching_caption,
+    ghost_clip, ghost_clip_hint, ghost_pulse, lane_scroll_to_show, lane_switches, lane_to_y,
+    lane_track_chip, loop_marks, slice_marks, time_selection, timeline_beat_labels, timeline_grab,
+    timeline_grid_units, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
+    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
+    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

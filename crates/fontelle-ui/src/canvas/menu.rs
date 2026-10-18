@@ -853,6 +853,45 @@ pub fn automate_menu(name: &str) -> Vec<MenuEntry> {
     ]
 }
 
+/// What a row of a knob's right-click menu does — see [`knob_menu`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KnobMenuRow {
+    Heading,
+    Automate,
+    CopyScale,
+    PasteScale,
+    CopyValue,
+    PasteValue,
+}
+
+/// A knob's right-click menu: [`automate_menu`], the pitch corrector's scale
+/// rows when `scale`, then *Copy value* and *Paste value*.
+///
+/// > *"add ability to right click knobs copy value and right click and paste
+/// > value of that knob either on the same knob or another knob flexibly"*
+/// > (2026-10-18)
+///
+/// Paste is greyed, not hidden, until something has been copied — the row
+/// says it is there.
+pub fn knob_menu(name: &str, scale: bool, can_paste: bool) -> (Vec<MenuEntry>, Vec<KnobMenuRow>) {
+    let mut entries = automate_menu(name);
+    let mut rows = vec![KnobMenuRow::Heading, KnobMenuRow::Automate];
+    if scale {
+        entries.push(MenuEntry::new("Copy scale"));
+        entries.push(MenuEntry::new("Paste scale"));
+        rows.extend([KnobMenuRow::CopyScale, KnobMenuRow::PasteScale]);
+    }
+    entries.push(MenuEntry::new("Copy value").after_rule());
+    rows.push(KnobMenuRow::CopyValue);
+    entries.push(if can_paste {
+        MenuEntry::new("Paste value")
+    } else {
+        MenuEntry::disabled("Paste value")
+    });
+    rows.push(KnobMenuRow::PasteValue);
+    (entries, rows)
+}
+
 /// What a row of a vocal track's own menu rows does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VocalTrackChoice {

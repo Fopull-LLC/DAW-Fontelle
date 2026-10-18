@@ -342,6 +342,16 @@ impl TextClipboard {
         }
     }
 
+    /// What is on the clipboard, every line of it — the desktop's first.
+    /// For a surface that takes more than one line (the notepad); a field
+    /// takes [`paste`](Self::paste).
+    pub fn paste_raw(&self) -> String {
+        self.system
+            .and_then(|system| (system.read)().ok())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| self.text.clone())
+    }
+
     /// What a paste would put down: the desktop's clipboard first, one
     /// line of it.
     pub fn paste(&self) -> String {

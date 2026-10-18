@@ -259,6 +259,102 @@ fn edits_to_two_different_clips_are_two_history_entries() {
     assert!(!a.merge_with(&b), "two clips coalesced into one entry");
 }
 
+// ------------------------------------------------- several clips at once ---
+//
+// *"selecting multiple clips and then doing edits like changing the track,
+// changing the volume, pan, etc. all need to apply to every selected clip in
+// the selection not just the one you double clicked to open its audio menu"*
+// (2026-10-18). One command over every selected clip, so one drag is one undo.
+
+use fontelle_model::SetAudioClips;
+
+fn three_takes() -> (Project, Vec<fontelle_types::ClipId>) {
+    let (mut project, first) = a_project_with_a_clip();
+    let mut ids = vec![first];
+    for (name, at) in [("Two.wav", PPQN * 8), ("Three.wav", PPQN * 16)] {
+        let mut more = import(name, at, PPQN * 4);
+        more.apply(&mut project).expect("applies");
+        ids.push(more.clip().expect("a clip"));
+    }
+    (project, ids)
+}
+
+#[test]
+fn several_clips_are_set_by_one_command() {
+    let (mut project, ids) = three_takes();
+    let befores: Vec<AudioClipData> = ids.iter().map(|id| data_of(&project, *id)).collect();
+    let items: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let mut d = data_of(&project, *id);
+            d.pan = -0.5;
+            (*id, d)
+        })
+        .collect();
+    let mut command = SetAudioClips::new(items);
+    command.apply(&mut project).expect("applies");
+    for (id, before) in ids.iter().zip(&befores) {
+        let now = data_of(&project, *id);
+        assert_eq!(now.pan, -0.5);
+        assert_eq!(now.asset, before.asset, "each keeps its own file");
+    }
+    command.invert().apply(&mut project).expect("inverts");
+    for (id, before) in ids.iter().zip(&befores) {
+        assert_eq!(
+            &data_of(&project, *id),
+            before,
+            "one undo puts them all back"
+        );
+    }
+}
+
+#[test]
+fn a_drag_over_the_same_clips_is_one_history_entry_and_other_clips_are_not() {
+    let (mut project, ids) = three_takes();
+    let step = |project: &Project, ids: &[fontelle_types::ClipId], gain: f32| {
+        SetAudioClips::new(
+            ids.iter()
+                .map(|id| {
+                    let mut d = data_of(project, *id);
+                    d.gain_db = gain;
+                    (*id, d)
+                })
+                .collect(),
+        )
+    };
+    let mut first = step(&project, &ids, -1.0);
+    first.apply(&mut project).unwrap();
+    let mut second = step(&project, &ids, -2.0);
+    assert!(first.merge_with(&second), "two steps of one drag coalesce");
+    second.apply(&mut project).unwrap();
+    let fewer = step(&project, &ids[..2], -3.0);
+    assert!(
+        !first.merge_with(&fewer),
+        "a different set of clips is a new entry"
+    );
+}
+
+#[test]
+fn a_set_naming_a_clip_that_is_gone_changes_nothing() {
+    let (mut project, mut ids) = three_takes();
+    let before: Vec<AudioClipData> = ids.iter().map(|id| data_of(&project, *id)).collect();
+    let items: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let mut d = data_of(&project, *id);
+            d.reverse = true;
+            (*id, d)
+        })
+        .collect();
+    let gone = ids.pop().unwrap();
+    project.clips.remove(gone);
+    let mut command = SetAudioClips::new(items);
+    assert!(command.apply(&mut project).is_err());
+    for (id, before) in ids.iter().zip(&before) {
+        assert_eq!(&data_of(&project, *id), before, "all or nothing");
+    }
+}
+
 // ------------------------------------------------------------ cutting one ---
 //
 // *"should work cleanly with all the tools like cutting and whatnot."*

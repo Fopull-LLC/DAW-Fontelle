@@ -100,3 +100,6 @@ fontelle-testsinger = { path = "../fontelle-testsinger" }
 fontelle-testvst3 = { path = "../fontelle-testvst3" }
 # Shift-JIS names for the voicebank install test.
 encoding_rs = "0.8"
+# The mouse buttons a `Windowless` window is pressed with (`tests/autoscroll.rs`).
+# The same version fontelle-ui opens its windows with.
+winit = "0.30.13"

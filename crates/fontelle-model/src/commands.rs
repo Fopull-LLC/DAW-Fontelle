@@ -6521,6 +6521,112 @@ impl Command for DuplicateClip {
     }
 }
 
+/// Sets several audio clips' properties as one edit — [`SetAudioClip`] over
+/// a selection.
+///
+/// > *"selecting multiple clips and then doing edits like changing the track,
+/// > changing the volume, pan, etc. all need to apply to every selected clip
+/// > in the selection not just the one you double clicked to open its audio
+/// > menu"* (2026-10-18)
+///
+/// One command rather than one per clip, for the undo: a knob dragged over
+/// three clips is a run of steps on all three, and [`SetAudioClip`]s run one
+/// after another never merge (each meets a different clip on top of the
+/// history), so the drag would be a hundred entries. This merges a step on the
+/// **same set** of clips, as the single one merges a step on the same clip.
+///
+/// All or nothing: a set naming a clip that is gone, or one that is not
+/// audio, changes none of them.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetAudioClips {
+    items: Vec<(ClipId, fontelle_types::AudioClipData)>,
+    /// What each was, captured on the first apply, in `items`' order.
+    before: Option<Vec<fontelle_types::AudioClipData>>,
+}
+
+impl SetAudioClips {
+    pub fn new(items: Vec<(ClipId, fontelle_types::AudioClipData)>) -> Self {
+        Self {
+            items,
+            before: None,
+        }
+    }
+}
+
+impl Command for SetAudioClips {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetAudioClips(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        // Every clip checked before any is written.
+        let mut before = Vec::with_capacity(self.items.len());
+        for (id, _) in &self.items {
+            match doc.clips.get(*id).map(|clip| &clip.source) {
+                Some(ClipSource::Audio(data)) => before.push(data.clone()),
+                Some(_) => return Err(CommandError("that clip is not audio".into())),
+                None => return Err(CommandError("that clip is not there".into())),
+            }
+        }
+        for (id, data) in &self.items {
+            if let Some(clip) = doc.clips.get_mut(*id)
+                && let ClipSource::Audio(existing) = &mut clip.source
+            {
+                *existing = data.clone();
+            }
+        }
+        if self.before.is_none() {
+            self.before = Some(before);
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.before {
+            Some(before) => Box::new(SetAudioClips::new(
+                self.items
+                    .iter()
+                    .zip(before)
+                    .map(|((id, _), data)| (*id, data.clone()))
+                    .collect(),
+            )),
+            None => Box::new(NotApplied::new("changing sounds")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Change sounds"
+    }
+
+    /// The later values with the earlier `before`, when it is the same clips
+    /// in the same order — the next step of the same drag.
+    fn merge_with(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = next.as_any().downcast_ref::<SetAudioClips>() else {
+            return false;
+        };
+        if next.items.len() != self.items.len()
+            || next
+                .items
+                .iter()
+                .zip(&self.items)
+                .any(|((a, _), (b, _))| a != b)
+        {
+            return false;
+        }
+        self.items = next.items.clone();
+        true
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.items.len() * std::mem::size_of::<fontelle_types::AudioClipData>() * 2
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 // --- Single values ---------------------------------------------------------
 
 /// Cuts a clip in two at a song tick — the arrangement's cut tool (`C`).
@@ -6539,10 +6645,10 @@ impl Command for DuplicateClip {
 /// - **A cut on either edge, or outside, is not a cut.** It would make a clip
 ///   of nothing. It is not an error either: a cut tool swept across a row
 ///   crosses gaps, and the gaps are not mistakes.
-/// - **A note lying across the cut is cut too**, into a head in the left half
-///   and a tail at the top of the right one — the same reading
-///   [`SliceNotes`] gives in the piano roll, and what makes the two halves
-///   sound like the one clip did.
+/// - **The cut moves the edge, not the notes.** The left half keeps every
+///   note it had; its new end is what stops the ones past the cut sounding,
+///   so growing it back out plays them again. A note lying across the cut
+///   also begins the right half, part-way through.
 /// - **A looped clip stays two looped clips.** Looping is one set of notes
 ///   played again every period (see [`crate::Clip::loop_length`]), so both
 ///   halves keep the period. If the cut lands part-way through a pass, the
@@ -6605,7 +6711,8 @@ impl Command for SplitClip {
 
         match (&original.source, &mut left.source, &mut right.source) {
             (ClipSource::Notes(source), ClipSource::Notes(head), ClipSource::Notes(tail)) => {
-                let (front, back) = split_notes(source, offset, original.loop_length);
+                let (front, back) =
+                    split_notes(source, offset, original.length, original.loop_length);
                 head.notes = front;
                 tail.notes = back;
                 // A vocal part's lanes are in the clip's own ticks: the second
@@ -6625,8 +6732,9 @@ impl Command for SplitClip {
                 // loops so the rest remains a looped clip and the first part
                 // is just a cut clip of what you made."*
                 //
-                // Its notes are the repeats written out (see `split_notes`),
-                // so it plays exactly what it did — which is the other half of
+                // Its notes are the repeats written out over the whole of
+                // what the loop was (see `split_notes`), so it plays exactly
+                // what it did — which is the other half of
                 // the same report: *"without making any edits the user didnt
                 // intend to make themselves"*. Left as a loop it would be a
                 // second thing that repeats when you drag its edge, which is
@@ -6926,9 +7034,12 @@ fn flatten_loop(source: &NoteData, period: Tick, length: Tick) -> Arena<NoteId, 
             if start >= length {
                 continue;
             }
+            // Cut at the end of its pass as well as at the end, as the
+            // compiler cuts it: written out, a note longer than the period
+            // would otherwise ring over the next pass's start.
             let mut copy = note.clone();
             copy.start = start;
-            copy.length = note.length.min(length - start);
+            copy.length = note.length.min(length - start).min(base + period - start);
             if copy.length > 0 {
                 out.insert(copy);
             }
@@ -6938,22 +7049,38 @@ fn flatten_loop(source: &NoteData, period: Tick, length: Tick) -> Arena<NoteId, 
     out
 }
 
+///
+/// **The front keeps everything** — a cut sets the size of a clip, not its
+/// contents:
+///
+/// > *"cutting a clip shouldnt remove all the notes outside of the cut
+/// > section from the clip, just cutting the actual size of the clip not the
+/// > contents"* (2026-10-18)
+///
+/// The front half's length is the window that stops what lies past the cut
+/// sounding (`fontelle_sequencer::compile` cuts every clip at its end), so
+/// dragging its end back out plays what was there. The back half begins at
+/// the cut and holds the notes from there on; a note clip has no offset into
+/// its own notes, so what lay before the cut stays with the front.
 fn split_notes(
     source: &NoteData,
     offset: Tick,
+    length: Tick,
     period: Option<Tick>,
 ) -> (Arena<NoteId, Note>, Arena<NoteId, Note>) {
-    let mut front = Arena::default();
+    let front;
     let mut back = Arena::default();
 
     match period.filter(|p| *p > 0) {
         // A loop. The **front** is the passes written out — it is a plain clip
         // now (see `SplitClip::apply`), so the pattern alone would go silent
         // after its first pass, and going silent is an edit nobody asked for.
-        // The **back** is still the loop, turned round to the point in the
-        // pattern the cut fell on, so it carries on saying what it was saying.
+        // Every pass the loop played is written, not only the ones before the
+        // cut. The **back** is still the loop, turned round to the point in
+        // the pattern the cut fell on, so it carries on saying what it was
+        // saying.
         Some(period) => {
-            front = flatten_loop(source, period, offset);
+            front = flatten_loop(source, period, length);
             let phase = offset.rem_euclid(period);
             for note in source.notes.values() {
                 if phase == 0 {
@@ -6983,24 +7110,21 @@ fn split_notes(
                 }
             }
         }
-        // Not a loop: each note belongs to the side it falls on, and one lying
-        // across the cut is cut.
+        // Not a loop: the front is the clip as it was, and the back the notes
+        // from the cut on — one lying across the cut begins the back half
+        // part-way through, struck again where the cut is.
         None => {
+            front = source.notes.clone();
             for note in source.notes.values() {
                 if note.start >= offset {
                     let mut moved = note.clone();
                     moved.start -= offset;
                     back.insert(moved);
                 } else if note.start + note.length > offset {
-                    let mut head = note.clone();
-                    head.length = offset - note.start;
-                    front.insert(head);
                     let mut tail = note.clone();
                     tail.start = 0;
                     tail.length = note.start + note.length - offset;
                     back.insert(tail);
-                } else {
-                    front.insert(note.clone());
                 }
             }
         }

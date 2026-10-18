@@ -281,3 +281,74 @@ fn a_split_on_an_edge_or_with_nothing_selected_asks_for_nothing() {
     assert!(timeline.split_at(&items, PPQN).is_empty(), "before it");
     assert_eq!(timeline.split_at(&items, PPQN * 3).len(), 1, "inside it");
 }
+
+// ------------------------------------------------ the clip's own menu ---
+//
+// *"selecting multiple clips and then doing edits ... all need to apply to
+// every selected clip in the selection"* (2026-10-18). The menu on a clip's
+// name acts on the selection when the clip is part of it, and on the clip
+// alone when it is not — as a right-click menu does everywhere.
+
+mod clip_menu {
+    use super::*;
+    use fontelle_ui::canvas::{ClipMenuRow, clip_menu_edits};
+
+    #[test]
+    fn a_selected_clips_menu_acts_on_the_whole_selection() {
+        let items = clips(&[(0, PPQN * 4, 0), (PPQN * 4, PPQN * 2, 0), (0, PPQN, 1)]);
+        let selection = vec![items[0].id, items[1].id];
+        let edits = clip_menu_edits(ClipMenuRow::Delete, &items[0], &selection, &items, 4);
+        assert_eq!(edits, vec![ArrangeEdit::Remove(selection.clone())]);
+
+        let edits = clip_menu_edits(ClipMenuRow::Mute, &items[1], &selection, &items, 4);
+        assert_eq!(
+            edits,
+            vec![ArrangeEdit::SetMuted {
+                ids: selection.clone(),
+                muted: true
+            }]
+        );
+
+        // The selection again, after itself, on the next bar — what Ctrl+D does.
+        let edits = clip_menu_edits(ClipMenuRow::Duplicate, &items[0], &selection, &items, 4);
+        assert_eq!(
+            edits,
+            vec![ArrangeEdit::Duplicate {
+                ids: selection.clone(),
+                tick_offset: PPQN * 8
+            }]
+        );
+
+        // Each clip loops over its own length.
+        let edits = clip_menu_edits(ClipMenuRow::Loop, &items[0], &selection, &items, 4);
+        assert_eq!(
+            edits,
+            vec![
+                ArrangeEdit::SetLoop {
+                    ids: vec![items[0].id],
+                    loop_length: Some(PPQN * 4)
+                },
+                ArrangeEdit::SetLoop {
+                    ids: vec![items[1].id],
+                    loop_length: Some(PPQN * 2)
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unselected_clips_menu_acts_on_that_clip_alone() {
+        let items = clips(&[(0, PPQN * 4, 0), (PPQN * 4, PPQN * 2, 0), (0, PPQN, 1)]);
+        let selection = vec![items[0].id, items[1].id];
+        let edits = clip_menu_edits(ClipMenuRow::Delete, &items[2], &selection, &items, 4);
+        assert_eq!(edits, vec![ArrangeEdit::Remove(vec![items[2].id])]);
+        let edits = clip_menu_edits(ClipMenuRow::Duplicate, &items[2], &selection, &items, 4);
+        assert_eq!(
+            edits,
+            vec![ArrangeEdit::Duplicate {
+                ids: vec![items[2].id],
+                tick_offset: PPQN
+            }]
+        );
+    }
+}

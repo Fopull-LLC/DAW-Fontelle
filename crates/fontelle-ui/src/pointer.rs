@@ -65,6 +65,8 @@ pub enum Pointer {
     /// this is the one signal that is there even when the chip under the
     /// pointer is somewhere the eye is not.
     Deny,
+    /// Middle-click autoscroll is on: the view follows the pointer.
+    Scroll,
 }
 
 impl Pointer {
@@ -372,6 +374,36 @@ impl DoubleClick {
         });
         self.last = if doubled { None } else { Some((x, y, now)) };
         doubled
+    }
+}
+
+/// Single, double and triple clicks, told apart: what a text editor's
+/// click selects — a place, a word, a line.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClickCount {
+    last: Option<(f32, f32, std::time::Instant, u8)>,
+}
+
+impl ClickCount {
+    /// Records a press and says which click of a run it was: 1, 2 or 3.
+    ///
+    /// The window and slop are a double-click's (`DOUBLE_CLICK_WINDOW`,
+    /// `DOUBLE_CLICK_SLOP`), each click measured against the one before;
+    /// after a third the run starts over.
+    pub fn press(&mut self, x: f32, y: f32, now: std::time::Instant) -> u8 {
+        let count = match self.last {
+            Some((px, py, at, n))
+                if n < 3
+                    && now.duration_since(at) <= DOUBLE_CLICK_WINDOW
+                    && (x - px).abs() <= DOUBLE_CLICK_SLOP
+                    && (y - py).abs() <= DOUBLE_CLICK_SLOP =>
+            {
+                n + 1
+            }
+            _ => 1,
+        };
+        self.last = Some((x, y, now, count));
+        count
     }
 }
 

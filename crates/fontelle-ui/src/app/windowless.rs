@@ -28,6 +28,24 @@ impl Windowless {
         Self { app }
     }
 
+    /// The same, with `host` as the transport the bar drives.
+    pub fn with_host(mut self, host: Box<dyn crate::transport::TransportHost>) -> Self {
+        self.app.options.host = Some(host);
+        self.app.view = self
+            .app
+            .options
+            .host
+            .as_mut()
+            .map(|h| h.view())
+            .unwrap_or_default();
+        self
+    }
+
+    /// The arrangement's ruler, where a press moves the time marker.
+    pub fn timeline_ruler(&self) -> Rect {
+        self.app.timeline_layout.ruler
+    }
+
     /// The selected channel's instrument panel, open as its window would be
     /// at `size` points.
     pub fn open_instrument_panel(&mut self, size: (f32, f32)) {
@@ -76,6 +94,45 @@ impl Windowless {
         self.app.press(winit::event::MouseButton::Left, x, y);
         self.app.studio_released();
         self.settle();
+    }
+
+    /// `button` going down at `(x, y)` in the studio's own window, and
+    /// staying down.
+    pub fn press_studio(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
+        self.app.cursor = (x, y);
+        self.app.press(button, x, y);
+        self.settle();
+    }
+
+    /// `button` coming up in the studio's window, wherever the pointer is.
+    pub fn release_studio(&mut self, button: winit::event::MouseButton) {
+        self.app.released(button);
+        self.settle();
+    }
+
+    /// The pointer moving to `(x, y)` in the studio's window.
+    pub fn move_studio(&mut self, x: f32, y: f32) {
+        self.app.pointer_moved(x, y);
+    }
+
+    /// One frame `dt` seconds after the last: what moves on its own moves.
+    pub fn frame(&mut self, dt: f32) {
+        self.app.frame_motion(dt);
+        self.settle();
+    }
+
+    /// The arrangement's area, and where its view is scrolled to in time.
+    pub fn timeline_frame(&self) -> Rect {
+        self.app.layout.timeline.frame
+    }
+
+    pub fn timeline_scroll_tick(&self) -> fontelle_types::Tick {
+        self.app.timeline.view.scroll_tick
+    }
+
+    /// How many clips the arrangement shows.
+    pub fn clip_count(&self) -> usize {
+        self.app.clips.len()
     }
 
     /// The window idling for `time`, as its loop does between events: the

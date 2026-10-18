@@ -4090,3 +4090,59 @@ pub fn clip_menu(clip: &ClipInfo) -> (Vec<MenuEntry>, Vec<ClipMenuRow>) {
     push(MenuEntry::new("Delete").after_rule(), ClipMenuRow::Delete);
     (entries, rows)
 }
+
+/// What a row of a clip's menu does to the arrangement: to the whole
+/// selection when `clip` is part of it, and to `clip` alone when it is not.
+///
+/// > *"selecting multiple clips and then doing edits ... all need to apply to
+/// > every selected clip in the selection"* (2026-10-18)
+///
+/// Duplicating a selection is `Ctrl+D`'s (after it, on the next bar); one
+/// clip lands straight after itself, as it always did. Looping gives each
+/// clip its own length, and the clip whose menu it is decides on or off.
+/// Rows that are not an arrangement edit give nothing.
+pub fn clip_menu_edits(
+    row: ClipMenuRow,
+    clip: &ClipInfo,
+    selection: &[ClipId],
+    clips: &[ClipInfo],
+    beats_per_bar: u32,
+) -> Vec<ArrangeEdit> {
+    let ids: Vec<ClipId> = if selection.contains(&clip.id) {
+        selection.to_vec()
+    } else {
+        vec![clip.id]
+    };
+    match row {
+        ClipMenuRow::Delete => vec![ArrangeEdit::Remove(ids)],
+        ClipMenuRow::Mute => vec![ArrangeEdit::SetMuted {
+            ids,
+            muted: !clip.muted,
+        }],
+        ClipMenuRow::Duplicate if ids.len() == 1 => vec![ArrangeEdit::Duplicate {
+            ids,
+            tick_offset: clip.length,
+        }],
+        ClipMenuRow::Duplicate => {
+            let mut timeline = Timeline::new(TimelineView::default());
+            timeline.select(ids);
+            timeline.duplicate(clips, beats_per_bar)
+        }
+        ClipMenuRow::Loop => ids
+            .iter()
+            .filter_map(|id| clips.iter().find(|c| c.id == *id))
+            .map(|c| ArrangeEdit::SetLoop {
+                ids: vec![c.id],
+                loop_length: if clip.loop_length.is_some() {
+                    None
+                } else {
+                    Some(c.length)
+                },
+            })
+            .collect(),
+        ClipMenuRow::Heading
+        | ClipMenuRow::Rename
+        | ClipMenuRow::Render
+        | ClipMenuRow::AnalyzeMusically => Vec::new(),
+    }
+}

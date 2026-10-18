@@ -846,3 +846,110 @@ fn stepping_by_one_is_the_arrow_key_nudge_not_the_wheel() {
     nudge_audio_row(&mut clip, AudioField::Pitch, -1, 48_000);
     assert_eq!(clip.pitch_semitones, 0.0);
 }
+
+// ------------------------------------------------- several clips at once ---
+//
+// *"selecting multiple clips and then doing edits like changing the track,
+// changing the volume, pan, etc. all need to apply to every selected clip in
+// the selection not just the one you double clicked to open its audio menu"*
+// (2026-10-18). The panel shows one clip; what changed on it is carried to
+// every other selected clip **as that one change**, never as the whole list
+// of numbers — the others keep their own files, trims and everything else.
+
+mod several {
+    use super::*;
+    use fontelle_ui::canvas::copy_audio_field;
+
+    fn take(name: &str, frames: i64, rate: u32) -> AudioClipData {
+        AudioClipData::whole(
+            AssetRef {
+                id: fontelle_types::AssetId::default(),
+                path: std::path::PathBuf::from(format!("/sounds/{name}")),
+                kind: AssetKind::Sample,
+                content_hash: 0,
+                size: 0,
+            },
+            frames,
+            rate,
+        )
+    }
+
+    #[test]
+    fn a_level_is_carried_as_its_value_and_nothing_else_moves() {
+        let mut open = take("a.wav", 48_000, 48_000);
+        let mut other = take("b.wav", 96_000, 44_100);
+        other.source_start = 1_000;
+        other.pan = 0.25;
+        let before = other.clone();
+        open.gain_db = -7.5;
+        copy_audio_field(AudioField::Gain, &open, &mut other);
+        assert_eq!(other.gain_db, -7.5);
+        let mut expected = before;
+        expected.gain_db = -7.5;
+        assert_eq!(other, expected, "only the gain moved");
+    }
+
+    #[test]
+    fn every_value_row_is_carried() {
+        let mut open = take("a.wav", 48_000, 48_000);
+        open.pan = -0.4;
+        open.pitch_semitones = 3.0;
+        open.speed = 1.5;
+        open.filter.cutoff_hz = 900.0;
+        open.filter.resonance = 0.3;
+        open.filter.drive = 0.6;
+        open.filter.shape = FilterShape::ALL[1];
+        open.stretch = ClipStretch::ALL[1];
+        open.loop_mode = ClipLoopMode::ALL[1];
+        open.fade_in.curve = FadeCurve::ALL[1];
+        open.fade_out.curve = FadeCurve::ALL[2];
+        open.mixer_track = a_few_tracks()[1];
+        let mut other = take("b.wav", 48_000, 48_000);
+        for field in AUDIO_ROWS {
+            copy_audio_field(field, &open, &mut other);
+        }
+        assert_eq!(other.pan, open.pan);
+        assert_eq!(other.pitch_semitones, open.pitch_semitones);
+        assert_eq!(other.speed, open.speed);
+        assert_eq!(other.filter, open.filter);
+        assert_eq!(other.stretch, open.stretch);
+        assert_eq!(other.loop_mode, open.loop_mode);
+        assert_eq!(other.fade_in.curve, open.fade_in.curve);
+        assert_eq!(other.fade_out.curve, open.fade_out.curve);
+        assert_eq!(other.mixer_track, open.mixer_track, "the track row too");
+        assert_eq!(other.asset.path, std::path::PathBuf::from("/sounds/b.wav"));
+    }
+
+    #[test]
+    fn a_switch_is_carried_as_on_or_off_rather_than_flipped() {
+        // A mixed selection flipped would stay mixed; what you see on the
+        // panel is what every clip ends up with.
+        let mut open = take("a.wav", 48_000, 48_000);
+        open.reverse = true;
+        let mut already = take("b.wav", 48_000, 48_000);
+        already.reverse = true;
+        let mut not = take("c.wav", 48_000, 48_000);
+        copy_audio_field(AudioField::Reverse, &open, &mut already);
+        copy_audio_field(AudioField::Reverse, &open, &mut not);
+        assert!(already.reverse && not.reverse);
+        open.normalize = true;
+        copy_audio_field(AudioField::Normalize, &open, &mut not);
+        assert!(not.normalize);
+    }
+
+    #[test]
+    fn a_fade_is_the_same_time_long_on_each_clip_and_never_longer_than_it() {
+        let mut open = take("a.wav", 96_000, 48_000);
+        open.fade_in.frames = 24_000; // half a second
+        let mut slower = take("b.wav", 88_200, 44_100);
+        copy_audio_field(AudioField::FadeIn, &open, &mut slower);
+        assert_eq!(
+            slower.fade_in.frames, 22_050,
+            "half a second at its own rate"
+        );
+        let mut short = take("c.wav", 4_800, 48_000);
+        open.fade_out.frames = 48_000;
+        copy_audio_field(AudioField::FadeOut, &open, &mut short);
+        assert_eq!(short.fade_out.frames, short.source_frames());
+    }
+}

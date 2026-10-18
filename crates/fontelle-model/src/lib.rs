@@ -45,12 +45,13 @@ pub use commands::{
     RenameMixerTrack, RenamePrefab, RenameProject, ReplaceClip, ResizeClip, ResizeClips,
     ResizeNotes, RestoreAutomationPoints, RestoreChannelPlugin, RestoreDeletedChannel,
     RestoreInsert, RestoreInsertConfig, RestorePluginParam, RestorePointCurves, SetAudioClip,
-    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
-    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
-    SetLoopRange, SetMixerOrder, SetMixerTrackColor, SetNoteKeys, SetNoteLengths, SetNotePath,
-    SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam,
-    SetPointCurve, SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput,
-    SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
+    SetAudioClips, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
+    SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
+    SetInsertParam, SetKey, SetLoopRange, SetMixerOrder, SetMixerTrackColor, SetNoteKeys,
+    SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
+    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
+    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
+    TrimClipStart,
 };
 pub use lane::Lane;
 pub use lane_routing::{

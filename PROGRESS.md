@@ -19,7 +19,59 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-17, latest — 0.28.0 brings the Windows audio beta to
+**As of 2026-10-18, latest — a user's complaint and five reports, for
+the public 0.28.0.** Ty: *"release these updates on public, not beta,
+since it is a user complaint we recieved."* On `main` on top of the
+cloud session's 0.28.0 bump (which was never tagged — its CI went red only
+on the trailer check, for an attribution line in that commit).
+
+- **Middle-click autoscroll** (the complaint): *"clicking with the middle
+  mouse and then that puts you in a scroll mode ... it will scroll in that
+  direction faster depending on how far you move your mouse cursor away."*
+  `canvas::Autoscroll` is the arithmetic (dead zone 10 pt, linear + square
+  rate, per second against the clock, rows carried); the window's
+  `AutoscrollGesture` holds the target chosen at the press — arrangement,
+  roll, mixer, rack, browser, menu, the overlays, any editor window. A tap
+  latches until the next click (which is spent on ending it), a hold ends
+  on release, Escape ends it. Arrangement and roll move through
+  `Glide::shift` (no easing — eased, it lagged and ran on after the
+  button). A middle release no longer ends a left drag (`released` asks
+  which button). `tests/autoscroll.rs` in both crates; `Windowless` gained
+  `press_studio`/`move_studio`/`release_studio`/`frame`.
+- **Audio clip panel over a selection**: every row changed on the opened
+  clip is carried to the other selected audio clips as *that one row*
+  (`canvas::copy_audio_field` — a fade as the same time, a switch as on or
+  off), sent as `SetAudioClips`, one command that merges a drag on the same
+  set, so one undo. The clip-name menu's Duplicate/Mute/Loop/Delete act on
+  the selection too (`canvas::clip_menu_edits`). New command, so the five
+  things: wire list, `every_command`.
+- **A cut keeps the contents**: *"just cutting the actual size of the clip
+  not the contents."* `split_notes` gives the left half every note (its
+  length windows them); a loop's left half is its passes written out over
+  the whole original length, each cut at its pass end as the compiler cuts
+  it. The right half still starts at the cut — a note clip has no offset
+  into its notes, so what lay before the cut stays with the left.
+- **Copy / Paste value on every knob's menu**: one `knob_clipboard`
+  (Flopsynth's, widened), normalised, so a value pastes onto any knob as
+  the same share of its travel — effects, instrument panel, mixer
+  fader/pan/wet, the audio clip panel's knobs, Flopsynth. `canvas::knob_menu`.
+  The Notepad itself has no knobs (two chips), so this is where it went.
+- **The Notepad as an editor**: drag-select, double-click word,
+  triple-click line (`pointer::ClickCount`), Ctrl+L line (again: the next),
+  copy/cut with nothing selected take the line, a paste keeps its lines
+  (`TextClipboard::paste_raw`; the field paste drops newlines), Tab/Shift+Tab
+  indent, Alt+Up/Down move lines, Ctrl+D duplicate, Ctrl+Shift+K delete
+  line, Ctrl+Backspace/Delete a word, Ctrl+Home/End, and a right-click menu
+  (Cut, Copy, Paste, Select all). The operations are pure
+  (`canvas/notepad.rs`, `tests/notepad_editing.rs`).
+- **Scrubbing a shared song froze**: every pointer move of a ruler drag
+  sought the engine (cutting every voice) and ran a whole `tick()`, and in
+  a shared song each tick's `missing_here` walked every soundfont folder for
+  every file the song names, only to list the ones with a fetch problem. A
+  drag now seeks once a frame (`scrub_to`, `flush_scrub`) and on release;
+  `files::missing_by` asks the disk only about files with trouble.
+
+**As of 2026-10-17 — 0.28.0 brings the Windows audio beta to
 stable.** Asked: *"can you bring the beta update to stable"*. The workspace
 version goes from `0.28.0-beta.1` to `0.28.0` on top of the beta's own
 commit (`main` had nothing after the `v0.28.0-beta.1` tag; CI and the

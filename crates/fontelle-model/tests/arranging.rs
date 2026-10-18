@@ -369,9 +369,78 @@ fn cutting_a_clip_in_two_gives_two_clips_that_meet_at_the_cut() {
     assert_eq!((right.start, right.length), (PPQN * 8, PPQN * 4));
     assert_eq!(right.lane, left.lane, "the halves stay on the same row");
 
-    // The notes went with the half they fall in, in that half's own ticks.
-    assert_eq!(notes_of(&project, clip), vec![(0, PPQN, 60)]);
+    // **A cut changes the size of the clip, not its contents** (reported
+    // 2026-10-18: *"cutting a clip shouldnt remove all the notes outside of
+    // the cut section from the clip, just cutting the actual size of the clip
+    // not the contents"*). The left half keeps every note — its length is the
+    // window that stops the second one sounding — and the right half holds
+    // the notes from the cut on, in its own ticks.
+    assert_eq!(
+        notes_of(&project, clip),
+        vec![(0, PPQN, 60), (PPQN * 5, PPQN, 62)]
+    );
     assert_eq!(notes_of(&project, tail), vec![(PPQN, PPQN, 62)]);
+}
+
+/// The report itself: cut a clip, drag the front half's end back out, and
+/// what was after the cut is still there.
+#[test]
+fn the_front_half_of_a_cut_grown_back_out_plays_what_it_did_before() {
+    for looped in [None, Some(PPQN * 4)] {
+        let (mut project, channel, lane) = a_project();
+        let clip = a_clip(
+            &mut project,
+            lane,
+            channel,
+            0,
+            PPQN * 16,
+            looped,
+            vec![a_note(0, PPQN, 60), a_note(PPQN * 3, PPQN * 2, 64)],
+        );
+        let before = sounding(&project);
+        let mut command = SplitClip::new(clip, PPQN * 6);
+        command.apply(&mut project).unwrap();
+        let tail = command.created().unwrap();
+        project.clips.remove(tail);
+        project.clips.get_mut(clip).unwrap().length = PPQN * 16;
+        assert_eq!(
+            sounding(&project),
+            before,
+            "the front half grown back out (loop {looped:?}) lost notes"
+        );
+    }
+}
+
+/// And a cut through a plain clip plays back note for note as it did.
+#[test]
+fn cutting_a_plain_clip_changes_nothing_about_what_plays() {
+    for cut in [PPQN, PPQN * 3, PPQN * 4, PPQN * 7] {
+        let (mut project, channel, lane) = a_project();
+        let clip = a_clip(
+            &mut project,
+            lane,
+            channel,
+            PPQN * 4,
+            PPQN * 8,
+            None,
+            // None lying across a cut (that one is struck again at the cut,
+            // by design — see `a_note_across_the_cut_is_cut_with_it`); the
+            // last runs past the clip's end, which cuts it.
+            vec![
+                a_note(0, PPQN, 60),
+                a_note(PPQN * 5, PPQN * 2, 64),
+                a_note(PPQN * 7, PPQN * 4, 67),
+            ],
+        );
+        let before = sounding(&project);
+        let mut command = SplitClip::new(clip, PPQN * 4 + cut);
+        command.apply(&mut project).unwrap();
+        assert_eq!(
+            sounding(&project),
+            before,
+            "a cut at {cut} into the clip changed what the song plays"
+        );
+    }
 }
 
 /// A note lying across the cut is cut too, which is what the same tool does in
@@ -391,7 +460,8 @@ fn a_note_across_the_cut_is_cut_with_it() {
     let mut command = SplitClip::new(clip, PPQN * 4);
     command.apply(&mut project).unwrap();
     let tail = command.created().unwrap();
-    assert_eq!(notes_of(&project, clip), vec![(0, PPQN * 4, 60)]);
+    // The left half keeps the whole note; its end cuts it where it sounds.
+    assert_eq!(notes_of(&project, clip), vec![(0, PPQN * 8, 60)]);
     assert_eq!(notes_of(&project, tail), vec![(0, PPQN * 4, 60)]);
 }
 
@@ -466,9 +536,11 @@ fn cutting_a_loop_leaves_a_plain_clip_and_a_loop_that_carries_on() {
     assert_eq!((left.start, left.length), (0, PPQN * 8));
     assert_eq!((right.start, right.length), (PPQN * 8, PPQN * 8));
 
-    // The left half holds **two passes written out**, because two passes is
-    // what sounded in those two bars. Left as a one-pass pattern it would go
-    // silent for the second bar, which is an edit nobody asked for.
+    // The left half holds **the passes written out** — every pass the loop
+    // played, not only the two its two bars sound: the cut sets its size and
+    // leaves its contents, so growing it back plays bars three and four
+    // again. Left as a one-pass pattern it would go silent for the second
+    // bar, which is an edit nobody asked for.
     assert_eq!(
         notes_of(&project, clip),
         vec![
@@ -476,6 +548,10 @@ fn cutting_a_loop_leaves_a_plain_clip_and_a_loop_that_carries_on() {
             (PPQN * 2, PPQN, 64),
             (PPQN * 4, PPQN, 60),
             (PPQN * 6, PPQN, 64),
+            (PPQN * 8, PPQN, 60),
+            (PPQN * 10, PPQN, 64),
+            (PPQN * 12, PPQN, 60),
+            (PPQN * 14, PPQN, 64),
         ]
     );
     // The cut fell on a whole number of passes, so the loop that carries on
@@ -535,15 +611,17 @@ fn sounding(project: &Project) -> Vec<(Tick, Tick, u8)> {
                 if period.is_some_and(|p| note.start >= p) {
                     continue;
                 }
+                // The clip's end is the end, looped or not.
                 let start = note.start + offset;
-                if period.is_some() && start >= clip.length {
+                if start >= clip.length {
                     continue;
                 }
                 let on = clip.start + start;
                 let mut off = on + note.length;
-                if period.is_some() {
-                    off = off.min(clip.start + clip.length);
+                if let Some(period) = period {
+                    off = off.min(clip.start + offset + period);
                 }
+                off = off.min(clip.start + clip.length);
                 if off > on {
                     out.push((on, off - on, note.key));
                 }

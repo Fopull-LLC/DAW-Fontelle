@@ -629,19 +629,39 @@ pub(crate) fn entry_of(file: &AssetRef) -> AssetEntry {
     }
 }
 
-/// Every file `song` names that this studio has not got.
-pub(crate) fn missing(song: &Project, here: &Here) -> Vec<AssetEntry> {
+/// Every file `song` names, that `wanted` asks about, which `has` says is
+/// not here.
+///
+/// `wanted` is asked first because `has` is the disk — the bundle's folder
+/// and a walk of every soundfont folder — and the session's list of what is
+/// missing (`Session::missing_here`), read every frame of a shared song, only
+/// shows the files with a fetch problem. Asking the disk about all the rest
+/// every frame was the freeze in *"dragging the time bar in shared songs
+/// makes everything freeze"* (2026-10-18).
+pub(crate) fn missing_by(
+    song: &Project,
+    wanted: impl Fn(u64) -> bool,
+    mut has: impl FnMut(&AssetEntry) -> bool,
+) -> Vec<AssetEntry> {
     let mut out: Vec<AssetEntry> = Vec::new();
     for file in song.files() {
-        if file.content_hash == 0 || out.iter().any(|e| e.hash == file.content_hash) {
+        if file.content_hash == 0
+            || !wanted(file.content_hash)
+            || out.iter().any(|e| e.hash == file.content_hash)
+        {
             continue;
         }
         let entry = entry_of(&file);
-        if !here.has(&entry) {
+        if !has(&entry) {
             out.push(entry);
         }
     }
     out
+}
+
+/// Every file `song` names that this studio has not got.
+pub(crate) fn missing(song: &Project, here: &Here) -> Vec<AssetEntry> {
+    missing_by(song, |_| true, |entry| here.has(entry))
 }
 
 fn piece(path: &Path, index: u32) -> std::io::Result<Vec<u8>> {
@@ -678,6 +698,51 @@ fn how_long(bytes: u64, pace: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::how_long;
+
+    /// A song naming three files by content.
+    fn a_song_naming(hashes: &[u64]) -> fontelle_model::Project {
+        use fontelle_model::Command;
+        let mut song = fontelle_model::Project::new("song");
+        for (i, hash) in hashes.iter().enumerate() {
+            let asset = fontelle_types::AssetRef {
+                id: fontelle_types::AssetId::default(),
+                path: format!("/elsewhere/take{i}.wav").into(),
+                content_hash: *hash,
+                size: 1_000 + i as u64,
+                kind: fontelle_types::AssetKind::Sample,
+            };
+            let mut add = fontelle_model::AddAudioClip::new(
+                "take",
+                fontelle_types::AudioClipData::whole(asset, 4_800, 48_000),
+                0,
+                fontelle_types::PPQN,
+            );
+            add.apply(&mut song).unwrap();
+        }
+        song
+    }
+
+    /// The session's list of what is missing is read every frame of a shared
+    /// song, and *"dragging the time bar in shared songs makes everything
+    /// freeze"* (2026-10-18) was it looking on disk — a walk of every
+    /// soundfont folder — for every file the song names, every frame, to
+    /// then list only the ones with a fetch problem. The disk is asked only
+    /// about the files that are wanted.
+    #[test]
+    fn the_disk_is_asked_only_about_the_files_that_are_wanted() {
+        let song = a_song_naming(&[11, 22, 33]);
+        let mut asked = Vec::new();
+        let missing = super::missing_by(
+            &song,
+            |hash| hash == 22,
+            |entry| {
+                asked.push(entry.hash);
+                false
+            },
+        );
+        assert_eq!(asked, vec![22], "only the wanted file went to the disk");
+        assert_eq!(missing.iter().map(|e| e.hash).collect::<Vec<_>>(), vec![22]);
+    }
 
     /// The fetch question says how long a file takes at the pace of the relay
     /// the song is shared through: a 100 MB soundfont is about a minute on

@@ -20,14 +20,14 @@ use fontelle_model::{
     RemoveInsert, RemoveLane, RemoveMarker, RemoveMixerTrack, RemoveNotes, RemovePrefab,
     RemoveSend, RenameChannel, RenameClip, RenameLane, RenameMixerTrack, RenamePrefab,
     RenameProject, ResizeClip, ResizeClips, ResizeNotes, RestoreInsert, SetAudioClip,
-    SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop, SetEqBand,
-    SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes, SetInsertParam, SetKey,
-    SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor, SetNoteKeys, SetNoteLengths,
-    SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide, SetNoteVelocity,
-    SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput, SetVocalLane, SetVocalSettings,
-    SetVocalState, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart, VocalVoice, load_project,
-    peek_meta, save_project,
+    SetAudioClips, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
+    SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
+    SetInsertParam, SetKey, SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor,
+    SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
+    SetNoteVelocity, SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef,
+    SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput, SetVocalLane,
+    SetVocalSettings, SetVocalState, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
+    VocalVoice, load_project, peek_meta, save_project,
 };
 use fontelle_model::{FreezeVocal, ImportVocal, UnfreezeVocal, VocalClipImport, VocalLanding};
 use fontelle_types::{
@@ -874,6 +874,12 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 s.audio_clip,
                 AudioClipData::whole(an_asset("/home/alice/other.wav"), 96_000, 48_000),
             ))
+        }),
+        ("SetAudioClips", |s| {
+            Box::new(SetAudioClips::new(vec![(
+                s.audio_clip,
+                AudioClipData::whole(an_asset("/home/alice/other.wav"), 96_000, 48_000),
+            )]))
         }),
         ("SetLoopRange", |_| {
             Box::new(SetLoopRange::new(Some((0, PPQN * 4))))

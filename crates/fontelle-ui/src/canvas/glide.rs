@@ -94,6 +94,19 @@ impl Glide {
         self.target = (self.target + delta).clamp(self.low, self.high);
     }
 
+    /// Moves `delta` at once, with no easing: the next
+    /// [`step`](Self::step) writes it whole. Wheel travel still owed is
+    /// carried along with it.
+    ///
+    /// For middle-click autoscroll, which already moves the view at its own
+    /// pace, frame by frame — eased as well, it lagged the pointer and ran
+    /// on after the button came up.
+    pub fn shift(&mut self, delta: f64) {
+        let owed = self.target - self.position;
+        self.position = (self.position + delta).clamp(self.low, self.high);
+        self.target = (self.position + owed).clamp(self.low, self.high);
+    }
+
     /// Takes `actual` — what the view holds now — as the place to be, if it
     /// is not what this glide last wrote there. Something else moved the
     /// view, and that something wins: the target is dropped.
@@ -114,6 +127,11 @@ impl Glide {
     /// the view; `None` when there was nowhere to go.
     pub fn step(&mut self, dt: f32, settle: f64) -> Option<f64> {
         if !self.moving() {
+            // A shift lands whole, and is written once.
+            if self.position != self.written {
+                self.written = self.position;
+                return Some(self.position);
+            }
             return None;
         }
         let remaining = self.target - self.position;

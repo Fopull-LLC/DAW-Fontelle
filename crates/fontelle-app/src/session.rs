@@ -2978,6 +2978,52 @@ impl Session {
         missing
     }
 
+    /// What [`set_audio_clip`](DocumentHost::set_audio_clip) actually
+    /// writes for `data`: the route held in lane-style, and a change of
+    /// stretch converted so the sound stays where it was.
+    fn audio_clip_as_set(
+        &mut self,
+        clip: ClipId,
+        mut data: fontelle_types::AudioClipData,
+    ) -> fontelle_types::AudioClipData {
+        // In lane-style the lane decides where a clip is heard; the editor's
+        // route is kept as the clip had it, and a change to it says why.
+        if self.lane_style()
+            && let Some(ClipSource::Audio(held)) = self.project.clips.get(clip).map(|c| &c.source)
+        {
+            if data.mixer_track != self.project.clip_route(clip) {
+                self.message = Some(
+                    "In lane-style a clip plays through its lane\u{2019}s track \u{2014} move it to another lane to change that"
+                        .to_string(),
+                );
+            }
+            data.mixer_track = held.mixer_track;
+        }
+        // The clip's length on the arrangement follows its trim: a clip that
+        // draws four bars and plays two is the picture lying about the sound.
+        // Not its *speed*, though — a clip played at half speed still occupies
+        // the block it was given, which is what makes a loop stretchable.
+        // `run` republishes and bumps the revision, so the block on the
+        // arrangement redraws with its new fades on the same frame.
+        //
+        // The editor's stretch chooser goes through here, and it is the same
+        // switch the arrangement's toolbar is: a change of mode keeps the
+        // sound where it was (`fontelle_model::with_stretch`), or the two
+        // ways of turning stretch off would leave two different sounds.
+        match self.project.clips.get(clip) {
+            Some(held) => match &held.source {
+                ClipSource::Audio(was) if was.stretch != data.stretch => {
+                    let stretch = data.stretch;
+                    let mut frozen = data;
+                    frozen.stretch = was.stretch;
+                    fontelle_model::with_stretch(&frozen, held, &self.project.tempo_map, stretch)
+                }
+                _ => data,
+            },
+            None => data,
+        }
+    }
+
     /// What the open song uses that this computer has not got, for the
     /// Share panel (F91): each plugin, by name, format and maker, with every
     /// place the song plays it; and each file a shared song names that could
@@ -3020,7 +3066,14 @@ impl Session {
             bundle: self.bundle.clone(),
             banks: self.library_dirs(),
         };
-        for entry in crate::collab::files::missing(&self.project, &place.with(&self.project)) {
+        // Only the files with a fetch problem are listed, so only they are
+        // looked for on disk — see `files::missing_by`.
+        let here = place.with(&self.project);
+        for entry in crate::collab::files::missing_by(
+            &self.project,
+            |hash| collab.file_trouble(hash).is_some(),
+            |entry| here.has(entry),
+        ) {
             use crate::collab::Trouble;
             let why = match collab.file_trouble(entry.hash) {
                 Some(Trouble::Asking) => "waiting for your yes to fetch it".to_string(),
@@ -12647,44 +12700,19 @@ impl StudioHost for Session {
         }
     }
 
-    fn set_audio_clip(&mut self, clip: ClipId, mut data: fontelle_types::AudioClipData) {
-        // In lane-style the lane decides where a clip is heard; the editor's
-        // route is kept as the clip had it, and a change to it says why.
-        if self.lane_style()
-            && let Some(ClipSource::Audio(held)) = self.project.clips.get(clip).map(|c| &c.source)
-        {
-            if data.mixer_track != self.project.clip_route(clip) {
-                self.message = Some(
-                    "In lane-style a clip plays through its lane\u{2019}s track \u{2014} move it to another lane to change that"
-                        .to_string(),
-                );
-            }
-            data.mixer_track = held.mixer_track;
-        }
-        // The clip's length on the arrangement follows its trim: a clip that
-        // draws four bars and plays two is the picture lying about the sound.
-        // Not its *speed*, though — a clip played at half speed still occupies
-        // the block it was given, which is what makes a loop stretchable.
-        // `run` republishes and bumps the revision, so the block on the
-        // arrangement redraws with its new fades on the same frame.
-        //
-        // The editor's stretch chooser goes through here, and it is the same
-        // switch the arrangement's toolbar is: a change of mode keeps the
-        // sound where it was (`fontelle_model::with_stretch`), or the two
-        // ways of turning stretch off would leave two different sounds.
-        let data = match self.project.clips.get(clip) {
-            Some(held) => match &held.source {
-                ClipSource::Audio(was) if was.stretch != data.stretch => {
-                    let stretch = data.stretch;
-                    let mut frozen = data;
-                    frozen.stretch = was.stretch;
-                    fontelle_model::with_stretch(&frozen, held, &self.project.tempo_map, stretch)
-                }
-                _ => data,
-            },
-            None => data,
-        };
+    fn set_audio_clip(&mut self, clip: ClipId, data: fontelle_types::AudioClipData) {
+        let data = self.audio_clip_as_set(clip, data);
         self.run(Box::new(fontelle_model::SetAudioClip::new(clip, data)));
+    }
+
+    /// One command for the lot, so a drag over a selection is one undo — see
+    /// `fontelle_model::SetAudioClips`.
+    fn set_audio_clips(&mut self, items: Vec<(ClipId, fontelle_types::AudioClipData)>) {
+        let items = items
+            .into_iter()
+            .map(|(clip, data)| (clip, self.audio_clip_as_set(clip, data)))
+            .collect();
+        self.run(Box::new(fontelle_model::SetAudioClips::new(items)));
     }
 
     fn keymap_overrides(&self) -> Vec<(String, String)> {

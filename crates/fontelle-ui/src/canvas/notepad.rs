@@ -572,3 +572,306 @@ pub fn notepad_scroll_to(caret_row: usize, lines: usize, scroll: usize) -> usize
     }
     scroll
 }
+
+// -------------------------------------------------------------- editing ---
+//
+// > *"add ability to select characters copy paste things and entire lines
+// > all the things youd expect for a full text editor thats fast and quick
+// > and easy to use"* (2026-10-18)
+//
+// What a pad does that a one-line field does not: words and lines selected
+// by a click, whole lines copied, cut, duplicated, moved and indented, and a
+// paste that keeps its line breaks. Lines here are the text's own — split on
+// `\n` — not the rows word wrap draws: a line moved by Alt+Up is the line you
+// wrote, however wide the window is.
+
+/// Where the line holding byte `at` begins.
+fn line_start(text: &str, at: usize) -> usize {
+    text[..at.min(text.len())].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Where the line holding byte `at` ends, before its newline.
+fn line_end(text: &str, at: usize) -> usize {
+    let at = at.min(text.len());
+    text[at..].find('\n').map_or(text.len(), |i| at + i)
+}
+
+/// The lines the selection touches — or the caret's line — as the start of
+/// the first and the end of the last, before its newline. A selection that
+/// ends at the very start of a line does not take that line in.
+fn lines_span(entry: &TextEntry) -> (usize, usize) {
+    let text = entry.text();
+    let (from, to) = entry.selection().unwrap_or((entry.caret(), entry.caret()));
+    let last = if to > from && text[..to].ends_with('\n') {
+        to - 1
+    } else {
+        to
+    };
+    (line_start(text, from), line_end(text, last))
+}
+
+/// The anchor and caret, so text can be swapped and the selection put back
+/// facing the same way.
+fn ends(entry: &TextEntry) -> (usize, usize) {
+    match entry.selection() {
+        Some((from, to)) if entry.caret() == from => (to, from),
+        Some((from, to)) => (from, to),
+        None => (entry.caret(), entry.caret()),
+    }
+}
+
+/// `entry` holding `text`, its selection put back at `anchor`..`caret`.
+fn replace(entry: &mut TextEntry, text: String, anchor: usize, caret: usize) {
+    entry.set(text);
+    entry.place(anchor, false);
+    if caret != anchor {
+        entry.place(caret, true);
+    }
+}
+
+/// A double-click: the word under byte `at` — or the run of spaces, if that
+/// is what is there. At the end of a line, the word before it.
+pub fn notepad_select_word(entry: &mut TextEntry, at: usize) {
+    let text = entry.text();
+    let at = at.min(text.len());
+    let probe = if at == text.len() || text[at..].starts_with('\n') {
+        text[..at]
+            .chars()
+            .next_back()
+            .map_or(at, |c| at - c.len_utf8())
+    } else {
+        at
+    };
+    let Some(here) = text[probe..].chars().next() else {
+        return;
+    };
+    if here == '\n' {
+        entry.place(at, false);
+        return;
+    }
+    let space = here.is_whitespace();
+    let same = |c: char| c != '\n' && c.is_whitespace() == space;
+    let mut from = probe;
+    while let Some(c) = text[..from].chars().next_back() {
+        if !same(c) {
+            break;
+        }
+        from -= c.len_utf8();
+    }
+    let mut to = probe;
+    while let Some(c) = text[to..].chars().next() {
+        if !same(c) {
+            break;
+        }
+        to += c.len_utf8();
+    }
+    entry.place(from, false);
+    entry.place(to, true);
+}
+
+/// A triple-click, or Ctrl+L: the whole line under byte `at`, with its
+/// newline. With `more` and a selection already made, the next line as well
+/// — Ctrl+L again.
+pub fn notepad_select_line(entry: &mut TextEntry, at: usize, more: bool) {
+    let text = entry.text();
+    let take_newline = |end: usize| if end < text.len() { end + 1 } else { end };
+    if more && let Some((from, to)) = entry.selection() {
+        let end = take_newline(line_end(text, to));
+        entry.place(line_start(text, from), false);
+        entry.place(end, true);
+        return;
+    }
+    let start = line_start(text, at);
+    let end = take_newline(line_end(text, at));
+    entry.place(start, false);
+    entry.place(end, true);
+}
+
+/// What Ctrl+C takes: the selection, or with nothing selected the whole line
+/// the caret is on — always ending in a newline, so a paste puts it on a line
+/// of its own.
+pub fn notepad_copy_text(entry: &TextEntry) -> String {
+    if entry.selection().is_some_and(|(from, to)| to > from) {
+        return entry.selected_text().to_string();
+    }
+    let text = entry.text();
+    let (start, end) = (
+        line_start(text, entry.caret()),
+        line_end(text, entry.caret()),
+    );
+    format!("{}\n", &text[start..end])
+}
+
+/// Ctrl+X: [`notepad_copy_text`]'s text, taken out.
+pub fn notepad_cut(entry: &mut TextEntry) -> String {
+    let taken = notepad_copy_text(entry);
+    if !entry.delete_selection() {
+        notepad_delete_line(entry);
+    }
+    taken
+}
+
+/// What a paste into the pad puts down: every line of it. Line endings of
+/// any system become `\n`; a tab is four spaces on the fixed grid, and any
+/// other control character goes.
+pub fn notepad_paste_text(raw: &str) -> String {
+    raw.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\t', "    ")
+        .chars()
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect()
+}
+
+/// Ctrl+Shift+K: the lines the caret or selection are on, gone. The caret
+/// lands where they were.
+pub fn notepad_delete_line(entry: &mut TextEntry) {
+    let text = entry.text().to_string();
+    let (start, end) = lines_span(entry);
+    let (from, to) = if end < text.len() {
+        (start, end + 1)
+    } else if start > 0 {
+        // The last line: the newline before it goes with it.
+        (start - 1, end)
+    } else {
+        (start, end)
+    };
+    let mut kept = text[..from].to_string();
+    kept.push_str(&text[to..]);
+    let caret = from.min(kept.len());
+    replace(entry, kept, caret, caret);
+}
+
+/// Ctrl+D: a copy of the lines under the caret or selection, underneath
+/// them, with the caret — and selection — moved onto the copy.
+pub fn notepad_duplicate_line(entry: &mut TextEntry) {
+    let text = entry.text().to_string();
+    let (start, end) = lines_span(entry);
+    let block = &text[start..end];
+    let mut out = text[..end].to_string();
+    out.push('\n');
+    out.push_str(block);
+    out.push_str(&text[end..]);
+    let by = block.len() + 1;
+    let (anchor, caret) = ends(entry);
+    replace(entry, out, anchor + by, caret + by);
+}
+
+/// Alt+Up and Alt+Down: the lines under the caret or selection swapped with
+/// the line above (`by` < 0) or below. False at the top or bottom.
+pub fn notepad_move_lines(entry: &mut TextEntry, by: i32) -> bool {
+    let text = entry.text().to_string();
+    let (start, end) = lines_span(entry);
+    let block = &text[start..end];
+    let (anchor, caret) = ends(entry);
+    if by < 0 {
+        if start == 0 {
+            return false;
+        }
+        let above = line_start(&text, start - 1);
+        let line = &text[above..start - 1];
+        let out = format!("{}{block}\n{line}{}", &text[..above], &text[end..]);
+        let shift = line.len() + 1;
+        replace(entry, out, anchor - shift, caret - shift);
+    } else {
+        if end >= text.len() {
+            return false;
+        }
+        let below_end = line_end(&text, end + 1);
+        let line = &text[end + 1..below_end];
+        let out = format!("{}{line}\n{block}{}", &text[..start], &text[below_end..]);
+        let shift = line.len() + 1;
+        replace(entry, out, anchor + shift, caret + shift);
+    }
+    true
+}
+
+/// How many spaces Tab puts in, and Shift+Tab takes out.
+const INDENT: &str = "    ";
+
+/// Tab: four spaces at the caret — or, with a selection over more than one
+/// line, four at the head of each of them, the selection kept.
+pub fn notepad_indent(entry: &mut TextEntry) {
+    let multi = entry
+        .selection()
+        .is_some_and(|_| entry.selected_text().contains('\n'));
+    if !multi {
+        entry.insert(INDENT);
+        return;
+    }
+    let text = entry.text().to_string();
+    let (start, end) = lines_span(entry);
+    let (anchor, caret) = ends(entry);
+    let mut out = text[..start].to_string();
+    let mut added = 0;
+    let (mut new_anchor, mut new_caret) = (anchor, caret);
+    let mut line_head = start;
+    for line in text[start..end].split('\n') {
+        out.push_str(INDENT);
+        added += INDENT.len();
+        if anchor >= line_head {
+            new_anchor = anchor + added;
+        }
+        if caret >= line_head {
+            new_caret = caret + added;
+        }
+        out.push_str(line);
+        out.push('\n');
+        line_head += line.len() + 1;
+    }
+    out.pop();
+    out.push_str(&text[end..]);
+    replace(entry, out, new_anchor, new_caret);
+}
+
+/// Shift+Tab: up to four spaces taken from the head of each line under the
+/// caret or selection.
+pub fn notepad_outdent(entry: &mut TextEntry) {
+    let text = entry.text().to_string();
+    let (start, end) = lines_span(entry);
+    let (anchor, caret) = ends(entry);
+    let mut out = text[..start].to_string();
+    let (mut new_anchor, mut new_caret) = (anchor, caret);
+    let mut line_head = start;
+    let mut removed_before = 0usize;
+    for line in text[start..end].split('\n') {
+        let cut = line.len() - line.trim_start_matches(' ').len();
+        let cut = cut.min(INDENT.len());
+        let shift = |at: usize| -> usize {
+            if at >= line_head + cut {
+                at - removed_before - cut
+            } else if at >= line_head {
+                line_head - removed_before
+            } else {
+                at
+            }
+        };
+        if anchor >= line_head {
+            new_anchor = shift(anchor);
+        }
+        if caret >= line_head {
+            new_caret = shift(caret);
+        }
+        out.push_str(&line[cut..]);
+        out.push('\n');
+        removed_before += cut;
+        line_head += line.len() + 1;
+    }
+    out.pop();
+    out.push_str(&text[end..]);
+    replace(entry, out, new_anchor, new_caret);
+}
+
+/// Ctrl+Backspace and Ctrl+Delete: back to where Ctrl+Left lands, or on to
+/// where Ctrl+Right does. A selection is deleted as it is.
+pub fn notepad_delete_word(entry: &mut TextEntry, forward: bool) {
+    if entry.delete_selection() {
+        return;
+    }
+    if forward {
+        entry.right(true, true);
+    } else {
+        entry.left(true, true);
+    }
+    entry.delete_selection();
+}
