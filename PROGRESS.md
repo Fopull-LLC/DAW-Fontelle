@@ -19,6 +19,50 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — Steam-ready builds (hub card 0429), on a branch, not
+released.** `docs/steam.md` has the whole of it.
+
+- **Depots from a tag**: `tools/steam/make-depots.sh <tag>` downloads the
+  release's archives (`gh release download`), checks them against
+  `SHA256SUMS`, and lays out three depots plus the SteamPipe `.vdf` scripts
+  (ids from `STEAM_APP_ID` / `STEAM_DEPOT_*`, `FILL_ME_*` otherwise).
+  - macOS: one universal `Fontelle.app` (`lipo`/`llvm-lipo`), with an
+    `Info.plist` from `packaging/macos/Info.plist.in`. The release itself
+    has no `.app`.
+  - `release.yml`'s `steam` job runs the script after `publish` on a macOS
+    runner and keeps the result as an artifact. Its steamcmd upload step is
+    `if: false`.
+  - Dry run on v0.29.0-beta.1: linux 119 MB, windows 105 MB, macos 180 MB.
+- **A Steam copy knows it is one** from a marker, `fontelle-steam.txt`,
+  beside the program (in `Contents/Resources` on macOS), read by
+  `distribution::Distribution`. It is not a cargo feature, so the depots
+  stay the released, checksummed bytes. In a Steam copy:
+  - the updater is `Updater::managed_by("Steam")`: the line reads "Updates
+    come through Steam" (`UpdateStatus::ByStore`), and it does no network or
+    disk work
+  - the Settings ▸ Updates rows are gone
+  - nothing is tidied beside the program
+  - the working directory moves to the data folder, so plugins that write
+    "here" stay out of Steam's folder
+
+  A copy without the marker is unchanged.
+- **The write audit** found three ways a folder could come out relative
+  (that is, inside the install folder under Steam), all now closed:
+  - a relative `HOME`
+  - the UTAU cache's own rule
+  - `./voicebanks` with no data folder
+- **Supporter Pack** (`supporter_pack.rs`): a folder with
+  `fontelle-pack.json`, found at `<install>/supporter-pack` or
+  `<data>/supporter-pack`. Its `soundfonts/` folder is a read-only shelf of
+  the bank (`FileBank::add_shelf`), never written to the settings. It
+  unlocks nothing. Its presets and templates are a reserved shape, not yet
+  read.
+- Tests: `fontelle-app/tests/steam.rs`, `fontelle-utau/tests/cache_dir.rs`,
+  `fontelle-ui/tests/welcome.rs`.
+- **Ty's** (docs/steam.md §7): the Steamworks ids and settings, a builder
+  account, macOS signing, notarisation and an icon, the oldest macOS, lilv
+  on SteamOS, and the pack's contents.
+
 **2026-10-19 — Help's ways out, and a line said once (hub card 0427), on
 a branch, not released.** Ty: *"accessibility is the product; nothing may
 nag or gate. The line is a courtesy, said once."*

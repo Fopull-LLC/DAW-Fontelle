@@ -672,6 +672,7 @@ pub fn update_line(status: &UpdateStatus, current: &str) -> (String, Option<&'st
             "Update check is off \u{2014} see Settings".to_string(),
             None,
         ),
+        UpdateStatus::ByStore { store } => (format!("Updates come through {store}"), None),
         UpdateStatus::Checking => ("Checking for updates\u{2026}".to_string(), None),
         UpdateStatus::UpToDate => (format!("Up to date \u{2014} {current} is the latest"), None),
         UpdateStatus::Available { version } => (

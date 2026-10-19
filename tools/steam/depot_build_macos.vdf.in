@@ -1,0 +1,13 @@
+// Fontelle for macOS (one universal Fontelle.app). TY: the depot id is
+// Steamworks' (see app_build).
+"DepotBuild"
+{
+	"DepotID" "@DEPOT_MACOS@"
+	"ContentRoot" "../depots/macos/"
+	"FileMapping"
+	{
+		"LocalPath" "*"
+		"DepotPath" "."
+		"Recursive" "1"
+	}
+}

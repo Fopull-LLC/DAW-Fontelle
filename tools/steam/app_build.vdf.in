@@ -1,0 +1,25 @@
+// The SteamPipe build for one Fontelle release, written by make-depots.sh
+// from this template. Paths are relative to this file (out/scripts/).
+//
+// TY: the app id and the three depot ids are Steamworks' (App Admin ->
+// SteamPipe -> Depots). make-depots.sh fills them from STEAM_APP_ID and
+// STEAM_DEPOT_LINUX / _WINDOWS / _MACOS; left unset they stay FILL_ME_*,
+// which steamcmd refuses rather than uploading somewhere wrong.
+//
+// SetLive is empty on purpose: a build goes up to no branch, and making it
+// live (default, or a beta branch) is done by hand on the Steamworks site.
+"AppBuild"
+{
+	"AppID" "@APP_ID@"
+	"Desc" "Fontelle @VERSION@"
+	"BuildOutput" "../output/"
+	"ContentRoot" "../depots/"
+	"SetLive" ""
+	"Preview" "0"
+	"Depots"
+	{
+		"@DEPOT_LINUX@" "depot_build_linux.vdf"
+		"@DEPOT_WINDOWS@" "depot_build_windows.vdf"
+		"@DEPOT_MACOS@" "depot_build_macos.vdf"
+	}
+}

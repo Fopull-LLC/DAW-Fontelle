@@ -1,0 +1,12 @@
+// Fontelle for Windows x86_64. TY: the depot id is Steamworks' (see app_build).
+"DepotBuild"
+{
+	"DepotID" "@DEPOT_WINDOWS@"
+	"ContentRoot" "../depots/windows/"
+	"FileMapping"
+	{
+		"LocalPath" "*"
+		"DepotPath" "."
+		"Recursive" "1"
+	}
+}

@@ -244,6 +244,14 @@ fn the_status_line_says_what_the_check_found_and_when_there_is_something_to_pres
     let off = line(&UpdateStatus::Off);
     assert!(off.0.to_lowercase().contains("off"), "{}", off.0);
     assert_eq!(off.1, None);
+
+    // A copy Steam installed is updated by Steam (hub card 0429): said so,
+    // with nothing to press.
+    let steam = line(&UpdateStatus::ByStore {
+        store: "Steam".into(),
+    });
+    assert_eq!(steam.0, "Updates come through Steam");
+    assert_eq!(steam.1, None);
 }
 
 #[test]

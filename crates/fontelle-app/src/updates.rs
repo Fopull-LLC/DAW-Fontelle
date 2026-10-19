@@ -726,6 +726,8 @@ pub struct Updater {
     fetch: Arc<Fetcher>,
     target: String,
     enabled: bool,
+    /// Updated by a store, not by this ([`Updater::managed_by`]).
+    managed: bool,
     channel: Channel,
     /// What this binary is, compared against what is out: [`CURRENT`],
     /// unless a test says otherwise.
@@ -752,6 +754,29 @@ impl Updater {
         updater
     }
 
+    /// This one, for a copy somebody else updates — `store` names who, and
+    /// the start menu says so ([`UpdateStatus::ByStore`]).
+    ///
+    /// Steam verifies its install folder file by file, and everything
+    /// [`install`] does — the download beside the program, the staging
+    /// folder, the binary renamed to `.old`, the ASIO helper copied in — is a
+    /// file Steam did not put there. So a managed updater neither asks
+    /// GitHub nor touches the disk, whatever it is asked to do
+    /// (`crate::distribution`, hub card 0429).
+    pub fn managed_by(mut self, store: &str) -> Self {
+        self.enabled = false;
+        self.managed = true;
+        *self.status.lock().unwrap() = UpdateStatus::ByStore {
+            store: store.to_string(),
+        };
+        self
+    }
+
+    /// Whether somebody else updates this copy (see [`managed_by`](Self::managed_by)).
+    pub fn is_managed(&self) -> bool {
+        self.managed
+    }
+
     /// One whose network is `fetch` — for tests.
     pub fn with_fetcher(fetch: Fetcher) -> Self {
         Self {
@@ -760,6 +785,7 @@ impl Updater {
             fetch: Arc::new(fetch),
             target: target_triple(),
             enabled: true,
+            managed: false,
             channel: Channel::Stable,
             current: Version::parse(CURRENT).unwrap_or(Version::new(0, 0, 0)),
         }
@@ -845,6 +871,9 @@ impl Updater {
     /// Downloads the release a check found, verifies it, and puts its binary
     /// where `exe` is — in the background.
     pub fn upgrade(&self, exe: PathBuf) {
+        if self.managed {
+            return;
+        }
         let Some(latest) = self.release.lock().unwrap().clone() else {
             *self.status.lock().unwrap() =
                 UpdateStatus::Failed("no release to install — check first".to_string());
