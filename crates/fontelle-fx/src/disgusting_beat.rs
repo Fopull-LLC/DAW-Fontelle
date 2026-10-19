@@ -280,19 +280,19 @@ impl DisgustingBeat {
         }
 
         let scene = self.scene_of(notes, config, music);
-        let beats_per_bar = music.beats_per_bar.max(1);
+        let bar = music.bar;
         let time_lane = grid.lane(scene, DisgustingBeatLaneKind::Time);
         let volume_lane = grid.lane(scene, DisgustingBeatLaneKind::Volume);
         let tone_lane = grid.lane(scene, DisgustingBeatLaneKind::Tone);
         let pan_lane = grid.lane(scene, DisgustingBeatLaneKind::Pan);
 
         let samples_per_tick = music.samples_per_tick();
-        let time_ticks = lane_ticks(time_lane.length, config.rate, beats_per_bar);
+        let time_ticks = lane_ticks(time_lane.length, config.rate, bar);
         // The time lane's value is in lane-lengths, so this is what turns one
         // into samples — and it is why a freeze is a freeze at any length.
         let lane_samples = time_ticks * samples_per_tick;
         let look_samples =
-            config.latency_samples(music.bpm, beats_per_bar, self.sample_rate) as f64;
+            config.latency_samples(music.opening_bpm, music.song_bar, self.sample_rate) as f64;
         let quality = match config.quality {
             DisgustingBeatQuality::Normal => Interpolation::Normal,
             DisgustingBeatQuality::High => Interpolation::High,
@@ -306,6 +306,26 @@ impl DisgustingBeat {
         // whichever clock the chooser names.
         let mut tick = self.clock_tick(config, music);
         let tick_step = music.ticks_per_sample;
+        // **Where a pattern counts from** (Ty, 2026-10-19: everything follows
+        // the signature the song is in). Locked to the song, a pattern that
+        // fits in a bar starts again on every bar line, and a longer one
+        // counts its bars from where the signature last changed — so a 7/8
+        // bar after a 4/4 one starts its pattern on its own downbeat rather
+        // than wherever tick 0 would put it. The bar line is walked with the
+        // tick: a block that crosses one moves the anchor on that sample.
+        let locked = config.sync == DisgustingBeatSync::Song && music.rolling;
+        let bar_ticks = bar.quarters * fontelle_types::PPQN as f64;
+        let mut bar_start = music.bar_start;
+        let mut next_bar = music.next_bar;
+        let anchor = |ticks: f64, bar_start: f64| -> f64 {
+            if !locked {
+                0.0
+            } else if ticks <= bar_ticks + 1e-6 {
+                bar_start
+            } else {
+                music.span_start
+            }
+        };
 
         let mut clamped_anywhere = false;
         let mut last_rate = 1.0f64;
@@ -326,7 +346,15 @@ impl DisgustingBeat {
             let now = self.written as f64 - 1.0;
 
             // ---- the phase, and what the lanes say there
-            let phase_time = self.phase_of(tick, time_ticks, config.swing);
+            if locked && tick >= next_bar {
+                bar_start = next_bar;
+                next_bar += bar_ticks.max(1.0);
+            }
+            let phase_time = self.phase_of(
+                tick - anchor(time_ticks, bar_start),
+                time_ticks,
+                config.swing,
+            );
             let offset_lanes = time_lane.value_at(phase_time, 0.0) * config.time as f64;
             let offset_samples = offset_lanes * lane_samples;
 
@@ -407,18 +435,31 @@ impl DisgustingBeat {
 
             // ---- the three control lanes, at step rate
             if frame % STEP == 0 {
-                let tone_ticks = lane_ticks(tone_lane.length, config.rate, beats_per_bar);
-                let volume_ticks = lane_ticks(volume_lane.length, config.rate, beats_per_bar);
-                let pan_ticks = lane_ticks(pan_lane.length, config.rate, beats_per_bar);
-                self.volume = (volume_lane
-                    .value_at(self.phase_of(tick, volume_ticks, config.swing), 1.0)
-                    as f32)
+                let tone_ticks = lane_ticks(tone_lane.length, config.rate, bar);
+                let volume_ticks = lane_ticks(volume_lane.length, config.rate, bar);
+                let pan_ticks = lane_ticks(pan_lane.length, config.rate, bar);
+                self.volume = (volume_lane.value_at(
+                    self.phase_of(
+                        tick - anchor(volume_ticks, bar_start),
+                        volume_ticks,
+                        config.swing,
+                    ),
+                    1.0,
+                ) as f32)
                     .mul_add(config.volume, 1.0 - config.volume);
-                self.tone_value =
-                    tone_lane.value_at(self.phase_of(tick, tone_ticks, config.swing), 0.0) as f32
-                        * config.tone;
-                self.pan = pan_lane.value_at(self.phase_of(tick, pan_ticks, config.swing), 0.0)
-                    as f32
+                self.tone_value = tone_lane.value_at(
+                    self.phase_of(
+                        tick - anchor(tone_ticks, bar_start),
+                        tone_ticks,
+                        config.swing,
+                    ),
+                    0.0,
+                ) as f32
+                    * config.tone;
+                self.pan = pan_lane.value_at(
+                    self.phase_of(tick - anchor(pan_ticks, bar_start), pan_ticks, config.swing),
+                    0.0,
+                ) as f32
                     * config.pan;
                 self.set_tone(config);
                 self.volume_step = (self.volume - self.volume_now) / STEP as f32;
@@ -456,10 +497,17 @@ impl DisgustingBeat {
         }
 
         // What the window is told, from the block's last sample.
+        if locked && tick >= next_bar {
+            bar_start = next_bar;
+        }
+        let shown = self.phase_of(
+            tick - anchor(time_ticks, bar_start),
+            time_ticks,
+            config.swing,
+        );
         self.frame = DisgustingBeatFrame {
-            phase: self.phase_of(tick, time_ticks, config.swing) as f32,
-            offset: (time_lane.value_at(self.phase_of(tick, time_ticks, config.swing), 0.0)
-                * config.time as f64) as f32,
+            phase: shown as f32,
+            offset: (time_lane.value_at(shown, 0.0) * config.time as f64) as f32,
             rate: last_rate as f32,
             clamped: clamped_anywhere,
             filled_seconds: (self.written as f32 / self.sample_rate)

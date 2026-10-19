@@ -196,7 +196,7 @@ fn pressing_just_past_the_edge_resizes_rather_than_drawing_a_clip() {
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let (x, y) = (block.right() + 3.0, row_y(&timeline.view, &l, 0));
 
-    let pressed = timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    let pressed = timeline.press(MouseButton::Left, x, y, &l, &clips);
     assert!(
         !pressed
             .iter()
@@ -209,13 +209,12 @@ fn pressing_just_past_the_edge_resizes_rather_than_drawing_a_clip() {
         y,
         &l,
         &clips,
-        4,
     );
     assert_eq!(resized(&dragged), BAR);
 
     // And the double-click that often follows is not a new clip either.
     timeline.release();
-    let again = timeline.double_press(MouseButton::Left, x, y, &l, &clips, 4);
+    let again = timeline.double_press(MouseButton::Left, x, y, &l, &clips);
     assert!(
         !again
             .iter()
@@ -236,7 +235,6 @@ fn a_right_click_just_past_the_edge_erases_nothing() {
         row_y(&timeline.view, &l, 0),
         &l,
         &clips,
-        4,
     );
     assert!(edits.is_empty(), "{edits:?}");
 }
@@ -253,7 +251,6 @@ fn the_body_is_a_move_and_says_so() {
         row_y(&timeline.view, &l, 0),
         &l,
         &clips,
-        4,
     );
     assert!(!timeline.sizing_edge());
 }
@@ -282,18 +279,22 @@ fn zoomed_all_the_way_in_the_snap_off_drag_moves_in_visible_steps() {
     let clips = clips(&[(BAR, BAR, 0, ClipKind::Notes)]);
     let x = timeline_tick_to_x(&timeline.view, l.grid, BAR + 10) + 0.5;
     let y = row_y(&timeline.view, &l, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
     // Less than half a tick is no move at all...
     let step = MAX_TIMELINE_PPT;
-    assert!(timeline.drag(x + step * 0.3, y, &l, &clips, 4).is_empty());
+    assert!(timeline.drag(x + step * 0.3, y, &l, &clips).is_empty());
     // ...and one tick's width is exactly one tick.
-    assert_eq!(moved(&timeline.drag(x + step, y, &l, &clips, 4)), 1);
+    assert_eq!(moved(&timeline.drag(x + step, y, &l, &clips)), 1);
 }
 
 #[test]
 fn the_grid_shows_beats_normally_and_single_ticks_zoomed_all_the_way_in() {
-    let normal = timeline_grid_units(&TimelineView::default(), 4);
+    let normal = timeline_grid_units(
+        &TimelineView::default(),
+        4 * fontelle_types::PPQN,
+        fontelle_types::PPQN,
+    );
     assert!(normal.contains(&(BAR, TimelineLine::Bar)), "{normal:?}");
     assert!(normal.contains(&(PPQN, TimelineLine::Beat)), "{normal:?}");
     assert!(
@@ -306,7 +307,8 @@ fn the_grid_shows_beats_normally_and_single_ticks_zoomed_all_the_way_in() {
             pixels_per_tick: MAX_TIMELINE_PPT,
             ..free()
         },
-        4,
+        4 * fontelle_types::PPQN,
+        fontelle_types::PPQN,
     );
     assert!(deep.contains(&(1, TimelineLine::Tick)), "{deep:?}");
 
@@ -317,7 +319,8 @@ fn the_grid_shows_beats_normally_and_single_ticks_zoomed_all_the_way_in() {
             pixels_per_tick: 0.002,
             ..TimelineView::default()
         },
-        4,
+        4 * fontelle_types::PPQN,
+        fontelle_types::PPQN,
     );
     assert!(far.iter().all(|(unit, _)| *unit >= BAR), "{far:?}");
 }
@@ -326,7 +329,12 @@ fn the_grid_shows_beats_normally_and_single_ticks_zoomed_all_the_way_in() {
 fn the_ruler_counts_beats_once_a_bar_no_longer_fits() {
     let l = layout();
     assert!(
-        timeline_beat_labels(&TimelineView::default(), l.grid, 4).is_empty(),
+        timeline_beat_labels(
+            &TimelineView::default(),
+            l.grid,
+            &fontelle_types::Meter::constant(4)
+        )
+        .is_empty(),
         "at the default zoom the bar numbers are enough"
     );
 
@@ -335,7 +343,7 @@ fn the_ruler_counts_beats_once_a_bar_no_longer_fits() {
         scroll_tick: BAR * 2,
         ..TimelineView::default()
     };
-    let labels = timeline_beat_labels(&deep, l.grid, 4);
+    let labels = timeline_beat_labels(&deep, l.grid, &fontelle_types::Meter::constant(4));
     assert!(
         labels.contains(&(BAR * 2 + PPQN, "3.2".to_string())),
         "{labels:?}"
@@ -353,7 +361,7 @@ fn the_ruler_counts_beats_once_a_bar_no_longer_fits() {
         scroll_tick: BAR * 4 + PPQN + 100,
         ..TimelineView::default()
     };
-    let labels = timeline_beat_labels(&deepest, l.grid, 4);
+    let labels = timeline_beat_labels(&deepest, l.grid, &fontelle_types::Meter::constant(4));
     assert!(labels.len() >= 2, "{labels:?}");
     for (tick, name) in &labels {
         assert_eq!(
@@ -383,16 +391,16 @@ fn with_the_snap_off_a_moved_edge_lands_exactly_on_one_nearby() {
     let ppt = timeline.view.pixels_per_tick;
     let x = timeline_tick_to_x(&timeline.view, l.grid, BAR / 2);
     let y = row_y(&timeline.view, &l, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
     // The end headed for the other block's start, three pixels short of it.
     let short = 3.0 / ppt;
-    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 3.0, y, &l, &clips, 4);
+    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 3.0, y, &l, &clips);
     assert_eq!(moved(&edits), BAR * 2, "{short} ticks short is on it");
     assert_eq!(timeline.magnet_tick(), Some(BAR * 3));
 
     // Well away from any edge the drag is free again.
-    let free_edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 40.0, y, &l, &clips, 4);
+    let free_edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 40.0, y, &l, &clips);
     let at = BAR * 2 + moved(&free_edits);
     assert!((at - (BAR * 2 - (40.0 / ppt) as Tick)).abs() <= 2, "{at}");
     assert_eq!(timeline.magnet_tick(), None);
@@ -411,8 +419,8 @@ fn alt_lets_an_edge_sit_right_beside_another() {
         alt: true,
         ..Modifiers::default()
     });
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
-    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 3.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
+    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 3.0, y, &l, &clips);
     let want = BAR * 2 - (3.0 / ppt) as Tick;
     assert!((moved(&edits) - want).abs() <= 2, "{edits:?}");
     assert_eq!(timeline.magnet_tick(), None);
@@ -424,14 +432,13 @@ fn a_right_edge_dragged_near_another_block_meets_it() {
     let ppt = timeline.view.pixels_per_tick;
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let (x, y) = (block.right() - 2.0, row_y(&timeline.view, &l, 0));
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
     assert!(timeline.sizing_edge());
     let edits = timeline.drag(
         x + (BAR * 2) as f32 * ppt + (MAGNET_PX - 2.0),
         y,
         &l,
         &clips,
-        4,
     );
     assert_eq!(resized(&edits), BAR * 2);
     assert_eq!(timeline.magnet_tick(), Some(BAR * 3));
@@ -448,9 +455,9 @@ fn a_left_edge_trimmed_near_another_blocks_end_meets_it() {
     let ppt = timeline.view.pixels_per_tick;
     let block = clip_rect(&timeline.view, l.grid, &clips[1]);
     let (x, y) = (block.x + 2.0, row_y(&timeline.view, &l, 0));
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
     assert!(timeline.sizing_edge());
-    let edits = timeline.drag(x + BAR as f32 * ppt - 4.0, y, &l, &clips, 4);
+    let edits = timeline.drag(x + BAR as f32 * ppt - 4.0, y, &l, &clips);
     assert_eq!(trimmed(&edits), BAR);
     assert_eq!(timeline.magnet_tick(), Some(BAR));
 }
@@ -463,8 +470,8 @@ fn a_block_is_never_pulled_onto_its_own_edges() {
     let clips = clips(&[(BAR, BAR, 0, ClipKind::Notes)]);
     let x = timeline_tick_to_x(&timeline.view, l.grid, BAR + BAR / 2);
     let y = row_y(&timeline.view, &l, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
-    timeline.drag(x + 3.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
+    timeline.drag(x + 3.0, y, &l, &clips);
     assert_eq!(timeline.magnet_tick(), None);
 }
 
@@ -479,8 +486,8 @@ fn a_grid_snap_is_left_as_it_was() {
     let ppt = timeline.view.pixels_per_tick;
     let x = timeline_tick_to_x(&timeline.view, l.grid, BAR / 2);
     let y = row_y(&timeline.view, &l, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
-    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 5.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
+    let edits = timeline.drag(x + (BAR * 2) as f32 * ppt - 5.0, y, &l, &clips);
     assert_eq!(moved(&edits), BAR * 2);
     assert_eq!(timeline.magnet_tick(), None);
 }

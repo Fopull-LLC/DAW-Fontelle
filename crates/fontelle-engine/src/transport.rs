@@ -380,8 +380,120 @@ pub struct TransportSnapshot {
     /// lands on the next block's snapshot, which is what every tempo-reading
     /// node in this program already assumes of `bpm`.
     pub ticks_per_sample: f64,
-    /// How many beats there are in a bar. Never zero.
-    pub beats_per_bar: u32,
+    /// The bar the block starts in: its signature, where it starts and the
+    /// next one does, read off the song's meter (Ty, 2026-10-19: *"the
+    /// metronome absolutely needs to match the correct signature you are
+    /// in"*). What a plugin is told and a pattern locks to.
+    pub bar: fontelle_types::BarHere,
+    /// The beats that fall inside this block, and how hard: what the click
+    /// plays. Worked out here, where the meter and the tempo table both are,
+    /// so a click lands on its tick whatever the tempo does.
+    pub clicks: Clicks,
+    /// The tempo and bar size at the top of the song, which a latency
+    /// measured in beats is sized by — once, for the whole song.
+    pub opening_bpm: f32,
+    pub song_bar: fontelle_types::BarSize,
+}
+
+/// The most beats one block can hold: a block of 512 frames at 48 kHz is
+/// ten milliseconds, and sixty-fourths at 300 bpm are twelve and a half.
+pub const MAX_CLICKS: usize = 16;
+
+/// The beats inside one block: where each falls, in frames from the block's
+/// start, and how hard it is. A fixed array, so a snapshot stays a copy and
+/// the audio thread never allocates for it (INVARIANT 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clicks {
+    at: [(u32, fontelle_types::Accent); MAX_CLICKS],
+    len: u8,
+}
+
+impl Default for Clicks {
+    fn default() -> Self {
+        Self {
+            at: [(0, fontelle_types::Accent::Beat); MAX_CLICKS],
+            len: 0,
+        }
+    }
+}
+
+impl Clicks {
+    /// One more, if there is room; a beat past the sixteenth in one block is
+    /// one nobody could hear apart from its neighbours.
+    pub fn push(&mut self, offset: u32, accent: fontelle_types::Accent) {
+        if usize::from(self.len) < MAX_CLICKS {
+            self.at[usize::from(self.len)] = (offset, accent);
+            self.len += 1;
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u32, fontelle_types::Accent)> + '_ {
+        self.at[..usize::from(self.len)].iter().copied()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// How big the song's own bar is.
+fn song_bar(timeline: &CompiledTimeline) -> fontelle_types::BarSize {
+    let (top, bottom) = timeline.meter.song_size();
+    fontelle_types::BarSize::of(top, bottom)
+}
+
+/// The beats of `timeline`'s meter that fall in the song-time `range`.
+///
+/// By tick: the block covers `[tick_at(start), tick_at(end))`, half-open, so
+/// a beat on a block boundary belongs to exactly one block — the next one —
+/// and is never played twice or skipped. Its sample comes off the tempo
+/// table.
+fn clicks_in(timeline: &CompiledTimeline, range: &Range<Sample>) -> Clicks {
+    let mut clicks = Clicks::default();
+    if range.end <= range.start {
+        return clicks;
+    }
+    let from = timeline.tick_at_exact(range.start).ceil() as i64;
+    let to = timeline.tick_at_exact(range.end).ceil() as i64;
+    let last = (range.end - range.start - 1) as f64;
+    timeline.meter.each_beat(from..to, |tick, accent| {
+        let at = timeline.sample_at_tick(tick as f64) - range.start as f64;
+        clicks.push(at.round().clamp(0.0, last) as u32, accent);
+    });
+    clicks
+}
+
+/// The count-in's beats in `range`: one every beat of the bar the playhead
+/// stands in, counted back from `playhead`, accented as that bar is — so the
+/// count is the bar it leads into, 7/8 and its grouping included.
+fn count_clicks(timeline: &CompiledTimeline, range: &Range<Sample>, playhead: Sample) -> Clicks {
+    let mut clicks = Clicks::default();
+    let tick = timeline.tick_at_exact(playhead).max(0.0);
+    let here = timeline.meter.here(tick.floor() as i64);
+    let beat_ticks = 4.0 * fontelle_types::PPQN as f64 / f64::from(here.bottom.max(1));
+    let beat = beat_ticks
+        / timeline
+            .ticks_per_sample_at(playhead)
+            .max(f64::MIN_POSITIVE);
+    if beat < 1.0 || range.end <= range.start {
+        return clicks;
+    }
+    let top = here.top.max(1);
+    let nearest = ((playhead - range.end) as f64 / beat).floor().max(1.0) as u32;
+    let farthest = ((playhead - range.start) as f64 / beat).ceil() as u32 + 1;
+    // Farthest first, so they come out in the order they sound.
+    for k in (nearest..=farthest).rev() {
+        let at = playhead - (f64::from(k) * beat).round() as i64;
+        if at < range.start || at >= range.end {
+            continue;
+        }
+        let in_bar = (top - k % top) % top;
+        clicks.push(
+            (at - range.start) as u32,
+            timeline.meter.accent(here.bar, in_bar),
+        );
+    }
+    clicks
 }
 
 impl Default for TransportSnapshot {
@@ -399,7 +511,10 @@ impl Default for TransportSnapshot {
             position_tick: 0.0,
             ticks_per_sample: fontelle_types::DEFAULT_BPM as f64 / 60.0 * PPQN as f64
                 / fontelle_types::DEFAULT_SAMPLE_RATE,
-            beats_per_bar: fontelle_types::DEFAULT_BEATS_PER_BAR,
+            bar: fontelle_types::BarHere::default(),
+            clicks: Clicks::default(),
+            opening_bpm: fontelle_types::DEFAULT_BPM,
+            song_bar: fontelle_types::BarSize::default(),
         }
     }
 }
@@ -521,7 +636,10 @@ impl TransportReader {
                 bpm: timeline.bpm_at(self.position),
                 position_tick: timeline.tick_at_exact(self.position),
                 ticks_per_sample: timeline.ticks_per_sample_at(self.position),
-                beats_per_bar: timeline.beats_per_bar,
+                bar: timeline.meter.here(timeline.tick_at(self.position)),
+                clicks: Clicks::default(),
+                opening_bpm: timeline.bpm_at(0),
+                song_bar: song_bar(timeline),
             };
             if awake {
                 // Audition: run the graph over a block's worth of time without
@@ -574,9 +692,10 @@ impl TransportReader {
                 .fetch_sub(frames as i64, Ordering::AcqRel);
             transport.publish_position(self.position);
             let start = self.position - left;
+            let range = start..start + frames as i64;
             return Step {
                 frames,
-                range: start..start + frames as i64,
+                range: range.clone(),
                 events: &[],
                 audio: &[],
                 snapshot: TransportSnapshot {
@@ -585,7 +704,10 @@ impl TransportReader {
                     bpm: timeline.bpm_at(self.position),
                     position_tick: timeline.tick_at_exact(self.position),
                     ticks_per_sample: timeline.ticks_per_sample_at(self.position),
-                    beats_per_bar: timeline.beats_per_bar,
+                    bar: timeline.meter.here(timeline.tick_at(self.position)),
+                    clicks: count_clicks(timeline, &range, self.position),
+                    opening_bpm: timeline.bpm_at(0),
+                    song_bar: song_bar(timeline),
                 },
                 reset,
                 process: true,
@@ -639,7 +761,10 @@ impl TransportReader {
                 // pattern locked to the bar is asking.
                 position_tick: timeline.tick_at_exact(range.start),
                 ticks_per_sample: timeline.ticks_per_sample_at(range.start),
-                beats_per_bar: timeline.beats_per_bar,
+                bar: timeline.meter.here(timeline.tick_at(range.start)),
+                clicks: clicks_in(timeline, &range),
+                opening_bpm: timeline.bpm_at(0),
+                song_bar: song_bar(timeline),
             },
             range,
             events,

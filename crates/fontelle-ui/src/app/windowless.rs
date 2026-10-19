@@ -323,6 +323,44 @@ impl Windowless {
 
     /// What a frame does before it is drawn: the document's work, and the
     /// window's view of it read again.
+    /// The song's meter, as the window last read it.
+    pub fn meter(&self) -> &fontelle_types::Meter {
+        &self.app.meter
+    }
+
+    /// The signature flags on the arrangement's ruler, by the bar each
+    /// starts.
+    pub fn meter_flags(&self) -> Vec<(u32, Rect)> {
+        crate::canvas::meter_flags(
+            &self.app.timeline.view,
+            self.app.timeline_layout.grid,
+            self.app.timeline_layout.ruler,
+            &self.app.meter,
+        )
+    }
+
+    /// An arrow key: `dx` across, `dy` down, with whatever [`hold`](Self::hold)
+    /// says is held.
+    pub fn press_key_arrow(&mut self, dx: i32, dy: i32) {
+        self.app.arrow(dx, dy);
+        self.settle();
+    }
+
+    /// Whether a typed prompt is open.
+    pub fn prompt_open(&self) -> bool {
+        matches!(&self.app.menu, Some((super::MenuTarget::NameProject(_), _)))
+    }
+
+    /// Types `text` into the open prompt and presses Enter.
+    pub fn answer_prompt(&mut self, text: &str) {
+        let Some((target, _)) = self.app.menu.clone() else {
+            panic!("no prompt is open");
+        };
+        self.app.menu_filter.set(text.to_string());
+        self.app.choose_menu(&target, 0);
+        self.settle();
+    }
+
     /// The settings page, on the section headed `title`.
     pub fn open_settings(&mut self, title: &str) {
         self.app.open_settings_page_at(title);

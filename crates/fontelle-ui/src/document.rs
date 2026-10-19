@@ -395,15 +395,18 @@ pub trait DocumentHost {
         0.5 / PPQN as f64
     }
 
-    /// The time signature's numerator, for the grid and the read-out.
-    fn beats_per_bar(&self) -> u32;
-    /// Puts a time signature change at `bar` (counted from 0), or takes it
-    /// away with `None` — one undo.
-    fn set_meter_change(&mut self, _bar: u32, _to: Option<(u32, u32)>) {}
-    /// The song's meter: its own signature, and where it changes.
+    /// The song's meter: its own signature, and where it changes. What the
+    /// grid, the snap, the bar numbers, the read-out and the click all count
+    /// by — there is no other answer to "how long is a bar" in this crate.
     fn meter(&self) -> fontelle_types::Meter {
-        fontelle_types::Meter::constant(self.beats_per_bar())
+        fontelle_types::Meter::default()
     }
+    /// Sets the signature from `bar` (counted from 0) on — bar 0 is the
+    /// song's own — or takes the change at `bar` away with `None`. One undo.
+    fn set_meter_change(&mut self, _bar: u32, _to: Option<fontelle_types::Signature>) {}
+    /// Moves the change at bar `from` to bar `to`, replacing any there. One
+    /// undo.
+    fn move_meter_change(&mut self, _from: u32, _to: u32) {}
 
     /// The tempo in force at the **start** of the piece, in beats per minute.
     ///
@@ -440,10 +443,6 @@ pub trait DocumentHost {
     /// [`end_gesture`](DocumentHost::end_gesture) when the mouse comes up, the
     /// same as it does for a note drag.
     fn set_tempo(&mut self, bpm: f64);
-
-    /// Sets the time signature's numerator. See
-    /// [`beats_per_bar`](DocumentHost::beats_per_bar).
-    fn set_beats_per_bar(&mut self, beats: u32);
 
     /// Where `position_sample` falls inside this clip, in the clip's own
     /// ticks, or `None` when the playhead is somewhere the clip does not

@@ -9,14 +9,11 @@
 use fontelle_model::{Arena, Note};
 use fontelle_types::{NoteId, PPQN, Tick};
 use fontelle_ui::canvas::{
-    DEFAULT_LANE_HEIGHT, NotePart, RollEdit, RollHit, RollView, SnapDivision, Tool, hit_test,
-    key_to_y, roll_layout, snap_tick, snap_unit, tick_to_x, visible_keys, visible_ticks, x_to_tick,
-    y_to_key,
+    DEFAULT_LANE_HEIGHT, MeterView, NotePart, RollEdit, RollHit, RollView, SnapDivision, Tool,
+    hit_test, key_to_y, roll_layout, tick_to_x, visible_keys, visible_ticks, x_to_tick, y_to_key,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
-
-const BEATS_PER_BAR: u32 = 4;
 
 fn view() -> RollView {
     RollView {
@@ -215,40 +212,45 @@ fn scrolling_past_the_top_of_the_keyboard_does_not_ask_for_keys_that_do_not_exis
 
 // ------------------------------------------------------------------ snap ---
 
+/// What each division snaps to in plain 4/4 — a bar of four quarters, a
+/// beat a quarter. (In other signatures, `meter_view.rs`.)
+fn four_four() -> MeterView {
+    MeterView::default()
+}
+
 #[test]
 fn the_snap_divisions_are_the_ones_the_keymap_names() {
-    assert_eq!(snap_unit(SnapDivision::Bar, BEATS_PER_BAR), PPQN * 4);
-    assert_eq!(snap_unit(SnapDivision::Beat, BEATS_PER_BAR), PPQN);
+    let m = four_four();
+    assert_eq!(m.snap(PPQN * 4 - 10, SnapDivision::Bar), PPQN * 4);
+    assert_eq!(m.snap(PPQN + 30, SnapDivision::Beat), PPQN);
     // A step is a sixteenth — the step sequencer's grid, hence the name.
-    assert_eq!(snap_unit(SnapDivision::Step, BEATS_PER_BAR), PPQN / 4);
-    assert_eq!(
-        snap_unit(SnapDivision::Division(3), BEATS_PER_BAR),
-        PPQN / 3
-    );
-    assert_eq!(snap_unit(SnapDivision::Triplet, BEATS_PER_BAR), PPQN / 3);
-    assert_eq!(snap_unit(SnapDivision::None, BEATS_PER_BAR), 0);
+    assert_eq!(m.snap(PPQN / 4 + 20, SnapDivision::Step), PPQN / 4);
+    assert_eq!(m.snap(PPQN / 3 + 10, SnapDivision::Division(3)), PPQN / 3);
+    assert_eq!(m.snap(PPQN / 3 - 10, SnapDivision::Triplet), PPQN / 3);
+    assert_eq!(m.snap(137, SnapDivision::None), 137);
 }
 
 #[test]
 fn snapping_goes_to_the_nearest_line_not_the_one_before() {
+    let m = four_four();
     let step = PPQN / 4; // 240
-    assert_eq!(snap_tick(0, SnapDivision::Step, BEATS_PER_BAR), 0);
-    assert_eq!(snap_tick(100, SnapDivision::Step, BEATS_PER_BAR), 0);
-    assert_eq!(snap_tick(140, SnapDivision::Step, BEATS_PER_BAR), step);
-    assert_eq!(snap_tick(239, SnapDivision::Step, BEATS_PER_BAR), step);
-    assert_eq!(snap_tick(step, SnapDivision::Step, BEATS_PER_BAR), step);
+    assert_eq!(m.snap(0, SnapDivision::Step), 0);
+    assert_eq!(m.snap(100, SnapDivision::Step), 0);
+    assert_eq!(m.snap(140, SnapDivision::Step), step);
+    assert_eq!(m.snap(239, SnapDivision::Step), step);
+    assert_eq!(m.snap(step, SnapDivision::Step), step);
 }
 
 #[test]
 fn no_snap_leaves_the_tick_exactly_where_it_was() {
     for tick in [0, 1, 137, 99_999] {
-        assert_eq!(snap_tick(tick, SnapDivision::None, BEATS_PER_BAR), tick);
+        assert_eq!(four_four().snap(tick, SnapDivision::None), tick);
     }
 }
 
 #[test]
 fn snapping_never_produces_a_negative_tick() {
-    assert_eq!(snap_tick(-100, SnapDivision::Bar, BEATS_PER_BAR), 0);
+    assert_eq!(four_four().snap(-100, SnapDivision::Bar), 0);
 }
 
 // ----------------------------------------------------------- hit-testing ---
@@ -364,14 +366,13 @@ fn drawing_on_an_empty_cell_asks_for_a_note_of_one_snap_unit() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(
         edits,
         vec![RollEdit::Add {
             note: Note {
-                start: snap_tick(500, SnapDivision::Step, BEATS_PER_BAR),
-                length: snap_unit(SnapDivision::Step, BEATS_PER_BAR),
+                start: four_four().snap(500, SnapDivision::Step),
+                length: PPQN / 4,
                 key: 60,
                 ..roll.template()
             },
@@ -392,7 +393,6 @@ fn right_clicking_a_note_deletes_it_and_nothing_else() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(edits, vec![RollEdit::Remove(vec![id])]);
 }
@@ -408,7 +408,6 @@ fn right_clicking_empty_space_draws_nothing() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     // Right-click is delete in every tool (§16.5). Deleting nothing is not
     // drawing something.
@@ -422,21 +421,14 @@ fn dragging_a_note_moves_it_by_whole_snap_steps() {
     let (v, g) = (roll.view, grid());
     let y = key_to_y(&v, g, 60) + 2.0;
 
-    roll.press(
-        MouseButton::Left,
-        tick_to_x(&v, g, 100),
-        y,
-        g,
-        &arena,
-        BEATS_PER_BAR,
-    );
+    roll.press(MouseButton::Left, tick_to_x(&v, g, 100), y, g, &arena);
     // Not far enough to reach the next step: no movement, and crucially no
     // zero-delta edit, which would be a history entry for nothing.
-    let none = roll.drag(tick_to_x(&v, g, 150), y, g, &arena, BEATS_PER_BAR);
+    let none = roll.drag(tick_to_x(&v, g, 150), y, g, &arena);
     assert!(none.is_empty(), "a sub-step drag moved the note: {none:?}");
 
-    let step = snap_unit(SnapDivision::Step, BEATS_PER_BAR);
-    let moved = roll.drag(tick_to_x(&v, g, 100 + step), y, g, &arena, BEATS_PER_BAR);
+    let step = PPQN / 4;
+    let moved = roll.drag(tick_to_x(&v, g, 100 + step), y, g, &arena);
     match moved.as_slice() {
         [
             RollEdit::Move {
@@ -458,18 +450,11 @@ fn a_drag_emits_the_step_since_the_last_one_not_the_total() {
     let arena = notes(&[(0, PPQN, 60)]);
     let (v, g) = (roll.view, grid());
     let y = key_to_y(&v, g, 60) + 2.0;
-    let step = snap_unit(SnapDivision::Step, BEATS_PER_BAR);
+    let step = PPQN / 4;
 
-    roll.press(
-        MouseButton::Left,
-        tick_to_x(&v, g, 0),
-        y,
-        g,
-        &arena,
-        BEATS_PER_BAR,
-    );
-    roll.drag(tick_to_x(&v, g, step), y, g, &arena, BEATS_PER_BAR);
-    let second = roll.drag(tick_to_x(&v, g, step * 2), y, g, &arena, BEATS_PER_BAR);
+    roll.press(MouseButton::Left, tick_to_x(&v, g, 0), y, g, &arena);
+    roll.drag(tick_to_x(&v, g, step), y, g, &arena);
+    let second = roll.drag(tick_to_x(&v, g, step * 2), y, g, &arena);
     // `MoveNotes` is a delta command that coalesces, so each step of the drag
     // must be relative to the last. Sending the total each time would move the
     // note by 1 + 2 + 3 + ... steps.
@@ -485,7 +470,7 @@ fn dragging_a_notes_right_edge_resizes_it() {
     let arena = notes(&[(0, PPQN, 60)]);
     let (v, g) = (roll.view, grid());
     let y = key_to_y(&v, g, 60) + 2.0;
-    let step = snap_unit(SnapDivision::Step, BEATS_PER_BAR);
+    let step = PPQN / 4;
 
     roll.press(
         MouseButton::Left,
@@ -493,9 +478,8 @@ fn dragging_a_notes_right_edge_resizes_it() {
         y,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
-    let edits = roll.drag(tick_to_x(&v, g, PPQN + step), y, g, &arena, BEATS_PER_BAR);
+    let edits = roll.drag(tick_to_x(&v, g, PPQN + step), y, g, &arena);
     match edits.as_slice() {
         [RollEdit::Resize { tick_delta, .. }] => assert_eq!(*tick_delta, step),
         other => panic!("expected one resize, got {other:?}"),
@@ -514,15 +498,8 @@ fn dragging_up_a_row_transposes_by_a_semitone() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
-    let edits = roll.drag(
-        tick_to_x(&v, g, 100),
-        key_to_y(&v, g, 63) + 2.0,
-        g,
-        &arena,
-        BEATS_PER_BAR,
-    );
+    let edits = roll.drag(tick_to_x(&v, g, 100), key_to_y(&v, g, 63) + 2.0, g, &arena);
     match edits.as_slice() {
         [
             RollEdit::Move {
@@ -551,7 +528,6 @@ fn clicking_a_note_selects_it_and_clicking_another_replaces_the_selection() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(roll.selection(), &[ids[0]]);
 
@@ -562,7 +538,6 @@ fn clicking_a_note_selects_it_and_clicking_another_replaces_the_selection() {
         key_to_y(&v, g, 62) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(roll.selection(), &[ids[1]]);
 }
@@ -573,7 +548,7 @@ fn dragging_moves_the_whole_selection() {
     let arena = notes(&[(0, PPQN, 60), (0, PPQN, 64)]);
     let ids: Vec<NoteId> = arena.keys().collect();
     let (v, g) = (roll.view, grid());
-    let step = snap_unit(SnapDivision::Step, BEATS_PER_BAR);
+    let step = PPQN / 4;
 
     roll.select_all(&arena);
     roll.press(
@@ -582,14 +557,12 @@ fn dragging_moves_the_whole_selection() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     let edits = roll.drag(
         tick_to_x(&v, g, 100 + step),
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     match edits.as_slice() {
         [RollEdit::Move { ids: moved, .. }] => {
@@ -617,7 +590,6 @@ fn pressing_a_note_that_is_already_selected_keeps_the_selection() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(roll.selection().len(), 2);
 }
@@ -650,7 +622,6 @@ fn the_delete_tool_removes_on_press_instead_of_selecting() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert_eq!(edits, vec![RollEdit::Remove(vec![id])]);
 }
@@ -667,7 +638,6 @@ fn the_select_tool_does_not_draw_on_empty_space() {
         key_to_y(&v, g, 60) + 2.0,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
     assert!(edits.is_empty(), "the select tool drew a note: {edits:?}");
 }
@@ -679,19 +649,12 @@ fn a_release_ends_the_gesture_so_the_next_drag_is_a_new_one() {
     let (v, g) = (roll.view, grid());
     let y = key_to_y(&v, g, 60) + 2.0;
 
-    roll.press(
-        MouseButton::Left,
-        tick_to_x(&v, g, 0),
-        y,
-        g,
-        &arena,
-        BEATS_PER_BAR,
-    );
+    roll.press(MouseButton::Left, tick_to_x(&v, g, 0), y, g, &arena);
     roll.release();
     // Moving the mouse with the button up must not move anything. This is
     // also what makes one drag one history entry: the app breaks the gesture
     // on the same release.
-    let edits = roll.drag(tick_to_x(&v, g, 5000), y, g, &arena, BEATS_PER_BAR);
+    let edits = roll.drag(tick_to_x(&v, g, 5000), y, g, &arena);
     assert!(
         edits.is_empty(),
         "a mouse-up did not end the drag: {edits:?}"
@@ -705,15 +668,8 @@ fn a_note_cannot_be_dragged_off_the_start_of_the_clip() {
     let (v, g) = (roll.view, grid());
     let y = key_to_y(&v, g, 60) + 2.0;
 
-    roll.press(
-        MouseButton::Left,
-        tick_to_x(&v, g, 100),
-        y,
-        g,
-        &arena,
-        BEATS_PER_BAR,
-    );
-    let edits = roll.drag(tick_to_x(&v, g, 0) - 400.0, y, g, &arena, BEATS_PER_BAR);
+    roll.press(MouseButton::Left, tick_to_x(&v, g, 100), y, g, &arena);
+    let edits = roll.drag(tick_to_x(&v, g, 0) - 400.0, y, g, &arena);
     for edit in &edits {
         if let RollEdit::Move { tick_delta, .. } = edit {
             assert!(
@@ -737,9 +693,8 @@ fn resizing_never_makes_a_note_shorter_than_nothing() {
         y,
         g,
         &arena,
-        BEATS_PER_BAR,
     );
-    let edits = roll.drag(tick_to_x(&v, g, 0) - 500.0, y, g, &arena, BEATS_PER_BAR);
+    let edits = roll.drag(tick_to_x(&v, g, 0) - 500.0, y, g, &arena);
     match edits.as_slice() {
         [] => {}
         [RollEdit::Resize { tick_delta, .. }] => assert!(
@@ -770,13 +725,13 @@ fn the_grid_shows_the_offbeats_however_coarse_the_snap_is() {
     use fontelle_ui::canvas::subdivision_unit;
 
     assert_eq!(
-        subdivision_unit(SnapDivision::Bar, 4),
+        subdivision_unit(SnapDivision::Bar),
         PPQN / 2,
         "snapping to bars must not empty the bar"
     );
-    assert_eq!(subdivision_unit(SnapDivision::Beat, 4), PPQN / 2);
+    assert_eq!(subdivision_unit(SnapDivision::Beat), PPQN / 2);
     assert_eq!(
-        subdivision_unit(SnapDivision::None, 4),
+        subdivision_unit(SnapDivision::None),
         PPQN / 2,
         "free positioning is about where a note may go, not about what you can see"
     );
@@ -788,10 +743,10 @@ fn the_grid_shows_the_offbeats_however_coarse_the_snap_is() {
 fn a_snap_finer_than_an_eighth_is_the_grid_that_is_drawn() {
     use fontelle_ui::canvas::subdivision_unit;
 
-    assert_eq!(subdivision_unit(SnapDivision::Step, 4), PPQN / 4);
-    assert_eq!(subdivision_unit(SnapDivision::Division(8), 4), PPQN / 8);
+    assert_eq!(subdivision_unit(SnapDivision::Step), PPQN / 4);
+    assert_eq!(subdivision_unit(SnapDivision::Division(8)), PPQN / 8);
     assert_eq!(
-        subdivision_unit(SnapDivision::Triplet, 4),
+        subdivision_unit(SnapDivision::Triplet),
         PPQN / 3,
         "a triplet grid is the one thing an eighth grid cannot show"
     );

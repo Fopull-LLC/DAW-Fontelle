@@ -26,6 +26,10 @@ use fontelle_ui::document::{LibraryEntry, LibraryKind};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
 
+/// The meter the arrangement counts in: plain 4/4.
+static FOUR_FOUR: std::sync::LazyLock<fontelle_ui::canvas::MeterView> =
+    std::sync::LazyLock::new(fontelle_ui::canvas::MeterView::default);
+
 fn metrics() -> Metrics {
     Theme::dark_default().metrics
 }
@@ -82,7 +86,7 @@ fn scene<'a>(
         timeline: Some(CarryTimeline {
             layout: timeline,
             view,
-            beats_per_bar: 4,
+            meter: &FOUR_FOUR,
             lanes: 2,
             length: None,
         }),
@@ -299,7 +303,7 @@ fn a_full_arrangement_lands_the_drop_on_the_visible_row_under_the_pointer() {
     scene.timeline = Some(CarryTimeline {
         layout: &timeline,
         view: &v,
-        beats_per_bar: 4,
+        meter: &FOUR_FOUR,
         lanes: 40,
         length: None,
     });
@@ -554,13 +558,18 @@ fn the_chip_says_what_letting_go_would_do() {
             },
             &names,
             &[],
-            4
+            &fontelle_types::Meter::constant(4)
         ),
         "Onto Snare",
         "which channel, by name — a row number is not something you can see"
     );
     assert_eq!(
-        carry_note(&CarryTarget::NewChannel { rect: rack.list }, &names, &[], 4),
+        carry_note(
+            &CarryTarget::NewChannel { rect: rack.list },
+            &names,
+            &[],
+            &fontelle_types::Meter::constant(4)
+        ),
         "A new channel"
     );
     assert_eq!(
@@ -571,7 +580,7 @@ fn the_chip_says_what_letting_go_would_do() {
             },
             &names,
             &[],
-            4
+            &fontelle_types::Meter::constant(4)
         ),
         "Onto Kick"
     );
@@ -585,7 +594,7 @@ fn the_chip_says_what_letting_go_would_do() {
             },
             &names,
             &[],
-            4
+            &fontelle_types::Meter::constant(4)
         ),
         "A new row at bar 9",
         "the bar it will start on, counted the way the transport counts"
@@ -599,17 +608,27 @@ fn the_chip_says_what_letting_go_would_do() {
             },
             &names,
             &["OSC A".to_string(), "OSC B".to_string()],
-            4
+            &fontelle_types::Meter::constant(4)
         ),
         "As OSC B\u{2019}s sound",
         "which oscillator, by the name on its card"
     );
     assert_eq!(
-        carry_note(&CarryTarget::Nowhere, &names, &[], 4),
+        carry_note(
+            &CarryTarget::Nowhere,
+            &names,
+            &[],
+            &fontelle_types::Meter::constant(4)
+        ),
         "Nowhere to put this"
     );
     assert_eq!(
-        carry_note(&CarryTarget::Panel, &names, &[], 4),
+        carry_note(
+            &CarryTarget::Panel,
+            &names,
+            &[],
+            &fontelle_types::Meter::constant(4)
+        ),
         "",
         "nothing to say about the list it came from"
     );
@@ -626,7 +645,10 @@ fn a_clip_that_does_not_start_on_a_bar_line_says_the_beat_too() {
         tick: PPQN * 4 * 8 + PPQN * 2,
         lane: None,
     };
-    assert_eq!(carry_note(&target, &names, &[], 4), "A new row at bar 9.3");
+    assert_eq!(
+        carry_note(&target, &names, &[], &fontelle_types::Meter::constant(4)),
+        "A new row at bar 9.3"
+    );
     // And onto an existing row, the label names the row rather than a new one.
     let onto = CarryTarget::Clip {
         row: Rect::new(0.0, 0.0, 10.0, 10.0),
@@ -634,7 +656,10 @@ fn a_clip_that_does_not_start_on_a_bar_line_says_the_beat_too() {
         tick: PPQN * 4 * 8,
         lane: Some(2),
     };
-    assert_eq!(carry_note(&onto, &names, &[], 4), "Onto row 3 at bar 9");
+    assert_eq!(
+        carry_note(&onto, &names, &[], &fontelle_types::Meter::constant(4)),
+        "Onto row 3 at bar 9"
+    );
 }
 
 #[test]
@@ -649,7 +674,7 @@ fn a_channel_nobody_has_named_is_still_named_in_the_chip() {
             },
             &channels(),
             &[],
-            4
+            &fontelle_types::Meter::constant(4)
         ),
         "Onto channel 8"
     );
@@ -874,12 +899,17 @@ fn a_held_row_says_how_to_put_it_down() {
         rect: Rect::new(0.0, 0.0, 10.0, 10.0),
     };
     // Over something that takes it, the note is the landing, as it was.
-    let landing = carry_note(&over, &[], &names, 4);
+    let landing = carry_note(&over, &[], &names, &fontelle_types::Meter::constant(4));
     assert_eq!(held_note(&over, &landing), landing);
     // Over nothing, it says what to do — the row is not stuck, it is waiting.
     let nowhere = held_note(
         &CarryTarget::Nowhere,
-        &carry_note(&CarryTarget::Nowhere, &[], &names, 4),
+        &carry_note(
+            &CarryTarget::Nowhere,
+            &[],
+            &names,
+            &fontelle_types::Meter::constant(4),
+        ),
     );
     assert!(nowhere.to_lowercase().contains("click"), "{nowhere}");
     assert!(nowhere.contains("Esc"), "{nowhere}");
@@ -1006,7 +1036,12 @@ fn a_browser_row_is_not_from_the_desktop_so_nowhere_stays_nowhere() {
 #[test]
 fn the_chip_says_an_opened_file_turns_up_in_view() {
     assert_eq!(
-        carry_note(&CarryTarget::Open, &channels(), &[], 4),
+        carry_note(
+            &CarryTarget::Open,
+            &channels(),
+            &[],
+            &fontelle_types::Meter::constant(4)
+        ),
         "A new row in view"
     );
 }

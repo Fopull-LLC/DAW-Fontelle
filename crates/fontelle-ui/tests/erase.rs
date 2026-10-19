@@ -105,12 +105,12 @@ fn a_right_drag_erases_every_note_it_crosses() {
     let ids: Vec<NoteId> = keys.iter().map(|k| notes.insert(note(0, *k))).collect();
 
     let (x, y) = at(&roll.view, g, 0, keys[0]);
-    let first = roll.press(MouseButton::Right, x, y, g, &notes, 4);
+    let first = roll.press(MouseButton::Right, x, y, g, &notes);
     apply(&mut notes, &first);
 
     for key in &keys[1..] {
         let (x, y) = at(&roll.view, g, 0, *key);
-        let edits = roll.drag(x, y, g, &notes, 4);
+        let edits = roll.drag(x, y, g, &notes);
         apply(&mut notes, &edits);
     }
 
@@ -133,11 +133,11 @@ fn a_right_drag_that_starts_on_empty_grid_still_erases_what_it_reaches() {
 
     // Down on nothing, which is how a sweep across a sparse bar begins.
     let (x, y) = at(&roll.view, g, 0, 67);
-    let first = roll.press(MouseButton::Right, x, y, g, &notes, 4);
+    let first = roll.press(MouseButton::Right, x, y, g, &notes);
     assert!(first.is_empty(), "there was nothing there to remove");
 
     let (x, y) = at(&roll.view, g, 0, 60);
-    let edits = roll.drag(x, y, g, &notes, 4);
+    let edits = roll.drag(x, y, g, &notes);
     apply(&mut notes, &edits);
 
     assert!(
@@ -154,7 +154,7 @@ fn an_erase_held_still_over_bare_grid_asks_for_nothing() {
     notes.insert(note(0, 60));
 
     let (x, y) = at(&roll.view, g, 0, 60);
-    let first = roll.press(MouseButton::Right, x, y, g, &notes, 4);
+    let first = roll.press(MouseButton::Right, x, y, g, &notes);
     apply(&mut notes, &first);
     assert!(notes.is_empty());
 
@@ -162,7 +162,7 @@ fn an_erase_held_still_over_bare_grid_asks_for_nothing() {
     // ask for it again — `apply` panics on a second removal, and so would the
     // real history.
     for step in 0..5 {
-        let again = roll.drag(x, y, g, &notes, 4);
+        let again = roll.drag(x, y, g, &notes);
         assert!(
             again.is_empty(),
             "step {step}: a stationary erase asked for {again:?}"
@@ -180,9 +180,9 @@ fn a_right_drag_neither_moves_a_note_nor_draws_a_selection_box() {
     // Down on empty grid, then a long drag across it — the shape that would
     // otherwise be a marquee, or a move if it had caught a note.
     let (x, y) = at(&roll.view, g, 0, 64);
-    roll.press(MouseButton::Right, x, y, g, &notes, 4);
+    roll.press(MouseButton::Right, x, y, g, &notes);
     for step in 1..6 {
-        let edits = roll.drag(x + step as f32 * 20.0, y + step as f32 * 6.0, g, &notes, 4);
+        let edits = roll.drag(x + step as f32 * 20.0, y + step as f32 * 6.0, g, &notes);
         apply(&mut notes, &edits);
     }
 
@@ -208,11 +208,11 @@ fn the_delete_tool_sweeps_on_a_left_drag_the_same_way() {
     }
 
     let (x, y) = at(&roll.view, g, 0, 60);
-    let first = roll.press(MouseButton::Left, x, y, g, &notes, 4);
+    let first = roll.press(MouseButton::Left, x, y, g, &notes);
     apply(&mut notes, &first);
     for key in [61, 62] {
         let (x, y) = at(&roll.view, g, 0, key);
-        let edits = roll.drag(x, y, g, &notes, 4);
+        let edits = roll.drag(x, y, g, &notes);
         apply(&mut notes, &edits);
     }
 
@@ -285,12 +285,12 @@ fn a_right_drag_erases_every_clip_it_crosses() {
     let mut items = clips(&[(0, PPQN * 4, 0), (0, PPQN * 4, 1), (0, PPQN * 4, 2)]);
 
     let (x, y) = clip_at(&timeline.view, &l, &items[0]);
-    let first = timeline.press(MouseButton::Right, x, y, &l, &items, 4);
+    let first = timeline.press(MouseButton::Right, x, y, &l, &items);
     apply_clips(&mut items, &first);
 
     while let Some(next) = items.first().cloned() {
         let (x, y) = clip_at(&timeline.view, &l, &next);
-        let edits = timeline.drag(x, y, &l, &items, 4);
+        let edits = timeline.drag(x, y, &l, &items);
         assert!(
             !edits.is_empty(),
             "the sweep reached a clip and passed over it"
@@ -308,7 +308,7 @@ fn erasing_a_clip_does_not_open_it_in_the_roll() {
     let items = clips(&[(0, PPQN * 4, 0)]);
 
     let (x, y) = clip_at(&timeline.view, &l, &items[0]);
-    timeline.press(MouseButton::Right, x, y, &l, &items, 4);
+    timeline.press(MouseButton::Right, x, y, &l, &items);
 
     assert!(
         timeline.take_open().is_none(),
@@ -323,12 +323,12 @@ fn an_arrangement_erase_held_still_asks_for_nothing() {
     let mut items = clips(&[(0, PPQN * 4, 0)]);
 
     let (x, y) = clip_at(&timeline.view, &l, &items[0]);
-    let first = timeline.press(MouseButton::Right, x, y, &l, &items, 4);
+    let first = timeline.press(MouseButton::Right, x, y, &l, &items);
     apply_clips(&mut items, &first);
     assert!(items.is_empty());
 
     for step in 0..5 {
-        let again = timeline.drag(x, y, &l, &items, 4);
+        let again = timeline.drag(x, y, &l, &items);
         assert!(
             again.is_empty(),
             "step {step}: a stationary erase asked for {again:?}"

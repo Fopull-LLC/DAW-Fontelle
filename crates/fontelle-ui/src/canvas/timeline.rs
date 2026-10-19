@@ -21,9 +21,10 @@ use std::ops::Range;
 
 use fontelle_types::{ClipId, ClipStretch, PPQN, PointId, Tick};
 
+use crate::canvas::MeterView;
 use crate::canvas::automation::{automation_block, block_tick_at, block_value_at};
 use crate::canvas::menu::MenuEntry;
-use crate::canvas::piano_roll::{SnapDivision, snap_tick, snap_unit, subdivision_unit};
+use crate::canvas::piano_roll::{SnapDivision, subdivision_unit};
 use crate::canvas::{Modifiers, MouseButton, clamp_to_grid};
 use crate::document::{ClipInfo, ClipKind};
 use crate::layout::Rect;
@@ -1078,20 +1079,27 @@ const TICK_LINE_PX: f32 = 6.0;
 /// on screen to read a drag against — half the reason the snap-off drag
 /// "looks extremely smooth". Beats come in once a beat has room, the
 /// subdivision after them, and single ticks at the deepest zooms.
-pub fn timeline_grid_units(view: &TimelineView, beats_per_bar: u32) -> Vec<(Tick, TimelineLine)> {
+///
+/// `bar` and `beat` are the lengths in view (the meter's, where the view
+/// starts): the levels are chosen by how wide those are on screen.
+pub fn timeline_grid_units(
+    view: &TimelineView,
+    bar: Tick,
+    beat: Tick,
+) -> Vec<(Tick, TimelineLine)> {
     let ppt = view.pixels_per_tick;
-    let bar = PPQN * Tick::from(beats_per_bar.max(1));
-    let sub = subdivision_unit(view.snap, beats_per_bar);
+    let bar = bar.max(1);
+    let sub = subdivision_unit(view.snap);
     let wide = |unit: Tick, px: f32| unit > 0 && unit as f32 * ppt >= px;
     let mut units = Vec::new();
     if wide(1, TICK_LINE_PX) {
         units.push((1, TimelineLine::Tick));
     }
-    if sub < PPQN && wide(sub, FINE_LINE_PX) {
+    if sub < beat && wide(sub, FINE_LINE_PX) {
         units.push((sub, TimelineLine::Sub));
     }
-    if PPQN < bar && wide(PPQN, FINE_LINE_PX) {
-        units.push((PPQN, TimelineLine::Beat));
+    if beat < bar && wide(beat, FINE_LINE_PX) {
+        units.push((beat, TimelineLine::Beat));
     }
     if wide(bar, BAR_LINE_PX) {
         units.push((bar, TimelineLine::Bar));
@@ -1120,49 +1128,6 @@ const LABEL_UNITS: [Tick; 9] = [
     5,
     1,
 ];
-
-/// The ruler's numbers finer than a bar, on screen: `"bar.beat"` on a beat,
-/// `"bar.beat.tick"` between beats once there is room for them. A bar's own
-/// first beat is left out — it is the bar number, drawn already.
-///
-/// Zoomed in far enough, a bar and then a beat is wider than the panel, and
-/// the ruler had no number on it at all: nowhere to read where you are
-/// while placing an edge by the tick.
-pub fn timeline_beat_labels(
-    view: &TimelineView,
-    grid: Rect,
-    beats_per_bar: u32,
-) -> Vec<(Tick, String)> {
-    let beats = Tick::from(beats_per_bar.max(1));
-    let ppt = view.pixels_per_tick;
-    if (PPQN as f32) * ppt < BEAT_LABEL_PX {
-        return Vec::new();
-    }
-    let unit = LABEL_UNITS
-        .iter()
-        .copied()
-        .rfind(|unit| (*unit as f32) * ppt >= FINE_LABEL_PX)
-        .unwrap_or(PPQN);
-    let bar = PPQN * beats;
-    let ticks = timeline_visible_ticks(view, grid);
-    let mut tick = ticks.start + (unit - ticks.start.rem_euclid(unit)) % unit;
-    let mut labels = Vec::new();
-    while tick < ticks.end {
-        if tick % bar != 0 {
-            let (number, beat, within) = (tick / bar + 1, tick % bar / PPQN + 1, tick % PPQN);
-            labels.push((
-                tick,
-                if within == 0 {
-                    format!("{number}.{beat}")
-                } else {
-                    format!("{number}.{beat}.{within}")
-                },
-            ));
-        }
-        tick += unit;
-    }
-    labels
-}
 
 /// The lanes the grid can show, clamped to how many the project has.
 pub fn visible_lanes(view: &TimelineView, grid: Rect, lane_count: usize) -> Range<usize> {
@@ -1258,7 +1223,7 @@ pub fn clip_cuts(
     from: (f32, f32),
     to: (f32, f32),
     snap: SnapDivision,
-    beats_per_bar: u32,
+    meter: &MeterView,
 ) -> Vec<(ClipId, Tick)> {
     let mut cuts = Vec::new();
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
@@ -1270,7 +1235,6 @@ pub fn clip_cuts(
         return cuts; // drawn along the rows: it crosses none of their middles
     }
 
-    let snapper = TimelineView { snap, ..*view };
     for clip in clips {
         let row = lane_to_y(view, grid, clip.lane) + view.lane_height / 2.0;
         let along = (row - from.1) / dy;
@@ -1278,7 +1242,7 @@ pub fn clip_cuts(
             continue; // the row is beyond one end of the stroke
         }
         let x = from.0 + dx * along;
-        let at = timeline_snap(&snapper, timeline_x_to_tick(view, grid, x), beats_per_bar);
+        let at = meter.snap(timeline_x_to_tick(view, grid, x), snap);
         if at <= clip.start || at >= clip.start + clip.length {
             continue;
         }
@@ -1311,13 +1275,13 @@ pub fn slice_marks(
     from: (f32, f32),
     to: (f32, f32),
     snap: SnapDivision,
-    beats_per_bar: u32,
+    meter: &MeterView,
 ) -> Vec<Rect> {
     /// How wide the mark is. Two pixels: thick enough to see against a clip's
     /// own fill, thin enough that it reads as a *place* rather than as a
     /// region — a cut has no width.
     const WIDTH: f32 = 2.0;
-    clip_cuts(view, grid, clips, from, to, snap, beats_per_bar)
+    clip_cuts(view, grid, clips, from, to, snap, meter)
         .into_iter()
         .filter_map(|(id, at)| {
             let clip = clips.iter().find(|clip| clip.id == id)?;
@@ -1694,10 +1658,10 @@ pub fn time_selection(
     anchor: Tick,
     to: Tick,
     snap: SnapDivision,
-    beats_per_bar: u32,
+    meter: &MeterView,
 ) -> Option<(Tick, Tick)> {
-    let a = snap_tick(anchor.max(0), snap, beats_per_bar);
-    let b = snap_tick(to.max(0), snap, beats_per_bar);
+    let a = meter.snap(anchor.max(0), snap);
+    let b = meter.snap(to.max(0), snap);
     let (from, to) = (a.min(b), a.max(b));
     (to > from).then_some((from, to))
 }
@@ -2024,10 +1988,16 @@ enum Gesture {
     Moving {
         applied_tick: Tick,
         applied_lane: i32,
+        /// Where the grabbed clip started: what lands on the grid. The
+        /// selection moves so that **this** sits on a line, and every other
+        /// clip keeps its distance from it.
+        anchor: Tick,
         limits: MoveLimits,
     },
     Resizing {
         applied_tick: Tick,
+        /// Where the grabbed clip ended: what lands on the grid.
+        anchor: Tick,
         /// The shortest clip in the selection when the gesture started — same
         /// reason as [`MoveLimits`].
         shortest: Tick,
@@ -2052,6 +2022,8 @@ enum Gesture {
     /// The left grip of the audio clips in the selection.
     TrimmingStart {
         applied_tick: Tick,
+        /// Where the grabbed clip started: what lands on the grid.
+        anchor: Tick,
         /// The furthest left the fronts may go: the song's start under the
         /// earliest of them.
         earliest: Tick,
@@ -2168,9 +2140,9 @@ pub enum TimelineTool {
 /// mouse is doing.
 pub struct Timeline {
     pub view: TimelineView,
-    /// The song's meter, so snapping to a bar lands on a bar line wherever
-    /// the signature changes (`set_meter`).
-    meter: fontelle_types::Meter,
+    /// The song's meter, which every snap, step and copy here is measured
+    /// in (`set_meter`): a bar as long as the signature it is in.
+    meter: MeterView,
     tool: TimelineTool,
     /// The Stretch switch — see [`TimelineControl::Stretch`]. Off until it
     /// is pressed.
@@ -2230,23 +2202,34 @@ pub struct Timeline {
 impl Timeline {
     /// The song's meter, as the window last read it.
     pub fn set_meter(&mut self, meter: fontelle_types::Meter) {
-        self.meter = meter;
+        self.meter = MeterView::song(meter);
     }
 
-    /// `tick` on the grid: a bar snap lands on the meter's nearest bar
-    /// line, any finer snap as it always did.
-    pub fn snapped(&self, tick: Tick, beats_per_bar: u32) -> Tick {
-        if self.view.snap == SnapDivision::Bar {
-            self.meter.nearest_bar(tick)
+    pub fn meter(&self) -> &MeterView {
+        &self.meter
+    }
+
+    /// `tick` on the arrangement's grid, never before the song.
+    pub fn snapped(&self, tick: Tick) -> Tick {
+        self.meter.snap(tick, self.view.snap)
+    }
+
+    /// How far a drag that has moved `raw` ticks from its press moves what it
+    /// holds, so that `anchor` — the grabbed clip's edge — lands on the grid:
+    /// a bar of whatever signature it lands in. With the snap off, the
+    /// magnet's.
+    fn landed(&mut self, anchor: Tick, raw: Tick) -> Tick {
+        if super::grid_step(self.view.snap).is_some() {
+            self.meter.snap(anchor + raw, self.view.snap) - anchor
         } else {
-            timeline_snap(&self.view, tick, beats_per_bar)
+            self.magnetised(raw)
         }
     }
 
     pub fn new(view: TimelineView) -> Self {
         Self {
             view,
-            meter: fontelle_types::Meter::constant(4),
+            meter: MeterView::default(),
             tool: TimelineTool::default(),
             stretch: false,
             selection: Vec::new(),
@@ -2405,7 +2388,6 @@ impl Timeline {
         y: f32,
         layout: &TimelineLayout,
         clips: &[ClipInfo],
-        beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
         self.magnet = Magnet::default();
         self.magnet_at = None;
@@ -2497,7 +2479,10 @@ impl Timeline {
                     self.gesture = Gesture::None;
                     return Vec::new();
                 };
-                let snapped = self.snapped(tick, beats_per_bar).clamp(0, clip.length);
+                let snapped = self
+                    .meter
+                    .snap_in(clip.start, tick, self.view.snap)
+                    .clamp(0, clip.length);
                 let block = clip_rect(&self.view, layout.grid, clip);
                 let area = automation_block(block, clip).area;
                 self.gesture = Gesture::MovingPoints {
@@ -2637,6 +2622,9 @@ impl Timeline {
                     timeline_x_to_tick(&self.view, layout.grid, x),
                     y_to_lane(&self.view, layout.grid, y),
                 );
+                let grabbed = clips.iter().find(|c| c.id == id);
+                let grabbed_start = grabbed.map_or(self.origin.0, |c| c.start);
+                let grabbed_end = grabbed.map_or(self.origin.0, |c| c.start + c.length);
                 self.gesture = match part {
                     ClipPart::LeftEdge => {
                         let audio = self
@@ -2648,12 +2636,14 @@ impl Timeline {
                             });
                         Gesture::TrimmingStart {
                             applied_tick: 0,
+                            anchor: grabbed_start,
                             earliest: if earliest == Tick::MAX { 0 } else { earliest },
                             shortest: if shortest == Tick::MAX { 1 } else { shortest },
                         }
                     }
                     ClipPart::RightEdge => Gesture::Resizing {
                         applied_tick: 0,
+                        anchor: grabbed_end,
                         shortest: self.shortest_selected(clips),
                         // Shift on the edge grip means **loop**, and it is
                         // decided here rather than read live: a modifier let
@@ -2670,6 +2660,7 @@ impl Timeline {
                     | ClipPart::FadeNode(_) => Gesture::Moving {
                         applied_tick: 0,
                         applied_lane: 0,
+                        anchor: grabbed_start,
                         limits: MoveLimits::of(&self.selection, clips),
                     },
                 };
@@ -2716,11 +2707,10 @@ impl Timeline {
                 // which is the host's to make (`ArrangeEdit::Paint`).
                 if self.tool == TimelineTool::Paint {
                     let source = self.stamp.filter(|id| clips.iter().any(|c| c.id == *id));
-                    let bar = PPQN * i64::from(beats_per_bar.max(1));
+                    let start = self.snapped(tick).max(0);
                     let period = source
                         .and_then(|id| clips.iter().find(|c| c.id == id))
-                        .map_or(bar, |clip| clip.length.max(1));
-                    let start = self.snapped(tick, beats_per_bar).max(0);
+                        .map_or(self.meter.bar_ticks_at(start), |clip| clip.length.max(1));
                     self.gesture = Gesture::Painting {
                         source,
                         row: lane,
@@ -2746,7 +2736,7 @@ impl Timeline {
                 // off the bar is one somebody has to nudge before they can use
                 // it, and the snap is right there in the toolbar saying what
                 // it should have been.
-                let start = self.snapped(tick, beats_per_bar).max(0);
+                let start = self.snapped(tick).max(0);
                 // *"to create a copy of your last selected item its shift +
                 // click."* A copy of the clip in hand, when there is one and
                 // it is still there. Nothing in hand is nothing to copy, and
@@ -2765,7 +2755,6 @@ impl Timeline {
             }
             _ => {
                 self.gesture = Gesture::None;
-                let _ = beats_per_bar;
                 Vec::new()
             }
         }
@@ -2793,7 +2782,6 @@ impl Timeline {
         y: f32,
         layout: &TimelineLayout,
         clips: &[ClipInfo],
-        beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
         self.gesture = Gesture::None;
         if button != MouseButton::Left || self.modifiers.shift {
@@ -2806,7 +2794,7 @@ impl Timeline {
         }
         match timeline_grab(&self.view, layout, clips, x, y) {
             TimelineHit::Empty { tick, lane } => {
-                let start = self.snapped(tick, beats_per_bar).max(0);
+                let start = self.snapped(tick).max(0);
                 vec![ArrangeEdit::Add { lane, start }]
             }
             // **A fade's way back.** Double-click on a handle takes the fade
@@ -2869,7 +2857,6 @@ impl Timeline {
         // parameter was kept: it holds no state, so the live clips are the
         // only thing that can tell it what is still under the pointer.
         clips: &[ClipInfo],
-        beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
         let grid = layout.grid;
         // Clamped for the reason the roll clamps: a drag that strays off the
@@ -3033,10 +3020,14 @@ impl Timeline {
                 };
                 let block = clip_rect(&self.view, grid, clip);
                 let area = automation_block(block, clip).area;
-                let unit = snap_unit(self.view.snap, beats_per_bar);
+                // Line to line on the grid of the bar it is in, in the
+                // clip's own ticks: the press's line, moved as far as the
+                // pointer has, and snapped there.
                 let raw = block_tick_at(area, clip.length, cx) - origin_tick;
-                let wanted_tick = if unit > 0 {
-                    (raw as f64 / unit as f64).round() as Tick * unit
+                let snap = self.view.snap;
+                let wanted_tick = if super::grid_step(snap).is_some() {
+                    let base = self.meter.snap_in(clip.start, origin_tick, snap);
+                    self.meter.snap_in(clip.start, base + raw, snap) - base
                 } else {
                     raw
                 }
@@ -3068,18 +3059,14 @@ impl Timeline {
             Gesture::Moving {
                 applied_tick,
                 applied_lane,
+                anchor,
                 limits,
             } => {
                 if self.selection.is_empty() {
                     return Vec::new();
                 }
-                let unit = snap_unit(self.view.snap, beats_per_bar);
                 let raw = tick - self.origin.0;
-                let wanted_tick = if unit > 0 {
-                    (raw as f64 / unit as f64).round() as Tick * unit
-                } else {
-                    self.magnetised(raw)
-                };
+                let wanted_tick = self.landed(anchor, raw);
                 // Never before the start of the song, and never above the
                 // first lane — against the limits this gesture *started* with.
                 let wanted_tick = wanted_tick.max(limits.min_tick);
@@ -3095,6 +3082,7 @@ impl Timeline {
                 self.gesture = Gesture::Moving {
                     applied_tick: wanted_tick,
                     applied_lane: wanted_lane,
+                    anchor,
                     limits,
                 };
                 vec![ArrangeEdit::Move {
@@ -3106,6 +3094,7 @@ impl Timeline {
 
             Gesture::TrimmingStart {
                 applied_tick,
+                anchor,
                 earliest,
                 shortest,
             } => {
@@ -3117,13 +3106,9 @@ impl Timeline {
                 if ids.is_empty() {
                     return Vec::new();
                 }
-                let unit = snap_unit(self.view.snap, beats_per_bar);
                 let raw = tick - self.origin.0;
-                let wanted = if unit > 0 {
-                    (raw as f64 / unit as f64).round() as Tick * unit
-                } else {
-                    self.magnetised(raw)
-                };
+                let wanted = self.landed(anchor, raw);
+                let unit = self.meter.unit_at(anchor, self.view.snap);
                 // Not before the song, and never past the other edge: at
                 // least a snap unit of block is left.
                 let wanted = wanted.max(-earliest).min((shortest - unit.max(1)).max(0));
@@ -3133,6 +3118,7 @@ impl Timeline {
                 }
                 self.gesture = Gesture::TrimmingStart {
                     applied_tick: wanted,
+                    anchor,
                     earliest,
                     shortest,
                 };
@@ -3144,6 +3130,7 @@ impl Timeline {
 
             Gesture::Resizing {
                 applied_tick,
+                anchor,
                 shortest,
                 looping,
                 ref periods,
@@ -3153,13 +3140,9 @@ impl Timeline {
                 if self.selection.is_empty() {
                     return Vec::new();
                 }
-                let unit = snap_unit(self.view.snap, beats_per_bar);
                 let raw = tick - self.origin.0;
-                let wanted = if unit > 0 {
-                    (raw as f64 / unit as f64).round() as Tick * unit
-                } else {
-                    self.magnetised(raw)
-                };
+                let wanted = self.landed(anchor, raw);
+                let unit = self.meter.unit_at(anchor, self.view.snap);
                 // Never past nothing: the shortest a clip may become is one
                 // snap unit, measured against the length it had when the drag
                 // started.
@@ -3171,6 +3154,7 @@ impl Timeline {
                 let first = applied_tick == 0;
                 self.gesture = Gesture::Resizing {
                     applied_tick: wanted,
+                    anchor,
                     shortest,
                     looping,
                     periods: periods.clone(),
@@ -3317,7 +3301,6 @@ impl Timeline {
         y: f32,
         layout: &TimelineLayout,
         clips: &[ClipInfo],
-        beats_per_bar: u32,
     ) -> Vec<ArrangeEdit> {
         let mut edits = Vec::new();
         match self.gesture {
@@ -3345,7 +3328,7 @@ impl Timeline {
                     from,
                     (x, y),
                     self.view.snap,
-                    beats_per_bar,
+                    &self.meter,
                 );
                 if !cuts.is_empty() {
                     edits.push(ArrangeEdit::Split { cuts });
@@ -3538,6 +3521,39 @@ impl Timeline {
         }]
     }
 
+    /// How far one arrow key moves the selection, signed: from the
+    /// earliest selected clip's start (or, `resize`, its end) to the next
+    /// line of the arrangement's grid — the bar's, with `by_bar` — or the
+    /// last one before it. A bar is the bar the clip is in, whatever its
+    /// signature. With the snap off, a beat.
+    pub fn arrow_delta(
+        &self,
+        clips: &[ClipInfo],
+        forward: bool,
+        by_bar: bool,
+        resize: bool,
+    ) -> Tick {
+        let anchor = if resize {
+            self.selected(clips).map(|c| c.start + c.length).min()
+        } else {
+            self.selected(clips).map(|c| c.start).min()
+        }
+        .unwrap_or(0);
+        let snap = if by_bar {
+            SnapDivision::Bar
+        } else if self.view.snap == SnapDivision::None {
+            SnapDivision::Beat
+        } else {
+            self.view.snap
+        };
+        let to = if forward {
+            self.meter.next(anchor, snap)
+        } else {
+            self.meter.previous(anchor, snap)
+        };
+        to - anchor
+    }
+
     /// Lengthens or shortens the selection, floored at its shortest clip.
     pub fn resize_selection(&mut self, clips: &[ClipInfo], tick_delta: Tick) -> Vec<ArrangeEdit> {
         if self.selection.is_empty() {
@@ -3569,7 +3585,7 @@ impl Timeline {
     /// Rounded up to the next bar, so duplicating a phrase produces a phrase
     /// twice as long rather than an overlap nobody asked for — the same rule
     /// the roll's duplicate follows.
-    pub fn duplicate(&mut self, clips: &[ClipInfo], beats_per_bar: u32) -> Vec<ArrangeEdit> {
+    pub fn duplicate(&mut self, clips: &[ClipInfo]) -> Vec<ArrangeEdit> {
         if self.selection.is_empty() {
             return Vec::new();
         }
@@ -3579,9 +3595,9 @@ impl Timeline {
             .map(|c| c.start + c.length)
             .max()
             .unwrap_or(earliest);
-        let bar = PPQN * Tick::from(beats_per_bar.max(1));
-        let landing = (end + bar - 1) / bar * bar;
-        let offset = (landing - earliest).max(bar);
+        // As many whole bars on as the selection spans, on the same beat of
+        // its bar — bars of whatever signature they are in.
+        let offset = self.meter.copy_starts(earliest, end, 1)[0] - earliest;
         vec![ArrangeEdit::Duplicate {
             ids: self.selection.clone(),
             tick_offset: offset,
@@ -3660,8 +3676,8 @@ impl Timeline {
     /// Snapped here for the reason `PianoRoll::paste` snaps there: `at` comes
     /// from the playhead or from the pointer, and neither of those is ever on
     /// a bar line by itself.
-    pub fn paste(&mut self, at: Tick, beats_per_bar: u32) -> Vec<ArrangeEdit> {
-        let at = self.snapped(at.max(0), beats_per_bar).max(0);
+    pub fn paste(&mut self, at: Tick) -> Vec<ArrangeEdit> {
+        let at = self.snapped(at.max(0)).max(0);
         vec![ArrangeEdit::Paste { at }]
     }
 
@@ -3672,12 +3688,7 @@ impl Timeline {
     /// per copy rather than one edit meaning "n copies", because each copy's
     /// offset is different and a single edit carrying a count would have to
     /// re-derive them somewhere that cannot see the clips.
-    pub fn repeat(
-        &mut self,
-        clips: &[ClipInfo],
-        times: usize,
-        beats_per_bar: u32,
-    ) -> Vec<ArrangeEdit> {
+    pub fn repeat(&mut self, clips: &[ClipInfo], times: usize) -> Vec<ArrangeEdit> {
         if self.selection.is_empty() || times == 0 {
             return Vec::new();
         }
@@ -3687,15 +3698,15 @@ impl Timeline {
             .map(|c| c.start + c.length)
             .max()
             .unwrap_or(earliest);
-        // The span the selection occupies, rounded up to a bar so a loop that
-        // is not quite a whole number of bars still repeats on the beat.
-        let bar = PPQN * Tick::from(beats_per_bar.max(1));
-        let span = (end - earliest).max(1);
-        let stride = (span + bar - 1) / bar * bar;
-        (1..=times as Tick)
-            .map(|n| ArrangeEdit::Duplicate {
+        // The span the selection occupies, rounded up to whole bars so a loop
+        // that is not quite a whole number of bars still repeats on the beat
+        // — bars of whatever signature each copy lands in.
+        self.meter
+            .copy_starts(earliest, end.max(earliest + 1), times)
+            .into_iter()
+            .map(|start| ArrangeEdit::Duplicate {
                 ids: self.selection.clone(),
-                tick_offset: stride * n,
+                tick_offset: start - earliest,
             })
             .collect()
     }
@@ -3776,12 +3787,6 @@ fn box_between(a: (f32, f32), b: (f32, f32)) -> Rect {
 /// line, and a line through a row of clips is an ordinary way to select them.
 fn taut(box_: Rect) -> Rect {
     Rect::new(box_.x, box_.y, box_.width.max(1.0), box_.height.max(1.0))
-}
-
-/// Snaps a tick to the arrangement's grid — re-exported here so callers that
-/// have a `TimelineView` do not have to reach into the roll for it.
-pub fn timeline_snap(view: &TimelineView, tick: Tick, beats_per_bar: u32) -> Tick {
-    snap_tick(tick, view.snap, beats_per_bar)
 }
 
 // -------------------------------------------------------- loop seams ---
@@ -3889,7 +3894,7 @@ pub fn lane_track_chip(header: Rect) -> Rect {
 const CLICK_SLOP_PX: f32 = 3.0;
 
 /// How many bars the ghost spans.
-const GHOST_BARS: i64 = 2;
+const GHOST_BARS: u32 = 2;
 
 /// Where the ghost of a first clip is drawn: two bars from the start of the
 /// first lane, inset like a block — or `None` once there is any clip at all,
@@ -3899,14 +3904,13 @@ pub fn ghost_clip(
     grid: Rect,
     clips: &[ClipInfo],
     lanes: usize,
-    beats_per_bar: u32,
+    meter: &fontelle_types::Meter,
 ) -> Option<Rect> {
     if !clips.is_empty() || lanes == 0 || grid.is_empty() {
         return None;
     }
-    let bar = fontelle_types::PPQN * i64::from(beats_per_bar.max(1));
     let x0 = timeline_tick_to_x(view, grid, 0);
-    let x1 = timeline_tick_to_x(view, grid, bar * GHOST_BARS);
+    let x1 = timeline_tick_to_x(view, grid, meter.tick_of_bar(GHOST_BARS));
     // Never thinner than a word, so a zoomed-out arrangement still has one.
     let width = (x1 - x0).max(96.0);
     let rect = Rect::new(x0, lane_to_y(view, grid, 0), width, view.lane_height).inset(2.0);
@@ -4125,7 +4129,7 @@ pub fn clip_menu_edits(
     clip: &ClipInfo,
     selection: &[ClipId],
     clips: &[ClipInfo],
-    beats_per_bar: u32,
+    meter: &MeterView,
 ) -> Vec<ArrangeEdit> {
     let ids: Vec<ClipId> = if selection.contains(&clip.id) {
         selection.to_vec()
@@ -4144,8 +4148,9 @@ pub fn clip_menu_edits(
         }],
         ClipMenuRow::Duplicate => {
             let mut timeline = Timeline::new(TimelineView::default());
+            timeline.set_meter(meter.meter().clone());
             timeline.select(ids);
-            timeline.duplicate(clips, beats_per_bar)
+            timeline.duplicate(clips)
         }
         ClipMenuRow::Loop => ids
             .iter()
@@ -4176,16 +4181,28 @@ pub fn timeline_grid_lines(
     meter: &fontelle_types::Meter,
 ) -> Vec<(Tick, TimelineLine)> {
     let ticks = timeline_visible_ticks(view, grid);
-    let levels = timeline_grid_units(view, meter.beats_in_bar(0));
+    let (bar_here, _) = meter.bar_at(ticks.start.max(0));
+    let levels = timeline_grid_units(view, meter.bar_ticks(bar_here), meter.beat_ticks(bar_here));
     let has = |level: TimelineLine| levels.iter().any(|(_, l)| *l == level);
     let mut lines = Vec::new();
+    let view_of = MeterView::song(meter.clone());
     for (unit, level) in &levels {
-        if matches!(level, TimelineLine::Tick | TimelineLine::Sub) {
-            let mut tick = ticks.start - ticks.start.rem_euclid(*unit);
-            while tick < ticks.end {
-                lines.push((tick, *level));
-                tick += unit;
+        match level {
+            TimelineLine::Tick => {
+                let mut tick = ticks.start - ticks.start.rem_euclid(*unit);
+                while tick < ticks.end {
+                    lines.push((tick, *level));
+                    tick += unit;
+                }
             }
+            // From each bar line, so they meet it in any signature.
+            TimelineLine::Sub => lines.extend(
+                view_of
+                    .fine_lines(ticks.start.max(0)..ticks.end, *unit)
+                    .into_iter()
+                    .map(|t| (t, TimelineLine::Sub)),
+            ),
+            _ => {}
         }
     }
     let placed = meter.lines(ticks.start.max(0)..ticks.end);
@@ -4193,7 +4210,12 @@ pub fn timeline_grid_lines(
         lines.extend(
             placed
                 .iter()
-                .filter(|(_, l)| *l == fontelle_types::MeterLine::Beat)
+                .filter(|(_, l)| {
+                    matches!(
+                        l,
+                        fontelle_types::MeterLine::Beat | fontelle_types::MeterLine::Group
+                    )
+                })
                 .map(|(t, _)| (*t, TimelineLine::Beat)),
         );
     }
@@ -4222,20 +4244,30 @@ pub fn timeline_bar_numbers(
         .into_iter()
         .filter_map(|(t, l)| match l {
             fontelle_types::MeterLine::Bar(n) => Some((t, n + 1)),
-            fontelle_types::MeterLine::Beat => None,
+            fontelle_types::MeterLine::Beat | fontelle_types::MeterLine::Group => None,
         })
         .collect()
 }
 
-/// [`timeline_beat_labels`], counted by the song's meter: `"bar.beat"` on a
-/// beat, `"bar.beat.tick"` between beats, each bar's own beat length.
-pub fn timeline_beat_labels_in(
+/// The ruler's numbers finer than a bar, on screen: `"bar.beat"` on a beat,
+/// `"bar.beat.tick"` between beats once there is room for them, each bar
+/// counted in its own signature's beats. A bar's own first beat is left out
+/// — it is the bar number, drawn already.
+///
+/// Zoomed in far enough, a bar and then a beat is wider than the panel, and
+/// the ruler had no number on it at all: nowhere to read where you are
+/// while placing an edge by the tick. The finer numbers are counted from
+/// each beat, so they sit on the beat lines in any signature.
+pub fn timeline_beat_labels(
     view: &TimelineView,
     grid: Rect,
     meter: &fontelle_types::Meter,
 ) -> Vec<(Tick, String)> {
     let ppt = view.pixels_per_tick;
-    if (meter.beat_ticks(0) as f32) * ppt < BEAT_LABEL_PX {
+    let ticks = timeline_visible_ticks(view, grid);
+    let from = ticks.start.max(0);
+    let (bar_here, _) = meter.bar_at(from);
+    if (meter.beat_ticks(bar_here) as f32) * ppt < BEAT_LABEL_PX {
         return Vec::new();
     }
     let unit = LABEL_UNITS
@@ -4243,22 +4275,32 @@ pub fn timeline_beat_labels_in(
         .copied()
         .rfind(|unit| (*unit as f32) * ppt >= FINE_LABEL_PX)
         .unwrap_or(PPQN);
-    let ticks = timeline_visible_ticks(view, grid);
-    let mut tick = ticks.start.max(0) + (unit - ticks.start.max(0).rem_euclid(unit)) % unit;
     let mut labels = Vec::new();
-    while tick < ticks.end {
-        let (bar, beat, within) = meter.beat_at(tick);
-        if beat != 0 || within != 0 {
-            labels.push((
-                tick,
-                if within == 0 {
-                    format!("{}.{}", bar + 1, beat + 1)
-                } else {
-                    format!("{}.{}.{within}", bar + 1, beat + 1)
-                },
-            ));
+    // From the beat the view starts in, so its finer numbers are there too.
+    let (bar, beat, _) = meter.beat_at(from);
+    let first = meter.beat_tick(bar, beat);
+    let mut beats = meter.clicks(first..ticks.end).into_iter().peekable();
+    while let Some((start, _)) = beats.next() {
+        let next = beats.peek().map_or_else(
+            || meter.next_line(start, fontelle_types::GridStep::Beat),
+            |b| b.0,
+        );
+        let (bar, beat, _) = meter.beat_at(start);
+        let mut tick = start;
+        while tick < next && tick < ticks.end {
+            let within = tick - start;
+            if tick >= ticks.start && (beat != 0 || within != 0) {
+                labels.push((
+                    tick,
+                    if within == 0 {
+                        format!("{}.{}", bar + 1, beat + 1)
+                    } else {
+                        format!("{}.{}.{within}", bar + 1, beat + 1)
+                    },
+                ));
+            }
+            tick += unit;
         }
-        tick += unit;
     }
     labels
 }
@@ -4283,7 +4325,14 @@ pub fn meter_flags(
             }
             let x = timeline_tick_to_x(view, grid, tick);
             let height = (ruler.height - 4.0).max(0.0);
-            let flag = Rect::new(x + 24.0, ruler.y + 2.0, 34.0, height);
+            // As wide as what it says: "7/8" and "3+2+2/8" are both a flag.
+            let chars = change.signature().label().chars().count() as f32;
+            let flag = Rect::new(
+                x + 24.0,
+                ruler.y + 2.0,
+                (chars * 7.0 + 12.0).max(34.0),
+                height,
+            );
             (flag.right() > grid.x).then_some((change.bar, flag))
         })
         .collect()

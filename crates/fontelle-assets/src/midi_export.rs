@@ -357,28 +357,29 @@ fn mpe_track<'a>(name: &'a [u8], notes: &[&PlacedNote]) -> Vec<TrackEvent<'a>> {
 fn tempo_track(project: &Project) -> Vec<TrackEvent<'static>> {
     let mut events: Vec<(Tick, TrackEventKind)> = Vec::new();
 
-    // 4/4 unless the project counts otherwise; the denominator is always four
-    // (PPQN is ticks per quarter — see `Project::beats_per_bar`). The two
-    // trailing fields are the file-standard 24 MIDI clocks per metronome click
-    // and 8 thirty-second notes per quarter.
-    let numerator = project.beats_per_bar.clamp(1, 255) as u8;
-    events.push((
-        0,
-        TrackEventKind::Meta(MetaMessage::TimeSignature(numerator, 2, 24, 8)),
-    ));
-    // And every change, at the bar it starts: the denominator as the power
-    // of two the file writes it as (8 is 3).
+    // The song's own signature at the top, then every change at the bar it
+    // starts. A file writes the beat as a power of two (8 is 3), so a bottom
+    // no power of two is — the 3 of 4/3 — goes in as the nearest one; the
+    // bars themselves are where the song puts them, because every note is at
+    // its tick. The click is one written beat (`96 / 2^power` MIDI clocks,
+    // 24 to a quarter); the last field is the standard 8 thirty-seconds to a
+    // quarter.
     let meter = project.meter();
-    for change in project.meter_changes.iter() {
-        let power = change.bottom.max(1).trailing_zeros().min(7) as u8;
+    let written = |top: u32, bottom: u32| {
+        let power = f64::from(bottom.max(1)).log2().round().clamp(0.0, 6.0) as u8;
+        let clocks = (96u32 >> power).max(1) as u8;
+        TrackEventKind::Meta(MetaMessage::TimeSignature(
+            top.clamp(1, 255) as u8,
+            power,
+            clocks,
+            8,
+        ))
+    };
+    events.push((0, written(project.beats_per_bar, project.beat_unit)));
+    for change in meter.changes() {
         events.push((
             meter.tick_of_bar(change.bar),
-            TrackEventKind::Meta(MetaMessage::TimeSignature(
-                change.top.clamp(1, 255) as u8,
-                power,
-                24,
-                8,
-            )),
+            written(change.top, change.bottom),
         ));
     }
 

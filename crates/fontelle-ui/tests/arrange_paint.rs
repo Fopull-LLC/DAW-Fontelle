@@ -84,7 +84,7 @@ fn pick(timeline: &mut Timeline, clips: &[ClipInfo], clip: &ClipInfo) {
     let tool = timeline.tool();
     timeline.set_tool(TimelineTool::Draw);
     let (x, y) = at(timeline, clip.start + PPQN, clip.lane);
-    timeline.press(MouseButton::Left, x, y, &layout(), clips, 4);
+    timeline.press(MouseButton::Left, x, y, &layout(), clips);
     timeline.release();
     timeline.set_tool(tool);
 }
@@ -98,17 +98,17 @@ fn stroke(
 ) -> Vec<ArrangeEdit> {
     let l = layout();
     let (x, y) = at(timeline, points[0].0, points[0].1);
-    let mut edits = timeline.press(MouseButton::Left, x, y, &l, clips, 4);
+    let mut edits = timeline.press(MouseButton::Left, x, y, &l, clips);
     for (tick, lane) in &points[1..] {
         let (x, y) = at(timeline, *tick, *lane);
-        edits.extend(timeline.drag(x, y, &l, clips, 4));
+        edits.extend(timeline.drag(x, y, &l, clips));
     }
     let (x, y) = at(
         timeline,
         points[points.len() - 1].0,
         points[points.len() - 1].1,
     );
-    edits.extend(timeline.release_over(x, y, &l, clips, 4));
+    edits.extend(timeline.release_over(x, y, &l, clips));
     edits
 }
 
@@ -370,7 +370,7 @@ fn the_right_button_still_erases_with_the_brush() {
     let clips = vec![a_clip(&mut arena, 1, BAR, BAR)];
     let mut timeline = painter();
     let (x, y) = at(&timeline, BAR + PPQN, 1);
-    let edits = timeline.press(MouseButton::Right, x, y, &layout(), &clips, 4);
+    let edits = timeline.press(MouseButton::Right, x, y, &layout(), &clips);
     assert_eq!(edits, vec![ArrangeEdit::Remove(vec![clips[0].id])]);
 }
 

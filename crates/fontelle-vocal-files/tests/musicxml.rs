@@ -127,14 +127,15 @@ fn tempo_and_time_signature() {
     assert_eq!(song.beats_per_bar, 4);
 }
 
+/// A signature is kept as written: six eighths, not three quarters.
 #[test]
-fn six_eight_is_three_quarter_beats() {
+fn six_eight_is_six_eighths() {
     let score = SCORE.replace(
         "<time><beats>4</beats><beat-type>4</beat-type></time>",
         "<time><beats>6</beats><beat-type>8</beat-type></time>",
     );
     let song = musicxml::read(&score, "file").unwrap();
-    assert_eq!(song.beats_per_bar, 3);
+    assert_eq!(song.beats_per_bar, 6);
     assert_eq!(song.beat_unit, 8);
 }
 

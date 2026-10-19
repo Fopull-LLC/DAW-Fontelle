@@ -79,7 +79,7 @@ fn at(timeline: &Timeline, tick: Tick, lane: usize) -> (f32, f32) {
 
 fn press(timeline: &mut Timeline, clips: &[ClipInfo], tick: Tick, lane: usize) -> Vec<ArrangeEdit> {
     let (x, y) = at(timeline, tick, lane);
-    let edits = timeline.press(MouseButton::Left, x, y, &layout(), clips, 4);
+    let edits = timeline.press(MouseButton::Left, x, y, &layout(), clips);
     timeline.release();
     edits
 }
@@ -107,7 +107,7 @@ fn double_press(
     lane: usize,
 ) -> Vec<ArrangeEdit> {
     let (x, y) = at(timeline, tick, lane);
-    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), clips, 4);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), clips);
     timeline.release();
     edits
 }
@@ -194,7 +194,7 @@ fn any_kind_of_clip_can_be_stamped() {
         let l = layout();
         let x = timeline_tick_to_x(&timeline.view, l.grid, PPQN);
         let y = lane_to_y(&timeline.view, l.grid, 0) + 3.0;
-        timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+        timeline.press(MouseButton::Left, x, y, &l, &clips);
         timeline.release();
         assert_eq!(
             timeline.selection(),
@@ -229,9 +229,9 @@ fn a_marquee_selection_is_something_to_stamp_too() {
     });
     let (x0, y0) = at(&timeline, 0, 0);
     let (x1, y1) = at(&timeline, BAR * 3, 0);
-    timeline.press(MouseButton::Left, x0, y0 - 5.0, &l, &clips, 4);
-    timeline.drag(x1, y1 + 5.0, &l, &clips, 4);
-    timeline.release_over(x1, y1 + 5.0, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x0, y0 - 5.0, &l, &clips);
+    timeline.drag(x1, y1 + 5.0, &l, &clips);
+    timeline.release_over(x1, y1 + 5.0, &l, &clips);
     timeline.set_modifiers(Modifiers::default());
     assert_eq!(timeline.selection(), &[clips[0].id]);
 

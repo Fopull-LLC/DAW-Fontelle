@@ -48,7 +48,8 @@ fn a_clip() -> ClipInfo {
 fn an_empty_arrangement_shows_a_ghost_at_the_start_of_the_first_lane() {
     let l = timeline_layout(body(), &Theme::dark_default().metrics);
     let view = TimelineView::default();
-    let ghost = ghost_clip(&view, l.grid, &[], 4, 4).expect("nothing there, so a ghost");
+    let ghost = ghost_clip(&view, l.grid, &[], 4, &fontelle_types::Meter::constant(4))
+        .expect("nothing there, so a ghost");
     assert!(
         (ghost.x - timeline_tick_to_x(&view, l.grid, 0)).abs() <= 3.0,
         "at the song's start: {ghost:?}"
@@ -62,8 +63,20 @@ fn an_empty_arrangement_shows_a_ghost_at_the_start_of_the_first_lane() {
 fn it_goes_the_moment_there_is_a_clip_and_never_comes_with_no_lane() {
     let l = timeline_layout(body(), &Theme::dark_default().metrics);
     let view = TimelineView::default();
-    assert_eq!(ghost_clip(&view, l.grid, &[a_clip()], 4, 4), None);
-    assert_eq!(ghost_clip(&view, l.grid, &[], 0, 4), None);
+    assert_eq!(
+        ghost_clip(
+            &view,
+            l.grid,
+            &[a_clip()],
+            4,
+            &fontelle_types::Meter::constant(4)
+        ),
+        None
+    );
+    assert_eq!(
+        ghost_clip(&view, l.grid, &[], 0, &fontelle_types::Meter::constant(4)),
+        None
+    );
 }
 
 #[test]
@@ -109,17 +122,24 @@ fn it_pulses_gently_and_holds_still_when_motion_is_off() {
 fn a_double_click_where_it_is_drawn_makes_the_clip_it_promised() {
     let l = timeline_layout(body(), &Theme::dark_default().metrics);
     let mut timeline = Timeline::new(TimelineView::default());
-    let ghost = ghost_clip(&timeline.view, l.grid, &[], 4, 4).unwrap();
+    let ghost = ghost_clip(
+        &timeline.view,
+        l.grid,
+        &[],
+        4,
+        &fontelle_types::Meter::constant(4),
+    )
+    .unwrap();
     let (x, y) = (ghost.x + ghost.width / 2.0, ghost.y + ghost.height / 2.0);
     // Nothing is there to hit: it is grid.
     assert!(matches!(
         timeline_hit(&timeline.view, &l, &[], x, y),
         TimelineHit::Empty { lane: 0, .. }
     ));
-    let first = timeline.press(MouseButton::Left, x, y, &l, &[], 4);
+    let first = timeline.press(MouseButton::Left, x, y, &l, &[]);
     assert!(first.is_empty(), "a single press makes nothing: {first:?}");
     timeline.release();
-    let second = timeline.double_press(MouseButton::Left, x, y, &l, &[], 4);
+    let second = timeline.double_press(MouseButton::Left, x, y, &l, &[]);
     assert!(
         matches!(second.as_slice(), [ArrangeEdit::Add { lane: 0, .. }]),
         "{second:?}"

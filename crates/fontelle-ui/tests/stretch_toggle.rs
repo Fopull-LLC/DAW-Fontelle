@@ -114,13 +114,12 @@ fn drag_edge(
     let l = layout();
     let block = clip_rect(&timeline.view, l.grid, clip);
     let y = block.y + block.height * 0.6;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, clips);
     timeline.drag(
         block.right() + BAR as f32 * bars * timeline.view.pixels_per_tick,
         y,
         &l,
         clips,
-        4,
     )
 }
 
@@ -225,10 +224,10 @@ fn the_mode_is_sent_once_and_the_rest_of_the_drag_is_only_resizes() {
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let y = block.y + block.height * 0.6;
     let step = BAR as f32 * timeline.view.pixels_per_tick;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
-    let first = timeline.drag(block.right() + step, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips);
+    let first = timeline.drag(block.right() + step, y, &l, &clips);
     assert_eq!(stretch_edits(&first).len(), 1);
-    let second = timeline.drag(block.right() + step * 2.0, y, &l, &clips, 4);
+    let second = timeline.drag(block.right() + step * 2.0, y, &l, &clips);
     assert!(stretch_edits(&second).is_empty(), "{second:?}");
     assert!(has_resize(&second), "{second:?}");
 }
@@ -342,14 +341,13 @@ fn the_switch_is_read_at_the_press_and_not_again_during_the_drag() {
     let l = layout();
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let y = block.y + block.height * 0.6;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips);
     timeline.set_stretch(false);
     let edits = timeline.drag(
         block.right() + BAR as f32 * timeline.view.pixels_per_tick,
         y,
         &l,
         &clips,
-        4,
     );
     assert_eq!(
         stretch_edits(&edits),
@@ -631,7 +629,6 @@ fn dragging_a_fade_handle_asks_for_a_fraction_of_the_file() {
         handle.y + handle.height / 2.0,
         &l,
         &clips,
-        4,
     );
     // Half the file is a quarter of the block: the file takes one bar of a
     // two-bar block. A fade measured against the block would call this 0.25.
@@ -640,7 +637,6 @@ fn dragging_a_fade_handle_asks_for_a_fraction_of_the_file() {
         handle.y + handle.height / 2.0,
         &l,
         &clips,
-        4,
     );
     let fraction = edits.iter().find_map(|e| match e {
         ArrangeEdit::SetFade {

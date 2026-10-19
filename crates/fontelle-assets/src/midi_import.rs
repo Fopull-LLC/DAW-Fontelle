@@ -236,6 +236,9 @@ struct Scan {
     ticks_per_quarter: u32,
     /// Every tempo event, at the tick it takes effect.
     tempo_events: Vec<(u64, u32)>,
+    /// Every time signature, at the file tick it takes effect: the top, and
+    /// the bottom as the power of two the file writes it as.
+    signatures: Vec<(u64, u8, u8)>,
     /// Notes, per MIDI channel — only for the channels `accept` let through,
     /// and only when the caller asked for them at all.
     per_channel: HashMap<u8, Arena<NoteId, Note>>,
@@ -342,6 +345,37 @@ fn read_smf<'bytes>(bytes: &'bytes [u8], what: &str) -> Result<(Smf<'bytes>, u32
 /// every note fractionally late; either way the bias is systematic, and at an
 /// odd source resolution it is a rhythm that is subtly but consistently wrong
 /// rather than a random jitter.
+/// The file's time signatures as the song's: the one at the top is the
+/// song's own, each later one a change on the bar line nearest where it
+/// falls — a file puts them on bar lines, and one a tick off is still meant
+/// for that bar. Of two on one bar, the last. A signature the meter cannot
+/// keep (a top of 0) is left out.
+fn set_meter(project: &mut Project, scan: &Scan) {
+    let mut signatures = scan.signatures.clone();
+    signatures.sort_by_key(|(at, _, _)| *at);
+    for (at, top, power) in signatures {
+        let signature = fontelle_types::Signature::new(u32::from(top), 1u32 << power.min(6));
+        if signature.check().is_err() {
+            continue;
+        }
+        let tick = to_project_ticks(at, scan.ticks_per_quarter);
+        let meter = project.meter();
+        let line = meter.nearest_bar(tick);
+        let bar = meter.bar_at(line).0;
+        if bar == 0 {
+            project.beats_per_bar = signature.top;
+            project.beat_unit = signature.bottom;
+            project.beat_groups.clear();
+            continue;
+        }
+        project.meter_changes.retain(|c| c.bar != bar);
+        project
+            .meter_changes
+            .push(fontelle_types::MeterChange::at(bar, &signature));
+        project.meter_changes.sort_by_key(|c| c.bar);
+    }
+}
+
 fn to_project_ticks(midi_tick: u64, ticks_per_quarter: u32) -> Tick {
     let tpq = ticks_per_quarter.max(1) as u64;
     ((midi_tick * PPQN as u64 + tpq / 2) / tpq) as Tick
@@ -361,6 +395,7 @@ fn scan(
     let mut scan = Scan {
         ticks_per_quarter,
         tempo_events: Vec::new(),
+        signatures: Vec::new(),
         per_channel: HashMap::new(),
         counts: HashMap::new(),
         programs: HashMap::new(),
@@ -392,6 +427,9 @@ fn scan(
             match event.kind {
                 TrackEventKind::Meta(MetaMessage::Tempo(us)) => {
                     scan.tempo_events.push((absolute, us.as_int()));
+                }
+                TrackEventKind::Meta(MetaMessage::TimeSignature(top, power, _, _)) => {
+                    scan.signatures.push((absolute, top, power));
                 }
                 // First of each wins: a track that renames itself part-way
                 // through is describing a section, not a second instrument.
@@ -588,6 +626,7 @@ pub fn read_midi(
     // caller replaces it with `TempoMap::set_sample_rate` once it knows one.
     project.tempo_map = TempoMap::from_segments(segments, 48_000.0);
     let tempo_changes = project.tempo_map.segments().len();
+    set_meter(&mut project, &scan);
 
     let mut midi_channels: Vec<u8> = scan.per_channel.keys().copied().collect();
     midi_channels.sort_unstable();

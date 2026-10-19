@@ -362,11 +362,7 @@ fn export_midi_writes_a_file_that_imports_back_to_the_same_notes() {
 fn signature_changes_are_written_where_they_fall() {
     let mut project = Project::new("song");
     project.tempo_map = TempoMap::new(120.0, SR);
-    project.meter_changes = vec![fontelle_types::MeterChange {
-        bar: 2,
-        top: 7,
-        bottom: 8,
-    }];
+    project.meter_changes = vec![fontelle_types::MeterChange::new(2, 7, 8)];
     let bytes = export_project_to_midi(&project);
     let smf = Smf::parse(&bytes).expect("readable MIDI");
     let mut signatures = Vec::new();
@@ -388,4 +384,66 @@ fn smf_ppq(smf: &Smf) -> u16 {
         Timing::Metrical(ppq) => ppq.as_int(),
         Timing::Timecode(..) => panic!("not metrical"),
     }
+}
+
+/// The song's own signature is written as it is — 6/8 is six over eight,
+/// not six quarters — and each signature's click is its own beat. A bottom
+/// a MIDI file has no way to say (the 3 of 4/3: the file writes the beat as
+/// a power of two) is written as the nearest one it can, with every bar
+/// still where the song puts it.
+#[test]
+fn every_signature_is_written_as_near_as_a_file_can_say_it() {
+    let mut project = Project::new("song");
+    project.tempo_map = TempoMap::new(120.0, SR);
+    project.beats_per_bar = 6;
+    project.beat_unit = 8;
+    project.meter_changes = vec![
+        fontelle_types::MeterChange::new(1, 4, 3),
+        fontelle_types::MeterChange::new(2, 5, 16),
+    ];
+    let bytes = export_project_to_midi(&project);
+    let smf = Smf::parse(&bytes).expect("readable MIDI");
+    let mut signatures = Vec::new();
+    for track in &smf.tracks {
+        let mut absolute: u64 = 0;
+        for event in track {
+            absolute += event.delta.as_int() as u64;
+            if let TrackEventKind::Meta(MetaMessage::TimeSignature(n, d, c, _)) = event.kind {
+                signatures.push((absolute, n, d, c));
+            }
+        }
+    }
+    let q = fontelle_types::PPQN as u64;
+    let meter = project.meter();
+    assert_eq!(
+        signatures,
+        vec![
+            (0, 6, 3, 12),
+            (meter.tick_of_bar(1) as u64, 4, 2, 24),
+            (meter.tick_of_bar(2) as u64, 5, 4, 6),
+        ],
+        "a quarter is {q} ticks"
+    );
+}
+
+/// And back: a MIDI file's time signatures become the song's own and its
+/// changes, at the bars they fall on — a 7/8 file opens in 7/8.
+#[test]
+fn signatures_come_back_from_a_midi_file() {
+    let mut project = Project::new("song");
+    project.tempo_map = TempoMap::new(120.0, SR);
+    project.beats_per_bar = 6;
+    project.beat_unit = 8;
+    project.meter_changes = vec![
+        fontelle_types::MeterChange::new(2, 5, 16),
+        fontelle_types::MeterChange::new(3, 7, 8),
+    ];
+    let bytes = export_project_to_midi(&project);
+    let read = fontelle_assets::read_midi(&bytes, "song", fontelle_assets::MidiChannels::All)
+        .expect("readable");
+    assert_eq!(
+        read.project.signature(),
+        fontelle_types::Signature::new(6, 8)
+    );
+    assert_eq!(read.project.meter_changes, project.meter_changes);
 }

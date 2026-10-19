@@ -104,16 +104,16 @@ fn a_clip_dragged_to_the_start_of_the_song_stays_there() {
     let id = clips[0].id;
 
     let (x, y) = at(&timeline.view, &l, PPQN * 16, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
     // Hard left, past bar one, and then held there.
     let far_left = l.grid.x - 300.0;
-    let first = timeline.drag(far_left, y, &l, &clips, 4);
+    let first = timeline.drag(far_left, y, &l, &clips);
     apply(&mut clips, &first);
     assert_eq!(clips[0].start, 0);
 
     for step in 0..5 {
-        let again = timeline.drag(far_left, y, &l, &clips, 4);
+        let again = timeline.drag(far_left, y, &l, &clips);
         assert!(
             again.is_empty(),
             "step {step}: a stationary pointer asked for {again:?}"
@@ -131,15 +131,15 @@ fn a_clip_dragged_to_the_first_lane_stays_on_it() {
     let mut clips = clips(&[(0, PPQN * 4, 3)]);
 
     let (x, y) = at(&timeline.view, &l, 0, 3);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
     let above = l.grid.y - 200.0;
-    let first = timeline.drag(x, above, &l, &clips, 4);
+    let first = timeline.drag(x, above, &l, &clips);
     apply(&mut clips, &first);
     assert_eq!(clips[0].lane, 0);
 
     for step in 0..5 {
-        let again = timeline.drag(x, above, &l, &clips, 4);
+        let again = timeline.drag(x, above, &l, &clips);
         assert!(again.is_empty(), "step {step} asked for {again:?}");
         apply(&mut clips, &again);
     }
@@ -156,15 +156,15 @@ fn a_clip_shortened_to_its_minimum_stays_there() {
         timeline_tick_to_x(&timeline.view, l.grid, end) - 2.0,
         fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, 0) + 1.0,
     );
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
     let far_left = l.grid.x - 300.0;
-    let first = timeline.drag(far_left, y, &l, &clips, 4);
+    let first = timeline.drag(far_left, y, &l, &clips);
     apply(&mut clips, &first);
     let settled = clips[0].length;
 
     for step in 0..5 {
-        let again = timeline.drag(far_left, y, &l, &clips, 4);
+        let again = timeline.drag(far_left, y, &l, &clips);
         assert!(again.is_empty(), "step {step} asked for {again:?}");
         apply(&mut clips, &again);
     }
@@ -181,14 +181,14 @@ fn a_clip_dragged_to_the_start_can_be_dragged_away_from_it_again() {
     let mut clips = clips(&[(PPQN * 16, PPQN * 16, 0)]);
 
     let (x, y) = at(&timeline.view, &l, PPQN * 16, 0);
-    timeline.press(MouseButton::Left, x, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, &clips);
 
-    let edits = timeline.drag(l.grid.x - 300.0, y, &l, &clips, 4);
+    let edits = timeline.drag(l.grid.x - 300.0, y, &l, &clips);
     apply(&mut clips, &edits);
     assert_eq!(clips[0].start, 0);
 
     let (bx, _) = at(&timeline.view, &l, PPQN * 32, 0);
-    let edits = timeline.drag(bx, y, &l, &clips, 4);
+    let edits = timeline.drag(bx, y, &l, &clips);
     apply(&mut clips, &edits);
     assert!(
         clips[0].start > 0,
@@ -281,11 +281,25 @@ fn the_blades_marks_are_where_the_cuts_will_land_not_where_the_mouse_is() {
     let from = (off_grid, l.grid.y + 2.0);
     let to = (off_grid, fontelle_ui::canvas::lane_to_y(&view, l.grid, 1));
 
-    let cuts =
-        fontelle_ui::canvas::clip_cuts(&view, l.grid, &items, from, to, SnapDivision::Beat, 4);
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &view,
+        l.grid,
+        &items,
+        from,
+        to,
+        SnapDivision::Beat,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+    );
     assert_eq!(cuts.len(), 1, "the stroke crosses one clip");
-    let marks =
-        fontelle_ui::canvas::slice_marks(&view, l.grid, &items, from, to, SnapDivision::Beat, 4);
+    let marks = fontelle_ui::canvas::slice_marks(
+        &view,
+        l.grid,
+        &items,
+        from,
+        to,
+        SnapDivision::Beat,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+    );
     assert_eq!(marks.len(), 1, "one cut, one mark");
     let want = timeline_tick_to_x(&view, l.grid, cuts[0].1);
     let centre = marks[0].x + marks[0].width / 2.0;
@@ -314,7 +328,7 @@ fn a_stroke_that_cuts_nothing_marks_nothing() {
         (past, l.grid.y + 2.0),
         (past, fontelle_ui::canvas::lane_to_y(&view, l.grid, 1)),
         SnapDivision::Beat,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert!(marks.is_empty(), "a stroke past the clip marked something");
 }
@@ -332,8 +346,15 @@ fn a_diagonal_stroke_marks_every_row_it_crosses() {
         timeline_tick_to_x(&view, l.grid, PPQN * 6),
         fontelle_ui::canvas::lane_to_y(&view, l.grid, 3),
     );
-    let marks =
-        fontelle_ui::canvas::slice_marks(&view, l.grid, &items, from, to, SnapDivision::Beat, 4);
+    let marks = fontelle_ui::canvas::slice_marks(
+        &view,
+        l.grid,
+        &items,
+        from,
+        to,
+        SnapDivision::Beat,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+    );
     assert_eq!(marks.len(), 3, "three rows crossed, three marks");
     for pair in marks.windows(2) {
         assert!(pair[1].y > pair[0].y, "two marks share a row");
@@ -382,8 +403,8 @@ fn an_edge_drag_never_turns_stretching_off_behind_your_back() {
     // in the content band under them.
     let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, 0)
         + timeline.view.lane_height * 0.75;
-    timeline.press(MouseButton::Left, edge, y, &l, &items, 4);
-    let edits = timeline.drag(edge + 200.0, y, &l, &items, 4);
+    timeline.press(MouseButton::Left, edge, y, &l, &items);
+    let edits = timeline.drag(edge + 200.0, y, &l, &items);
 
     assert!(
         !edits.iter().any(|edit| matches!(
@@ -418,8 +439,8 @@ fn an_edge_drag_with_the_switch_on_still_turns_stretching_on() {
     // in the content band under them.
     let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, 0)
         + timeline.view.lane_height * 0.75;
-    timeline.press(MouseButton::Left, edge, y, &l, &items, 4);
-    let edits = timeline.drag(edge + 200.0, y, &l, &items, 4);
+    timeline.press(MouseButton::Left, edge, y, &l, &items);
+    let edits = timeline.drag(edge + 200.0, y, &l, &items);
 
     assert!(
         edits.iter().any(|edit| matches!(

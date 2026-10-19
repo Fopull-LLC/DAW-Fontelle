@@ -82,14 +82,14 @@ fn a_roll_marquee_keeps_its_first_corner_on_the_music_while_the_view_scrolls() {
 
     let x0 = tick_to_x(&roll.view, grid, 0) + 1.0;
     let y0 = key_to_y(&roll.view, grid, 63) + 1.0;
-    roll.press(MouseButton::Left, x0, y0, grid, &arena, 4);
+    roll.press(MouseButton::Left, x0, y0, grid, &arena);
 
     // Off the bottom right corner, and held there while the view travels.
     let (px, py) = (grid.right() + 40.0, grid.bottom() + 40.0);
-    roll.drag(px, py, grid, &arena, 4);
+    roll.drag(px, py, grid, &arena);
     roll.view.scroll_tick += 4000;
     roll.view.top_key -= 40; // 72 -> 32: keys 32 down to -1 now on screen
-    roll.drag(px, py, grid, &arena, 4);
+    roll.drag(px, py, grid, &arena);
 
     let shown = roll.marquee().expect("the box is still being drawn");
     let corner_x = tick_to_x(&roll.view, grid, 0) + 1.0;
@@ -130,11 +130,11 @@ fn a_roll_marquee_dragged_back_past_its_corner_after_scrolling_still_turns_round
     roll.view.scroll_tick = 5000;
     let x0 = tick_to_x(&roll.view, grid, 6000 + PPQN) + 1.0;
     let y0 = key_to_y(&roll.view, grid, 62) + 1.0;
-    roll.press(MouseButton::Left, x0, y0, grid, &arena, 4);
+    roll.press(MouseButton::Left, x0, y0, grid, &arena);
     roll.view.scroll_tick = 3000;
     let x1 = tick_to_x(&roll.view, grid, 3500);
     let y1 = key_to_y(&roll.view, grid, 59);
-    roll.drag(x1, y1, grid, &arena, 4);
+    roll.drag(x1, y1, grid, &arena);
     roll.release_over(x1, y1, grid, &arena);
 
     let mut got = roll.selection().to_vec();
@@ -197,13 +197,13 @@ fn an_arrangement_marquee_keeps_its_first_corner_on_the_song_while_the_view_scro
 
     let x0 = timeline_tick_to_x(&t.view, grid, BAR) + 1.0;
     let y0 = lane_to_y(&t.view, grid, 0) + 1.0;
-    t.press(MouseButton::Left, x0, y0, &l, &clips, 4);
+    t.press(MouseButton::Left, x0, y0, &l, &clips);
 
     let (px, py) = (grid.right() + 40.0, grid.bottom() + 40.0);
-    t.drag(px, py, &l, &clips, 4);
+    t.drag(px, py, &l, &clips);
     t.view.scroll_tick += BAR * 8;
     t.view.top_lane += 4;
-    t.drag(px, py, &l, &clips, 4);
+    t.drag(px, py, &l, &clips);
 
     let shown = t.marquee().expect("the box is still being drawn");
     let corner_x = timeline_tick_to_x(&t.view, grid, BAR) + 1.0;
@@ -220,7 +220,7 @@ fn an_arrangement_marquee_keeps_its_first_corner_on_the_song_while_the_view_scro
         "and ends at the edge the pointer is held past: {shown:?}"
     );
 
-    t.release_over(px, py, &l, &clips, 4);
+    t.release_over(px, py, &l, &clips);
     let got = t.selection();
     assert_eq!(got.len(), 2, "got {got:?}");
     assert!(got.contains(&clips[0].id));

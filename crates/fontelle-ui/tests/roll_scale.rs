@@ -124,7 +124,7 @@ fn a_note_drawn_on_a_dimmed_row_lands_on_the_nearest_row_in_the_scale() {
     roll.scale = Some(c_major());
     let notes: Arena<NoteId, Note> = Arena::default();
     let (x, y) = at(0, 66);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes);
     let key = edits.iter().find_map(|e| match e {
         RollEdit::Add { note } => Some(note.key),
         _ => None,
@@ -142,7 +142,7 @@ fn alt_draws_exactly_where_it_points() {
     });
     let notes: Arena<NoteId, Note> = Arena::default();
     let (x, y) = at(0, 66);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes);
     assert!(
         edits
             .iter()
@@ -158,7 +158,7 @@ fn a_note_dragged_up_and_down_steps_through_the_scale() {
     let mut notes: Arena<NoteId, Note> = Arena::default();
     let e = notes.insert(note(0, 64));
     let (x, y) = at(PPQN / 2, 64);
-    roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &notes);
     assert!(roll.selection().contains(&e));
 
     let moved = |edits: &[RollEdit]| -> i16 {
@@ -172,13 +172,13 @@ fn a_note_dragged_up_and_down_steps_through_the_scale() {
     };
     // One row up from E is F, in the scale: it goes.
     let (_, up_one) = at(PPQN / 2, 65);
-    assert_eq!(moved(&roll.drag(x, up_one, grid(), &notes, 4)), 1);
+    assert_eq!(moved(&roll.drag(x, up_one, grid(), &notes)), 1);
     // One more is F#, out: it stays on F.
     let (_, up_two) = at(PPQN / 2, 66);
-    assert_eq!(moved(&roll.drag(x, up_two, grid(), &notes, 4)), 0);
+    assert_eq!(moved(&roll.drag(x, up_two, grid(), &notes)), 0);
     // And G is next.
     let (_, up_three) = at(PPQN / 2, 67);
-    assert_eq!(moved(&roll.drag(x, up_three, grid(), &notes, 4)), 2);
+    assert_eq!(moved(&roll.drag(x, up_three, grid(), &notes)), 2);
 }
 
 // --------------------------------------------------------- the chips ---

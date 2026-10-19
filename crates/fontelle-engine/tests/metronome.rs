@@ -12,12 +12,15 @@
 //! node reading the transport's own position, switched by an atomic like every
 //! other live control in this window (see `fontelle_engine::TrackControls`).
 //!
-//! Reading the **position** rather than counting elapsed blocks is what makes
-//! a seek and a loop land on the beat: the click is a function of where the
-//! playhead is, not of how long the node has been running.
+//! Playing the beats the **transport** hands each block, rather than counting
+//! elapsed blocks, is what makes a seek and a loop land on the beat: the
+//! click is a function of where the playhead is, not of how long the node has
+//! been running. Where the beats are is the song's meter — see
+//! `meter_clock.rs` for signatures and tempo changes.
 
 use fontelle_engine::{AudioNode, Metronome, MetronomeNode, PrepareContext, ProcessContext};
-use fontelle_engine::{TransportSnapshot, TransportState};
+use fontelle_engine::{Clicks, Transport, TransportReader, TransportSnapshot, TransportState};
+use fontelle_types::{Accent, CompiledTimeline};
 use std::sync::Arc;
 
 const SR: f32 = 48_000.0;
@@ -33,15 +36,20 @@ fn node(metronome: &Arc<Metronome>) -> MetronomeNode {
     node
 }
 
-/// Renders `frames` starting at `from`, in `block`-frame chunks, and returns
-/// the peak of each chunk — which is where the clicks are.
+/// Renders `frames` starting at `from`, in `block`-frame chunks, through a
+/// transport playing an uncompiled song (4/4 at 120), and returns the peak
+/// of each chunk — which is where the clicks are.
 fn peaks(node: &mut MetronomeNode, from: i64, frames: usize, block: usize) -> Vec<(i64, f32)> {
+    let timeline = CompiledTimeline::empty();
+    let transport = Transport::new();
+    transport.seek(from);
+    transport.set_state(TransportState::Playing);
+    let mut reader = TransportReader::new();
     let mut out = Vec::new();
-    let mut at = from;
     let mut left = frames;
     while left > 0 {
-        let n = left.min(block);
-        let mut buffer = vec![0.0f32; n];
+        let step = reader.next_step(&transport, &timeline, left.min(block), block, false);
+        let mut buffer = vec![0.0f32; step.frames];
         {
             let mut outputs: Vec<&mut [f32]> = vec![&mut buffer];
             let mut ctx = ProcessContext {
@@ -51,22 +59,23 @@ fn peaks(node: &mut MetronomeNode, from: i64, frames: usize, block: usize) -> Ve
                 live_events: &[],
                 audio: &[],
                 node: Default::default(),
-                transport: TransportSnapshot {
-                    state: TransportState::Playing,
-                    position_sample: at,
-                    bpm: fontelle_types::DEFAULT_BPM,
-                    ..Default::default()
-                },
-                sample_range: at..at + n as i64,
+                transport: step.snapshot,
+                sample_range: step.range.clone(),
             };
             node.process(&mut ctx);
         }
         let peak = buffer.iter().fold(0.0f32, |a, s| a.max(s.abs()));
-        out.push((at, peak));
-        at += n as i64;
-        left -= n;
+        out.push((step.range.start, peak));
+        left -= step.frames;
     }
     out
+}
+
+/// A beat at the first frame of a block.
+fn a_beat_now() -> Clicks {
+    let mut clicks = Clicks::default();
+    clicks.push(0, Accent::Bar);
+    clicks
 }
 
 /// Where each click **began**.
@@ -116,7 +125,6 @@ fn a_metronome_that_is_off_is_silent() {
 fn a_metronome_that_is_on_clicks_once_a_beat() {
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     let clicks = clicked(&peaks(&mut node, 0, BEAT as usize * 4, 128));
@@ -137,7 +145,6 @@ fn the_first_beat_of_a_bar_is_louder_than_the_others() {
     // where you are, not only how fast.
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     let all = peaks(&mut node, 0, BEAT as usize * 4, 128);
@@ -156,7 +163,6 @@ fn a_seek_lands_on_the_beat_rather_than_restarting_the_count() {
     // not on a grid measured from wherever playback happened to start.
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     // Start halfway through a beat, so a node counting from zero would be
@@ -179,7 +185,6 @@ fn a_click_does_not_bleed_into_the_next_beat() {
     // drone, and a drone is not a time reference.
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     let all = peaks(&mut node, 0, BEAT as usize * 2, 128);
@@ -192,12 +197,12 @@ fn a_click_does_not_bleed_into_the_next_beat() {
 }
 
 #[test]
-fn a_metronome_with_no_tempo_yet_is_silent_rather_than_dividing_by_zero() {
+fn a_block_with_no_beat_in_it_is_silent() {
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(0, 4);
     let mut node = node(&metronome);
-    assert!(clicked(&peaks(&mut node, 0, 4096, 128)).is_empty());
+    // Between beats: frames 1000 to 5096 of a 24 000-sample beat.
+    assert!(clicked(&peaks(&mut node, 1_000, 4096, 128)).is_empty());
 }
 
 #[test]
@@ -206,7 +211,6 @@ fn the_metronome_adds_into_its_bus_rather_than_replacing_it() {
     // mute the song on every beat, which is a memorable way to find out.
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     let mut buffer = vec![0.5f32; 128];
@@ -223,6 +227,7 @@ fn the_metronome_adds_into_its_bus_rather_than_replacing_it() {
                 state: TransportState::Playing,
                 position_sample: 0,
                 bpm: fontelle_types::DEFAULT_BPM,
+                clicks: a_beat_now(),
                 ..Default::default()
             },
             sample_range: 0..128,
@@ -247,7 +252,6 @@ fn the_metronome_adds_into_its_bus_rather_than_replacing_it() {
 fn a_stopped_transport_does_not_click() {
     let metronome = Arc::new(Metronome::new());
     metronome.set_on(true);
-    metronome.set_beat(BEAT as u32, 4);
     let mut node = node(&metronome);
 
     let mut buffer = vec![0.0f32; 128];
@@ -264,6 +268,7 @@ fn a_stopped_transport_does_not_click() {
                 state: TransportState::Stopped,
                 position_sample: 0,
                 bpm: fontelle_types::DEFAULT_BPM,
+                clicks: a_beat_now(),
                 ..Default::default()
             },
             sample_range: 0..128,

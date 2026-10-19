@@ -79,7 +79,7 @@ fn press_once(
     let x = fontelle_ui::canvas::timeline_tick_to_x(&timeline.view, l.grid, tick);
     let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, lane)
         + timeline.view.lane_height / 2.0;
-    timeline.press(MouseButton::Left, x, y, &l, clips, 4)
+    timeline.press(MouseButton::Left, x, y, &l, clips)
 }
 
 /// A double-click on empty grid at `(tick, lane)`, and what it asked for.
@@ -97,8 +97,8 @@ fn press_empty(
     let x = fontelle_ui::canvas::timeline_tick_to_x(&timeline.view, l.grid, tick);
     let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, lane)
         + timeline.view.lane_height / 2.0;
-    timeline.press(MouseButton::Left, x, y, &l, clips, 4);
-    timeline.double_press(MouseButton::Left, x, y, &l, clips, 4)
+    timeline.press(MouseButton::Left, x, y, &l, clips);
+    timeline.double_press(MouseButton::Left, x, y, &l, clips)
 }
 
 // ----------------------------------------------------------- the default ---
@@ -148,14 +148,7 @@ fn a_clip_is_never_drawn_before_the_start_of_the_song() {
     let m = Theme::dark_default().metrics;
     let l = timeline_layout(body(), &m);
     // Left of the grid entirely.
-    let edits = timeline.press(
-        MouseButton::Left,
-        l.grid.x - 200.0,
-        l.grid.y + 5.0,
-        &l,
-        &[],
-        4,
-    );
+    let edits = timeline.press(MouseButton::Left, l.grid.x - 200.0, l.grid.y + 5.0, &l, &[]);
     match edits.as_slice() {
         [ArrangeEdit::Add { start, .. }] => assert!(*start >= 0, "start {start}"),
         [] => {}
@@ -181,7 +174,6 @@ fn drawing_on_a_clip_still_moves_it() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     assert!(
         edits.is_empty(),
@@ -236,7 +228,6 @@ fn a_right_press_still_erases_in_either_tool() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     assert_eq!(edits, vec![ArrangeEdit::Remove(vec![id])]);
 }

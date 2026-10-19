@@ -206,13 +206,13 @@ pub struct CompiledTimeline {
     /// Empty on a timeline nobody compiled, which is what
     /// [`bpm_at`](Self::bpm_at)'s default is for.
     pub tempo: Vec<TempoSpan>,
-    /// How many beats there are in a bar — `Project::beats_per_bar`.
+    /// The song's meter: its signature and where it changes
+    /// (`Project::meter`).
     ///
     /// Here for the same reason the tempo is: a node that has to put the same
     /// thing under beat 1 of every bar cannot ask the project what a bar is.
-    /// Four on a timeline nobody compiled, because it may never be zero —
-    /// what reads it divides by it.
-    pub beats_per_bar: u32,
+    /// A timeline nobody compiled is in 4/4.
+    pub meter: crate::Meter,
     /// Every audio clip in the project, placed on the song (TDD §15).
     ///
     /// Beside the events rather than among them, because it is a different
@@ -229,15 +229,14 @@ pub struct CompiledTimeline {
 }
 
 impl Default for CompiledTimeline {
-    /// Written out rather than derived for one field:
-    /// [`beats_per_bar`](Self::beats_per_bar) of zero is a division by zero on
-    /// the audio thread, and `derive(Default)` has no way to say four.
+    /// An empty song in 4/4 at the default tempo: every answer musical,
+    /// none of them a division by zero on the audio thread.
     fn default() -> Self {
         Self {
             events: Vec::new(),
             index: Vec::new(),
             tempo: Vec::new(),
-            beats_per_bar: DEFAULT_BEATS_PER_BAR,
+            meter: crate::Meter::default(),
             audio: Vec::new(),
         }
     }
@@ -353,6 +352,18 @@ impl CompiledTimeline {
         }
     }
 
+    /// The other way: the sample `tick` falls on, with its fraction. What
+    /// puts a click on its beat — the beat is a tick, and the tempo table says
+    /// when that is.
+    pub fn sample_at_tick(&self, tick: f64) -> f64 {
+        if self.tempo.is_empty() {
+            return tick / default_ticks_per_sample();
+        }
+        let at = self.tempo.partition_point(|span| span.tick as f64 <= tick);
+        let span = &self.tempo[at.saturating_sub(1)];
+        span.start as f64 + (tick - span.tick as f64) / span.ticks_per_sample
+    }
+
     /// How far the song moves per sample at `sample`, in ticks.
     ///
     /// What a node advances a phase by without asking again — the tempo
@@ -372,12 +383,6 @@ impl CompiledTimeline {
 /// it is here rather than only there because the audio thread needs an answer
 /// for a timeline the sequencer never touched, and it must not be zero.
 pub const DEFAULT_BPM: f32 = 120.0;
-
-/// The metre a timeline with none of its own is read in.
-///
-/// Four, for `Project::beats_per_bar`'s reason, and never zero: what reads it
-/// divides by it.
-pub const DEFAULT_BEATS_PER_BAR: u32 = 4;
 
 /// The rate an *uncompiled* timeline answers position questions at.
 ///

@@ -563,18 +563,17 @@ fn place(outputs: &mut [&mut [f32]], frames: usize, gain_db: f32, pan: f32) {
 /// Where the song is, said the way a plugin reads it — see
 /// [`fontelle_host::PluginTransport`].
 ///
-/// The bar is worked out from the meter in force now, as if it had always
-/// been: the snapshot carries one meter, not the map, and a song that changes
-/// meter part way has its later bars numbered as if it had not. What a synced
-/// LFO or arpeggiator reads — the tempo and the beat — is exact.
+/// The bar, its number and its signature are the song's meter's, read off
+/// the compiled timeline for the block — a 7/8 bar after a 4/4 one is said
+/// as 7/8, starting where it really starts. Positions are in quarter notes,
+/// which is what every format's "beats" are.
 pub fn plugin_transport(
     snapshot: &crate::TransportSnapshot,
     sample_rate: f64,
 ) -> fontelle_host::PluginTransport {
     use crate::TransportState;
     let beats = snapshot.position_tick / fontelle_types::PPQN as f64;
-    let per_bar = f64::from(snapshot.beats_per_bar.max(1));
-    let bar = (beats / per_bar).floor();
+    let bar = snapshot.bar;
     fontelle_host::PluginTransport {
         playing: matches!(
             snapshot.state,
@@ -583,10 +582,10 @@ pub fn plugin_transport(
         tempo: f64::from(snapshot.bpm),
         beats,
         seconds: snapshot.position_sample as f64 / sample_rate.max(1.0),
-        bar_start_beats: bar * per_bar,
-        bar_number: bar as i32,
-        numerator: snapshot.beats_per_bar.clamp(1, u32::from(u16::MAX)) as u16,
-        denominator: 4,
+        bar_start_beats: bar.bar_start as f64 / fontelle_types::PPQN as f64,
+        bar_number: bar.bar as i32,
+        numerator: bar.top.clamp(1, u32::from(u16::MAX)) as u16,
+        denominator: bar.bottom.clamp(1, u32::from(u16::MAX)) as u16,
         offline: snapshot.state == TransportState::Rendering,
     }
 }

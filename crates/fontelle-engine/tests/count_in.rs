@@ -205,7 +205,6 @@ fn stopping_during_a_count_in_forgets_it() {
 fn the_count_in_clicks_its_beats_even_with_the_metronome_off() {
     const BEAT: i64 = 24_000;
     let metronome = Arc::new(Metronome::new());
-    metronome.set_beat(BEAT as u32, 4);
     assert!(!metronome.is_on());
     let mut node = MetronomeNode::new(Arc::clone(&metronome));
     node.prepare(&PrepareContext {

@@ -100,13 +100,13 @@ impl Host {
         let (x, y) = at(tick, key);
         let edits = self
             .roll
-            .press(MouseButton::Left, x, y, grid(), &self.notes, 4);
+            .press(MouseButton::Left, x, y, grid(), &self.notes);
         self.apply(edits);
     }
 
     fn drag(&mut self, tick: Tick, key: u8) {
         let (x, y) = at(tick, key);
-        let edits = self.roll.drag(x, y, grid(), &self.notes, 4);
+        let edits = self.roll.drag(x, y, grid(), &self.notes);
         self.apply(edits);
     }
 
@@ -128,7 +128,7 @@ impl Host {
 
     fn double(&mut self, tick: Tick, key: u8) {
         let (x, y) = at(tick, key);
-        let edits = self.roll.double_press(x, y, grid(), &self.notes, 4);
+        let edits = self.roll.double_press(x, y, grid(), &self.notes);
         self.apply(edits);
     }
 
@@ -490,8 +490,8 @@ fn a_box_around_where_a_slide_landed_selects_the_note() {
     roll.tool = fontelle_ui::canvas::Tool::Select;
     let (x0, y0) = at(PPQN * 3, 70);
     let (x1, y1) = at(PPQN * 3 + PPQN / 2, 66);
-    roll.press(MouseButton::Left, x0, y0, grid(), &notes, 4);
-    roll.drag(x1, y1, grid(), &notes, 4);
+    roll.press(MouseButton::Left, x0, y0, grid(), &notes);
+    roll.drag(x1, y1, grid(), &notes);
     roll.release_over(x1, y1, grid(), &notes);
     assert_eq!(roll.selection(), &[id]);
 
@@ -500,8 +500,8 @@ fn a_box_around_where_a_slide_landed_selects_the_note() {
     roll.tool = fontelle_ui::canvas::Tool::Select;
     let (x0, y0) = at(PPQN * 3, 61);
     let (x1, y1) = at(PPQN * 3 + PPQN / 2, 59);
-    roll.press(MouseButton::Left, x0, y0, grid(), &notes, 4);
-    roll.drag(x1, y1, grid(), &notes, 4);
+    roll.press(MouseButton::Left, x0, y0, grid(), &notes);
+    roll.drag(x1, y1, grid(), &notes);
     roll.release_over(x1, y1, grid(), &notes);
     assert!(roll.selection().is_empty());
 }

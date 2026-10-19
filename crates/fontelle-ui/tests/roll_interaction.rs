@@ -97,7 +97,7 @@ fn drawing_a_note_and_dragging_right_sizes_it_in_one_gesture() {
 
     let step = PPQN / 4;
     let (x, y) = at(&roll.view, 0, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     assert_eq!(
         edits,
         vec![RollEdit::Add {
@@ -121,7 +121,7 @@ fn drawing_a_note_and_dragging_right_sizes_it_in_one_gesture() {
 
     // Now the same drag lengthens it, without letting go of the button.
     let (x, y) = at(&roll.view, step * 4, 60);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     assert_eq!(
         edits,
         vec![RollEdit::Resize {
@@ -140,13 +140,13 @@ fn drawing_and_letting_go_without_moving_leaves_a_note_of_one_snap_unit() {
     let step = PPQN / 4;
 
     let (x, y) = at(&roll.view, step * 2, 64);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
     let id = arena.insert(note(step * 2, step, 64));
     roll.note_added(id);
 
     // The pointer has not moved. Nothing further is asked for — a note that
     // shrank because the mouse jittered is the bug this is guarding.
-    assert!(roll.drag(x, y, grid(), &arena, 4).is_empty());
+    assert!(roll.drag(x, y, grid(), &arena).is_empty());
     roll.release();
     assert_eq!(arena[id].length, step);
 }
@@ -159,13 +159,13 @@ fn a_press_that_makes_no_note_starts_no_sizing_gesture() {
 
     let (x, y) = at(&roll.view, 0, 60);
     assert!(
-        roll.press(MouseButton::Left, x, y, grid(), &arena, 4)
+        roll.press(MouseButton::Left, x, y, grid(), &arena)
             .is_empty()
     );
     // Nothing was added, so nothing can be sized: a stale pending-add would
     // capture the *next* note drawn anywhere in the roll.
     let (x, y) = at(&roll.view, PPQN * 4, 60);
-    assert!(roll.drag(x, y, grid(), &arena, 4).is_empty());
+    assert!(roll.drag(x, y, grid(), &arena).is_empty());
 }
 
 // ------------------------------------------------------------------- zoom ---
@@ -290,10 +290,10 @@ fn the_select_tool_drags_a_marquee_and_selects_what_it_covers() {
     let ids: Vec<NoteId> = arena.keys().collect();
 
     let (x0, y0) = at(&roll.view, 0, 63);
-    roll.press(MouseButton::Left, x0, y0, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x0, y0, grid(), &arena);
     let (x1, y1) = at(&roll.view, PPQN * 3, 59);
     assert!(
-        roll.drag(x1, y1, grid(), &arena, 4).is_empty(),
+        roll.drag(x1, y1, grid(), &arena).is_empty(),
         "a marquee edits nothing"
     );
     assert!(
@@ -328,8 +328,8 @@ fn a_marquee_selects_the_same_notes_dragged_in_any_direction() {
         roll.tool = Tool::Select;
         let (x0, y0) = at(&roll.view, t0, k0);
         let (x1, y1) = at(&roll.view, t1, k1);
-        roll.press(MouseButton::Left, x0, y0, grid(), &arena, 4);
-        roll.drag(x1, y1, grid(), &arena, 4);
+        roll.press(MouseButton::Left, x0, y0, grid(), &arena);
+        roll.drag(x1, y1, grid(), &arena);
         roll.release_over(x1, y1, grid(), &arena);
 
         let mut got = roll.selection().to_vec();
@@ -358,12 +358,12 @@ fn holding_alt_bypasses_the_snap() {
         ..Default::default()
     });
     let (x, y) = at(&roll.view, PPQN / 2, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
     // Somewhere that is not on a grid line at all.
     let off_grid = PPQN / 2 + 37;
     let (x, y) = at(&roll.view, off_grid, 60);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     let RollEdit::Move { tick_delta, .. } = &edits[0] else {
         panic!("expected a move, got {edits:?}")
     };
@@ -392,9 +392,9 @@ fn holding_shift_constrains_a_drag_to_one_axis() {
         ..Default::default()
     });
     let (x, y) = at(&first.view, PPQN, 60);
-    first.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    first.press(MouseButton::Left, x, y, grid(), &arena);
     let (x, y) = at(&first.view, PPQN * 3, 61);
-    let edits = first.drag(x, y, grid(), &arena, 4);
+    let edits = first.drag(x, y, grid(), &arena);
     let RollEdit::Move {
         tick_delta,
         key_delta,
@@ -415,9 +415,9 @@ fn holding_shift_constrains_a_drag_to_one_axis() {
         ..Default::default()
     });
     let (x, y) = at(&second.view, PPQN, 60);
-    second.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    second.press(MouseButton::Left, x, y, grid(), &arena);
     let (x, y) = at(&second.view, PPQN + PPQN / 8, 67);
-    let edits = second.drag(x, y, grid(), &arena, 4);
+    let edits = second.drag(x, y, grid(), &arena);
     let RollEdit::Move {
         tick_delta,
         key_delta,
@@ -441,7 +441,7 @@ fn copy_and_paste_puts_the_phrase_down_where_it_was_asked_for() {
     roll.select_all(&arena);
 
     assert_eq!(roll.copy(&arena), 2);
-    let edits = roll.paste(PPQN * 8, 4);
+    let edits = roll.paste(PPQN * 8);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}")
     };
@@ -469,7 +469,7 @@ fn cutting_removes_what_it_copied_and_paste_still_works_afterwards() {
         "what was cut is not still selected"
     );
 
-    let edits = roll.paste(PPQN * 2, 4);
+    let edits = roll.paste(PPQN * 2);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected an insert")
     };
@@ -480,7 +480,7 @@ fn cutting_removes_what_it_copied_and_paste_still_works_afterwards() {
 #[test]
 fn pasting_an_empty_clipboard_asks_for_nothing() {
     let mut roll = roll();
-    assert!(roll.paste(PPQN, 4).is_empty());
+    assert!(roll.paste(PPQN).is_empty());
     // And an empty selection copies nothing rather than emptying what is held.
     let arena = notes(&[(0, PPQN, 60)]);
     roll.select_all(&arena);
@@ -488,7 +488,7 @@ fn pasting_an_empty_clipboard_asks_for_nothing() {
     roll.clear_selection();
     assert_eq!(roll.copy(&arena), 0);
     assert_eq!(
-        roll.paste(0, 4).len(),
+        roll.paste(0).len(),
         1,
         "the clipboard is not cleared by a bad copy"
     );
@@ -501,7 +501,7 @@ fn duplicating_puts_the_copy_immediately_after_the_original() {
     let arena = notes(&[(0, PPQN, 60), (PPQN * 2, PPQN, 62)]);
     roll.select_all(&arena);
 
-    let edits = roll.duplicate(&arena, 4);
+    let edits = roll.duplicate(&arena);
     let [RollEdit::Insert(copies)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}")
     };
@@ -723,7 +723,7 @@ fn pasting_lands_on_the_grid_rather_than_where_the_pointer_happened_to_be() {
     assert_eq!(roll.copy(&notes), 1);
 
     // Seventeen ticks past bar 3 — the sort of number a pointer produces.
-    let edits = roll.paste(PPQN * 8 + 17, 4);
+    let edits = roll.paste(PPQN * 8 + 17);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}");
     };
@@ -747,7 +747,7 @@ fn a_paste_uses_the_snap_division_that_is_switched_on() {
     roll.select(vec![id]);
     roll.copy(&notes);
 
-    let edits = roll.paste(PPQN * 5, 4);
+    let edits = roll.paste(PPQN * 5);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}");
     };
@@ -772,7 +772,7 @@ fn alt_pastes_free_of_the_grid() {
         ..Default::default()
     });
 
-    let edits = roll.paste(PPQN * 8 + 17, 4);
+    let edits = roll.paste(PPQN * 8 + 17);
     let [RollEdit::Insert(pasted)] = &edits[..] else {
         panic!("expected one insert, got {edits:?}");
     };

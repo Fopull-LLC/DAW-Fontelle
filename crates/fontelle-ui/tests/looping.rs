@@ -79,14 +79,12 @@ fn dragging_the_right_edge_makes_the_clip_longer() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     let edits = timeline.drag(
         block.right() + PPQN as f32 * 4.0 * timeline.view.pixels_per_tick,
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     assert!(
         edits
@@ -124,14 +122,12 @@ fn holding_shift_on_the_same_edge_loops_it_instead() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     let edits = timeline.drag(
         block.right() + PPQN as f32 * 4.0 * timeline.view.pixels_per_tick,
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
 
     // The clip gets longer *and* starts repeating: "make this play twice" is
@@ -168,14 +164,12 @@ fn a_clip_that_already_loops_keeps_its_period_when_it_is_stretched_further() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     let edits = timeline.drag(
         block.right() + PPQN as f32 * 8.0 * timeline.view.pixels_per_tick,
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     assert!(
         loop_edits(&edits)
@@ -213,14 +207,12 @@ fn shift_dragging_a_clips_body_still_just_moves_it() {
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     let edits = timeline.drag(
         block.x + block.width / 2.0 + PPQN as f32 * 4.0 * timeline.view.pixels_per_tick,
         block.y + 5.0,
         &l,
         &clips,
-        4,
     );
     assert!(edits.iter().all(|e| matches!(e, ArrangeEdit::Move { .. })));
 }
@@ -340,9 +332,9 @@ fn drag_edge_to_bars(
     });
     let block = clip_rect(&timeline.view, l.grid, clip);
     let y = block.y + 5.0;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, clips);
     let want_x = block.x + PPQN as f32 * 4.0 * bars * timeline.view.pixels_per_tick;
-    timeline.drag(want_x, y, &l, clips, 4)
+    timeline.drag(want_x, y, &l, clips)
 }
 
 /// Every period these edits set: a `SetLoop`'s, and each one a first step of
@@ -435,13 +427,13 @@ fn the_unloop_is_sent_once_rather_than_on_every_step_of_the_drag() {
     let mut timeline = Timeline::new(view());
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let y = block.y + 5.0;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips);
     let bar_px = PPQN as f32 * 4.0 * timeline.view.pixels_per_tick;
-    let first = timeline.drag(block.x + bar_px, y, &l, &clips, 4);
+    let first = timeline.drag(block.x + bar_px, y, &l, &clips);
     assert_eq!(loop_edits(&first), vec![None]);
     // The document would now report it unlooped; the canvas is given that.
     let settled = vec![clip(id, 0, PPQN * 4, None)];
-    let second = timeline.drag(block.x + bar_px * 0.75, y, &l, &settled, 4);
+    let second = timeline.drag(block.x + bar_px * 0.75, y, &l, &settled);
     assert!(loop_edits(&second).is_empty(), "said twice: {second:?}");
 }
 
@@ -482,9 +474,9 @@ fn shift_dragging_a_mixed_selection_loops_each_clip_as_dragging_it_alone_would()
     });
     let block = clip_rect(&timeline.view, l.grid, &clips[0]);
     let y = block.y + 5.0;
-    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    timeline.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips);
     let bar_px = PPQN as f32 * 4.0 * timeline.view.pixels_per_tick;
-    let first = timeline.drag(block.right() - 2.0 + bar_px, y, &l, &clips, 4);
+    let first = timeline.drag(block.right() - 2.0 + bar_px, y, &l, &clips);
 
     // One edit for the first step, carrying each clip's own answer.
     let resizing: Vec<_> = first
@@ -516,7 +508,7 @@ fn shift_dragging_a_mixed_selection_loops_each_clip_as_dragging_it_alone_would()
     );
 
     // And the steps after it only grow them, by the same amount each.
-    let second = timeline.drag(block.right() - 2.0 + bar_px * 2.0, y, &l, &clips, 4);
+    let second = timeline.drag(block.right() - 2.0 + bar_px * 2.0, y, &l, &clips);
     assert_eq!(
         second,
         vec![ArrangeEdit::Resize {

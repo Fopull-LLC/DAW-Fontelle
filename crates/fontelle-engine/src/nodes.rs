@@ -607,7 +607,7 @@ pub fn insert_latency_samples(
     config: &fontelle_types::EffectConfig,
     sample_rate: f32,
     bpm: f32,
-    beats_per_bar: u32,
+    bar: fontelle_types::BarSize,
 ) -> u32 {
     match config {
         fontelle_types::EffectConfig::Gate(gate) => {
@@ -624,7 +624,7 @@ pub fn insert_latency_samples(
         // lines are sized once, off the audio thread, and a song that slows
         // down would have to resize them mid-block (INVARIANT 1).
         fontelle_types::EffectConfig::DisgustingBeat(disgusting_beat) => {
-            disgusting_beat.latency_samples(bpm, beats_per_bar, sample_rate)
+            disgusting_beat.latency_samples(bpm, bar, sample_rate)
         }
         // The limiter's look-ahead is fixed, so its latency is one constant
         // rather than a knob — but it is a latency all the same, and lining the
@@ -704,13 +704,17 @@ pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_
 /// The slowest tempo a DisgustingBeat's dry line is sized for, and the
 /// longest bar.
 ///
-/// Sixty at seven beats is 7 seconds of look-ahead — past anything musical,
-/// and the line is only as big as the worst case it is sized for once. A
-/// project slower than this still *plays*; its look-ahead is clamped to the
-/// line, which `max_insert_latency_samples` and the node agree about because
-/// both read these two numbers.
+/// Sixty at eight quarter notes is 8 seconds of look-ahead — past anything
+/// musical, and the line is only as big as the worst case it is sized for
+/// once. A project slower than this, or a bar longer (a 16/4, a 64/8), still
+/// *plays*; its look-ahead is clamped to the line, which
+/// `max_insert_latency_samples` and the node agree about because both read
+/// these two numbers.
 const DISGUSTING_BEAT_SLOWEST_BPM: f32 = 60.0;
-const DISGUSTING_BEAT_WIDEST_BAR: u32 = 7;
+const DISGUSTING_BEAT_WIDEST_BAR: fontelle_types::BarSize = fontelle_types::BarSize {
+    quarters: 8.0,
+    beats: 8,
+};
 
 /// A fixed number of samples of nothing, on a path that arrives too early
 /// (TDD §5.5).
@@ -882,7 +886,7 @@ pub struct EffectNode {
     /// `realise`'s walk over the document, which reads the project's own
     /// tempo; this is what the node *reports*, and the dry line beneath it is
     /// sized for the worst case either way.
-    metre: (f32, u32),
+    metre: (f32, fontelle_types::BarSize),
     /// What `prepare` was told, so this node can answer what it costs
     /// without being asked in the middle of a block — see
     /// [`EffectNode::configured_latency`].
@@ -1299,7 +1303,7 @@ impl EffectNode {
             automated: [None; MAX_EFFECT_PARAMS],
             metre: (
                 fontelle_types::DEFAULT_BPM,
-                fontelle_types::DEFAULT_BEATS_PER_BAR,
+                fontelle_types::BarSize::default(),
             ),
             dry: Vec::new(),
             dry_line: Vec::new(),
@@ -1676,7 +1680,8 @@ impl AudioNode for EffectNode {
             bend_cents: self.bend_cents,
             ons: self.held.ons(),
         };
-        self.metre = (ctx.transport.bpm, ctx.transport.beats_per_bar.max(1));
+        // The song's opening tempo and bar: what `realise` compensates by.
+        self.metre = (ctx.transport.opening_bpm, ctx.transport.song_bar);
         // **DisgustingBeat is processed here**, not in
         // `EffectState::process`. It is
         // the only insert that reads two things that dispatch does not carry:
@@ -1692,8 +1697,13 @@ impl AudioNode for EffectNode {
             let music = fontelle_types::MusicalTime {
                 tick: ctx.transport.position_tick,
                 ticks_per_sample: ctx.transport.ticks_per_sample,
-                beats_per_bar: ctx.transport.beats_per_bar.max(1),
+                bar: fontelle_types::BarSize::of(ctx.transport.bar.top, ctx.transport.bar.bottom),
+                bar_start: ctx.transport.bar.bar_start as f64,
+                next_bar: ctx.transport.bar.next_bar as f64,
+                span_start: ctx.transport.bar.span_start as f64,
                 bpm: ctx.transport.bpm,
+                opening_bpm: ctx.transport.opening_bpm,
+                song_bar: ctx.transport.song_bar,
                 rolling: matches!(
                     ctx.transport.state,
                     crate::TransportState::Playing
@@ -2657,37 +2667,34 @@ fn clip_pan(pan: f32) -> (f32, f32) {
     fontelle_types::PanLaw::Linear.gains(pan)
 }
 
-/// The metronome's switch and its beat, shared with the RT thread.
+/// The metronome's switch, shared with the RT thread.
 ///
-/// Atomics, like [`TrackControls`] and [`MasterMeter`], and for the same
-/// reason: three scalars that change when somebody clicks something and are
-/// read once a block.
+/// An atomic, like [`TrackControls`] and [`MasterMeter`]: one flag that
+/// changes when somebody clicks something and is read once a block. Where
+/// the beats are is not here any more — it is the song's meter, which the
+/// transport reads off the compiled timeline and hands every block as its
+/// [`Clicks`](crate::Clicks). A beat length pushed in from outside could
+/// only ever be one signature at one tempo, which is the click Ty heard
+/// counting 4/4 through a 7/8 bar.
 ///
 /// # Why a click is not a clip
 ///
 /// It is not document data. It is not saved, it does not bounce, it belongs to
 /// no channel and it has no notes — a project sent to somebody else must not
 /// arrive with a woodblock on every beat. So it is a node reading the
-/// transport's own position, switched from outside like every other live
-/// control here.
+/// transport, switched from outside like every other live control here.
 #[derive(Debug)]
 pub struct Metronome {
     on: std::sync::atomic::AtomicBool,
-    /// How many samples one beat is. **Zero is "no tempo yet"** and clicks
-    /// nothing, rather than dividing by it.
-    samples_per_beat: std::sync::atomic::AtomicU32,
-    beats_per_bar: std::sync::atomic::AtomicU32,
 }
 
 impl Metronome {
-    /// Off, with no tempo. **Off is the default and has to be**: a window that
-    /// clicks at you the first time you press play is one you have to go and
-    /// find the switch for.
+    /// Off. **Off is the default and has to be**: a window that clicks at you
+    /// the first time you press play is one you have to go and find the
+    /// switch for.
     pub fn new() -> Self {
         Self {
             on: std::sync::atomic::AtomicBool::new(false),
-            samples_per_beat: std::sync::atomic::AtomicU32::new(0),
-            beats_per_bar: std::sync::atomic::AtomicU32::new(4),
         }
     }
 
@@ -2697,48 +2704,6 @@ impl Metronome {
 
     pub fn set_on(&self, on: bool) {
         self.on.store(on, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Where the beats are: how long one is, and how many make a bar.
-    ///
-    /// Written by the model side whenever the tempo or the signature changes.
-    /// **A constant beat**, which is exact for a song at one tempo — every
-    /// song this build can create — and drifts across a tempo *change*, where
-    /// the correct answer needs the map the RT thread may not read
-    /// (INVARIANT 3). Worth writing down rather than hiding: a piece with a
-    /// tempo curve gets a click that is right until the first change.
-    pub fn set_beat(&self, samples_per_beat: u32, beats_per_bar: u32) {
-        self.samples_per_beat
-            .store(samples_per_beat, std::sync::atomic::Ordering::Relaxed);
-        self.beats_per_bar
-            .store(beats_per_bar.max(1), std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// How long one beat is, in samples. Zero is "no tempo yet" and clicks
-    /// nothing — which is exactly the state a metronome nobody told the tempo
-    /// to sits in, so it is worth being able to ask.
-    pub fn samples_per_beat(&self) -> u32 {
-        self.samples_per_beat
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub fn beats_per_bar(&self) -> u32 {
-        self.beats_per_bar
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn beat(&self) -> (i64, i64) {
-        (
-            i64::from(
-                self.samples_per_beat
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            ),
-            i64::from(
-                self.beats_per_bar
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            )
-            .max(1),
-        )
     }
 }
 
@@ -2753,14 +2718,13 @@ impl Default for Metronome {
 /// counts in.
 const CLICK_SECONDS: f32 = 0.03;
 
-/// The downbeat, and the beats between it.
-const ACCENT_HZ: f32 = 1_600.0;
-const BEAT_HZ: f32 = 1_000.0;
-
-/// And how loud, which is a judgement: loud enough to hear over a mix, quiet
-/// enough not to be the loudest thing in the room.
-const ACCENT_GAIN: f32 = 0.5;
-const BEAT_GAIN: f32 = 0.28;
+/// The pitch and loudness of each strength of beat: the bar's first, a
+/// group's first (the 4 of a 6/8, the 3 and 5 of a 2+2+3/8), and the rest.
+/// Loud enough to hear over a mix, quiet enough not to be the loudest thing
+/// in the room, and far enough apart to tell by ear without counting.
+const BAR_CLICK: (f32, f32) = (1_600.0, 0.5);
+const GROUP_CLICK: (f32, f32) = (1_250.0, 0.38);
+const BEAT_CLICK: (f32, f32) = (1_000.0, 0.26);
 
 /// The click itself (item 9 of `docs/first-usable-plan.md`).
 ///
@@ -2768,10 +2732,10 @@ const BEAT_GAIN: f32 = 0.28;
 /// pair with the music, and a node that overwrote would mute the song on every
 /// beat.
 ///
-/// Reads the transport's **position** rather than counting its own elapsed
-/// blocks, which is what makes a seek and a loop land on the beat: the click
-/// is a function of where the playhead is, not of how long the node has been
-/// running.
+/// Plays the beats the transport hands it for this block
+/// ([`TransportSnapshot::clicks`](crate::TransportSnapshot)), which come
+/// from the song's position — so a seek and a loop land on the beat, and a
+/// signature or tempo change is followed to the tick.
 pub struct MetronomeNode {
     metronome: Arc<Metronome>,
     sample_rate: f32,
@@ -2781,9 +2745,6 @@ pub struct MetronomeNode {
     phase: f32,
     step: f32,
     gain: f32,
-    /// Which beat last fired, so one beat does not click twice when a block
-    /// boundary falls inside it.
-    last_beat: i64,
 }
 
 impl MetronomeNode {
@@ -2796,13 +2757,16 @@ impl MetronomeNode {
             phase: 0.0,
             step: 0.0,
             gain: 0.0,
-            last_beat: i64::MIN,
         }
     }
 
-    fn start(&mut self, accent: bool) {
-        let hz = if accent { ACCENT_HZ } else { BEAT_HZ };
-        self.gain = if accent { ACCENT_GAIN } else { BEAT_GAIN };
+    fn start(&mut self, accent: fontelle_types::Accent) {
+        let (hz, gain) = match accent {
+            fontelle_types::Accent::Bar => BAR_CLICK,
+            fontelle_types::Accent::Group => GROUP_CLICK,
+            fontelle_types::Accent::Beat => BEAT_CLICK,
+        };
+        self.gain = gain;
         self.length = (CLICK_SECONDS * self.sample_rate).max(1.0) as u32;
         self.remaining = self.length;
         self.phase = 0.0;
@@ -2814,7 +2778,6 @@ impl AudioNode for MetronomeNode {
     fn prepare(&mut self, ctx: &PrepareContext) {
         self.sample_rate = ctx.sample_rate;
         self.remaining = 0;
-        self.last_beat = i64::MIN;
     }
 
     fn process(&mut self, ctx: &mut ProcessContext) {
@@ -2828,33 +2791,19 @@ impl AudioNode for MetronomeNode {
             self.remaining = 0;
             return;
         }
-        let (per_beat, per_bar) = self.metronome.beat();
-        if per_beat <= 0 || self.sample_rate <= 0.0 {
-            return; // no tempo yet — silent, rather than dividing by zero
+        if self.sample_rate <= 0.0 {
+            return;
         }
-
         let frames = ctx.outputs.first().map_or(0, |o| o.len());
-        let start = ctx.sample_range.start;
+        let clicks = ctx.transport.clicks;
+        let mut next = clicks.iter().peekable();
         for frame in 0..frames {
-            let at = start + frame as i64;
-            if counting {
-                // The range runs up to the standing playhead, so what is
-                // left of the count is how far `at` is short of it: a beat
-                // every `per_beat` of that, the first of the bar accented.
-                let left = ctx.transport.position_sample - at;
-                if left > 0 && left % per_beat == 0 {
-                    self.start((left / per_beat) % per_bar == 0);
+            while let Some(&(at, accent)) = next.peek() {
+                if at as usize > frame {
+                    break;
                 }
-            } else {
-                // The beat this sample belongs to. Floor division, so a
-                // position before the start of the song counts backwards
-                // rather than clustering every negative sample onto beat
-                // zero.
-                let beat = at.div_euclid(per_beat);
-                if at.rem_euclid(per_beat) == 0 && beat != self.last_beat {
-                    self.last_beat = beat;
-                    self.start(beat.rem_euclid(per_bar) == 0);
-                }
+                self.start(accent);
+                next.next();
             }
             if self.remaining == 0 {
                 continue;
@@ -2874,7 +2823,6 @@ impl AudioNode for MetronomeNode {
 
     fn reset(&mut self) {
         self.remaining = 0;
-        self.last_beat = i64::MIN;
     }
 
     fn params(&self) -> &dyn ParamSet {

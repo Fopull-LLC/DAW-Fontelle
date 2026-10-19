@@ -242,6 +242,7 @@ edits!(
     SetVocalStyle,
     // The next update: where the time signature changes.
     SetMeterChange,
+    MoveMeterChange,
 );
 
 /// What an edit changes in the running studio, and so what the studio has to
@@ -303,6 +304,7 @@ impl Edit {
             | Edit::SetNotePath(_)
             | Edit::SetKey(_)
             | Edit::SetMeterChange(_)
+            | Edit::MoveMeterChange(_)
             | Edit::AddClip(_)
             | Edit::RemoveClip(_)
             | Edit::RestoreClip(_)

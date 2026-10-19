@@ -268,7 +268,7 @@ fn the_blade_cuts_a_take_like_it_cuts_anything_else() {
         (x, row - v.lane_height),
         (x, row + v.lane_height),
         SnapDivision::Step,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert_eq!(cuts.len(), 1, "the blade passed straight through a take");
     assert_eq!(cuts[0].0, clips[0].id);
@@ -295,7 +295,7 @@ fn a_stroke_that_starts_below_a_take_still_crosses_it() {
         (x, row + v.lane_height),
         (x, row - v.lane_height),
         SnapDivision::Step,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert_eq!(cuts.len(), 1, "a stroke drawn upwards cuts nothing");
 }

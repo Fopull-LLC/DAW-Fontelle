@@ -55,7 +55,7 @@ use crate::settings::Settings;
 use crate::updates::Updater;
 
 /// How long a clip a freshly added channel gets, in bars.
-const NEW_CLIP_BARS: i64 = 8;
+const NEW_CLIP_BARS: u32 = 8;
 
 /// And how long a brand-new project is. The same eight: a new project is one
 /// empty channel with one clip on it, and the two should agree.
@@ -4308,22 +4308,6 @@ impl Session {
         self.selected_track = self.selected_track.min(last);
     }
 
-    /// Tells the metronome where the beats are.
-    ///
-    /// From the tempo map, so a click follows the tempo box; a **constant**
-    /// beat, which is exact for a song at one tempo and drifts across a tempo
-    /// change — see `fontelle_engine::Metronome::set_beat` for why the RT side
-    /// cannot be given the map itself (INVARIANT 3).
-    fn publish_metronome(&self) {
-        let Some(metronome) = &self.metronome else {
-            return;
-        };
-        metronome.set_beat(
-            crate::beat_samples(&self.project),
-            self.project.beats_per_bar,
-        );
-    }
-
     /// Gives the session the click the running graph is playing through.
     ///
     /// **Without this the metronome button goes dead on the first rebuild.**
@@ -4334,7 +4318,6 @@ impl Session {
     /// nothing sounds. See `fontelle-app/tests/click.rs`.
     pub fn with_metronome(mut self, metronome: std::sync::Arc<fontelle_engine::Metronome>) -> Self {
         self.metronome = Some(metronome);
-        self.publish_metronome();
         self
     }
 
@@ -5585,7 +5568,7 @@ impl Session {
             .map(|clip| clip.start + clip.length)
             .max()
             .unwrap_or(0)
-            .max(PPQN * i64::from(self.project.beats_per_bar) * NEW_CLIP_BARS)
+            .max(self.project.meter().tick_of_bar(NEW_CLIP_BARS))
     }
 
     /// What an addressed parameter is worth right now, normalised.
@@ -6140,7 +6123,6 @@ impl Session {
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
                 self.send_controls = realised.send_controls;
                 self.metronome = Some(realised.metronome);
-                self.publish_metronome();
                 self.master_meter = Some(realised.master);
                 // New graph, new node ids — including the one a plugged-in
                 // keyboard is playing through.
@@ -8539,10 +8521,6 @@ impl DocumentHost for Session {
         self.let_go();
     }
 
-    fn beats_per_bar(&self) -> u32 {
-        self.project.beats_per_bar
-    }
-
     /// The tempo at the **start** of the piece. See the trait's own note: a
     /// song with a tempo change has no single BPM (INVARIANT 5), and this is
     /// the number the transport's box shows and moves.
@@ -8565,8 +8543,6 @@ impl DocumentHost for Session {
 
     fn set_tempo(&mut self, bpm: f64) {
         self.run(Box::new(SetNumber::new(NumberTarget::Tempo, bpm)));
-        // The click counts in samples, so a new tempo is a new beat length.
-        self.publish_metronome();
         // The tempo is the one document value the *timeline* depends on for
         // more than its contents: every tick becomes a different sample.
         // `run` has already republished it. The graph is untouched — nothing
@@ -8578,21 +8554,18 @@ impl DocumentHost for Session {
         self.project.meter()
     }
 
-    fn set_meter_change(&mut self, bar: u32, to: Option<(u32, u32)>) {
+    // A signature is the song's meter, which the timeline carries to the
+    // audio thread — `run` republishes it, and the click, the plugins and
+    // DisgustingBeat follow from the next block.
+    fn set_meter_change(&mut self, bar: u32, to: Option<fontelle_types::Signature>) {
         self.run(Box::new(fontelle_model::SetMeterChange::new(bar, to)));
         self.let_go();
-        // A new signature is a new downbeat, wherever it starts.
-        self.publish_metronome();
         self.touch();
     }
 
-    fn set_beats_per_bar(&mut self, beats: u32) {
-        self.run(Box::new(SetNumber::new(
-            NumberTarget::BeatsPerBar,
-            f64::from(beats),
-        )));
-        // And a new signature is a new downbeat.
-        self.publish_metronome();
+    fn move_meter_change(&mut self, from: u32, to: u32) {
+        self.run(Box::new(fontelle_model::MoveMeterChange::new(from, to)));
+        self.let_go();
         self.touch();
     }
 
@@ -8705,9 +8678,13 @@ impl Session {
                 Some("add an instrument first — a take has to play something".to_string());
             return None;
         };
-        let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
-        let start = first.div_euclid(bar) * bar;
-        let end = (last.max(first + 1) + bar - 1).div_euclid(bar) * bar;
+        // Whole bars of the signature they are in, around what was played.
+        let meter = self.project.meter();
+        let start = meter.tick_of_bar(meter.bar_at(first).0);
+        let end = match meter.bar_at(last.max(first + 1)) {
+            (bar, 0) => meter.tick_of_bar(bar),
+            (bar, _) => meter.tick_of_bar(bar + 1),
+        };
         let free = |lane: fontelle_types::LaneId| {
             !self.project.clips.values().any(|clip| {
                 clip.lane == lane && clip.start < end && start < clip.start + clip.length
@@ -8963,11 +8940,15 @@ impl Session {
     /// A file's tempo is right for the file and wrong for the piece you are
     /// working on, and changing the song's tempo is an edit nobody asked for;
     /// on an empty project it is the only tempo there is, so it is taken.
+    ///
+    /// The file's signatures, `meter`, are the same: taken into an empty song,
+    /// said and left alone in one under way.
     fn bring_in(
         &mut self,
         what: &str,
         parts: Vec<ImportPart>,
         bpm: Option<f64>,
+        meter: Option<fontelle_types::Meter>,
     ) -> Result<String, String> {
         if parts.is_empty() {
             return Err(format!("there is nothing in {what} to import"));
@@ -8991,13 +8972,38 @@ impl Session {
         if let (Some(bpm), true) = (bpm, empty) {
             self.set_tempo(bpm);
         }
+        if let (Some(meter), true) = (&meter, empty) {
+            self.run(Box::new(fontelle_model::SetMeterChange::new(
+                0,
+                Some(meter.song()),
+            )));
+            for change in meter.changes() {
+                self.run(Box::new(fontelle_model::SetMeterChange::new(
+                    change.bar,
+                    Some(change.signature()),
+                )));
+            }
+            self.let_go();
+        }
         self.rebuild_graph();
         self.republish();
 
-        let tempo_note = match (bpm, empty) {
-            (Some(bpm), false) => format!(" \u{2014} the file is {bpm:.0} bpm, this song is not"),
+        // Said only where the file and the song differ.
+        let song_bpm = self.project.tempo_map.tempo_at(0);
+        let mut tempo_note = match (bpm, empty) {
+            (Some(bpm), false) if (bpm - song_bpm).abs() >= 0.01 => {
+                format!(" \u{2014} the file is {bpm:.0} bpm, this song is not")
+            }
             _ => String::new(),
         };
+        if let (Some(meter), false) = (&meter, empty)
+            && meter != &self.project.meter()
+        {
+            tempo_note.push_str(&format!(
+                " \u{2014} the file is in {}, this song keeps its own signature",
+                meter.song().label()
+            ));
+        }
         Ok(match names.len() {
             1 => format!("Imported \u{201c}{}\u{201d}{tempo_note}", names[0]),
             n => format!("Imported {n} parts from {what}{tempo_note}"),
@@ -9005,7 +9011,10 @@ impl Session {
     }
 
     /// Every part of a surveyed MIDI file, as things to bring in.
-    fn midi_parts(path: &Path, which: MidiChannels) -> Result<(Vec<ImportPart>, f64), String> {
+    fn midi_parts(
+        path: &Path,
+        which: MidiChannels,
+    ) -> Result<(Vec<ImportPart>, f64, fontelle_types::Meter), String> {
         let import = import_midi(path, which).map_err(|e| e.to_string())?;
         let mut parts = Vec::new();
         for (index, channel) in import.channels.iter().enumerate() {
@@ -9034,7 +9043,7 @@ impl Session {
                 color: IMPORT_COLOURS[index % IMPORT_COLOURS.len()],
             });
         }
-        Ok((parts, import.bpm))
+        Ok((parts, import.bpm, import.project.meter()))
     }
 
     /// Imports a `.mid` file, or asks which part of it to import.
@@ -9045,8 +9054,8 @@ impl Session {
     ) -> Result<String, String> {
         let name = file_label(path);
         if let Some(which) = which {
-            let (parts, bpm) = Self::midi_parts(path, which)?;
-            return self.bring_in(&name, parts, Some(bpm));
+            let (parts, bpm, meter) = Self::midi_parts(path, which)?;
+            return self.bring_in(&name, parts, Some(bpm), Some(meter));
         }
         let survey = survey_midi(path).map_err(|e| e.to_string())?;
         if survey.parts.is_empty() {
@@ -9056,8 +9065,8 @@ impl Session {
         // click somebody has to make to get what they already asked for.
         if !survey.is_multi_part() {
             let only = survey.parts[0].channel;
-            let (parts, bpm) = Self::midi_parts(path, MidiChannels::Only(only))?;
-            return self.bring_in(&name, parts, Some(bpm));
+            let (parts, bpm, meter) = Self::midi_parts(path, MidiChannels::Only(only))?;
+            return self.bring_in(&name, parts, Some(bpm), Some(meter));
         }
         // More than one: the window asks. What it asks *with* is
         // `pending_import`, which it reads back through `import_prompt`.
@@ -11177,7 +11186,8 @@ impl StudioHost for Session {
         };
         // Melody mode's chord lane, a bar of the song's tempo at a time: the
         // half-second reading named every sung note as a chord.
-        let bar = f64::from(self.project.beats_per_bar.max(1))
+        let bar = fontelle_types::BarSize::of(self.project.beats_per_bar, self.project.beat_unit)
+            .quarters
             * f64::from(crate::beat_samples(&self.project))
             / f64::from(self.options.sample_rate.max(1));
         view.melody_chords = crate::analyze::melody_chords(&view.melody, view.duration, bar);
@@ -15211,7 +15221,15 @@ impl StudioHost for Session {
             filled_seconds: live.as_ref().map_or(0.0, |v| v.frame.filled_seconds),
             trail: live.as_ref().map(|v| v.trail.clone()).unwrap_or_default(),
             memory: live.map(|v| v.buckets).unwrap_or_default(),
-            beats_per_bar: self.project.beats_per_bar.max(1),
+            // The bar the playhead is in: what the insert is counting in now.
+            bar: {
+                let at = self
+                    .transport
+                    .as_ref()
+                    .map_or(0, |t| self.playhead_song_tick(t.position_sample()));
+                let here = self.project.meter().here(at);
+                fontelle_types::BarSize::of(here.top, here.bottom)
+            },
             bpm: self.project.tempo_map.tempo_at(0) as f32,
             tool: self.disgusting_beat_tool,
             snap: self.disgusting_beat_snap,
@@ -15903,7 +15921,9 @@ impl StudioHost for Session {
                     };
                 };
 
-                let bar = PPQN * i64::from(self.project.beats_per_bar.max(1));
+                // One bar of the signature it starts in.
+                let meter = self.project.meter();
+                let bar = meter.bar_ticks(meter.bar_at(start).0);
                 let clip = Clip {
                     name: None,
                     lane: lane_id,
@@ -15982,7 +16002,10 @@ impl StudioHost for Session {
                             name: None,
                             lane: lane_id,
                             start,
-                            length: PPQN * i64::from(self.project.beats_per_bar.max(1)),
+                            length: {
+                                let meter = self.project.meter();
+                                meter.bar_ticks(meter.bar_at(start).0)
+                            },
                             source: ClipSource::Notes(NoteData {
                                 channel,
                                 notes: Arena::default(),

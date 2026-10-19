@@ -81,6 +81,8 @@ pub use rt_guard::{
 pub use spectrum_tap::SpectrumTap;
 pub use study_player::{StudyAudio, StudyPlayer, StudyPlayerNode};
 pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};
-pub use transport::{Step, Transport, TransportReader, TransportSnapshot, TransportState};
+pub use transport::{
+    Clicks, MAX_CLICKS, Step, Transport, TransportReader, TransportSnapshot, TransportState,
+};
 pub use tune_tap::{TUNE_TRACE_FRAMES, TuneTap};
 pub use vocal::{SungPhrase, VocalNode, VocalPlayer, VocalTable};

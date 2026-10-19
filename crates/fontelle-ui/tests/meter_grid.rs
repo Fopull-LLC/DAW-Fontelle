@@ -8,14 +8,7 @@ use fontelle_ui::layout::Rect;
 const Q: i64 = PPQN;
 
 fn waltz_from_bar_three() -> Meter {
-    Meter::new(
-        4,
-        &[MeterChange {
-            bar: 2,
-            top: 3,
-            bottom: 4,
-        }],
-    )
+    Meter::new(4, &[MeterChange::new(2, 3, 4)])
 }
 
 fn view() -> (TimelineView, Rect) {
@@ -68,13 +61,9 @@ fn the_arrangement_snaps_to_the_meters_bars_and_finer_as_before() {
         ..TimelineView::default()
     });
     t.set_meter(waltz_from_bar_three());
-    assert_eq!(t.snapped(Q + 100, 4), Q);
+    assert_eq!(t.snapped(Q + 100), Q);
     t.view.snap = SnapDivision::Bar;
-    assert_eq!(
-        t.snapped(10 * Q, 4),
-        11 * Q,
-        "a 3/4 bar line, not a 4/4 one"
-    );
+    assert_eq!(t.snapped(10 * Q), 11 * Q, "a 3/4 bar line, not a 4/4 one");
 }
 
 /// The roll counts from its clip's start: bar lines where the song's meter
@@ -89,7 +78,7 @@ fn the_roll_draws_the_meter_from_its_clips_start() {
         .iter()
         .filter_map(|(t, l)| match l {
             MeterLine::Bar(n) => Some((*t, *n)),
-            MeterLine::Beat => None,
+            MeterLine::Beat | MeterLine::Group => None,
         })
         .collect();
     assert_eq!(bars, vec![(0, 0), (3 * Q, 1), (6 * Q, 2)]);

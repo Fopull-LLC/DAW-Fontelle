@@ -348,8 +348,8 @@ pub fn read(text: &str, name: &str) -> Result<VocalSong, String> {
         song.parts.push(part);
     }
     if let Some((beats, unit)) = signature {
-        song.beat_unit = unit as u32;
-        song.beats_per_bar = ((beats * 4.0 / unit).round() as u32).max(1);
+        song.beat_unit = (unit.round() as u32).max(1);
+        song.beats_per_bar = (beats.round() as u32).max(1);
     }
     tempo.sort_by_key(|t| t.start_tick);
     if !tempo.is_empty() {

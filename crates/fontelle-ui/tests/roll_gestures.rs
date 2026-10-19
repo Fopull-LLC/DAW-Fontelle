@@ -130,10 +130,10 @@ fn assert_settles(
     y: f32,
     what: &str,
 ) {
-    let first = roll.drag(x, y, grid(), arena, 4);
+    let first = roll.drag(x, y, grid(), arena);
     apply(arena, &first);
     for step in 0..5 {
-        let again = roll.drag(x, y, grid(), arena, 4);
+        let again = roll.drag(x, y, grid(), arena);
         assert!(
             again.is_empty(),
             "{what}: step {step} with the pointer stationary asked for {again:?}"
@@ -151,7 +151,7 @@ fn a_note_dragged_to_the_start_of_the_clip_stays_there() {
     let id = arena.keys().next().expect("a note");
 
     let (x, y) = at(&roll.view, PPQN * 2, 60);
-    roll.press(MouseButton::Left, x + 20.0, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x + 20.0, y, grid(), &arena);
 
     // Hard left, and held there.
     assert_settles(&mut roll, &mut arena, grid().x - 400.0, y, "moving");
@@ -171,7 +171,7 @@ fn a_note_dragged_off_the_bottom_of_the_keyboard_stays_there() {
     roll.view = view;
 
     let (x, y) = at(&roll.view, PPQN, 40);
-    roll.press(MouseButton::Left, x + 10.0, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x + 10.0, y, grid(), &arena);
     assert_settles(
         &mut roll,
         &mut arena,
@@ -195,9 +195,9 @@ fn a_chord_dragged_off_the_top_of_the_keyboard_clamps_rather_than_asking_for_key
 
     roll.select_all(&arena);
     let (x, y) = at(&roll.view, 0, 118);
-    roll.press(MouseButton::Left, x + 10.0, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x + 10.0, y, grid(), &arena);
 
-    let edits = roll.drag(x + 10.0, grid().y, grid(), &arena, 4);
+    let edits = roll.drag(x + 10.0, grid().y, grid(), &arena);
     for edit in &edits {
         if let RollEdit::Move { key_delta, .. } = edit {
             assert!(
@@ -228,7 +228,7 @@ fn a_note_resized_down_to_its_shortest_stays_there() {
     // Grab the right-hand edge.
     let x = tick_to_x(&roll.view, grid(), PPQN * 2) - 2.0;
     let y = key_to_y(&roll.view, grid(), 60) + 1.0;
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
     assert_settles(&mut roll, &mut arena, grid().x, y, "resizing");
     assert!(
@@ -247,7 +247,7 @@ fn drawing_a_note_and_dragging_back_over_its_own_start_does_not_flicker() {
     let mut arena = notes(&[]);
 
     let (x, y) = at(&roll.view, PPQN * 2, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     let [RollEdit::Add { note }] = &edits[..] else {
         panic!("expected one add, got {edits:?}");
     };
@@ -268,19 +268,13 @@ fn a_resize_still_reaches_every_length_between_the_ends() {
     let y = key_to_y(&roll.view, grid(), 60) + 1.0;
 
     let x = tick_to_x(&roll.view, grid(), PPQN * 2) - 2.0;
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
-    let shorter = roll.drag(tick_to_x(&roll.view, grid(), PPQN), y, grid(), &arena, 4);
+    let shorter = roll.drag(tick_to_x(&roll.view, grid(), PPQN), y, grid(), &arena);
     apply(&mut arena, &shorter);
     assert_eq!(arena[id].length, PPQN, "dragged in to one beat");
 
-    let longer = roll.drag(
-        tick_to_x(&roll.view, grid(), PPQN * 3),
-        y,
-        grid(),
-        &arena,
-        4,
-    );
+    let longer = roll.drag(tick_to_x(&roll.view, grid(), PPQN * 3), y, grid(), &arena);
     apply(&mut arena, &longer);
     assert_eq!(arena[id].length, PPQN * 3, "and back out to three");
 }
@@ -291,19 +285,13 @@ fn a_move_still_reaches_every_position_between_the_ends() {
     let mut arena = notes(&[(PPQN * 2, PPQN, 60)]);
     let id = arena.keys().next().expect("a note");
     let (x, y) = at(&roll.view, PPQN * 2, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
-    let left = roll.drag(grid().x, y, grid(), &arena, 4);
+    let left = roll.drag(grid().x, y, grid(), &arena);
     apply(&mut arena, &left);
     assert_eq!(arena[id].start, 0);
 
-    let back = roll.drag(
-        tick_to_x(&roll.view, grid(), PPQN * 3),
-        y,
-        grid(),
-        &arena,
-        4,
-    );
+    let back = roll.drag(tick_to_x(&roll.view, grid(), PPQN * 3), y, grid(), &arena);
     apply(&mut arena, &back);
     assert_eq!(
         arena[id].start,
@@ -348,7 +336,7 @@ fn clicking_a_note_and_letting_go_without_moving_sounds_it() {
     );
 
     let (x, y) = at(&roll.view, PPQN / 2, 64);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
     assert_eq!(
         roll.take_audition().map(|a| a.key),
         None,
@@ -372,8 +360,8 @@ fn a_click_that_wobbles_a_pixel_is_still_a_click() {
     let mut roll = roll();
     let arena = notes(&[(0, PPQN, 64)]);
     let (x, y) = at(&roll.view, PPQN / 2, 64);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
-    roll.drag(x + 1.0, y + 1.0, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
+    roll.drag(x + 1.0, y + 1.0, grid(), &arena);
     roll.release_over(x + 1.0, y + 1.0, grid(), &arena);
     assert_eq!(roll.take_audition().map(|a| a.key), Some(64));
 }
@@ -385,10 +373,10 @@ fn dragging_a_note_to_a_new_pitch_never_sounds_it() {
     let mut roll = roll();
     let mut arena = notes(&[(0, PPQN, 60)]);
     let (x, y) = at(&roll.view, PPQN / 2, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
     let to = key_to_y(&roll.view, grid(), 67) + 1.0;
-    let edits = roll.drag(x, to, grid(), &arena, 4);
+    let edits = roll.drag(x, to, grid(), &arena);
     apply(&mut arena, &edits);
     assert_eq!(
         roll.take_audition().map(|a| a.key),
@@ -412,10 +400,10 @@ fn resizing_a_note_never_sounds_it() {
     let mut arena = notes(&[(0, PPQN * 2, 60)]);
     let end = tick_to_x(&roll.view, grid(), PPQN * 2) - 2.0;
     let y = key_to_y(&roll.view, grid(), 60) + 1.0;
-    roll.press(MouseButton::Left, end, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, end, y, grid(), &arena);
 
     let longer = tick_to_x(&roll.view, grid(), PPQN * 4);
-    let edits = roll.drag(longer, y, grid(), &arena, 4);
+    let edits = roll.drag(longer, y, grid(), &arena);
     apply(&mut arena, &edits);
     assert!(arena[*roll.selection().first().unwrap()].length > PPQN * 2);
 
@@ -428,10 +416,10 @@ fn a_note_that_is_only_moved_in_time_is_not_sounded_either() {
     let mut roll = roll();
     let mut arena = notes(&[(0, PPQN, 60)]);
     let (x, y) = at(&roll.view, PPQN / 2, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
 
     let to = tick_to_x(&roll.view, grid(), PPQN * 2);
-    let edits = roll.drag(to, y, grid(), &arena, 4);
+    let edits = roll.drag(to, y, grid(), &arena);
     apply(&mut arena, &edits);
     roll.release_over(to, y, grid(), &arena);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
@@ -443,7 +431,7 @@ fn drawing_a_note_does_not_sound_it() {
     let mut roll = roll();
     let arena = notes(&[]);
     let (x, y) = at(&roll.view, PPQN, 62);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     assert!(
         edits.iter().any(|e| matches!(e, RollEdit::Add { .. })),
         "the press still draws a note"
@@ -464,14 +452,13 @@ fn painting_a_run_of_notes_does_not_sound_them() {
     roll.tool = fontelle_ui::canvas::Tool::Paint;
     let mut arena = notes(&[]);
     let (x, y) = at(&roll.view, 0, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     apply(&mut arena, &edits);
     let edits = roll.drag(
         tick_to_x(&roll.view, grid(), PPQN * 2),
         key_to_y(&roll.view, grid(), 64) + 1.0,
         grid(),
         &arena,
-        4,
     );
     apply(&mut arena, &edits);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
@@ -482,7 +469,7 @@ fn deleting_a_note_does_not_sound_it() {
     let mut roll = roll();
     let arena = notes(&[(0, PPQN, 60)]);
     let (x, y) = at(&roll.view, PPQN / 2, 60);
-    roll.press(MouseButton::Right, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Right, x, y, grid(), &arena);
     assert_eq!(roll.take_audition().map(|a| a.key), None);
     roll.release_over(x, y, grid(), &arena);
     assert_eq!(

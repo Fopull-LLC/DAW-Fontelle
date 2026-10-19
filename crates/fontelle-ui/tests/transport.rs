@@ -348,11 +348,26 @@ fn the_clock_reads_minutes_seconds_and_milliseconds() {
 #[test]
 fn the_position_reads_as_bars_beats_and_ticks() {
     // One-based, like every DAW: the song starts at bar 1, beat 1.
-    assert_eq!(format_bars_beats(0.0, 4), "1.1.000");
-    assert_eq!(format_bars_beats(1.0, 4), "1.2.000");
-    assert_eq!(format_bars_beats(4.0, 4), "2.1.000");
-    assert_eq!(format_bars_beats(9.5, 4), "3.2.480");
-    assert_eq!(format_bars_beats(-1.0, 4), "1.1.000");
+    assert_eq!(
+        format_bars_beats(0.0, &fontelle_types::Meter::constant(4)),
+        "1.1.000"
+    );
+    assert_eq!(
+        format_bars_beats(1.0, &fontelle_types::Meter::constant(4)),
+        "1.2.000"
+    );
+    assert_eq!(
+        format_bars_beats(4.0, &fontelle_types::Meter::constant(4)),
+        "2.1.000"
+    );
+    assert_eq!(
+        format_bars_beats(9.5, &fontelle_types::Meter::constant(4)),
+        "3.2.480"
+    );
+    assert_eq!(
+        format_bars_beats(-1.0, &fontelle_types::Meter::constant(4)),
+        "1.1.000"
+    );
 }
 
 // ----------------------------------------------------- commands down ------

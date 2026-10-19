@@ -100,13 +100,12 @@ fn a_note_blocks_left_edge_is_still_its_body() {
 fn drag_left(timeline: &mut Timeline, clips: &[ClipInfo], dx_ticks: Tick) -> Vec<ArrangeEdit> {
     let (x, y) = left_edge(&clips[0]);
     let l = layout();
-    timeline.press(MouseButton::Left, x, y, &l, clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, clips);
     timeline.drag(
         x + dx_ticks as f32 * timeline.view.pixels_per_tick,
         y,
         &l,
         clips,
-        4,
     )
 }
 

@@ -6,15 +6,20 @@ use fontelle_types::{ChannelId, Tick};
 
 use crate::{SongPart, VocalSong};
 
-/// `part` as a clip `offset` ticks into the song, **by beats**: from the
-/// start of the bar (`bar` ticks long) its first note is in to the end of
-/// the bar its last note ends in; notes and lanes from the clip's start.
-pub fn clip_of(part: &SongPart, offset: Tick, bar: Tick) -> VocalClipImport {
-    let bar = bar.max(1);
+/// `part` as a clip `offset` ticks into the song, **by bars**: from the
+/// start of the bar its first note is in to the end of the bar its last note
+/// ends in, bars of the file's own `meter`; notes and lanes from the clip's
+/// start.
+pub fn clip_of(part: &SongPart, offset: Tick, meter: &fontelle_types::Meter) -> VocalClipImport {
     let first = part.notes.iter().map(|n| n.start).min().unwrap_or(0).max(0);
     let end = part.end();
-    let from = first.div_euclid(bar) * bar;
-    let to = (end + bar - 1).div_euclid(bar) * bar;
+    let (first_bar, _) = meter.bar_at(first);
+    let from = meter.tick_of_bar(first_bar);
+    let to = match meter.bar_at(end) {
+        (bar, 0) => meter.tick_of_bar(bar),
+        (bar, _) => meter.tick_of_bar(bar + 1),
+    };
+    let bar = meter.bar_ticks(first_bar);
     let notes = part
         .notes
         .iter()
@@ -47,7 +52,7 @@ pub fn song_of_channel(project: &Project, channel: ChannelId) -> VocalSong {
     let mut song = VocalSong::new(name.clone());
     song.tempo = project.tempo_map.segments().to_vec();
     song.beats_per_bar = project.beats_per_bar;
-    song.beat_unit = 4;
+    song.beat_unit = project.beat_unit;
     let mut part = SongPart::new(name);
     let mut clips: Vec<_> = project.clips.iter().collect();
     clips.sort_by_key(|(_, c)| c.start);

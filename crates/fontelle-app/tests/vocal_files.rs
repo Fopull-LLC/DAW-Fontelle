@@ -108,9 +108,15 @@ fn session(name: &str) -> (Session, PathBuf) {
 
 /// A two-note song at `bpm`, written as `.ustx`.
 fn ustx_file(dir: &Path, bpm: f64) -> PathBuf {
+    ustx_file_in(dir, bpm, 3, 4)
+}
+
+/// The same, in `top`/`bottom`.
+fn ustx_file_in(dir: &Path, bpm: f64, top: u32, bottom: u32) -> PathBuf {
     let mut song = VocalSong::new("Imported");
     song.tempo = vec![TempoSegment { start_tick: 0, bpm }];
-    song.beats_per_bar = 3;
+    song.beats_per_bar = top;
+    song.beat_unit = bottom;
     let mut part = SongPart::new("Lead");
     part.notes = vec![
         vocal_note(PPQN * 3, PPQN, 60, "sa"),
@@ -204,6 +210,25 @@ fn a_file_dropped_on_an_empty_song_brings_its_tempo_in_one_undo() {
     assert!(vocal_channels(project).is_empty());
     assert_eq!(project.tempo_map.tempo_at(0), 120.0);
     assert_eq!(project.beats_per_bar, 4);
+}
+
+/// A file in 6/8 makes an empty song 6/8 — six eighths, not three quarters —
+/// and one undo puts the song's own back.
+#[test]
+fn a_file_in_eighths_brings_its_signature_as_written() {
+    let (mut session, dir) = session("eighths");
+    let file = ustx_file_in(&dir, 90.0, 6, 8);
+    let said = session.drop_file(&file).unwrap();
+    assert!(said.contains("6/8"), "{said}");
+    assert_eq!(
+        session.project().signature(),
+        fontelle_types::Signature::new(6, 8)
+    );
+    session.undo();
+    assert_eq!(
+        session.project().signature(),
+        fontelle_types::Signature::new(4, 4)
+    );
 }
 
 #[test]

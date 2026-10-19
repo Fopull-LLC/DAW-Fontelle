@@ -194,8 +194,8 @@ pub fn read(text_in: &str, name: &str) -> Result<VocalSong, String> {
         .or_else(|| number(&doc, "beat_unit"))
         .unwrap_or(4.0)
         .max(1.0);
-    song.beat_unit = unit as u32;
-    song.beats_per_bar = ((beats * 4.0 / unit).round() as u32).max(1);
+    song.beat_unit = (unit.round() as u32).max(1);
+    song.beats_per_bar = (beats.round() as u32).max(1);
     if list(&doc, "time_signatures").len() > 1 {
         song.unmapped("time signature changes (the first is kept)");
     }
@@ -610,9 +610,7 @@ fn round2(x: f64) -> f64 {
 
 /// The song as an OpenUtau project: a track and one voice part per part.
 pub fn write(song: &VocalSong) -> String {
-    let written_beats = (song.beats_per_bar * song.beat_unit.max(1))
-        .div_ceil(4)
-        .max(1);
+    let written_beats = song.beats_per_bar.max(1);
     let mut expressions = BTreeMap::new();
     for map in &CURVES {
         expressions.insert(

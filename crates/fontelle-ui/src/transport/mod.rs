@@ -181,8 +181,8 @@ pub struct TransportBarLayout {
     /// The tempo, in beats per minute. Dragged, and the only control on this
     /// bar that writes to the **document** rather than to the engine.
     pub tempo: Rect,
-    /// The time signature — its numerator, over a quarter note. See
-    /// [`format_signature`].
+    /// The time signature: the song's own, or the change chosen on the
+    /// ruler. A press opens [`meter_menu`].
     pub signature: Rect,
     /// Song or clip: what pressing play plays. See
     /// [`PlayMode`](crate::document::PlayMode).
@@ -613,36 +613,6 @@ pub fn format_tempo(bpm: f64) -> String {
 
 // ------------------------------------------------------- the time signature ---
 
-/// One beat in a bar: a bar line every beat. Odd, and legal.
-pub const MIN_BEATS_PER_BAR: u32 = 1;
-
-/// And the most. Past this the bar numbers on the roll's ruler are further
-/// apart than the roll is wide at any useful zoom.
-pub const MAX_BEATS_PER_BAR: u32 = 16;
-
-/// The signature box's drop-down: every metre the box can hold, in order,
-/// with the one in force greyed.
-///
-/// > *"remember we are trying to move away from iterating through options,
-/// > instead it should be a dropdown."*
-///
-/// A click used to step the box to the next value and wrap at the top, which
-/// made 3/4 from 4/4 fifteen clicks away. The list is the same answer the
-/// settings rows and the clip editor's choices give: the choice is a row, and
-/// the row you are on says where you are.
-pub fn signature_menu_entries(current: u32) -> Vec<crate::canvas::MenuEntry> {
-    (MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR)
-        .map(|beats| {
-            let label = format_signature(beats);
-            if beats == current {
-                crate::canvas::MenuEntry::disabled(label)
-            } else {
-                crate::canvas::MenuEntry::new(label)
-            }
-        })
-        .collect()
-}
-
 /// What the signature box is editing: the song's own signature, or the
 /// change at a bar chosen on the ruler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -656,51 +626,78 @@ pub enum MeterTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeterRow {
     Heading,
-    /// Make it this signature.
-    Signature(u32, u32),
+    /// Make it [`METER_PRESETS`]' entry.
+    Preset(usize),
+    /// Type any signature — `7/8`, `4/3`, `3+3+2/8` — in a prompt.
+    Type,
     /// Put a change at this bar, where the marker is.
     AddAt(u32),
     /// Take the change at this bar away.
     Remove(u32),
 }
 
-/// The signatures a change may have in eighths — the compound and the odd
-/// ones people write in eighths.
-const EIGHTHS: [u32; 6] = [3, 5, 6, 7, 9, 12];
+/// The signatures the menu offers at a click: the common ones in quarters,
+/// halves, eighths and sixteenths. Anything else — any top over any bottom,
+/// grouped however — is a row away, typed (Ty, 2026-10-19: *"totally
+/// flexible so that advanced artists could use this as well as
+/// beginners"*).
+pub const METER_PRESETS: [(u32, u32); 18] = [
+    (2, 4),
+    (3, 4),
+    (4, 4),
+    (5, 4),
+    (6, 4),
+    (7, 4),
+    (2, 2),
+    (3, 2),
+    (3, 8),
+    (5, 8),
+    (6, 8),
+    (7, 8),
+    (9, 8),
+    (12, 8),
+    (5, 16),
+    (7, 16),
+    (9, 16),
+    (15, 16),
+];
 
-/// The signature box's menu: a heading saying what it edits, the signatures
-/// it can be (the one in force greyed), then a change to add at the
-/// marker's bar `marker_bar` — or, editing a change, a way to take it away.
-/// Ty, 2026-10-18: *"the project time signature i guess would be considered
-/// the default."*
+/// The row that opens the prompt.
+pub const TYPE_A_SIGNATURE: &str = "Type a signature\u{2026}";
+
+/// What the prompt asks.
+pub const SIGNATURE_PROMPT: &str = "Any signature \u{2014} 7/8, 5/16, 4/3, or grouped like 3+3+2/8";
+
+/// The signature box's menu: a heading saying what it edits, the common
+/// signatures (the one in force greyed), a row to type any other, then a
+/// change to add at the marker's bar `marker_bar` — or, editing a change, a
+/// way to take it away. Ty, 2026-10-18: *"the project time signature i guess
+/// would be considered the default."*
 pub fn meter_menu(
     target: MeterTarget,
-    current: (u32, u32),
+    current: &fontelle_types::Signature,
     marker_bar: u32,
     change_at_marker: bool,
 ) -> (Vec<crate::canvas::MenuEntry>, Vec<MeterRow>) {
     use crate::canvas::MenuEntry;
     let mut entries = vec![MenuEntry::disabled(match target {
-        MeterTarget::Song => "The song's own signature".to_string(),
-        MeterTarget::Change(bar) => format!("From bar {}", bar + 1),
+        MeterTarget::Song => format!("The song's own signature \u{2014} {}", current.label()),
+        MeterTarget::Change(bar) => format!("From bar {} \u{2014} {}", bar + 1, current.label()),
     })];
     let mut rows = vec![MeterRow::Heading];
-    let offer = |top: u32, bottom: u32, entries: &mut Vec<MenuEntry>, rows: &mut Vec<MeterRow>| {
-        let label = format!("{top}/{bottom}");
-        entries.push(if (top, bottom) == current {
+    for (index, (top, bottom)) in METER_PRESETS.iter().enumerate() {
+        let preset = fontelle_types::Signature::new(*top, *bottom);
+        let label = preset.label();
+        entries.push(if &preset == current {
             MenuEntry::disabled(label)
         } else {
             MenuEntry::new(label)
         });
-        rows.push(MeterRow::Signature(top, bottom));
-    };
-    for top in MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR {
-        offer(top, 4, &mut entries, &mut rows);
+        rows.push(MeterRow::Preset(index));
     }
+    entries.push(MenuEntry::new(TYPE_A_SIGNATURE));
+    rows.push(MeterRow::Type);
     if let MeterTarget::Change(bar) = target {
-        for top in EIGHTHS {
-            offer(top, 8, &mut entries, &mut rows);
-        }
         entries.push(MenuEntry::new(format!(
             "Remove the change at bar {}",
             bar + 1
@@ -714,26 +711,6 @@ pub fn meter_menu(
         rows.push(MeterRow::AddAt(marker_bar));
     }
     (entries, rows)
-}
-
-/// The metre the `row`th entry of [`signature_menu_entries`] stands for.
-/// Clamped, so a row past the end is the widest metre rather than a panic.
-pub fn beats_per_bar_at(row: usize) -> u32 {
-    let offset = u32::try_from(row).unwrap_or(u32::MAX);
-    MIN_BEATS_PER_BAR
-        .saturating_add(offset)
-        .clamp(MIN_BEATS_PER_BAR, MAX_BEATS_PER_BAR)
-}
-
-/// What the signature box says.
-///
-/// The denominator is not settable and the box does not pretend it is:
-/// [`PPQN`] is ticks per *quarter* note, so a denominator other than four is a
-/// change to what a tick means in every conversion in the project, not a
-/// control. It is drawn because `4/4` is how a time signature reads and a bare
-/// `4` is not.
-pub fn format_signature(beats_per_bar: u32) -> String {
-    format!("{beats_per_bar}/4")
 }
 
 /// Turns an action into commands on the engine, and hands back where the marker
@@ -920,47 +897,22 @@ pub fn format_clock(seconds: f64) -> String {
 /// Both, because they answer different questions — "where am I in the song"
 /// and "how long is this" — and a bar narrow enough that only one fits is a
 /// problem for the layout, not a reason to make the user choose.
-pub fn format_readout(view: &TransportView, beats_per_bar: u32) -> String {
+pub fn format_readout(view: &TransportView, meter: &fontelle_types::Meter) -> String {
     format!(
         "{}  {}",
-        format_bars_beats(view.position_beats, beats_per_bar),
+        format_bars_beats(view.position_beats, meter),
         format_clock(view.position_seconds())
     )
 }
 
 /// `bar.beat.tick`, one-based, with the tick inside the beat at [`PPQN`]
-/// resolution — the read-out every DAW has, in the units the document uses.
-pub fn format_bars_beats(beats: f64, beats_per_bar: u32) -> String {
-    let beats_per_bar = beats_per_bar.max(1) as f64;
-    let beats = beats.max(0.0);
-    let bar = (beats / beats_per_bar).floor();
-    let in_bar = beats - bar * beats_per_bar;
-    let beat = in_bar.floor();
-    let tick = ((in_bar - beat) * PPQN as f64).round() as i64;
-    format!(
-        "{}.{}.{:03}",
-        bar as i64 + 1,
-        beat as i64 + 1,
-        tick.min(PPQN - 1)
-    )
-}
-
-/// [`format_bars_beats`], counted by the song's meter: each bar its own
-/// length, each beat its own (an eighth in 7/8). `beats` is in quarters,
-/// as the transport reports it.
-pub fn format_bars_beats_in(beats: f64, meter: &fontelle_types::Meter) -> String {
+/// resolution — the read-out every DAW has — counted by the song's meter:
+/// each bar its own length, each beat its own (an eighth in 7/8). `beats` is
+/// in quarters, as the transport reports it.
+pub fn format_bars_beats(beats: f64, meter: &fontelle_types::Meter) -> String {
     let tick = (beats.max(0.0) * PPQN as f64).round() as fontelle_types::Tick;
     let (bar, beat, within) = meter.beat_at(tick);
     format!("{}.{}.{:03}", bar + 1, beat + 1, within.min(PPQN - 1))
-}
-
-/// [`format_readout`], counted by the song's meter.
-pub fn format_readout_in(view: &TransportView, meter: &fontelle_types::Meter) -> String {
-    format!(
-        "{}  {}",
-        format_bars_beats_in(view.position_beats, meter),
-        format_clock(view.position_seconds())
-    )
 }
 
 /// The shortest a mouse audition sounds for.
@@ -1064,21 +1016,18 @@ pub fn record_menu_entries_for(current: RecordMode) -> Vec<crate::canvas::MenuEn
         .collect()
 }
 
-/// How many beats the click counts before the tape starts.
-///
-/// *"after the 4 tap metronome count in it starts recording"* — four, which is
-/// what every studio does. Four **beats of the bar being counted in**, so a
-/// count-in in 3/4 is three and one in 6/8 is six: a fixed four over a waltz
-/// counts you in wrong.
-pub const COUNT_IN_BEATS: u32 = 4;
-
 /// The longest a count-in may be, in seconds.
 ///
 /// A bar at 20 bpm is twelve seconds, and somebody who set a slow tempo to work
 /// out a part and then pressed record would think the button was broken.
 const LONGEST_COUNT_IN_SECONDS: i64 = 8;
 
-/// How long the count-in is, in samples.
+/// How long the count-in is, in samples: `beats` beats of `samples_per_beat`
+/// each — **one bar of the signature the take starts in**, so 3/4 counts
+/// three, 7/8 seven eighths, 12/8 twelve. *"after the 4 tap metronome count
+/// in it starts recording"* was 4/4's case of the same rule; the engine
+/// clicks the count in that bar's beats and accents, counted back from the
+/// marker.
 ///
 /// A count-in is **not** a delay before the transport rolls. The transport
 /// rolls, the click sounds, and the tape starts a bar later — which is what
@@ -1088,9 +1037,12 @@ const LONGEST_COUNT_IN_SECONDS: i64 = 8;
 /// Zero for a project with no tempo yet, rather than dividing by it. Trimmed to
 /// whole beats when a bar this slow would run past
 /// [`LONGEST_COUNT_IN_SECONDS`] — a count-in cut off mid-beat is a click that
-/// stops in the wrong place, which is worse than a shorter one.
-pub fn count_in_samples(samples_per_beat: Sample, beats: u32) -> Sample {
-    if samples_per_beat <= 0 || beats == 0 {
+/// stops in the wrong place, which is worse than a shorter one; the beats
+/// kept are the bar's last, leading into the marker. A beat need not be a
+/// whole number of samples (a 5/7 bar's is not), so it is a fraction and
+/// the count rounds once, at the end.
+pub fn count_in_samples(samples_per_beat: f64, beats: u32) -> Sample {
+    if samples_per_beat < 1.0 || beats == 0 || !samples_per_beat.is_finite() {
         return 0;
     }
     // The cap is in seconds and nobody tells this function the device's rate —
@@ -1100,9 +1052,9 @@ pub fn count_in_samples(samples_per_beat: Sample, beats: u32) -> Sample {
     // bar you can still hear; one that is too long is a button that looks
     // broken.
     const ASSUMED_RATE: Sample = 48_000;
-    let longest = LONGEST_COUNT_IN_SECONDS * ASSUMED_RATE;
-    let allowed = (longest / samples_per_beat).clamp(1, i64::from(beats));
-    samples_per_beat.saturating_mul(allowed)
+    let longest = (LONGEST_COUNT_IN_SECONDS * ASSUMED_RATE) as f64;
+    let allowed = ((longest / samples_per_beat).floor() as i64).clamp(1, i64::from(beats));
+    (samples_per_beat * allowed as f64).round() as Sample
 }
 
 /// Where the audio load strip goes: under the meter's two lanes, in the
