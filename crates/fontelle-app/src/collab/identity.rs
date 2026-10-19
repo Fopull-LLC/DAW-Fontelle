@@ -9,18 +9,24 @@
 //! **An install is an Ed25519 key pair**, made the first time it shares or
 //! joins and kept beside the settings file, readable by its owner alone. A
 //! joiner proves it holds the key by signing the host's fresh nonce together
-//! with the session's code ([`join_message`]): the signature is good for
-//! that one connection to that one session, so it can be neither replayed
-//! later nor carried into somebody else's session. What the host blocks is
-//! that public key.
+//! with the session's code and both halves of the connection's key exchange
+//! ([`join_message`]): the signature is good for that one connection to that
+//! one session, so it can be neither replayed later nor carried into
+//! somebody else's session or exchange. What the host blocks is that public
+//! key.
+//!
+//! **Every connection is sealed**, password or not: an ephemeral X25519
+//! exchange ([`Exchange`]) rides in the challenge and its answer, and the
+//! connection's keys come from its secret mixed with the nonce
+//! ([`link_keys`]). So the relay in the middle forwards ciphertext.
 //!
 //! **A password is never sent.** Both sides stretch it with PBKDF2 under the
 //! session's code ([`PasswordKeys::derive`]) and split what comes out, by
 //! label, into a key for the proof (an HMAC of the nonce and the joiner's
-//! key) and a key the connection is sealed with ([`PasswordKeys::link`],
-//! one key a direction, mixed with the connection's nonce). Somebody who
-//! watched a handshake can still guess passwords offline at PBKDF2's price;
-//! nothing short of a PAKE stops that, and a long password is the defence.
+//! key) and a seal key mixed into the connection's keys as well. Somebody
+//! who watched a handshake can still guess passwords offline at PBKDF2's
+//! price; nothing short of a PAKE stops that, and a long password is the
+//! defence.
 
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -28,7 +34,7 @@ use std::sync::Arc;
 
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
-use ring::{hmac, pbkdf2};
+use ring::{agreement, hmac, pbkdf2};
 
 /// What a joiner signs ahead of the nonce and the code: the purpose, so a
 /// signature made here is no signature of anything else.
@@ -137,9 +143,21 @@ pub fn verify(key: &[u8], message: &[u8], signature: &[u8]) -> bool {
 
 /// What a joiner signs to come into the session `code` on the connection
 /// the host challenged with `nonce`.
-pub fn join_message(nonce: &[u8], code: &str) -> Vec<u8> {
+/// Both halves of the connection's key exchange are in it, the host's then
+/// the joiner's: a signature lifted onto another exchange — somebody in the
+/// middle swapping in their own halves — signs nothing the host will take.
+/// Every part but the code has a fixed length, so no two different sets of
+/// parts make the same message.
+pub fn join_message(
+    nonce: &[u8],
+    code: &str,
+    host_exchange: &[u8],
+    joiner_exchange: &[u8],
+) -> Vec<u8> {
     let mut message = JOIN_CONTEXT.to_vec();
     message.extend_from_slice(nonce);
+    message.extend_from_slice(host_exchange);
+    message.extend_from_slice(joiner_exchange);
     message.extend_from_slice(code.as_bytes());
     message
 }
@@ -208,16 +226,66 @@ impl PasswordKeys {
         message.extend_from_slice(key);
         hmac::verify(&mac, &message, proof).is_ok()
     }
+}
 
-    /// The keys the connection challenged with `nonce` is sealed under, one
-    /// each way. Mixed with the nonce, so every connection has its own and a
-    /// frame from one is nothing on another.
-    pub fn link(&self, nonce: &[u8]) -> LinkKeys {
-        let mac = hmac::Key::new(hmac::HMAC_SHA256, &self.seal);
-        LinkKeys {
-            host_to_joiner: tag32(&mac, &[b"host to joiner", nonce]),
-            joiner_to_host: tag32(&mac, &[b"joiner to host", nonce]),
-        }
+/// One side's half of a connection's X25519 exchange: made fresh for each
+/// challenge, used once, and gone — so every connection, a reconnect
+/// included, is sealed under keys nobody had before.
+pub struct Exchange {
+    private: agreement::EphemeralPrivateKey,
+    public: Vec<u8>,
+}
+
+impl Default for Exchange {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Exchange {
+    pub fn new() -> Exchange {
+        let rng = SystemRandom::new();
+        let private = agreement::EphemeralPrivateKey::generate(&agreement::X25519, &rng)
+            .expect("the system has randomness");
+        let public = private
+            .compute_public_key()
+            .expect("a key just made has a public half")
+            .as_ref()
+            .to_vec();
+        Exchange { private, public }
+    }
+
+    /// The half that crosses the wire.
+    pub fn public(&self) -> &[u8] {
+        &self.public
+    }
+
+    /// The secret both sides share, given the other side's half; `None` for
+    /// a half that is not one.
+    pub fn agree(self, theirs: &[u8]) -> Option<[u8; 32]> {
+        let theirs = agreement::UnparsedPublicKey::new(&agreement::X25519, theirs);
+        agreement::agree_ephemeral(self.private, &theirs, |secret| {
+            let mut shared = [0u8; 32];
+            shared.copy_from_slice(secret);
+            shared
+        })
+        .ok()
+    }
+}
+
+/// The keys a connection is sealed under, one each way, from its exchange's
+/// `shared` secret mixed with the challenge's `nonce` — and, in a password
+/// session, with the password's seal key: a relay that ran both halves of
+/// the exchange itself (the signature binds them, but this does not lean on
+/// that alone) still cannot make these without the password.
+pub fn link_keys(shared: &[u8; 32], nonce: &[u8], password: Option<&PasswordKeys>) -> LinkKeys {
+    let salt = hmac::Key::new(hmac::HMAC_SHA256, nonce);
+    let seal: &[u8] = password.map_or(&[], |keys| &keys.seal);
+    let extracted = tag32(&salt, &[b"fontelle link v1", shared, seal]);
+    let mac = hmac::Key::new(hmac::HMAC_SHA256, &extracted);
+    LinkKeys {
+        host_to_joiner: tag32(&mac, &[b"host to joiner"]),
+        joiner_to_host: tag32(&mac, &[b"joiner to host"]),
     }
 }
 

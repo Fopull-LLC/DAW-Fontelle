@@ -1768,12 +1768,15 @@ fn msg_variant_order_is_pinned() {
     // Who may come in (Ty, 2026-10-19: *"we should try our best to implement
     // security so that users can be blocked from sessions"*): the host's
     // challenge, the joiner's proof, and the wait while the host decides.
+    // Each side's half of the connection's key exchange rides in the first
+    // two (unshipped, so the fields were added rather than new variants).
     // After `Hello`, never instead of it — an older build still reads its
     // version refusal.
     assert_eq!(
         tag(&Msg::Challenge {
             nonce: vec![7; 32],
-            password: true
+            password: true,
+            exchange: vec![4; 32],
         }),
         24
     );
@@ -1781,7 +1784,8 @@ fn msg_variant_order_is_pinned() {
         tag(&Msg::Answer {
             key: vec![1; 32],
             signature: vec![2; 64],
-            proof: None
+            proof: None,
+            exchange: vec![5; 32],
         }),
         25
     );
@@ -1803,13 +1807,16 @@ fn the_handshake_crosses_the_wire_and_a_sealed_frame_is_no_message() {
         key: vec![9; 32],
         signature: vec![8; 64],
         proof: Some(vec![3; 32]),
+        exchange: vec![6; 32],
     };
     match Msg::from_bytes(&answer.to_bytes()).unwrap() {
         Msg::Answer {
             key,
             signature,
             proof,
+            exchange,
         } => {
+            assert_eq!(exchange, vec![6; 32]);
             assert_eq!(key, vec![9; 32]);
             assert_eq!(signature, vec![8; 64]);
             assert_eq!(proof, Some(vec![3; 32]));

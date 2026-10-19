@@ -23,25 +23,14 @@ use fontelle_types::{EffectKind, PPQN, PersistentId};
 use super::files::Place;
 use super::*;
 
-/// A joiner's link that counts what the joiner asks for.
-struct Counting {
-    inner: Box<dyn Transport>,
-    resyncs: Arc<Mutex<usize>>,
-}
-
-impl Transport for Counting {
-    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+/// Counts the fresh copies a joiner asks for, at the choke point — under
+/// it everything is sealed.
+fn counting(collab: &mut Collab, resyncs: Arc<Mutex<usize>>) {
+    collab.transport.tap_out = Some(Box::new(move |bytes| {
         if matches!(Msg::from_bytes(bytes), Ok(Msg::ResyncRequest)) {
-            *self.resyncs.lock().unwrap() += 1;
+            *resyncs.lock().unwrap() += 1;
         }
-        self.inner.send(peer, channel, bytes);
-    }
-    fn poll(&mut self) -> Vec<Incoming> {
-        self.inner.poll()
-    }
-    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
-        self.inner.stats(peer)
-    }
+    }));
 }
 
 struct Side {
@@ -157,16 +146,14 @@ impl Two {
             },
         };
         let resyncs = Arc::new(Mutex::new(0));
-        let inner: Box<dyn Transport> = match setup.joiner_link {
+        let link: Box<dyn Transport> = match setup.joiner_link {
             Some(wrap) => wrap(&hub, hub.connect()),
             None => Box::new(hub.connect()),
         };
-        let link = Counting {
-            inner,
-            resyncs: resyncs.clone(),
-        };
+        let mut collab = Collab::join(link, options("Joiner"), dir.clone());
+        counting(&mut collab, resyncs.clone());
         let joiner = Side {
-            collab: Collab::join(Box::new(link), options("Joiner"), dir.clone()),
+            collab,
             doc: Project::new("nothing yet"),
             history: History::new(),
             place: Place {
@@ -381,40 +368,18 @@ fn a_disagreement_asks_for_one_fresh_copy_not_one_an_edit() {
     assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
 }
 
-/// A joiner's link on which every song arrives with a fingerprint that is
-/// not its own — what a build that writes songs differently looks like.
-struct Damaging {
-    inner: fontelle_net::MemoryTransport,
-}
-
-impl Transport for Damaging {
-    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
-        self.inner.send(peer, channel, bytes);
-    }
-    fn poll(&mut self) -> Vec<Incoming> {
-        self.inner
-            .poll()
-            .into_iter()
-            .map(|incoming| match incoming {
-                Incoming::Message(peer, channel, bytes) => match Msg::from_bytes(&bytes) {
-                    Ok(Msg::SnapshotDone { hash, seq }) => Incoming::Message(
-                        peer,
-                        channel,
-                        Msg::SnapshotDone {
-                            hash: hash ^ 1,
-                            seq,
-                        }
-                        .to_bytes(),
-                    ),
-                    _ => Incoming::Message(peer, channel, bytes),
-                },
-                other => other,
-            })
-            .collect()
-    }
-    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
-        self.inner.stats(peer)
-    }
+/// A joiner on which every song arrives with a fingerprint that is not its
+/// own — what a build that writes songs differently looks like. Spoiled at
+/// the choke point, once opened: under it everything is sealed.
+fn damaging(collab: &mut Collab) {
+    collab.transport.tap_in = Some(Box::new(|bytes| match Msg::from_bytes(&bytes) {
+        Ok(Msg::SnapshotDone { hash, seq }) => Msg::SnapshotDone {
+            hash: hash ^ 1,
+            seq,
+        }
+        .to_bytes(),
+        _ => bytes,
+    }));
 }
 
 /// Ty, joining a friend from the phase 1 preview (2026-10-18): *"its
@@ -438,14 +403,10 @@ fn a_song_that_arrives_damaged_ends_the_join_and_says_why() {
         },
     };
     host.history.open_outbox();
+    let mut damaged = Collab::join(Box::new(hub.connect()), options("Joiner"), dir.clone());
+    damaging(&mut damaged);
     let mut joiner = Side {
-        collab: Collab::join(
-            Box::new(Damaging {
-                inner: hub.connect(),
-            }),
-            options("Joiner"),
-            dir.clone(),
-        ),
+        collab: damaged,
         doc: Project::new("nothing yet"),
         history: History::new(),
         place: Place {
@@ -1198,14 +1159,25 @@ fn recorded(frames: &Frames) -> Wrap {
 /// in the clear, and the password itself never crosses at all.
 #[test]
 fn everything_after_the_handshake_is_sealed_whereabouts_and_files_too() {
+    sealed_throughout("sealed", Some("correct horse"));
+}
+
+/// And so does a session with no password: every connection is sealed
+/// under keys from its own key exchange, whatever the host chose.
+#[test]
+fn a_session_without_a_password_is_sealed_too() {
+    sealed_throughout("sealed-open", None);
+}
+
+fn sealed_throughout(name: &str, password: Option<&'static str>) {
     let host_frames = Arc::new(Mutex::new(Vec::new()));
     let joiner_frames = Arc::new(Mutex::new(Vec::new()));
     let mut two = Two::with(
-        "sealed",
+        name,
         2,
         Setup {
-            host_password: Some("correct horse"),
-            joiner_password: Some("correct horse"),
+            host_password: password,
+            joiner_password: password,
             host_link: Some(recorded(&host_frames)),
             joiner_link: Some(recorded(&joiner_frames)),
         },
@@ -1346,7 +1318,8 @@ fn a_frame_that_does_not_open_is_dropped_and_so_is_a_replay() {
         [Incoming::Connected(peer)] => *peer,
         other => panic!("{other:?}"),
     };
-    let keys = identity::PasswordKeys::derive("pw", "ABCDEF").link(&[5; 32]);
+    let password = identity::PasswordKeys::derive("pw", "ABCDEF");
+    let keys = identity::link_keys(&[7; 32], &[5; 32], Some(&password));
     host.arm(peer, &keys);
     joiner.arm(fontelle_net::SERVER, &keys);
     let said = |text: &str| Msg::Chat {
@@ -1390,6 +1363,7 @@ fn a_frame_that_does_not_open_is_dropped_and_so_is_a_replay() {
         &Msg::Challenge {
             nonce: vec![1; 32],
             password: true,
+            exchange: vec![2; 32],
         }
         .to_bytes(),
     );
@@ -1689,14 +1663,25 @@ impl Transport for Rejoins {
 /// back in its place, sealed.
 #[test]
 fn a_password_joiner_whose_link_drops_is_back_without_being_asked() {
+    back_after_a_drop("password-rejoin", Some("pw"));
+}
+
+/// Without a password the same: the new connection runs its own key
+/// exchange, and is sealed under fresh keys.
+#[test]
+fn a_joiner_whose_link_drops_is_sealed_again_under_fresh_keys() {
+    back_after_a_drop("open-rejoin", None);
+}
+
+fn back_after_a_drop(name: &str, password: Option<&'static str>) {
     let back = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let theirs = back.clone();
     let mut two = Two::with(
-        "password-rejoin",
+        name,
         2,
         Setup {
-            host_password: Some("pw"),
-            joiner_password: Some("pw"),
+            host_password: password,
+            joiner_password: password,
             joiner_link: Some(Box::new(move |hub, link| {
                 Box::new(Rejoins {
                     hub: hub.clone(),
@@ -1717,10 +1702,139 @@ fn a_password_joiner_whose_link_drops_is_back_without_being_asked() {
     assert!(!asked, "asked for the password again");
     assert!(two.joiner.collab.is_live());
     assert_eq!(joiner_space(&two), bob, "in its own place");
+    let opened = two.host.collab.transport.opened_in();
     let clip = two.host.doc.clips.keys().next().unwrap();
     two.joiner.run(MoveClip::new(clip, PPQN, None));
     two.settle();
     assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
+    assert!(
+        two.host.collab.transport.opened_in() > opened,
+        "the new connection is sealed"
+    );
+}
+
+/// What the joiner signs names both halves of the key exchange: a relay
+/// that swaps either for its own — to sit in the middle of the sealed
+/// connection — makes the signature good for nothing, and the join is
+/// refused.
+#[test]
+fn a_swapped_exchange_key_is_refused() {
+    for (name, host_side) in [("swap-joiners-half", true), ("swap-hosts-half", false)] {
+        let mut two = Two::new(name, 2);
+        let mut mallory_in_the_middle = Side {
+            collab: Collab::join(
+                Box::new(Swapping {
+                    inner: Box::new(two.hub.connect()),
+                    answers: host_side,
+                }),
+                options("Carol"),
+                two.dir.join(name),
+            ),
+            doc: Project::new("nothing yet"),
+            history: History::new(),
+            place: Place {
+                bundle: None,
+                banks: Vec::new(),
+            },
+        };
+        assert!(!bring_in(&mut two, &mut mallory_in_the_middle, None));
+        let why = mallory_in_the_middle.collab.ended().unwrap();
+        assert!(why.contains("couldn't prove"), "{why}");
+    }
+}
+
+/// A link that puts its own exchange key in place of the joiner's (in each
+/// `Answer` it sends, with `answers`) or the host's (in each `Challenge` it
+/// hears).
+struct Swapping {
+    inner: Box<dyn Transport>,
+    answers: bool,
+}
+
+fn another_exchange_key() -> Vec<u8> {
+    identity::Exchange::new().public().to_vec()
+}
+
+impl Transport for Swapping {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        match Msg::from_bytes(bytes) {
+            Ok(Msg::Answer {
+                key,
+                signature,
+                proof,
+                ..
+            }) if self.answers => {
+                let swapped = Msg::Answer {
+                    key,
+                    signature,
+                    proof,
+                    exchange: another_exchange_key(),
+                };
+                self.inner.send(peer, channel, &swapped.to_bytes());
+            }
+            _ => self.inner.send(peer, channel, bytes),
+        }
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        let answers = self.answers;
+        self.inner
+            .poll()
+            .into_iter()
+            .map(|incoming| match incoming {
+                Incoming::Message(peer, channel, bytes) if !answers => {
+                    match Msg::from_bytes(&bytes) {
+                        Ok(Msg::Challenge {
+                            nonce, password, ..
+                        }) => Incoming::Message(
+                            peer,
+                            channel,
+                            Msg::Challenge {
+                                nonce,
+                                password,
+                                exchange: another_exchange_key(),
+                            }
+                            .to_bytes(),
+                        ),
+                        _ => Incoming::Message(peer, channel, bytes),
+                    }
+                }
+                other => other,
+            })
+            .collect()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// The link keys come from the exchange, the nonce and — when there is
+/// one — the password: change any of them and the keys change, so a relay
+/// that ran both halves of the exchange itself still lacks the password's.
+#[test]
+fn link_keys_mix_the_exchange_the_nonce_and_the_password() {
+    let password = identity::PasswordKeys::derive("pw", "ABCDEF");
+    let base = identity::link_keys(&[1; 32], &[2; 32], Some(&password));
+    let keys = |k: &identity::LinkKeys| (k.host_to_joiner, k.joiner_to_host);
+    assert_ne!(base.host_to_joiner, base.joiner_to_host, "a key each way");
+    for other in [
+        identity::link_keys(&[9; 32], &[2; 32], Some(&password)),
+        identity::link_keys(&[1; 32], &[9; 32], Some(&password)),
+        identity::link_keys(&[1; 32], &[2; 32], None),
+        identity::link_keys(
+            &[1; 32],
+            &[2; 32],
+            Some(&identity::PasswordKeys::derive("other", "ABCDEF")),
+        ),
+    ] {
+        assert_ne!(keys(&other), keys(&base));
+    }
+    // Both ends of one exchange agree on the secret.
+    let (host, joiner) = (identity::Exchange::new(), identity::Exchange::new());
+    let (host_public, joiner_public) = (host.public().to_vec(), joiner.public().to_vec());
+    assert_eq!(
+        host.agree(&joiner_public).unwrap(),
+        joiner.agree(&host_public).unwrap()
+    );
 }
 
 /// An install's key is kept in a file of its own, made the first time and

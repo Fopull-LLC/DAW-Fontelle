@@ -3,9 +3,10 @@
 //! edits, chat, whereabouts on the unreliable channel, a file's chunks — goes
 //! through the [`Sealed`] around its transport, and nowhere else.
 //!
-//! On a connection that came in with a session password the frames are
-//! sealed with ChaCha20-Poly1305 under that connection's own key, one each
-//! way ([`super::identity::PasswordKeys::link`]). The nonce is the channel
+//! Every connection is sealed from the moment it is proven — password or
+//! not — with ChaCha20-Poly1305 under that connection's own key, one each
+//! way, from its own key exchange ([`super::identity::link_keys`]). Before
+//! that, only the handshake crosses, in the clear. The nonce is the channel
 //! and a counter that only goes up, so it never repeats under one key, and
 //! the receiver takes only a counter higher than the last it took on that
 //! channel — a frame sent again, or one carried over from another channel,
@@ -13,8 +14,6 @@
 //! a sealed connection unless it is part of the handshake (which a
 //! connection starting again speaks in the clear). Dropped, never a panic:
 //! a relay that mangles or invents frames can stop a session, not crash one.
-//!
-//! A connection without a password is passed through as it always was.
 
 use std::collections::BTreeMap;
 
@@ -36,6 +35,12 @@ pub enum End {
 /// A frame's header: [`SEALED`], the channel, the counter.
 const HEADER: usize = 2 + 1 + 8;
 
+/// A test's look at what goes out, and its hand in what comes in.
+#[cfg(test)]
+pub(crate) type TapOut = Box<dyn FnMut(&[u8]) + Send>;
+#[cfg(test)]
+pub(crate) type TapIn = Box<dyn FnMut(Vec<u8>) -> Vec<u8> + Send>;
+
 struct Link {
     seal: LessSafeKey,
     open: LessSafeKey,
@@ -52,6 +57,14 @@ pub struct Sealed {
     sealed_out: usize,
     opened_in: usize,
     dropped_in: usize,
+    /// For tests: what goes out, seen before it is sealed, and what comes
+    /// in, after it is opened (and changed, if the test wants it changed).
+    /// Under the seal there is nothing left to read, so a test that counts
+    /// or spoils messages does it here.
+    #[cfg(test)]
+    pub(crate) tap_out: Option<TapOut>,
+    #[cfg(test)]
+    pub(crate) tap_in: Option<TapIn>,
 }
 
 fn channel_tag(channel: Channel) -> u8 {
@@ -82,6 +95,10 @@ impl Sealed {
             sealed_out: 0,
             opened_in: 0,
             dropped_in: 0,
+            #[cfg(test)]
+            tap_out: None,
+            #[cfg(test)]
+            tap_in: None,
         }
     }
 
@@ -178,6 +195,10 @@ impl Sealed {
 
 impl Transport for Sealed {
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        #[cfg(test)]
+        if let Some(tap) = &mut self.tap_out {
+            tap(bytes);
+        }
         let Some(link) = self.links.get_mut(&peer) else {
             self.inner.send(peer, channel, bytes);
             return;
@@ -223,6 +244,14 @@ impl Transport for Sealed {
                     out.push(Incoming::Disconnected(peer, why));
                 }
                 other => out.push(other),
+            }
+        }
+        #[cfg(test)]
+        if let Some(tap) = &mut self.tap_in {
+            for incoming in &mut out {
+                if let Incoming::Message(_, _, bytes) = incoming {
+                    *bytes = tap(std::mem::take(bytes));
+                }
             }
         }
         out

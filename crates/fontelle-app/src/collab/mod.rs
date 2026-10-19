@@ -705,9 +705,10 @@ impl Collab {
     }
 
     /// The session's password, set, changed, or cleared with `None` (host
-    /// only). **Those already in keep the keys they came in with**: their
-    /// connections were sealed under the password they proved, and stay so;
-    /// a cleared password leaves them sealed too. Only somebody joining
+    /// only). **Those already in keep the keys they came in with**: every
+    /// connection was sealed as it was proven — under its own exchange, and
+    /// the password it proved if there was one — and stays so, whatever the
+    /// password becomes; nobody is ever in the clear. Only somebody joining
     /// from now on is asked for the new one — and a challenge already out
     /// under the old one is answered with a fresh challenge, not let through.
     pub fn set_password(&mut self, password: Option<String>) {
@@ -799,11 +800,11 @@ impl Collab {
     /// what goes is a proof of it, and the connection is sealed under it.
     pub fn give_password(&mut self, password: &str) {
         if let Role::Joiner(joiner) = &mut self.role
-            && let Some(nonce) = joiner.challenge.take()
+            && let Some((nonce, theirs)) = joiner.challenge.take()
         {
             joiner.wrong = false;
             joiner.password = Some(password.to_string());
-            joiner.answer(&mut self.transport, &self.options, &nonce);
+            joiner.answer(&mut self.transport, &self.options, &nonce, &theirs);
         }
     }
 
@@ -1463,8 +1464,10 @@ struct HostPeer {
     session: Option<PersistentId>,
     /// The public key it proved; empty until it has.
     key: Vec<u8>,
-    /// The challenge it was set and has not answered.
+    /// The challenge it was set and has not answered, and the host's secret
+    /// half of the exchange in it — used once, when the answer comes.
     challenge: Option<Challenge>,
+    exchange: Option<identity::Exchange>,
     /// Wrong passwords on this connection (see [`MOST_TRIES`]).
     failures: u8,
     /// When it arrived, or was last challenged: what the host's patience
@@ -1474,11 +1477,13 @@ struct HostPeer {
     knocking: bool,
 }
 
-/// A challenge set to one connection: the nonce, the code and password keys
-/// it was set under, and which password that was.
+/// A challenge set to one connection: the nonce, the host's half of the
+/// exchange, the code and password keys it was set under, and which password
+/// that was.
 #[derive(Clone)]
 struct Challenge {
     nonce: Vec<u8>,
+    exchange: Vec<u8>,
     code: String,
     keys: Option<std::sync::Arc<identity::PasswordKeys>>,
     epoch: u64,
@@ -1495,12 +1500,26 @@ impl HostPeer {
             session: None,
             key: Vec::new(),
             challenge: None,
+            exchange: None,
             failures: 0,
             since: Instant::now(),
             knocking: false,
         }
     }
+}
 
+impl Challenge {
+    /// What the joiner is sent.
+    fn msg(&self) -> Msg {
+        Msg::Challenge {
+            nonce: self.nonce.clone(),
+            password: self.keys.is_some(),
+            exchange: self.exchange.clone(),
+        }
+    }
+}
+
+impl HostPeer {
     fn public(&self) -> Peer {
         Peer {
             peer: self.space,
@@ -1552,8 +1571,7 @@ impl Host {
                         // The challenge, or the answer to it, may be what
                         // was lost: a fresh one, which a joiner that knows
                         // its password answers without asking again.
-                        let fresh = self.challenge(turn);
-                        self.challenge_again(turn, peer, fresh);
+                        self.challenge(turn, peer);
                     }
                 }
                 Incoming::Connected(peer) => {
@@ -1665,31 +1683,20 @@ impl Host {
                 // makes them somebody is answering the challenge — the same
                 // one again for a hello said twice, so an answer already on
                 // its way still fits it.
-                let challenge = match self.peers.get(&peer).and_then(|p| p.challenge.clone()) {
-                    Some(challenge) => challenge,
-                    None => self.challenge(turn),
-                };
                 let entry = self.peers.entry(peer).or_insert_with(HostPeer::arriving);
                 entry.name = name;
                 entry.install = install;
-                if entry.challenge.is_none() {
-                    entry.since = Instant::now();
+                match entry.challenge.clone() {
+                    Some(challenge) => send(turn.transport, peer, &challenge.msg()),
+                    None => self.challenge(turn, peer),
                 }
-                entry.challenge = Some(challenge.clone());
-                send(
-                    turn.transport,
-                    peer,
-                    &Msg::Challenge {
-                        nonce: challenge.nonce,
-                        password: challenge.keys.is_some(),
-                    },
-                );
             }
             Msg::Answer {
                 key,
                 signature,
                 proof,
-            } => self.answered(turn, peer, key, signature, proof, doc),
+                exchange,
+            } => self.answered(turn, peer, key, signature, proof, exchange, doc),
             Msg::Propose { local_seq, edit } => {
                 let Some(author) = self.peers.get(&peer).filter(|p| p.welcomed) else {
                     return;
@@ -1849,10 +1856,12 @@ impl Host {
         }
     }
 
-    /// A fresh challenge, under the session's code as the relay has it now
-    /// (it can change when the relay is lost and found again) and the
-    /// password as it is now.
-    fn challenge(&mut self, turn: &mut Turn) -> Challenge {
+    /// Sets `peer` a fresh challenge and sends it: a new nonce and a new
+    /// half of the key exchange, under the session's code as the relay has it
+    /// now (it can change when the relay is lost and found again) and the
+    /// password as it is now. The host's secret half is kept on the peer,
+    /// for the answer.
+    fn challenge(&mut self, turn: &mut Turn, peer: PeerId) {
         let code = identity::normal_code(
             &turn
                 .transport
@@ -1867,12 +1876,19 @@ impl Host {
                 keys
             }
         });
-        Challenge {
+        let exchange = identity::Exchange::new();
+        let challenge = Challenge {
             nonce: identity::nonce(),
+            exchange: exchange.public().to_vec(),
             code,
             keys,
             epoch: self.password_epoch,
-        }
+        };
+        let entry = self.peers.entry(peer).or_insert_with(HostPeer::arriving);
+        entry.since = Instant::now();
+        entry.challenge = Some(challenge.clone());
+        entry.exchange = Some(exchange);
+        send(turn.transport, peer, &challenge.msg());
     }
 
     /// Tells `peer` why, and lets go of the connection.
@@ -1899,6 +1915,7 @@ impl Host {
     /// somebody blocked learns nothing a stranger without the password
     /// would not; the key is not blocked; the session is not locked to it;
     /// and then it is in, or waiting on the host.
+    #[allow(clippy::too_many_arguments)]
     fn answered(
         &mut self,
         turn: &mut Turn,
@@ -1906,6 +1923,7 @@ impl Host {
         key: Vec<u8>,
         signature: Vec<u8>,
         proof: Option<Vec<u8>>,
+        exchange: Vec<u8>,
         doc: &mut Project,
     ) {
         let Some(who) = self.peers.get(&peer).filter(|p| !p.welcomed && !p.knocking) else {
@@ -1916,23 +1934,26 @@ impl Host {
         };
         let name = who.name.clone();
         let host = turn.options.name.clone();
-        let message = identity::join_message(&challenge.nonce, &challenge.code);
+        let not_proven = format!(
+            "Your studio couldn't prove who it is to {host} \u{2014} check the code and join \
+             again."
+        );
+        // Signed over both halves of the exchange: one swapped on the way,
+        // either way, and this does not verify.
+        let message = identity::join_message(
+            &challenge.nonce,
+            &challenge.code,
+            &challenge.exchange,
+            &exchange,
+        );
         if !identity::verify(&key, &message, &signature) {
-            self.turn_away(
-                turn,
-                peer,
-                &format!(
-                    "Your studio couldn't prove who it is to {host} \u{2014} check the code \
-                     and join again."
-                ),
-            );
+            self.turn_away(turn, peer, &not_proven);
             return;
         }
         // Set under a password that has changed since: set again, under
         // the one there is now. Not a wrong guess — nobody guessed.
         if challenge.epoch != self.password_epoch {
-            let fresh = self.challenge(turn);
-            self.challenge_again(turn, peer, fresh);
+            self.challenge(turn, peer);
             return;
         }
         if let Some(keys) = &challenge.keys {
@@ -1963,8 +1984,7 @@ impl Host {
                         reason: WRONG_PASSWORD.to_string(),
                     },
                 );
-                let fresh = self.challenge(turn);
-                self.challenge_again(turn, peer, fresh);
+                self.challenge(turn, peer);
                 return;
             }
         }
@@ -1982,11 +2002,18 @@ impl Host {
                 .push(format!("{name} tried to join; the session is locked."));
             return;
         }
-        // Proven: from here on, a password session's connection is sealed,
-        // both ways (the joiner sealed its side as it answered).
-        if let Some(keys) = &challenge.keys {
-            turn.transport.arm(peer, &keys.link(&challenge.nonce));
-        }
+        // Proven: from here on the connection is sealed, both ways (the
+        // joiner sealed its side as it answered), under keys from this
+        // connection's exchange — and the password's, when there is one.
+        let entry = self.peers.get_mut(&peer).expect("just found");
+        let Some(shared) = entry.exchange.take().and_then(|ours| ours.agree(&exchange)) else {
+            self.turn_away(turn, peer, &not_proven);
+            return;
+        };
+        turn.transport.arm(
+            peer,
+            &identity::link_keys(&shared, &challenge.nonce, challenge.keys.as_deref()),
+        );
         let entry = self.peers.get_mut(&peer).expect("just found");
         entry.key = key;
         entry.challenge = None;
@@ -1998,20 +2025,6 @@ impl Host {
             return;
         }
         self.admit(turn, peer, doc);
-    }
-
-    fn challenge_again(&mut self, turn: &mut Turn, peer: PeerId, fresh: Challenge) {
-        let entry = self.peers.get_mut(&peer).expect("the caller found it");
-        entry.since = Instant::now();
-        entry.challenge = Some(fresh.clone());
-        send(
-            turn.transport,
-            peer,
-            &Msg::Challenge {
-                nonce: fresh.nonce,
-                password: fresh.keys.is_some(),
-            },
-        );
     }
 
     /// What the host answered somebody waiting, carried out.
@@ -2384,8 +2397,9 @@ struct Joiner {
     /// again from the host's song must not take back — see
     /// [`Collab::plugin_kept_here`].
     kept_here: Vec<KeptHere>,
-    /// The host's challenge, while it waits on the person's password.
-    challenge: Option<Vec<u8>>,
+    /// The host's challenge — its nonce and its half of the exchange —
+    /// while it waits on the person's password.
+    challenge: Option<(Vec<u8>, Vec<u8>)>,
     /// The host has challenged this connection: hello is not said again.
     challenged: bool,
     /// How many times the password has been asked for, and whether the
@@ -2441,13 +2455,26 @@ impl Joiner {
         }
     }
 
-    /// Answers the host's challenge `nonce`: this studio's key, its
-    /// signature over the nonce and the code, and — with a password — the
-    /// proof of it, after which this end of the link is sealed.
-    fn answer(&mut self, transport: &mut sealed::Sealed, options: &CollabOptions, nonce: &[u8]) {
+    /// Answers the host's challenge `nonce`, whose half of the exchange is
+    /// `theirs`: this studio's key, this side's half of the exchange (fresh,
+    /// used once), a signature over the nonce, the code and both halves,
+    /// and — with a password — the proof of it. Then this end of the link
+    /// is sealed, whatever the session: under the exchange's secret, and the
+    /// password's too when there is one.
+    fn answer(
+        &mut self,
+        transport: &mut sealed::Sealed,
+        options: &CollabOptions,
+        nonce: &[u8],
+        theirs: &[u8],
+    ) {
         let code = identity::normal_code(&options.code);
         let key = options.identity.public_key();
-        let signature = options.identity.sign(&identity::join_message(nonce, &code));
+        let exchange = identity::Exchange::new();
+        let ours = exchange.public().to_vec();
+        let signature = options
+            .identity
+            .sign(&identity::join_message(nonce, &code, theirs, &ours));
         let keys = self.password.clone().map(|password| match &self.stretched {
             Some((p, c, keys)) if *p == password && *c == code => keys.clone(),
             _ => {
@@ -2464,10 +2491,14 @@ impl Joiner {
                 key,
                 signature,
                 proof,
+                exchange: ours,
             },
         );
-        if let Some(keys) = keys {
-            transport.arm(SERVER, &keys.link(nonce));
+        // A half that agrees on nothing is not a real one: nothing is sealed
+        // here, the host cannot open what this side sends, and the join goes
+        // no further.
+        if let Some(shared) = exchange.agree(theirs) {
+            transport.arm(SERVER, &identity::link_keys(&shared, nonce, keys.as_ref()));
         }
     }
 
@@ -2710,7 +2741,11 @@ impl Joiner {
             // hello can be said more than once before the first is heard —
             // is the one already in hand.
             Msg::Challenge { nonce, .. } if self.last_nonce.as_ref() == Some(&nonce) => {}
-            Msg::Challenge { nonce, password } => {
+            Msg::Challenge {
+                nonce,
+                password,
+                exchange,
+            } => {
                 // Whatever this end sealed under answered an older
                 // challenge; the next answer seals under this one's.
                 turn.transport.disarm(SERVER);
@@ -2722,12 +2757,14 @@ impl Joiner {
                     // joined again): proved again without asking.
                     _ if !password => {
                         self.password = None;
-                        self.answer(turn.transport, turn.options, &nonce);
+                        self.answer(turn.transport, turn.options, &nonce, &exchange);
                     }
-                    Some(_) if !self.wrong => self.answer(turn.transport, turn.options, &nonce),
+                    Some(_) if !self.wrong => {
+                        self.answer(turn.transport, turn.options, &nonce, &exchange);
+                    }
                     _ => {
                         self.asks += 1;
-                        self.challenge = Some(nonce);
+                        self.challenge = Some((nonce, exchange));
                     }
                 }
             }

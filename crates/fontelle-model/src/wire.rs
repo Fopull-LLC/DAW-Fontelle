@@ -680,15 +680,20 @@ pub enum Msg {
     Challenge {
         nonce: Vec<u8>,
         password: bool,
+        /// The host's half of this connection's X25519 exchange, fresh for
+        /// each challenge: what every connection is sealed under.
+        exchange: Vec<u8>,
     },
     /// Joiner to host: the studio's Ed25519 public key, its signature over
-    /// the join context, the nonce and the code, and — for a password
-    /// session — an HMAC of the nonce under a key derived from the password.
-    /// The password itself never crosses.
+    /// the join context, the nonce, the code and both halves of the
+    /// exchange, and — for a password session — an HMAC of the nonce under a
+    /// key derived from the password. The password itself never crosses.
     Answer {
         key: Vec<u8>,
         signature: Vec<u8>,
         proof: Option<Vec<u8>>,
+        /// The joiner's half of the connection's X25519 exchange.
+        exchange: Vec<u8>,
     },
     /// Host to a proven joiner, while the host decides whether to let them
     /// in (*Ask before letting people in*).

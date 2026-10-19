@@ -50,19 +50,25 @@ sessions, etc. just ensure odd gaps like this dont make it in"*.
   connection → let go of. The joiner's prompt draws dots
   (`TextEntry::masked`), never copies to the clipboard; Escape abandons the
   join.
-- **Sealing** (`collab/sealed.rs`, the one choke point every frame passes):
-  ChaCha20-Poly1305, a key per connection per direction, nonce = channel +
-  counter, replays and spoiled frames dropped, clear frames on a sealed link
-  dropped unless they are the handshake's. Changing the password keeps
-  those already in on their keys.
+- **Sealing every session** (`collab/sealed.rs`, the one choke point every
+  frame passes): an ephemeral X25519 exchange per connection rides in
+  `Challenge`/`Answer` (fields, not new variants — neither had shipped),
+  both halves signed into the joiner's proof; link keys come from its
+  secret, the nonce and — with a password — the password's seal key.
+  ChaCha20-Poly1305, a key per direction, nonce = channel + counter,
+  replays and spoiled frames dropped, clear frames on a sealed link dropped
+  unless they are the handshake's. A reconnect runs a fresh exchange.
+  Changing the password keeps those already in on their keys.
 - Tests: `collab/tests.rs` (17 new, the `Two` harness now `Two::with`),
   `fontelle-model/tests/wire.rs`, `fontelle-ui/tests/share_panel.rs`,
   `fontelle-app/tests/share_security_window.rs`; headless dumps looked at.
 - **Limits**: the relay cannot drop a connection the host kicks (F79 —
   `RelayHost` has no kick), so "let go of" means forgotten and ignored; a
   watcher of one handshake can guess passwords offline at PBKDF2's price
-  (no PAKE); a session without a password is still in the clear under the
-  relay; a name is still self-chosen — a key says *the same studio*, not
+  (no PAKE); without a password the exchange is unauthenticated on the
+  host's side, so a relay that answers the challenge itself as a new
+  joiner is just a joiner — the code, Ask first and Lock are what keep it
+  out; a name is still self-chosen — a key says *the same studio*, not
   *this person*; not yet seen on `:99` with the real binary.
 
 **2026-10-19 — the next update, phases 3–5, all on `main`, not
