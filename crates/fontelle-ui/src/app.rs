@@ -22966,9 +22966,29 @@ impl WindowApp {
         }
         let mut added = Vec::new();
         let mut inserted = Vec::new();
+        // The preference: what to sound once these have landed — a placed
+        // note, or a note moved to another key (never a move in time).
+        let mut sound: Option<u8> = None;
+        let sounding = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.sounds_placed_notes());
         if let Some(doc) = &mut self.options.document {
             for edit in edits {
                 let is_add = matches!(edit, crate::canvas::RollEdit::Add { .. });
+                if sounding {
+                    match &edit {
+                        crate::canvas::RollEdit::Add { note } => sound = Some(note.key),
+                        crate::canvas::RollEdit::Move { ids, key_delta, .. } if *key_delta != 0 => {
+                            sound = ids
+                                .first()
+                                .and_then(|id| doc.notes().get(*id))
+                                .map(|n| (i16::from(n.key) + *key_delta).clamp(0, 127) as u8);
+                        }
+                        _ => {}
+                    }
+                }
                 let ids = doc.edit(edit);
                 if is_add {
                     added.extend(ids);
@@ -22989,6 +23009,10 @@ impl WindowApp {
         }
         if !inserted.is_empty() {
             self.roll.notes_inserted(inserted);
+        }
+        if let Some(key) = sound {
+            self.end_preview();
+            self.start_audition(key, self.roll.template().length);
         }
         self.tree.invalidate(PANEL);
         self.refresh_title();

@@ -944,6 +944,14 @@ impl Session {
             self.touch();
             return;
         }
+        if *row == crate::settings::SettingRow::SoundPlacedNotes {
+            self.settings.sound_placed_notes = !self.settings.sound_placed_notes;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
         if *row == crate::settings::SettingRow::HoldBackdrops {
             self.settings.hold_backdrops_while_playing =
                 !self.settings.hold_backdrops_while_playing;
@@ -1984,6 +1992,11 @@ impl Session {
             }
             None => self,
         }
+    }
+
+    /// The settings, to change in place — for the tests.
+    pub fn settings_mut(&mut self) -> &mut crate::settings::Settings {
+        &mut self.settings
     }
 
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
@@ -12142,7 +12155,9 @@ impl StudioHost for Session {
                 // The one switch reads its state off the whole settings, not
                 // the MIDI half — see `nudge_setting`, which flips it here too.
                 K::Switch => SettingControl::Switch {
-                    on: if *row == crate::settings::SettingRow::HoldBackdrops {
+                    on: if *row == crate::settings::SettingRow::SoundPlacedNotes {
+                        self.settings.sound_placed_notes
+                    } else if *row == crate::settings::SettingRow::HoldBackdrops {
                         self.settings.hold_backdrops_while_playing
                     } else if *row == crate::settings::SettingRow::BackdropsUnfocused {
                         self.settings.backdrops_when_unfocused
@@ -15237,6 +15252,10 @@ impl StudioHost for Session {
 
     fn lane_order(&self) -> Vec<LaneId> {
         self.lane_ids()
+    }
+
+    fn sounds_placed_notes(&self) -> bool {
+        self.settings.sound_placed_notes
     }
 
     fn scale_notes(&self) -> Vec<fontelle_types::ScaleNote> {

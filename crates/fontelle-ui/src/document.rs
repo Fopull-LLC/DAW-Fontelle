@@ -3637,6 +3637,10 @@ pub trait StudioHost: DocumentHost {
     fn roll_clip(&self) -> Option<ClipId> {
         None
     }
+    /// Whether a placed note, or one dragged to another key, sounds.
+    fn sounds_placed_notes(&self) -> bool {
+        false
+    }
     /// The song's melodic notes, as *Find my scale…* weighs them: every
     /// note clip's, drum kits left out.
     fn scale_notes(&self) -> Vec<fontelle_types::ScaleNote> {

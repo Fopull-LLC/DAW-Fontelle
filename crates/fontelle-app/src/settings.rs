@@ -250,6 +250,10 @@ pub struct Settings {
     /// the music is the point.
     #[serde(default)]
     pub hold_backdrops_while_playing: bool,
+    /// A note sounds when it is placed, and when a drag moves it to
+    /// another key. Off by default: placing is silent on purpose.
+    #[serde(default)]
+    pub sound_placed_notes: bool,
     /// Keep backdrops moving while another window has the focus. On by
     /// default: Ty likes *"lots of moving windows"*.
     #[serde(default = "yes")]
@@ -353,6 +357,7 @@ impl Default for Settings {
             backdrop_fps: thirty(),
             backdrop_scale_percent: fifty(),
             hold_backdrops_while_playing: false,
+            sound_placed_notes: false,
             backdrops_when_unfocused: true,
             compatible_plugin_graphics: false,
             never_ask_compatible_graphics: false,
@@ -736,6 +741,8 @@ pub enum SettingRow {
     BackdropResolution,
     /// Hold backdrops still while the transport plays. A switch.
     HoldBackdrops,
+    /// A note sounds when placed or moved to another key. A switch.
+    SoundPlacedNotes,
     /// Keep backdrops moving while another window has the focus. A switch.
     BackdropsUnfocused,
     /// How a section's picture fits it: cover, contain, stretch, tile,
@@ -769,7 +776,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 54] = [
+pub const SETTING_ROWS: [SettingRow; 56] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -848,6 +855,8 @@ pub const SETTING_ROWS: [SettingRow; 54] = [
     SettingRow::Heading("Project"),
     SettingRow::SongRouting,
     SettingRow::NewSongRouting,
+    SettingRow::Heading("Editing"),
+    SettingRow::SoundPlacedNotes,
 ];
 
 /// Every row the settings tab shows **for these settings**: the skeleton
@@ -1057,6 +1066,7 @@ impl SettingRow {
             Self::BackdropRate => "Backdrop rate",
             Self::BackdropResolution => "Backdrop resolution",
             Self::HoldBackdrops => "Hold backdrops still while playing",
+            Self::SoundPlacedNotes => "Notes sound when placed",
             Self::BackdropsUnfocused => "Keep backdrops moving when not focused",
             Self::PictureFit(panel) => picture_row_label(panel, "fit"),
             Self::PictureSize(panel) => picture_row_label(panel, "size"),
@@ -1224,6 +1234,12 @@ impl SettingRow {
                 "Off"
             }
             .to_string(),
+            Self::SoundPlacedNotes => if settings.sound_placed_notes {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
             Self::BackdropsUnfocused => if settings.backdrops_when_unfocused {
                 "On"
             } else {
@@ -1346,6 +1362,9 @@ impl SettingRow {
             Self::BackdropRate => "How often a moving backdrop is drawn; lower costs less",
             Self::BackdropResolution => "How sharp a moving backdrop is; lower costs less",
             Self::HoldBackdrops => "Nothing behind the panels moves while the song plays",
+            Self::SoundPlacedNotes => {
+                "A note you place in the roll plays once, and again when a drag moves it to another key"
+            }
             Self::BackdropsUnfocused => "Off: only the window you are working in moves",
             Self::PictureFit(_) => "Cover, contain, stretch to fit, tile, or its own size",
             Self::PictureSize(_) => "Larger or smaller than the fit makes it",
@@ -1405,6 +1424,7 @@ impl SettingRow {
             | Self::BackdropRate
             | Self::BackdropResolution
             | Self::HoldBackdrops
+            | Self::SoundPlacedNotes
             | Self::BackdropsUnfocused
             | Self::PictureFit(_)
             | Self::PictureSize(_)
@@ -1502,7 +1522,9 @@ impl SettingRow {
             Self::BackdropEffects | Self::BackdropRate | Self::BackdropResolution => {
                 SettingControlKind::Choice
             }
-            Self::HoldBackdrops | Self::BackdropsUnfocused => SettingControlKind::Switch,
+            Self::HoldBackdrops | Self::BackdropsUnfocused | Self::SoundPlacedNotes => {
+                SettingControlKind::Switch
+            }
             Self::PictureFit(_) | Self::PicturePlace(_) => SettingControlKind::Choice,
             Self::PictureSize(_) => SettingControlKind::Slider,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {

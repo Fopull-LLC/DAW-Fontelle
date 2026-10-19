@@ -247,6 +247,11 @@ impl Windowless {
         )
     }
 
+    /// The key the single-note audition is sounding, if any.
+    pub fn auditioning(&self) -> Option<u8> {
+        self.app.audition.key()
+    }
+
     /// The open menu's rows, and what each says.
     pub fn menu_rows(&self) -> Vec<(Rect, String)> {
         self.app
