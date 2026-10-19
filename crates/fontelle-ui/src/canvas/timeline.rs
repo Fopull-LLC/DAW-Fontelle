@@ -2168,6 +2168,9 @@ pub enum TimelineTool {
 /// mouse is doing.
 pub struct Timeline {
     pub view: TimelineView,
+    /// The song's meter, so snapping to a bar lands on a bar line wherever
+    /// the signature changes (`set_meter`).
+    meter: fontelle_types::Meter,
     tool: TimelineTool,
     /// The Stretch switch — see [`TimelineControl::Stretch`]. Off until it
     /// is pressed.
@@ -2225,9 +2228,25 @@ pub struct Timeline {
 }
 
 impl Timeline {
+    /// The song's meter, as the window last read it.
+    pub fn set_meter(&mut self, meter: fontelle_types::Meter) {
+        self.meter = meter;
+    }
+
+    /// `tick` on the grid: a bar snap lands on the meter's nearest bar
+    /// line, any finer snap as it always did.
+    pub fn snapped(&self, tick: Tick, beats_per_bar: u32) -> Tick {
+        if self.view.snap == SnapDivision::Bar {
+            self.meter.nearest_bar(tick)
+        } else {
+            self.snapped(tick, beats_per_bar)
+        }
+    }
+
     pub fn new(view: TimelineView) -> Self {
         Self {
             view,
+            meter: fontelle_types::Meter::constant(4),
             tool: TimelineTool::default(),
             stretch: false,
             selection: Vec::new(),
@@ -2478,7 +2497,7 @@ impl Timeline {
                     self.gesture = Gesture::None;
                     return Vec::new();
                 };
-                let snapped = timeline_snap(&self.view, tick, beats_per_bar).clamp(0, clip.length);
+                let snapped = self.snapped(tick, beats_per_bar).clamp(0, clip.length);
                 let block = clip_rect(&self.view, layout.grid, clip);
                 let area = automation_block(block, clip).area;
                 self.gesture = Gesture::MovingPoints {
@@ -2701,7 +2720,7 @@ impl Timeline {
                     let period = source
                         .and_then(|id| clips.iter().find(|c| c.id == id))
                         .map_or(bar, |clip| clip.length.max(1));
-                    let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                    let start = self.snapped(tick, beats_per_bar).max(0);
                     self.gesture = Gesture::Painting {
                         source,
                         row: lane,
@@ -2727,7 +2746,7 @@ impl Timeline {
                 // off the bar is one somebody has to nudge before they can use
                 // it, and the snap is right there in the toolbar saying what
                 // it should have been.
-                let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                let start = self.snapped(tick, beats_per_bar).max(0);
                 // *"to create a copy of your last selected item its shift +
                 // click."* A copy of the clip in hand, when there is one and
                 // it is still there. Nothing in hand is nothing to copy, and
@@ -2787,7 +2806,7 @@ impl Timeline {
         }
         match timeline_grab(&self.view, layout, clips, x, y) {
             TimelineHit::Empty { tick, lane } => {
-                let start = timeline_snap(&self.view, tick, beats_per_bar).max(0);
+                let start = self.snapped(tick, beats_per_bar).max(0);
                 vec![ArrangeEdit::Add { lane, start }]
             }
             // **A fade's way back.** Double-click on a handle takes the fade
@@ -3642,7 +3661,7 @@ impl Timeline {
     /// from the playhead or from the pointer, and neither of those is ever on
     /// a bar line by itself.
     pub fn paste(&mut self, at: Tick, beats_per_bar: u32) -> Vec<ArrangeEdit> {
-        let at = timeline_snap(&self.view, at.max(0), beats_per_bar).max(0);
+        let at = self.snapped(at.max(0), beats_per_bar).max(0);
         vec![ArrangeEdit::Paste { at }]
     }
 
@@ -4145,4 +4164,127 @@ pub fn clip_menu_edits(
         | ClipMenuRow::Render
         | ClipMenuRow::AnalyzeMusically => Vec::new(),
     }
+}
+
+/// The arrangement's grid lines in view, placed: bar and beat lines where
+/// the song's meter puts them — a bar that changes signature is a bar of
+/// its own length — and the finer levels evenly, as before. Faintest
+/// first, so the stronger wins where two land on one tick.
+pub fn timeline_grid_lines(
+    view: &TimelineView,
+    grid: Rect,
+    meter: &fontelle_types::Meter,
+) -> Vec<(Tick, TimelineLine)> {
+    let ticks = timeline_visible_ticks(view, grid);
+    let levels = timeline_grid_units(view, meter.beats_in_bar(0));
+    let has = |level: TimelineLine| levels.iter().any(|(_, l)| *l == level);
+    let mut lines = Vec::new();
+    for (unit, level) in &levels {
+        if matches!(level, TimelineLine::Tick | TimelineLine::Sub) {
+            let mut tick = ticks.start - ticks.start.rem_euclid(*unit);
+            while tick < ticks.end {
+                lines.push((tick, *level));
+                tick += unit;
+            }
+        }
+    }
+    let placed = meter.lines(ticks.start.max(0)..ticks.end);
+    if has(TimelineLine::Beat) {
+        lines.extend(
+            placed
+                .iter()
+                .filter(|(_, l)| *l == fontelle_types::MeterLine::Beat)
+                .map(|(t, _)| (*t, TimelineLine::Beat)),
+        );
+    }
+    let (bars, phrases) = (has(TimelineLine::Bar), has(TimelineLine::Phrase));
+    for (t, l) in &placed {
+        if let fontelle_types::MeterLine::Bar(n) = l {
+            if phrases && n % 4 == 0 {
+                lines.push((*t, TimelineLine::Phrase));
+            } else if bars {
+                lines.push((*t, TimelineLine::Bar));
+            }
+        }
+    }
+    lines
+}
+
+/// Every bar starting in view, numbered from 1 as the ruler numbers them.
+pub fn timeline_bar_numbers(
+    view: &TimelineView,
+    grid: Rect,
+    meter: &fontelle_types::Meter,
+) -> Vec<(Tick, u32)> {
+    let ticks = timeline_visible_ticks(view, grid);
+    meter
+        .lines(ticks.start.max(0)..ticks.end)
+        .into_iter()
+        .filter_map(|(t, l)| match l {
+            fontelle_types::MeterLine::Bar(n) => Some((t, n + 1)),
+            fontelle_types::MeterLine::Beat => None,
+        })
+        .collect()
+}
+
+/// [`timeline_beat_labels`], counted by the song's meter: `"bar.beat"` on a
+/// beat, `"bar.beat.tick"` between beats, each bar's own beat length.
+pub fn timeline_beat_labels_in(
+    view: &TimelineView,
+    grid: Rect,
+    meter: &fontelle_types::Meter,
+) -> Vec<(Tick, String)> {
+    let ppt = view.pixels_per_tick;
+    if (meter.beat_ticks(0) as f32) * ppt < BEAT_LABEL_PX {
+        return Vec::new();
+    }
+    let unit = LABEL_UNITS
+        .iter()
+        .copied()
+        .rfind(|unit| (*unit as f32) * ppt >= FINE_LABEL_PX)
+        .unwrap_or(PPQN);
+    let ticks = timeline_visible_ticks(view, grid);
+    let mut tick = ticks.start.max(0) + (unit - ticks.start.max(0).rem_euclid(unit)) % unit;
+    let mut labels = Vec::new();
+    while tick < ticks.end {
+        let (bar, beat, within) = meter.beat_at(tick);
+        if beat != 0 || within != 0 {
+            labels.push((
+                tick,
+                if within == 0 {
+                    format!("{}.{}", bar + 1, beat + 1)
+                } else {
+                    format!("{}.{}.{within}", bar + 1, beat + 1)
+                },
+            ));
+        }
+        tick += unit;
+    }
+    labels
+}
+
+/// Where each signature change is flagged on the ruler: a pill just right of
+/// its bar line, clear of the bar's number, by the bar (counted from 0) it
+/// starts.
+pub fn meter_flags(
+    view: &TimelineView,
+    grid: Rect,
+    ruler: Rect,
+    meter: &fontelle_types::Meter,
+) -> Vec<(u32, Rect)> {
+    let ticks = timeline_visible_ticks(view, grid);
+    meter
+        .changes()
+        .into_iter()
+        .filter_map(|change| {
+            let tick = meter.tick_of_bar(change.bar);
+            if tick < ticks.start - PPQN * 8 || tick > ticks.end {
+                return None;
+            }
+            let x = timeline_tick_to_x(view, grid, tick);
+            let height = (ruler.height - 4.0).max(0.0);
+            let flag = Rect::new(x + 24.0, ruler.y + 2.0, 34.0, height);
+            (flag.right() > grid.x).then_some((change.bar, flag))
+        })
+        .collect()
 }

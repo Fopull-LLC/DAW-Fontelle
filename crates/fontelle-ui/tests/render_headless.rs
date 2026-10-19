@@ -1425,6 +1425,19 @@ fn shoot_timeline_recording(
             labels.ensure(&caption, &theme.font, &mut text);
         }
     }
+    let (shot_meter, shot_selected) = SHOT_METER
+        .with(|slot| slot.borrow().clone())
+        .unwrap_or((fontelle_types::Meter::constant(4), None));
+    for change in shot_meter.changes() {
+        labels.ensure(
+            &format!("{}/{}", change.top, change.bottom),
+            &theme.font,
+            &mut text,
+        );
+    }
+    for n in 1..=40 {
+        labels.ensure(&n.to_string(), &theme.font, &mut text);
+    }
     let people = PEOPLE.with(|slot| slot.borrow().clone());
     for person in &people {
         labels.ensure(&person.name, &theme.font, &mut text);
@@ -1501,6 +1514,8 @@ fn shoot_timeline_recording(
                 take_notes: takes,
                 glow,
                 selected_lane,
+                meter: &shot_meter,
+                meter_selected: shot_selected,
                 also_selected: &[],
                 ghost,
                 captions: &captions,
@@ -7660,6 +7675,9 @@ thread_local! {
     static GHOST: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
     /// Whether the next timeline shot shapes and draws its clips' names.
     static CAPTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A meter and the change chosen, for the next timeline shot.
+    static SHOT_METER: std::cell::RefCell<Option<(fontelle_types::Meter, Option<u32>)>> =
+        const { std::cell::RefCell::new(None) };
     /// The roll's smart chords, for the next roll shot.
     static ROLL_CHORDS: std::cell::RefCell<fontelle_ui::render::RollChords> =
         std::cell::RefCell::new(Default::default());
@@ -9347,4 +9365,33 @@ fn flecks_of_a_deleted_note_are_drawn() {
         })
         .count();
     assert!(lit > 0, "no fleck drawn");
+}
+
+/// A signature change: the bars after it their own length, and a flag on the
+/// ruler saying what to, lit while the signature box edits it.
+#[test]
+fn a_signature_change_draws_its_bars_and_its_flag() {
+    use fontelle_types::{Meter, MeterChange};
+    let meter = Meter::new(
+        4,
+        &[MeterChange {
+            bar: 2,
+            top: 3,
+            bottom: 4,
+        }],
+    );
+    SHOT_METER.with(|slot| *slot.borrow_mut() = Some((meter.clone(), Some(2))));
+    let shot = shoot_timeline(&[]);
+    SHOT_METER.with(|slot| *slot.borrow_mut() = None);
+    let Some(shot) = shot else { return };
+    dump_sized(&shot.pixels, "meter-change", RW, RH);
+    let flags =
+        fontelle_ui::canvas::meter_flags(&shot.view, shot.layout.grid, shot.layout.ruler, &meter);
+    assert_eq!(flags.len(), 1);
+    let flag = flags[0].1;
+    let c = shot.at((flag.x + 3.0) as u32, (flag.y + flag.height / 2.0) as u32);
+    assert!(
+        near(c, shot.theme.palette.accent),
+        "the chosen flag is not lit: {c:?}"
+    );
 }

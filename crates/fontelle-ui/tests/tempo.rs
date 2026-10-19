@@ -328,3 +328,49 @@ fn the_signature_reads_over_a_quarter_note_because_that_is_what_it_is() {
     assert_eq!(format_signature(3), "3/4");
     assert_eq!(format_signature(7), "7/4");
 }
+
+// --- signature changes (the next update, §6b) ---
+
+/// The signature box edits the song's own signature, or the change chosen
+/// on the ruler; and it offers to add a change where the marker is.
+#[test]
+fn the_signature_menu_edits_the_song_or_the_change_and_adds_one_at_the_marker() {
+    use fontelle_ui::transport::{MeterRow, MeterTarget, meter_menu};
+    let (entries, rows) = meter_menu(MeterTarget::Song, (4, 4), 9, false);
+    assert_eq!(entries.len(), rows.len());
+    assert!(entries[0].label.contains("song"), "{}", entries[0].label);
+    assert!(rows.contains(&MeterRow::Signature(3, 4)));
+    assert!(
+        !rows.contains(&MeterRow::Signature(7, 8)),
+        "the song's own is in quarters"
+    );
+    let add = rows
+        .iter()
+        .position(|r| *r == MeterRow::AddAt(9))
+        .expect("a change offered at the marker's bar");
+    assert!(
+        entries[add].label.contains("bar 10"),
+        "{}",
+        entries[add].label
+    );
+
+    let (entries, rows) = meter_menu(MeterTarget::Change(9), (7, 8), 9, true);
+    assert!(entries[0].label.contains("bar 10"), "{}", entries[0].label);
+    assert!(rows.contains(&MeterRow::Signature(7, 8)));
+    assert!(rows.contains(&MeterRow::Remove(9)));
+    assert!(!rows.iter().any(|r| matches!(r, MeterRow::AddAt(_))));
+    // The one in force is greyed.
+    let at = rows
+        .iter()
+        .position(|r| *r == MeterRow::Signature(7, 8))
+        .unwrap();
+    assert!(!entries[at].enabled);
+}
+
+/// At bar 1 there is nothing to add: that is the song's own.
+#[test]
+fn no_change_is_offered_at_bar_one() {
+    use fontelle_ui::transport::{MeterRow, MeterTarget, meter_menu};
+    let (_, rows) = meter_menu(MeterTarget::Song, (4, 4), 0, false);
+    assert!(!rows.iter().any(|r| matches!(r, MeterRow::AddAt(_))));
+}

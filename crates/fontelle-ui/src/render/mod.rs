@@ -498,6 +498,10 @@ pub struct TimelineChrome<'a> {
     /// The row a click on its header selected, lit — where new material with
     /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
     pub selected_lane: Option<usize>,
+    /// The song's meter: where the bars fall (`canvas::timeline_grid_lines`).
+    pub meter: &'a fontelle_types::Meter,
+    /// The change chosen on the ruler, which the signature box edits.
+    pub meter_selected: Option<u32>,
     /// The rest of a shift- or ctrl-clicked set of rows, lit the same.
     pub also_selected: &'a [usize],
     /// How strongly to draw the ghost of a first clip, 0..1, while the
@@ -8621,22 +8625,19 @@ fn draw_timeline(
     // The grid, faintest level first so the stronger wins where two land on
     // the same tick: bars and every fourth bar always, beats and finer once
     // there is room, single ticks at the deepest zooms.
-    for (unit, level) in crate::canvas::timeline_grid_units(v, chrome.beats_per_bar) {
+    let _ = ticks;
+    for (tick, level) in crate::canvas::timeline_grid_lines(v, l.grid, chrome.meter) {
         let colour = match level {
             crate::canvas::TimelineLine::Phrase => p.grid_line_strong,
             crate::canvas::TimelineLine::Bar => p.grid_line,
             _ => p.grid_line_sub,
         };
-        let mut tick = ticks.start - ticks.start.rem_euclid(unit);
-        while tick < ticks.end {
-            let x = timeline_tick_to_x(v, l.grid, tick).floor();
-            fill_rect(
-                scene,
-                Rect::new(x, l.grid.y, 1.0, l.grid.height).intersection(&l.grid),
-                colour,
-            );
-            tick += unit;
-        }
+        let x = timeline_tick_to_x(v, l.grid, tick).floor();
+        fill_rect(
+            scene,
+            Rect::new(x, l.grid.y, 1.0, l.grid.height).intersection(&l.grid),
+            colour,
+        );
     }
 
     // The time selection, as a band down the grid: what will loop, where it
@@ -9680,11 +9681,10 @@ fn draw_timeline_ruler(
     }
     fill_rect(scene, l.ruler, timeline_ruler_ink(p));
 
-    let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
-    let ticks = timeline_visible_ticks(v, l.grid);
-    let label_every = label_stride(bar as f32 * v.pixels_per_tick);
-    let mut tick = ticks.start - ticks.start.rem_euclid(bar);
-    while tick < ticks.end {
+    // Bars where the meter puts them, numbered as often as they fit — a
+    // stride read off the song's own bar, so it does not flicker at a change.
+    let label_every = label_stride(chrome.meter.bar_ticks(0) as f32 * v.pixels_per_tick);
+    for (tick, number) in crate::canvas::timeline_bar_numbers(v, l.grid, chrome.meter) {
         let x = timeline_tick_to_x(v, l.grid, tick).floor();
         if x >= l.grid.x {
             fill_rect(
@@ -9692,7 +9692,7 @@ fn draw_timeline_ruler(
                 Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
                 p.grid_line_strong,
             );
-            let number = tick / bar + 1;
+            let number = i64::from(number);
             if let Some(stride) = label_every
                 && labelled_bar(number, stride)
                 && let Some(text) = labels.get(&number.to_string())
@@ -9707,10 +9707,32 @@ fn draw_timeline_ruler(
                 );
             }
         }
-        tick += bar;
+    }
+    // Where the signature changes: a flag on the ruler saying to what, lit
+    // when it is the one the signature box is editing.
+    for (bar, flag) in crate::canvas::meter_flags(v, l.grid, l.ruler, chrome.meter) {
+        let lit = chrome.meter_selected == Some(bar);
+        fill_rect_rounded(
+            scene,
+            flag,
+            flag.height / 2.0,
+            if lit { p.accent } else { p.panel_header },
+        );
+        stroke_rect_rounded(scene, flag, flag.height / 2.0, 1.0, p.accent);
+        let (top, bottom) = chrome.meter.signature(bar);
+        if let Some(text) = labels.get(&format!("{top}/{bottom}")) {
+            draw_text_clipped(
+                scene,
+                text,
+                flag,
+                flag.x + (flag.width - text.width) / 2.0,
+                flag.y + (flag.height - text.height) / 2.0,
+                if lit { p.panel } else { p.text },
+            );
+        }
     }
     // Zoomed in past the point where a bar fits, the beats are numbered too.
-    for (tick, name) in crate::canvas::timeline_beat_labels(v, l.grid, chrome.beats_per_bar) {
+    for (tick, name) in crate::canvas::timeline_beat_labels_in(v, l.grid, chrome.meter) {
         let x = timeline_tick_to_x(v, l.grid, tick).floor();
         if x < l.grid.x {
             continue;

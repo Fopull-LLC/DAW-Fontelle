@@ -397,6 +397,13 @@ pub trait DocumentHost {
 
     /// The time signature's numerator, for the grid and the read-out.
     fn beats_per_bar(&self) -> u32;
+    /// Puts a time signature change at `bar` (counted from 0), or takes it
+    /// away with `None` — one undo.
+    fn set_meter_change(&mut self, _bar: u32, _to: Option<(u32, u32)>) {}
+    /// The song's meter: its own signature, and where it changes.
+    fn meter(&self) -> fontelle_types::Meter {
+        fontelle_types::Meter::constant(self.beats_per_bar())
+    }
 
     /// The tempo in force at the **start** of the piece, in beats per minute.
     ///

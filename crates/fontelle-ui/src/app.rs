@@ -43,9 +43,8 @@ use crate::canvas::{
     format_gain_db, format_pan, instrument_hit, instrument_layout, knob_value, lane_height_at,
     mixer_hit, next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label,
     route_menu_hit, route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout,
-    timeline_snap, timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick,
-    timeline_zoom_x, timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x,
-    zoom_y,
+    timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
+    timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
 use crate::canvas::{
     ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout, tools_dialog_hit,
@@ -68,8 +67,8 @@ use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView, action,
-    apply, beats_per_bar_at, format_readout, format_signature, format_tempo, hit, parse_tempo,
-    sample_at, signature_menu_entries, tempo_at, transport_bar_layout,
+    apply, format_readout, format_signature, format_tempo, hit, parse_tempo, sample_at, tempo_at,
+    transport_bar_layout,
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
@@ -1978,6 +1977,11 @@ pub struct WindowApp {
     /// Every row of a shift- or ctrl-clicked set; empty for one row or none.
     /// Delete, mute, solo and move act on all of them, each as one undo.
     lane_set: Vec<usize>,
+    /// The song's meter, read with the rest of the studio.
+    meter: fontelle_types::Meter,
+    /// The signature change chosen on the ruler, by its bar: what the
+    /// signature box edits while one is.
+    meter_selected: Option<u32>,
     /// A cable knob being turned: where the press was, and the level then.
     /// Here rather than on `Drag`, which is compared, for the reason
     /// `MenuScroll` gives.
@@ -2748,6 +2752,8 @@ impl WindowApp {
             clip_strips: Vec::new(),
             selected_lane: None,
             lane_set: Vec::new(),
+            meter: fontelle_types::Meter::constant(4),
+            meter_selected: None,
             fed_by: Vec::new(),
             selected_track: 0,
             track_output: None,
@@ -3628,6 +3634,8 @@ impl WindowApp {
                     take_notes: &self.takes,
                     glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
                     selected_lane: self.selected_lane,
+                    meter: &self.meter,
+                    meter_selected: self.meter_selected,
                     also_selected: &self.lane_set,
                     ghost,
                     captions: &self.clip_captions,
@@ -7472,6 +7480,14 @@ impl WindowApp {
         self.selected_file = doc.selected_file();
         self.selected_preset = doc.selected_preset();
         self.lanes = doc.lanes();
+        self.meter = doc.meter();
+        self.timeline.set_meter(self.meter.clone());
+        // A change taken away is no longer chosen.
+        if let Some(bar) = self.meter_selected
+            && !self.meter.changes().iter().any(|c| c.bar == bar)
+        {
+            self.meter_selected = None;
+        }
         // A set that names a row no longer there is no set.
         if self.lane_set.iter().any(|l| *l >= self.lanes.len()) {
             self.lane_set.clear();
@@ -8492,11 +8508,26 @@ impl WindowApp {
             self.tempo_text = self.text.layout(&tempo, &font, None);
             self.shaped_tempo = showing;
         }
-        let beats = self.beats_per_bar();
-        if self.shaped_beats != beats {
-            let signature = format_signature(beats);
+        // The box says the change chosen on the ruler while one is, or the
+        // song's own signature.
+        let (top, bottom) = match self.meter_selected {
+            Some(bar) => self.meter.signature(bar),
+            None => (self.beats_per_bar(), 4),
+        };
+        let showing = top * 100 + bottom;
+        if self.shaped_beats != showing {
+            let signature = if bottom == 4 && self.meter_selected.is_none() {
+                format_signature(top)
+            } else {
+                format!("{top}/{bottom}")
+            };
             self.signature_text = self.text.layout(&signature, &font, None);
-            self.shaped_beats = beats;
+            self.shaped_beats = showing;
+        }
+        // And each change's flag says what it changes to.
+        for change in self.meter.changes() {
+            let text = format!("{}/{}", change.top, change.bottom);
+            self.labels.ensure(&text, &font, &mut self.text);
         }
 
         // The mixer's names and read-outs, bounded by the strips on screen.
@@ -8850,22 +8881,26 @@ impl WindowApp {
                 let caption = crate::canvas::fade_caption(clip, end);
                 self.labels.ensure(&caption, &font, &mut self.text);
             }
-            let bar = fontelle_types::PPQN * i64::from(self.beats_per_bar().max(1));
-            if let Some(stride) = label_stride(bar as f32 * self.timeline.view.pixels_per_tick) {
-                let mut tick = ticks.start - ticks.start.rem_euclid(bar);
-                while tick < ticks.end {
-                    let number = tick / bar + 1;
+            let _ = ticks;
+            if let Some(stride) =
+                label_stride(self.meter.bar_ticks(0) as f32 * self.timeline.view.pixels_per_tick)
+            {
+                for (_, number) in crate::canvas::timeline_bar_numbers(
+                    &self.timeline.view,
+                    self.timeline_layout.grid,
+                    &self.meter,
+                ) {
+                    let number = i64::from(number);
                     if labelled_bar(number, stride) {
                         self.labels
                             .ensure(&number.to_string(), &font, &mut self.text);
                     }
-                    tick += bar;
                 }
             }
-            for (_, name) in crate::canvas::timeline_beat_labels(
+            for (_, name) in crate::canvas::timeline_beat_labels_in(
                 &self.timeline.view,
                 self.timeline_layout.grid,
-                self.beats_per_bar(),
+                &self.meter,
             ) {
                 self.labels.ensure(&name, &font, &mut self.text);
             }
@@ -9836,6 +9871,15 @@ impl WindowApp {
             // automate it, and the tempo is a control (§12.3). *"even the
             // tempo section for example which i currently cannot turn into
             // an automation clip."*
+            // Right or left, the signature box opens its menu — the right
+            // because that is where Ty went looking for the change.
+            if button == winit::event::MouseButton::Right && what == TransportHit::Signature {
+                let at = self.bar.signature;
+                let bounds = self.layout.window;
+                self.open_menu(MenuTarget::Signature, at.x, at.bottom(), bounds);
+                self.tree.invalidate(TRANSPORT);
+                return;
+            }
             if button == winit::event::MouseButton::Right && what == TransportHit::Tempo {
                 let bounds = self.layout.window;
                 self.open_menu(MenuTarget::Tempo, x, y, bounds);
@@ -13052,6 +13096,49 @@ impl WindowApp {
         self.refresh_title();
         // Every tick is a different sample now, so the playhead and both
         // rulers have moved even though nothing was played.
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(PANEL);
+    }
+
+    /// The signature box's menu as it stands: what it edits (the change
+    /// chosen on the ruler, or the song), its rows.
+    fn meter_menu(
+        &self,
+    ) -> (
+        Vec<crate::canvas::MenuEntry>,
+        Vec<crate::transport::MeterRow>,
+        crate::transport::MeterTarget,
+    ) {
+        use crate::transport::MeterTarget;
+        let target = match self.meter_selected {
+            Some(bar) => MeterTarget::Change(bar),
+            None => MeterTarget::Song,
+        };
+        let current = match target {
+            MeterTarget::Song => (self.beats_per_bar(), 4),
+            MeterTarget::Change(bar) => self.meter.signature(bar),
+        };
+        // Read off the marker itself: the song position the frame keeps is
+        // a frame behind a click that has just moved it.
+        let marker = self
+            .options
+            .document
+            .as_ref()
+            .map_or(self.song_marker, |doc| doc.playhead_song_tick(self.marker));
+        let marker_bar = self.meter.bar_at(marker).0;
+        let there = self.meter.changes().iter().any(|c| c.bar == marker_bar);
+        let (entries, rows) = crate::transport::meter_menu(target, current, marker_bar, there);
+        (entries, rows, target)
+    }
+
+    fn set_meter_change(&mut self, bar: u32, to: Option<(u32, u32)>) {
+        if let Some(doc) = &mut self.options.document {
+            doc.set_meter_change(bar, to);
+            doc.end_gesture();
+        }
+        self.refresh_studio();
+        self.refresh_title();
         self.tree.invalidate(TRANSPORT);
         self.tree.invalidate(TIMELINE);
         self.tree.invalidate(PANEL);
@@ -16353,6 +16440,33 @@ impl WindowApp {
         // the roll's chrome is: the right button erases, and neither of them
         // holds a clip.
         if self.timeline_layout.ruler.contains(x, y) {
+            // A change's flag: chosen, so the signature box edits it — and
+            // chosen again, let go. Anywhere else on the ruler lets go too.
+            let flag = crate::canvas::meter_flags(
+                &self.timeline.view,
+                self.timeline_layout.grid,
+                self.timeline_layout.ruler,
+                &self.meter,
+            )
+            .into_iter()
+            .find(|(_, r)| r.contains(x, y))
+            .map(|(bar, _)| bar);
+            let was = self.meter_selected;
+            self.meter_selected = flag.filter(|bar| was != Some(*bar));
+            if was != self.meter_selected {
+                self.tree.invalidate(TRANSPORT);
+            }
+            if flag.is_some() && button == MouseButton::Left {
+                self.tree.invalidate(TIMELINE);
+                return;
+            }
+            if flag.is_some() && button == MouseButton::Right {
+                let at = self.bar.signature;
+                let bounds = self.layout.window;
+                self.meter_selected = flag;
+                self.open_menu(MenuTarget::Signature, at.x, at.bottom(), bounds);
+                return;
+            }
             match button {
                 MouseButton::Left => {
                     self.drag = Drag::TimelineRuler;
@@ -16644,7 +16758,7 @@ impl WindowApp {
         let tick = if self.modifiers.alt_key() {
             tick
         } else {
-            timeline_snap(&self.timeline.view, tick, self.beats_per_bar())
+            self.timeline.snapped(tick, self.beats_per_bar())
         };
         let Some(sample) = self
             .options
@@ -18155,8 +18269,7 @@ impl WindowApp {
             return;
         };
         let loose = crate::canvas::timeline_x_to_tick(&self.timeline.view, grid, x);
-        let from =
-            crate::canvas::timeline_snap(&self.timeline.view, loose, self.beats_per_bar()).max(0);
+        let from = self.timeline.snapped(loose, self.beats_per_bar()).max(0);
         if self.carry_length_for.as_ref() == Some(&(key.clone(), from)) {
             return;
         }
@@ -19934,7 +20047,7 @@ impl WindowApp {
             // The same drop-down for a settings choice: its options, the one it
             // is on greyed. The options ride along on the `Choice` control the
             // host already built, so nothing new crosses the boundary.
-            MenuTarget::Signature => signature_menu_entries(self.beats_per_bar()),
+            MenuTarget::Signature => self.meter_menu().0,
             MenuTarget::TourSection => {
                 let steps = crate::canvas::tour_steps();
                 let here = self
@@ -21914,7 +22027,30 @@ impl WindowApp {
             }
             // The metre chosen from the signature box's list.
             (MenuTarget::Signature, index) => {
-                self.set_beats_per_bar(beats_per_bar_at(index));
+                use crate::transport::{MeterRow, MeterTarget};
+                let (_, rows, target) = self.meter_menu();
+                match (rows.get(index).copied(), target) {
+                    (Some(MeterRow::Signature(top, _)), MeterTarget::Song) => {
+                        self.set_beats_per_bar(top);
+                    }
+                    (Some(MeterRow::Signature(top, bottom)), MeterTarget::Change(bar)) => {
+                        self.set_meter_change(bar, Some((top, bottom)));
+                    }
+                    (Some(MeterRow::AddAt(bar)), _) => {
+                        let here = self.meter.signature(bar);
+                        self.set_meter_change(bar, Some(here));
+                        self.meter_selected = Some(bar);
+                        self.status = format!(
+                            "Signature change at bar {} \u{2014} the signature box now sets it",
+                            bar + 1
+                        );
+                    }
+                    (Some(MeterRow::Remove(bar)), _) => {
+                        self.set_meter_change(bar, None);
+                        self.meter_selected = None;
+                    }
+                    _ => {}
+                }
             }
             // A jump in the tour, to the first step of the section.
             (MenuTarget::TourSection, index) => {

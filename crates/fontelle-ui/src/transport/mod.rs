@@ -643,6 +643,79 @@ pub fn signature_menu_entries(current: u32) -> Vec<crate::canvas::MenuEntry> {
         .collect()
 }
 
+/// What the signature box is editing: the song's own signature, or the
+/// change at a bar chosen on the ruler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterTarget {
+    Song,
+    /// The change from this bar (counted from 0).
+    Change(u32),
+}
+
+/// What a row of [`meter_menu`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterRow {
+    Heading,
+    /// Make it this signature.
+    Signature(u32, u32),
+    /// Put a change at this bar, where the marker is.
+    AddAt(u32),
+    /// Take the change at this bar away.
+    Remove(u32),
+}
+
+/// The signatures a change may have in eighths — the compound and the odd
+/// ones people write in eighths.
+const EIGHTHS: [u32; 6] = [3, 5, 6, 7, 9, 12];
+
+/// The signature box's menu: a heading saying what it edits, the signatures
+/// it can be (the one in force greyed), then a change to add at the
+/// marker's bar `marker_bar` — or, editing a change, a way to take it away.
+/// Ty, 2026-10-18: *"the project time signature i guess would be considered
+/// the default."*
+pub fn meter_menu(
+    target: MeterTarget,
+    current: (u32, u32),
+    marker_bar: u32,
+    change_at_marker: bool,
+) -> (Vec<crate::canvas::MenuEntry>, Vec<MeterRow>) {
+    use crate::canvas::MenuEntry;
+    let mut entries = vec![MenuEntry::disabled(match target {
+        MeterTarget::Song => "The song's own signature".to_string(),
+        MeterTarget::Change(bar) => format!("From bar {}", bar + 1),
+    })];
+    let mut rows = vec![MeterRow::Heading];
+    let offer = |top: u32, bottom: u32, entries: &mut Vec<MenuEntry>, rows: &mut Vec<MeterRow>| {
+        let label = format!("{top}/{bottom}");
+        entries.push(if (top, bottom) == current {
+            MenuEntry::disabled(label)
+        } else {
+            MenuEntry::new(label)
+        });
+        rows.push(MeterRow::Signature(top, bottom));
+    };
+    for top in MIN_BEATS_PER_BAR..=MAX_BEATS_PER_BAR {
+        offer(top, 4, &mut entries, &mut rows);
+    }
+    if let MeterTarget::Change(bar) = target {
+        for top in EIGHTHS {
+            offer(top, 8, &mut entries, &mut rows);
+        }
+        entries.push(MenuEntry::new(format!(
+            "Remove the change at bar {}",
+            bar + 1
+        )));
+        rows.push(MeterRow::Remove(bar));
+    } else if marker_bar > 0 && !change_at_marker {
+        entries.push(MenuEntry::new(format!(
+            "Add a signature change at bar {}",
+            marker_bar + 1
+        )));
+        rows.push(MeterRow::AddAt(marker_bar));
+    }
+    (entries, rows)
+}
+
 /// The metre the `row`th entry of [`signature_menu_entries`] stands for.
 /// Clamped, so a row past the end is the widest metre rather than a panic.
 pub fn beats_per_bar_at(row: usize) -> u32 {

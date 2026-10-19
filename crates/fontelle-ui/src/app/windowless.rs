@@ -252,6 +252,16 @@ impl Windowless {
         self.app.particles.flecks().len()
     }
 
+    /// The transport bar's signature box.
+    pub fn signature_box(&self) -> Rect {
+        self.app.bar.signature
+    }
+
+    /// The change chosen on the ruler, by its bar.
+    pub fn meter_selected(&self) -> Option<u32> {
+        self.app.meter_selected
+    }
+
     /// Row `lane`'s header on the arrangement.
     pub fn lane_header(&self, lane: usize) -> Rect {
         let top =

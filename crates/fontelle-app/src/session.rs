@@ -8410,6 +8410,18 @@ impl DocumentHost for Session {
         self.touch();
     }
 
+    fn meter(&self) -> fontelle_types::Meter {
+        self.project.meter()
+    }
+
+    fn set_meter_change(&mut self, bar: u32, to: Option<(u32, u32)>) {
+        self.run(Box::new(fontelle_model::SetMeterChange::new(bar, to)));
+        self.let_go();
+        // A new signature is a new downbeat, wherever it starts.
+        self.publish_metronome();
+        self.touch();
+    }
+
     fn set_beats_per_bar(&mut self, beats: u32) {
         self.run(Box::new(SetNumber::new(
             NumberTarget::BeatsPerBar,

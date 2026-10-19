@@ -331,6 +331,9 @@ pub use timeline::{
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
     timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
+pub use timeline::{
+    meter_flags, timeline_bar_numbers, timeline_beat_labels_in, timeline_grid_lines,
+};
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
     tools_dialog_hit, tools_dialog_layout,
