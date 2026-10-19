@@ -323,6 +323,12 @@ pub struct MixerTrack {
     /// would be a song that had lost its mix.
     #[serde(default = "routed")]
     pub output_on: bool,
+    /// Whether what comes in on `input` is heard through this track. Off,
+    /// it still records — a singer who would rather hear the backing than
+    /// themselves. Written only when off, so every song saved before reads
+    /// and writes the same: monitored, as it always was.
+    #[serde(default = "routed", skip_serializing_if = "is_on")]
+    pub monitor: bool,
     /// Which audio input this track records from (TDD §15.4), by **name**.
     ///
     /// *"i click a input button that lets my select my mic input to feed to
@@ -429,6 +435,7 @@ impl MixerTrack {
             sends: Vec::new(),
             output: None,
             output_on: true,
+            monitor: true,
             input: None,
             order: 0,
         }
@@ -439,6 +446,10 @@ impl MixerTrack {
 /// field. A function because `serde`'s `default` takes one.
 fn routed() -> bool {
     true
+}
+
+fn is_on(on: &bool) -> bool {
+    *on
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

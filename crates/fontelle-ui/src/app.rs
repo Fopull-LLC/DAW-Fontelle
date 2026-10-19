@@ -3647,6 +3647,12 @@ impl WindowApp {
                     rename: self.rename_marks,
                     output_label: output_label.clone(),
                     input_label: input_label.clone(),
+                    monitoring: self
+                        .mixer
+                        .options
+                        .as_ref()
+                        .zip(self.options.document.as_ref())
+                        .is_none_or(|(o, doc)| doc.track_monitors(o.track)),
                     insert_drag: self.insert_drag,
                     moving_strip: self
                         .strip_drag
@@ -8524,6 +8530,7 @@ impl WindowApp {
             want(&mut self.labels, &mut self.text, crate::render::SEND_POST);
             want(&mut self.labels, &mut self.text, crate::render::GRIP);
             want(&mut self.labels, &mut self.text, crate::render::REMOVE);
+            want(&mut self.labels, &mut self.text, crate::render::MONITOR);
             let output = self.output_caption();
             want(&mut self.labels, &mut self.text, &output);
             let input = self.input_caption();
@@ -10498,6 +10505,14 @@ impl WindowApp {
             // shortest possible feedback loop and the easiest to click by
             // accident.
             OptionsHit::Output => self.open_output_menu(),
+            OptionsHit::Monitor => {
+                let strip = self.mixer.options.as_ref().map(|o| o.track);
+                if let (Some(strip), Some(doc)) = (strip, &mut self.options.document) {
+                    doc.toggle_track_monitor(strip);
+                }
+                self.refresh_studio();
+                self.tree.invalidate(PANEL);
+            }
             // *"i click a input button that lets my select my mic input to
             // feed to that mixer track."* A menu of what the machine has,
             // because the answer cannot be guessed.

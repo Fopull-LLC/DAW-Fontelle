@@ -350,6 +350,7 @@ impl Edit {
                 | FlagTarget::ChannelMuted(_)
                 | FlagTarget::ChannelSoloed(_) => Reach::Timeline,
                 FlagTarget::TrackOutputOn(_)
+                | FlagTarget::TrackMonitor(_)
                 | FlagTarget::ChannelNamedKeys(_)
                 | FlagTarget::ChannelPluginMpe(_) => Reach::Graph,
             },
@@ -704,7 +705,10 @@ impl Edit {
             ),
             Edit::SetFlag(set) => matches!(
                 set.target(),
-                FlagTarget::TrackMute(_) | FlagTarget::TrackSolo(_) | FlagTarget::TrackOutputOn(_)
+                FlagTarget::TrackMute(_)
+                    | FlagTarget::TrackSolo(_)
+                    | FlagTarget::TrackOutputOn(_)
+                    | FlagTarget::TrackMonitor(_)
             ),
             Edit::SetSendLevel(_)
             | Edit::SetInsertParam(_)

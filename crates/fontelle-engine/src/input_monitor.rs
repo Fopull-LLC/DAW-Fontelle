@@ -264,9 +264,20 @@ pub struct MonitorNode {
     generation: u32,
     sample_rate: f64,
     max_block: usize,
+    /// Read the ring and add nothing: the track's Monitor is off. The ring is
+    /// still emptied, or it would fill and a take would lose what it needed.
+    silent: bool,
 }
 
 impl MonitorNode {
+    /// The same node, draining the input without being heard.
+    pub fn silent(monitor: std::sync::Arc<InputMonitor>) -> Self {
+        Self {
+            silent: true,
+            ..Self::new(monitor)
+        }
+    }
+
     pub fn new(monitor: std::sync::Arc<InputMonitor>) -> Self {
         Self {
             monitor,
@@ -278,6 +289,7 @@ impl MonitorNode {
             generation: 0,
             sample_rate: 48_000.0,
             max_block: crate::BLOCK_SIZE,
+            silent: false,
         }
     }
 
@@ -422,7 +434,9 @@ impl crate::AudioNode for MonitorNode {
                 // Linear between the two input frames the output frame falls
                 // between. At the common ratio of exactly one this is `a`
                 // every time and costs a multiply nobody hears.
-                out[frame] += a + (b - a) * self.phase as f32;
+                if !self.silent {
+                    out[frame] += a + (b - a) * self.phase as f32;
+                }
             }
             self.phase += ratio;
             while self.phase >= 1.0 {

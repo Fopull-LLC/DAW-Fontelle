@@ -902,11 +902,16 @@ pub fn realise_hosting(
     if let Some(plan) = monitor {
         let track = plan.track.unwrap_or(master);
         if let Some(bus) = bus_of.get(&track) {
+            // The track's Monitor off: read, and not heard.
+            let heard = project.mixer.tracks.get(track).is_none_or(|t| t.monitor);
+            let monitor = std::sync::Arc::clone(&plan.monitor);
             schedule.push(ScheduledNode {
                 id: mint(&mut next_id),
-                node: Box::new(fontelle_engine::MonitorNode::new(std::sync::Arc::clone(
-                    &plan.monitor,
-                ))),
+                node: Box::new(if heard {
+                    fontelle_engine::MonitorNode::new(monitor)
+                } else {
+                    fontelle_engine::MonitorNode::silent(monitor)
+                }),
                 input_buffers: Vec::new(),
                 output_buffers: bus.to_vec(),
             });

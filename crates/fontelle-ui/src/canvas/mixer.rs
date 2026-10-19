@@ -308,6 +308,9 @@ pub struct TrackOptionsLayout {
     /// goes — and a column that reads top to bottom as a signal path is one you
     /// do not have to hunt in.
     pub input: Rect,
+    /// Monitor, at the end of the input row: what comes in is heard through
+    /// the track, or only recorded.
+    pub monitor: Rect,
     /// Where the track's output goes. Press to choose another (§13.2).
     pub output: Rect,
     /// The heading over the chain.
@@ -785,7 +788,21 @@ fn options_layout(
     let mut top = inner.y;
     let title = take(&mut top, inner, row);
     take(&mut top, inner, GAP);
-    let input = take(&mut top, inner, row);
+    let input_row = take(&mut top, inner, row);
+    let monitor_w = 64.0_f32.min(input_row.width * 0.4).max(0.0);
+    let input = Rect::new(
+        input_row.x,
+        input_row.y,
+        (input_row.width - monitor_w - 4.0).max(0.0),
+        input_row.height,
+    );
+    let monitor = Rect::new(
+        input_row.right() - monitor_w,
+        input_row.y,
+        monitor_w,
+        input_row.height,
+    )
+    .clamped();
     let output = take(&mut top, inner, row);
     take(&mut top, inner, GAP);
     let inserts_title = take(&mut top, inner, row);
@@ -844,6 +861,7 @@ fn options_layout(
         frame,
         title,
         input,
+        monitor,
         output,
         inserts_title,
         inserts,
@@ -1110,6 +1128,8 @@ pub enum OptionsHit {
     Rename,
     /// Which input this track records from (TDD §15.4).
     Input,
+    /// Hear what comes in, or only record it.
+    Monitor,
     /// Where the track's output goes (§13.2).
     Output,
     /// Open the effect in this slot.
@@ -1294,6 +1314,7 @@ impl OptionsHit {
         match self {
             Self::Rename => "Click to rename this track",
             Self::Input => "Which input this track records from",
+            Self::Monitor => "Hear what comes in, or only record it",
             Self::Output => "Where this track's sound goes",
             Self::Insert(_) => "Open this effect's controls",
             Self::Bypass(_) => "Switch this effect out, keeping its settings",
@@ -1515,6 +1536,9 @@ fn options_hit(options: &TrackOptionsLayout, x: f32, y: f32) -> MixerHit {
     }
     if options.add_send.contains(x, y) {
         return MixerHit::Options(OptionsHit::AddSend);
+    }
+    if options.monitor.contains(x, y) {
+        return MixerHit::Options(OptionsHit::Monitor);
     }
     if options.input.contains(x, y) {
         return MixerHit::Options(OptionsHit::Input);

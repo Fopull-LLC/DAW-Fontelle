@@ -15293,6 +15293,24 @@ impl StudioHost for Session {
             .then_some(self.clip)
     }
 
+    fn track_monitors(&self, strip: usize) -> bool {
+        self.mixer_track_ids()
+            .get(strip)
+            .and_then(|id| self.project.mixer.tracks.get(*id))
+            .is_none_or(|t| t.monitor)
+    }
+
+    fn toggle_track_monitor(&mut self, strip: usize) {
+        let Some(id) = self.mixer_track_ids().get(strip).copied() else {
+            return;
+        };
+        let now = self.project.mixer.tracks.get(id).is_none_or(|t| t.monitor);
+        self.run(Box::new(SetFlag::new(FlagTarget::TrackMonitor(id), !now)));
+        self.let_go();
+        self.rebuild_graph();
+        self.touch();
+    }
+
     fn strip_tracks(&self) -> Vec<MixerTrackId> {
         self.mixer_track_ids()
     }

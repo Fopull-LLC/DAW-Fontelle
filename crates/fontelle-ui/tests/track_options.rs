@@ -656,3 +656,23 @@ fn the_input_row_never_overlaps_anything_else_in_the_column() {
         }
     }
 }
+
+/// Monitor, at the end of the "In:" row: what comes in is heard, or only
+/// recorded. Beside the input it is about, and pressable on its own.
+#[test]
+fn the_input_row_ends_in_a_monitor_switch() {
+    let o = options(1);
+    assert!(!o.monitor.is_empty());
+    assert!(o.monitor.y >= o.input.y - 0.5 && o.monitor.bottom() <= o.input.bottom() + 0.5);
+    assert!(
+        o.monitor.x >= o.input.right() - 0.5,
+        "over the input's name"
+    );
+    assert!(o.monitor.intersection(&o.frame) == o.monitor);
+    let (x, y) = centre(o.monitor);
+    let layout = mixer_layout_for(body(), &metrics(), &strips(), 0, Some(1));
+    assert_eq!(
+        mixer_hit(&layout, x, y),
+        MixerHit::Options(OptionsHit::Monitor)
+    );
+}

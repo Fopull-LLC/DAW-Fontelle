@@ -665,6 +665,8 @@ pub struct MixerChrome<'a> {
     /// And what its **input** row says (TDD §15.4): the device this track
     /// records from, or that it records nothing.
     pub input_label: String,
+    /// Whether that input is heard (the Monitor switch, lit when on).
+    pub monitoring: bool,
     /// An insert being dragged up or down the chain: the slot it started in
     /// and the slot it is over.
     pub insert_drag: Option<(usize, usize)>,
@@ -3550,6 +3552,9 @@ pub const SAVE: &str = "Save";
 pub const UNDO: &str = "Undo";
 /// The two buttons on the confirm modal.
 pub const CONFIRM_CANCEL: &str = "Cancel";
+
+/// The word on a track's Monitor switch.
+pub const MONITOR: &str = "Monitor";
 pub const CONFIRM_REMOVE: &str = "Remove";
 pub const SAVE_AS: &str = "Save as\u{2026}";
 
@@ -5620,6 +5625,32 @@ fn draw_track_options(
             options.input.x + 4.0,
             if lit { p.text } else { p.text_muted },
         );
+    }
+
+    if !options.monitor.is_empty() {
+        let lit = hovering(OptionsHit::Monitor);
+        let fill = if chrome.monitoring {
+            p.accent
+        } else if lit {
+            p.border
+        } else {
+            p.panel_header
+        };
+        fill_rect_rounded(scene, options.monitor, m.corner_radius * 0.5, fill);
+        if let Some(shaped) = labels.get(MONITOR) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                options.monitor,
+                options.monitor.x + (options.monitor.width - shaped.width) / 2.0,
+                options.monitor.y + (options.monitor.height - shaped.height) / 2.0,
+                if chrome.monitoring {
+                    p.panel
+                } else {
+                    p.text_muted
+                },
+            );
+        }
     }
 
     // Where it goes (§13.2).

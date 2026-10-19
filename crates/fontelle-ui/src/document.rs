@@ -3646,6 +3646,12 @@ pub trait StudioHost: DocumentHost {
     fn scale_notes(&self) -> Vec<fontelle_types::ScaleNote> {
         Vec::new()
     }
+    /// Whether strip `strip`'s input is heard (its Monitor switch).
+    fn track_monitors(&self, _strip: usize) -> bool {
+        true
+    }
+    /// Turns strip `strip`'s Monitor over.
+    fn toggle_track_monitor(&mut self, _strip: usize) {}
     /// The mixer strips' tracks, in strip order.
     fn strip_tracks(&self) -> Vec<fontelle_types::MixerTrackId> {
         Vec::new()

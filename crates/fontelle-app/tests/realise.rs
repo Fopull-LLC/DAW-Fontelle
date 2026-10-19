@@ -659,3 +659,24 @@ fn in_lane_style_a_channel_plays_through_its_lanes_track_and_not_its_route_chip(
         "muting the lane's track left its instrument playing"
     );
 }
+
+#[test]
+fn a_track_not_monitoring_records_its_input_unheard() {
+    // Monitor off on the track's "In:" row: the input is not heard, and the
+    // ring is still drained — a ring nobody empties fills, and a take loses
+    // what it needed.
+    let mut rig = Rig::new();
+    let mic = rig.add_track("Mic", None);
+    set_flag(&mut rig.project, FlagTarget::TrackMonitor(mic), false);
+    let monitor = a_live_input(0.5);
+    let plan = fontelle_app::MonitorPlan {
+        monitor: Arc::clone(&monitor),
+        track: Some(mic),
+    };
+    assert_eq!(
+        peak_mono(&render_live(&rig, Some(&plan), 8_000)),
+        0.0,
+        "the input was heard with Monitor off"
+    );
+    assert!(monitor.available() < 96_000, "the ring was never read");
+}

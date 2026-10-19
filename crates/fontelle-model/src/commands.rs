@@ -7323,6 +7323,9 @@ pub enum FlagTarget {
     /// channel of its own, so a note path's slide bends that note alone.
     /// After the solo, for the same reason the solo is last.
     ChannelPluginMpe(ChannelId),
+    /// Whether a track's input is heard (`MixerTrack::monitor`). Last, for
+    /// the reason the MPE switch is.
+    TrackMonitor(MixerTrackId),
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -7369,6 +7372,14 @@ impl Command for SetFlag {
                     .get_mut(id)
                     .ok_or_else(|| CommandError(format!("no mixer track {id:?}")))?;
                 std::mem::replace(&mut track.solo, self.value)
+            }
+            FlagTarget::TrackMonitor(id) => {
+                let track = doc
+                    .mixer
+                    .tracks
+                    .get_mut(id)
+                    .ok_or_else(|| CommandError(format!("no mixer track {id:?}")))?;
+                std::mem::replace(&mut track.monitor, self.value)
             }
             FlagTarget::TrackOutputOn(id) => {
                 // The master's output is the speakers. Switching it off is
@@ -7449,6 +7460,8 @@ impl Command for SetFlag {
         match (self.target, self.value) {
             (FlagTarget::TrackSolo(_), true) => "Solo",
             (FlagTarget::TrackSolo(_), false) => "Unsolo",
+            (FlagTarget::TrackMonitor(_), true) => "Monitor input",
+            (FlagTarget::TrackMonitor(_), false) => "Stop monitoring input",
             (FlagTarget::TrackOutputOn(_), true) => "Route mixer track",
             (FlagTarget::TrackOutputOn(_), false) => "Unroute mixer track",
             (_, true) => "Mute",
