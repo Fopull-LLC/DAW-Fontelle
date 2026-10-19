@@ -19,8 +19,8 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**2026-10-19 — any time signature, moveable, followed everywhere; on
-`main`, 0.29.0-alpha.2, `PROTOCOL` 3, not released.** Ty: *"the metronome
+**2026-10-19 — any time signature, moveable, followed everywhere;
+0.29.0-beta.1, `PROTOCOL` 3, released as a beta on Ty's word.** Ty: *"the metronome
 absolutely needs to match the correct signature you are in, they
 absolutely need to be moveable, and signatures NEED to be flexible enough
 … so youre not just locked to x/4."*
