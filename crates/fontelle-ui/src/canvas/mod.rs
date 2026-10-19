@@ -21,6 +21,7 @@ mod mixer;
 mod note_clipboard;
 mod notepad;
 mod overlays;
+mod particles;
 mod piano_roll;
 mod plugin_menu;
 mod preedit;
@@ -154,6 +155,7 @@ pub use overlays::{
     SAVED_FLASH_TEXT, SavePromptLayout, SavedFlash, TOAST_SECONDS, ToastLayout, confirm_layout,
     job_card_layout, project_caption, save_prompt_layout, saved_flash, toast_layout,
 };
+pub use particles::{Fleck, MAX_BURSTS, PARTICLE_SECONDS, Particles};
 pub use plugin_menu::{
     NEXT_PRESET, PREVIOUS_PRESET, PluginMenuInput, PluginMenuKey, PluginMenuOutcome, PluginMenuRow,
     PluginPresetMenu, SHOW_IN_BROWSER, plugin_preset_menu,

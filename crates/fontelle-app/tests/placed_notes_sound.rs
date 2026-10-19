@@ -5,7 +5,6 @@
 
 mod common;
 
-
 fn a_window(on: bool) -> fontelle_ui::Windowless {
     let dir =
         std::env::temp_dir().join(format!("fontelle-placed-sound-{on}-{}", std::process::id()));
@@ -47,3 +46,19 @@ fn on_a_placed_note_sounds_and_a_drag_to_another_key_sounds_the_new_key() {
 }
 
 const PPQ: i64 = fontelle_types::PPQN;
+
+/// A deleted note bursts, and the flecks are gone in a moment.
+#[test]
+fn a_deleted_note_bursts_and_is_gone() {
+    let mut w = a_window(false);
+    let (x, y) = w.roll_point(0, 64);
+    w.click_studio(x, y);
+    // The right button erases.
+    w.press_studio(winit::event::MouseButton::Right, x, y);
+    w.release_studio(winit::event::MouseButton::Right);
+    assert!(w.flecks() > 0, "no burst");
+    for _ in 0..30 {
+        w.frame(1.0 / 60.0);
+    }
+    assert_eq!(w.flecks(), 0, "still in the air");
+}

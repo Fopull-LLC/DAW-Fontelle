@@ -9255,6 +9255,7 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     ROLL_CHORDS.with(|c| {
         *c.borrow_mut() = fontelle_ui::render::RollChords {
             outline_outside: None,
+            flecks: Vec::new(),
             smart: true,
             locked: true,
             strip: Some(fontelle_ui::render::ChordStripChrome {
@@ -9306,4 +9307,41 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
         far(ghost) + 60 < far(bare),
         "the ghost is not in the accent: {ghost:?} beside {bare:?}"
     );
+}
+
+/// Flecks of a deleted note, a moment after the delete.
+#[test]
+fn flecks_of_a_deleted_note_are_drawn() {
+    let notes: Arena<NoteId, Note> = Arena::default();
+    let Some(probe) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    let grid = probe.layout.grid;
+    let row = fontelle_ui::canvas::key_row(&probe.view, grid, 64);
+    let x0 = fontelle_ui::canvas::tick_to_x(&probe.view, grid, PPQN);
+    let mut particles = fontelle_ui::canvas::Particles::default();
+    particles.burst(
+        &[Rect::new(x0, row.y, 80.0, row.height)],
+        probe.theme.palette.note.0,
+    );
+    particles.step(0.08);
+    let flecks = particles.flecks();
+    ROLL_CHORDS.with(|c| {
+        *c.borrow_mut() = fontelle_ui::render::RollChords {
+            flecks: flecks.clone(),
+            ..Default::default()
+        }
+    });
+    let shot = shoot_roll(&notes, &[]);
+    ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
+    let Some(shot) = shot else { return };
+    dump_sized(&shot.pixels, "flecks", RW, RH);
+    let lit = flecks
+        .iter()
+        .filter(|f| {
+            let c = shot.at(f.x as u32, f.y as u32);
+            near(c, shot.theme.palette.note) || c.0[0] > probe.at(f.x as u32, f.y as u32).0[0]
+        })
+        .count();
+    assert!(lit > 0, "no fleck drawn");
 }

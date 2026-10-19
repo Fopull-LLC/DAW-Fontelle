@@ -247,6 +247,11 @@ impl Windowless {
         )
     }
 
+    /// How many flecks of deleted notes are in the air.
+    pub fn flecks(&self) -> usize {
+        self.app.particles.flecks().len()
+    }
+
     /// The key the single-note audition is sounding, if any.
     pub fn auditioning(&self) -> Option<u8> {
         self.app.audition.key()

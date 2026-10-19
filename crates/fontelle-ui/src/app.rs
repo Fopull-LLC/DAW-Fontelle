@@ -2277,6 +2277,8 @@ pub struct WindowApp {
     /// sounding while a chip is hovered and since when, and the last chord
     /// written — what *Nearest* leads from.
     chord_strip: Option<ChordStripState>,
+    /// Flecks of notes just deleted, in the air for a moment.
+    particles: crate::canvas::Particles,
     chord_pending: Option<fontelle_types::NoteId>,
     chord_sounding: Vec<u8>,
     chord_heard_at: Option<std::time::Instant>,
@@ -2789,6 +2791,7 @@ impl WindowApp {
             song_key: None,
             scale_finding: None,
             chord_strip: None,
+            particles: Default::default(),
             chord_pending: None,
             chord_sounding: Vec::new(),
             chord_heard_at: None,
@@ -9295,7 +9298,12 @@ impl WindowApp {
     fn frame_motion(&mut self, dt: f32) -> bool {
         self.flush_scrub();
         let scrolling = self.autoscroll_frame(dt);
-        self.glide_views(dt) || scrolling
+        let flying = self.particles.is_moving();
+        if flying {
+            self.particles.step(dt);
+            self.tree.invalidate(PANEL);
+        }
+        self.glide_views(dt) || scrolling || flying
     }
 
     /// Middle-click autoscroll begins at `(x, y)`: in the studio's window
@@ -23012,6 +23020,26 @@ impl WindowApp {
                         _ => {}
                     }
                 }
+                // A delete bursts what went, where it was — unless the
+                // theme's effects are still or off.
+                if let crate::canvas::RollEdit::Remove(gone) = &edit
+                    && self.motion.effects == crate::backdrop::Effects::Moving
+                {
+                    let grid = self.roll_layout.grid;
+                    let view = &self.roll.view;
+                    let rects: Vec<crate::layout::Rect> = gone
+                        .iter()
+                        .filter_map(|id| doc.notes().get(*id))
+                        .map(|n| {
+                            let row = crate::canvas::key_row(view, grid, n.key);
+                            let x0 = crate::canvas::tick_to_x(view, grid, n.start);
+                            let x1 = crate::canvas::tick_to_x(view, grid, n.start + n.length);
+                            crate::layout::Rect::new(x0, row.y, (x1 - x0).max(3.0), row.height)
+                        })
+                        .collect();
+                    self.particles
+                        .burst(&rects, self.options.theme.palette.note.0);
+                }
                 let ids = doc.edit(edit);
                 if is_add {
                     added.extend(ids);
@@ -25421,6 +25449,7 @@ impl WindowApp {
     /// The strip and its ghosts, as the roll draws them.
     fn roll_chords(&self) -> crate::render::RollChords {
         let mut chords = crate::render::RollChords {
+            flecks: self.particles.flecks(),
             smart: self.roll.smart_chords,
             locked: self.roll.scale_lock && self.song_key.is_some(),
             outline_outside: self.scale_preview().and_then(|fit| fit.key.mask()),

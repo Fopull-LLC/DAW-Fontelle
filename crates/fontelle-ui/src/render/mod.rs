@@ -604,6 +604,8 @@ pub struct RollChords {
     /// *Find my scale…*'s candidate under the pointer: the notes outside
     /// these pitch classes are outlined.
     pub outline_outside: Option<u16>,
+    /// What is left of notes just deleted (`canvas::Particles`).
+    pub flecks: Vec<crate::canvas::Fleck>,
 }
 
 /// The strip open on a placed note.
@@ -7029,6 +7031,18 @@ fn draw_property_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
 /// in the accent, over the notes, so it reads as *this, if you click*.
 fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
     let grid = chrome.layout.grid;
+    for fleck in &chrome.chords.flecks {
+        let r = Rect::new(
+            fleck.x - fleck.size / 2.0,
+            fleck.y - fleck.size / 2.0,
+            fleck.size,
+            fleck.size,
+        );
+        if grid.contains(fleck.x, fleck.y) {
+            let [r_, g, b, a] = fleck.colour;
+            fill_rect_rounded(scene, r, fleck.size / 2.0, Color::rgba(r_, g, b, a));
+        }
+    }
     // A candidate key previewed: its outsiders ringed, so the why is seen.
     if let Some(mask) = chrome.chords.outline_outside {
         for note in chrome.notes.values() {
