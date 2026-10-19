@@ -3131,6 +3131,15 @@ impl Session {
                     .next()
                     .unwrap_or(&entry.file_name),
             ));
+            // Not the same file, but one by the same name: a different
+            // version, which reads as "not recognised" unless it is said.
+            let why = match here.namesake(&entry) {
+                Some(found) => format!(
+                    "you have a different version of it ({}) \u{2014} {why}",
+                    found.display()
+                ),
+                None => why,
+            };
             items.push(MissingItem {
                 what: format!("{name} \u{2014} {}", file_kind(entry.kind)),
                 detail: format!("{why} \u{2014} what plays it is silent here"),

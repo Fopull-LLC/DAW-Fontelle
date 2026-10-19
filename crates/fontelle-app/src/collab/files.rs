@@ -512,6 +512,39 @@ impl Here<'_> {
         self.own(entry.hash, entry.size).is_some()
     }
 
+    /// A file in this studio's soundfont folders with the same name as the
+    /// one `entry` names — which, when `entry` is missing, has other contents:
+    /// a different version.
+    pub fn namesake(&self, entry: &AssetEntry) -> Option<PathBuf> {
+        let wanted = entry
+            .file_name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(&entry.file_name)
+            .to_lowercase();
+        let mut stack: Vec<PathBuf> = self.banks.to_vec();
+        let mut seen = std::collections::HashSet::new();
+        while let Some(dir) = stack.pop() {
+            if !seen.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+                continue;
+            }
+            let Ok(listing) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for path in listing.flatten().map(|e| e.path()) {
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_lowercase() == wanted)
+                {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
     fn own(&self, hash: u64, size: u64) -> Option<PathBuf> {
         let tail = format!("{hash:016x}");
         if let Some(bundle) = self.bundle
@@ -786,6 +819,44 @@ mod tests {
         assert_eq!(landed, mine.join("Glass.sf2"));
         std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// *"when users have the same soundfonts downloaded sometimes it still
+    /// doesnt recognize it"* (2026-10-18). Often it is not the same: a
+    /// different version under the same name. The panel can say so, which it
+    /// can only do by finding the namesake.
+    #[test]
+    fn a_namesake_with_other_contents_is_found_by_its_name() {
+        let dir = scratch_any("namesake");
+        let bank = dir.join("bank");
+        std::fs::create_dir_all(bank.join("deep")).unwrap();
+        std::fs::write(bank.join("deep").join("glass.SF2"), b"an older glass").unwrap();
+        let song = fontelle_model::Project::new("song");
+        let banks = [bank.clone()];
+        let here = super::Here {
+            bundle: None,
+            banks: &banks,
+            song: &song,
+        };
+        assert_eq!(
+            here.namesake(&a_soundfont(11)),
+            Some(bank.join("deep").join("glass.SF2"))
+        );
+        let mut other = a_soundfont(12);
+        other.file_name = "Piano.sf2".to_string();
+        assert_eq!(here.namesake(&other), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn scratch_any(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fontelle-files-any-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     /// A "Not now" was for the rest of the session: the file was never asked
