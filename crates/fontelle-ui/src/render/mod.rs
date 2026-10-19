@@ -612,6 +612,10 @@ pub struct RollChords {
     pub outline_outside: Option<u16>,
     /// What is left of notes just deleted (`canvas::Particles`).
     pub flecks: Vec<crate::canvas::Fleck>,
+    /// The song's meter and where the open clip starts in it, when the song
+    /// changes signature: the roll's bars then follow it
+    /// (`canvas::clip_meter_lines`). `None` draws the plain grid.
+    pub meter: Option<(fontelle_types::Meter, Tick)>,
 }
 
 /// The strip open on a placed note.
@@ -6506,11 +6510,38 @@ pub fn draw_piano_roll(
     // [`subdivision_unit`](crate::canvas::subdivision_unit).
     let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
     let sub = crate::canvas::subdivision_unit(v.snap, chrome.beats_per_bar);
-    for (unit, colour) in [
-        (sub, p.grid_line_sub),
-        (PPQN, p.grid_line),
-        (bar, p.grid_line_strong),
-    ] {
+    // A song that changes signature: beats and bars where its meter puts
+    // them, the subdivisions evenly under them.
+    let metered = chrome.chords.meter.as_ref();
+    if let Some((meter, clip_start)) = metered {
+        for (tick, line) in crate::canvas::clip_meter_lines(meter, *clip_start, ticks.clone()) {
+            let colour = match line {
+                fontelle_types::MeterLine::Bar(_) => p.grid_line_strong,
+                fontelle_types::MeterLine::Beat => p.grid_line,
+            };
+            if (meter.beat_ticks(0) as f32) * v.pixels_per_tick < 4.0
+                && matches!(line, fontelle_types::MeterLine::Beat)
+            {
+                continue;
+            }
+            let x = tick_to_x(v, grid, tick).floor();
+            fill_rect(
+                scene,
+                Rect::new(x, grid.y, 1.0, grid.height).intersection(&grid),
+                colour,
+            );
+        }
+    }
+    let levels: &[(Tick, Color)] = if metered.is_some() {
+        &[(sub, p.grid_line_sub)]
+    } else {
+        &[
+            (sub, p.grid_line_sub),
+            (PPQN, p.grid_line),
+            (bar, p.grid_line_strong),
+        ]
+    };
+    for &(unit, colour) in levels {
         if unit <= 0 || (unit as f32) * v.pixels_per_tick < 4.0 {
             // Lines closer together than a few pixels are a grey wash, not a
             // grid.
@@ -10581,8 +10612,39 @@ fn draw_ruler_strip(
     // Numbered only when the numbers would not collide — at a zoom where two
     // bars are eight pixels apart, a wall of digits is less legible than none.
     let label_every = label_stride(bar as f32 * v.pixels_per_tick);
+    // A song that changes signature: the bars where its meter puts them.
+    if let Some((meter, clip_start)) = &chrome.chords.meter {
+        for (tick, line) in crate::canvas::clip_meter_lines(meter, *clip_start, ticks.clone()) {
+            let fontelle_types::MeterLine::Bar(n) = line else {
+                continue;
+            };
+            let x = tick_to_x(v, l.grid, tick).floor();
+            if x < l.grid.x {
+                continue;
+            }
+            fill_rect(
+                scene,
+                Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
+                p.grid_line_strong,
+            );
+            let number = i64::from(n) + 1;
+            if let Some(stride) = label_every
+                && labelled_bar(number, stride)
+                && let Some(text) = labels.get(&number.to_string())
+            {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    l.ruler,
+                    x + 3.0,
+                    l.ruler.y + (l.ruler.height - text.height) / 2.0,
+                    p.text_muted,
+                );
+            }
+        }
+    }
     let mut tick = ticks.start - ticks.start.rem_euclid(bar);
-    while tick < ticks.end {
+    while chrome.chords.meter.is_none() && tick < ticks.end {
         let x = tick_to_x(v, l.grid, tick).floor();
         if x >= l.grid.x {
             fill_rect(

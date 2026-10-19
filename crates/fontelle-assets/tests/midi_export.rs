@@ -355,3 +355,37 @@ fn export_midi_writes_a_file_that_imports_back_to_the_same_notes() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A signature change is in the file where it is in the song (the next
+/// update, §6b): a time signature event at its bar.
+#[test]
+fn signature_changes_are_written_where_they_fall() {
+    let mut project = Project::new("song");
+    project.tempo_map = TempoMap::new(120.0, SR);
+    project.meter_changes = vec![fontelle_types::MeterChange {
+        bar: 2,
+        top: 7,
+        bottom: 8,
+    }];
+    let bytes = export_project_to_midi(&project);
+    let smf = Smf::parse(&bytes).expect("readable MIDI");
+    let mut signatures = Vec::new();
+    for track in &smf.tracks {
+        let mut absolute: u64 = 0;
+        for event in track {
+            absolute += event.delta.as_int() as u64;
+            if let TrackEventKind::Meta(MetaMessage::TimeSignature(n, d, _, _)) = event.kind {
+                signatures.push((absolute, n, d));
+            }
+        }
+    }
+    let at = |tick: i64| (tick as u64) * u64::from(smf_ppq(&smf)) / PPQN as u64;
+    assert_eq!(signatures, vec![(0, 4, 2), (at(8 * PPQN), 7, 3)]);
+}
+
+fn smf_ppq(smf: &Smf) -> u16 {
+    match smf.header.timing {
+        Timing::Metrical(ppq) => ppq.as_int(),
+        Timing::Timecode(..) => panic!("not metrical"),
+    }
+}

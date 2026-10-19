@@ -366,6 +366,21 @@ fn tempo_track(project: &Project) -> Vec<TrackEvent<'static>> {
         0,
         TrackEventKind::Meta(MetaMessage::TimeSignature(numerator, 2, 24, 8)),
     ));
+    // And every change, at the bar it starts: the denominator as the power
+    // of two the file writes it as (8 is 3).
+    let meter = project.meter();
+    for change in project.meter_changes.iter() {
+        let power = change.bottom.max(1).trailing_zeros().min(7) as u8;
+        events.push((
+            meter.tick_of_bar(change.bar),
+            TrackEventKind::Meta(MetaMessage::TimeSignature(
+                change.top.clamp(1, 255) as u8,
+                power,
+                24,
+                8,
+            )),
+        ));
+    }
 
     for segment in project.tempo_map.segments() {
         let us = if segment.bpm > 0.0 {

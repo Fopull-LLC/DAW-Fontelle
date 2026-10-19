@@ -67,7 +67,7 @@ use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView, action,
-    apply, format_readout, format_signature, format_tempo, hit, parse_tempo, sample_at, tempo_at,
+    apply, format_signature, format_tempo, hit, parse_tempo, sample_at, tempo_at,
     transport_bar_layout,
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
@@ -4290,9 +4290,8 @@ impl WindowApp {
         // changed, not once per frame: shaping allocates, and a stopped
         // transport should not be doing it at all.
         if view.position_sample != self.view.position_sample || !self.view.available {
-            let beats_per_bar = self.beats_per_bar();
             self.readout = self.text.layout(
-                &format_readout(&view, beats_per_bar),
+                &crate::transport::format_readout_in(&view, &self.meter),
                 &self.options.theme.font,
                 None,
             );
@@ -25704,6 +25703,15 @@ impl WindowApp {
     /// The strip and its ghosts, as the roll draws them.
     fn roll_chords(&self) -> crate::render::RollChords {
         let mut chords = crate::render::RollChords {
+            meter: (!self.meter.changes().is_empty())
+                .then(|| {
+                    self.options
+                        .document
+                        .as_ref()
+                        .map(|doc| doc.song_tick_of_clip_tick(0))
+                        .map(|start| (self.meter.clone(), start))
+                })
+                .flatten(),
             flecks: self.particles.flecks(),
             smart: self.roll.smart_chords,
             locked: self.roll.scale_lock && self.song_key.is_some(),

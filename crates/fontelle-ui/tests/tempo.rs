@@ -374,3 +374,24 @@ fn no_change_is_offered_at_bar_one() {
     let (_, rows) = meter_menu(MeterTarget::Song, (4, 4), 0, false);
     assert!(!rows.iter().any(|r| matches!(r, MeterRow::AddAt(_))));
 }
+
+/// The read-out counts bars and beats by the meter: past a change to 7/8,
+/// a beat is an eighth.
+#[test]
+fn the_read_out_counts_by_the_meter() {
+    use fontelle_types::{Meter, MeterChange};
+    use fontelle_ui::transport::format_bars_beats_in;
+    let meter = Meter::new(
+        4,
+        &[MeterChange {
+            bar: 1,
+            top: 7,
+            bottom: 8,
+        }],
+    );
+    assert_eq!(format_bars_beats_in(0.0, &meter), "1.1.000");
+    assert_eq!(format_bars_beats_in(4.0, &meter), "2.1.000");
+    // Half a quarter into bar 2: its second eighth.
+    assert_eq!(format_bars_beats_in(4.5, &meter), "2.2.000");
+    assert_eq!(format_bars_beats_in(4.0 + 3.5, &meter), "3.1.000");
+}

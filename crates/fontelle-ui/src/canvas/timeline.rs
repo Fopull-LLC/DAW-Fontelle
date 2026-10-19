@@ -4288,3 +4288,27 @@ pub fn meter_flags(
         })
         .collect()
 }
+
+/// The meter's lines over `range` of a clip that starts at song tick
+/// `clip_start`, in the clip's own ticks — a bar numbered from the clip's
+/// first bar, as the roll numbers them.
+pub fn clip_meter_lines(
+    meter: &fontelle_types::Meter,
+    clip_start: Tick,
+    range: Range<Tick>,
+) -> Vec<(Tick, fontelle_types::MeterLine)> {
+    let first = meter.bar_at(clip_start.max(0)).0;
+    meter
+        .lines((range.start + clip_start).max(0)..range.end + clip_start)
+        .into_iter()
+        .map(|(t, l)| {
+            let l = match l {
+                fontelle_types::MeterLine::Bar(n) => {
+                    fontelle_types::MeterLine::Bar(n.saturating_sub(first))
+                }
+                other => other,
+            };
+            (t - clip_start, l)
+        })
+        .collect()
+}

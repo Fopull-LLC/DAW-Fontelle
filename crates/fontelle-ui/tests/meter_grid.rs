@@ -76,3 +76,21 @@ fn the_arrangement_snaps_to_the_meters_bars_and_finer_as_before() {
         "a 3/4 bar line, not a 4/4 one"
     );
 }
+
+/// The roll counts from its clip's start: bar lines where the song's meter
+/// puts them, shifted into the clip, numbered from the clip's first bar.
+#[test]
+fn the_roll_draws_the_meter_from_its_clips_start() {
+    use fontelle_types::MeterLine;
+    use fontelle_ui::canvas::clip_meter_lines;
+    // A clip starting at bar 2 (8 quarters in), which is where 3/4 begins.
+    let lines = clip_meter_lines(&waltz_from_bar_three(), 8 * Q, 0..7 * Q);
+    let bars: Vec<(i64, u32)> = lines
+        .iter()
+        .filter_map(|(t, l)| match l {
+            MeterLine::Bar(n) => Some((*t, *n)),
+            MeterLine::Beat => None,
+        })
+        .collect();
+    assert_eq!(bars, vec![(0, 0), (3 * Q, 1), (6 * Q, 2)]);
+}

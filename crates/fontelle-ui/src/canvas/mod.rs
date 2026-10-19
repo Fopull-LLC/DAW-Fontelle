@@ -332,7 +332,8 @@ pub use timeline::{
     timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
 };
 pub use timeline::{
-    meter_flags, timeline_bar_numbers, timeline_beat_labels_in, timeline_grid_lines,
+    clip_meter_lines, meter_flags, timeline_bar_numbers, timeline_beat_labels_in,
+    timeline_grid_lines,
 };
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,

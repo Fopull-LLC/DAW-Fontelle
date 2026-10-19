@@ -9276,6 +9276,7 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     ROLL_CHORDS.with(|c| {
         *c.borrow_mut() = fontelle_ui::render::RollChords {
             outline_outside: None,
+            meter: None,
             flecks: Vec::new(),
             smart: true,
             locked: true,
@@ -9394,4 +9395,28 @@ fn a_signature_change_draws_its_bars_and_its_flag() {
         near(c, shot.theme.palette.accent),
         "the chosen flag is not lit: {c:?}"
     );
+}
+
+/// The roll over a clip in a song that changes to 3/4: its bars follow.
+#[test]
+fn the_roll_draws_the_meter() {
+    use fontelle_types::{Meter, MeterChange};
+    let meter = Meter::new(
+        4,
+        &[MeterChange {
+            bar: 1,
+            top: 3,
+            bottom: 4,
+        }],
+    );
+    ROLL_CHORDS.with(|c| {
+        *c.borrow_mut() = fontelle_ui::render::RollChords {
+            meter: Some((meter, 0)),
+            ..Default::default()
+        }
+    });
+    let shot = shoot_roll(&Arena::default(), &[]);
+    ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
+    let Some(shot) = shot else { return };
+    dump_sized(&shot.pixels, "roll-meter", RW, RH);
 }

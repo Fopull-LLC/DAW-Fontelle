@@ -945,6 +945,24 @@ pub fn format_bars_beats(beats: f64, beats_per_bar: u32) -> String {
     )
 }
 
+/// [`format_bars_beats`], counted by the song's meter: each bar its own
+/// length, each beat its own (an eighth in 7/8). `beats` is in quarters,
+/// as the transport reports it.
+pub fn format_bars_beats_in(beats: f64, meter: &fontelle_types::Meter) -> String {
+    let tick = (beats.max(0.0) * PPQN as f64).round() as fontelle_types::Tick;
+    let (bar, beat, within) = meter.beat_at(tick);
+    format!("{}.{}.{:03}", bar + 1, beat + 1, within.min(PPQN - 1))
+}
+
+/// [`format_readout`], counted by the song's meter.
+pub fn format_readout_in(view: &TransportView, meter: &fontelle_types::Meter) -> String {
+    format!(
+        "{}  {}",
+        format_bars_beats_in(view.position_beats, meter),
+        format_clock(view.position_seconds())
+    )
+}
+
 /// The shortest a mouse audition sounds for.
 ///
 /// Lives in [`crate::audition`] now, beside the state machine that enforces
