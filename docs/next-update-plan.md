@@ -268,6 +268,47 @@ small "out of key" dot, so going out of key is a choice you can see.
 **Without a scale set,** the strip still works — it just offers common
 chord qualities on the note as a root (maj, min, 7, maj7, m7, dim, sus).
 
+### 3.2b "What scale am I in?" — added 2026-10-18
+
+> *"if you dont know the scale you are writing stuff in, there should be a
+> button inside of the scales section that says like what scale am i
+> writing ... a list of possible scales with the notes you have ... which
+> its closer to than others and hovering over the options highlights ...
+> what notes are wrong or out of that scale ... the closeness percentage,
+> and see why ... selecting it should just set the piano roll to that
+> scale."*
+
+**Design.**
+- A row at the top of the *scale ▾* menu: **Find my scale…**
+- It opens a list, best first: each row is a scale name, a **fit
+  percentage**, and the reason in a few words — *"98% · 1 note out (F♯)"*.
+- **Hovering a row previews it**: the roll shades rows by that scale (the
+  existing row shading, with the candidate in place of the song's key) and
+  outlines the notes that fall outside it, so you see *why*.
+- **Clicking sets the key and moves nothing.** This matters: today, choosing
+  a scale from the menu also *fits every note* into it
+  (`choose_song_key`), which would quietly move the very notes the finder
+  just showed you were out. The finder sets the key only; "Fit notes" stays
+  a separate, deliberate step.
+
+**How it scores (honest version).** The notes are counted by pitch class,
+weighted by how long they sound, over the song's melodic clips (drum kits
+left out). Each root × scale gets *the share of that weight inside the
+scale* — that is the percentage. Then two tie-breakers, because the
+percentage alone cannot tell **C major from A minor** (same seven notes):
+which note feels like home (it is long, low, first or last, on strong
+beats), and simpler scales before exotic ones. Rows that are the same notes
+are grouped: *"C major — or A minor"*, the likelier home first.
+
+**Where it lives.** The scoring is pure and testable; it belongs with the
+analysis code (which already has a key detector for audio, `detect_key`),
+reached through the host so the UI stays thin.
+
+**Caveats.** A short idea of four notes fits dozens of scales at 100 %;
+the list says so ("only 4 notes — many scales fit") rather than
+pretending to know. Songs that change key are scored as a whole (a
+"from here" option could come later).
+
 ### 3.3 Engineering, briefly
 
 - **The chord math goes in `fontelle-types`** next to `scale.rs`: stacking
