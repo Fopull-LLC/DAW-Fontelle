@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Fontelle.app's Info.plist, filled in by tools/steam/make-depots.sh.
+  LSMinimumSystemVersion is the Apple silicon binary's own floor (its
+  LC_BUILD_VERSION minos); docs/steam.md says why the store page asks for
+  more. No CFBundleIconFile yet: there is no .icns (docs/steam.md, Ty's list).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Fontelle</string>
+	<key>CFBundleDisplayName</key>
+	<string>Fontelle</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.fopull.Fontelle</string>
+	<key>CFBundleExecutable</key>
+	<string>fontelle</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@SHORT_VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- Without it macOS refuses the input stream outright: recording is a
+	     feature of the free app, so the bundle has to ask. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Fontelle records from your microphone or audio interface when you record a take.</string>
+</dict>
+</plist>

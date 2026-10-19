@@ -170,6 +170,12 @@ pub struct FileBank {
     /// Which files count. See [`BankFilter`].
     filter: BankFilter,
     dirs: Vec<PathBuf>,
+    /// Folders listed beside `dirs` that are **not the person's**: a
+    /// Supporter Pack's soundfonts (`crate::supporter_pack`), with the name
+    /// the top level shows for each. Read-only, never written into the
+    /// settings, never the folder the browser's buttons act on — which is
+    /// why they are not in `dirs`, the list all of those read.
+    shelves: Vec<(PathBuf, String)>,
     /// Every soundfont under every configured folder, flat. What the **search**
     /// runs against, and what it has always been.
     entries: Vec<BankEntry>,
@@ -204,6 +210,7 @@ impl FileBank {
         Self {
             filter,
             dirs,
+            shelves: Vec::new(),
             entries: Vec::new(),
             at: None,
             rows: Vec::new(),
@@ -217,6 +224,35 @@ impl FileBank {
 
     pub fn dirs(&self) -> &[PathBuf] {
         &self.dirs
+    }
+
+    /// Lists `dir` too, read-only, as a folder called `name` at the top —
+    /// from the next [`rescan`](Self::rescan). A folder already listed is
+    /// not listed twice.
+    pub fn add_shelf(&mut self, dir: PathBuf, name: String) {
+        if !self.roots().contains(&dir) {
+            self.shelves.push((dir, name));
+        }
+    }
+
+    /// The read-only folders [`add_shelf`](Self::add_shelf) added.
+    pub fn shelves(&self) -> &[(PathBuf, String)] {
+        &self.shelves
+    }
+
+    /// Whether `path` is on a shelf: content Fontelle came with, which
+    /// nothing may change, move or delete.
+    pub fn is_read_only(&self, path: &Path) -> bool {
+        self.shelves.iter().any(|(dir, _)| path.starts_with(dir))
+    }
+
+    /// Every folder walked: the person's, then the shelves.
+    fn roots(&self) -> Vec<PathBuf> {
+        self.dirs
+            .iter()
+            .cloned()
+            .chain(self.shelves.iter().map(|(dir, _)| dir.clone()))
+            .collect()
     }
 
     /// Every soundfont in the collection, flat. What the search runs against.
@@ -273,7 +309,7 @@ impl FileBank {
             Some(parent) => parent,
             None => return String::new(),
         };
-        for root in &self.dirs {
+        for root in &self.roots() {
             if let Ok(rest) = parent.strip_prefix(root) {
                 // `/` whatever the platform separator is: this is a label, and
                 // a mixed one would read as a bug.
@@ -317,6 +353,13 @@ impl FileBank {
             }
             self.walk(&dir, 0, &mut seen);
         }
+        // A pack with no soundfonts in it has no folder for them, and that is
+        // not a folder that went missing.
+        for (dir, _) in self.shelves.clone() {
+            if dir.is_dir() {
+                self.walk(&dir, 0, &mut seen);
+            }
+        }
 
         self.entries.sort_by_key(|entry| entry.name.to_lowercase());
         // Where the browser was standing may have been moved or deleted while
@@ -336,8 +379,9 @@ impl FileBank {
         // With exactly one configured folder there is no useful level above
         // it: a bank with one root should not make you click into it before
         // you can see anything.
-        if self.at.is_none() && self.dirs.len() == 1 {
-            self.at = self.dirs.first().cloned();
+        let roots = self.roots();
+        if self.at.is_none() && roots.len() == 1 {
+            self.at = roots.first().cloned();
         }
         while let Some(at) = self.at.clone() {
             if at.is_dir() && self.root_of(&at).is_some() {
@@ -345,19 +389,19 @@ impl FileBank {
             }
             self.at = self.parent_within_roots(&at);
         }
-        if self.dirs.len() == 1 {
-            self.at = self.dirs.first().filter(|d| d.is_dir()).cloned();
+        if roots.len() == 1 {
+            self.at = roots.first().filter(|d| d.is_dir()).cloned();
         }
     }
 
     /// The configured folder `path` is inside, or is.
-    fn root_of(&self, path: &Path) -> Option<&PathBuf> {
-        self.dirs.iter().find(|root| path.starts_with(root))
+    fn root_of(&self, path: &Path) -> Option<PathBuf> {
+        self.roots().into_iter().find(|root| path.starts_with(root))
     }
 
     /// One level up, or `None` at a configured root — which is the top.
     fn parent_within_roots(&self, path: &Path) -> Option<PathBuf> {
-        if self.dirs.iter().any(|root| root == path) {
+        if self.roots().iter().any(|root| root == path) {
             return None;
         }
         path.parent()
@@ -378,11 +422,18 @@ impl FileBank {
                     path: dir,
                 });
             }
+            for (dir, name) in self.shelves.clone() {
+                self.rows.push(BankRow::Folder {
+                    name,
+                    files: self.count_under(&dir),
+                    path: dir,
+                });
+            }
             self.rows.sort_by_key(|row| row_key(row).to_lowercase());
             return;
         };
 
-        if self.parent_within_roots(&at).is_some() || self.dirs.len() > 1 {
+        if self.parent_within_roots(&at).is_some() || self.roots().len() > 1 {
             self.rows.push(BankRow::Up {
                 to: self.parent_within_roots(&at),
             });

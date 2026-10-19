@@ -880,8 +880,10 @@ pub fn fontelle_data_dir_from(
     if let Some(xdg) = env("XDG_DATA_HOME").filter(|v| absolute(v)) {
         return Some(PathBuf::from(xdg).join("fontelle"));
     }
+    // A relative `HOME` would put the folder under the working directory —
+    // the install folder, when Steam starts the program (hub card 0429).
     let under_home = env("HOME")
-        .filter(|h| !h.is_empty())
+        .filter(|h| absolute(h))
         .map(|h| PathBuf::from(h).join(".local/share").join("fontelle"));
     if windows {
         if let Some(old) = under_home.as_ref().filter(|d| exists(d)) {

@@ -209,3 +209,47 @@ jobs:
           files: |
             artifacts/fontelle-*
             artifacts/SHA256SUMS
+
+  # Steam's depots from the release just published (hub card 0429,
+  # docs/steam.md): `tools/steam/make-depots.sh` downloads this tag's
+  # archives, checks them against SHA256SUMS and lays them out, so the bytes
+  # on Steam are the bytes on the release page — nothing is rebuilt, and like
+  # the release itself nothing happens unless CI passed (`publish` needs
+  # `ci`). On a macOS runner because the macOS depot is one universal binary
+  # and `lipo` is there. The depots and the SteamPipe scripts are a workflow
+  # artifact; uploading them to Steam is Ty's step.
+  steam:
+    name: Steam depots
+    needs: [version, publish]
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+      # Steamworks' ids, once Ty has them (repository variables, not
+      # secrets: they are on the store page anyway). Unset, the scripts keep
+      # FILL_ME placeholders that steamcmd refuses.
+      STEAM_APP_ID: ${{ vars.STEAM_APP_ID }}
+      STEAM_DEPOT_LINUX: ${{ vars.STEAM_DEPOT_LINUX }}
+      STEAM_DEPOT_WINDOWS: ${{ vars.STEAM_DEPOT_WINDOWS }}
+      STEAM_DEPOT_MACOS: ${{ vars.STEAM_DEPOT_MACOS }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/steam/make-depots.sh "${{ github.ref_name }}" "steam-$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fontelle-steam-${{ needs.version.outputs.version }}
+          path: |
+            steam-${{ needs.version.outputs.version }}/depots
+            steam-${{ needs.version.outputs.version }}/scripts
+          if-no-files-found: error
+      # Off until Ty has a Steamworks builder account and wants uploads from
+      # CI: it needs STEAM_USERNAME and a STEAM_CONFIG_VDF (steamcmd's
+      # config.vdf after a Steam Guard login) as secrets. Even then the build
+      # goes up to no branch (`SetLive` is empty); setting it live stays a
+      # click on the Steamworks site.
+      - name: Upload to Steam (disabled)
+        if: false
+        run: |
+          echo "steamcmd +login \"$STEAM_USERNAME\" +run_app_build \"$PWD/steam-$VERSION/scripts/app_build.vdf\" +quit"

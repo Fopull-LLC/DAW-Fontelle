@@ -709,6 +709,10 @@ pub struct Session {
     /// replaced through [`Session::with_updater`] by the one the launch
     /// decides on, so a session made for a test never touches the network.
     updater: Updater,
+    /// Supporter Packs found at launch (`supporter_pack.rs`): their
+    /// soundfonts are read-only shelves of the bank. Content only — nothing
+    /// else in the session reads this.
+    supporter_packs: Vec<crate::supporter_pack::SupporterPack>,
     query: String,
     /// Which soundfont is open, and what is inside it.
     ///
@@ -1758,6 +1762,7 @@ impl Session {
             bank: SoundfontBank::default(),
             projects: ProjectLibrary::default(),
             updater: Updater::disabled(),
+            supporter_packs: Vec::new(),
             query: String::new(),
             open_file: None,
             flopsynth_open: false,
@@ -2221,9 +2226,23 @@ impl Session {
     /// The settings page's rows for this studio: the settings', with a
     /// section's picture rows under every section the theme has a picture in.
     fn setting_rows(&self) -> Vec<crate::settings::SettingRow> {
-        crate::settings::setting_rows_with(&self.settings, |panel| {
+        use crate::settings::SettingRow;
+        let mut rows = crate::settings::setting_rows_with(&self.settings, |panel| {
             self.theme.backdrops.get(panel).is_some()
-        })
+        });
+        // A copy a store updates has no update switches to offer: the start
+        // menu's line says who updates it (hub card 0429).
+        if self.updater.is_managed() {
+            rows.retain(|row| {
+                !matches!(
+                    row,
+                    SettingRow::Heading("Updates")
+                        | SettingRow::CheckForUpdates
+                        | SettingRow::BetaUpdates
+                )
+            });
+        }
+        rows
     }
 
     /// Changes `panel`'s picture in the theme, on a copy if it is built in.
@@ -2494,7 +2513,7 @@ impl Session {
     /// about exactly once, because it is where their soundfonts go.
     pub fn open_bank(&mut self) -> Option<PathBuf> {
         let dirs = self.settings.soundfont_dirs_or_default();
-        self.bank = SoundfontBank::new(dirs.dirs);
+        self.bank = self.bank_over(dirs.dirs);
         self.bank.rescan();
         // Remembered, so the default is only chosen once and any folder the
         // user adds with `--soundfonts` survives a restart.
@@ -2503,6 +2522,31 @@ impl Session {
         }
         self.touch();
         dirs.created
+    }
+
+    /// The bank over the person's `dirs`, with every Supporter Pack's
+    /// soundfonts on a shelf beside them.
+    fn bank_over(&self, dirs: Vec<PathBuf>) -> SoundfontBank {
+        let mut bank = SoundfontBank::new(dirs);
+        for pack in &self.supporter_packs {
+            bank.add_shelf(pack.soundfonts(), pack.name.clone());
+        }
+        bank
+    }
+
+    /// The Supporter Packs this session lists content from — what the
+    /// launch found (`supporter_pack::installed_packs`), or a test's.
+    pub fn with_supporter_packs(
+        mut self,
+        packs: Vec<crate::supporter_pack::SupporterPack>,
+    ) -> Self {
+        self.supporter_packs = packs;
+        self
+    }
+
+    /// The soundfont bank as it stands.
+    pub fn soundfont_bank(&self) -> &SoundfontBank {
+        &self.bank
     }
 
     /// Reads the projects folder the settings name, if they name one.
@@ -4114,7 +4158,7 @@ impl Session {
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
-        self.bank = SoundfontBank::new(wanted);
+        self.bank = self.bank_over(wanted);
         self.bank.rescan();
         // The bank is a different collection now: the file that was open may
         // not be in any of these folders.

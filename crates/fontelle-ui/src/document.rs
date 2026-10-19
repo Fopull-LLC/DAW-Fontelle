@@ -40,6 +40,10 @@ pub enum UpdateStatus {
     /// than drawn as nothing, so a menu with no update line is not mistaken
     /// for one that is up to date.
     Off,
+    /// Somebody else updates this copy — Steam, for one it installed
+    /// (`fontelle_app::distribution`). Nothing to check and nothing to
+    /// press: a swap of the binary would fail the store's verification.
+    ByStore { store: String },
     /// The request is in flight.
     Checking,
     /// This build is the newest release.

@@ -1,0 +1,12 @@
+// Fontelle for Linux x86_64. TY: the depot id is Steamworks' (see app_build).
+"DepotBuild"
+{
+	"DepotID" "@DEPOT_LINUX@"
+	"ContentRoot" "../depots/linux/"
+	"FileMapping"
+	{
+		"LocalPath" "*"
+		"DepotPath" "."
+		"Recursive" "1"
+	}
+}

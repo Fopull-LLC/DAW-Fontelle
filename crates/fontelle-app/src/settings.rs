@@ -2192,8 +2192,11 @@ impl Settings {
         {
             return Some(PathBuf::from(value).join("fontelle"));
         }
+        // A relative `HOME` is no home: its folders would be under the
+        // working directory, which is the install folder when Steam starts
+        // the program — a folder Steam verifies file by file (hub card 0429).
         let under_home = env("HOME")
-            .filter(|home| !home.is_empty())
+            .filter(|home| platform.is_absolute(home))
             .map(|home| PathBuf::from(home).join(fallback).join("fontelle"));
         if platform == Platform::Windows {
             if let Some(old) = under_home.as_ref().filter(|dir| exists(dir)) {

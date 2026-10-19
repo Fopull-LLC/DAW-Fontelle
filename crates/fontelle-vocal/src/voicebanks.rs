@@ -149,6 +149,29 @@ pub fn voicebanks_dir() -> Option<PathBuf> {
     fontelle_host::fontelle_data_dir().map(|d| d.join("voicebanks"))
 }
 
+/// [`voicebanks_dir_from`], or — on a machine with no data folder at all —
+/// one in the temporary folder.
+///
+/// The fallback used to be a bare `voicebanks`, under the working
+/// directory: the install folder when Steam starts the program, which Steam
+/// verifies file by file (hub card 0429). Banks installed there would be
+/// lost at the next reboot, and that is the lesser harm.
+pub fn voicebanks_dir_or_scratch_from(
+    env: &dyn Fn(&str) -> Option<String>,
+    windows: bool,
+    exists: &dyn Fn(&Path) -> bool,
+) -> PathBuf {
+    voicebanks_dir_from(env, windows, exists)
+        .unwrap_or_else(|| std::env::temp_dir().join("fontelle-voicebanks"))
+}
+
+/// [`voicebanks_dir_or_scratch_from`] for this process.
+pub fn voicebanks_dir_or_scratch() -> PathBuf {
+    voicebanks_dir_or_scratch_from(&|key| std::env::var(key).ok(), cfg!(windows), &|path| {
+        path.is_dir()
+    })
+}
+
 // ------------------------------------------------------------ installing
 
 static STAGING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

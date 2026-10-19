@@ -751,6 +751,9 @@ fn play_or_render(
             if let Some(port) = live_ports.claim() {
                 session = session.with_audition(Box::new(port));
             }
+            // A Supporter Pack's soundfonts, read-only beside the person's
+            // own (`supporter_pack.rs`).
+            session = session.with_supporter_packs(fontelle_app::supporter_pack::installed_packs());
             for dir in &soundfont_dirs {
                 session.add_soundfont_dir(dir);
             }
@@ -777,7 +780,12 @@ fn play_or_render(
             // The start menu's update check, if the settings allow one. Built
             // here rather than started: the window starts it when the menu
             // goes up, so a launch straight into a project asks nothing.
-            if session.checks_for_updates() {
+            // A store's copy is the store's to update: the line says so
+            // and nothing asks GitHub (`distribution.rs`).
+            if let Some(store) = fontelle_app::distribution::Distribution::here().store() {
+                session =
+                    session.with_updater(fontelle_app::updates::Updater::new().managed_by(store));
+            } else if session.checks_for_updates() {
                 session = session.with_updater(fontelle_app::updates::Updater::new());
             }
             // And what happened to the last run, in the window's own status
@@ -1439,8 +1447,24 @@ fn main() {
     // goes now, on the launch after — quietly, because it is housekeeping.
     // Also the moment the binary's path is taken for the updater, before an
     // upgrade can rename it (`updates::launched_exe`).
-    if let Some(exe) = fontelle_app::updates::launched_exe() {
+    // A copy Steam installed has nothing of the updater's to tidy, and its
+    // install folder is Steam's (hub card 0429): nothing here touches it.
+    let distribution = fontelle_app::distribution::Distribution::here();
+    if let Some(exe) = fontelle_app::updates::launched_exe()
+        && distribution.updates_itself()
+    {
         fontelle_app::updates::tidy(&exe);
+    }
+    // Steam starts a program in its install folder, and a plugin that writes
+    // a file "here" (Cardinal's patch.json) would write it into a folder
+    // Steam verifies. A Steam copy works from its data folder instead; a
+    // copy from the release page keeps the folder it was started in, as
+    // relative paths on its command line expect.
+    if !distribution.updates_itself()
+        && let Some(data) = fontelle_app::settings::Settings::data_dir()
+        && std::fs::create_dir_all(&data).is_ok()
+    {
+        std::env::set_current_dir(&data).ok();
     }
     // Before anything else opens a device or reads a file: somebody asking
     // what the flags are should not have a stream opened at them.

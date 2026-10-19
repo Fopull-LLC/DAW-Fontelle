@@ -278,15 +278,51 @@ fn read_analysis(path: &Path) -> Option<Analysis> {
 /// `<cache>/fontelle/utau`: `$XDG_CACHE_HOME` or `~/.cache` (Linux),
 /// `~/Library/Caches` (macOS), `%LOCALAPPDATA%` (Windows).
 pub fn default_cache_dir() -> Option<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    let os = if cfg!(windows) {
+        CacheOs::Windows
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Caches"))
+        CacheOs::Macos
     } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .filter(|v| !v.is_empty())
+        CacheOs::Linux
+    };
+    default_cache_dir_from(&|key| std::env::var(key).ok(), os)
+}
+
+/// Which platform's rule [`default_cache_dir_from`] follows — a parameter so
+/// all three are tested on whichever machine runs the tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheOs {
+    Linux,
+    Macos,
+    Windows,
+}
+
+/// [`default_cache_dir`] for an environment: **an absolute folder or none**.
+///
+/// A relative variable (or an empty `HOME`) once came out as a relative
+/// `.cache/fontelle/utau` — under the working directory, which is the
+/// install folder when Steam starts the program, and Steam verifies that
+/// folder file by file (hub card 0429). No cache is better than that.
+pub fn default_cache_dir_from(
+    env: &dyn Fn(&str) -> Option<String>,
+    os: CacheOs,
+) -> Option<PathBuf> {
+    let absolute = |value: &String| match os {
+        CacheOs::Windows => {
+            let b = value.as_bytes();
+            (b.len() >= 3 && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'))
+                || value.starts_with("\\\\")
+        }
+        _ => value.starts_with('/'),
+    };
+    let home = || env("HOME").filter(absolute).map(PathBuf::from);
+    let base = match os {
+        CacheOs::Windows => env("LOCALAPPDATA").filter(absolute).map(PathBuf::from),
+        CacheOs::Macos => home().map(|h| h.join("Library").join("Caches")),
+        CacheOs::Linux => env("XDG_CACHE_HOME")
+            .filter(absolute)
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+            .or_else(|| home().map(|h| h.join(".cache"))),
     }?;
     Some(base.join("fontelle").join("utau"))
 }

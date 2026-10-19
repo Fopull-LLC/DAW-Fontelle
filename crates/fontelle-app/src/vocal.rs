@@ -341,8 +341,7 @@ impl VocalSession {
     pub fn voicebanks_dir(&self) -> PathBuf {
         self.voicebanks
             .clone()
-            .or_else(voicebanks::voicebanks_dir)
-            .unwrap_or_else(|| PathBuf::from("voicebanks"))
+            .unwrap_or_else(voicebanks::voicebanks_dir_or_scratch)
     }
 
     /// Everyone who can sing, made the first time anything asks.
