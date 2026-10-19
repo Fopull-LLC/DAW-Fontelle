@@ -19,7 +19,35 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-18, latest — a user's complaint and five reports, for
+**As of 2026-10-18 (later), latest — the next update, phase 1: shared
+songs that don't break.** Plan and Ty's decisions: `docs/next-update-plan.md`.
+On `main`, **not released**: preview build → beta → stable, Ty's word each
+step. Ty now reviews the design-bearing code; see that doc's §8.
+
+- **A song swap ends the session first** (`adopt_at` → `leave_session`), and
+  the window asks first (`end_session_question`: host "End the session for
+  everyone?", joiner "Leave the shared song?"). Opening another song used
+  to leave a host "hosting" and apply a joiner's edits to the new song.
+- **`Edit::reach`** (`fontelle-model/src/wire.rs`, exhaustive): an edit
+  from a collaborator costs what the same local edit costs — `Timeline`
+  (republish), `Values` (`publish_values`), `Graph` (rebuild). Every
+  arriving edit used to rebuild the graph and cut whatever was sounding.
+  `Effect::Changed(Reach)`, merged to the dearest per turn.
+- **Soundfonts**: `find_by_hash` follows links; a fetched one lands in the
+  first folder that takes it and the bank rescans; arrivals load through
+  `resolve_checked` (contents, not a foreign path); `Files::ask_again` +
+  the Share panel's *Fetch again*; a host's "Not now" tells waiting peers;
+  a missing file with a namesake says "a different version".
+- **Solo is personal**: `MixerTrack::solo`, `Channel::soloed`,
+  `Lane::soloed` are `skip_serializing` (read from old songs, never
+  written, so never sent or hashed), set directly (not undoable, not
+  dirtying); `keep_solos` carries a joiner's across a rebuild. Exports
+  honour solo (Ty: he exports one track that way).
+- Not done: songs saved before the SHA-256 change still carry hashes no
+  file matches; the new-track-silent report is unconfirmed (solo was the
+  likely cause, now personal).
+
+**As of 2026-10-18 — a user's complaint and five reports, for
 the public 0.28.0.** Ty: *"release these updates on public, not beta,
 since it is a user complaint we recieved."* On `main` on top of the
 cloud session's 0.28.0 bump (which was never tagged — its CI went red only
