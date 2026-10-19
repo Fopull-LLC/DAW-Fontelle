@@ -869,6 +869,16 @@ fn shoot_roll_everything(
     // window does this in `ensure_labels`, and a caption nobody shaped draws as
     // nothing at all, which would make a blank strip look like a pass.
     let mut labels = Labels::new();
+    let chords = ROLL_CHORDS.with(|c| c.borrow().clone());
+    if let Some(strip) = &chords.strip {
+        for word in fontelle_ui::canvas::chord_strip_words() {
+            labels.ensure(word, &theme.font, &mut text);
+        }
+        for (name, small) in &strip.captions {
+            labels.ensure(name, &theme.font, &mut text);
+            labels.ensure_small(small, &theme.font, &mut text);
+        }
+    }
     for key in fontelle_ui::canvas::visible_keys(&roll_view, roll_l.grid) {
         let key = key.clamp(0, 127) as u8;
         if let Some(name) = key_map.name(key) {
@@ -975,7 +985,7 @@ fn shoot_roll_everything(
                 scale: song_key.and_then(fontelle_ui::canvas::RollScale::of),
                 key: song_key,
                 key_root: song_key.map_or(0, |key| key.root),
-                chords: Default::default(),
+                chords: chords.clone(),
                 vocal: None,
             }),
             rack: None,
@@ -7647,6 +7657,9 @@ thread_local! {
     static GHOST: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
     /// Whether the next timeline shot shapes and draws its clips' names.
     static CAPTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The roll's smart chords, for the next roll shot.
+    static ROLL_CHORDS: std::cell::RefCell<fontelle_ui::render::RollChords> =
+        std::cell::RefCell::new(Default::default());
     /// Everybody else in a session, for the next timeline shot.
     static PEOPLE: std::cell::RefCell<Vec<fontelle_ui::canvas::Marks>> =
         const { std::cell::RefCell::new(Vec::new()) };
@@ -9201,5 +9214,95 @@ fn somebody_elses_pointer_and_time_marker_are_drawn_in_their_colour() {
     assert!(
         near(shot.at((grid.right() - 12.0) as u32, cy as u32), carol),
         "Carol's arrow is not at the edge"
+    );
+}
+
+/// The chord strip over a placed G, its second chip under the pointer: the
+/// chip lit, the chord ghosted in the accent where it would be written.
+#[test]
+fn the_chord_strip_and_its_ghosts_are_drawn() {
+    use fontelle_types::chord::{Extension, Inversion, Suggest, Voicing, suggestions};
+    let mut notes: Arena<NoteId, Note> = Arena::default();
+    notes.insert(note(PPQN, PPQN, 67));
+    let key = fontelle_types::KeyScale::new(0, "major");
+    let offered = suggestions(Some(&key), 67, Suggest::Rooted, Extension::Triad, true);
+    // Laid out as the window lays it: over the note's row in the shot's view.
+    let Some(probe) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    let grid = probe.layout.grid;
+    // Clear of every key a chip would add, as the window places it.
+    let top = fontelle_ui::canvas::key_row(&probe.view, grid, 79).y;
+    let bottom = fontelle_ui::canvas::key_row(&probe.view, grid, 67).bottom();
+    let x0 = fontelle_ui::canvas::tick_to_x(&probe.view, grid, PPQN);
+    let x1 = fontelle_ui::canvas::tick_to_x(&probe.view, grid, 2 * PPQN);
+    let note_rect = Rect::new(x0, top, x1 - x0, bottom - top);
+    let layout = fontelle_ui::canvas::chord_strip_layout(
+        grid,
+        note_rect,
+        offered.len(),
+        &probe.theme.metrics,
+    );
+    let chip = layout.chips[1];
+    let ghost_keys = [71u8, 74];
+    for key in ghost_keys {
+        let row = fontelle_ui::canvas::key_row(&probe.view, grid, key);
+        assert!(
+            row.intersection(&layout.frame).is_empty(),
+            "the strip covers the chord's {key}"
+        );
+    }
+    ROLL_CHORDS.with(|c| {
+        *c.borrow_mut() = fontelle_ui::render::RollChords {
+            smart: true,
+            locked: true,
+            strip: Some(fontelle_ui::render::ChordStripChrome {
+                layout: layout.clone(),
+                captions: offered
+                    .iter()
+                    .map(fontelle_ui::canvas::chord_chip_caption)
+                    .collect(),
+                hover: Some(1),
+                suggest: Suggest::Rooted,
+                extension: Extension::Triad,
+                voicing: Voicing::Close,
+                inversion: Inversion::Root,
+            }),
+            ghosts: ghost_keys
+                .iter()
+                .map(|k| fontelle_ui::document::GhostNote {
+                    start: PPQN,
+                    length: PPQN,
+                    key: *k,
+                    color: [0, 0, 0, 0],
+                })
+                .collect(),
+        }
+    });
+    let shot = shoot_roll(&notes, &[]);
+    ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
+    let Some(shot) = shot else { return };
+    dump_sized(&shot.pixels, "chord-strip", RW, RH);
+    let accent = shot.theme.palette.accent;
+    assert!(
+        near(
+            shot.at((chip.x + 3.0) as u32, (chip.y + 3.0) as u32),
+            accent
+        ),
+        "the hovered chip is not lit"
+    );
+    let ghost_row = fontelle_ui::canvas::key_row(&shot.view, shot.layout.grid, 71);
+    let gy = (ghost_row.y + ghost_row.height / 2.0) as u32;
+    let far = |c: Color| {
+        c.0.iter()
+            .zip(accent.0.iter())
+            .map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs())
+            .sum::<i32>()
+    };
+    let ghost = shot.at((x0 + 12.0) as u32, gy);
+    let bare = shot.at((x1 + 60.0) as u32, gy);
+    assert!(
+        far(ghost) + 60 < far(bare),
+        "the ghost is not in the accent: {ghost:?} beside {bare:?}"
     );
 }

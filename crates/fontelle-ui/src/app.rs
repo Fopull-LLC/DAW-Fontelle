@@ -25077,18 +25077,29 @@ impl WindowApp {
         }
     }
 
-    /// Where the strip is, over the note it is for.
+    /// Where the strip is: just above the note and every key its chips
+    /// would add, so a hovered chord's ghosts are never under it (a close
+    /// chord goes up from its note, where the strip would otherwise sit).
     fn chord_strip_layout(&self) -> Option<crate::canvas::ChordStripLayout> {
         let strip = self.chord_strip.as_ref()?;
         let grid = self.roll_layout.grid;
         let view = &self.roll.view;
-        let row = crate::canvas::key_row(view, grid, strip.note.key);
+        let keys: Vec<u8> = strip
+            .suggestions
+            .iter()
+            .flat_map(|s| self.chord_keys(&s.chord))
+            .chain([strip.note.key])
+            .collect();
+        let high = keys.iter().copied().max().unwrap_or(strip.note.key);
+        let low = keys.iter().copied().min().unwrap_or(strip.note.key);
+        let top = crate::canvas::key_row(view, grid, high).y;
+        let bottom = crate::canvas::key_row(view, grid, low).bottom();
         let x0 = crate::canvas::tick_to_x(view, grid, strip.note.start);
         let x1 = crate::canvas::tick_to_x(view, grid, strip.note.start + strip.note.length);
-        let note = crate::layout::Rect::new(x0, row.y, (x1 - x0).max(4.0), row.height);
+        let span = crate::layout::Rect::new(x0, top, (x1 - x0).max(4.0), (bottom - top).max(1.0));
         Some(crate::canvas::chord_strip_layout(
             grid,
-            note,
+            span,
             strip.suggestions.len(),
             &self.options.theme.metrics,
         ))
