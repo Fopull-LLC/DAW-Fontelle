@@ -2476,6 +2476,15 @@ fn draw_share_panel(
             p.meter_peak,
         );
     }
+    if !l.fetch_again.is_empty() {
+        draw_line(
+            scene,
+            labels,
+            crate::canvas::FETCH_AGAIN,
+            l.fetch_again,
+            p.accent,
+        );
+    }
     for ((what, detail), item) in l.missing.iter().zip(share.missing) {
         draw_line(scene, labels, &item.what, *what, p.text);
         draw_line(scene, labels, &item.detail, *detail, p.text_muted);

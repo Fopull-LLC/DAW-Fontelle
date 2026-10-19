@@ -273,3 +273,35 @@ fn a_reopened_kit_still_knows_what_its_keys_are_called() {
     std::fs::remove_dir_all(&bundle).ok();
     std::fs::remove_file(&soundfont).ok();
 }
+
+/// A file arrived from somebody else's song names a path on *their* disk. If
+/// this machine has a different file at that path, the path is not trusted:
+/// the file is looked for by what is in it (2026-10-18).
+#[test]
+fn a_path_holding_a_different_file_is_not_trusted() {
+    let dir = std::env::temp_dir().join(format!(
+        "fontelle-resolve-checked-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+    let bank = dir.join("bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    let theirs = dir.join("FluidR3_GM.sf2");
+    std::fs::write(&theirs, b"another version of it").unwrap();
+    let real = bank.join("my copy.sf2");
+    std::fs::write(&real, b"the version the song was made with").unwrap();
+    let hash = fontelle_assets::content_hash::hash_file(&real).unwrap().low;
+    let file = fontelle_types::AssetRef {
+        id: fontelle_types::AssetId::default(),
+        path: theirs.clone(),
+        content_hash: hash,
+        size: std::fs::metadata(&real).unwrap().len(),
+        kind: fontelle_types::AssetKind::Sf2,
+    };
+    assert_eq!(
+        fontelle_app::resolve_checked(None, &file, std::slice::from_ref(&bank)),
+        Some(real)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

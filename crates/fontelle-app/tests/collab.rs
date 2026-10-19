@@ -3209,3 +3209,88 @@ fn an_insert_added_by_somebody_else_still_rebuilds() {
     pair.same();
     assert!(pair.host.graph_builds() > builds, "what is wired changed");
 }
+
+/// A soundfont joiner and host, with the soundfont in neither of Bob's
+/// folders: the pair and Bob's bank, with the question about the fetch up.
+fn a_fetch_waiting(dir: &Path) -> (Session, Session, MemoryHub, PathBuf, u64) {
+    let (host, _) = a_song_on_a_soundfont(dir);
+    let mut joiner = a_session();
+    std::fs::create_dir_all(dir.join("bob")).unwrap();
+    joiner.set_projects_dir(Some(dir.join("bob")));
+    let bank = dir.join("bob-bank");
+    std::fs::create_dir_all(&bank).unwrap();
+    joiner.set_library_dirs(vec![bank.clone()], false);
+    let hub = MemoryHub::new();
+    hub.set_conditions(2, 0.0);
+    let mut host = host;
+    host.share(
+        Box::new(hub.server_endpoint()),
+        options("Alice", PersistentId::new()),
+    )
+    .unwrap();
+    let mut mine = options("Bob", PersistentId::new());
+    mine.ask_above = 0;
+    joiner.join(Box::new(hub.connect()), mine).unwrap();
+    let mut now = 0;
+    for _ in 0..20 {
+        now += 1;
+        hub.set_now(now);
+        host.pump_collab();
+        joiner.pump_collab();
+    }
+    joiner.answer_join(JoinAnswer::Copy).unwrap();
+    for _ in 0..20 {
+        now += 1;
+        hub.set_now(now);
+        host.pump_collab();
+        joiner.pump_collab();
+    }
+    assert!(joiner.fetch_question().is_some(), "asked before fetching");
+    (host, joiner, hub, bank, now)
+}
+
+fn turns(host: &mut Session, joiner: &mut Session, hub: &MemoryHub, now: &mut u64, n: u64) {
+    for _ in 0..n {
+        *now += 1;
+        hub.set_now(*now);
+        host.pump_collab();
+        joiner.pump_collab();
+    }
+}
+
+/// *"copied soundfonts from shared projects dont get added to that users
+/// soundfont folder"* (2026-10-18): the file was on disk, but the soundfont
+/// list was never read again, so it was not there until a restart.
+#[test]
+fn a_fetched_soundfont_is_in_the_soundfont_list_at_once() {
+    let dir = scratch("fetched-listed");
+    let (mut host, mut joiner, hub, _bank, mut now) = a_fetch_waiting(&dir);
+    let before = joiner.library_count();
+    joiner.answer_fetch(true).unwrap();
+    turns(&mut host, &mut joiner, &hub, &mut now, 40);
+    assert_eq!(joiner.files_received().len(), 1);
+    assert_eq!(
+        joiner.library_count(),
+        before + 1,
+        "listed without a rescan by hand"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A "Not now" was for the rest of the session. It can be taken back.
+#[test]
+fn a_declined_soundfont_can_be_fetched_after_all() {
+    let dir = scratch("declined-again");
+    let (mut host, mut joiner, hub, _bank, mut now) = a_fetch_waiting(&dir);
+    joiner.answer_fetch(false).unwrap();
+    turns(&mut host, &mut joiner, &hub, &mut now, 10);
+    assert!(joiner.fetch_question().is_none());
+    assert!(!joiner.missing_files().is_empty());
+    joiner.fetch_missing_again();
+    turns(&mut host, &mut joiner, &hub, &mut now, 10);
+    assert!(joiner.fetch_question().is_some(), "asked again");
+    joiner.answer_fetch(true).unwrap();
+    turns(&mut host, &mut joiner, &hub, &mut now, 40);
+    assert!(joiner.missing_files().is_empty(), "and fetched");
+    std::fs::remove_dir_all(&dir).ok();
+}

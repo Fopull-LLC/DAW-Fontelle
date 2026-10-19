@@ -7111,6 +7111,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         },
     ];
     words.push(fontelle_ui::canvas::MISSING_HERE.to_string());
+    words.extend(share_panel_words(ShareRole::Joined, &peers));
     words.push(fontelle_ui::canvas::missing_more_words(1));
     for item in &missing {
         words.extend([item.what.clone(), item.detail.clone()]);
@@ -7271,6 +7272,10 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     assert!(
         ink(&lacking, &bare, listed.missing_title) > 20,
         "no heading over what is missing"
+    );
+    assert!(
+        ink(&lacking, &bare, listed.fetch_again) > 20,
+        "no Fetch again for the joiner"
     );
     // A short window: as many as fit, and the rest counted.
     assert!(!listed.missing.is_empty());

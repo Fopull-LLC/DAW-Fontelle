@@ -469,7 +469,26 @@ impl Collab {
     }
 
     pub fn answer_fetch(&mut self, fetch: bool) {
-        self.files.answer(fetch);
+        // Whoever was waiting on this studio for a file it turned down hears
+        // that it is not coming, rather than waiting at 0 % for good.
+        for (peer, hash) in self.files.answer(fetch) {
+            send(self.transport.as_mut(), peer, &Msg::AssetMissing { hash });
+        }
+    }
+
+    /// Asks again about every file `doc` names that is not here — a "Not
+    /// now" used to be for the rest of the session. A joiner asks the host;
+    /// a host forgets its refusals, so the next edit naming a file asks
+    /// again. The files found here already are handed back, to be loaded.
+    pub fn fetch_missing_again(&mut self, doc: &Project, place: &files::Place) -> Vec<u64> {
+        self.files.ask_again();
+        if !matches!(self.role, Role::Joiner(_)) || self.ended.is_some() {
+            return Vec::new();
+        }
+        let here = place.with(doc);
+        let wanted = files::missing(doc, &here);
+        self.files
+            .want(wanted, SERVER, &here, self.options.ask_above)
     }
 
     /// The files that have arrived whole, by hash.

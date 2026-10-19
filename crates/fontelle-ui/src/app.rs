@@ -24784,6 +24784,11 @@ impl WindowApp {
         };
         let peer = |i: usize| self.session.peers.get(i).cloned();
         match hit {
+            ShareHit::FetchAgain => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.fetch_missing_again();
+                }
+            }
             ShareHit::Primary if self.session.role == SessionRole::Alone => self.start_share(),
             ShareHit::Primary => {
                 if let Some(doc) = &mut self.options.document {

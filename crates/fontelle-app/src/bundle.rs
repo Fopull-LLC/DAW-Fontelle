@@ -112,6 +112,12 @@ pub fn resolve(bundle: Option<&Path>, file: &AssetRef, banks: &[PathBuf]) -> Opt
     } else if file.path.is_file() {
         return Some(file.path.clone());
     }
+    by_contents(bundle, file, banks)
+}
+
+/// The file `file` names, found by what is in it alone: a collected copy in
+/// the bundle, then the soundfont folders.
+fn by_contents(bundle: Option<&Path>, file: &AssetRef, banks: &[PathBuf]) -> Option<PathBuf> {
     if file.content_hash == 0 {
         return None;
     }
@@ -130,6 +136,29 @@ pub fn resolve(bundle: Option<&Path>, file: &AssetRef, banks: &[PathBuf]) -> Opt
         }
     }
     fontelle_assets::content_hash::find_by_hash(banks, file.content_hash, file.size)
+}
+
+/// [`resolve`], trusting a path only when what is there is the file: the
+/// same contents the reference names.
+///
+/// For a file that has just arrived from somebody else's song, whose
+/// reference carries a path on *their* disk. Two machines with different
+/// files at one path — the same distro folder holding different versions,
+/// or the same user name — used to load the wrong one.
+pub fn resolve_checked(
+    bundle: Option<&Path>,
+    file: &AssetRef,
+    banks: &[PathBuf],
+) -> Option<PathBuf> {
+    let found = resolve(bundle, file, banks)?;
+    if file.content_hash == 0
+        || fontelle_assets::content_hash::hash_file(&found)
+            .is_ok_and(|hash| hash.low == file.content_hash)
+    {
+        return Some(found);
+    }
+    // The path held something else; look by contents alone.
+    by_contents(bundle, file, banks)
 }
 
 /// Reads the project at `path` and reloads the audio its patches name.

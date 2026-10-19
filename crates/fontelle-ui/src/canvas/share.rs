@@ -138,6 +138,9 @@ pub struct SharePanelLayout {
     pub missing: Vec<(Rect, Rect)>,
     /// "and 3 more", when not every one fits.
     pub missing_more: Rect,
+    /// *Fetch again*, at the heading's right end: a joiner asks for what is
+    /// missing again ([`FETCH_AGAIN`]).
+    pub fetch_again: Rect,
     /// Two lines: who is fetching what, why the share ended — broken at the
     /// sentence's dash ([`status_lines`]).
     pub status: Rect,
@@ -163,14 +166,19 @@ pub enum ShareHit {
     ViewOnly(usize),
     /// The × on the `n`th row.
     Remove(usize),
+    /// [`SharePanelLayout::fetch_again`].
+    FetchAgain,
 }
 
 const PANEL_WIDTH: f32 = 320.0;
 const COPY_WIDTH: f32 = 64.0;
+const FETCH_AGAIN_WIDTH: f32 = 84.0;
 const VIEW_ONLY_WIDTH: f32 = 64.0;
 
 /// The heading over the list of what the song uses that is not here.
 pub const MISSING_HERE: &str = "Missing on this computer";
+/// Asking again for the files a joiner turned down, or that failed.
+pub const FETCH_AGAIN: &str = "Fetch again";
 
 /// What the list says of the ones that did not fit.
 pub fn missing_more_words(more: usize) -> String {
@@ -389,6 +397,18 @@ pub fn share_panel_layout_with(
             .map(|(what, detail)| (keep(what), keep(detail)))
             .collect(),
         missing_more: keep(missing_more),
+        // Only a joiner has somebody to ask (the host); the words sit at the
+        // heading's right end, the heading's own words at its left.
+        fetch_again: if role == ShareRole::Joined && !missing_title.is_empty() {
+            keep(Rect::new(
+                missing_title.right() - FETCH_AGAIN_WIDTH,
+                missing_title.y,
+                FETCH_AGAIN_WIDTH,
+                missing_title.height,
+            ))
+        } else {
+            Rect::ZERO
+        },
         status: keep(status),
         primary: keep(primary),
         join: keep(join),
@@ -407,6 +427,9 @@ pub fn share_hit(layout: &SharePanelLayout, x: f32, y: f32) -> Option<ShareHit> 
     }
     if layout.join.contains(x, y) {
         return Some(ShareHit::Join);
+    }
+    if layout.fetch_again.contains(x, y) {
+        return Some(ShareHit::FetchAgain);
     }
     for (i, row) in layout.rows.iter().enumerate() {
         if row.view_only.contains(x, y) {
@@ -427,6 +450,9 @@ pub fn share_panel_words(role: ShareRole, people: &[crate::document::SessionPeer
     words.extend(role.join().map(str::to_string));
     if role == ShareRole::Hosting {
         words.extend([COPY_CODE, VIEW_ONLY, REMOVE_PEER].map(str::to_string));
+    }
+    if role == ShareRole::Joined {
+        words.push(FETCH_AGAIN.to_string());
     }
     if role.lists_people() {
         words.push(NOBODY_YET.to_string());

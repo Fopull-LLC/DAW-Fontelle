@@ -119,7 +119,7 @@ impl Files {
         })
     }
 
-    pub fn answer(&mut self, fetch: bool) {
+    pub fn answer(&mut self, fetch: bool) -> Vec<(PeerId, u64)> {
         let held = std::mem::take(&mut self.held);
         if fetch {
             self.wanted.extend(held);
@@ -130,6 +130,25 @@ impl Files {
                 self.why_not.insert(entry.hash, Trouble::Declined);
             }
         }
+        // Whoever asked this studio for a file it has now turned down is told
+        // it is not coming — they were waiting at 0 % on a fetch that would
+        // never start. The caller sends the word.
+        let declined = &self.declined;
+        let told: Vec<(PeerId, u64)> = self
+            .owed
+            .iter()
+            .filter(|(_, hash)| declined.contains(hash))
+            .copied()
+            .collect();
+        self.owed.retain(|(_, hash)| !declined.contains(hash));
+        told
+    }
+
+    /// Forgets every "not now" and every failure, so the files are asked
+    /// about again: a "Not now" used to be for the rest of the session.
+    pub fn ask_again(&mut self) {
+        self.declined.clear();
+        self.why_not.clear();
     }
 
     /// Why `hash` is not here and not on its way, if that is so.
@@ -528,6 +547,23 @@ impl Here<'_> {
     }
 
     /// Puts a file that arrived whole where it belongs, and says where.
+    /// `part` moved into soundfont folder `bank`, under a name nothing there
+    /// has.
+    fn keep_in(&self, part: &Path, bank: &Path, name: &str, ext: &str) -> Result<PathBuf, String> {
+        std::fs::create_dir_all(bank).map_err(|e| format!("{}: {e}", bank.display()))?;
+        let mut target = bank.join(format!("{name}.{ext}"));
+        let mut n = 2;
+        while target.exists() {
+            target = bank.join(format!("{name} {n}.{ext}"));
+            n += 1;
+        }
+        std::fs::rename(part, &target)
+            .or_else(|_| std::fs::copy(part, &target).map(|_| ()))
+            .map_err(|e| format!("{}: {e}", target.display()))?;
+        let _ = std::fs::remove_file(part);
+        Ok(target)
+    }
+
     fn keep(&self, part: &Path, entry: &AssetEntry) -> Result<PathBuf, String> {
         let name = crate::projects::safe_name(&display_name(&entry.file_name));
         let ext = Path::new(&entry.file_name)
@@ -535,19 +571,23 @@ impl Here<'_> {
             .map(|e| crate::projects::safe_name(&e.to_string_lossy()).to_lowercase())
             .unwrap_or_else(|| "bin".to_string());
         let target = match entry.kind {
+            // **The first folder that takes it**, not the first folder: that
+            // one can be a system folder nobody may write to (Fedora's
+            // `/usr/share/soundfonts`), and the copy then failed and read as
+            // damaged — *"copied soundfonts from shared projects dont get
+            // added to that users soundfont folder"* (2026-10-18).
             AssetKind::Sf2 | AssetKind::Sf3 | AssetKind::Sfz => {
-                let bank = self
-                    .banks
-                    .first()
-                    .ok_or("there is no soundfont folder to put it in")?;
-                std::fs::create_dir_all(bank).map_err(|e| format!("{}: {e}", bank.display()))?;
-                let mut target = bank.join(format!("{name}.{ext}"));
-                let mut n = 2;
-                while target.exists() {
-                    target = bank.join(format!("{name} {n}.{ext}"));
-                    n += 1;
+                if self.banks.is_empty() {
+                    return Err("there is no soundfont folder to put it in".to_string());
                 }
-                target
+                let mut last = String::new();
+                for bank in self.banks {
+                    match self.keep_in(part, bank, &name, &ext) {
+                        Ok(target) => return Ok(target),
+                        Err(e) => last = e,
+                    }
+                }
+                return Err(last);
             }
             AssetKind::Sample => {
                 let bundle = self.bundle.ok_or("this studio has no song open")?;
@@ -698,6 +738,70 @@ fn how_long(bytes: u64, pace: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::how_long;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fontelle-files-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn a_soundfont(hash: u64) -> fontelle_model::wire::AssetEntry {
+        fontelle_model::wire::AssetEntry {
+            hash,
+            size: 5,
+            file_name: "Glass.sf2".to_string(),
+            kind: fontelle_types::AssetKind::Sf2,
+        }
+    }
+
+    /// *"copied soundfonts from shared projects dont get added to that users
+    /// soundfont folder"* (2026-10-18): a fetched soundfont went to the first
+    /// folder or nowhere, and the first can be a read-only system folder
+    /// (Fedora's `/usr/share/soundfonts`). It goes to the first that takes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fetched_soundfont_lands_in_the_first_folder_that_takes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("first-writable");
+        let (system, mine) = (dir.join("system"), dir.join("mine"));
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let part = dir.join("glass.part");
+        std::fs::write(&part, b"bytes").unwrap();
+        let song = fontelle_model::Project::new("song");
+        let banks = [system.clone(), mine.clone()];
+        let here = super::Here {
+            bundle: None,
+            banks: &banks,
+            song: &song,
+        };
+        let landed = here.keep(&part, &a_soundfont(7)).expect("kept somewhere");
+        assert_eq!(landed, mine.join("Glass.sf2"));
+        std::fs::set_permissions(&system, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A "Not now" was for the rest of the session: the file was never asked
+    /// about again. It can be — and whoever was waiting on this studio for it
+    /// is told it is not coming, rather than left at 0 %.
+    #[test]
+    fn a_declined_file_can_be_asked_about_again_and_whoever_waited_is_told() {
+        let mut files = super::Files::default();
+        files.held.push((a_soundfont(9), 0));
+        files.owed.push((3, 9));
+        let told = files.answer(false);
+        assert_eq!(told, vec![(3, 9)], "the studio waiting on us hears no");
+        assert!(files.knows(9) && files.trouble(9).is_some());
+        files.ask_again();
+        assert!(!files.knows(9), "asked about again from now on");
+        assert_eq!(files.trouble(9), None);
+    }
 
     /// A song naming three files by content.
     fn a_song_naming(hashes: &[u64]) -> fontelle_model::Project {

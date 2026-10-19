@@ -1930,6 +1930,9 @@ pub trait StudioHost: DocumentHost {
     /// The host's two controls on a person's row (§10.1, F49).
     fn set_peer_view_only(&mut self, _peer: u16, _view_only: bool) {}
     fn remove_peer(&mut self, _peer: u16) {}
+    /// Asks again for the files the song names that are not here — turned
+    /// down, or failed (the Share panel's *Fetch again*).
+    fn fetch_missing_again(&mut self) {}
     /// What the session has to say — somebody came, an edit was taken back —
     /// taken once, for the toasts.
     /// Whether an answer just given asks for Fontelle to restart (Compatible

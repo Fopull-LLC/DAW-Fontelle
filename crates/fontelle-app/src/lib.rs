@@ -48,7 +48,8 @@ use fontelle_types::{CompiledTimeline, PPQN, Tick};
 
 pub use analyze::analysis_cache_dir;
 pub use bundle::{
-    MissingAsset, OpenError, OpenedProject, open_project, open_project_with, resolve, save_project,
+    MissingAsset, OpenError, OpenedProject, open_project, open_project_with, resolve,
+    resolve_checked, save_project,
 };
 pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
 pub use library::{ImportedAudio, SampleLibrary};

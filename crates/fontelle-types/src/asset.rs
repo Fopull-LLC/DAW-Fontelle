@@ -23,8 +23,11 @@ pub struct AssetRef {
     pub id: AssetId,
     /// Absolute, or project-relative if the asset was copied in on import.
     pub path: PathBuf,
-    /// xxhash of the first 1MB + file size — cheap enough to compute on every load,
-    /// used to relink broken references (TDD §17.4).
+    /// The low 64 bits of the whole file's SHA-256
+    /// (`fontelle_assets::content_hash`), used to relink broken references
+    /// (TDD §17.4) and to find a shared song's files on another machine.
+    /// Songs saved before that change carry an older xxhash here, which no
+    /// file will match.
     pub content_hash: u64,
     pub size: u64,
     pub kind: AssetKind,

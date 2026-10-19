@@ -2747,6 +2747,21 @@ impl Session {
     /// and prefab whose audio it is, under the id the song gave it, and every
     /// instrument's samples out of it (§7.3).
     fn load_arrived(&mut self, hash: u64) {
+        // A soundfont that arrived went into a soundfont folder: the list is
+        // read again, or it is not there until a restart — *"copied
+        // soundfonts from shared projects dont get added to that users
+        // soundfont folder"* (2026-10-18).
+        if self.project.files().iter().any(|file| {
+            file.content_hash == hash
+                && matches!(
+                    file.kind,
+                    fontelle_types::AssetKind::Sf2
+                        | fontelle_types::AssetKind::Sf3
+                        | fontelle_types::AssetKind::Sfz
+                )
+        }) {
+            self.bank.rescan();
+        }
         let banks = self.library_dirs();
         let bundle = self.bundle.clone();
         let mut samples: std::collections::BTreeMap<fontelle_types::AssetRef, Vec<u32>> =
@@ -2770,14 +2785,15 @@ impl Session {
             if file.content_hash != hash || samples.contains_key(&file) {
                 continue;
             }
-            if let Some(from) = crate::bundle::resolve(bundle.as_deref(), &file, &banks)
+            if let Some(from) = crate::bundle::resolve_checked(bundle.as_deref(), &file, &banks)
                 && let Err(e) = self.library.reload_audio(&file, &from)
             {
                 self.message = Some(format!("{}: {e}", from.display()));
             }
         }
         for (file, wanted) in samples {
-            let Some(from) = crate::bundle::resolve(bundle.as_deref(), &file, &banks) else {
+            let Some(from) = crate::bundle::resolve_checked(bundle.as_deref(), &file, &banks)
+            else {
                 continue;
             };
             let loaded = match file.kind {
@@ -2804,6 +2820,22 @@ impl Session {
         collab.answer_fetch(fetch);
         self.touch();
         Ok(())
+    }
+
+    /// Asks again about every file the song names that is not here — the
+    /// ones turned down, and the ones that failed.
+    pub fn fetch_missing_again(&mut self) {
+        let place = crate::collab::files::Place {
+            bundle: self.bundle.clone(),
+            banks: self.library_dirs(),
+        };
+        let Some(collab) = self.collab.as_mut() else {
+            return;
+        };
+        for hash in collab.fetch_missing_again(&self.project, &place) {
+            self.load_arrived(hash);
+        }
+        self.touch();
     }
 
     /// How far along the file `hash` is while it is on its way here.
@@ -11424,6 +11456,10 @@ impl StudioHost for Session {
         if let Err(why) = Session::remove_peer(self, peer) {
             self.session_notices.push(why);
         }
+    }
+
+    fn fetch_missing_again(&mut self) {
+        Session::fetch_missing_again(self);
     }
 
     fn take_restart_request(&mut self) -> bool {

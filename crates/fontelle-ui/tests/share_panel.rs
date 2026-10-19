@@ -327,3 +327,28 @@ mod leaving {
         assert!(end_session_question(ShareRole::Joining).is_some());
     }
 }
+
+/// A file somebody turned down ("Not now") or that failed can be fetched
+/// after all: *Fetch again* beside the heading, for a studio that joined —
+/// the host is where the files come from, and has nobody to ask (2026-10-18).
+#[test]
+fn a_joiner_missing_files_can_fetch_them_again() {
+    use fontelle_ui::canvas::share_panel_layout_with;
+    let window = wide();
+    let l = share_panel_layout_with(window, anchor(window), &metrics(), ShareRole::Joined, 1, 2);
+    assert!(
+        !l.fetch_again.is_empty(),
+        "offered to a joiner with files missing"
+    );
+    assert!(
+        within(l.fetch_again, l.missing_title),
+        "on the heading's row"
+    );
+    let (x, y) = centre(l.fetch_again);
+    assert_eq!(share_hit(&l, x, y), Some(ShareHit::FetchAgain));
+    let host =
+        share_panel_layout_with(window, anchor(window), &metrics(), ShareRole::Hosting, 1, 2);
+    assert!(host.fetch_again.is_empty(), "not to the host");
+    let none = share_panel_layout_with(window, anchor(window), &metrics(), ShareRole::Joined, 1, 0);
+    assert!(none.fetch_again.is_empty(), "nor with nothing missing");
+}

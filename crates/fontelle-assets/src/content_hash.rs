@@ -87,15 +87,26 @@ pub fn hash_file_bytes(path: &Path, bytes: &[u8]) -> FileHash {
 ///
 /// The size is checked first, so a search through a bank of a hundred
 /// soundfonts hashes only the ones that could possibly be the file.
+///
+/// **Links are followed**, files and folders both: *"when users have the
+/// same soundfonts downloaded sometimes it still doesnt recognize it"*
+/// (2026-10-18) — a soundfont that was a link reported the link's own size,
+/// and a linked folder was not a folder, so neither was ever found. Each
+/// folder is entered once, by where it really is, so a link back into the
+/// bank ends.
 pub fn find_by_hash(dirs: &[PathBuf], hash: u64, size: u64) -> Option<PathBuf> {
     let mut stack: Vec<PathBuf> = dirs.to_vec();
+    let mut seen = std::collections::HashSet::new();
     while let Some(dir) = stack.pop() {
+        if !seen.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+            continue;
+        }
         let Ok(listing) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in listing.flatten() {
             let path = entry.path();
-            let Ok(meta) = entry.metadata() else {
+            let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
             };
             if meta.is_dir() {
