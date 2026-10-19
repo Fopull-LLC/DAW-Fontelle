@@ -1975,6 +1975,9 @@ pub struct WindowApp {
     /// The arrangement row a click on its header selected, read with the
     /// studio's lists (`StudioHost::selected_lane`).
     selected_lane: Option<usize>,
+    /// Every row of a shift- or ctrl-clicked set; empty for one row or none.
+    /// Delete, mute, solo and move act on all of them, each as one undo.
+    lane_set: Vec<usize>,
     /// A cable knob being turned: where the press was, and the level then.
     /// Here rather than on `Drag`, which is compared, for the reason
     /// `MenuScroll` gives.
@@ -2744,6 +2747,7 @@ impl WindowApp {
             cable_drag: None,
             clip_strips: Vec::new(),
             selected_lane: None,
+            lane_set: Vec::new(),
             fed_by: Vec::new(),
             selected_track: 0,
             track_output: None,
@@ -3624,6 +3628,7 @@ impl WindowApp {
                     take_notes: &self.takes,
                     glow: clip_glow.as_ref().map(|(c, ids)| (*c, ids.as_slice())),
                     selected_lane: self.selected_lane,
+                    also_selected: &self.lane_set,
                     ghost,
                     captions: &self.clip_captions,
                     can_paste: self
@@ -7467,6 +7472,10 @@ impl WindowApp {
         self.selected_file = doc.selected_file();
         self.selected_preset = doc.selected_preset();
         self.lanes = doc.lanes();
+        // A set that names a row no longer there is no set.
+        if self.lane_set.iter().any(|l| *l >= self.lanes.len()) {
+            self.lane_set.clear();
+        }
         self.lane_order = doc.lane_order();
         self.roll_clip = doc.roll_clip();
         self.strip_tracks = doc.strip_tracks();
@@ -16399,15 +16408,53 @@ impl WindowApp {
                         self.timeline.view.lane_height,
                     );
                     let (mute, solo) = crate::canvas::lane_switches(header);
+                    let chosen = self.lanes_with(lane);
+                    let (shift, ctrl) = (self.modifiers.shift_key(), self.modifiers.control_key());
+                    let info = self.lanes.get(lane).cloned();
                     if let Some(doc) = &mut self.options.document {
                         if mute.contains(x, y) {
-                            doc.toggle_lane_mute(lane);
+                            // A switch on a chosen row switches them all, to
+                            // what it turns this one to.
+                            if chosen.len() > 1 {
+                                doc.set_lanes_muted(chosen, !info.is_some_and(|l| l.muted));
+                            } else {
+                                doc.toggle_lane_mute(lane);
+                            }
                         } else if solo.contains(x, y) {
-                            doc.toggle_lane_solo(lane);
-                        } else if doc.selected_lane() == Some(lane) {
-                            doc.select_lane(None);
-                        } else {
+                            if chosen.len() > 1 {
+                                doc.set_lanes_soloed(chosen, !info.is_some_and(|l| l.soloed));
+                            } else {
+                                doc.toggle_lane_solo(lane);
+                            }
+                        } else if shift {
+                            // From the row already chosen to this one.
+                            let from = doc.selected_lane().unwrap_or(lane);
+                            self.lane_set = (from.min(lane)..=from.max(lane)).collect();
                             doc.select_lane(Some(lane));
+                        } else if ctrl {
+                            if self.lane_set.is_empty()
+                                && let Some(was) = doc.selected_lane()
+                            {
+                                self.lane_set.push(was);
+                            }
+                            if let Some(at) = self.lane_set.iter().position(|l| *l == lane) {
+                                self.lane_set.remove(at);
+                                let last = self.lane_set.last().copied();
+                                doc.select_lane(last);
+                            } else {
+                                self.lane_set.push(lane);
+                                doc.select_lane(Some(lane));
+                            }
+                            if self.lane_set.len() < 2 {
+                                self.lane_set.clear();
+                            }
+                        } else {
+                            self.lane_set.clear();
+                            if doc.selected_lane() == Some(lane) {
+                                doc.select_lane(None);
+                            } else {
+                                doc.select_lane(Some(lane));
+                            }
                         }
                     }
                     self.refresh_studio();
@@ -20860,30 +20907,48 @@ impl WindowApp {
             }
             (MenuTarget::Lane(lane), 3) => self.start_rename(MenuTarget::Lane(*lane)),
             (MenuTarget::Lane(lane), 4) => {
+                let chosen = self.lanes_with(*lane);
+                let muted = self.lanes.get(*lane).is_some_and(|l| l.muted);
                 if let Some(doc) = &mut self.options.document {
-                    doc.toggle_lane_mute(*lane);
+                    doc.set_lanes_muted(chosen, !muted);
                 }
             }
             (MenuTarget::Lane(lane), 5) => {
+                let chosen = self.lanes_with(*lane);
+                let soloed = self.lanes.get(*lane).is_some_and(|l| l.soloed);
                 if let Some(doc) = &mut self.options.document {
-                    doc.toggle_lane_solo(*lane);
+                    doc.set_lanes_soloed(chosen, !soloed);
                 }
             }
-            (MenuTarget::Lane(lane), 6) => {
+            (MenuTarget::Lane(lane), 6 | 7) => {
+                let delta = if index == 6 { -1 } else { 1 };
+                let chosen = self.lanes_with(*lane);
+                let count = chosen.len();
                 if let Some(doc) = &mut self.options.document {
-                    doc.move_lane(*lane, -1);
+                    doc.move_lanes(chosen, delta);
                 }
-                self.status = "Row moved up".to_string();
-            }
-            (MenuTarget::Lane(lane), 7) => {
-                if let Some(doc) = &mut self.options.document {
-                    doc.move_lane(*lane, 1);
+                // The set moves with its rows.
+                let rows = self.lanes.len() as isize;
+                if self
+                    .lane_set
+                    .iter()
+                    .all(|l| (0..rows).contains(&(*l as isize + delta)))
+                {
+                    for l in &mut self.lane_set {
+                        *l = (*l as isize + delta) as usize;
+                    }
                 }
-                self.status = "Row moved down".to_string();
+                self.status = format!(
+                    "{} moved {}",
+                    if count > 1 { "Rows" } else { "Row" },
+                    if delta < 0 { "up" } else { "down" }
+                );
             }
             (MenuTarget::Lane(lane), _) => {
+                let chosen = self.lanes_with(*lane);
+                self.lane_set.clear();
                 if let Some(doc) = &mut self.options.document {
-                    doc.remove_lane(*lane);
+                    doc.remove_lanes(chosen);
                 }
             }
 
@@ -25167,6 +25232,16 @@ impl WindowApp {
         }
         if role_changed || arrived {
             self.refresh_title();
+        }
+    }
+
+    /// The rows an action on `lane` reaches: the whole chosen set when
+    /// `lane` is in it, or `lane` alone.
+    fn lanes_with(&self, lane: usize) -> Vec<usize> {
+        if self.lane_set.len() > 1 && self.lane_set.contains(&lane) {
+            self.lane_set.clone()
+        } else {
+            vec![lane]
         }
     }
 

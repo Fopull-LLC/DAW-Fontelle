@@ -252,6 +252,31 @@ impl Windowless {
         self.app.particles.flecks().len()
     }
 
+    /// Row `lane`'s header on the arrangement.
+    pub fn lane_header(&self, lane: usize) -> Rect {
+        let top =
+            crate::canvas::lane_to_y(&self.app.timeline.view, self.app.timeline_layout.grid, lane);
+        Rect::new(
+            self.app.timeline_layout.headers.x,
+            top,
+            self.app.timeline_layout.headers.width,
+            self.app.timeline.view.lane_height,
+        )
+    }
+
+    /// Holds (or lets go of) Shift and Ctrl for the presses that follow.
+    pub fn hold(&mut self, shift: bool, ctrl: bool) {
+        let mut m = winit::keyboard::ModifiersState::empty();
+        m.set(winit::keyboard::ModifiersState::SHIFT, shift);
+        m.set(winit::keyboard::ModifiersState::CONTROL, ctrl);
+        self.app.modifiers = m;
+    }
+
+    /// The rows a shift- or ctrl-click has chosen together.
+    pub fn lane_set(&self) -> &[usize] {
+        &self.app.lane_set
+    }
+
     /// The key the single-note audition is sounding, if any.
     pub fn auditioning(&self) -> Option<u8> {
         self.app.audition.key()

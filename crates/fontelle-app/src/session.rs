@@ -16069,6 +16069,112 @@ impl StudioHost for Session {
         self.touch();
     }
 
+    fn remove_lanes(&mut self, lanes: Vec<usize>) {
+        let ids = self.lane_ids();
+        let mut chosen: Vec<LaneId> = lanes.iter().filter_map(|i| ids.get(*i).copied()).collect();
+        chosen.sort_unstable();
+        chosen.dedup();
+        // A song keeps a row: all of them chosen, the top one stays.
+        if chosen.len() >= ids.len() {
+            chosen.retain(|id| Some(id) != ids.first());
+        }
+        if chosen.is_empty() {
+            return;
+        }
+        if chosen.len() == 1 {
+            let index = ids.iter().position(|id| *id == chosen[0]).unwrap_or(0);
+            self.remove_lane(index);
+            return;
+        }
+        let opened = self
+            .project
+            .clips
+            .get(self.clip)
+            .is_some_and(|clip| chosen.contains(&clip.lane));
+        let label = format!("Delete {} lanes", chosen.len());
+        let parts: Vec<Box<dyn Command>> = chosen
+            .into_iter()
+            .map(|id| Box::new(fontelle_model::RemoveLane::new(id)) as Box<dyn Command>)
+            .collect();
+        self.run(Box::new(fontelle_model::Compound::new(label, parts)));
+        self.let_go();
+        if opened && let Some(next) = Self::first_clip(&self.project) {
+            self.clip = next;
+            self.selected = self.channel_index_of_clip().unwrap_or(self.selected);
+        }
+        self.dirty = true;
+        self.rebuild_graph();
+    }
+
+    fn set_lanes_muted(&mut self, lanes: Vec<usize>, muted: bool) {
+        let ids = self.lane_ids();
+        let parts: Vec<Box<dyn Command>> = lanes
+            .iter()
+            .filter_map(|i| ids.get(*i).copied())
+            .filter(|id| {
+                self.project
+                    .lanes
+                    .get(*id)
+                    .is_some_and(|l| l.muted != muted)
+            })
+            .map(|id| Box::new(SetFlag::new(FlagTarget::LaneMuted(id), muted)) as Box<dyn Command>)
+            .collect();
+        if parts.is_empty() {
+            return;
+        }
+        let label = if muted { "Mute lanes" } else { "Unmute lanes" };
+        self.run(Box::new(fontelle_model::Compound::new(label, parts)));
+        self.let_go();
+        self.touch();
+    }
+
+    fn set_lanes_soloed(&mut self, lanes: Vec<usize>, soloed: bool) {
+        // This studio's own (`Lane::soloed`): set directly, not undoable.
+        let ids = self.lane_ids();
+        for id in lanes.iter().filter_map(|i| ids.get(*i)) {
+            if let Some(l) = self.project.lanes.get_mut(*id) {
+                l.soloed = soloed;
+            }
+        }
+        self.republish();
+        self.touch();
+    }
+
+    fn move_lanes(&mut self, lanes: Vec<usize>, delta: isize) {
+        let count = self.lane_ids().len();
+        let mut lanes = lanes;
+        lanes.sort_unstable();
+        lanes.dedup();
+        // The block cannot leave the stack: refused whole rather than
+        // squeezing at the edge.
+        let fits = lanes.iter().all(|i| {
+            let to = *i as isize + delta;
+            to >= 0 && (to as usize) < count
+        });
+        if lanes.is_empty() || !fits || delta == 0 {
+            return;
+        }
+        // Up, the top one first; down, the bottom one first — so each steps
+        // into room the one before it has left.
+        if delta > 0 {
+            lanes.reverse();
+        }
+        let step = delta.signum();
+        let mut parts: Vec<Box<dyn Command>> = Vec::new();
+        for _ in 0..delta.abs() {
+            for lane in &lanes {
+                parts.push(Box::new(fontelle_model::MoveLane::new(*lane, step)));
+            }
+            for lane in &mut lanes {
+                *lane = (*lane as isize + step) as usize;
+            }
+        }
+        self.run(Box::new(fontelle_model::Compound::new("Move lanes", parts)));
+        self.let_go();
+        self.dirty = true;
+        self.touch();
+    }
+
     fn move_lane(&mut self, lane: usize, delta: isize) {
         self.run(Box::new(fontelle_model::MoveLane::new(lane, delta)));
         self.let_go();

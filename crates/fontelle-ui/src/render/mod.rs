@@ -498,6 +498,8 @@ pub struct TimelineChrome<'a> {
     /// The row a click on its header selected, lit — where new material with
     /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
     pub selected_lane: Option<usize>,
+    /// The rest of a shift- or ctrl-clicked set of rows, lit the same.
+    pub also_selected: &'a [usize],
     /// How strongly to draw the ghost of a first clip, 0..1, while the
     /// arrangement has none — `canvas::ghost_pulse`'s breath. `None` draws
     /// no ghost; and with any clip there is none to draw whatever this says.
@@ -8531,7 +8533,7 @@ fn draw_timeline(
         let soloed = info.is_some_and(|i| i.soloed);
         // Selected — a click on the header — lit like a selected rack row:
         // where new material with no row of its own will land.
-        if chrome.selected_lane == Some(lane) {
+        if chrome.selected_lane == Some(lane) || chrome.also_selected.contains(&lane) {
             fill_rect(scene, header, p.selection);
         }
         fill_rect(

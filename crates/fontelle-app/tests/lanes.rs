@@ -126,3 +126,59 @@ fn adding_a_row_is_one_undo() {
     session.undo();
     assert_eq!(session.lanes().len(), before);
 }
+
+// --- several rows at once (the next update, phase 4) ---
+
+fn row_names(session: &fontelle_app::Session) -> Vec<String> {
+    session.lanes().into_iter().map(|l| l.name).collect()
+}
+
+/// Shift- or Ctrl-clicked rows go together: deleting them is one undo.
+#[test]
+fn several_rows_delete_as_one_undo() {
+    let mut session = a_session();
+    let before = row_names(&session);
+    assert!(before.len() >= 5);
+    session.remove_lanes(vec![1, 3, 4]);
+    let after = row_names(&session);
+    assert_eq!(after.len(), before.len() - 3);
+    assert!(!after.contains(&before[1]) && !after.contains(&before[3]));
+    DocumentHost::undo(&mut session);
+    assert_eq!(row_names(&session), before, "one undo puts all three back");
+}
+
+/// However many are chosen, a row is left.
+#[test]
+fn deleting_every_row_leaves_one() {
+    let mut session = a_session();
+    let all: Vec<usize> = (0..session.lanes().len()).collect();
+    session.remove_lanes(all);
+    assert_eq!(session.lanes().len(), 1);
+}
+
+#[test]
+fn several_rows_mute_and_move_as_one_undo_each() {
+    let mut session = a_session();
+    let before = row_names(&session);
+    session.set_lanes_muted(vec![0, 2], true);
+    let lanes = session.lanes();
+    assert!(lanes[0].muted && lanes[2].muted && !lanes[1].muted);
+    DocumentHost::undo(&mut session);
+    assert!(session.lanes().iter().all(|l| !l.muted));
+
+    session.move_lanes(vec![2, 3], -1);
+    let moved = row_names(&session);
+    assert_eq!(&moved[1..3], &before[2..4], "the pair moved up together");
+    assert_eq!(moved[3], before[1]);
+    DocumentHost::undo(&mut session);
+    assert_eq!(row_names(&session), before);
+}
+
+/// Solo is each studio's own and no edit: several rows at once all the same.
+#[test]
+fn several_rows_solo_together() {
+    let mut session = a_session();
+    session.set_lanes_soloed(vec![1, 2], true);
+    let lanes = session.lanes();
+    assert!(lanes[1].soloed && lanes[2].soloed && !lanes[0].soloed);
+}

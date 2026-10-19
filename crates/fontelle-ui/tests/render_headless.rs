@@ -1501,6 +1501,7 @@ fn shoot_timeline_recording(
                 take_notes: takes,
                 glow,
                 selected_lane,
+                also_selected: &[],
                 ghost,
                 captions: &captions,
             }),

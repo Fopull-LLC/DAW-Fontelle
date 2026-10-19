@@ -3741,6 +3741,19 @@ pub trait StudioHost: DocumentHost {
     /// something the window has to handle rather than something it can just
     /// ask for.
     fn move_lane(&mut self, _lane: usize, _delta: isize) {}
+    /// Several rows at once (shift- and ctrl-clicked), each as one undo:
+    /// delete them (a row is always left), mute or unmute them, solo them
+    /// (each studio's own, no undo), move them up or down together.
+    fn remove_lanes(&mut self, lanes: Vec<usize>) {
+        let mut lanes = lanes;
+        lanes.sort_unstable();
+        for lane in lanes.into_iter().rev() {
+            self.remove_lane(lane);
+        }
+    }
+    fn set_lanes_muted(&mut self, _lanes: Vec<usize>, _muted: bool) {}
+    fn set_lanes_soloed(&mut self, _lanes: Vec<usize>, _soloed: bool) {}
+    fn move_lanes(&mut self, _lanes: Vec<usize>, _delta: isize) {}
 
     // --- recording (TDD §14.7, §15.4) ---
     /// What the record button records — see
