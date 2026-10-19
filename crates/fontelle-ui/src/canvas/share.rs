@@ -528,3 +528,23 @@ pub fn status_lines(sentence: &str) -> (&str, &str) {
         None => (sentence, ""),
     }
 }
+
+/// What to ask before leaving the song this studio shares — opening another,
+/// making a new one, quitting — and the confirm button's word. `None` when
+/// there is no session to end.
+///
+/// Ty, 2026-10-18: *"yes, ask so its more clear"* — the one moment somebody
+/// can end a friend's session without meaning to.
+pub fn end_session_question(role: ShareRole) -> Option<(String, &'static str)> {
+    match role {
+        ShareRole::Alone => None,
+        ShareRole::Starting | ShareRole::Hosting => Some((
+            "End the session for everyone? Their copies stay theirs.".to_string(),
+            "End session",
+        )),
+        ShareRole::Joining | ShareRole::Joined => Some((
+            "Leave the shared song? Your copy stays open.".to_string(),
+            "Leave",
+        )),
+    }
+}

@@ -290,3 +290,40 @@ fn what_is_missing_is_listed_on_the_panel_and_cut_to_what_fits() {
     assert!(!crowded.missing_more.is_empty(), "the rest are counted");
     assert!(within(crowded.missing_more, crowded.frame));
 }
+
+// ------------------------------------------- leaving the song you share ---
+//
+// Ty, 2026-10-18: opening another song while in a session asks first —
+// *"yes, ask so its more clear"*. The question says who it affects and the
+// button says what it does.
+
+mod leaving {
+    use fontelle_ui::canvas::{ShareRole, end_session_question};
+
+    #[test]
+    fn a_host_is_asked_whether_to_end_it_for_everyone() {
+        let (question, button) = end_session_question(ShareRole::Hosting).unwrap();
+        assert!(question.contains("everyone"), "{question}");
+        assert_eq!(button, "End session");
+    }
+
+    #[test]
+    fn a_joiner_is_asked_whether_to_leave() {
+        let (question, button) = end_session_question(ShareRole::Joined).unwrap();
+        assert!(question.to_lowercase().contains("leave"), "{question}");
+        assert_eq!(button, "Leave");
+    }
+
+    #[test]
+    fn nobody_alone_is_asked_anything() {
+        assert!(end_session_question(ShareRole::Alone).is_none());
+    }
+
+    #[test]
+    fn a_session_still_starting_is_asked_too() {
+        // A code being waited for, or a song still arriving, is a session
+        // somebody may be about to walk into.
+        assert!(end_session_question(ShareRole::Starting).is_some());
+        assert!(end_session_question(ShareRole::Joining).is_some());
+    }
+}

@@ -1268,7 +1268,17 @@ struct Toast {
 /// extension). `index` is the settings row to press if the answer is yes.
 struct Confirm {
     question: String,
-    index: usize,
+    /// The confirm button's word.
+    button: &'static str,
+    then: ConfirmThen,
+}
+
+/// What a confirmed [`Confirm`] goes on to do.
+enum ConfirmThen {
+    /// The settings row, pressed for real.
+    Setting(usize),
+    /// End or leave the session, then carry on leaving for `Leave`.
+    EndSession(Leave),
 }
 
 /// The guide page while it is up (`canvas::guide`): the section it shows,
@@ -3586,7 +3596,10 @@ impl WindowApp {
                 labels: &self.labels,
                 status: &self.status,
                 toast: self.toast.as_ref().map(|t| (t.text.as_str(), t.undoable)),
-                confirm: self.confirm.as_ref().map(|c| c.question.as_str()),
+                confirm: self
+                    .confirm
+                    .as_ref()
+                    .map(|c| (c.question.as_str(), c.button)),
                 notices: crate::render::Notices {
                     job: self.job.as_ref().map(|j| (j.label.as_str(), j.fraction)),
                     saved: self.saved_at.and_then(|at| {
@@ -8529,11 +8542,7 @@ impl WindowApp {
                 &mut self.text,
                 crate::render::CONFIRM_CANCEL,
             );
-            want(
-                &mut self.labels,
-                &mut self.text,
-                crate::render::CONFIRM_REMOVE,
-            );
+            want(&mut self.labels, &mut self.text, confirm.button);
         }
         // The hover tip. Shaped while it is *pending* rather than when it
         // falls due, so the frame that first shows it already has its width —
@@ -18283,7 +18292,16 @@ impl WindowApp {
         };
         self.tree.invalidate_rect(self.layout.window);
         if layout.confirm.contains(x, y) {
-            self.apply_setting_press(confirm.index, false);
+            match confirm.then {
+                ConfirmThen::Setting(index) => self.apply_setting_press(index, false),
+                ConfirmThen::EndSession(what) => {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.leave_song();
+                    }
+                    self.read_session_now();
+                    self.leave_unsaved(what);
+                }
+            }
         }
         self.request_redraw_if_dirty();
     }
@@ -18398,7 +18416,11 @@ impl WindowApp {
             .as_ref()
             .and_then(|doc| doc.settings_confirm(index));
         if let Some(question) = confirm {
-            self.confirm = Some(Confirm { question, index });
+            self.confirm = Some(Confirm {
+                question,
+                button: crate::render::CONFIRM_REMOVE,
+                then: ConfirmThen::Setting(index),
+            });
             self.tree.invalidate_rect(self.layout.window);
             self.request_redraw_if_dirty();
             return;
@@ -24569,7 +24591,31 @@ impl WindowApp {
 
     /// Leaves what is open to do `what` — asking first, when there are
     /// changes that are not on disk.
+    ///
+    /// Leaving a song this studio shares asks about the session first —
+    /// opening another song ends it for everyone (`end_session_question`).
     fn leave(&mut self, what: Leave) {
+        if matches!(
+            what,
+            Leave::Quit | Leave::Restart | Leave::OpenProject(_) | Leave::NewProject
+        ) && let Some((question, button)) =
+            crate::canvas::end_session_question(self.session.role)
+        {
+            self.menu = None;
+            self.confirm = Some(Confirm {
+                question,
+                button,
+                then: ConfirmThen::EndSession(what),
+            });
+            self.tree.invalidate_rect(self.layout.window);
+            return;
+        }
+        self.leave_unsaved(what);
+    }
+
+    /// [`leave`](Self::leave) past the session's question: asks about unsaved
+    /// changes, then goes.
+    fn leave_unsaved(&mut self, what: Leave) {
         let Some(doc) = &self.options.document else {
             self.go(what);
             return;

@@ -142,7 +142,8 @@ pub struct Chrome<'a> {
     pub toast: Option<(&'a str, bool)>,
     /// A confirm modal's question, while one is up. Drawn last of all, over a
     /// scrim. See [`crate::canvas::confirm_layout`].
-    pub confirm: Option<&'a str>,
+    /// The question and the confirm button's word.
+    pub confirm: Option<(&'a str, &'a str)>,
     /// Saving and long jobs: the progress card, "Saved!", and the prompt
     /// before leaving unsaved work. See [`Notices`].
     pub notices: Notices<'a>,
@@ -1048,8 +1049,8 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(flash) = chrome.notices.saved {
         draw_saved_flash(scene, theme, chrome.labels, flash);
     }
-    if let Some(question) = chrome.confirm {
-        draw_confirm(scene, theme, chrome.labels, layout.window, question);
+    if let Some((question, button)) = chrome.confirm {
+        draw_confirm(scene, theme, chrome.labels, layout.window, question, button);
     }
     if let Some(colour) = chrome.notices.sharing {
         let dot = crate::canvas::share_dot(chrome.transport.layout.share);
@@ -2204,7 +2205,14 @@ fn draw_toast(
 
 /// The confirm modal: a scrim over the window, then a card with the question
 /// and two buttons — Cancel, and a Remove tinted so it reads as the weighty one.
-fn draw_confirm(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect, question: &str) {
+fn draw_confirm(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    window: Rect,
+    question: &str,
+    button: &str,
+) {
     let p = &theme.palette;
     let m = &theme.metrics;
     // A scrim, so what is under the modal reads as out of reach.
@@ -2227,7 +2235,7 @@ fn draw_confirm(scene: &mut Scene, theme: &Theme, labels: &Labels, window: Rect,
     }
     let buttons = [
         (l.cancel, CONFIRM_CANCEL, p.panel_header, p.text),
-        (l.confirm, CONFIRM_REMOVE, p.accent, p.window),
+        (l.confirm, button, p.accent, p.window),
     ];
     for (rect, word, fill, ink) in buttons {
         if rect.is_empty() {

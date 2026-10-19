@@ -3100,3 +3100,56 @@ fn deleting_an_instrument_lands_the_same_for_a_joiner() {
     );
     assert_eq!(notes_of(&pair.joiner, clip).len(), 1);
 }
+
+/// Opening another song ends the session — for everyone, and before the
+/// swap. Found while tracing *"when someone leaves their session theyre
+/// hosting ... it looks like their friend is still there"* (2026-10-18):
+/// only the Share panel ever ended a session, so a host who opened another
+/// song stayed "hosting", and a joiner's edits went on landing on the **new,
+/// unrelated** song — the two copies then disagreed, and the resync sent the
+/// joiner that unrelated song, which a save would have written over their
+/// shared copy.
+#[test]
+fn a_host_opening_another_song_ends_the_session_for_everyone() {
+    let mut pair = Pair::joined("host-opens-another", 2);
+    let shared = pair.joiner.project().sync_hash();
+    pair.host.new_project_named("Something else").unwrap();
+    pair.settle();
+    assert!(!pair.host.collab_live(), "the host is no longer sharing");
+    assert!(
+        pair.joiner.collab_ended().is_some(),
+        "and the joiner was told it ended"
+    );
+    // Whatever the joiner does now stays on the joiner's own copy.
+    let other = pair.host.project().sync_hash();
+    draw(&mut pair.joiner, 0, 64);
+    pair.settle();
+    assert_eq!(
+        pair.host.project().sync_hash(),
+        other,
+        "the host's new song is untouched"
+    );
+    assert_ne!(
+        pair.joiner.project().sync_hash(),
+        other,
+        "the joiner kept the shared song"
+    );
+    assert_ne!(
+        pair.joiner.project().sync_hash(),
+        shared,
+        "with its own edit on it"
+    );
+}
+
+#[test]
+fn a_joiner_opening_another_song_leaves_the_session() {
+    let mut pair = Pair::joined("joiner-opens-another", 2);
+    pair.joiner.new_project_named("Mine").unwrap();
+    pair.settle();
+    assert!(!pair.joiner.collab_live(), "the joiner left");
+    assert!(
+        pair.host.session_peers().is_empty(),
+        "and the host no longer lists them"
+    );
+    assert!(pair.host.collab_live(), "the host goes on sharing");
+}

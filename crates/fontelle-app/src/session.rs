@@ -3698,6 +3698,15 @@ impl Session {
     /// [`adopt`](Self::adopt), for a song that has a folder or — recovered
     /// from an untitled song's backup — none.
     fn adopt_at(&mut self, opened: crate::bundle::OpenedProject, path: Option<PathBuf>) {
+        // **A different song ends the session first** — for everyone, the
+        // way Stop sharing does: what is in the hand goes, then the goodbye.
+        // Only the Share panel used to end one, so a host who opened another
+        // song stayed "hosting" and went on applying a joiner's edits to the
+        // new, unrelated song; the copies then disagreed and the resync sent
+        // the joiner that song, which a save would write over their shared
+        // copy. A join's own copy is adopted with the session lifted out of
+        // the way (`Effect::Open`), so this never ends the session it opens.
+        self.leave_session();
         self.project = opened.project;
         // The **folder's** name is the project's name. They could drift apart
         // — `save_project` writes `meta.name` and never renames a bundle — so
