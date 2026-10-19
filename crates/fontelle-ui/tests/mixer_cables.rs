@@ -254,3 +254,37 @@ fn each_strip_has_a_row_under_its_name_for_what_feeds_it() {
         assert!(s.fed.x >= s.frame.x && s.fed.right() <= s.frame.right());
     }
 }
+
+// --- letting go over nothing (the next update, phase 4) ---
+
+/// *"still wired after I disconnect"*: a plug carried off its jack and let
+/// go over nothing used to spring back. Now it is unplugged — unless it
+/// barely moved, which is a click, not a pull.
+#[test]
+fn a_plug_let_go_over_nothing_is_unplugged() {
+    use fontelle_ui::canvas::cable_unplugs;
+    assert!(cable_unplugs([100.0, 100.0], [180.0, 140.0], false));
+    assert!(
+        !cable_unplugs([100.0, 100.0], [180.0, 140.0], true),
+        "over a track it reroutes"
+    );
+    assert!(
+        !cable_unplugs([100.0, 100.0], [104.0, 103.0], false),
+        "a wobble is not a pull"
+    );
+}
+
+/// With the output off, a track still feeds its sends — and the row says so.
+#[test]
+fn an_output_off_with_sends_says_they_still_carry() {
+    use fontelle_ui::canvas::output_row_caption;
+    assert_eq!(output_row_caption(true, 2, "Master"), "Out \u{25b8} Master");
+    assert_eq!(
+        output_row_caption(false, 0, "Master"),
+        "Out \u{25b8} \u{2014} none"
+    );
+    assert_eq!(
+        output_row_caption(false, 2, "Master"),
+        "Out \u{25b8} \u{2014} none \u{b7} sends still on"
+    );
+}

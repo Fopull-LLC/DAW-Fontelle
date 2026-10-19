@@ -251,11 +251,12 @@ pub use mixer::{
     MixerHit, MixerKey, MixerLayout, MixerRightClick, MixerStripLayout, MixerView, NamePress,
     OPTIONS_WIDTH, OptionsHit, PAN_DETENT_PX, PATCH_HEIGHT, SEND_KNOB_TRAVEL, STRIP_WIDTH,
     SendRowLayout, StripRoute, StripSources, TrackMenuRow, TrackOptionsLayout, cable_drop_target,
-    fader_db_at, fader_y_of_db, fed_by_caption, format_gain_db, format_mix, format_pan,
-    format_send_db, insert_mix_dial, mixer_cables, mixer_hit, mixer_key, mixer_layout,
-    mixer_layout_for, mixer_layout_view, mixer_right_click, mixer_zoomed, name_press, pan_at,
-    pan_x_of, patch_height_at, route_strip, send_knob_db, send_level_at, send_x_of_level,
-    strip_drop_index, strip_sources, track_menu_rows, unity_fraction,
+    cable_unplugs, fader_db_at, fader_y_of_db, fed_by_caption, format_gain_db, format_mix,
+    format_pan, format_send_db, insert_mix_dial, mixer_cables, mixer_hit, mixer_key, mixer_layout,
+    mixer_layout_for, mixer_layout_view, mixer_right_click, mixer_zoomed, name_press,
+    output_row_caption, pan_at, pan_x_of, patch_height_at, route_strip, send_knob_db,
+    send_level_at, send_x_of_level, strip_drop_index, strip_sources, track_menu_rows,
+    unity_fraction,
 };
 pub use note_clipboard::NoteClipboard;
 pub use notepad::{

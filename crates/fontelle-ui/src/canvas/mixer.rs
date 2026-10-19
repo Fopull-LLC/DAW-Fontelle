@@ -1795,3 +1795,29 @@ pub fn format_pan(pan: f32) -> String {
         p => format!("R{p}"),
     }
 }
+
+/// How far a plug has to be carried before letting go of it over nothing
+/// unplugs it, in points: less is a click, not a pull.
+const UNPLUG_DISTANCE: f32 = 12.0;
+
+/// Whether a plug picked up at `picked` and let go at `dropped` comes out of
+/// its jack — let go over no track, having been carried. *"Still wired after
+/// I disconnect"*: it used to spring back home.
+pub fn cable_unplugs(picked: [f32; 2], dropped: [f32; 2], over_track: bool) -> bool {
+    let (dx, dy) = (dropped[0] - picked[0], dropped[1] - picked[1]);
+    !over_track && (dx * dx + dy * dy).sqrt() >= UNPLUG_DISTANCE
+}
+
+/// What a track's output row says: where it goes, or that it goes nowhere —
+/// and then, when its sends still carry, that they do, since a track with
+/// its output off is still heard through them.
+pub fn output_row_caption(on: bool, sends: usize, name: &str) -> String {
+    if on {
+        return format!("Out \u{25b8} {name}");
+    }
+    let mut caption = format!("Out \u{25b8} {}", super::rack::NO_OUTPUT);
+    if sends > 0 {
+        caption.push_str(" \u{b7} sends still on");
+    }
+    caption
+}

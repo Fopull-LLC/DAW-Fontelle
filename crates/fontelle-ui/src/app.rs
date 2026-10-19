@@ -2004,6 +2004,8 @@ pub struct WindowApp {
     mixer_view: crate::canvas::MixerView,
     /// The cable whose far plug is in the hand (`Drag::Cable`).
     carried_cable: Option<crate::cables::CableKey<fontelle_types::MixerTrackId>>,
+    /// Where the carried plug was picked up — a drop near it is a click.
+    cable_picked_at: [f32; 2],
     /// Which strip the track-options column is about, read with the rest of
     /// the studio's lists.
     selected_track: usize,
@@ -2731,6 +2733,7 @@ impl WindowApp {
             backdrop_errors: Default::default(),
             theme_seen: 0,
             carried_cable: None,
+            cable_picked_at: [0.0, 0.0],
             mixer_strips: Vec::new(),
             mixer_peaks: Vec::new(),
             mixer_scroll: 0,
@@ -10273,6 +10276,7 @@ impl WindowApp {
         {
             self.drag = Drag::Cable;
             self.carried_cable = Some(key);
+            self.cable_picked_at = [x, y];
             self.cables.hold(key, [x, y]);
             self.tree.invalidate(PANEL);
             return;
@@ -10364,7 +10368,13 @@ impl WindowApp {
         // go if it were connected — which would be a row that reads exactly
         // like an audible track and a mix you cannot explain.
         if !self.track_output_on {
-            return crate::render::output_label(crate::canvas::NO_OUTPUT);
+            let sends = self
+                .mixer
+                .options
+                .as_ref()
+                .and_then(|o| self.mixer_strips.get(o.track))
+                .map_or(0, |s| s.sends.len());
+            return crate::canvas::output_row_caption(false, sends, "");
         }
         let name = match self.track_output {
             Some(index) => self.route_names.get(index).cloned(),
@@ -10870,7 +10880,26 @@ impl WindowApp {
         let Some(strip) = self.mixer_routes.iter().position(|r| r.id == key.track) else {
             return;
         };
-        let Some(target) = crate::canvas::cable_drop_target(&self.mixer, x, y) else {
+        let target = crate::canvas::cable_drop_target(&self.mixer, x, y);
+        // Let go over nothing, having been pulled: out of its jack.
+        if crate::canvas::cable_unplugs(self.cable_picked_at, [x, y], target.is_some()) {
+            let Some(doc) = &mut self.options.document else {
+                return;
+            };
+            match key.role {
+                crate::cables::CableRole::Output => {
+                    if doc.track_output_on(strip) {
+                        doc.set_track_output_on(strip, false);
+                    }
+                }
+                crate::cables::CableRole::Send(index) => doc.remove_send(strip, index),
+            }
+            doc.end_gesture();
+            self.refresh_studio();
+            self.refresh_title();
+            return;
+        }
+        let Some(target) = target else {
             return;
         };
         // A track into itself is the shortest feedback loop there is.
