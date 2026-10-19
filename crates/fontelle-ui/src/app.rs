@@ -491,6 +491,8 @@ enum NameFor {
     YourName(Sharing),
     /// A text row on the settings page, by its index (§10.4).
     Setting(usize),
+    /// A line for the session's chat: Enter says it and asks for the next.
+    Chat,
 }
 
 /// What was being done when the name the others see was asked for.
@@ -540,6 +542,7 @@ impl NameFor {
             Self::JoinCode => "The code you were given",
             Self::YourName(_) => "Your name, as the others will see it",
             Self::Setting(_) => "Type it \u{2014} blank for the default",
+            Self::Chat => "Say something to everyone \u{2014} Enter sends",
         }
     }
 }
@@ -1498,6 +1501,22 @@ pub struct WindowApp {
     /// What the session is waiting on the person for (§4.3, §7.1), drawn as
     /// a card over everything.
     session_question: Option<crate::document::SessionQuestion>,
+    /// Everybody else in the session, and where they are (phase 2.2).
+    people: Vec<crate::document::PersonHere>,
+    /// The song's lanes top row first, the clip the roll has open, and the
+    /// mixer strips' tracks: what a place in the song is named by.
+    lane_order: Vec<fontelle_types::LaneId>,
+    roll_clip: Option<fontelle_types::ClipId>,
+    strip_tracks: Vec<fontelle_types::MixerTrackId>,
+    /// The person whose view this one follows, by their number; any input
+    /// of this person's own lets go.
+    following: Option<u16>,
+    /// Lines somebody else said a moment ago, by their number, and when:
+    /// shown by their pointer for `SAID_SECONDS`.
+    bubbles: Vec<(u16, String, std::time::Instant)>,
+    /// Who this event stopped following, so a press on their own Follow
+    /// is a stop rather than a stop and a start.
+    let_go_of: Option<u16>,
     /// When the question went up — a key answers it only after a moment.
     session_question_shown: Option<std::time::Instant>,
     /// A code typed while there were unsaved changes, held while the save
@@ -2486,6 +2505,13 @@ impl WindowApp {
             share_open: false,
             session: Default::default(),
             session_question: None,
+            people: Vec::new(),
+            lane_order: Vec::new(),
+            roll_clip: None,
+            strip_tracks: Vec::new(),
+            following: None,
+            bubbles: Vec::new(),
+            let_go_of: None,
             session_question_shown: None,
             pending_join: None,
             wake: None,
@@ -3241,6 +3267,7 @@ impl WindowApp {
         // contents when the studio has changed them, and a shaped form of
         // every string the (pure) renderer will look up.
         self.refresh_studio();
+        let people_marks = self.people_marks();
         self.shape_labels();
         // Read before the surface is borrowed: the chrome below is built
         // inside a closure that already holds a mutable borrow of `self`.
@@ -3377,6 +3404,7 @@ impl WindowApp {
             &Chrome {
                 field,
                 panel_title: &self.title,
+                people: &people_marks,
                 backdrops,
                 transport: TransportChrome {
                     layout: self.bar,
@@ -3616,6 +3644,8 @@ impl WindowApp {
                         peers: &self.session.peers,
                         status: &self.session.status,
                         missing: &self.session.missing,
+                        following: self.following,
+                        chat: &self.session.chat,
                     }),
                     question: self.session_question.as_ref().map(|q| {
                         crate::render::QuestionNotice {
@@ -3626,6 +3656,7 @@ impl WindowApp {
                     }),
                     sharing: (self.session.role != crate::document::SessionRole::Alone)
                         .then_some(0),
+                    chat_unread: self.session.unread > 0,
                 },
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
                 // Only the studio's own menus: one opened on a knob belongs
@@ -3856,6 +3887,8 @@ impl WindowApp {
         self.poll_job();
         self.poll_analysis();
         self.tick_analyze_playhead();
+        // Where this person is goes with the pass's edits.
+        self.send_presence();
         // A shared song: somebody else's edits come in, this studio's go
         // out, once a pass — and while one is open the loop keeps looking.
         self.session_open = self
@@ -3864,6 +3897,7 @@ impl WindowApp {
             .as_mut()
             .is_some_and(|doc| doc.pump_session());
         self.read_session();
+        self.read_people();
         self.refresh_vocal();
         // The tour's spotlight glides between steps.
         if self.tour_moving() {
@@ -4953,6 +4987,28 @@ impl ApplicationHandler for WindowApp {
         if let Some(index) = self.editor_at(id) {
             self.editor_event(index, event);
             return;
+        }
+        // Following somebody ends at anything this person does themselves —
+        // a press, the wheel, a key — so the view is theirs again the moment
+        // they reach for it.
+        let let_go = matches!(
+            &event,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            } | WindowEvent::MouseWheel { .. }
+        ) || matches!(&event, WindowEvent::KeyboardInput { event, .. }
+        if event.state == winit::event::ElementState::Pressed
+            && !matches!(event.logical_key, winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Shift
+                    | winit::keyboard::NamedKey::Control
+                    | winit::keyboard::NamedKey::Alt
+                    | winit::keyboard::NamedKey::Super
+            )));
+        self.let_go_of = None;
+        if let_go && self.following.is_some() {
+            self.let_go_of = self.following.take();
+            self.tree.invalidate_rect(self.layout.window);
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -7334,6 +7390,9 @@ impl WindowApp {
         self.selected_file = doc.selected_file();
         self.selected_preset = doc.selected_preset();
         self.lanes = doc.lanes();
+        self.lane_order = doc.lane_order();
+        self.roll_clip = doc.roll_clip();
+        self.strip_tracks = doc.strip_tracks();
         self.clips = doc.clips();
         self.instrument = doc.instrument();
         let singer_panel = doc.singer_panel();
@@ -8475,6 +8534,18 @@ impl WindowApp {
             let status = self.status.clone();
             want(&mut self.labels, &mut self.text, &status);
         }
+        // Everybody else's name, beside their pointer and their marker, and
+        // what they have just said.
+        let said = self.bubbles.iter().map(|(_, text, _)| text.clone());
+        for name in self
+            .people
+            .iter()
+            .map(|p| p.name.clone())
+            .chain(said)
+            .collect::<Vec<_>>()
+        {
+            want(&mut self.labels, &mut self.text, &name);
+        }
         // The transient banner and the confirm modal, under exactly the strings
         // they are drawn with, so a banner invented after this pass would not
         // have been measured — see the module note on `shape_labels`.
@@ -8501,6 +8572,17 @@ impl WindowApp {
                 crate::canvas::share_panel_words(self.session.role, &self.session.peers);
             let (first, second) = crate::canvas::status_lines(&self.session.status);
             words.extend([first.to_string(), second.to_string()]);
+            words.extend(
+                crate::canvas::share_chat_rows(
+                    self.layout.window,
+                    self.bar.share,
+                    &self.options.theme.metrics,
+                    self.session.role,
+                    &self.session.chat,
+                )
+                .into_iter()
+                .map(|(_, row)| row),
+            );
             if !self.session.missing.is_empty() {
                 words.push(crate::canvas::MISSING_HERE.to_string());
                 for item in &self.session.missing {
@@ -24738,6 +24820,26 @@ impl WindowApp {
         if session != self.session || question != self.session_question {
             self.tree.invalidate_rect(self.layout.window);
         }
+        // Lines that have just come, from somebody else, show by their
+        // pointer: those after the last line this window had already seen.
+        let new_from = self
+            .session
+            .chat
+            .last()
+            .and_then(|last| session.chat.iter().rposition(|line| line == last))
+            .map_or(0, |at| at + 1);
+        let now = std::time::Instant::now();
+        for line in session.chat[new_from..].iter().rev().take(3) {
+            if !line.mine {
+                self.bubbles.retain(|(peer, _, _)| *peer != line.peer);
+                self.bubbles
+                    .push((line.peer, crate::canvas::said_bubble(&line.text), now));
+            }
+        }
+        // Whatever was said while the panel is open has been seen.
+        if self.share_open && session.unread > 0 {
+            doc.read_chat();
+        }
         self.session = session;
         if question.is_some() && self.session_question.is_none() {
             self.session_question_shown = Some(std::time::Instant::now());
@@ -24768,14 +24870,200 @@ impl WindowApp {
         }
     }
 
+    // --- presence (phase 2.2) ---
+
+    /// Whether this studio is in a session somebody else could see it in.
+    fn in_session(&self) -> bool {
+        use crate::document::SessionRole;
+        matches!(
+            self.session.role,
+            SessionRole::Hosting | SessionRole::Joined
+        )
+    }
+
+    /// The clip the roll shows, while it is showing.
+    fn roll_showing(&self) -> Option<fontelle_types::ClipId> {
+        (self.tab == EditorTab::Roll && !self.roll_layout.grid.is_empty())
+            .then_some(self.roll_clip)
+            .flatten()
+    }
+
+    /// This person's whereabouts: what the pointer is over, what is on
+    /// screen, and the time marker — all in the song's terms.
+    fn my_presence(&self) -> fontelle_model::wire::Presence {
+        use fontelle_model::wire::{Pointer, Presence, SeenEditor};
+        let (x, y) = self.cursor;
+        let grid = self.timeline_layout.grid;
+        let timeline = !self.layout.timeline.frame.is_empty();
+        let roll = self.roll_showing();
+        let pointer = if timeline && grid.contains(x, y) {
+            crate::canvas::arrangement_pointer(&self.timeline.view, grid, &self.lane_order, x, y)
+        } else if let Some(clip) = roll.filter(|_| self.roll_layout.grid.contains(x, y)) {
+            crate::canvas::roll_pointer(&self.roll.view, self.roll_layout.grid, clip, x, y)
+        } else if self.tab == EditorTab::Mixer {
+            self.mixer
+                .strips
+                .iter()
+                .chain(self.mixer.master.iter())
+                .find(|strip| strip.frame.contains(x, y))
+                .and_then(|strip| self.strip_tracks.get(strip.index))
+                .map(|&track| Pointer::Mixer { track })
+        } else {
+            None
+        };
+        let mut seen = crate::canvas::seen_timeline(&self.timeline.view, grid, &self.lane_order);
+        seen.editor = match (self.tab, roll) {
+            (EditorTab::Roll, Some(clip)) => {
+                crate::canvas::seen_roll(&self.roll.view, self.roll_layout.grid, clip)
+            }
+            (EditorTab::Mixer, _) => SeenEditor::Mixer,
+            _ => SeenEditor::Other,
+        };
+        Presence {
+            pointer,
+            seen,
+            playhead: self.song_playhead as f64,
+            playing: self.view.playing,
+        }
+    }
+
+    fn send_presence(&mut self) {
+        if !self.in_session() {
+            return;
+        }
+        let presence = self.my_presence();
+        if let Some(doc) = &mut self.options.document {
+            doc.set_presence(presence);
+        }
+    }
+
+    /// Everybody else's whereabouts, read once a pass; the view follows the
+    /// person being followed.
+    fn read_people(&mut self) {
+        let people = if self.in_session() {
+            self.options
+                .document
+                .as_ref()
+                .map(|doc| doc.presences())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if people != self.people {
+            self.people = people;
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(PANEL);
+        }
+        let before = self.bubbles.len();
+        self.bubbles
+            .retain(|(_, _, at)| at.elapsed().as_secs_f32() < crate::canvas::SAID_SECONDS);
+        if self.bubbles.len() != before {
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(PANEL);
+        }
+        self.follow();
+    }
+
+    /// Shows what the person being followed sees: their stretch of the
+    /// arrangement, and their clip or mixer under it.
+    fn follow(&mut self) {
+        use fontelle_model::wire::SeenEditor;
+        let Some(peer) = self.following else {
+            return;
+        };
+        let Some(seen) = self
+            .people
+            .iter()
+            .find(|p| p.peer == peer)
+            .map(|p| p.presence.seen.clone())
+        else {
+            // They have gone.
+            self.following = None;
+            self.tree.invalidate_rect(self.layout.window);
+            return;
+        };
+        let before = (self.timeline.view, self.roll.view, self.tab);
+        crate::canvas::follow_timeline(
+            &mut self.timeline.view,
+            self.timeline_layout.grid,
+            &self.lane_order,
+            &seen,
+        );
+        match &seen.editor {
+            SeenEditor::Roll { clip, .. } => {
+                if self.roll_clip != Some(*clip)
+                    && let Some(doc) = &mut self.options.document
+                {
+                    doc.open_clip(*clip);
+                    self.roll.clear_selection();
+                    self.studio_revision = u64::MAX;
+                    self.refresh_studio();
+                }
+                self.show_tab(EditorTab::Roll);
+                crate::canvas::follow_roll(
+                    &mut self.roll.view,
+                    self.roll_layout.grid,
+                    &seen.editor,
+                );
+            }
+            SeenEditor::Mixer => self.show_tab(EditorTab::Mixer),
+            SeenEditor::Other => {}
+        }
+        if before != (self.timeline.view, self.roll.view, self.tab) {
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// Everybody else's whereabouts as drawn on this frame.
+    fn people_marks(&self) -> Vec<crate::canvas::Marks> {
+        if self.people.is_empty() {
+            return Vec::new();
+        }
+        let timeline = (!self.layout.timeline.frame.is_empty())
+            .then_some((&self.timeline.view, self.timeline_layout.grid));
+        let places = crate::canvas::Places {
+            timeline,
+            lanes: &self.lane_order,
+            roll: self
+                .roll_showing()
+                .map(|clip| (&self.roll.view, self.roll_layout.grid, clip)),
+            mixer: (self.tab == EditorTab::Mixer).then_some((&self.mixer, &self.strip_tracks[..])),
+        };
+        self.people
+            .iter()
+            .map(|person| {
+                let mut marks = crate::canvas::person_marks(
+                    person,
+                    &places,
+                    self.following == Some(person.peer),
+                );
+                marks.said = self
+                    .bubbles
+                    .iter()
+                    .find(|(peer, _, _)| *peer == person.peer)
+                    .map(|(_, text, _)| text.clone());
+                marks
+            })
+            .collect()
+    }
+
     fn share_panel_layout(&self) -> crate::canvas::SharePanelLayout {
-        crate::canvas::share_panel_layout_with(
+        let chat = crate::canvas::share_chat_rows(
+            self.layout.window,
+            self.bar.share,
+            &self.options.theme.metrics,
+            self.session.role,
+            &self.session.chat,
+        );
+        crate::canvas::share_panel_layout_full(
             self.layout.window,
             self.bar.share,
             &self.options.theme.metrics,
             self.session.role,
             self.session.peers.len(),
             self.session.missing.len(),
+            chat.len(),
         )
     }
 
@@ -24787,6 +25075,17 @@ impl WindowApp {
         };
         let peer = |i: usize| self.session.peers.get(i).cloned();
         match hit {
+            ShareHit::Say => self.ask_for_a_name(NameFor::Chat, String::new()),
+            ShareHit::Follow(i) => {
+                if let Some(who) = peer(i) {
+                    self.following = if self.let_go_of == Some(who.peer) {
+                        None
+                    } else {
+                        Some(who.peer)
+                    };
+                    self.follow();
+                }
+            }
             ShareHit::FetchAgain => {
                 if let Some(doc) = &mut self.options.document {
                     doc.fetch_missing_again();
@@ -24964,6 +25263,17 @@ impl WindowApp {
                 }
                 self.refresh_studio();
                 self.tree.invalidate(BROWSER);
+            }
+            NameFor::Chat => {
+                if !name.trim().is_empty() {
+                    if let Some(doc) = &mut self.options.document {
+                        doc.say(name);
+                    }
+                    // Asked again at once: a conversation is more than one
+                    // line, and Escape ends it.
+                    self.ask_for_a_name(NameFor::Chat, String::new());
+                }
+                self.read_session_now();
             }
             NameFor::NewProject | NameFor::SaveAs(_) => return false,
         }

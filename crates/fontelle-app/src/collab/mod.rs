@@ -241,7 +241,47 @@ pub(crate) struct Collab {
     held: Option<(u64, Instant)>,
     /// The song's files on their way in and out (§7.2).
     files: Files,
+    /// Where everybody is in the song (phase 2.2).
+    presence: Presences,
+    /// What everybody has said, oldest first, and how much of it this
+    /// person has not looked at (phase 2.3).
+    chat: VecDeque<ChatLine>,
+    unread: usize,
 }
+
+/// A line of the session's chat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatLine {
+    /// Who said it, by their number (the host is 0).
+    pub peer: u16,
+    pub name: String,
+    pub text: String,
+    /// Said by this person.
+    pub mine: bool,
+}
+
+/// The longest line, in characters: a sentence or three, not a document.
+pub const CHAT_LONGEST: usize = 500;
+/// How many lines a session keeps.
+pub const CHAT_KEPT: usize = 200;
+
+/// Where everybody is in the song: this studio's own, as last told and as
+/// last sent, and everybody else's by their number.
+#[derive(Default)]
+struct Presences {
+    mine: Option<fontelle_model::wire::Presence>,
+    sent: Option<fontelle_model::wire::Presence>,
+    sent_at: Option<Instant>,
+    count: usize,
+    others: BTreeMap<u16, fontelle_model::wire::Presence>,
+    /// What arrived while a drag was in the hand, besides whereabouts: kept,
+    /// in order, until the hand is empty (F17).
+    held: VecDeque<Incoming>,
+}
+
+/// How often this studio's whereabouts may go: fifteen times a second is a
+/// cursor that moves smoothly enough, and a few hundred bytes a second.
+const PRESENCE_EVERY: Duration = Duration::from_millis(1000 / 15);
 
 impl Collab {
     pub fn host(transport: Box<dyn Transport>, options: CollabOptions) -> Self {
@@ -254,6 +294,9 @@ impl Collab {
             ended_here: false,
             held: None,
             files: Files::default(),
+            presence: Presences::default(),
+            chat: VecDeque::new(),
+            unread: 0,
         }
     }
 
@@ -274,6 +317,9 @@ impl Collab {
             ended_here: false,
             held: None,
             files: Files::default(),
+            presence: Presences::default(),
+            chat: VecDeque::new(),
+            unread: 0,
         }
     }
 
@@ -314,6 +360,121 @@ impl Collab {
 
     pub fn ended(&self) -> Option<&str> {
         self.ended.as_deref()
+    }
+
+    /// Where this studio is in the song now; it goes when it has changed,
+    /// no faster than [`PRESENCE_EVERY`].
+    pub fn set_presence(&mut self, presence: fontelle_model::wire::Presence) {
+        self.presence.mine = Some(presence);
+    }
+
+    /// Where everybody else is, by their number (the host is 0).
+    pub fn presences(&self) -> Vec<(u16, fontelle_model::wire::Presence)> {
+        if self.ended.is_some() {
+            return Vec::new();
+        }
+        self.presence
+            .others
+            .iter()
+            .map(|(peer, presence)| (*peer, presence.clone()))
+            .collect()
+    }
+
+    /// How many times this studio's whereabouts have gone — for the tests.
+    #[cfg(test)]
+    pub fn presence_sent(&self) -> usize {
+        self.presence.count
+    }
+
+    /// Sends this studio's whereabouts, when they have changed and the last
+    /// went long enough ago.
+    fn send_presence(&mut self) {
+        let presence = &mut self.presence;
+        if presence.mine.is_none() || presence.mine == presence.sent {
+            return;
+        }
+        if presence
+            .sent_at
+            .is_some_and(|at| at.elapsed() < PRESENCE_EVERY)
+        {
+            return;
+        }
+        let mine = presence.mine.clone().expect("just checked");
+        let bytes = Msg::Presence {
+            peer: 0,
+            presence: mine.clone(),
+        }
+        .to_bytes();
+        let to: Vec<PeerId> = match &self.role {
+            Role::Host(host) => host
+                .peers
+                .iter()
+                .filter(|(_, p)| p.welcomed)
+                .map(|(id, _)| *id)
+                .collect(),
+            Role::Joiner(joiner) if joiner.stage == Stage::Live => vec![SERVER],
+            Role::Joiner(_) => Vec::new(),
+        };
+        for peer in to {
+            self.transport.send(peer, Channel::Unreliable, &bytes);
+        }
+        presence.sent = Some(mine);
+        presence.sent_at = Some(Instant::now());
+        presence.count += 1;
+    }
+
+    /// Says `text` to everybody in the session: trimmed, cut at
+    /// [`CHAT_LONGEST`], and nothing at all when it is blank.
+    pub fn say(&mut self, text: &str) {
+        let text: String = text.trim().chars().take(CHAT_LONGEST).collect();
+        if text.is_empty() || self.ended.is_some() {
+            return;
+        }
+        let bytes = Msg::Chat {
+            peer: 0,
+            text: text.clone(),
+        }
+        .to_bytes();
+        let me = match &mut self.role {
+            Role::Host(host) => {
+                for (peer, who) in &host.peers {
+                    if who.welcomed {
+                        self.transport.send(*peer, Channel::Reliable, &bytes);
+                    }
+                }
+                0
+            }
+            Role::Joiner(joiner) => {
+                self.transport.send(SERVER, Channel::Reliable, &bytes);
+                joiner.space
+            }
+        };
+        let name = self.options.name.clone();
+        keep_line(
+            &mut self.chat,
+            ChatLine {
+                peer: me,
+                name,
+                text,
+                mine: true,
+            },
+        );
+    }
+
+    /// What has been said, oldest first.
+    pub fn chat(&self) -> Vec<ChatLine> {
+        self.chat.iter().cloned().collect()
+    }
+
+    /// How many lines from somebody else have come since [`read_chat`].
+    ///
+    /// [`read_chat`]: Collab::read_chat
+    pub fn chat_unread(&self) -> usize {
+        self.unread
+    }
+
+    pub fn read_chat(&mut self) {
+        self.unread = 0;
     }
 
     /// Whether somebody else, or the network, ended the session.
@@ -402,6 +563,7 @@ impl Collab {
             .map(|(&id, _)| id)
             .ok_or("that person has left")?;
         let who = host.peers.remove(&id).expect("just found");
+        self.presence.others.remove(&who.space);
         if let Some(lost) = self.files.relink(id, None) {
             self.notices.push(lost);
         }
@@ -535,6 +697,7 @@ impl Collab {
             return Vec::new();
         }
         self.let_go_of_idle_edits(history);
+        self.send_presence();
         // What the link has to say for itself — the relay lost, and got
         // back under which code — is the person's to read (F38).
         self.notices.extend(self.transport.take_notices());
@@ -546,6 +709,9 @@ impl Collab {
             place,
             notices: &mut self.notices,
             effects: &mut effects,
+            presence: &mut self.presence,
+            chat: &mut self.chat,
+            unread: &mut self.unread,
         };
         match &mut self.role {
             Role::Host(host) => {
@@ -680,6 +846,9 @@ impl Collab {
             place,
             notices: &mut self.notices,
             effects: &mut effects,
+            presence: &mut self.presence,
+            chat: &mut self.chat,
+            unread: &mut self.unread,
         };
         if let Some(why) = joiner.went_live(&mut turn, doc, history) {
             self.end(why, history);
@@ -725,6 +894,14 @@ impl Collab {
         history.close_outbox();
         history.set_mint_space(None);
         self.ended = Some(why);
+    }
+}
+
+/// Keeps `line`, and no more than [`CHAT_KEPT`] of them.
+fn keep_line(chat: &mut VecDeque<ChatLine>, line: ChatLine) {
+    chat.push_back(line);
+    while chat.len() > CHAT_KEPT {
+        chat.pop_front();
     }
 }
 
@@ -824,9 +1001,38 @@ struct Turn<'a> {
     place: &'a Place,
     notices: &'a mut Vec<String>,
     effects: &'a mut Vec<Effect>,
+    presence: &'a mut Presences,
+    chat: &'a mut VecDeque<ChatLine>,
+    unread: &'a mut usize,
 }
 
 impl Turn<'_> {
+    /// What has arrived to be dealt with now. While a drag is in the hand
+    /// that is only whereabouts — everything else waits, in order, until it
+    /// is empty (F17) — so nobody's cursor freezes while anybody drags.
+    fn incoming(&mut self, in_hand: bool) -> Vec<Incoming> {
+        let fresh = self.transport.poll();
+        if in_hand {
+            let mut now = Vec::new();
+            for incoming in fresh {
+                let whereabouts = matches!(
+                    &incoming,
+                    Incoming::Message(_, Channel::Unreliable, bytes)
+                        if matches!(Msg::from_bytes(bytes), Ok(Msg::Presence { .. }))
+                );
+                if whereabouts {
+                    now.push(incoming);
+                } else {
+                    self.presence.held.push_back(incoming);
+                }
+            }
+            return now;
+        }
+        let mut all: Vec<Incoming> = self.presence.held.drain(..).collect();
+        all.extend(fresh);
+        all
+    }
+
     /// The file messages, which both sides speak alike (§7.2). `true` when
     /// `msg` was one of them.
     fn file_message(&mut self, from: PeerId, msg: &Msg, doc: &Project) -> bool {
@@ -936,11 +1142,10 @@ impl Host {
 
         // Nothing from outside while the host has a drag in the hand: an
         // edit applied under it, or a snapshot taken of its middle, would be
-        // a document nobody else could reach (F17).
-        if history.gesture_in_hand() {
-            return None;
-        }
-        for incoming in turn.transport.poll() {
+        // a document nobody else could reach (F17). Whereabouts are not the
+        // document, and come in all the same.
+        let in_hand = history.gesture_in_hand();
+        for incoming in turn.incoming(in_hand) {
             match incoming {
                 // Somebody this host already has, announced again: the
                 // host's leg to the relay dropped and is back, and whatever
@@ -1167,6 +1372,57 @@ impl Host {
                 }
             }
             Msg::ResyncRequest => self.send_snapshot(turn.transport, peer, doc),
+            Msg::Chat { text, .. } => {
+                let Some(who) = self.peers.get(&peer).filter(|p| p.welcomed) else {
+                    return;
+                };
+                let text: String = text.trim().chars().take(CHAT_LONGEST).collect();
+                if text.is_empty() {
+                    return;
+                }
+                let (space, name) = (who.space, who.name.clone());
+                self.broadcast_except(
+                    turn.transport,
+                    peer,
+                    &Msg::Chat {
+                        peer: space,
+                        text: text.clone(),
+                    },
+                );
+                keep_line(
+                    turn.chat,
+                    ChatLine {
+                        peer: space,
+                        name,
+                        text,
+                        mine: false,
+                    },
+                );
+                *turn.unread += 1;
+            }
+            Msg::Presence { presence, .. } => {
+                let Some(space) = self
+                    .peers
+                    .get(&peer)
+                    .filter(|p| p.welcomed)
+                    .map(|p| p.space)
+                else {
+                    return;
+                };
+                // Joiners talk only to the host: it passes each one's
+                // whereabouts on to everybody else, under their number.
+                let bytes = Msg::Presence {
+                    peer: space,
+                    presence: presence.clone(),
+                }
+                .to_bytes();
+                for (id, who) in &self.peers {
+                    if who.welcomed && *id != peer {
+                        turn.transport.send(*id, Channel::Unreliable, &bytes);
+                    }
+                }
+                turn.presence.others.insert(space, presence);
+            }
             Msg::Bye => self.gone(turn, peer, doc, true),
             _ => {}
         }
@@ -1183,6 +1439,7 @@ impl Host {
         if !who.welcomed {
             return;
         }
+        turn.presence.others.remove(&who.space);
         // What the two copies agree on as they part (§4.5).
         if said_goodbye {
             doc.meta.shared_revision = Some((who.install, doc.sync_hash()));
@@ -1478,13 +1735,11 @@ impl Joiner {
         }
         if self.stage == Stage::Live {
             self.send_mine(turn.transport, history);
-            // Nothing is rebased under a drag in the hand (F17): it waits in
-            // the transport until the button comes up.
-            if history.gesture_in_hand() {
-                return None;
-            }
         }
-        for incoming in turn.transport.poll() {
+        // Nothing is rebased under a drag in the hand (F17): it waits until
+        // the button comes up. Whereabouts are not the document.
+        let in_hand = self.stage == Stage::Live && history.gesture_in_hand();
+        for incoming in turn.incoming(in_hand) {
             match incoming {
                 // A connection again after the welcome: the link dropped and
                 // `fontelle-net` joined again by itself. The host knows this
@@ -1733,7 +1988,33 @@ impl Joiner {
                     },
                 );
             }
+            Msg::Presence { peer, presence } => {
+                turn.presence.others.insert(peer, presence);
+            }
+            Msg::Chat { peer, text } => {
+                let name = if peer == 0 {
+                    self.host_or_them().to_string()
+                } else {
+                    self.peers
+                        .get(&peer)
+                        .map_or_else(|| "Somebody".to_string(), |p| p.name.clone())
+                };
+                let text: String = text.trim().chars().take(CHAT_LONGEST).collect();
+                if !text.is_empty() {
+                    keep_line(
+                        turn.chat,
+                        ChatLine {
+                            peer,
+                            name,
+                            text,
+                            mine: false,
+                        },
+                    );
+                    *turn.unread += 1;
+                }
+            }
             Msg::Left { peer } => {
+                turn.presence.others.remove(&peer);
                 if let Some(who) = self.peers.remove(&peer) {
                     turn.notices.push(format!("{} left", who.name));
                 }

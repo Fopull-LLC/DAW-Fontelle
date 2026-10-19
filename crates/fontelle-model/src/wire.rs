@@ -645,6 +645,87 @@ pub enum Msg {
     Singers {
         singers: Vec<SingerNeed>,
     },
+    // The next update: presence.
+    /// Where somebody is in the song, fire-and-forget — a lost one is
+    /// replaced by the next, never sent again. A joiner sends its own with `peer` 0 and the host
+    /// passes it on to everyone else with the joiner's number; the host's
+    /// own goes out as 0.
+    Presence {
+        peer: u16,
+        presence: Presence,
+    },
+    /// A line of the session's chat: a joiner's goes to the host with `peer`
+    /// 0 and the host passes it on under their number. Not part of the song,
+    /// and never saved.
+    Chat {
+        peer: u16,
+        text: String,
+    },
+}
+
+/// Where somebody is in the song (`Msg::Presence`), in the song's own terms
+/// — ticks, lanes, clips, keys, tracks — and never in pixels: each studio
+/// draws it through its own zoom, scroll and window, so everyone sees the
+/// same *place* whatever their screen.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Presence {
+    /// What their pointer is over, when it is over the song.
+    pub pointer: Option<Pointer>,
+    /// What they are looking at — what following them adopts.
+    pub seen: Seen,
+    /// Their time marker, in ticks.
+    pub playhead: f64,
+    pub playing: bool,
+}
+
+/// What somebody's pointer is over.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Pointer {
+    /// A place on the arrangement: a tick, a lane, and how far down it.
+    Arrangement {
+        tick: f64,
+        lane: fontelle_types::LaneId,
+        down: f32,
+    },
+    /// A place in a clip's notes: drawn only where that clip is open.
+    /// `key` counts up from the bottom of key 0's row.
+    Roll {
+        clip: fontelle_types::ClipId,
+        tick: f64,
+        key: f32,
+    },
+    /// A mixer strip: lit, rather than a cursor drawn on it.
+    Mixer { track: fontelle_types::MixerTrackId },
+}
+
+/// What somebody has on screen.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Seen {
+    /// The arrangement: its left edge and how many ticks wide it is.
+    pub first_tick: f64,
+    pub ticks: f64,
+    /// The lane in its top row, and how much of that row is scrolled away.
+    pub top_lane: Option<fontelle_types::LaneId>,
+    pub lane_offset: f32,
+    /// The editor under it.
+    pub editor: SeenEditor,
+}
+
+/// What somebody's editor shows.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SeenEditor {
+    /// Something not followed: an instrument, an effect.
+    #[default]
+    Other,
+    /// A clip's notes, from `first_tick`, `ticks` wide, with `top_key` (a
+    /// key and how much of the one above shows) at the top.
+    Roll {
+        clip: fontelle_types::ClipId,
+        first_tick: f64,
+        ticks: f64,
+        top_key: f32,
+    },
+    Mixer,
 }
 
 /// A singer a shared song uses (`Msg::Singers`), as the song names it

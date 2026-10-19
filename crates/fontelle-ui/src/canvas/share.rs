@@ -117,6 +117,8 @@ pub struct PeerRowLayout {
     pub view_only: Rect,
     /// The ×. Empty on a joiner's panel.
     pub remove: Rect,
+    /// Follow: this studio's view goes where theirs goes.
+    pub follow: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +150,10 @@ pub struct SharePanelLayout {
     pub primary: Rect,
     /// Join a shared song, Join instead. Empty while a session is starting.
     pub join: Rect,
+    /// The chat's last rows, oldest first ([`chat_rows`]); none alone.
+    pub chat: Vec<Rect>,
+    /// *Say something…* under them.
+    pub say: Rect,
     /// How big the code is written — the biggest text on the panel, because
     /// it is read across a room or typed off a screenshot.
     pub code_size: f32,
@@ -166,14 +172,95 @@ pub enum ShareHit {
     ViewOnly(usize),
     /// The × on the `n`th row.
     Remove(usize),
+    /// Follow (or stop following) the `n`th row's person.
+    Follow(usize),
     /// [`SharePanelLayout::fetch_again`].
     FetchAgain,
+    /// [`SharePanelLayout::say`].
+    Say,
 }
 
 const PANEL_WIDTH: f32 = 320.0;
 const COPY_WIDTH: f32 = 64.0;
 const FETCH_AGAIN_WIDTH: f32 = 84.0;
 const VIEW_ONLY_WIDTH: f32 = 64.0;
+const FOLLOW_WIDTH: f32 = 82.0;
+const SAY_WIDTH: f32 = 64.0;
+
+/// The words on a row's Follow, while not and while following.
+pub const FOLLOW: &str = "Follow";
+pub const FOLLOWING: &str = "Following";
+
+/// The button under the chat, and how many of its rows the panel shows.
+pub const SAY_SOMETHING: &str = "Chat\u{2026}";
+pub const CHAT_ROWS: usize = 5;
+
+/// The chat as the panel's rows: each line as *Name: what they said*,
+/// wrapped at `chars` a row, the newest last, no more than [`CHAT_ROWS`] —
+/// each with the colour of whoever said it.
+pub fn chat_rows(lines: &[crate::document::SaidLine], chars: usize) -> Vec<(u8, String)> {
+    let chars = chars.max(8);
+    let mut rows = Vec::new();
+    for line in lines.iter().rev() {
+        let text = format!("{}: {}", line.name, line.text);
+        let mut wrapped = Vec::new();
+        let mut current = String::new();
+        for word in text.split_whitespace() {
+            // A word longer than a row is cut into rows of its own.
+            let mut word = word.to_string();
+            while word.chars().count() > chars {
+                if !current.is_empty() {
+                    wrapped.push(std::mem::take(&mut current));
+                }
+                let head: String = word.chars().take(chars).collect();
+                word = word.chars().skip(chars).collect();
+                wrapped.push(head);
+            }
+            let fits =
+                current.is_empty() || current.chars().count() + 1 + word.chars().count() <= chars;
+            if !fits {
+                wrapped.push(std::mem::take(&mut current));
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(&word);
+        }
+        if !current.is_empty() {
+            wrapped.push(current);
+        }
+        for row in wrapped.into_iter().rev() {
+            rows.push((line.colour, row));
+            if rows.len() == CHAT_ROWS {
+                rows.reverse();
+                return rows;
+            }
+        }
+    }
+    rows.reverse();
+    rows
+}
+
+/// The chat's rows for a panel laid out in `window` from `anchor`: wrapped
+/// to the panel's width, so the window that shapes them and the renderer
+/// that draws them agree on what each row says.
+pub fn share_chat_rows(
+    window: Rect,
+    anchor: Rect,
+    metrics: &Metrics,
+    role: ShareRole,
+    chat: &[crate::document::SaidLine],
+) -> Vec<(u8, String)> {
+    if !matches!(role, ShareRole::Hosting | ShareRole::Joined) || chat.is_empty() {
+        return Vec::new();
+    }
+    let l = share_panel_layout(window, anchor, metrics, role, 0);
+    // Under the narrowest a proportional face sets an average character in,
+    // across the panel's whole inner width.
+    let inner = l.say.right() - l.title.x;
+    let chars = ((inner - 6.0) / (l.text_size * 0.55)).floor().max(8.0) as usize;
+    chat_rows(chat, chars)
+}
 
 /// The heading over the list of what the song uses that is not here.
 pub const MISSING_HERE: &str = "Missing on this computer";
@@ -207,6 +294,20 @@ pub fn share_panel_layout_with(
     people: usize,
     missing: usize,
 ) -> SharePanelLayout {
+    share_panel_layout_full(window, anchor, metrics, role, people, missing, 0)
+}
+
+/// [`share_panel_layout_with`], with `chat` rows of the session's chat and
+/// a way to say something under the people (phase 2.3).
+pub fn share_panel_layout_full(
+    window: Rect,
+    anchor: Rect,
+    metrics: &Metrics,
+    role: ShareRole,
+    people: usize,
+    missing: usize,
+    chat: usize,
+) -> SharePanelLayout {
     let row = metrics.row_height.max(1.0);
     let pad = metrics.panel_padding.max(1.0);
     let margin = metrics.panel_margin.max(0.0);
@@ -223,6 +324,9 @@ pub fn share_panel_layout_with(
     let inner_x = x + pad;
 
     let hosting = role == ShareRole::Hosting;
+    let chats = matches!(role, ShareRole::Hosting | ShareRole::Joined);
+    let chat = if chats { chat.min(CHAT_ROWS) } else { 0 };
+    let chat_h = chat as f32 * row;
     let code_h = if hosting { code_size + pad } else { 0.0 };
     let buttons = if role.join().is_some() {
         2.0 * button + pad * 0.5
@@ -238,7 +342,8 @@ pub fn share_panel_layout_with(
         + 2.0 * row
         + pad
         + buttons
-        + pad;
+        + pad
+        + chat_h;
     let room = (window.bottom() - margin - top - fixed).max(0.0);
     let wanted = if role.lists_people() {
         people.max(1)
@@ -279,7 +384,23 @@ pub fn share_panel_layout_with(
         .clamped();
 
     let mut y = top + pad;
-    let title = Rect::new(inner_x, y, inner_w, row);
+    // In a session the title row ends in Chat, so the chat costs no room
+    // until something has been said.
+    let (title, say) = if chats {
+        let say_w = SAY_WIDTH.min(inner_w * 0.3);
+        let say_h = (row * 0.9).round();
+        (
+            Rect::new(inner_x, y, (inner_w - say_w - pad).max(0.0), row),
+            Rect::new(
+                inner_x + inner_w - say_w,
+                y + (row - say_h) / 2.0,
+                say_w,
+                say_h,
+            ),
+        )
+    } else {
+        (Rect::new(inner_x, y, inner_w, row), Rect::ZERO)
+    };
     y += row + pad;
     let (code, copy) = if hosting {
         let copy_w = COPY_WIDTH.min(inner_w * 0.3);
@@ -316,11 +437,23 @@ pub fn share_panel_layout_with(
             } else {
                 (Rect::ZERO, Rect::ZERO, Rect::ZERO)
             };
-            let name_end = if hosting {
+            // Follow sits before whatever else the row has at its end.
+            let follow_end = if hosting {
                 view_only_label.x - pad * 0.5
             } else {
                 frame.right()
             };
+            let follow_w = FOLLOW_WIDTH
+                .min((follow_end - swatch.right()) * 0.4)
+                .max(0.0);
+            let follow_h = (row * 0.7).round();
+            let follow = Rect::new(
+                follow_end - follow_w,
+                frame.y + (row - follow_h) / 2.0,
+                follow_w,
+                follow_h,
+            );
+            let name_end = follow.x - pad * 0.5;
             let name = Rect::new(
                 swatch.right() + pad,
                 frame.y,
@@ -334,6 +467,7 @@ pub fn share_panel_layout_with(
                 view_only_label,
                 view_only,
                 remove,
+                follow,
             }
         })
         .collect();
@@ -364,6 +498,11 @@ pub fn share_panel_layout_with(
         (Rect::ZERO, Vec::new(), Rect::ZERO)
     };
     y += missing_h;
+    let mut chat_lines = Vec::with_capacity(chat);
+    for _ in 0..chat {
+        chat_lines.push(Rect::new(inner_x, y, inner_w, row));
+        y += row;
+    }
     let status = Rect::new(inner_x, y, inner_w, 2.0 * row);
     y += 2.0 * row + pad;
     let primary = Rect::new(inner_x, y, inner_w, button);
@@ -388,8 +527,11 @@ pub fn share_panel_layout_with(
                 view_only_label: keep(r.view_only_label),
                 view_only: keep(r.view_only),
                 remove: keep(r.remove),
+                follow: keep(r.follow),
             })
             .collect(),
+        chat: chat_lines.into_iter().map(keep).collect(),
+        say: keep(say),
         nobody: keep(nobody),
         missing_title: keep(missing_title),
         missing: missing_rows
@@ -431,12 +573,18 @@ pub fn share_hit(layout: &SharePanelLayout, x: f32, y: f32) -> Option<ShareHit> 
     if layout.fetch_again.contains(x, y) {
         return Some(ShareHit::FetchAgain);
     }
+    if layout.say.contains(x, y) {
+        return Some(ShareHit::Say);
+    }
     for (i, row) in layout.rows.iter().enumerate() {
         if row.view_only.contains(x, y) {
             return Some(ShareHit::ViewOnly(i));
         }
         if row.remove.contains(x, y) {
             return Some(ShareHit::Remove(i));
+        }
+        if row.follow.contains(x, y) {
+            return Some(ShareHit::Follow(i));
         }
     }
     None
@@ -454,8 +602,11 @@ pub fn share_panel_words(role: ShareRole, people: &[crate::document::SessionPeer
     if role == ShareRole::Joined {
         words.push(FETCH_AGAIN.to_string());
     }
+    if matches!(role, ShareRole::Hosting | ShareRole::Joined) {
+        words.push(SAY_SOMETHING.to_string());
+    }
     if role.lists_people() {
-        words.push(NOBODY_YET.to_string());
+        words.extend([NOBODY_YET, FOLLOW, FOLLOWING].map(str::to_string));
         words.extend(people.iter().map(|p| p.name.clone()));
     }
     words

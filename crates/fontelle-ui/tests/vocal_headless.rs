@@ -226,6 +226,7 @@ fn shoot(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),

@@ -166,6 +166,7 @@ fn shoot_sized(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
@@ -924,6 +925,7 @@ fn shoot_roll_everything(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -1412,6 +1414,13 @@ fn shoot_timeline_recording(
             labels.ensure(&caption, &theme.font, &mut text);
         }
     }
+    let people = PEOPLE.with(|slot| slot.borrow().clone());
+    for person in &people {
+        labels.ensure(&person.name, &theme.font, &mut text);
+        if let Some(said) = &person.said {
+            labels.ensure(said, &theme.font, &mut text);
+        }
+    }
     let tview = TimelineView::default();
     let (selected_lane, soloed_lane) = LANE_STATE.with(|state| state.get());
     let lanes: Vec<LaneInfo> = (0..4)
@@ -1431,6 +1440,7 @@ fn shoot_timeline_recording(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &people,
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -2237,6 +2247,7 @@ fn shoot_mixer_lit(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -2714,6 +2725,7 @@ fn shoot_rack_routed(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -5003,6 +5015,7 @@ fn shoot_carry(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -5289,6 +5302,7 @@ fn shoot_welcome_status(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
@@ -5575,6 +5589,7 @@ fn shoot_settings_controls() {
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),
@@ -5709,6 +5724,7 @@ fn shoot_keybinds(theme: Theme, scroll: f32) -> Option<(Vec<u8>, Theme, u32, u32
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
@@ -6091,6 +6107,7 @@ fn shoot_settings_page(theme: Theme, section: usize) -> Option<(Vec<u8>, Theme, 
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
@@ -6273,6 +6290,7 @@ fn shoot_guide(
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: bar,
@@ -6903,6 +6921,7 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
             &Chrome {
                 field: None,
                 panel_title: &title,
+                people: &[],
                 backdrops: Default::default(),
                 transport: TransportChrome {
                     layout: bar,
@@ -7119,6 +7138,34 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     for word in &words {
         labels.ensure(word, &theme.font, &mut text);
     }
+    // The chat: Bob and Carol's lines under the people, each with a bar in
+    // its speaker's colour, and an unread dot on the Share button.
+    let chat = vec![
+        fontelle_ui::document::SaidLine {
+            peer: peers[0].peer,
+            name: "Bob".into(),
+            colour: peers[0].colour,
+            text: "can you turn the bass down a bit".into(),
+            mine: false,
+        },
+        fontelle_ui::document::SaidLine {
+            peer: peers[1].peer,
+            name: "Carol".into(),
+            colour: peers[1].colour,
+            text: "on it".into(),
+            mine: false,
+        },
+    ];
+    let rows = fontelle_ui::canvas::share_chat_rows(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Joined,
+        &chat,
+    );
+    for (_, row) in &rows {
+        labels.ensure(row, &theme.font, &mut text);
+    }
     labels.ensure_mono("UL22A6", panel.code_size, &mut text);
 
     let shoot = |notices: Notices<'_>| {
@@ -7130,6 +7177,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             &Chrome {
                 field: None,
                 panel_title: &title,
+                people: &[],
                 backdrops: Default::default(),
                 transport: TransportChrome {
                     layout: bar,
@@ -7226,6 +7274,8 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             peers: &peers,
             status,
             missing: &[],
+            following: Some(peers[0].peer),
+            chat: &[],
         }),
         ..Default::default()
     });
@@ -7246,6 +7296,12 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         "Carol is view only and her switch is not lit"
     );
     assert!(!lit(panel.rows[0].view_only), "Bob's switch is lit");
+    // Following Bob: his Follow is lit, Carol's not.
+    assert!(
+        lit(panel.rows[0].follow),
+        "following Bob, and his Follow is not lit"
+    );
+    assert!(!lit(panel.rows[1].follow), "Carol's Follow is lit");
 
     // A joiner missing a plugin and a soundfont: listed, under a heading,
     // what and where (F91).
@@ -7257,6 +7313,8 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             peers: &peers,
             status,
             missing: &missing,
+            following: None,
+            chat: &[],
         }),
         ..Default::default()
     });
@@ -7292,6 +7350,41 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         );
         assert!(ink(&lacking, &bare, *detail) > 20, "nor where it is used");
     }
+
+    let chatting = shoot(Notices {
+        sharing: Some(0),
+        chat_unread: true,
+        share: Some(ShareNotice {
+            role: ShareRole::Joined,
+            code: None,
+            peers: &peers,
+            status,
+            missing: &[],
+            following: None,
+            chat: &chat,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&chatting, "share-panel-chat", W, H);
+    let talked = fontelle_ui::canvas::share_panel_layout_full(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Joined,
+        peers.len(),
+        0,
+        rows.len(),
+    );
+    assert_eq!(talked.chat.len(), rows.len());
+    for (row, (colour, _)) in talked.chat.iter().zip(&rows) {
+        // The speaker's bar, down the row's left edge.
+        let bar = at(&chatting, row.x + 1.0, row.y + row.height / 2.0);
+        assert!(
+            near(bar, Color(fontelle_ui::canvas::peer_colour(*colour))),
+            "a chat row has no speaker's bar"
+        );
+    }
+    assert!(ink(&chatting, &bare, talked.say) > 20, "no Chat button");
 
     // The join's question: a scrim, the words, and the safe answer weighted.
     let asked = shoot(Notices {
@@ -7532,6 +7625,9 @@ thread_local! {
     static GHOST: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
     /// Whether the next timeline shot shapes and draws its clips' names.
     static CAPTIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Everybody else in a session, for the next timeline shot.
+    static PEOPLE: std::cell::RefCell<Vec<fontelle_ui::canvas::Marks>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     static SHOT_THEME: std::cell::RefCell<Option<Theme>> = const { std::cell::RefCell::new(None) };
     /// The display's scale for the next timeline shot: laid out in points,
     /// drawn into `RW` × `RH` pixels.
@@ -9011,5 +9107,77 @@ fn on_a_150_percent_display_the_window_fills_its_surface() {
     assert!(
         near(found, Color(hats)),
         "the clip is not under the pointer at ({x}, {y}) points: {found:?}"
+    );
+}
+
+/// Everybody else in a session, on the arrangement: Bob's pointer in his
+/// colour with his name beside it, his time marker down the lanes, and Carol
+/// — off to the right — as an arrow at the edge (phase 2.2).
+#[test]
+fn somebody_elses_pointer_and_time_marker_are_drawn_in_their_colour() {
+    use fontelle_ui::canvas::{Marks, Spot, Toward, peer_colour, timeline_layout};
+    let theme = Theme::dark_default();
+    let layout = window_layout(
+        RW as f32,
+        RH as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let grid = timeline_layout(layout.timeline.body, &theme.metrics).grid;
+    let (cx, cy) = (grid.x + grid.width * 0.4, grid.y + grid.height * 0.5);
+    let playhead = grid.x + grid.width * 0.7;
+    PEOPLE.with(|slot| {
+        *slot.borrow_mut() = vec![
+            Marks {
+                peer: 1,
+                name: "Bob".into(),
+                colour: 1,
+                cursor: Some(Spot::Here { x: cx, y: cy }),
+                playhead: Some(playhead),
+                strip: None,
+                followed: false,
+                said: Some("try the chorus here".into()),
+            },
+            Marks {
+                peer: 2,
+                name: "Carol".into(),
+                colour: 2,
+                cursor: Some(Spot::Off {
+                    x: grid.right() - 10.0,
+                    y: cy,
+                    toward: Toward::Right,
+                }),
+                playhead: None,
+                strip: None,
+                followed: false,
+                said: None,
+            },
+        ]
+    });
+    let Some(shot) = shoot_timeline(&[]) else {
+        PEOPLE.with(|slot| slot.borrow_mut().clear());
+        return;
+    };
+    PEOPLE.with(|slot| slot.borrow_mut().clear());
+    dump_sized(&shot.pixels, "presence-arrangement", RW, RH);
+    let bob = Color(peer_colour(1));
+    let carol = Color(peer_colour(2));
+    assert!(
+        near(shot.at((cx + 2.0) as u32, (cy + 8.0) as u32), bob),
+        "Bob's pointer is not in his colour"
+    );
+    assert!(
+        near(
+            shot.at(
+                (playhead.round() - 1.0) as u32,
+                (grid.bottom() - 4.0) as u32
+            ),
+            bob
+        ),
+        "Bob's time marker is not down the lanes"
+    );
+    assert!(
+        near(shot.at((grid.right() - 12.0) as u32, cy as u32), carol),
+        "Carol's arrow is not at the edge"
     );
 }

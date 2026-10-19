@@ -527,6 +527,7 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
         &Chrome {
             field: None,
             panel_title: &title,
+            people: &[],
             backdrops: Default::default(),
             transport: TransportChrome {
                 layout: transport_bar_layout(layout.transport, &theme.metrics),

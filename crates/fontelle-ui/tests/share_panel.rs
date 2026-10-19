@@ -50,7 +50,9 @@ fn pressables(l: &SharePanelLayout) -> Vec<(Rect, ShareHit)> {
     for (i, row) in l.rows.iter().enumerate() {
         all.push((row.view_only, ShareHit::ViewOnly(i)));
         all.push((row.remove, ShareHit::Remove(i)));
+        all.push((row.follow, ShareHit::Follow(i)));
     }
+    all.push((l.say, ShareHit::Say));
     all.retain(|(r, _)| !r.is_empty());
     all
 }
@@ -351,4 +353,100 @@ fn a_joiner_missing_files_can_fetch_them_again() {
     assert!(host.fetch_again.is_empty(), "not to the host");
     let none = share_panel_layout_with(window, anchor(window), &metrics(), ShareRole::Joined, 1, 0);
     assert!(none.fetch_again.is_empty(), "nor with nothing missing");
+}
+
+/// Everybody's row, host's panel or joiner's, has a Follow: the view goes
+/// where that person's goes — *"one person could teach some one how to do
+/// something and they can show them"* (Ty, 2026-10-18).
+#[test]
+fn every_row_can_be_followed() {
+    for role in [ShareRole::Hosting, ShareRole::Joined] {
+        let l = share_panel_layout(wide(), anchor(wide()), &metrics(), role, 2);
+        assert_eq!(l.rows.len(), 2);
+        for (i, row) in l.rows.iter().enumerate() {
+            assert!(!row.follow.is_empty(), "{role:?} row {i}");
+            assert!(within(row.follow, row.frame));
+            assert!(
+                row.follow.intersection(&row.name).is_empty(),
+                "over the name"
+            );
+            assert!(row.follow.intersection(&row.view_only_label).is_empty());
+            let (x, y) = centre(row.follow);
+            assert_eq!(share_hit(&l, x, y), Some(ShareHit::Follow(i)));
+        }
+    }
+}
+
+// --- chat (phase 2.3) ---
+
+fn said(name: &str, text: &str) -> fontelle_ui::document::SaidLine {
+    fontelle_ui::document::SaidLine {
+        peer: 1,
+        name: name.into(),
+        colour: 1,
+        text: text.into(),
+        mine: false,
+    }
+}
+
+/// In a session the panel carries the chat — its last lines, then a way to
+/// say something — between who is here and what is going on. Alone, none.
+#[test]
+fn the_chat_sits_between_the_people_and_the_status() {
+    use fontelle_ui::canvas::share_panel_layout_full;
+    for role in [ShareRole::Hosting, ShareRole::Joined] {
+        let l = share_panel_layout_full(wide(), anchor(wide()), &metrics(), role, 2, 0, 3);
+        assert_eq!(l.chat.len(), 3, "{role:?}");
+        let last_row = l.rows.last().unwrap();
+        for line in &l.chat {
+            assert!(within(*line, l.frame));
+            assert!(line.y >= last_row.frame.bottom() - 0.5, "over the people");
+            assert!(line.bottom() <= l.status.y + 0.5, "over the status");
+        }
+        assert!(!l.say.is_empty());
+        assert!(within(l.say, l.frame));
+        assert!(l.say.intersection(&l.title).is_empty(), "over the title");
+        let (x, y) = centre(l.say);
+        assert_eq!(share_hit(&l, x, y), Some(ShareHit::Say));
+    }
+    let alone = share_panel_layout_full(
+        wide(),
+        anchor(wide()),
+        &metrics(),
+        ShareRole::Alone,
+        0,
+        0,
+        3,
+    );
+    assert!(alone.chat.is_empty() && alone.say.is_empty());
+}
+
+/// The chat's rows: each line wrapped to the width, the name on its first
+/// row, the newest at the bottom, no more than fit.
+#[test]
+fn chat_lines_wrap_and_the_newest_are_kept() {
+    use fontelle_ui::canvas::{CHAT_ROWS, chat_rows};
+    let lines = vec![
+        said("Bob", "first"),
+        said(
+            "Carol",
+            "a rather long line that will not fit on one row of the panel at all",
+        ),
+        said("Bob", "last"),
+    ];
+    let rows = chat_rows(&lines, 30);
+    assert!(rows.len() <= CHAT_ROWS);
+    assert!(
+        rows.iter().all(|(_, text)| text.chars().count() <= 30),
+        "{rows:?}"
+    );
+    assert_eq!(rows.last().unwrap().1, "Bob: last");
+    assert!(
+        rows.iter()
+            .any(|(_, text)| text.starts_with("Carol: a rather"))
+    );
+    let many: Vec<_> = (0..20).map(|n| said("Bob", &format!("line {n}"))).collect();
+    let rows = chat_rows(&many, 30);
+    assert_eq!(rows.len(), CHAT_ROWS);
+    assert_eq!(rows.last().unwrap().1, "Bob: line 19");
 }

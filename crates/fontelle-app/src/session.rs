@@ -5222,7 +5222,7 @@ impl Session {
     /// The lanes, in the order the arrangement stacks them. The same reason
     /// [`Session::channel_ids`] exists: "lane 3" has to mean one thing to the
     /// canvas and to the commands it produces.
-    fn lane_ids(&self) -> Vec<LaneId> {
+    pub fn lane_ids(&self) -> Vec<LaneId> {
         // One answer to "what is row 3", and it is the document's — see
         // `Project::lane_ids`. The arena's own order was this until rows could
         // be moved.
@@ -11540,6 +11540,51 @@ impl StudioHost for Session {
         std::mem::take(&mut self.restart_request)
     }
 
+    fn say(&mut self, text: &str) {
+        if let Some(collab) = self.collab.as_mut().filter(|c| c.is_live()) {
+            collab.say(text);
+            self.touch();
+        }
+    }
+
+    fn read_chat(&mut self) {
+        if let Some(collab) = self.collab.as_mut() {
+            collab.read_chat();
+        }
+    }
+
+    fn set_presence(&mut self, presence: fontelle_model::wire::Presence) {
+        if let Some(collab) = self.collab.as_mut().filter(|c| c.is_live()) {
+            collab.set_presence(presence);
+        }
+    }
+
+    fn presences(&self) -> Vec<fontelle_ui::document::PersonHere> {
+        let Some(collab) = self.collab.as_ref().filter(|c| c.is_live()) else {
+            return Vec::new();
+        };
+        let peers = collab.peers();
+        collab
+            .presences()
+            .into_iter()
+            .filter_map(|(peer, presence)| {
+                // The host is 0, and wears the first colour.
+                let (name, colour) = if peer == 0 {
+                    (collab.host_name()?.to_string(), 0)
+                } else {
+                    let who = peers.iter().find(|p| p.peer == peer)?;
+                    (who.name.clone(), who.colour)
+                };
+                Some(fontelle_ui::document::PersonHere {
+                    peer,
+                    name,
+                    colour,
+                    presence,
+                })
+            })
+            .collect()
+    }
+
     fn closing(&mut self) {
         if let Some(collab) = &mut self.collab {
             collab.flush(std::time::Duration::from_millis(1500));
@@ -15161,6 +15206,21 @@ impl StudioHost for Session {
 
     // ------------------------------------------------------ the arrangement ---
 
+    fn lane_order(&self) -> Vec<LaneId> {
+        self.lane_ids()
+    }
+
+    fn roll_clip(&self) -> Option<ClipId> {
+        self.project
+            .clips
+            .contains_key(self.clip)
+            .then_some(self.clip)
+    }
+
+    fn strip_tracks(&self) -> Vec<MixerTrackId> {
+        self.mixer_track_ids()
+    }
+
     fn lanes(&self) -> Vec<LaneInfo> {
         // **Through `lane_ids`**, which is the order the arrangement stacks
         // them — not the arena's. `clips()` below already indexes rows by
@@ -18122,6 +18182,20 @@ impl Session {
                 }
             }
         };
+        let chat = collab
+            .chat()
+            .into_iter()
+            .map(|line| fontelle_ui::document::SaidLine {
+                colour: peers
+                    .iter()
+                    .find(|p| p.peer == line.peer)
+                    .map_or((line.peer % 8) as u8, |p| p.colour),
+                peer: line.peer,
+                name: line.name,
+                text: line.text,
+                mine: line.mine,
+            })
+            .collect();
         SessionView {
             role,
             code: collab.code(),
@@ -18130,6 +18204,8 @@ impl Session {
             view_only: collab.view_only(),
             status,
             missing: Vec::new(),
+            chat,
+            unread: collab.chat_unread(),
         }
     }
 }

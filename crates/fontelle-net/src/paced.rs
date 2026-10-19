@@ -132,7 +132,26 @@ impl<T: Transport> Paced<T> {
 
 impl<T: Transport> Transport for Paced<T> {
     fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
-        self.waiting.push_back((peer, channel, bytes.to_vec()));
+        if channel == Channel::Reliable {
+            self.waiting.push_back((peer, channel, bytes.to_vec()));
+        } else {
+            // Fire-and-forget is small and worth something only now —
+            // where somebody's pointer is — so it goes ahead of whatever
+            // reliable is waiting, after any fire-and-forget already there:
+            // a cursor that waited behind a song's samples arrived seconds
+            // late. A sequenced one replaces an older one still waiting,
+            // since only the newest matters. The pace still counts them.
+            if channel == Channel::UnreliableSequenced {
+                self.waiting
+                    .retain(|(p, c, _)| !(*p == peer && *c == Channel::UnreliableSequenced));
+            }
+            let ahead = self
+                .waiting
+                .iter()
+                .take_while(|(_, c, _)| *c != Channel::Reliable)
+                .count();
+            self.waiting.insert(ahead, (peer, channel, bytes.to_vec()));
+        }
         self.flush();
     }
 

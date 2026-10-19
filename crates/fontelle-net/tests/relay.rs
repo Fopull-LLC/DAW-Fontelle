@@ -939,3 +939,86 @@ fn a_song_crosses_floptle_cloud_at_fontelles_pace() {
         Relay::Cloud.pace() / 1024
     );
 }
+
+/// A link that remembers, in order, the first byte of everything it sends.
+struct Order {
+    sent: Arc<Mutex<Vec<(Channel, u8)>>>,
+}
+
+impl Transport for Order {
+    fn send(&mut self, _: PeerId, channel: Channel, bytes: &[u8]) {
+        self.sent.lock().unwrap().push((channel, bytes[0]));
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        Vec::new()
+    }
+    fn stats(&self, _: PeerId) -> fontelle_net::LinkStats {
+        fontelle_net::LinkStats::default()
+    }
+}
+
+/// Where somebody's pointer is goes on the sequenced channel: only the
+/// newest matters. It does not wait behind a song's samples on their way
+/// out — a cursor seconds late is worse than none — and a newer one replaces
+/// an older still waiting, so a busy link sends the latest, once.
+#[test]
+fn a_sequenced_message_does_not_wait_behind_a_file() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let clock = Arc::new(Mutex::new(Duration::ZERO));
+    let ticking = clock.clone();
+    let mut paced = Paced::with_clock(
+        Order { sent: sent.clone() },
+        100 * 1024,
+        Box::new(move || *ticking.lock().unwrap()),
+    );
+    // A file: far more than a helping, most of it left waiting.
+    for _ in 0..40 {
+        paced.send(SERVER, Channel::Reliable, &[0u8; 8 * 1024]);
+    }
+    let before = sent.lock().unwrap().len();
+    paced.send(SERVER, Channel::UnreliableSequenced, &[1, 0, 0]);
+    paced.send(SERVER, Channel::UnreliableSequenced, &[2, 0, 0]);
+    *clock.lock().unwrap() += Duration::from_millis(100);
+    paced.poll();
+    let sent = sent.lock().unwrap();
+    let next = &sent[before..];
+    assert_eq!(
+        next.first(),
+        Some(&(Channel::UnreliableSequenced, 2)),
+        "the newest whereabouts go next: {next:?}"
+    );
+    assert!(
+        !sent.contains(&(Channel::UnreliableSequenced, 1)),
+        "the older whereabouts are never sent"
+    );
+}
+
+/// Fire-and-forget messages are small and only worth anything now — several
+/// people's whereabouts passed on by a host — so they too go ahead of a file,
+/// in the order they were given, none of them merged away.
+#[test]
+fn unreliable_messages_go_ahead_of_a_file_in_order() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let clock = Arc::new(Mutex::new(Duration::ZERO));
+    let ticking = clock.clone();
+    let mut paced = Paced::with_clock(
+        Order { sent: sent.clone() },
+        100 * 1024,
+        Box::new(move || *ticking.lock().unwrap()),
+    );
+    for _ in 0..40 {
+        paced.send(SERVER, Channel::Reliable, &[0u8; 8 * 1024]);
+    }
+    let before = sent.lock().unwrap().len();
+    paced.send(SERVER, Channel::Unreliable, &[1, 0, 0]);
+    paced.send(SERVER, Channel::Unreliable, &[2, 0, 0]);
+    *clock.lock().unwrap() += Duration::from_millis(100);
+    paced.poll();
+    let sent = sent.lock().unwrap();
+    assert_eq!(
+        &sent[before..before + 2],
+        &[(Channel::Unreliable, 1), (Channel::Unreliable, 2)],
+        "{:?}",
+        &sent[before..]
+    );
+}

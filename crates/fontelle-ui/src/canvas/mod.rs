@@ -24,6 +24,7 @@ mod piano_roll;
 mod plugin_menu;
 mod preedit;
 mod prefabs;
+mod presence;
 mod preset_bar;
 mod rack;
 mod roll_scale;
@@ -149,6 +150,11 @@ pub use overlays::{
 pub use plugin_menu::{
     NEXT_PRESET, PREVIOUS_PRESET, PluginMenuInput, PluginMenuKey, PluginMenuOutcome, PluginMenuRow,
     PluginPresetMenu, SHOW_IN_BROWSER, plugin_preset_menu,
+};
+pub use presence::{
+    Marks, Places, SAID_SECONDS, Spot, Toward, arrangement_playhead_x, arrangement_pointer,
+    arrangement_spot, follow_roll, follow_timeline, person_marks, roll_pointer, roll_spot,
+    said_bubble, seen_roll, seen_timeline,
 };
 pub use preset_bar::{
     NO_PRESET, PLUGIN_HEADER_HEIGHT, PLUGIN_PRESETS_HEADING, PRESET_MENU_HEADING, PluginHeaderView,
@@ -283,11 +289,12 @@ pub use roll_scale::{
     scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
 };
 pub use share::{
-    COPY_CODE, ChoicePromptLayout, FETCH_AGAIN, JOIN_A_SONG, JOIN_INSTEAD, LEAVE_SESSION,
-    MISSING_HERE, NOBODY_YET, PEER_COLOURS, PeerRowLayout, REMOVE_PEER, SHARE_THIS_SONG,
-    STOP_SHARING, ShareHit, SharePanelLayout, ShareRole, VIEW_ONLY, choice_prompt_hit,
-    choice_prompt_layout, end_session_question, missing_more_words, peer_colour, share_dot,
-    share_hit, share_panel_layout, share_panel_layout_with, share_panel_words, status_lines,
+    CHAT_ROWS, COPY_CODE, ChoicePromptLayout, FETCH_AGAIN, FOLLOW, FOLLOWING, JOIN_A_SONG,
+    JOIN_INSTEAD, LEAVE_SESSION, MISSING_HERE, NOBODY_YET, PEER_COLOURS, PeerRowLayout,
+    REMOVE_PEER, SAY_SOMETHING, SHARE_THIS_SONG, STOP_SHARING, ShareHit, SharePanelLayout,
+    ShareRole, VIEW_ONLY, chat_rows, choice_prompt_hit, choice_prompt_layout, end_session_question,
+    missing_more_words, peer_colour, share_chat_rows, share_dot, share_hit, share_panel_layout,
+    share_panel_layout_full, share_panel_layout_with, share_panel_words, status_lines,
 };
 pub use singer_panel::{
     CARD_HEADING, FOOTNOTE_HEIGHT, SINGER_PANEL_PAD, SINGER_PANEL_SIZE, SINGER_PICTURE_HEIGHT,

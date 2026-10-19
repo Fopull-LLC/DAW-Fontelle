@@ -1740,6 +1740,68 @@ fn msg_variant_order_is_pinned() {
         }),
         20
     );
+    // The next update: where everybody is in the song.
+    assert_eq!(
+        tag(&Msg::Presence {
+            peer: 0,
+            presence: Default::default()
+        }),
+        21
+    );
+    // And what they say to each other.
+    assert_eq!(
+        tag(&Msg::Chat {
+            peer: 0,
+            text: "hi".into()
+        }),
+        22
+    );
+}
+
+/// Where somebody is goes across as the song's own positions — a lane and a
+/// tick, a clip and a key — never as pixels, so each studio draws it through
+/// its own zoom and scroll; and it comes out as it went in.
+#[test]
+fn whereabouts_cross_the_wire_in_the_songs_terms() {
+    use fontelle_model::wire::{Msg, Pointer, Presence, Seen, SeenEditor};
+    let studio = a_studio();
+    let lane = studio.project.lane_ids()[0];
+    let presence = Presence {
+        pointer: Some(Pointer::Arrangement {
+            tick: 1234.5,
+            lane,
+            down: 0.25,
+        }),
+        seen: Seen {
+            first_tick: 960.0,
+            ticks: 15_360.0,
+            top_lane: Some(lane),
+            lane_offset: 0.5,
+            editor: SeenEditor::Roll {
+                clip: studio.notes_clip,
+                first_tick: 0.0,
+                ticks: 3840.0,
+                top_key: 84.0,
+            },
+        },
+        playhead: 480.0,
+        playing: true,
+    };
+    let msg = Msg::Presence {
+        peer: 2,
+        presence: presence.clone(),
+    };
+    let _ = &msg;
+    let bytes = msg.to_bytes();
+    assert!(bytes.len() < 120, "small enough to send 15 times a second");
+    let Ok(Msg::Presence {
+        peer,
+        presence: back,
+    }) = Msg::from_bytes(&bytes)
+    else {
+        panic!("not whereabouts");
+    };
+    assert_eq!((peer, back), (2, presence));
 }
 
 /// §8.2 and F52: an edit rides inside a postcard message as the JSON the

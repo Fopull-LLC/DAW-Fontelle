@@ -3409,3 +3409,34 @@ fn leaving_yourself_is_a_line_not_a_card() {
     pair.settle();
     assert!(end_card(&pair.host).is_none());
 }
+
+// --- presence (phase 2.2) ---
+
+/// Whereabouts set in one studio are listed in the other, under the name
+/// and colour the Share panel gives that person.
+#[test]
+fn whereabouts_are_listed_with_who_they_are() {
+    let mut pair = Pair::joined("presence-names", 2);
+    let lane = pair.joiner.lane_ids()[1];
+    let presence = fontelle_model::wire::Presence {
+        pointer: Some(fontelle_model::wire::Pointer::Arrangement {
+            tick: 960.0,
+            lane,
+            down: 0.5,
+        }),
+        ..Default::default()
+    };
+    pair.joiner.set_presence(presence.clone());
+    pair.host
+        .set_presence(fontelle_model::wire::Presence::default());
+    pair.settle();
+    let here = pair.host.presences();
+    assert_eq!(here.len(), 1, "{here:?}");
+    assert_eq!(here[0].name, "Bob");
+    assert_eq!(here[0].presence, presence);
+    let bob = pair.host.session_peers()[0].clone();
+    assert_eq!(here[0].colour, bob.colour);
+    let there = pair.joiner.presences();
+    assert_eq!(there.len(), 1);
+    assert_eq!(there[0].name, "Alice");
+}

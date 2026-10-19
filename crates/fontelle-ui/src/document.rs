@@ -1309,6 +1309,10 @@ pub struct SessionView {
     pub view_only: bool,
     /// One line for the panel: who is fetching what, or why it ended.
     pub status: String,
+    /// What everybody has said, oldest first, and how many lines from
+    /// somebody else are unread.
+    pub chat: Vec<SaidLine>,
+    pub unread: usize,
     /// What the song uses that this computer has not got — plugins, and
     /// files that could not be had — each with where the song uses it.
     pub missing: Vec<MissingItem>,
@@ -1321,6 +1325,27 @@ pub struct SessionView {
 pub struct MissingItem {
     pub what: String,
     pub detail: String,
+}
+
+/// A line of the session's chat, as the Share panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaidLine {
+    pub peer: u16,
+    pub name: String,
+    /// Which of [`crate::canvas::PEER_COLOURS`] marks them.
+    pub colour: u8,
+    pub text: String,
+    pub mine: bool,
+}
+
+/// Somebody else in the session, and where they are in the song.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersonHere {
+    pub peer: u16,
+    pub name: String,
+    /// Which of [`crate::canvas::PEER_COLOURS`] marks them.
+    pub colour: u8,
+    pub presence: fontelle_model::wire::Presence,
 }
 
 /// A question a session asks, with more answers than the confirm card has.
@@ -1952,6 +1977,16 @@ pub trait StudioHost: DocumentHost {
         Err("Restart Fontelle to finish".to_string())
     }
     fn take_session_notices(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Says `text` to everybody in the session.
+    fn say(&mut self, _text: &str) {}
+    /// This person has seen the chat.
+    fn read_chat(&mut self) {}
+    /// Where this person is in the song now — the session sends it on.
+    fn set_presence(&mut self, _presence: fontelle_model::wire::Presence) {}
+    /// Where everybody else in the session is.
+    fn presences(&self) -> Vec<PersonHere> {
         Vec::new()
     }
     /// The name the first Share or Join should ask for, while nobody has typed
@@ -3585,6 +3620,18 @@ pub trait StudioHost: DocumentHost {
     // --- the arrangement ---
     /// The lanes, in the order the arrangement stacks them.
     fn lanes(&self) -> Vec<LaneInfo>;
+    /// The same lanes' ids, top row first — what a place in the song names.
+    fn lane_order(&self) -> Vec<fontelle_types::LaneId> {
+        Vec::new()
+    }
+    /// The clip the roll has open.
+    fn roll_clip(&self) -> Option<ClipId> {
+        None
+    }
+    /// The mixer strips' tracks, in strip order.
+    fn strip_tracks(&self) -> Vec<fontelle_types::MixerTrackId> {
+        Vec::new()
+    }
     /// Every clip in the project, flattened for the canvas.
     fn clips(&self) -> Vec<ClipInfo>;
     /// Applies one arrangement edit as a command, recording it in the history.

@@ -539,3 +539,222 @@ fn closing_waits_a_moment_for_the_goodbye() {
     collab.flush(Duration::from_secs(1));
     assert!(!collab.flushing(), "the goodbye is still waiting");
 }
+
+// --- presence (next update, phase 2.2) ---
+
+fn at(tick: f64) -> fontelle_model::wire::Presence {
+    fontelle_model::wire::Presence {
+        playhead: tick,
+        ..Default::default()
+    }
+}
+
+fn whereabouts(side: &Side) -> Vec<(u16, f64)> {
+    side.collab
+        .presences()
+        .into_iter()
+        .map(|(peer, presence)| (peer, presence.playhead))
+        .collect()
+}
+
+#[test]
+fn whereabouts_reach_the_other_side() {
+    let mut two = Two::new("whereabouts", 2);
+    two.joiner.collab.set_presence(at(480.0));
+    two.host.collab.set_presence(at(960.0));
+    two.settle();
+    let joiner = match &two.joiner.collab.role {
+        Role::Joiner(joiner) => joiner.space,
+        Role::Host(_) => unreachable!(),
+    };
+    assert_eq!(whereabouts(&two.host), vec![(joiner, 480.0)]);
+    assert_eq!(whereabouts(&two.joiner), vec![(0, 960.0)]);
+}
+
+/// The session holds everything from outside while a drag is in the hand
+/// (F17) — and used to hold where everybody was with it, so every cursor
+/// froze for as long as anybody dragged anything.
+#[test]
+fn whereabouts_keep_coming_during_a_drag() {
+    let mut two = Two::new("whereabouts-drag", 2);
+    two.host.collab.options.idle_break = Duration::from_secs(600);
+    let track = a_track_that_is_not_the_master(&two.host.doc);
+    // A step of a drag, applied and left in the hand.
+    two.host
+        .history
+        .apply(
+            Box::new(AddInsert::new(track, EffectKind::Eq)),
+            &mut two.host.doc,
+        )
+        .unwrap();
+    assert!(two.host.history.gesture_in_hand());
+    two.joiner.collab.set_presence(at(1920.0));
+    two.settle();
+    assert_eq!(
+        whereabouts(&two.host).first().map(|w| w.1),
+        Some(1920.0),
+        "the cursor froze under the drag"
+    );
+    assert!(two.host.history.gesture_in_hand(), "the drag is still held");
+}
+
+/// Fifteen times a second at most, and only when something moved: a pointer
+/// held still sends nothing.
+#[test]
+fn whereabouts_go_when_they_change_and_no_faster_than_fifteen_a_second() {
+    let mut two = Two::new("whereabouts-rate", 2);
+    two.joiner.collab.set_presence(at(1.0));
+    let first = two.joiner.collab.presence_sent();
+    for _ in 0..20 {
+        two.joiner.collab.set_presence(at(1.0));
+        two.joiner.pump();
+    }
+    assert_eq!(two.joiner.collab.presence_sent(), first + 1, "still sends");
+    two.joiner.collab.set_presence(at(2.0));
+    two.joiner.pump();
+    two.joiner.collab.set_presence(at(3.0));
+    two.joiner.pump();
+    assert_eq!(
+        two.joiner.collab.presence_sent(),
+        first + 1,
+        "sent again within a fifteenth of a second"
+    );
+    std::thread::sleep(Duration::from_millis(70));
+    two.joiner.pump();
+    assert_eq!(two.joiner.collab.presence_sent(), first + 2);
+    two.settle();
+    assert_eq!(whereabouts(&two.host).first().map(|w| w.1), Some(3.0));
+}
+
+/// Three studios: whereabouts go through the host, since joiners only talk
+/// to it, and somebody who leaves takes theirs with them.
+#[test]
+fn whereabouts_go_round_through_the_host_and_leave_with_their_owner() {
+    let mut two = Two::new("whereabouts-three", 2);
+    let dir = two.dir.join("carol");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut carol = Side {
+        collab: Collab::join(Box::new(two.hub.connect()), options("Carol"), dir),
+        doc: Project::new("nothing yet"),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    let tick = |two: &mut Two, carol: &mut Side| {
+        two.tick();
+        carol.pump()
+    };
+    for _ in 0..60 {
+        tick(&mut two, &mut carol);
+    }
+    let mut effects = carol
+        .collab
+        .answer(JoinAnswer::Copy, &mut carol.history)
+        .unwrap();
+    for _ in 0..200 {
+        effects.extend(tick(&mut two, &mut carol));
+        if let Some(path) = std::mem::take(&mut effects)
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Open(path) => Some(path),
+                _ => None,
+            })
+        {
+            carol.doc = fontelle_model::load_project(&path).unwrap();
+            let Side {
+                collab,
+                doc,
+                history,
+                place,
+            } = &mut carol;
+            collab.went_live(doc, history, place);
+        }
+    }
+    assert!(carol.collab.is_live());
+    two.joiner.collab.set_presence(at(7.0));
+    for _ in 0..60 {
+        tick(&mut two, &mut carol);
+    }
+    let bob = match &two.joiner.collab.role {
+        Role::Joiner(joiner) => joiner.space,
+        Role::Host(_) => unreachable!(),
+    };
+    assert_eq!(whereabouts(&carol), vec![(bob, 7.0)]);
+    two.joiner
+        .collab
+        .leave(&mut two.joiner.doc, &mut two.joiner.history);
+    for _ in 0..60 {
+        tick(&mut two, &mut carol);
+    }
+    assert!(whereabouts(&carol).is_empty(), "{:?}", whereabouts(&carol));
+    assert!(whereabouts(&two.host).is_empty());
+}
+
+// --- chat (phase 2.3) ---
+
+fn lines(side: &Side) -> Vec<(String, String)> {
+    side.collab
+        .chat()
+        .into_iter()
+        .map(|line| (line.name, line.text))
+        .collect()
+}
+
+/// What one person says reaches everybody, under their name, in the order
+/// it was said — and their own line is in their own list at once.
+#[test]
+fn what_is_said_reaches_everybody_in_order() {
+    let mut two = Two::new("chat", 2);
+    two.joiner.collab.say("hi Alice");
+    assert_eq!(
+        lines(&two.joiner),
+        vec![("Joiner".to_string(), "hi Alice".to_string())],
+        "your own line shows at once"
+    );
+    two.settle();
+    two.host.collab.say("  hey  ");
+    two.settle();
+    let both = vec![
+        ("Joiner".to_string(), "hi Alice".to_string()),
+        ("Host".to_string(), "hey".to_string()),
+    ];
+    assert_eq!(lines(&two.host), both);
+    assert_eq!(lines(&two.joiner), both);
+    assert!(two.joiner.collab.chat()[0].mine);
+    assert!(!two.host.collab.chat()[0].mine);
+}
+
+/// Nothing is said by a blank line, a novel is cut short, and only the
+/// last two hundred lines are kept.
+#[test]
+fn chat_keeps_a_sensible_amount() {
+    let mut two = Two::new("chat-limits", 2);
+    two.joiner.collab.say("   ");
+    assert!(two.joiner.collab.chat().is_empty());
+    two.joiner.collab.say(&"a".repeat(2000));
+    assert_eq!(
+        two.joiner.collab.chat()[0].text.chars().count(),
+        CHAT_LONGEST
+    );
+    for n in 0..250 {
+        two.host.collab.say(&format!("line {n}"));
+    }
+    two.settle();
+    let kept = two.joiner.collab.chat();
+    assert_eq!(kept.len(), CHAT_KEPT);
+    assert_eq!(kept.last().unwrap().text, "line 249");
+}
+
+/// A line from somebody else is unread until the person looks.
+#[test]
+fn a_line_from_somebody_else_is_unread_until_looked_at() {
+    let mut two = Two::new("chat-unread", 2);
+    two.joiner.collab.say("psst");
+    two.settle();
+    assert_eq!(two.host.collab.chat_unread(), 1);
+    assert_eq!(two.joiner.collab.chat_unread(), 0, "your own line is read");
+    two.host.collab.read_chat();
+    assert_eq!(two.host.collab.chat_unread(), 0);
+}

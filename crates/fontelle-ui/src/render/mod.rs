@@ -17,6 +17,7 @@
 mod analyze;
 mod analyze_pages;
 mod bridge;
+mod people;
 pub mod singer_panel;
 pub mod vocal;
 
@@ -69,6 +70,8 @@ pub struct Notices<'a> {
     /// While this studio is in a session: the host's colour, for the dot on
     /// the Share button.
     pub sharing: Option<u8>,
+    /// Somebody has said something this person has not read: a second dot.
+    pub chat_unread: bool,
 }
 
 /// What the Share panel says. See [`crate::canvas::share_panel_layout`].
@@ -80,6 +83,10 @@ pub struct ShareNotice<'a> {
     pub status: &'a str,
     /// What the song uses that this computer has not got (F91).
     pub missing: &'a [crate::document::MissingItem],
+    /// Whom this studio is following, by their number.
+    pub following: Option<u16>,
+    /// The session's chat, oldest first.
+    pub chat: &'a [crate::document::SaidLine],
 }
 
 /// A question with its answers, the safe one first and weighted. See
@@ -99,6 +106,8 @@ pub struct QuestionNotice<'a> {
 /// picture testable off a GPU and off a window.
 pub struct Chrome<'a> {
     pub panel_title: &'a TextLayout,
+    /// Everybody else in a session, where they are (`canvas::person_marks`).
+    pub people: &'a [crate::canvas::Marks],
     /// The theme's pictures, decoded, by [`crate::theme::BackdropPanel`]:
     /// the arrangement's, the roll's and the mixer's, each with how strongly
     /// it shows.
@@ -997,6 +1006,15 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         }
     }
     draw_editor_tabs(scene, theme, chrome);
+    // Everybody else in the session, over the canvases they point at and
+    // under every page, menu and card.
+    people::draw_people(
+        scene,
+        theme,
+        chrome.labels,
+        chrome.people,
+        chrome.timeline.as_ref().map(|t| &t.layout),
+    );
 
     draw_text(
         scene,
@@ -1057,6 +1075,19 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         if !dot.is_empty() {
             let [r, g, b, a] = crate::canvas::peer_colour(colour);
             fill_rect_rounded(scene, dot, dot.width / 2.0, Color::rgba(r, g, b, a));
+        }
+        // Something said and not yet read: the same dot at the other corner,
+        // in the accent.
+        if chrome.notices.chat_unread && !dot.is_empty() {
+            let share = chrome.transport.layout.share;
+            let unread = Rect::new(
+                share.x + (share.right() - dot.right()),
+                dot.y,
+                dot.width,
+                dot.height,
+            );
+            fill_rect_rounded(scene, unread, unread.width / 2.0, theme.palette.accent);
+            stroke_rect_rounded(scene, unread, unread.width / 2.0, 1.0, theme.palette.window);
         }
     }
     if let Some(share) = &chrome.notices.share {
@@ -2378,16 +2409,18 @@ fn draw_share_panel(
     anchor: Rect,
     share: &ShareNotice<'_>,
 ) {
-    use crate::canvas::{COPY_CODE, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
+    use crate::canvas::{COPY_CODE, FOLLOW, FOLLOWING, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
     let p = &theme.palette;
     let m = &theme.metrics;
-    let l = crate::canvas::share_panel_layout_with(
+    let rows = crate::canvas::share_chat_rows(window, anchor, m, share.role, share.chat);
+    let l = crate::canvas::share_panel_layout_full(
         window,
         anchor,
         m,
         share.role,
         share.peers.len(),
         share.missing.len(),
+        rows.len(),
     );
     if l.frame.is_empty() {
         return;
@@ -2420,6 +2453,23 @@ fn draw_share_panel(
             Color::rgba(r, g, b, a),
         );
         draw_line(scene, labels, &peer.name, row.name, p.text);
+        if !row.follow.is_empty() {
+            if share.following == Some(peer.peer) {
+                fill_rect_rounded(scene, row.follow, row.follow.height / 2.0, p.accent);
+                if let Some(shaped) = labels.get(FOLLOWING) {
+                    draw_text_clipped(
+                        scene,
+                        shaped,
+                        row.follow,
+                        row.follow.x + (row.follow.width - shaped.width) / 2.0,
+                        row.follow.y + (row.follow.height - shaped.height) / 2.0,
+                        p.window,
+                    );
+                }
+            } else {
+                draw_welcome_button(scene, theme, labels, FOLLOW, row.follow, false);
+            }
+        }
         if !row.view_only.is_empty() {
             draw_line(scene, labels, VIEW_ONLY, row.view_only_label, p.text_muted);
             // The settings page's switch, so it reads as one.
@@ -2460,6 +2510,32 @@ fn draw_share_panel(
                 p.text_muted,
             );
         }
+    }
+    for (rect, (colour, text)) in l.chat.iter().zip(&rows) {
+        let [r, g, b, a] = crate::canvas::peer_colour(*colour);
+        // A thin bar in the speaker's colour down the left of their rows.
+        fill_rect(
+            scene,
+            Rect::new(rect.x, rect.y + 3.0, 2.0, (rect.height - 6.0).max(0.0)),
+            Color::rgba(r, g, b, a),
+        );
+        let text_rect = Rect::new(
+            rect.x + 6.0,
+            rect.y,
+            (rect.width - 6.0).max(0.0),
+            rect.height,
+        );
+        draw_line(scene, labels, text, text_rect, p.text);
+    }
+    if !l.say.is_empty() {
+        draw_welcome_button(
+            scene,
+            theme,
+            labels,
+            crate::canvas::SAY_SOMETHING,
+            l.say,
+            false,
+        );
     }
     if !l.nobody.is_empty() {
         draw_line(scene, labels, NOBODY_YET, l.nobody, p.text_muted);
