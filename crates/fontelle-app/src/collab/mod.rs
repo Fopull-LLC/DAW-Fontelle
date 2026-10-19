@@ -622,7 +622,14 @@ impl Collab {
             }
             answer => {
                 joiner.answer = Some(answer);
-                Ok(joiner.finish().into_iter().collect())
+                match joiner.finish() {
+                    Ok(effect) => Ok(effect.into_iter().collect()),
+                    Err(why) => {
+                        send(self.transport.as_mut(), SERVER, &Msg::Bye);
+                        self.end(why, history);
+                        Ok(Vec::new())
+                    }
+                }
             }
         }
     }
@@ -1502,7 +1509,13 @@ impl Joiner {
             }
         }
         if self.stage == Stage::Asking {
-            turn.effects.extend(self.finish());
+            match self.finish() {
+                Ok(effect) => turn.effects.extend(effect),
+                Err(why) => {
+                    send(turn.transport, SERVER, &Msg::Bye);
+                    return Some(why);
+                }
+            }
         }
         None
     }
@@ -1897,22 +1910,32 @@ impl Joiner {
         *doc = rebuilt;
     }
 
-    /// Writes the join's copy once there is both an answer and a whole song.
-    fn finish(&mut self) -> Option<Effect> {
-        let answer = self.answer.clone()?;
-        let (hash, _) = self.snapshot_done?;
-        let head = self.head.clone()?;
-        if self.stage != Stage::Asking {
-            return None;
-        }
-        let song: Project = match serde_json::from_slice(&self.snapshot) {
-            Ok(song) => song,
-            Err(e) => {
-                return Some(Effect::Say(format!("The song did not arrive whole: {e}")));
-            }
+    /// Writes the join's copy once there is both an answer and a whole song;
+    /// a song that cannot be used ends the join, and says why.
+    ///
+    /// It used to be a line on the status bar, and the panel went on saying
+    /// the song was on its way. Ty, joining a friend from a preview build:
+    /// *"its getting stuck on this"*. Waiting cannot mend it — the host sends
+    /// the same song again — so the join ends where the person can see it.
+    fn finish(&mut self) -> Result<Option<Effect>, String> {
+        let (Some(answer), Some((hash, _)), Some(head)) =
+            (self.answer.clone(), self.snapshot_done, self.head.clone())
+        else {
+            return Ok(None);
         };
+        if self.stage != Stage::Asking {
+            return Ok(None);
+        }
+        // Two builds that write songs differently cannot agree on one: the
+        // likeliest cause by far, and the one thing the person can act on.
+        let mend = format!(
+            "you and {} need the same version of Fontelle. Nothing was copied.",
+            self.host_or_them()
+        );
+        let song: Project = serde_json::from_slice(&self.snapshot)
+            .map_err(|e| format!("The song did not arrive whole ({e}) \u{2014} {mend}"))?;
         if song.sync_hash() != hash {
-            return Some(Effect::Say("The song arrived damaged; join again.".into()));
+            return Err(format!("The song arrived damaged \u{2014} {mend}"));
         }
         let written = match answer {
             JoinAnswer::Copy => join::copy_in(&self.projects_dir, &song, &head, self.host_install),
@@ -1921,16 +1944,16 @@ impl Joiner {
             }
             JoinAnswer::KeepBoth(path) => join::fork(&path)
                 .and_then(|()| join::copy_in(&self.projects_dir, &song, &head, self.host_install)),
-            JoinAnswer::Pick(_) | JoinAnswer::Cancel => return None,
+            JoinAnswer::Pick(_) | JoinAnswer::Cancel => return Ok(None),
         };
-        match written {
+        Ok(Some(match written {
             Ok(path) => {
                 self.stage = Stage::Opening;
                 self.confirmed = Some(song);
-                Some(Effect::Open(path))
+                Effect::Open(path)
             }
-            Err(e) => Some(Effect::Say(format!("Could not write the copy: {e}"))),
-        }
+            Err(e) => Effect::Say(format!("Could not write the copy: {e}")),
+        }))
     }
 
     /// The copy is open as `doc`. `Some` is why the session ended instead.

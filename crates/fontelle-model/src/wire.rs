@@ -485,9 +485,15 @@ pub(crate) mod nested {
 
 // ------------------------------------------------------------- the session
 
-/// The version of the conversation below. v1 also requires the same
-/// Fontelle on both ends (§8.3), so this moves only once that is relaxed.
-pub const PROTOCOL: u32 = 1;
+/// The version of the conversation below, **and of the song as written**:
+/// two studios compare a fingerprint of the written song, so a build that
+/// writes it differently cannot share with one that does not, and is refused
+/// at the door. `fontelle-app`'s `tests/song_form.rs` fails until this moves
+/// with the song's form. The same Fontelle on both ends is also required
+/// (§8.3); this is what still tells two test builds of one version apart.
+///
+/// 2: solo is no longer written (each studio's own).
+pub const PROTOCOL: u32 = 2;
 
 /// What a shared song says about itself when somebody joins it — enough for
 /// the joiner to find its own copy and say which is newer (§4.3).

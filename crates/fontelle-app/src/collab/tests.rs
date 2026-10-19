@@ -343,3 +343,102 @@ fn a_disagreement_asks_for_one_fresh_copy_not_one_an_edit() {
     assert_eq!(*two.resyncs.lock().unwrap(), 1, "one fresh copy");
     assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
 }
+
+/// A joiner's link on which every song arrives with a fingerprint that is
+/// not its own — what a build that writes songs differently looks like.
+struct Damaging {
+    inner: fontelle_net::MemoryTransport,
+}
+
+impl Transport for Damaging {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        self.inner.send(peer, channel, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        self.inner
+            .poll()
+            .into_iter()
+            .map(|incoming| match incoming {
+                Incoming::Message(peer, channel, bytes) => match Msg::from_bytes(&bytes) {
+                    Ok(Msg::SnapshotDone { hash, seq }) => Incoming::Message(
+                        peer,
+                        channel,
+                        Msg::SnapshotDone {
+                            hash: hash ^ 1,
+                            seq,
+                        }
+                        .to_bytes(),
+                    ),
+                    _ => Incoming::Message(peer, channel, bytes),
+                },
+                other => other,
+            })
+            .collect()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// Ty, joining a friend from the phase 1 preview (2026-10-18): *"its
+/// getting stuck on this"* — "YapEmporium is sending the song…" for good.
+/// The preview wrote songs without their solos and the friend's 0.28.0 with
+/// them, so the fingerprints never agreed; the join said so on the status
+/// line and went on waiting.
+#[test]
+fn a_song_that_arrives_damaged_ends_the_join_and_says_why() {
+    let dir = std::env::temp_dir().join(format!("fontelle-collab-damaged-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let hub = MemoryHub::new();
+    let mut host = Side {
+        collab: Collab::host(Box::new(hub.server_endpoint()), options("Host")),
+        doc: crate::blank_project(8, 120.0, 48_000),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    host.history.open_outbox();
+    let mut joiner = Side {
+        collab: Collab::join(
+            Box::new(Damaging {
+                inner: hub.connect(),
+            }),
+            options("Joiner"),
+            dir.clone(),
+        ),
+        doc: Project::new("nothing yet"),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    let mut now = 0;
+    let mut tick = |host: &mut Side, joiner: &mut Side| {
+        now += 1;
+        hub.set_now(now);
+        host.pump();
+        joiner.pump()
+    };
+    for _ in 0..60 {
+        tick(&mut host, &mut joiner);
+    }
+    let mut effects = joiner
+        .collab
+        .answer(JoinAnswer::Copy, &mut joiner.history)
+        .unwrap();
+    for _ in 0..60 {
+        effects.extend(tick(&mut host, &mut joiner));
+    }
+    assert!(
+        !effects.iter().any(|e| matches!(e, Effect::Open(_))),
+        "a damaged song was opened"
+    );
+    let why = joiner.collab.ended().expect("the join ended");
+    assert!(why.contains("damaged"), "{why}");
+    assert!(why.contains("same version"), "{why}");
+    std::fs::remove_dir_all(&dir).ok();
+}
