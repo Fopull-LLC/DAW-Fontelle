@@ -19,7 +19,46 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
-**As of 2026-10-18 (later), latest — the next update, phase 1: shared
+**As of 2026-10-19, latest — the next update, phase 2: session controls,
+and the chord model of phase 3.** Workspace version **0.29.0-alpha.1**
+until the beta, so a test build is refused by a release at the door.
+`PROTOCOL` is 2 and moves with what a song writes
+(`fontelle-app/tests/song_form.rs` + `song_form.txt`, `FONTELLE_BLESS=1`).
+
+- **Join**: a song that arrives damaged ends the join with a sentence
+  (Ty: *"its getting stuck on this"* — preview vs. 0.28.0 disagreed on the
+  hash after solo stopped being written).
+- **Endings**: somebody else ending a session is a card (`end_card`,
+  Save / Keep working), not a toast; the copy is dirty when the agreed
+  revision changed; an ended `Collab` drops its transport once the goodbye
+  is out (`Closed`), and closing the window flushes it (`closing`).
+- **Presence** (`Msg::Presence`, `canvas::presence`): places in the song,
+  never pixels — `arrangement_pointer/spot`, `roll_pointer/spot`,
+  `person_marks`; pointers with names, edge arrows, time markers, a lit
+  strip; still received while a drag holds everything else
+  (`Turn::incoming`); newcomers told where everybody is. **Follow** on a
+  person's Share row (`follow_timeline/roll`); own input lets go.
+  **Floptle Cloud drops datagrams both ways** (by hand:
+  `unreliable_crosses_floptle_cloud`), so relay legs carry fire-and-forget
+  reliably (`fontelle_net::Reliably`); the pace still puts it ahead of
+  files (`Paced::send`).
+- **Chat** (`Msg::Chat`): last lines in the Share panel, Chat… prompt
+  (stays open; Escape closes it before the panel), unread dot, a bubble by
+  the speaker's pointer for `SAID_SECONDS`. 200 kept, not saved.
+- **Permissions** (`Msg::Permissions`, `wire::Permissions`): Mixer /
+  Sounds / Plugins switches per person on the host's panel; the host
+  refuses what is not allowed (new files and plugins seen in the song
+  after the edit; `Edit::touches_mixer`, `Edit::changes_sound`).
+  **Removed stays out** (L6) by install id — casual, a modified build
+  could name another.
+- **Chord model** (`fontelle_types::chord`): qualities, names, numerals,
+  suggestions rooted/containing with borrowed marked, voicings/inversions
+  around the placed note, a reader for names and numerals; Analyze's chord
+  lane uses it. The strip UI is next.
+- Seen live with two studios over Floptle Cloud (nested `:99`/`:98`,
+  scratch settings): cursors, markers, chat, follow, permissions chips.
+
+**As of 2026-10-18 (later) — the next update, phase 1: shared
 songs that don't break.** Plan and Ty's decisions: `docs/next-update-plan.md`.
 On `main`, **not released**: preview build → beta → stable, Ty's word each
 step. Ty now reviews the design-bearing code; see that doc's §8.
