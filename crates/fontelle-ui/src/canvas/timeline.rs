@@ -2239,7 +2239,7 @@ impl Timeline {
         if self.view.snap == SnapDivision::Bar {
             self.meter.nearest_bar(tick)
         } else {
-            self.snapped(tick, beats_per_bar)
+            timeline_snap(&self.view, tick, beats_per_bar)
         }
     }
 

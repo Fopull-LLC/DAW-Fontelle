@@ -57,3 +57,22 @@ fn the_ruler_numbers_the_bars_from_one() {
     assert!(numbers.contains(&(8 * Q, 3)));
     assert!(numbers.contains(&(11 * Q, 4)));
 }
+
+/// A snap finer than a bar snaps as it always did; a bar snap lands on the
+/// meter's bar lines.
+#[test]
+fn the_arrangement_snaps_to_the_meters_bars_and_finer_as_before() {
+    use fontelle_ui::canvas::{SnapDivision, Timeline};
+    let mut t = Timeline::new(TimelineView {
+        snap: SnapDivision::Beat,
+        ..TimelineView::default()
+    });
+    t.set_meter(waltz_from_bar_three());
+    assert_eq!(t.snapped(Q + 100, 4), Q);
+    t.view.snap = SnapDivision::Bar;
+    assert_eq!(
+        t.snapped(10 * Q, 4),
+        11 * Q,
+        "a 3/4 bar line, not a 4/4 one"
+    );
+}
