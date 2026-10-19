@@ -19,6 +19,47 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — the next update, phases 3–5, all on `main`, not
+released.** With phase 6 below, everything in `docs/next-update-plan.md` is
+built; next is Ty's beta.
+
+- **Smart chords** (`canvas::chord_strip`, roll chips *chords* / *in key*,
+  **H** / **K** — keys picked here, not yet confirmed by Ty): click a note,
+  the strip offers chords rooted on it or containing it; a chip auditions
+  (all voices, `CHORD_HEARD_FOR`) and writes the voicing as one undo
+  (`RollEdit::Insert`); Type… reads a name or numeral. The strip sits clear
+  of every chip's keys. *In key* keeps drawn notes on the scale.
+- **Find my scale** (`fontelle_types::find_scales`): the scale menu ranks
+  scales by the song's notes (drums skipped); hovering a row previews its
+  shading and rings the notes outside it; a click sets the key.
+- **Ruler zoom**: the wheel over the arrangement ruler, the roll's ruler
+  and the song strip zooms about the pointer.
+- **Notes sound when placed** (Settings ▸ Editing, off by default).
+- **Analyze** in an audio clip's header. **Delete flecks**
+  (`canvas::particles`, only when Effects is Moving). **Monitor** per
+  track (`MixerTrack::monitor`, written only when off; a silent monitor
+  still drains its input). **Unplug** a cable by pulling it off a jack
+  (`cable_unplugs`). **Several lanes** at once: Shift range, Ctrl toggle;
+  mute, solo, move and remove act on the set.
+- **The meter** (`fontelle_types::meter`, `Project::meter_changes`,
+  `SetMeterChange`): signature changes on bar lines, from the signature
+  box's menu; the grid, bar numbers, read-out, roll and MIDI export count
+  by it. Not yet: the metronome's accent and hosted plugins still hear the
+  song's own signature; flags cannot be dragged; the song's own bottom is
+  4.
+- **The theme editor** (`canvas::theme_editor`, `app/theme_editor.rs`,
+  `render/theme_editor.rs`): Settings ▸ Appearance ▸ *Edit this theme…*.
+  A working copy worn live; Save keeps it (a built-in becomes "… (mine)"),
+  Close puts the saved look back. Colours by name with a picker; per-section
+  layer stacks (add colour/gradient/shader, reorder, remove, opacity,
+  speed, gradient ends); a shader's WGSL on a code card, checked with naga
+  each edit — shown when it compiles, the author's line named when not
+  (`backdrop::shader_problem`). The shader stays text, so a node graph
+  later only has to write WGSL. `apply_theme` decodes backdrops only when
+  they changed (a picker drag over a picture theme stuttered otherwise).
+  Tests: `fontelle-ui/tests/theme_editor.rs`,
+  `fontelle-app/tests/theme_editor_window.rs`; seen on `:99`.
+
 **2026-10-19 — the next update, phase 6: Discord status, built and
 inert.** `fontelle-app/src/discord.rs` speaks Discord's local protocol by
 hand (no new crate): the socket/pipe paths (Flatpak and Snap folders
