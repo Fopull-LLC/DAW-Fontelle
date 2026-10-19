@@ -360,6 +360,62 @@ dependency.
 
 ---
 
+## 6b. Added 2026-10-18 — time signature changes, and the wheel over a ruler
+
+### Time signature changes
+
+> *"right clicking the time signature thing up top and a context menu says
+> change time signature point ... it lets you place a point in your
+> arrangement where the time signature changes and clicking on that
+> highlights the time signature button to let you change it ... the project
+> time signature i guess would be considered the default."*
+
+**Where the code stands.** A song has one signature, and only its top
+number: `Project::beats_per_bar: u32`; the bottom number is always 4 (the
+comment at `project.rs:296` names a "time-signature track" as the known
+gap). About 150 places read that one number — the grid, bar numbers, snap,
+the ruler, the metronome, the arrangement, the roll, DisgustingBeat, the
+transport hosted plugins are told, MIDI export.
+
+**Design.**
+- A **meter map** beside the tempo map: the song's signature is the first
+  entry (the "default" Ty describes), and each change is `(bar, top,
+  bottom)`. Changes sit **on bar lines** — that is how notation and every
+  DAW do it, and it is what keeps bar numbers meaningful.
+- **Bottom numbers other than 4 are possible** (6/8, 7/8, 5/16): a beat is
+  then a 1/8 or 1/16 note, `PPQN × 4 / bottom` ticks, which is whole for
+  the denominators people use (2, 4, 8, 16). The old comment's worry was
+  about redefining the tick; this does not.
+- **One API replaces the number**: `bar_at(tick)`, `tick_of_bar(bar)`,
+  `beats_in_bar(bar)`, and an iterator of bar/beat lines over a range. Every
+  caller asks *at a tick* instead of reading one global. This is the bulk
+  of the work: mechanical, but wide.
+- **The gesture, as Ty described it:** right-click the signature box →
+  *Add signature change here* (at the marker's bar). A change shows as a
+  small flag on the arrangement's ruler; clicking a flag selects it and the
+  signature box then edits *that change* (it lights to say so); clicking
+  empty ruler goes back to the song's own signature. Drag a flag to another
+  bar; right-click it to delete.
+- New commands (`SetMeterChange`, `RemoveMeterChange`) with wire forms;
+  songs without changes save exactly as today.
+
+**Caveats.** Hosted plugins are told "bar start" and the signature; a
+change mid-song has to reach them per block. MIDI export gains time
+signature events (easy). Old songs open unchanged.
+
+### The wheel over a ruler zooms
+
+> *"if i scroll my mousewheel while my mouse cursor is hovering over the time
+> bars in the arrangement or piano roll or very top, it should squish and
+> stretch"* — FL Studio's behaviour.
+
+Over the arrangement's ruler → zoom the arrangement in time about the
+pointer; over the roll's ruler → zoom the roll; over the transport bar's
+song strip at the very top → zoom the arrangement about that point of the
+song. The zoom functions already exist (`timeline_zoom_x`, `zoom_x`, both
+anchored to the pointer); this is three hit-tests in the wheel handler.
+Zooming is navigation, so it stays within the "the wheel never edits" rule.
+
 ## 7. Decisions — Ty's answers (2026-10-18)
 
 Ty agreed with the recommendations above. His calls:
