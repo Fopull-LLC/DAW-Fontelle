@@ -65,21 +65,19 @@ pub fn reveal(dir: &Path) -> Result<(), String> {
 /// The program and arguments that open `url` in the default browser.
 ///
 /// `xdg-open` and `open` take a URL as readily as a folder. Windows does not:
-/// `explorer` shows folders, and a link goes through `cmd /c start` — with an
-/// empty title first, because `start` reads its first quoted argument as a
-/// window title and a URL is quoted.
+/// `explorer` shows folders, and a link goes to the URL protocol handler
+/// through `rundll32`. It went through `cmd /c start` until the guide's
+/// report links (hub card 0427), whose addresses have `&` between fields and
+/// `%` inside them — `cmd` reads the one as "then run" and the other as a
+/// variable, so the browser got half an address and `cmd` tried to run the
+/// rest. `rundll32` hands the handler the argument as it is.
 pub fn open_url_command(url: &str) -> (&'static str, Vec<String>) {
     if cfg!(target_os = "macos") {
         ("open", vec![url.to_string()])
     } else if cfg!(target_os = "windows") {
         (
-            "cmd",
-            vec![
-                "/c".to_string(),
-                "start".to_string(),
-                String::new(),
-                url.to_string(),
-            ],
+            "rundll32",
+            vec!["url.dll,FileProtocolHandler".to_string(), url.to_string()],
         )
     } else {
         ("xdg-open", vec![url.to_string()])
@@ -103,6 +101,49 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("could not open {url}: {program} {e}"))
+}
+
+/// The system, as a bug report names it: "Windows", "macOS", or "Linux"
+/// with the distribution's own name from `os_release` (the text of
+/// `/etc/os-release`) when it gives one — a fault on Fedora is often not
+/// one on Arch. `family` is `std::env::consts::OS`.
+pub fn os_label(family: &str, os_release: Option<&str>) -> String {
+    match family {
+        "windows" => "Windows".to_string(),
+        "macos" => "macOS".to_string(),
+        "linux" => {
+            let pretty = os_release.and_then(|text| {
+                text.lines().find_map(|line| {
+                    let value = line.trim().strip_prefix("PRETTY_NAME=")?;
+                    let value = value
+                        .strip_prefix('"')
+                        .and_then(|v| v.strip_suffix('"'))
+                        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                        .unwrap_or(value)
+                        .trim();
+                    (!value.is_empty()).then(|| value.to_string())
+                })
+            });
+            match pretty {
+                Some(name) => format!("Linux ({name})"),
+                None => "Linux".to_string(),
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+/// [`os_label`] for this machine. Read when a report link is pressed, from
+/// the file every systemd-era distribution has; nothing else is looked at.
+pub fn this_os() -> String {
+    let release = if cfg!(target_os = "linux") {
+        std::fs::read_to_string("/etc/os-release")
+            .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+            .ok()
+    } else {
+        None
+    };
+    os_label(std::env::consts::OS, release.as_deref())
 }
 
 /// The programs that put text on the desktop's clipboard, in the order to

@@ -126,10 +126,10 @@ pub use gestures::{
 };
 pub use guide::{
     GUIDE, GuideChoice, GuideKind, GuideMedia, GuidePage, GuideSection, GuideTarget, HELP_CLOSE,
-    HELP_SHORTCUTS, HELP_TITLE, HelpBlock, HelpHit, HelpLayout, TOUR_BACK, TOUR_CARD_WIDTH,
-    TOUR_DONE, TOUR_MEDIA_WIDTH, TOUR_NEXT, TourHit, TourLayout, help_hit, help_layout,
-    help_scroll_max, help_scrolled, help_text_width, tour_hit, tour_layout, tour_steps,
-    tour_text_width,
+    HELP_LINKS, HELP_SHORTCUTS, HELP_TITLE, HelpBlock, HelpHit, HelpLayout, HelpLink, TOUR_BACK,
+    TOUR_CARD_WIDTH, TOUR_DONE, TOUR_MEDIA_WIDTH, TOUR_NEXT, TourHit, TourLayout, help_hit,
+    help_layout, help_scroll_max, help_scrolled, help_text_width, tour_hit, tour_layout,
+    tour_steps, tour_text_width,
 };
 pub use instrument::{
     CELL_HEIGHT, CELL_WIDTH, CHIP_HEIGHT, CHIP_WIDTH, InstrumentGroup, InstrumentLayout,
@@ -377,7 +377,9 @@ pub use voicebank_page::{
 pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,
     NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, RECENT_HEADING, REPOSITORY_LABEL,
-    REPOSITORY_URL, RecentRow, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WelcomeCredit, WelcomeHit,
-    WelcomeLayout, transfer_fraction, transfer_text, update_line, update_progress, welcome_enter,
-    welcome_hint, welcome_hit, welcome_layout, with_asio_credit, with_learn, with_recovery,
+    REPOSITORY_URL, RecentRow, SUPPORT_LINE_LAUNCH, SUPPORT_LINE_LEAD, SUPPORT_LINE_LINK,
+    SUPPORT_LINE_TEXT, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WelcomeCredit, WelcomeHit,
+    WelcomeLayout, support_line_due, transfer_fraction, transfer_text, update_line,
+    update_progress, welcome_enter, welcome_hint, welcome_hit, welcome_layout, with_asio_credit,
+    with_learn, with_recovery, with_support_line,
 };

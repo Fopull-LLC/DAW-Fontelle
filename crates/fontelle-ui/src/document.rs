@@ -1917,6 +1917,12 @@ pub trait StudioHost: DocumentHost {
     fn open_release_page(&mut self) {}
     /// A web address, in the desktop's browser — the footer's links.
     fn open_url(&mut self, _url: &str) {}
+    /// What the guide's *Report a bug* and *Request a feature* put in the
+    /// board's form: this build, this system, the song's plugin formats.
+    /// Read when one is pressed, never sent by itself.
+    fn report_environment(&self) -> crate::support::ReportEnvironment {
+        crate::support::ReportEnvironment::default()
+    }
 
     /// Bounces the whole project to a WAV inside its own `renders/` folder.
     /// `Ok` carries a line worth showing; `Err` does too.
@@ -2192,6 +2198,18 @@ pub trait StudioHost: DocumentHost {
     }
     /// Remembers that it was.
     fn set_tour_offered(&mut self) {}
+    /// How many times the studio has been launched, this one counted — for
+    /// the start menu's support line (`canvas::support_line_due`).
+    fn launch_count(&self) -> u32 {
+        0
+    }
+    /// Whether that line has been shown. `true` by default: a host that
+    /// keeps no count never says it.
+    fn support_line_said(&self) -> bool {
+        true
+    }
+    /// Remembers that it was, the moment it is shown.
+    fn set_support_line_said(&mut self) {}
 
     /// One line per settings row saying what it is for, parallel to
     /// [`settings`](Self::settings) — what the settings page writes under each

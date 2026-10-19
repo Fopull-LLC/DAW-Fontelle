@@ -142,6 +142,11 @@ pub struct WelcomeLayout {
     /// The ASIO credit — Steinberg's logo and the attribution — where ASIO
     /// is offered. See [`with_asio_credit`].
     pub asio_credit: Option<WelcomeCredit>,
+    /// *Fontelle is free…*, once, from the tenth launch — see
+    /// [`with_support_line`]. The whole line is the link.
+    pub support: Option<Rect>,
+    /// Its ×.
+    pub support_dismiss: Option<Rect>,
 }
 
 /// A credit on the card: a mark and the words beside it.
@@ -329,6 +334,8 @@ pub fn welcome_layout(
         learn_text: None,
         learn_dismiss: None,
         asio_credit: None,
+        support: None,
+        support_dismiss: None,
     }
 }
 
@@ -426,6 +433,117 @@ pub fn with_recovery(mut layout: WelcomeLayout, offer: bool) -> WelcomeLayout {
     layout
 }
 
+/// The line the card says once (hub card 0427), exactly as Ty's card has
+/// it: the words, then the address, which is drawn as the link it is.
+pub const SUPPORT_LINE_LEAD: &str = "Fontelle is free. If it has earned something, ";
+pub const SUPPORT_LINE_LINK: &str = "fopull.com/support";
+pub const SUPPORT_LINE_TEXT: &str =
+    "Fontelle is free. If it has earned something, fopull.com/support";
+/// The launch it is first due on.
+pub const SUPPORT_LINE_LAUNCH: u32 = 10;
+
+/// Whether the start menu says the line on this launch: the `launches`th,
+/// counting this one, with the line `said` before or not, a crash's work
+/// being offered back (`recovering`) or a song with `unsaved` changes open.
+///
+/// Ty: *"accessibility is the product; nothing may nag or gate. The line is
+/// a courtesy, said once."* So never before the tenth launch, never twice,
+/// and never beside work somebody could lose — a launch like that is not the
+/// moment, and the line waits for the next clean one rather than being
+/// spent on it.
+pub fn support_line_due(launches: u32, said: bool, recovering: bool, unsaved: bool) -> bool {
+    launches >= SUPPORT_LINE_LAUNCH && !said && !recovering && !unsaved
+}
+
+/// Places the line, when `show`, on its own row just above the footer and
+/// across the card — it is a sentence, and half the card would wrap it —
+/// with a × at its end. Everything else that stands on the footer (the
+/// ways in, the recovery offer, the tour's way in, the ASIO credit) is
+/// lifted by that row, and the recent rows they then cover are dropped,
+/// as [`with_learn`] drops them. Call last.
+pub fn with_support_line(
+    mut layout: WelcomeLayout,
+    metrics: &Metrics,
+    show: bool,
+) -> WelcomeLayout {
+    if !show {
+        return layout;
+    }
+    let row = metrics.row_height;
+    let lift = row + STACK_GAP;
+    let line_y = layout.footer.y - STACK_GAP - row;
+    let up = |r: &mut Rect| {
+        if !r.is_empty() {
+            r.y -= lift;
+        }
+    };
+    for r in [
+        &mut layout.new_button,
+        &mut layout.open_button,
+        &mut layout.join_button,
+        &mut layout.learn,
+    ] {
+        up(r);
+    }
+    for r in [
+        &mut layout.recover_button,
+        &mut layout.learn_card,
+        &mut layout.learn_text,
+        &mut layout.learn_dismiss,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        up(r);
+    }
+    if let Some(credit) = &mut layout.asio_credit {
+        up(&mut credit.logo);
+        up(&mut credit.text);
+    }
+    layout.message.height = (layout.message.height - lift).max(0.0);
+    // New and Open stacked may now reach the update offer: side by side on
+    // Open's row then, as `welcome_layout` does on a short card.
+    let floor = layout
+        .update_button
+        .map_or(layout.update.bottom(), |b| b.bottom())
+        + STACK_GAP;
+    if layout.new_button.y < floor && layout.new_button.y != layout.open_button.y {
+        let half = ((layout.open_button.width - BUTTON_GAP) / 2.0).max(0.0);
+        let y = layout.open_button.y;
+        layout.new_button = Rect::new(layout.open_button.x, y, half, BUTTON_HEIGHT);
+        layout.open_button = Rect::new(
+            layout.open_button.x + half + BUTTON_GAP,
+            y,
+            half,
+            BUTTON_HEIGHT,
+        );
+        layout.message.height = (layout.recover_button.map_or(layout.new_button.y, |b| b.y)
+            - BUTTON_GAP
+            - layout.message.y)
+            .max(0.0);
+    }
+    let right_top = [
+        layout.learn_card.map(|r| r.y),
+        (!layout.learn.is_empty()).then_some(layout.learn.y),
+        layout.asio_credit.map(|c| c.logo.y),
+        Some(line_y),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(f32::INFINITY, f32::min)
+        - BUTTON_GAP;
+    layout.rows.retain(|r| r.frame.bottom() <= right_top);
+    let cross = Rect::new(layout.footer.right() - row, line_y, row, row);
+    layout.support = Some(Rect::new(
+        layout.footer.x,
+        line_y,
+        (cross.x - layout.footer.x).max(0.0),
+        row,
+    ));
+    layout.support_dismiss = Some(cross);
+    layout
+}
+
 /// What a press on the card means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WelcomeHit {
@@ -455,6 +573,10 @@ pub enum WelcomeHit {
     /// Recover what the last run, which did not end cleanly, left in a
     /// backup — see [`with_recovery`].
     Recover,
+    /// The support line: its page, in the browser.
+    Support,
+    /// The support line's ×.
+    DismissSupport,
 }
 
 /// What Enter does on the card: reopens the newest recent project that is
@@ -483,6 +605,12 @@ pub fn welcome_hint(recent: &[crate::document::RecentProject]) -> Option<String>
 
 /// What is under `(x, y)`, if anything is.
 pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit> {
+    if layout.support_dismiss.is_some_and(|r| r.contains(x, y)) {
+        return Some(WelcomeHit::DismissSupport);
+    }
+    if layout.support.is_some_and(|r| r.contains(x, y)) {
+        return Some(WelcomeHit::Support);
+    }
     for (i, row) in layout.rows.iter().enumerate() {
         if row.forget.contains(x, y) {
             return Some(WelcomeHit::Forget(i));

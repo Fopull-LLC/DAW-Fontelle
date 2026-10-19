@@ -1196,6 +1196,9 @@ struct Welcome {
     /// The ASIO credit's words, shaped to its room, where the host offers
     /// ASIO — `StudioHost::asio_credit`.
     credit: Option<TextLayout>,
+    /// Whether the support line is on the card — decided once, as the menu
+    /// goes up, and only ever turned off after (its ×).
+    support: bool,
 }
 
 #[derive(Debug)]
@@ -2979,22 +2982,41 @@ impl WindowApp {
             .document
             .as_ref()
             .is_some_and(|doc| doc.asio_credit());
-        let layout = crate::canvas::with_recovery(
-            crate::canvas::with_asio_credit(
-                crate::canvas::with_learn(
-                    crate::canvas::welcome_layout(
-                        self.layout.window,
+        // The support line (hub card 0427): said once, from the tenth launch,
+        // never beside a recovery or unsaved work. Marked said here, as it
+        // goes up, so it never comes back whether it is pressed or not.
+        let support = self.options.document.as_mut().is_some_and(|doc| {
+            let due = crate::canvas::support_line_due(
+                doc.launch_count(),
+                doc.support_line_said(),
+                recover.is_some(),
+                doc.is_dirty(),
+            );
+            if due {
+                doc.set_support_line_said();
+            }
+            due
+        });
+        let layout = crate::canvas::with_support_line(
+            crate::canvas::with_recovery(
+                crate::canvas::with_asio_credit(
+                    crate::canvas::with_learn(
+                        crate::canvas::welcome_layout(
+                            self.layout.window,
+                            &self.options.theme.metrics,
+                            recent.len(),
+                            button.is_some() || progress.is_some(),
+                        ),
                         &self.options.theme.metrics,
-                        recent.len(),
-                        button.is_some() || progress.is_some(),
+                        offer,
                     ),
                     &self.options.theme.metrics,
-                    offer,
+                    credit,
                 ),
-                &self.options.theme.metrics,
-                credit,
+                recover.is_some(),
             ),
-            recover.is_some(),
+            &self.options.theme.metrics,
+            support,
         );
         let line = self.text.layout(&line, font, Some(layout.update.width));
         let credit = layout.asio_credit.map(|c| {
@@ -3017,6 +3039,7 @@ impl WindowApp {
             message: TextLayout::default(),
             recover,
             credit,
+            support,
         });
         if let Some(hint) = self
             .welcome
@@ -3062,22 +3085,26 @@ impl WindowApp {
             .as_ref()
             .is_some_and(|doc| doc.asio_credit());
         if let Some(welcome) = &mut self.welcome {
-            welcome.layout = crate::canvas::with_recovery(
-                crate::canvas::with_asio_credit(
-                    crate::canvas::with_learn(
-                        crate::canvas::welcome_layout(
-                            window,
+            welcome.layout = crate::canvas::with_support_line(
+                crate::canvas::with_recovery(
+                    crate::canvas::with_asio_credit(
+                        crate::canvas::with_learn(
+                            crate::canvas::welcome_layout(
+                                window,
+                                metrics,
+                                welcome.recent.len(),
+                                welcome.button.is_some() || welcome.progress.is_some(),
+                            ),
                             metrics,
-                            welcome.recent.len(),
-                            welcome.button.is_some() || welcome.progress.is_some(),
+                            offer,
                         ),
                         metrics,
-                        offer,
+                        credit,
                     ),
-                    metrics,
-                    credit,
+                    welcome.recover.is_some(),
                 ),
-                welcome.recover.is_some(),
+                metrics,
+                welcome.support,
             );
             welcome.credit = welcome.layout.asio_credit.map(|c| {
                 self.text.layout(
@@ -3194,6 +3221,14 @@ impl WindowApp {
             self.start_join();
             return;
         }
+        // Gone for this launch; it was marked said when it went up.
+        if hit == WelcomeHit::DismissSupport {
+            if let Some(welcome) = &mut self.welcome {
+                welcome.support = false;
+            }
+            self.relayout_welcome();
+            return;
+        }
         if hit == WelcomeHit::NewProject {
             if !self.ensure_projects_dir("A new project needs a folder to live in") {
                 return;
@@ -3238,6 +3273,10 @@ impl WindowApp {
                 doc.open_url(REPOSITORY_URL);
                 Ok(false)
             }
+            WelcomeHit::Support => {
+                doc.open_url(crate::support::SUPPORT_URL);
+                Ok(false)
+            }
             // The menu stays up: the folder opens beside it, and a report
             // is written with the project still to be chosen.
             WelcomeHit::Logs => doc.reveal_logs_dir().map(|()| false),
@@ -3245,7 +3284,8 @@ impl WindowApp {
             | WelcomeHit::Settings
             | WelcomeHit::Join
             | WelcomeHit::Learn
-            | WelcomeHit::DismissLearn => {
+            | WelcomeHit::DismissLearn
+            | WelcomeHit::DismissSupport => {
                 unreachable!("handled above")
             }
         };
@@ -7893,6 +7933,8 @@ impl WindowApp {
                 crate::canvas::LEARN_OFFER,
                 crate::canvas::LEARN_TAKE,
                 crate::canvas::LEARN_DISMISS,
+                crate::canvas::SUPPORT_LINE_LEAD,
+                crate::canvas::SUPPORT_LINE_LINK,
                 "\u{00d7}",
             ] {
                 want(&mut self.labels, &mut self.text, fixed);
@@ -8254,6 +8296,9 @@ impl WindowApp {
                 crate::canvas::HELP_SHORTCUTS,
             ] {
                 want(&mut self.labels, &mut self.text, fixed);
+            }
+            for (_, label) in crate::canvas::HELP_LINKS {
+                want(&mut self.labels, &mut self.text, label);
             }
             for section in crate::canvas::GUIDE {
                 want(&mut self.labels, &mut self.text, section.title);
@@ -17327,6 +17372,24 @@ impl WindowApp {
             HelpHit::Shortcuts => {
                 self.close_help();
                 self.open_keybinds();
+            }
+            // The browser, over the guide, which stays: whoever is writing a
+            // report may want the page they were reading.
+            HelpHit::Link(link) => {
+                use crate::canvas::HelpLink;
+                use crate::support::{ReportKind, SUPPORT_URL, report_url};
+                if let Some(doc) = &mut self.options.document {
+                    let url = match link {
+                        HelpLink::ReportBug => {
+                            report_url(ReportKind::Bug, &doc.report_environment())
+                        }
+                        HelpLink::RequestFeature => {
+                            report_url(ReportKind::Feature, &doc.report_environment())
+                        }
+                        HelpLink::Support => SUPPORT_URL.to_string(),
+                    };
+                    doc.open_url(&url);
+                }
             }
             HelpHit::Card => {}
         }

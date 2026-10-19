@@ -19,6 +19,34 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — Help's ways out, and a line said once (hub card 0427), on
+a branch, not released.** Ty: *"accessibility is the product; nothing may
+nag or gate. The line is a courtesy, said once."*
+
+- **The guide** (`?`) has *Report a bug*, *Request a feature* and *Support
+  Fontelle* on its heading's row, drawn as links with a drawn ↗ (no chrome
+  face has the arrow). Not in the nav column: fourteen sections and the
+  shortcuts page already reach the foot of a 720-high window. Addresses
+  are `fontelle_ui::support` (pure, tested): the board's form with
+  `env_version`, `env_os`, `env_plugin` percent-encoded and cut to the
+  form's maxlengths, an empty field left out. The host fills them
+  (`StudioHost::report_environment`): `updates::CURRENT`,
+  `desktop::this_os` ("Linux (PRETTY_NAME)"), `plugin_formats_label` (the
+  song's formats, never names). The website does not prefill from the
+  query yet (asked of agent W).
+- **The line** — *Fontelle is free. If it has earned something,
+  fopull.com/support* — on the start menu, a row above the footer with a
+  ×, from the tenth launch (`Settings::launches`, counted by `main` until
+  it is said, then not), marked `support_line_said` the moment it goes up,
+  never with a recovery offered or unsaved work (`canvas::
+  support_line_due`; deferred, not spent).
+- **Windows links** open through `rundll32 url.dll,FileProtocolHandler`:
+  `cmd /c start` would have cut a report's address at its first `&`.
+- Tests: `fontelle-ui/tests/support.rs`, `fontelle-app/tests/
+  support_window.rs` (`Session::with_links_to` writes links down instead
+  of opening a browser), `desktop.rs`, `render_headless.rs`
+  (`the_support_line_is_one_quiet_row_above_the_footer`).
+
 **2026-10-19 — the SoundFont suite designed, and the licence rule for
 shipped sounds built (hub card 0430), on `main`, not released.**
 

@@ -35,6 +35,7 @@ pub mod portrait;
 pub mod render;
 pub mod skin;
 pub mod sky;
+pub mod support;
 pub mod text;
 pub mod theme;
 pub mod tooltip;

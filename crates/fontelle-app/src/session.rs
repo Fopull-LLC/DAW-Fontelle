@@ -583,6 +583,9 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// Where pressed links go instead of the browser — a test's, which must
+    /// not open one. `None`, the browser.
+    links_to: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
     /// This install's key pair for shared songs (`collab::identity`): read
     /// from beside the settings file, made there the first time; with no
     /// settings file, made for this session alone. `None` until first asked.
@@ -1724,6 +1727,7 @@ impl Session {
             restart_request: false,
             settings,
             settings_path: None,
+            links_to: None,
             identity: None,
             share_password: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
@@ -2049,6 +2053,27 @@ impl Session {
     /// The settings, to change in place — for the tests.
     pub fn settings_mut(&mut self) -> &mut crate::settings::Settings {
         &mut self.settings
+    }
+
+    /// Links pressed in this studio written into `links` rather than opened
+    /// in the browser — for the tests, which must see where a press goes
+    /// without a browser opening on the machine running them.
+    pub fn with_links_to(mut self, links: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        self.links_to = Some(links);
+        self
+    }
+
+    /// One more launch of the studio, counted in the settings and written
+    /// back — `main` calls it once per window opened. What the start menu's
+    /// support line is timed by, and nothing else (hub card 0427).
+    pub fn count_launch(&mut self) {
+        let before = self.settings.launches;
+        self.settings.count_launch();
+        if self.settings.launches != before
+            && let Err(e) = self.save_settings()
+        {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     pub fn with_settings_path(mut self, path: PathBuf) -> Self {
@@ -12077,8 +12102,22 @@ impl StudioHost for Session {
     }
 
     fn open_url(&mut self, url: &str) {
+        if let Some(links) = &self.links_to {
+            if let Ok(mut links) = links.lock() {
+                links.push(url.to_string());
+            }
+            return;
+        }
         if let Err(e) = crate::desktop::open_url(url) {
             self.message = Some(e);
+        }
+    }
+
+    fn report_environment(&self) -> fontelle_ui::support::ReportEnvironment {
+        fontelle_ui::support::ReportEnvironment {
+            version: crate::updates::CURRENT.to_string(),
+            os: crate::desktop::this_os(),
+            plugins: crate::plugins::plugin_formats_label(&self.project),
         }
     }
 
@@ -12244,6 +12283,21 @@ impl StudioHost for Session {
 
     fn set_tour_offered(&mut self) {
         self.settings.tour_offered = true;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
+    fn launch_count(&self) -> u32 {
+        self.settings.launches
+    }
+
+    fn support_line_said(&self) -> bool {
+        self.settings.support_line_said
+    }
+
+    fn set_support_line_said(&mut self) {
+        self.settings.support_line_said = true;
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
