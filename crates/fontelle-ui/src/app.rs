@@ -19225,7 +19225,17 @@ impl WindowApp {
                 .map(|(entry, _)| entry)
                 .collect(),
             MenuTarget::NameProject(purpose) => {
-                crate::canvas::name_prompt_entries(purpose.title(), self.menu_filter.text())
+                let mut entries =
+                    crate::canvas::name_prompt_entries(purpose.title(), self.menu_filter.text());
+                // A line of chat with nothing in it is not "Untitled": it is
+                // nothing yet, and Enter on it sends nothing.
+                if *purpose == NameFor::Chat
+                    && self.menu_filter.text().trim().is_empty()
+                    && let Some(last) = entries.last_mut()
+                {
+                    *last = MenuEntry::disabled("Type a line, then Enter");
+                }
+                entries
             }
             MenuTarget::Clip(id) => self
                 .clips
@@ -23450,7 +23460,12 @@ impl WindowApp {
             }
             return;
         }
-        if self.share_open && event.logical_key == Key::Named(NamedKey::Escape) {
+        // A prompt open over the panel — Chat's — is what Escape closes
+        // first: the nearer of the two.
+        if self.share_open
+            && self.menu.is_none()
+            && event.logical_key == Key::Named(NamedKey::Escape)
+        {
             self.share_open = false;
             self.tree.invalidate_rect(self.layout.window);
             return;

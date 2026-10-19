@@ -1659,6 +1659,23 @@ impl Host {
                 },
             );
         }
+        // Where everybody already is: somebody holding still says nothing
+        // more, and a newcomer would not see them until they moved.
+        let here = turn.presence.sent.iter().map(|p| (0, p));
+        let others = turn
+            .presence
+            .others
+            .iter()
+            .filter(|(space, _)| **space != who.space)
+            .map(|(space, p)| (*space, p));
+        for (space, presence) in here.chain(others) {
+            let bytes = Msg::Presence {
+                peer: space,
+                presence: presence.clone(),
+            }
+            .to_bytes();
+            turn.transport.send(peer, Channel::Unreliable, &bytes);
+        }
         if who.view_only {
             send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
         }

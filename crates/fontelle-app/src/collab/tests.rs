@@ -900,3 +900,72 @@ fn somebody_removed_cannot_come_back_with_the_code() {
     assert!(why.contains("removed"), "{why}");
     assert!(two.host.collab.peers().is_empty());
 }
+
+/// Somebody who joins sees where everybody already is, not only those who
+/// move after they arrive: the host's pointer held still said nothing to a
+/// newcomer, seen with two studios on two displays.
+#[test]
+fn a_newcomer_is_told_where_everybody_already_is() {
+    let hub = MemoryHub::new();
+    let dir = std::env::temp_dir().join(format!("fontelle-collab-newcomer-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut host = Side {
+        collab: Collab::host(Box::new(hub.server_endpoint()), options("Host")),
+        doc: crate::blank_project(8, 120.0, 48_000),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    host.history.open_outbox();
+    host.collab.set_presence(at(960.0));
+    host.pump();
+    let mut joiner = Side {
+        collab: Collab::join(Box::new(hub.connect()), options("Joiner"), dir.clone()),
+        doc: Project::new("nothing yet"),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    let mut now = 0;
+    let mut effects = Vec::new();
+    let mut answered = false;
+    for _ in 0..200 {
+        now += 1;
+        hub.set_now(now);
+        host.pump();
+        effects.extend(joiner.pump());
+        if !answered && joiner.collab.question().is_some() {
+            effects.extend(
+                joiner
+                    .collab
+                    .answer(JoinAnswer::Copy, &mut joiner.history)
+                    .unwrap(),
+            );
+            answered = true;
+        }
+        if let Some(path) = std::mem::take(&mut effects)
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Open(path) => Some(path),
+                _ => None,
+            })
+        {
+            joiner.doc = fontelle_model::load_project(&path).unwrap();
+            let Side {
+                collab,
+                doc,
+                history,
+                place,
+            } = &mut joiner;
+            collab.went_live(doc, history, place);
+        }
+    }
+    assert!(joiner.collab.is_live());
+    assert_eq!(whereabouts(&joiner), vec![(0, 960.0)]);
+    std::fs::remove_dir_all(&dir).ok();
+}
