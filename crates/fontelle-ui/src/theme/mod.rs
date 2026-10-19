@@ -104,6 +104,44 @@ impl Color {
         let [r, g, b, a] = self.0;
         vello::peniko::Color::from_rgba8(r, g, b, a)
     }
+    /// Hue in degrees (0–360), saturation, value and alpha (0–1) — what a
+    /// colour picker moves.
+    pub fn to_hsva(self) -> [f32; 4] {
+        let [r, g, b, a] = self.0.map(|c| f32::from(c) / 255.0);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let d = max - min;
+        let h = if d <= f32::EPSILON {
+            0.0
+        } else if max == r {
+            60.0 * ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        let s = if max <= f32::EPSILON { 0.0 } else { d / max };
+        [h, s, max, a]
+    }
+
+    /// The colour at hue `h` (degrees), saturation `s`, value `v`, alpha `a`.
+    pub fn from_hsva(h: f32, s: f32, v: f32, a: f32) -> Self {
+        let (s, v, a) = (s.clamp(0.0, 1.0), v.clamp(0.0, 1.0), a.clamp(0.0, 1.0));
+        let h = h.rem_euclid(360.0) / 60.0;
+        let c = v * s;
+        let x = c * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
+        let (r, g, b) = match h as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        let m = v - c;
+        let byte = |f: f32| ((f + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+        Self([byte(r), byte(g), byte(b), (a * 255.0).round() as u8])
+    }
 }
 
 /// A string that was meant to be a colour and was not one.
@@ -262,6 +300,32 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Every colour's name, as a theme file writes it.
+    pub fn names(&self) -> Vec<String> {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The colour called `name`.
+    pub fn get(&self, name: &str) -> Option<Color> {
+        let value = serde_json::to_value(self).ok()?;
+        serde_json::from_value(value.get(name)?.clone()).ok()
+    }
+
+    /// Makes the colour called `name` `color`. A name the palette has not
+    /// got is refused: a theme cannot grow a colour nothing draws.
+    pub fn set(&mut self, name: &str, color: Color) -> Result<(), String> {
+        let mut value = serde_json::to_value(&*self).map_err(|e| e.to_string())?;
+        let slot = value
+            .get_mut(name)
+            .ok_or_else(|| format!("the palette has no colour called {name}"))?;
+        *slot = serde_json::to_value(color).map_err(|e| e.to_string())?;
+        *self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     /// The same inks with the grounds made solid: for whatever is drawn
     /// **over** other content — a page, a menu, a tip — where a see-through
     /// theme would put two layers of words on top of each other.

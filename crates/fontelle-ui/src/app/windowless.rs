@@ -323,6 +323,78 @@ impl Windowless {
 
     /// What a frame does before it is drawn: the document's work, and the
     /// window's view of it read again.
+    /// The settings page, on the section headed `title`.
+    pub fn open_settings(&mut self, title: &str) {
+        self.app.open_settings_page_at(title);
+    }
+
+    pub fn settings_page_open(&self) -> bool {
+        self.app.settings_page.is_some()
+    }
+
+    /// A press on settings row `index`, as a click on its control makes.
+    pub fn press_setting(&mut self, index: usize) {
+        self.app.press_setting_row(index, false);
+        self.settle();
+    }
+
+    /// The theme editor's card, while it is open.
+    pub fn theme_editor(&self) -> Option<crate::canvas::ThemeEditorLayout> {
+        self.app.theme_editor.as_ref().map(|ed| ed.layout.clone())
+    }
+
+    /// The card's colour rows with the palette colour each is.
+    pub fn theme_editor_rows(&self) -> Vec<(Rect, String)> {
+        self.app.theme_editor.as_ref().map_or_else(Vec::new, |ed| {
+            ed.layout
+                .rows
+                .iter()
+                .copied()
+                .zip(ed.names.iter().cloned())
+                .filter(|(r, _)| r.intersection(&ed.layout.list) == *r)
+                .collect()
+        })
+    }
+
+    /// The look the window is wearing now.
+    pub fn window_theme(&self) -> &Theme {
+        &self.app.options.theme
+    }
+
+    /// The shader code card, while it is open.
+    pub fn shader_editor(&self) -> Option<crate::canvas::ShaderEditorLayout> {
+        self.app
+            .theme_editor
+            .as_ref()
+            .and_then(|ed| ed.code.as_ref())
+            .map(|code| code.layout)
+    }
+
+    /// What the code card says is wrong, or `None` while it compiles.
+    pub fn shader_problem(&self) -> Option<String> {
+        let code = self.app.theme_editor.as_ref()?.code.as_ref()?;
+        code.problem.as_ref()?;
+        Some(code.problem_words())
+    }
+
+    /// `text` typed, a key a character, `\n` as Enter and `\u{8}` as
+    /// Backspace — to whatever has the
+    /// theme editor's keyboard.
+    pub fn type_text(&mut self, text: &str) {
+        use winit::keyboard::{Key, NamedKey};
+        for c in text.chars() {
+            let key = if c == '\n' {
+                Key::Named(NamedKey::Enter)
+            } else if c == '\u{8}' {
+                Key::Named(NamedKey::Backspace)
+            } else {
+                Key::Character(c.to_string().into())
+            };
+            self.app.theme_editor_key(&key);
+        }
+        self.settle();
+    }
+
     fn settle(&mut self) {
         if let Some(doc) = &mut self.app.options.document {
             doc.pump();

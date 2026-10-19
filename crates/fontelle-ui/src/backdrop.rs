@@ -226,6 +226,37 @@ pub fn validate(body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What is wrong with a shader, as its editor says it: naga's first line,
+/// and the line **of the body** it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShaderProblem {
+    /// Counted from 1, in the text the author typed. `None` when the fault
+    /// is no one line's — no `fn backdrop` at all.
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+/// `body`'s problem, or `None` when it compiles.
+pub fn shader_problem(body: &str) -> Option<ShaderProblem> {
+    let why = validate(body).err()?;
+    let message = why
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("error: ")
+        .to_string();
+    // naga counts in the whole program: the prelude, a newline, then the body.
+    let before = PRELUDE.matches('\n').count() + 1;
+    let line = why
+        .split("wgsl:")
+        .nth(1)
+        .and_then(|rest| rest.split(':').next())
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .and_then(|n| n.checked_sub(before))
+        .filter(|n| *n >= 1 && *n <= body.lines().count().max(1));
+    Some(ShaderProblem { line, message })
+}
+
 const NO_BACKDROP: &str =
     "the shader has no `fn backdrop(uv: vec2<f32>, px: vec2<f32>) -> vec4<f32>`";
 

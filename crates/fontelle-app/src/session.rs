@@ -361,6 +361,9 @@ pub struct Session {
     /// What Discord is told, from a thread of its own; told the settings and
     /// the transport every [`Session::pump`].
     discord: crate::discord::DiscordPresence,
+    /// Settings ▸ Appearance ▸ *Edit this theme…* was pressed and the window
+    /// has not opened its editor yet.
+    theme_editor_requested: bool,
     /// The transform behind the EQ's graph, and the scratch it reads into.
     ///
     /// One of each rather than one per insert: only one EQ window is open at a
@@ -898,6 +901,12 @@ impl Session {
                 crate::settings::SettingRow::ImportFlFolders => self.import_fl_folders(),
                 _ => <Self as StudioHost>::rescan_plugins(self),
             }
+            self.touch();
+            return;
+        }
+        // The editor is the window's; the session only says to open it.
+        if *row == crate::settings::SettingRow::EditTheme {
+            self.theme_editor_requested = true;
             self.touch();
             return;
         }
@@ -1627,6 +1636,7 @@ impl Session {
             },
             plugins_hosted: false,
             discord: crate::discord::DiscordPresence::new(),
+            theme_editor_requested: false,
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
             spectrum_scratch: Vec::new(),
             automation_clip: None,
@@ -12060,6 +12070,19 @@ impl StudioHost for Session {
 
     fn studio_theme(&self) -> Option<fontelle_ui::Theme> {
         Some(self.theme.clone())
+    }
+
+    fn take_theme_editor_request(&mut self) -> bool {
+        std::mem::take(&mut self.theme_editor_requested)
+    }
+
+    fn save_edited_theme(&mut self, theme: fontelle_ui::Theme) -> Result<String, String> {
+        self.edit_theme(|t| {
+            let name = t.name.clone();
+            *t = theme;
+            t.name = name;
+        })?;
+        Ok(format!("Saved {}", self.theme.name))
     }
 
     fn backdrop_motion(&self) -> fontelle_ui::backdrop::Motion {

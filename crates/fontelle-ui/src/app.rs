@@ -73,6 +73,7 @@ use crate::transport::{
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
 mod analyze;
+pub mod theme_editor;
 mod vocal;
 mod vocal_files;
 mod windowless;
@@ -1515,6 +1516,8 @@ pub struct WindowApp {
     save_prompt: Option<(Leave, String)>,
     /// The Share panel, open (`docs/collab-plan.md` §10.1).
     share_open: bool,
+    /// The theme editor beside the studio, while it is open.
+    theme_editor: Option<theme_editor::ThemeEditor>,
     /// The shared song as last read — once a pass while one is open, and once
     /// more as it ends.
     session: crate::document::SessionView,
@@ -2546,6 +2549,7 @@ impl WindowApp {
             confirm: None,
             save_prompt: None,
             share_open: false,
+            theme_editor: None,
             session: Default::default(),
             session_question: None,
             people: Vec::new(),
@@ -3308,6 +3312,7 @@ impl WindowApp {
         // with nothing in it.
         self.tree.invalidate_rect(self.layout.window);
         self.relayout_welcome();
+        self.relayout_theme_editor();
     }
 
     fn draw(&mut self) {
@@ -3726,6 +3731,7 @@ impl WindowApp {
                     sharing: (self.session.role != crate::document::SessionRole::Alone)
                         .then_some(0),
                     chat_unread: self.session.unread > 0,
+                    theme_editor: self.theme_editor.as_ref().map(|ed| (ed, self.caret_on)),
                 },
                 tooltip: tooltip.as_ref().map(|(text, rect)| (text.as_str(), *rect)),
                 // Only the studio's own menus: one opened on a knob belongs
@@ -7411,6 +7417,14 @@ impl WindowApp {
     /// once a frame for a list that changes when somebody clicks something.
     fn refresh_studio(&mut self) {
         self.refresh_theme();
+        if self
+            .options
+            .document
+            .as_mut()
+            .is_some_and(|doc| doc.take_theme_editor_request())
+        {
+            self.open_theme_editor();
+        }
         let Some(doc) = &mut self.options.document else {
             return;
         };
@@ -8751,6 +8765,19 @@ impl WindowApp {
                 want(&mut self.labels, &mut self.text, word);
             }
         }
+        if let Some(ed) = &self.theme_editor {
+            for word in crate::render::theme_editor_words(ed) {
+                want(&mut self.labels, &mut self.text, &word);
+            }
+            if let Some(code) = &ed.code {
+                let text = code.entry.text();
+                for row in code.scroll..(code.scroll + code.lines).min(code.rows.len()) {
+                    let r = code.rows[row];
+                    let line = &text[r.from.min(text.len())..r.to.min(text.len())];
+                    self.labels.ensure_mono(line, code.text_px, &mut self.text);
+                }
+            }
+        }
         if let Some((_, question)) = &self.save_prompt {
             let question = question.clone();
             want(&mut self.labels, &mut self.text, &question);
@@ -9124,6 +9151,9 @@ impl WindowApp {
     /// One press, routed to whichever panel it landed in.
     /// The button came up over the studio's own window.
     fn studio_released(&mut self) {
+        if self.release_theme_editor() {
+            return;
+        }
         // A ruler drag lands where it was let go, not a frame later.
         self.flush_scrub();
         let was_control = matches!(
@@ -9316,6 +9346,10 @@ impl WindowApp {
         self.cursor = (x, y);
         self.pointer_window = None;
         self.steer_autoscroll(None, x, y);
+        if self.drag_theme_editor(x, y) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         let started = std::time::Instant::now();
         self.update_hover();
         let hovered = ms_since(started);
@@ -9674,6 +9708,12 @@ impl WindowApp {
         // A session's question, the same.
         if self.session_question.is_some() {
             self.press_session_question(x, y);
+            return;
+        }
+        // The theme editor's cards take a press on them, and nothing under
+        // them sees it.
+        if self.press_theme_editor(x, y) {
+            self.request_redraw_if_dirty();
             return;
         }
         // The Share panel takes a press on it; a press anywhere else but the
@@ -10876,7 +10916,15 @@ impl WindowApp {
         if theme == self.options.theme {
             return;
         }
-        self.backdrops = crate::render::decode_backdrops(&theme);
+        // Decoded again only when they changed — a colour dragged on the
+        // theme editor's picker is a theme a pointer motion, and a picture
+        // decoded per motion is a stutter. A shader's colours are the
+        // palette's, so a shader takes a palette change too.
+        if theme.backdrops != self.options.theme.backdrops
+            || (theme.palette != self.options.theme.palette && theme.backdrops.has_shaders())
+        {
+            self.backdrops = crate::render::decode_backdrops(&theme);
+        }
         self.backdrop_redraw = true;
         self.backdrop_errors.clear();
         // Its fonts, before anything is shaped in them; and every label
@@ -23558,6 +23606,10 @@ impl WindowApp {
 
     fn scroll_roll(&mut self, dx: f32, dy: f32) {
         let (x, y) = self.cursor;
+        if self.wheel_theme_editor(dy) {
+            self.request_redraw_if_dirty();
+            return;
+        }
 
         // A menu is drawn in front of everything, so the wheel is its before
         // it is anything else's. Without this a plugin list is 357 entries
@@ -23918,6 +23970,12 @@ impl WindowApp {
             if let Some(answer) = answer {
                 self.answer_session_question(answer);
             }
+            return;
+        }
+        // The theme editor's code card and hex field have the keyboard
+        // while they are open.
+        if self.theme_editor_key(&event.logical_key) {
+            self.request_redraw_if_dirty();
             return;
         }
         // A prompt open over the panel — Chat's — is what Escape closes

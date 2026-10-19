@@ -2110,6 +2110,20 @@ pub trait StudioHost: DocumentHost {
         None
     }
 
+    /// Whether the settings page asked for the theme editor since the last
+    /// time this was asked. The window opens it beside the studio.
+    fn take_theme_editor_request(&mut self) -> bool {
+        false
+    }
+
+    /// Keeps `theme`, edited in the window, as the look in use: on a copy
+    /// named "… (mine)" when the one being edited is built in, which are
+    /// never overwritten. Answers what to tell the person.
+    fn save_edited_theme(&mut self, theme: crate::Theme) -> Result<String, String> {
+        let _ = theme;
+        Err("this studio cannot keep a theme".to_string())
+    }
+
     /// How much a theme's backdrops may move — Settings ▸ Appearance's
     /// Effects, rate, resolution and "hold still while playing" (hub card
     /// 0366). Read each pass of the loop; cheap.

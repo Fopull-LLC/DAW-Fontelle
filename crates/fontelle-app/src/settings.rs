@@ -743,6 +743,8 @@ pub enum SettingRow {
     /// Writes the look in use to a `.fontelletheme` file, to send to
     /// someone. A button.
     SaveTheme,
+    /// Opens the theme editor beside the studio. A button.
+    EditTheme,
     /// Moving, Still or Off: how much a theme's backdrops move. A choice.
     BackdropEffects,
     /// The most frames a second a moving backdrop draws. A choice.
@@ -790,7 +792,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 59] = [
+pub const SETTING_ROWS: [SettingRow; 60] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -839,6 +841,8 @@ pub const SETTING_ROWS: [SettingRow; 59] = [
     // pictures, and the way in and out for a `.fontelletheme` file.
     SettingRow::Heading("Appearance"),
     SettingRow::Theme,
+    // Under the look it edits.
+    SettingRow::EditTheme,
     SettingRow::CornerRounding,
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Window),
     SettingRow::Backdrop(fontelle_ui::theme::BackdropPanel::Transport),
@@ -1081,6 +1085,7 @@ impl SettingRow {
             Self::PanelSeeThrough => "Panel see-through",
             Self::ImportTheme => "Import a theme",
             Self::SaveTheme => "Save this theme",
+            Self::EditTheme => "Edit this theme",
             Self::BackdropEffects => "Effects",
             Self::BackdropRate => "Backdrop rate",
             Self::BackdropResolution => "Backdrop resolution",
@@ -1245,7 +1250,7 @@ impl SettingRow {
             Self::PictureStrength => "None set".to_string(),
             Self::PanelSeeThrough => "0%".to_string(),
             // Pure actions: the button says what they do.
-            Self::ImportTheme | Self::SaveTheme => String::new(),
+            Self::ImportTheme | Self::SaveTheme | Self::EditTheme => String::new(),
             Self::BackdropEffects => settings.backdrop_motion(false).effects.label().to_string(),
             Self::BackdropRate => format!("{} fps", settings.backdrop_fps),
             Self::BackdropResolution => backdrop_resolution_label(settings.backdrop_scale_percent),
@@ -1303,6 +1308,7 @@ impl SettingRow {
             // "Remove" when one is set; the session knows, and says so.
             Self::Backdrop(_) => "Choose\u{2026}",
             Self::SaveTheme => "Save\u{2026}",
+            Self::EditTheme => "Edit\u{2026}",
             Self::Extension(index) => match crate::extensions::CATALOGUE.get(index) {
                 Some(extension) => {
                     match crate::extensions::action_for(&crate::extensions::state_here(extension)) {
@@ -1384,6 +1390,7 @@ impl SettingRow {
             Self::PanelSeeThrough => "Let the window's picture show through the panels",
             Self::ImportTheme => "Add a .fontelletheme file someone sent you",
             Self::SaveTheme => "Write this look to a .fontelletheme file to share",
+            Self::EditTheme => "Its colours and backdrops, beside the studio as you change them",
             Self::BackdropEffects => {
                 "Moving pictures as the theme draws them, held still, or colours only"
             }
@@ -1460,6 +1467,7 @@ impl SettingRow {
             | Self::PanelSeeThrough
             | Self::ImportTheme
             | Self::SaveTheme
+            | Self::EditTheme
             | Self::BackdropEffects
             | Self::BackdropRate
             | Self::BackdropResolution
@@ -1560,7 +1568,9 @@ impl SettingRow {
             Self::CornerRounding | Self::PictureStrength | Self::PanelSeeThrough => {
                 SettingControlKind::Slider
             }
-            Self::Backdrop(_) | Self::ImportTheme | Self::SaveTheme => SettingControlKind::Button,
+            Self::Backdrop(_) | Self::ImportTheme | Self::SaveTheme | Self::EditTheme => {
+                SettingControlKind::Button
+            }
             Self::BackdropEffects | Self::BackdropRate | Self::BackdropResolution => {
                 SettingControlKind::Choice
             }

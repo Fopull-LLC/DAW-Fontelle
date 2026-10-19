@@ -19,10 +19,12 @@ mod analyze_pages;
 mod bridge;
 mod people;
 pub mod singer_panel;
+mod theme_editor;
 pub mod vocal;
 
 pub use analyze::{AnalyzeChrome, analyze_style, lay_out_analyze, shape_analyze};
 pub use bridge::SkyFrame;
+pub use theme_editor::theme_editor_words;
 
 use vello::kurbo::{Affine, BezPath, Point, Rect as KRect, RoundedRect, RoundedRectRadii, Stroke};
 use vello::peniko::{BlendMode, Fill};
@@ -72,6 +74,9 @@ pub struct Notices<'a> {
     pub sharing: Option<u8>,
     /// Somebody has said something this person has not read: a second dot.
     pub chat_unread: bool,
+    /// The theme editor's cards, and whether the code card's caret is on
+    /// its lit half.
+    pub theme_editor: Option<(&'a crate::app::theme_editor::ThemeEditor, bool)>,
 }
 
 /// What the Share panel says. See [`crate::canvas::share_panel_layout`].
@@ -1143,6 +1148,9 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
             chrome.transport.layout.share,
             share,
         );
+    }
+    if let Some((editor, caret_on)) = chrome.notices.theme_editor {
+        theme_editor::draw_theme_editor(scene, theme, chrome.labels, editor, caret_on);
     }
     if let Some(question) = chrome.notices.save_prompt {
         draw_save_prompt(scene, theme, chrome.labels, layout.window, question);

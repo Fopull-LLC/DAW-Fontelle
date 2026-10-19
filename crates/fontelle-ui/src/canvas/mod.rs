@@ -36,6 +36,7 @@ mod share;
 mod singer_panel;
 mod singer_picker;
 mod text_entry;
+mod theme_editor;
 mod timeline;
 mod tools;
 mod tune;
@@ -317,6 +318,15 @@ pub use singer_picker::{
     singer_picker_layout_for,
 };
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
+pub use theme_editor::{
+    LayerRowLayout, PALETTE_GROUPS, SHADER_EDITOR_DONE, SHADER_EDITOR_FINE, SHADER_EDITOR_TITLE,
+    ShaderEditorHit, ShaderEditorLayout, THEME_EDITOR_ADD, THEME_EDITOR_CLOSE, THEME_EDITOR_CODE,
+    THEME_EDITOR_NO_COLOUR, THEME_EDITOR_NO_LAYERS, THEME_EDITOR_OPACITY, THEME_EDITOR_SAVE,
+    THEME_EDITOR_SPEED, THEME_EDITOR_STOPS, THEME_EDITOR_TABS, THEME_EDITOR_TITLE, ThemeEditorHit,
+    ThemeEditorLayout, ThemeEditorTab, alpha_at, hue_at, palette_group, palette_label,
+    palette_order, picker_colour, picker_point, shader_editor_hit, shader_editor_layout, slider_at,
+    theme_editor_hit, theme_editor_layout, theme_editor_layout_scrolled,
+};
 pub use timeline::{
     ArrangeEdit, CLIP_HEADER_PX, ClipMenuRow, ClipOverlap, ClipPart, EDGE_REACH_PX, FadeAnatomy,
     FadeEnd, FadeGrip, MAGNET_PX, MAX_LANE_ROW, MAX_TIMELINE_PPT, MIN_LANE_ROW, MIN_TIMELINE_PPT,
