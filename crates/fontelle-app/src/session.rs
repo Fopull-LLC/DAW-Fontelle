@@ -9193,12 +9193,12 @@ impl StudioHost for Session {
         let Some(channel) = self.channel_ids().get(index).copied() else {
             return;
         };
-        let now = self.project.channels.get(channel).is_some_and(|c| c.soloed);
-        self.run(Box::new(SetFlag::new(
-            FlagTarget::ChannelSoloed(channel),
-            !now,
-        )));
-        self.let_go();
+        // Set directly, not by a command: a solo is this studio's own (see
+        // `Channel::soloed`) — not undoable, not sent, not saved.
+        if let Some(c) = self.project.channels.get_mut(channel) {
+            c.soloed = !c.soloed;
+        }
+        self.republish();
         self.touch();
     }
 
@@ -14969,9 +14969,11 @@ impl StudioHost for Session {
         let Some(id) = self.mixer_track_ids().get(strip).copied() else {
             return;
         };
-        let now = self.project.mixer.tracks.get(id).is_some_and(|t| t.solo);
-        self.run(Box::new(SetFlag::new(FlagTarget::TrackSolo(id), !now)));
-        self.let_go();
+        // This studio's own (`MixerTrack::solo`): set directly, so it is not
+        // undoable and never reaches a collaborator.
+        if let Some(track) = self.project.mixer.tracks.get_mut(id) {
+            track.solo = !track.solo;
+        }
         self.publish_mixer();
     }
 
@@ -15830,9 +15832,11 @@ impl StudioHost for Session {
         let Some(id) = self.lane_ids().get(lane).copied() else {
             return;
         };
-        let now = self.project.lanes.get(id).is_some_and(|l| l.soloed);
-        self.run(Box::new(SetFlag::new(FlagTarget::LaneSoloed(id), !now)));
-        self.let_go();
+        // This studio's own (`Lane::soloed`): set directly, not undoable.
+        if let Some(l) = self.project.lanes.get_mut(id) {
+            l.soloed = !l.soloed;
+        }
+        self.republish();
         self.touch();
     }
 

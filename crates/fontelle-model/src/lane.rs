@@ -18,7 +18,12 @@ pub struct Lane {
     /// The lane header's right-click menu and its S switch
     /// (`docs/ux-routing-and-learning-plan.md` §2). Defaulted, so a project
     /// written before rows could be soloed opens with none soloed.
-    #[serde(default)]
+    /// **Personal, not part of the song** (Ty, 2026-10-18: *"soloing should
+    /// just be a local thing not a synced state"*): read from a song saved
+    /// before that, never written — so never sent to a collaborator, never in
+    /// [`crate::Project::sync_hash`], and set directly by the studio rather
+    /// than by a command, so it is not undoable either.
+    #[serde(default, skip_serializing)]
     pub soloed: bool,
     /// Where this row sits in the stack, low first.
     ///

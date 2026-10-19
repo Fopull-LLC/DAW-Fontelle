@@ -719,6 +719,21 @@ fn once_changed(effects: Vec<Effect>) -> Vec<Effect> {
         .collect()
 }
 
+/// This studio's solos, carried from `from` onto `to` by id: a solo is each
+/// studio's own and never crosses the wire, so a copy rebuilt from the host's
+/// has none of its own (Ty, 2026-10-18).
+fn keep_solos(from: &Project, to: &mut Project) {
+    for (id, track) in to.mixer.tracks.iter_mut() {
+        track.solo = from.mixer.tracks.get(id).is_some_and(|t| t.solo);
+    }
+    for (id, channel) in to.channels.iter_mut() {
+        channel.soloed = from.channels.get(id).is_some_and(|c| c.soloed);
+    }
+    for (id, lane) in to.lanes.iter_mut() {
+        lane.soloed = from.lanes.get(id).is_some_and(|l| l.soloed);
+    }
+}
+
 /// Applies `command` the way the studio that made it did: minting in its
 /// author's space (`fontelle_model::minting_in`, F55).
 ///
@@ -1878,6 +1893,7 @@ impl Joiner {
         // The view is this studio's own, whatever the song did.
         rebuilt.view_state = doc.view_state.clone();
         rebuilt.meta = doc.meta.clone();
+        keep_solos(doc, &mut rebuilt);
         *doc = rebuilt;
     }
 

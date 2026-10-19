@@ -3294,3 +3294,32 @@ fn a_declined_soundfont_can_be_fetched_after_all() {
     assert!(joiner.missing_files().is_empty(), "and fetched");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Solo is each studio's own (Ty, 2026-10-18): a host's solo is not heard
+/// on a joiner's machine, the two still hold one song, and a joiner's own
+/// solo survives its copy being rebuilt under it when edits cross.
+#[test]
+fn a_solo_stays_on_the_studio_that_made_it() {
+    let mut pair = Pair::joined("solo-own", 2);
+    pair.host.toggle_solo(0);
+    pair.settle();
+    pair.same();
+    assert!(
+        pair.joiner.project().channels.values().all(|c| !c.soloed),
+        "the host's solo reached the joiner"
+    );
+    pair.joiner.toggle_lane_solo(0);
+    // Edits that cross: the joiner's copy is rebuilt from the host's.
+    draw(&mut pair.joiner, 0, 60);
+    draw(&mut pair.host, PPQN * 2, 62);
+    pair.settle();
+    pair.same();
+    assert!(
+        pair.joiner.project().lanes.values().any(|l| l.soloed),
+        "the joiner's solo was lost when its copy was rebuilt"
+    );
+    assert!(
+        pair.host.project().lanes.values().all(|l| !l.soloed),
+        "and it never reached the host"
+    );
+}

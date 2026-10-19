@@ -130,7 +130,12 @@ pub struct Channel {
     pub muted: bool,
     /// Only the soloed channels play. Also a sequencer mute; the mixer keeps
     /// its own solo, over tracks, which is a different question.
-    #[serde(default)]
+    /// **Personal, not part of the song** (Ty, 2026-10-18: *"soloing should
+    /// just be a local thing not a synced state"*): read from a song saved
+    /// before that, never written — so never sent to a collaborator, never in
+    /// [`crate::Project::sync_hash`], and set directly by the studio rather
+    /// than by a command, so it is not undoable either.
+    #[serde(default, skip_serializing)]
     pub soloed: bool,
     /// Draw the roll's key strip as a **list of names** rather than as a
     /// keyboard (TDD §16.4).

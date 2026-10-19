@@ -26,6 +26,7 @@ use fontelle_engine::timeline_channel;
 use fontelle_types::{CompiledTimeline, PPQN};
 use fontelle_ui::canvas::RollEdit;
 use fontelle_ui::document::DocumentHost;
+use fontelle_ui::document::StudioHost;
 
 const SR: u32 = 48_000;
 
@@ -386,6 +387,50 @@ fn a_selection_is_cut_where_the_drawn_tempo_puts_it() {
     assert!(
         (frames - wanted).abs() <= 1,
         "{frames} frames; the drawn tempo makes it {wanted}, the box's {at_the_box}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The loudest sample in a sixteen-bit WAV's data.
+fn loudest(path: &Path) -> i32 {
+    let bytes = std::fs::read(path).expect("the file is there");
+    let at = bytes
+        .windows(4)
+        .position(|w| w == b"data")
+        .expect("a data chunk")
+        + 8;
+    bytes[at..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| i32::from(i16::from_le_bytes(*s)).abs())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Solo is each studio's own and not saved — but an export honours it: *"if
+/// you have solo on it actually should export with that solo taking effect
+/// ... i do this all the time to export a specific track"* (Ty, 2026-10-18).
+#[test]
+fn an_export_honours_the_solo_that_is_on() {
+    let dir = scratch("solo");
+    let mut session = saved_session(&dir);
+    a_note(&mut session);
+    session.add_channel().unwrap();
+    session.export_wav().unwrap();
+    let renders = dir.join("Song.fontelle").join("renders");
+    assert!(loudest(&renders.join("Song.wav")) > 0, "the note is heard");
+    // The other channel soloed: the note's channel is not.
+    session.toggle_solo(1);
+    session.export_wav().unwrap();
+    let second = wavs(&dir.join("Song.fontelle"))
+        .into_iter()
+        .find(|name| name != "Song.wav")
+        .expect("a second render");
+    assert_eq!(
+        loudest(&renders.join(second)),
+        0,
+        "the solo was not honoured"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
