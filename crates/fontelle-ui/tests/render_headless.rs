@@ -9254,6 +9254,7 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     }
     ROLL_CHORDS.with(|c| {
         *c.borrow_mut() = fontelle_ui::render::RollChords {
+            outline_outside: None,
             smart: true,
             locked: true,
             strip: Some(fontelle_ui::render::ChordStripChrome {

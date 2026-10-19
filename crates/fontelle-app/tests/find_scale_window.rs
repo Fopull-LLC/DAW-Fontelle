@@ -5,7 +5,6 @@ mod common;
 
 use fontelle_model::Command;
 use fontelle_ui::canvas::RollControl;
-use fontelle_ui::document::{DocumentHost, StudioHost};
 
 fn centre(r: fontelle_ui::layout::Rect) -> (f32, f32) {
     (r.x + r.width / 2.0, r.y + r.height / 2.0)
