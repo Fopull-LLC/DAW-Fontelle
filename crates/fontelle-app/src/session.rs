@@ -97,6 +97,10 @@ enum BounceEnd {
 /// The offer of Compatible plugin graphics' three answers, the one Enter
 /// presses first and the one Escape presses last.
 const GRAPHICS_TURN_ON: &str = "Turn on and restart";
+/// The card a session somebody else ended leaves: save the copy, or carry
+/// on with it as it is.
+const SESSION_SAVE: &str = "Save";
+const SESSION_KEEP_WORKING: &str = "Keep working";
 const GRAPHICS_NEVER: &str = "Don't ask again";
 const GRAPHICS_NOT_NOW: &str = "Not now";
 
@@ -486,6 +490,9 @@ pub struct Session {
     wake: Option<fontelle_net::Wake>,
     /// Whether the window has been told why the last session ended.
     told_end: bool,
+    /// The card a session somebody else ended leaves until it is answered:
+    /// its lines, and whether it offers a save.
+    end_card: Option<(Vec<String>, bool)>,
     /// What the session's own plumbing has to say, beside the collaboration's
     /// notices — a share the relay refused.
     session_notices: Vec<String>,
@@ -1626,6 +1633,7 @@ impl Session {
             sharing: None,
             wake: None,
             told_end: false,
+            end_card: None,
             session_notices: Vec::new(),
             job: None,
             analysis: None,
@@ -2724,8 +2732,10 @@ impl Session {
         // follows the channel, not its place in a list they can add to or
         // take from.
         let selected = self.selected_channel_id();
+        let agreed = self.project.meta.shared_revision;
         let collab = self.collab.as_mut().expect("just checked");
         let effects = collab.pump(&mut self.project, &mut self.history, &place);
+        self.note_agreement(agreed);
         if let Some(at) =
             selected.and_then(|id| self.channel_ids().iter().position(|other| *other == id))
         {
@@ -3333,10 +3343,45 @@ impl Session {
     /// Stops sharing, or leaves the session and carries on alone with the
     /// copy (§10.3).
     pub fn leave_session(&mut self) {
+        let agreed = self.project.meta.shared_revision;
         if let Some(collab) = self.collab.as_mut() {
             collab.leave(&mut self.project, &mut self.history);
+            self.note_agreement(agreed);
             self.touch();
         }
+    }
+
+    /// What two copies agreed on as a session ended is written into the
+    /// song in memory; the song asks to be saved so it reaches the disk, or
+    /// the next join cannot tell the copies were ever the same.
+    fn note_agreement(&mut self, before: Option<(fontelle_types::PersistentId, u64)>) {
+        if self.project.meta.shared_revision != before {
+            self.dirty = true;
+        }
+        self.note_end();
+    }
+
+    /// Tells the person once why the session ended: a line for what they
+    /// did themselves, a card for what somebody else (or the network) did —
+    /// a toast was gone before it was read, and the copy left open is theirs
+    /// now, which they ought to know.
+    fn note_end(&mut self) {
+        if self.told_end {
+            return;
+        }
+        let Some(collab) = &self.collab else {
+            return;
+        };
+        let Some(why) = collab.ended() else {
+            return;
+        };
+        self.told_end = true;
+        if !collab.ended_by_others() {
+            self.session_notices.push(why.to_string());
+            return;
+        }
+        self.end_card = Some((end_card_lines(why), self.dirty && self.bundle.is_some()));
+        self.touch();
     }
 
     /// Whether this studio is sharing, or has a shared song open.
@@ -11338,6 +11383,19 @@ impl StudioHost for Session {
     }
 
     fn session_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        if let Some((lines, offer_save)) = &self.end_card {
+            // Escape answers the last, which keeps working; Enter saves.
+            let mut buttons = Vec::new();
+            if *offer_save {
+                buttons.push(SESSION_SAVE.to_string());
+            }
+            buttons.push(SESSION_KEEP_WORKING.to_string());
+            return Some(fontelle_ui::document::SessionQuestion {
+                lines: lines.clone(),
+                buttons,
+                default: 0,
+            });
+        }
         if let Some(plugin) = &self.graphics_offer {
             return Some(fontelle_ui::document::SessionQuestion {
                 lines: vec![
@@ -11416,6 +11474,13 @@ impl StudioHost for Session {
     }
 
     fn answer_session_question(&mut self, answer: usize) -> Result<(), String> {
+        if let Some((_, offer_save)) = self.end_card.take() {
+            self.touch();
+            if offer_save && answer == 0 {
+                fontelle_ui::document::DocumentHost::save(self)?;
+            }
+            return Ok(());
+        }
         if self.graphics_offer.take().is_some() {
             self.answer_graphics_offer(answer);
             return Ok(());
@@ -11475,6 +11540,12 @@ impl StudioHost for Session {
         std::mem::take(&mut self.restart_request)
     }
 
+    fn closing(&mut self) {
+        if let Some(collab) = &mut self.collab {
+            collab.flush(std::time::Duration::from_millis(1500));
+        }
+    }
+
     /// Leaves this binary, on this song as it is on disk, for `main` to
     /// start once the window has gone (`crate::relaunch`).
     fn prepare_restart(&mut self) -> Result<(), String> {
@@ -11485,14 +11556,9 @@ impl StudioHost for Session {
     }
 
     fn take_session_notices(&mut self) -> Vec<String> {
+        self.note_end();
         let mut notices = std::mem::take(&mut self.session_notices);
         notices.extend(self.take_collab_notices());
-        if !self.told_end
-            && let Some(why) = self.collab_ended()
-        {
-            notices.push(why.to_string());
-            self.told_end = true;
-        }
         notices
     }
 
@@ -18065,5 +18131,22 @@ impl Session {
             status,
             missing: Vec::new(),
         }
+    }
+}
+
+/// A session's ending as the card's lines: what happened, then what it means
+/// for the copy — the two halves of the sentence the session gave
+/// ("Alice stopped sharing — your copy is still open, and yours now.").
+fn end_card_lines(why: &str) -> Vec<String> {
+    match why.split_once(" \u{2014} ") {
+        Some((what, then)) => {
+            let mut then_chars = then.chars();
+            let then = match then_chars.next() {
+                Some(first) => first.to_uppercase().chain(then_chars).collect(),
+                None => String::new(),
+            };
+            vec![format!("{what}."), then]
+        }
+        None => vec![why.to_string()],
     }
 }

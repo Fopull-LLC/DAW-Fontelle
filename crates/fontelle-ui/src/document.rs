@@ -1942,6 +1942,9 @@ pub trait StudioHost: DocumentHost {
     fn take_restart_request(&mut self) -> bool {
         false
     }
+    /// The window is closing: whatever an ended session still has to say
+    /// (its goodbye) is given a moment to go.
+    fn closing(&mut self) {}
     /// Arranges for this binary to start again on this song once the window
     /// has gone. `Err` says what to tell the person instead ("Restart
     /// Fontelle to finish").

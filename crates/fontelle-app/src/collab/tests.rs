@@ -442,3 +442,100 @@ fn a_song_that_arrives_damaged_ends_the_join_and_says_why() {
     assert!(why.contains("same version"), "{why}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A link that says when it has been let go of.
+struct Watched {
+    inner: fontelle_net::MemoryTransport,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Transport for Watched {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        self.inner.send(peer, channel, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        self.inner.poll()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// A session that has ended lets go of its link once the goodbye is out,
+/// so the connection closes then — and the relay, and everyone still on it,
+/// hear the host has gone — rather than when the studio is next shared or
+/// closed. It used to be held, open and idle, until then.
+#[test]
+fn an_ended_session_lets_go_of_its_link() {
+    let hub = MemoryHub::new();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut host = Side {
+        collab: Collab::host(
+            Box::new(Watched {
+                inner: hub.server_endpoint(),
+                dropped: dropped.clone(),
+            }),
+            options("Host"),
+        ),
+        doc: crate::blank_project(8, 120.0, 48_000),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    host.history.open_outbox();
+    host.pump();
+    host.collab.leave(&mut host.doc, &mut host.history);
+    for _ in 0..3 {
+        host.pump();
+    }
+    assert!(
+        dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "the link is still held"
+    );
+}
+
+/// A link that holds back what it is given until it has been looked at a
+/// few times — a relay's pace.
+struct Slow {
+    backlog: usize,
+}
+
+impl Transport for Slow {
+    fn send(&mut self, _: PeerId, _: Channel, _: &[u8]) {
+        self.backlog += 1;
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        self.backlog = self.backlog.saturating_sub(1);
+        Vec::new()
+    }
+    fn stats(&self, _: PeerId) -> fontelle_net::LinkStats {
+        fontelle_net::LinkStats::default()
+    }
+    fn backlog(&self) -> usize {
+        self.backlog
+    }
+}
+
+/// Closing Fontelle straight after Stop sharing used to take the goodbye
+/// with it: it was still waiting on the relay's pace when the process went,
+/// and everyone else waited out the relay's grace instead of hearing at once.
+#[test]
+fn closing_waits_a_moment_for_the_goodbye() {
+    let mut collab = Collab::host(Box::new(Slow { backlog: 5 }), options("Host"));
+    let mut doc = crate::blank_project(8, 120.0, 48_000);
+    let mut history = History::new();
+    history.open_outbox();
+    collab.leave(&mut doc, &mut history);
+    assert!(collab.flushing());
+    collab.flush(Duration::from_secs(1));
+    assert!(!collab.flushing(), "the goodbye is still waiting");
+}

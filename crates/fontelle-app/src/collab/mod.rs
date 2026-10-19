@@ -232,6 +232,10 @@ pub(crate) struct Collab {
     notices: Vec<String>,
     /// Why the session is over, once it is.
     ended: Option<String>,
+    /// Whether this studio ended it — Stop sharing, Leave, Cancel — rather
+    /// than somebody else or the network. The person who did it needs no
+    /// card to tell them.
+    ended_here: bool,
     /// The history's generation last seen with an edit in the hand, and
     /// since when — see [`CollabOptions::idle_break`].
     held: Option<(u64, Instant)>,
@@ -247,6 +251,7 @@ impl Collab {
             role: Role::Host(Host::default()),
             notices: Vec::new(),
             ended: None,
+            ended_here: false,
             held: None,
             files: Files::default(),
         }
@@ -266,6 +271,7 @@ impl Collab {
             role: Role::Joiner(Box::new(joiner)),
             notices: Vec::new(),
             ended: None,
+            ended_here: false,
             held: None,
             files: Files::default(),
         }
@@ -310,9 +316,25 @@ impl Collab {
         self.ended.as_deref()
     }
 
+    /// Whether somebody else, or the network, ended the session.
+    pub fn ended_by_others(&self) -> bool {
+        self.ended.is_some() && !self.ended_here
+    }
+
     /// Over, and still sending what was said last (see [`Collab::pump`]).
     pub fn flushing(&self) -> bool {
         self.ended.is_some() && self.transport.backlog() > 0
+    }
+
+    /// Waits, for no longer than `at_most`, for an ended session's last
+    /// words to go — what closing the window does, so the goodbye is not
+    /// taken with the process.
+    pub fn flush(&mut self, at_most: Duration) {
+        let until = Instant::now() + at_most;
+        while self.flushing() && Instant::now() < until {
+            let _ = self.transport.poll();
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     pub fn question(&self) -> Option<&JoinQuestion> {
@@ -504,6 +526,11 @@ impl Collab {
             // the link is looked at. Nothing that arrives matters now.
             if self.flushing() {
                 let _ = self.transport.poll();
+            } else {
+                // Then the link is let go of, which closes the connection:
+                // the relay hears the host has gone now, not when the studio
+                // is next shared or closed.
+                self.transport = Box::new(Closed);
             }
             return Vec::new();
         }
@@ -607,6 +634,7 @@ impl Collab {
             JoinAnswer::Cancel => {
                 send(self.transport.as_mut(), SERVER, &Msg::Bye);
                 self.end("You cancelled the join.".to_string(), history);
+                self.ended_here = true;
                 Ok(Vec::new())
             }
             JoinAnswer::Pick(path) => {
@@ -679,6 +707,7 @@ impl Collab {
                     send(self.transport.as_mut(), *peer, &Msg::Bye);
                 }
                 self.end("You stopped sharing.".to_string(), history);
+                self.ended_here = true;
             }
             Role::Joiner(joiner) => {
                 if joiner.stage == Stage::Live {
@@ -687,6 +716,7 @@ impl Collab {
                 }
                 send(self.transport.as_mut(), SERVER, &Msg::Bye);
                 self.end("You left the session.".to_string(), history);
+                self.ended_here = true;
             }
         }
     }
@@ -695,6 +725,20 @@ impl Collab {
         history.close_outbox();
         history.set_mint_space(None);
         self.ended = Some(why);
+    }
+}
+
+/// The link of a session that has ended and said its goodbye: nothing
+/// goes, nothing comes.
+struct Closed;
+
+impl Transport for Closed {
+    fn send(&mut self, _: PeerId, _: Channel, _: &[u8]) {}
+    fn poll(&mut self) -> Vec<Incoming> {
+        Vec::new()
+    }
+    fn stats(&self, _: PeerId) -> fontelle_net::LinkStats {
+        fontelle_net::LinkStats::default()
     }
 }
 

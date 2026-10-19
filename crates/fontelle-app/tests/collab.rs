@@ -3323,3 +3323,89 @@ fn a_solo_stays_on_the_studio_that_made_it() {
         "and it never reached the host"
     );
 }
+
+// --- sessions that end cleanly (next update, phase 2.1) ---
+
+/// The card a session somebody else ended leaves, as the window sees it.
+fn end_card(session: &Session) -> Option<fontelle_ui::document::SessionQuestion> {
+    session
+        .session_question()
+        .filter(|q| q.buttons.iter().any(|b| b == "Keep working"))
+}
+
+/// A session somebody else ended is a card the person answers — the copy is
+/// open and theirs now, and it says so — not a toast that is gone before it
+/// is read. And the copy asks to be saved: what the two copies last agreed
+/// on was written into it as the session ended, in memory only.
+#[test]
+fn a_host_who_stops_sharing_leaves_the_joiner_a_card_and_an_unsaved_copy() {
+    let mut pair = Pair::joined("ended-card", 2);
+    // Worked on together and saved: what the disk says the copies agreed on
+    // is still the song as it was joined.
+    draw(&mut pair.joiner, 0, 61);
+    pair.settle();
+    DocumentHost::save(&mut pair.joiner).unwrap();
+    assert!(!pair.joiner.is_dirty());
+    pair.host.leave_session();
+    pair.settle();
+
+    let card = end_card(&pair.joiner).expect("Bob is shown a card");
+    assert!(card.lines.concat().contains("Alice"), "{:?}", card.lines);
+    assert!(
+        card.buttons.iter().any(|b| b == "Save"),
+        "{:?}",
+        card.buttons
+    );
+    assert!(
+        !pair
+            .joiner
+            .take_session_notices()
+            .iter()
+            .any(|n| n.contains("stopped sharing")),
+        "not a card and a toast both"
+    );
+    assert!(pair.joiner.is_dirty(), "the agreed revision is not on disk");
+    let save = card.buttons.iter().position(|b| b == "Save").unwrap();
+    pair.joiner.answer_session_question(save).unwrap();
+    assert!(!pair.joiner.is_dirty(), "Save saved");
+    assert!(end_card(&pair.joiner).is_none(), "the card is answered");
+}
+
+#[test]
+fn a_removed_joiner_is_shown_a_card() {
+    let mut pair = Pair::joined("removed-card", 2);
+    let bob = pair.host.session_peers()[0].peer;
+    pair.host.remove_peer(bob).unwrap();
+    pair.settle();
+    let card = end_card(&pair.joiner).expect("Bob is shown a card");
+    assert!(
+        card.lines.concat().contains("Alice removed you"),
+        "{:?}",
+        card.lines
+    );
+    let keep = card
+        .buttons
+        .iter()
+        .position(|b| b == "Keep working")
+        .unwrap();
+    pair.joiner.answer_session_question(keep).unwrap();
+    assert!(end_card(&pair.joiner).is_none());
+}
+
+/// What the person did themselves needs no card: they know.
+#[test]
+fn leaving_yourself_is_a_line_not_a_card() {
+    let mut pair = Pair::joined("left-myself", 2);
+    pair.joiner.leave_session();
+    pair.settle();
+    assert!(end_card(&pair.joiner).is_none());
+    assert!(
+        pair.joiner
+            .take_session_notices()
+            .iter()
+            .any(|n| n.contains("You left")),
+    );
+    pair.host.leave_session();
+    pair.settle();
+    assert!(end_card(&pair.host).is_none());
+}

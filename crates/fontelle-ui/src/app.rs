@@ -5217,6 +5217,9 @@ impl ApplicationHandler for WindowApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // The save prompt was answered with a close.
         if self.quit {
+            if let Some(doc) = &mut self.options.document {
+                doc.closing();
+            }
             event_loop.exit();
             return;
         }
