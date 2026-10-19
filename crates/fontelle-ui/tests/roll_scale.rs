@@ -491,3 +491,55 @@ fn the_plain_menu_is_the_same_menu_with_nothing_on_the_clipboard() {
         scale_menu_with("", Some(&current), None)
     );
 }
+
+// --- Find my scale… (the next update, §3.2b) ---
+
+/// The scale menu offers to find the scale, and the list says the fit and
+/// why: *"98% · 1 note out (F♯)"*, and the same notes' other name.
+#[test]
+fn find_my_scale_lists_the_fit_and_why() {
+    use fontelle_types::{KeyScale, ScaleFinding, ScaleFit};
+    let (entries, rows) = fontelle_ui::canvas::scale_menu("", None);
+    let at = rows
+        .iter()
+        .position(|r| *r == fontelle_ui::canvas::ScaleMenuRow::FindScale)
+        .expect("the menu offers to find the scale");
+    assert!(entries[at].label.contains("Find my scale"));
+    let finding = ScaleFinding {
+        rows: vec![
+            ScaleFit {
+                key: KeyScale::new(0, "major"),
+                fit: 1.0,
+                out: vec![],
+                also: vec![KeyScale::new(9, "natural-minor")],
+            },
+            ScaleFit {
+                key: KeyScale::new(7, "major"),
+                fit: 0.91,
+                out: vec![5],
+                also: vec![],
+            },
+        ],
+        few_notes: false,
+    };
+    let list = fontelle_ui::canvas::find_scale_menu(&finding);
+    assert_eq!(list.len(), 3, "a heading and a row each");
+    assert!(list[1].label.contains("C major"), "{}", list[1].label);
+    assert!(
+        list[1].label.contains("A natural minor"),
+        "{}",
+        list[1].label
+    );
+    assert!(list[1].label.contains("100%"), "{}", list[1].label);
+    assert!(list[2].label.contains("91%"), "{}", list[2].label);
+    assert!(
+        list[2].label.contains("1 note out (F)"),
+        "{}",
+        list[2].label
+    );
+    let few = fontelle_ui::canvas::find_scale_menu(&ScaleFinding {
+        few_notes: true,
+        ..finding
+    });
+    assert!(few[0].label.contains("many scales fit"), "{}", few[0].label);
+}

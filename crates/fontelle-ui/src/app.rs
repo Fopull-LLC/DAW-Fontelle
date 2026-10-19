@@ -744,6 +744,8 @@ enum MenuTarget {
     /// The scale chip: every scale, grouped, filtered as you type — see
     /// `canvas::scale_menu`.
     KeyScale,
+    /// *Find my scale…*'s list (`canvas::find_scale_menu`).
+    FindScale,
     /// A [`ParamKind::Choice`] on the instrument panel or on an effect's own
     /// — a filter's slope, an LFO's shape. The same complaint as
     /// [`MenuTarget::AudioRow`] and the same answer: the list drops down.
@@ -956,7 +958,11 @@ impl MenuTarget {
             Self::DevicePresetName(_)
             | Self::DevicePresetCategory(_)
             | Self::DevicePresetNewCategory(_) => None,
-            Self::Snap { .. } | Self::KeyRoot | Self::KeyScale | Self::GhostMenu => None,
+            Self::Snap { .. }
+            | Self::KeyRoot
+            | Self::KeyScale
+            | Self::FindScale
+            | Self::GhostMenu => None,
             // The settings drop-down is a row of the browser panel, which is in
             // the main window.
             Self::SettingChoice(_) | Self::TourSection => None,
@@ -2264,6 +2270,8 @@ pub struct WindowApp {
     key_style: crate::canvas::KeyStyle,
     /// The song's key, read once a revision (`StudioHost::song_key`).
     song_key: Option<fontelle_types::KeyScale>,
+    /// What *Find my scale…* found, while its list is open.
+    scale_finding: Option<fontelle_types::ScaleFinding>,
     /// The smart-chord strip open on a note just placed (phase 3), the note
     /// waiting for its button to come up before the strip opens, the keys
     /// sounding while a chip is hovered and since when, and the last chord
@@ -2779,6 +2787,7 @@ impl WindowApp {
             key_map: crate::document::KeyMap::unknown(),
             key_style: crate::canvas::KeyStyle::default(),
             song_key: None,
+            scale_finding: None,
             chord_strip: None,
             chord_pending: None,
             chord_sounding: Vec::new(),
@@ -3298,6 +3307,9 @@ impl WindowApp {
         self.refresh_studio();
         let people_marks = self.people_marks();
         let roll_chords = self.roll_chords();
+        let scale_preview = self
+            .scale_preview()
+            .and_then(|fit| crate::canvas::RollScale::of(&fit.key));
         self.shape_labels();
         // Read before the surface is borrowed: the chrome below is built
         // inside a closure that already holds a mutable borrow of `self`.
@@ -3467,7 +3479,8 @@ impl WindowApp {
                     ghost_caption: ghost_caption.clone(),
                     recording: &self.takes,
                     key_style: self.key_style,
-                    scale: self.roll.scale,
+                    // A candidate scale previewed shades the rows in its place.
+                    scale: scale_preview.or(self.roll.scale),
                     key: self.song_key.as_ref(),
                     key_root: self.key_root,
                     clip_length: doc.clip_length(),
@@ -4557,6 +4570,10 @@ impl WindowApp {
     /// changed.
     fn update_hover(&mut self) {
         self.hover_chord_strip();
+        // A candidate scale previewed follows the pointer down the list.
+        if matches!(self.menu, Some((MenuTarget::FindScale, _))) {
+            self.tree.invalidate(PANEL);
+        }
         // The sheet is over everything, so while it is up the only hover
         // that matters is its own: the row under the pointer lights up, and
         // nothing under the sheet is told about the pointer at all.
@@ -19711,6 +19728,11 @@ impl WindowApp {
                 )
                 .0
             }
+            MenuTarget::FindScale => self
+                .scale_finding
+                .as_ref()
+                .map(crate::canvas::find_scale_menu)
+                .unwrap_or_default(),
             // The grid, as a list rather than as six presses round a ring.
             MenuTarget::Snap { timeline } => {
                 let current = if *timeline {
@@ -21640,6 +21662,7 @@ impl WindowApp {
                 )
                 .1;
                 match rows.get(index) {
+                    Some(crate::canvas::ScaleMenuRow::FindScale) => self.open_find_scale(),
                     Some(crate::canvas::ScaleMenuRow::NoScale) => self.choose_song_key(None),
                     Some(crate::canvas::ScaleMenuRow::FitNotes) => self.fit_notes_to_key(),
                     Some(crate::canvas::ScaleMenuRow::CopyScale) => {
@@ -21665,6 +21688,25 @@ impl WindowApp {
                     }
                     _ => {}
                 }
+            }
+            (MenuTarget::FindScale, index) => {
+                let Some(fit) = self
+                    .scale_finding
+                    .take()
+                    .and_then(|f| index.checked_sub(1).and_then(|i| f.rows.get(i).cloned()))
+                else {
+                    return;
+                };
+                // **The key and nothing else**: choosing a scale from the
+                // chooser fits every note to it, which would move the very
+                // notes the list just showed were out of it.
+                self.key_root = fit.key.root;
+                self.status = format!("Key: {} \u{2014} no notes moved", fit.key.label());
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_song_key(Some(fit.key), Vec::new(), Vec::new());
+                }
+                self.refresh_studio();
+                self.tree.invalidate(PANEL);
             }
             (MenuTarget::Snap { timeline }, index) => {
                 let Some(snap) = crate::canvas::SNAP_DIVISIONS.get(index).copied() else {
@@ -24985,6 +25027,30 @@ impl WindowApp {
         }
     }
 
+    // --- finding the scale (§3.2b) ---
+
+    /// Weighs the song's notes and opens the list of scales they fit.
+    fn open_find_scale(&mut self) {
+        let notes = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.scale_notes())
+            .unwrap_or_default();
+        self.scale_finding = Some(fontelle_types::find_scales(&notes));
+        self.open_key_menu(MenuTarget::FindScale);
+    }
+
+    /// The candidate under the pointer while *Find my scale…* is open.
+    fn scale_preview(&self) -> Option<&fontelle_types::ScaleFit> {
+        let (MenuTarget::FindScale, menu) = self.menu.as_ref()? else {
+            return None;
+        };
+        let (x, y) = self.cursor;
+        let index = menu.rows.iter().position(|r| r.contains(x, y))?;
+        self.scale_finding.as_ref()?.rows.get(index.checked_sub(1)?)
+    }
+
     // --- smart chords (phase 3) ---
 
     /// Whether a placed note opens the chord strip: on, in the roll, on an
@@ -25286,6 +25352,7 @@ impl WindowApp {
         let mut chords = crate::render::RollChords {
             smart: self.roll.smart_chords,
             locked: self.roll.scale_lock && self.song_key.is_some(),
+            outline_outside: self.scale_preview().and_then(|fit| fit.key.mask()),
             ..Default::default()
         };
         let (Some(strip), Some(layout)) = (&self.chord_strip, self.chord_strip_layout()) else {

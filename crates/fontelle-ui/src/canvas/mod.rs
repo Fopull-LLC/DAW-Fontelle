@@ -291,8 +291,8 @@ pub use rack::{
     route_menu_layout_excluding, route_tip, scroll_to_show, tab_at, tab_strip, without_route_chips,
 };
 pub use roll_scale::{
-    RollScale, RowShade, ScaleMenuRow, root_caption, root_menu, row_shade, scale_caption,
-    scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
+    RollScale, RowShade, ScaleMenuRow, find_scale_menu, root_caption, root_menu, row_shade,
+    scale_caption, scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
 };
 pub use share::{
     ALLOW, CHAT_ROWS, COPY_CODE, ChoicePromptLayout, FETCH_AGAIN, FOLLOW, FOLLOWING, JOIN_A_SONG,

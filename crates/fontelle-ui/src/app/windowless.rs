@@ -222,6 +222,21 @@ impl Windowless {
         &self.app.chord_sounding
     }
 
+    /// The open menu's rows, and what each says.
+    pub fn menu_rows(&self) -> Vec<(Rect, String)> {
+        self.app
+            .menu
+            .as_ref()
+            .map(|(_, m)| {
+                m.rows
+                    .iter()
+                    .copied()
+                    .zip(m.entries.iter().map(|e| e.label.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// The pointer's move, and the hover it brings.
     pub fn hover_studio(&mut self, x: f32, y: f32) {
         self.app.pointer_moved(x, y);

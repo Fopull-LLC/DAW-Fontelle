@@ -154,6 +154,9 @@ pub fn root_menu(current: u8) -> Vec<MenuEntry> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScaleMenuRow {
     Heading,
+    /// *Find my scale…*: the scales the notes could be in, best first
+    /// ([`find_scale_menu`]).
+    FindScale,
     /// Turn the scale off. The notes stay where they are.
     NoScale,
     /// Fit the notes to the scale that is on — for notes drawn with Alt, or
@@ -203,6 +206,8 @@ pub fn scale_menu_with(
     let mut rows = vec![ScaleMenuRow::Heading];
 
     if query.is_empty() {
+        entries.push(MenuEntry::new("   Find my scale\u{2026}"));
+        rows.push(ScaleMenuRow::FindScale);
         entries.push(MenuEntry::new(match current {
             None => format!("{CHOSEN_MARK}No scale"),
             Some(_) => "   No scale".to_string(),
@@ -268,4 +273,41 @@ pub fn scale_menu_with(
         rows.push(ScaleMenuRow::Heading);
     }
     (entries, rows)
+}
+
+/// *Find my scale…*'s list: a heading, then a row a candidate — its key and
+/// the other keys of the same notes, how well the notes fit, and the notes
+/// outside it. Hovering a row previews it; choosing one sets the key and
+/// moves nothing.
+pub fn find_scale_menu(finding: &fontelle_types::ScaleFinding) -> Vec<MenuEntry> {
+    let heading = if finding.rows.is_empty() {
+        "No notes to go by yet".to_string()
+    } else if finding.few_notes {
+        "Only a few notes \u{2014} many scales fit them".to_string()
+    } else {
+        "Your notes fit \u{2014} hover to see, click to set the key".to_string()
+    };
+    let mut entries = vec![MenuEntry::disabled(heading)];
+    for row in &finding.rows {
+        let mut label = row.key.label();
+        if let Some(other) = row.also.first() {
+            label.push_str(&format!(" \u{2014} or {}", other.label()));
+        }
+        label.push_str(&format!(" \u{b7} {:.0}%", row.fit * 100.0));
+        if !row.out.is_empty() {
+            let names: Vec<&str> = row
+                .out
+                .iter()
+                .map(|pc| PITCH_NAMES[usize::from(*pc % 12)])
+                .collect();
+            let count = row.out.len();
+            label.push_str(&format!(
+                " \u{b7} {count} note{} out ({})",
+                if count == 1 { "" } else { "s" },
+                names.join(", ")
+            ));
+        }
+        entries.push(MenuEntry::new(label));
+    }
+    entries
 }

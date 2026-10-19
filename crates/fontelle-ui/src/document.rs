@@ -3637,6 +3637,11 @@ pub trait StudioHost: DocumentHost {
     fn roll_clip(&self) -> Option<ClipId> {
         None
     }
+    /// The song's melodic notes, as *Find my scale…* weighs them: every
+    /// note clip's, drum kits left out.
+    fn scale_notes(&self) -> Vec<fontelle_types::ScaleNote> {
+        Vec::new()
+    }
     /// The mixer strips' tracks, in strip order.
     fn strip_tracks(&self) -> Vec<fontelle_types::MixerTrackId> {
         Vec::new()

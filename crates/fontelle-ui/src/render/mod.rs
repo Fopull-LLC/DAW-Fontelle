@@ -601,6 +601,9 @@ pub struct RollChords {
     pub strip: Option<ChordStripChrome>,
     /// The chord under the pointer, as notes ghosted where it would go.
     pub ghosts: Vec<GhostNote>,
+    /// *Find my scale…*'s candidate under the pointer: the notes outside
+    /// these pitch classes are outlined.
+    pub outline_outside: Option<u16>,
 }
 
 /// The strip open on a placed note.
@@ -7013,6 +7016,23 @@ fn draw_property_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
 /// in the accent, over the notes, so it reads as *this, if you click*.
 fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
     let grid = chrome.layout.grid;
+    // A candidate key previewed: its outsiders ringed, so the why is seen.
+    if let Some(mask) = chrome.chords.outline_outside {
+        for note in chrome.notes.values() {
+            if mask & (1 << (note.key % 12)) != 0 {
+                continue;
+            }
+            let row = crate::canvas::key_row(&chrome.view, grid, note.key);
+            let x0 = crate::canvas::tick_to_x(&chrome.view, grid, note.start);
+            let x1 = crate::canvas::tick_to_x(&chrome.view, grid, note.start + note.length);
+            let r = Rect::new(x0, row.y, (x1 - x0).max(3.0), row.height)
+                .intersection(&grid)
+                .clamped();
+            if !r.is_empty() {
+                stroke_rect_rounded(scene, r, 2.0, 2.0, theme.palette.meter_peak);
+            }
+        }
+    }
     for ghost in &chrome.chords.ghosts {
         let row = crate::canvas::key_row(&chrome.view, grid, ghost.key);
         let x0 = crate::canvas::tick_to_x(&chrome.view, grid, ghost.start);

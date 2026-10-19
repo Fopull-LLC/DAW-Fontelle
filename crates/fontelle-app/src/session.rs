@@ -15239,6 +15239,34 @@ impl StudioHost for Session {
         self.lane_ids()
     }
 
+    fn scale_notes(&self) -> Vec<fontelle_types::ScaleNote> {
+        let mut out = Vec::new();
+        for clip in self.project.clips.values() {
+            let ClipSource::Notes(data) = &clip.source else {
+                continue;
+            };
+            for note in data.notes.values() {
+                let channel = self
+                    .project
+                    .channels
+                    .get(note.channel.unwrap_or(data.channel));
+                // A kit's keys are drums, not pitches.
+                let drums = channel.is_some_and(|c| {
+                    c.named_keys
+                        || c.instrument == Some(fontelle_types::InstrumentKind::DrumMachine)
+                });
+                if !drums {
+                    out.push(fontelle_types::ScaleNote {
+                        key: note.key,
+                        start: clip.start + note.start,
+                        length: note.length,
+                    });
+                }
+            }
+        }
+        out
+    }
+
     fn roll_clip(&self) -> Option<ClipId> {
         self.project
             .clips
