@@ -7074,12 +7074,17 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             name: "Bob".into(),
             colour: 1,
             view_only: false,
+            permissions: Default::default(),
         },
         SessionPeer {
             peer: 2,
             name: "Carol".into(),
             colour: 2,
             view_only: true,
+            permissions: fontelle_model::wire::Permissions {
+                mixer: false,
+                ..Default::default()
+            },
         },
     ];
     let status = "Bob is fetching 3 of 14 files";
@@ -7302,6 +7307,22 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         "following Bob, and his Follow is not lit"
     );
     assert!(!lit(panel.rows[1].follow), "Carol's Follow is lit");
+    // Carol is kept off the mixer: her Mixer switch is dark, Bob's lit.
+    let inside = |r: Rect| at(&open, r.x + 5.0, r.y + r.height / 2.0);
+    assert!(
+        !near(
+            inside(panel.rows[0].allow[0]),
+            inside(panel.rows[1].allow[0])
+        ),
+        "Bob's Mixer and Carol's look alike"
+    );
+    assert!(
+        near(
+            inside(panel.rows[0].allow[1]),
+            inside(panel.rows[1].allow[1])
+        ),
+        "both have Sounds, and they look different"
+    );
 
     // A joiner missing a plugin and a soundfont: listed, under a heading,
     // what and where (F91).

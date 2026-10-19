@@ -1756,6 +1756,12 @@ fn msg_variant_order_is_pinned() {
         }),
         22
     );
+    assert_eq!(
+        tag(&Msg::Permissions {
+            permissions: Default::default()
+        }),
+        23
+    );
 }
 
 /// Where somebody is goes across as the song's own positions — a lane and a

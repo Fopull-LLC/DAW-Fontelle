@@ -2453,6 +2453,36 @@ fn draw_share_panel(
             Color::rgba(r, g, b, a),
         );
         draw_line(scene, labels, &peer.name, row.name, p.text);
+        for ((chip, word), on) in row.allow.iter().zip(crate::canvas::ALLOW).zip([
+            peer.permissions.mixer,
+            peer.permissions.sounds,
+            peer.permissions.plugins,
+        ]) {
+            if chip.is_empty() {
+                continue;
+            }
+            // Lit while allowed, the way the view-only switch is lit while on.
+            if on {
+                fill_rect_rounded(scene, *chip, chip.height / 2.0, p.accent.with_alpha(0x55));
+            }
+            stroke_rect_rounded(
+                scene,
+                *chip,
+                chip.height / 2.0,
+                1.0,
+                if on { p.accent } else { p.border },
+            );
+            if let Some(shaped) = labels.get(word) {
+                draw_text_clipped(
+                    scene,
+                    shaped,
+                    *chip,
+                    chip.x + (chip.width - shaped.width) / 2.0,
+                    chip.y + (chip.height - shaped.height) / 2.0,
+                    if on { p.text } else { p.text_muted },
+                );
+            }
+        }
         if !row.follow.is_empty() {
             if share.following == Some(peer.peer) {
                 fill_rect_rounded(scene, row.follow, row.follow.height / 2.0, p.accent);

@@ -25076,6 +25076,20 @@ impl WindowApp {
         let peer = |i: usize| self.session.peers.get(i).cloned();
         match hit {
             ShareHit::Say => self.ask_for_a_name(NameFor::Chat, String::new()),
+            ShareHit::Allow(i, k) => {
+                if let Some(who) = peer(i)
+                    && let Some(doc) = &mut self.options.document
+                {
+                    let mut p = who.permissions;
+                    match k {
+                        0 => p.mixer = !p.mixer,
+                        1 => p.sounds = !p.sounds,
+                        _ => p.plugins = !p.plugins,
+                    }
+                    doc.set_peer_permissions(who.peer, p);
+                }
+                self.read_session_now();
+            }
             ShareHit::Follow(i) => {
                 if let Some(who) = peer(i) {
                     self.following = if self.let_go_of == Some(who.peer) {

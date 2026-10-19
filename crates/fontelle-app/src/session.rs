@@ -2577,6 +2577,7 @@ impl Session {
             transport.set_wake(wake.clone());
         }
         self.collab = Some(crate::collab::Collab::host(transport, options));
+        self.tell_plugins_here();
         self.told_end = false;
         self.touch();
         Ok(())
@@ -3300,11 +3301,29 @@ impl Session {
     /// A plugin somebody put in the shared song that this computer has not
     /// got is said the moment it arrives, once (F91): it is silent here, and
     /// nothing else would say why.
+    /// What anybody in a session may add without being allowed plugins:
+    /// what this computer's scan has found, as far as it has looked. Not a
+    /// scan of its own — that loads every plugin, and is not a thing to do
+    /// at the press of Share.
+    fn tell_plugins_here(&mut self) {
+        let Some(collab) = self.collab.as_mut() else {
+            return;
+        };
+        let scan = self.plugins.scan();
+        collab.set_plugins_here(
+            scan.instruments()
+                .chain(scan.effects())
+                .map(|p| p.key.clone())
+                .collect(),
+        );
+    }
+
     fn say_new_missing_plugins(&mut self) {
         if self.missing_plugins_said.is_none() || crate::plugin_slots(&self.project).is_empty() {
             return;
         }
         self.plugins.scan_once();
+        self.tell_plugins_here();
         let mut fresh = Vec::new();
         for (state, places) in self.missing_plugins() {
             let key = format!("{}:{}", state.key.format.label(), state.key.id);
@@ -11540,6 +11559,16 @@ impl StudioHost for Session {
         std::mem::take(&mut self.restart_request)
     }
 
+    fn set_peer_permissions(&mut self, peer: u16, permissions: fontelle_model::wire::Permissions) {
+        let Some(collab) = self.collab.as_mut() else {
+            return;
+        };
+        match collab.set_permissions(peer, permissions) {
+            Ok(()) => self.touch(),
+            Err(why) => self.session_notices.push(why),
+        }
+    }
+
     fn say(&mut self, text: &str) {
         if let Some(collab) = self.collab.as_mut().filter(|c| c.is_live()) {
             collab.say(text);
@@ -18146,9 +18175,11 @@ impl Session {
                 name: host.clone(),
                 colour: 0,
                 view_only: false,
+                permissions: Default::default(),
             });
         }
         peers.extend(collab.peers().into_iter().map(|p| SessionPeer {
+            permissions: collab.permissions_of(p.peer),
             peer: p.peer,
             name: p.name,
             colour: p.colour,
@@ -18178,7 +18209,25 @@ impl Session {
                         if missing == 1 { "" } else { "s" }
                     )
                 } else {
-                    format!("{host} is sharing this song")
+                    // What the host keeps this person off, on the line's
+                    // second half, so a taken-back edit is no surprise.
+                    let p = collab.my_permissions();
+                    let kept: Vec<&str> = [
+                        (!p.mixer).then_some("the mixer"),
+                        (!p.sounds).then_some("sounds"),
+                        (!p.plugins).then_some("new plugins"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    if kept.is_empty() {
+                        format!("{host} is sharing this song")
+                    } else {
+                        format!(
+                            "{host} is sharing this song \u{2014} you can't change {}",
+                            kept.join(", ")
+                        )
+                    }
                 }
             }
         };

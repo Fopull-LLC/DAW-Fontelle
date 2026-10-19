@@ -119,6 +119,9 @@ pub struct PeerRowLayout {
     pub remove: Rect,
     /// Follow: this studio's view goes where theirs goes.
     pub follow: Rect,
+    /// On the host's panel, the switches for what they may touch:
+    /// [`ALLOW`]'s three, in order. Empty on a joiner's.
+    pub allow: [Rect; 3],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -174,6 +177,8 @@ pub enum ShareHit {
     Remove(usize),
     /// Follow (or stop following) the `n`th row's person.
     Follow(usize),
+    /// The `n`th row's `k`th permission switch ([`ALLOW`]).
+    Allow(usize, usize),
     /// [`SharePanelLayout::fetch_again`].
     FetchAgain,
     /// [`SharePanelLayout::say`].
@@ -186,6 +191,10 @@ const FETCH_AGAIN_WIDTH: f32 = 84.0;
 const VIEW_ONLY_WIDTH: f32 = 64.0;
 const FOLLOW_WIDTH: f32 = 82.0;
 const SAY_WIDTH: f32 = 64.0;
+
+/// The host's three switches on a person's row: the mixer, instruments'
+/// sounds, and plugins the host has not got.
+pub const ALLOW: [&str; 3] = ["Mixer", "Sounds", "Plugins"];
 
 /// The words on a row's Follow, while not and while following.
 pub const FOLLOW: &str = "Follow";
@@ -328,6 +337,9 @@ pub fn share_panel_layout_full(
     let chat = if chats { chat.min(CHAT_ROWS) } else { 0 };
     let chat_h = chat as f32 * row;
     let code_h = if hosting { code_size + pad } else { 0.0 };
+    // On the host's panel a person takes two rows: their name and controls,
+    // then what they may touch (phase 2.4).
+    let person_h = if hosting { 2.0 * row } else { row };
     let buttons = if role.join().is_some() {
         2.0 * button + pad * 0.5
     } else {
@@ -350,7 +362,7 @@ pub fn share_panel_layout_full(
     } else {
         0
     };
-    let fit = ((room / row).floor() as usize).min(wanted);
+    let fit = ((room / person_h).floor() as usize).min(wanted);
     let shown = if role.lists_people() {
         fit.min(people)
     } else {
@@ -358,7 +370,7 @@ pub fn share_panel_layout_full(
     };
     // What is missing, in what room the people leave: a heading, two lines
     // a thing, and a line counting the rest when they do not all fit.
-    let left = room - fit as f32 * row;
+    let left = room - fit as f32 * person_h;
     let heading = row + pad * 0.5;
     let (listed, more) = if missing == 0 || left < heading + 2.0 * row {
         (0, missing > 0 && left >= heading + row)
@@ -378,7 +390,7 @@ pub fn share_panel_layout_full(
     } else {
         0.0
     };
-    let height = fixed + fit as f32 * row + missing_h;
+    let height = fixed + fit as f32 * person_h + missing_h;
     let frame = Rect::new(x, top, width, height)
         .intersection(&window)
         .clamped();
@@ -418,7 +430,7 @@ pub fn share_panel_layout_full(
     };
     let rows: Vec<PeerRowLayout> = (0..shown)
         .map(|i| {
-            let frame = Rect::new(inner_x, y + i as f32 * row, inner_w, row);
+            let frame = Rect::new(inner_x, y + i as f32 * person_h, inner_w, person_h);
             let side = (row * 0.5).round();
             let swatch = Rect::new(frame.x, frame.y + (row - side) / 2.0, side, side);
             let (view_only_label, view_only, remove) = if hosting {
@@ -468,6 +480,16 @@ pub fn share_panel_layout_full(
                 view_only,
                 remove,
                 follow,
+                allow: if hosting {
+                    let gap = pad * 0.5;
+                    let left = name.x;
+                    let w = ((frame.right() - left - 2.0 * gap) / 3.0).max(0.0);
+                    let h = (row * 0.7).round();
+                    let y = frame.y + row + (row - h) / 2.0;
+                    [0, 1, 2].map(|k| Rect::new(left + k as f32 * (w + gap), y, w, h))
+                } else {
+                    [Rect::ZERO; 3]
+                },
             }
         })
         .collect();
@@ -476,7 +498,7 @@ pub fn share_panel_layout_full(
     } else {
         Rect::ZERO
     };
-    y += fit as f32 * row;
+    y += fit as f32 * person_h;
     let (missing_title, missing_rows, missing_more) = if missing_h > 0.0 {
         let title = Rect::new(inner_x, y + pad * 0.5, inner_w, row);
         let mut at = y + heading;
@@ -528,6 +550,7 @@ pub fn share_panel_layout_full(
                 view_only: keep(r.view_only),
                 remove: keep(r.remove),
                 follow: keep(r.follow),
+                allow: r.allow.map(keep),
             })
             .collect(),
         chat: chat_lines.into_iter().map(keep).collect(),
@@ -586,6 +609,9 @@ pub fn share_hit(layout: &SharePanelLayout, x: f32, y: f32) -> Option<ShareHit> 
         if row.follow.contains(x, y) {
             return Some(ShareHit::Follow(i));
         }
+        if let Some(k) = row.allow.iter().position(|c| c.contains(x, y)) {
+            return Some(ShareHit::Allow(i, k));
+        }
     }
     None
 }
@@ -598,6 +624,7 @@ pub fn share_panel_words(role: ShareRole, people: &[crate::document::SessionPeer
     words.extend(role.join().map(str::to_string));
     if role == ShareRole::Hosting {
         words.extend([COPY_CODE, VIEW_ONLY, REMOVE_PEER].map(str::to_string));
+        words.extend(ALLOW.map(str::to_string));
     }
     if role == ShareRole::Joined {
         words.push(FETCH_AGAIN.to_string());

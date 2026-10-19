@@ -661,6 +661,100 @@ pub enum Msg {
         peer: u16,
         text: String,
     },
+    /// Host to one joiner: what they may touch besides the notes, so a
+    /// refusal can say which permission it needed.
+    Permissions {
+        permissions: Permissions,
+    },
+}
+
+/// What a person in a session may touch besides the notes, the clips and
+/// the arrangement — the host's to give, person by person, and enforced by
+/// the host. Everything is allowed until the host says otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Permissions {
+    /// The mixer: levels, pans, effects, sends, routing, tracks.
+    pub mixer: bool,
+    /// An instrument's sound, and any new sample or soundfont — the files
+    /// everybody else then has to fetch.
+    pub sounds: bool,
+    /// Plugins the host has not got, which nobody but their owner hears.
+    pub plugins: bool,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            mixer: true,
+            sounds: true,
+            plugins: true,
+        }
+    }
+}
+
+impl Edit {
+    /// Whether this edit changes the mixer (`Permissions::mixer`).
+    pub fn touches_mixer(&self) -> bool {
+        use crate::{FlagTarget, NumberTarget};
+        match self {
+            Edit::Compound { parts, .. } => parts.iter().any(Edit::touches_mixer),
+            Edit::SetNumber(set) => matches!(
+                set.target(),
+                NumberTarget::TrackGainDb(_) | NumberTarget::TrackPan(_)
+            ),
+            Edit::SetFlag(set) => matches!(
+                set.target(),
+                FlagTarget::TrackMute(_) | FlagTarget::TrackSolo(_) | FlagTarget::TrackOutputOn(_)
+            ),
+            Edit::SetSendLevel(_)
+            | Edit::SetInsertParam(_)
+            | Edit::SetInsertMix(_)
+            | Edit::SetEqBand(_)
+            | Edit::SetInsertBypassed(_)
+            | Edit::AddMixerTrack(_)
+            | Edit::RemoveMixerTrack(_)
+            | Edit::RestoreMixerTrack(_)
+            | Edit::MoveMixerTrack(_)
+            | Edit::DuplicateMixerTrack(_)
+            | Edit::SetMixerOrder(_)
+            | Edit::SetTrackOutput(_)
+            | Edit::AddSend(_)
+            | Edit::RemoveSend(_)
+            | Edit::RestoreSend(_)
+            | Edit::SetSendPreFader(_)
+            | Edit::SetChannelRoute(_)
+            | Edit::SetTrackInput(_)
+            | Edit::ApplyTrackChain(_)
+            | Edit::RestoreTrackChain(_)
+            | Edit::AddInsert(_)
+            | Edit::RemoveInsert(_)
+            | Edit::RestoreInsert(_)
+            | Edit::MoveInsert(_)
+            | Edit::SetInsertKey(_)
+            | Edit::RestoreInsertConfig(_)
+            | Edit::AddPluginInsert(_)
+            | Edit::RenameMixerTrack(_)
+            | Edit::SetMixerTrackColor(_)
+            | Edit::SetRoutingMode(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether this edit changes what an instrument sounds like
+    /// (`Permissions::sounds`) — besides bringing in a new file, which the
+    /// host sees for itself.
+    pub fn changes_sound(&self) -> bool {
+        match self {
+            Edit::Compound { parts, .. } => parts.iter().any(Edit::changes_sound),
+            Edit::SetChannelPatch(_)
+            | Edit::SetChannelKind(_)
+            | Edit::RestoreChannelKind(_)
+            | Edit::ApplyPreset(_)
+            | Edit::SwitchChannelAb(_)
+            | Edit::CopyChannelAb(_) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Where somebody is in the song (`Msg::Presence`), in the song's own terms

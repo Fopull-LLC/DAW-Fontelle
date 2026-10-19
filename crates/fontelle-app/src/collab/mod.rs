@@ -423,6 +423,58 @@ impl Collab {
         presence.count += 1;
     }
 
+    /// What the person numbered `peer` may touch (host only).
+    pub fn set_permissions(
+        &mut self,
+        peer: u16,
+        permissions: fontelle_model::wire::Permissions,
+    ) -> Result<(), String> {
+        let Role::Host(host) = &mut self.role else {
+            return Err("only the person sharing the song decides that".into());
+        };
+        let (id, install) = host
+            .peers
+            .iter()
+            .find(|(_, p)| p.welcomed && p.space == peer)
+            .map(|(&id, p)| (id, p.install))
+            .ok_or("that person has left")?;
+        host.allowed.insert(install, permissions);
+        send(
+            self.transport.as_mut(),
+            id,
+            &Msg::Permissions { permissions },
+        );
+        Ok(())
+    }
+
+    /// What the person numbered `peer` may touch, as the host has it.
+    pub fn permissions_of(&self, peer: u16) -> fontelle_model::wire::Permissions {
+        match &self.role {
+            Role::Host(host) => host
+                .peers
+                .values()
+                .find(|p| p.welcomed && p.space == peer)
+                .and_then(|p| host.allowed.get(&p.install).copied())
+                .unwrap_or_default(),
+            Role::Joiner(_) => Default::default(),
+        }
+    }
+
+    /// What the host lets this studio touch (a joiner's).
+    pub fn my_permissions(&self) -> fontelle_model::wire::Permissions {
+        match &self.role {
+            Role::Joiner(joiner) => joiner.permissions,
+            Role::Host(_) => Default::default(),
+        }
+    }
+
+    /// The plugins installed here, which anybody may add (host only).
+    pub fn set_plugins_here(&mut self, plugins: Vec<fontelle_types::PluginKey>) {
+        if let Role::Host(host) = &mut self.role {
+            host.plugins_here = plugins;
+        }
+    }
+
     /// Says `text` to everybody in the session: trimmed, cut at
     /// [`CHAT_LONGEST`], and nothing at all when it is blank.
     pub fn say(&mut self, text: &str) {
@@ -563,6 +615,7 @@ impl Collab {
             .map(|(&id, _)| id)
             .ok_or("that person has left")?;
         let who = host.peers.remove(&id).expect("just found");
+        host.removed.insert(who.install);
         self.presence.others.remove(&who.space);
         if let Some(lost) = self.files.relink(id, None) {
             self.notices.push(lost);
@@ -897,6 +950,54 @@ impl Collab {
     }
 }
 
+/// What a joiner is told when the host changes what they may touch.
+fn permissions_sentence(host: &str, p: fontelle_model::wire::Permissions) -> String {
+    let mut kept = Vec::new();
+    if !p.mixer {
+        kept.push("the mixer");
+    }
+    if !p.sounds {
+        kept.push("instruments' sounds");
+    }
+    if !p.plugins {
+        kept.push("plugins they haven't got");
+    }
+    if kept.is_empty() {
+        format!("{host} has let you change everything again.")
+    } else {
+        format!("{host} has kept you off {}.", kept.join(", "))
+    }
+}
+
+/// How a refusal for want of a permission begins, before which one.
+const PERMISSION: &str = "permission:";
+
+/// Every file the song uses, by its contents.
+fn doc_files(doc: &Project) -> Vec<u64> {
+    doc.files().iter().map(|f| f.content_hash).collect()
+}
+
+/// Every plugin the song plays, instruments and inserts.
+fn doc_plugins(doc: &Project) -> Vec<fontelle_types::PluginKey> {
+    let mut keys = Vec::new();
+    for channel in doc.channels.values() {
+        if channel.instrument == Some(fontelle_types::InstrumentKind::Plugin)
+            && let Some(state) = &channel.plugin
+        {
+            keys.push(state.key.clone());
+        }
+    }
+    for track in doc.mixer.tracks.values() {
+        keys.extend(
+            track
+                .inserts
+                .iter()
+                .filter_map(|i| i.plugin.as_ref().map(|s| s.key.clone())),
+        );
+    }
+    keys
+}
+
 /// Keeps `line`, and no more than [`CHAT_KEPT`] of them.
 fn keep_line(chat: &mut VecDeque<ChatLine>, line: ChatLine) {
     chat.push_back(line);
@@ -1096,6 +1197,14 @@ struct Host {
     spaces: BTreeMap<PersistentId, u16>,
     /// The singers the song uses (F93), as last said.
     singers: Vec<SingerNeed>,
+    /// What each studio may touch, by its install, so a rejoin keeps it.
+    allowed: BTreeMap<PersistentId, fontelle_model::wire::Permissions>,
+    /// Studios removed from this session, kept out of it (L6). By the
+    /// install a hello names: a casual lock, which a modified build that
+    /// names another could get past.
+    removed: std::collections::BTreeSet<PersistentId>,
+    /// The plugins this computer has: one of these is anybody's to add.
+    plugins_here: Vec<fontelle_types::PluginKey>,
 }
 
 struct HostPeer {
@@ -1241,6 +1350,18 @@ impl Host {
                     return;
                 }
                 let options = turn.options;
+                if self.removed.contains(&install) {
+                    send(
+                        turn.transport,
+                        peer,
+                        &Msg::Refuse {
+                            reason: format!("{} removed you from this session.", options.name),
+                        },
+                    );
+                    turn.transport.disconnect(peer);
+                    self.peers.remove(&peer);
+                    return;
+                }
                 if protocol != PROTOCOL || fontelle != options.fontelle {
                     let reason = version_sentence(&options.name, &options.fontelle, &fontelle);
                     send(turn.transport, peer, &Msg::Refuse { reason });
@@ -1337,12 +1458,55 @@ impl Host {
                     );
                     return;
                 }
+                let allowed = self
+                    .allowed
+                    .get(&author.install)
+                    .copied()
+                    .unwrap_or_default();
                 let author = author.space;
+                let mixer = edit.touches_mixer();
+                let sound = edit.changes_sound();
+                let files_before = (!allowed.sounds).then(|| doc_files(doc));
+                let plugins_before = (!allowed.plugins).then(|| doc_plugins(doc));
                 // The proposal as it came, ids and all: the joiner minted
                 // them in its own space, so they can be nobody else's (F55).
                 let mut command = edit.into_command();
                 match apply_as(author, command.as_mut(), doc) {
                     Ok(()) => {
+                        // What it needed, now it has shown what it does: a
+                        // new file or plugin is seen in the song itself, so
+                        // no edit can bring one in unnoticed.
+                        let new_file = files_before.is_some_and(|before| {
+                            doc_files(doc).iter().any(|f| !before.contains(f))
+                        });
+                        let plugins_here = &self.plugins_here;
+                        let new_plugin = plugins_before.is_some_and(|before| {
+                            doc_plugins(doc)
+                                .iter()
+                                .any(|p| !before.contains(p) && !plugins_here.contains(p))
+                        });
+                        let needed = if !allowed.mixer && mixer {
+                            Some("mixer")
+                        } else if !allowed.sounds && (sound || new_file) {
+                            Some("sounds")
+                        } else if !allowed.plugins && new_plugin {
+                            Some("plugins")
+                        } else {
+                            None
+                        };
+                        if let Some(needed) = needed {
+                            let mut back = command.invert();
+                            let _ = apply_as(author, back.as_mut(), doc);
+                            send(
+                                turn.transport,
+                                peer,
+                                &Msg::Refused {
+                                    local_seq,
+                                    reason: format!("{PERMISSION}{needed}"),
+                                },
+                            );
+                            return;
+                        }
                         healed(doc);
                         self.seq += 1;
                         let applied = command.to_edit();
@@ -1495,6 +1659,9 @@ impl Host {
         }
         if who.view_only {
             send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
+        }
+        if let Some(&permissions) = self.allowed.get(&who.install) {
+            send(turn.transport, peer, &Msg::Permissions { permissions });
         }
         if !self.singers.is_empty() {
             send(
@@ -1667,6 +1834,8 @@ struct Joiner {
     peers: BTreeMap<u16, Peer>,
     /// The host refuses this studio's edits (F49).
     view_only: bool,
+    /// What the host lets this studio touch besides the notes.
+    permissions: fontelle_model::wire::Permissions,
     /// The singers the host's song uses (F93).
     singers: Vec<SingerNeed>,
     /// Plugin states this studio kept of its own plugins, which a copy made
@@ -1701,6 +1870,7 @@ impl Joiner {
             singers: Vec::new(),
             peers: BTreeMap::new(),
             view_only: false,
+            permissions: Default::default(),
             kept_here: Vec::new(),
         }
     }
@@ -1965,7 +2135,17 @@ impl Joiner {
                     history.forget(refused.entry);
                     eprintln!("Fontelle: the host refused edit {local_seq}: {reason}");
                     let label = refused.command.label();
-                    turn.notices.push(if self.view_only {
+                    turn.notices.push(if let Some(needed) = reason.strip_prefix(PERMISSION) {
+                        let what = match needed {
+                            "mixer" => "change the mixer",
+                            "sounds" => "change instruments' sounds",
+                            _ => "add plugins they haven't got",
+                        };
+                        format!(
+                            "\u{201c}{label}\u{201d} was taken back \u{2014} {} hasn't let you {what}.",
+                            self.host_or_them()
+                        )
+                    } else if self.view_only {
                         // Short enough for a toast (F64).
                         format!("\u{201c}{label}\u{201d} was taken back \u{2014} it is view only.")
                     } else {
@@ -1990,6 +2170,13 @@ impl Joiner {
             }
             Msg::Presence { peer, presence } => {
                 turn.presence.others.insert(peer, presence);
+            }
+            Msg::Permissions { permissions } => {
+                if permissions != self.permissions {
+                    self.permissions = permissions;
+                    turn.notices
+                        .push(permissions_sentence(self.host_or_them(), permissions));
+                }
             }
             Msg::Chat { peer, text } => {
                 let name = if peer == 0 {

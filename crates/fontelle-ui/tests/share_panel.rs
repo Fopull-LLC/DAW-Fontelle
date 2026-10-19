@@ -51,6 +51,9 @@ fn pressables(l: &SharePanelLayout) -> Vec<(Rect, ShareHit)> {
         all.push((row.view_only, ShareHit::ViewOnly(i)));
         all.push((row.remove, ShareHit::Remove(i)));
         all.push((row.follow, ShareHit::Follow(i)));
+        for (k, chip) in row.allow.iter().enumerate() {
+            all.push((*chip, ShareHit::Allow(i, k)));
+        }
     }
     all.push((l.say, ShareHit::Say));
     all.retain(|(r, _)| !r.is_empty());
@@ -449,4 +452,32 @@ fn chat_lines_wrap_and_the_newest_are_kept() {
     let rows = chat_rows(&many, 30);
     assert_eq!(rows.len(), CHAT_ROWS);
     assert_eq!(rows.last().unwrap().1, "Bob: line 19");
+}
+
+// --- permissions (phase 2.4) ---
+
+/// On the host's panel each person has three switches under their name —
+/// the mixer, sounds, plugins — and a joiner's panel has none.
+#[test]
+fn the_host_can_allow_each_person_the_mixer_sounds_and_plugins() {
+    let l = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Hosting, 2);
+    for (i, row) in l.rows.iter().enumerate() {
+        for (k, chip) in row.allow.iter().enumerate() {
+            assert!(!chip.is_empty(), "row {i} chip {k}");
+            assert!(within(*chip, row.frame));
+            assert!(
+                chip.y >= row.name.bottom() - 0.5,
+                "beside the name, not under it"
+            );
+            let (x, y) = centre(*chip);
+            assert_eq!(share_hit(&l, x, y), Some(ShareHit::Allow(i, k)));
+        }
+    }
+    let joined = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Joined, 2);
+    assert!(
+        joined
+            .rows
+            .iter()
+            .all(|r| r.allow.iter().all(|c| c.is_empty()))
+    );
 }

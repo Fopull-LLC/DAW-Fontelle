@@ -758,3 +758,145 @@ fn a_line_from_somebody_else_is_unread_until_looked_at() {
     two.host.collab.read_chat();
     assert_eq!(two.host.collab.chat_unread(), 0);
 }
+
+// --- permissions (phase 2.4) ---
+
+fn joiner_space(two: &Two) -> u16 {
+    match &two.joiner.collab.role {
+        Role::Joiner(joiner) => joiner.space,
+        Role::Host(_) => unreachable!(),
+    }
+}
+
+fn a_plugin() -> fontelle_types::PluginState {
+    fontelle_types::PluginState::new(
+        fontelle_types::PluginKey::new(fontelle_types::PluginFormat::Clap, "com.example.diva"),
+        "Diva",
+    )
+}
+
+/// The host decides, person by person, what each may touch beyond the
+/// notes; what is not allowed is refused and taken back, with a sentence
+/// that says which permission it needed.
+#[test]
+fn a_person_kept_off_the_mixer_cannot_change_it_but_can_still_write() {
+    let mut two = Two::new("perm-mixer", 2);
+    let bob = joiner_space(&two);
+    two.host
+        .collab
+        .set_permissions(
+            bob,
+            fontelle_model::wire::Permissions {
+                mixer: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    two.settle();
+    assert!(!two.joiner.collab.my_permissions().mixer, "Bob is told");
+    let track = a_track_that_is_not_the_master(&two.joiner.doc);
+    let inserts = two.host.doc.mixer.tracks[track].inserts.len();
+    two.joiner.run(AddInsert::new(track, EffectKind::Eq));
+    two.settle();
+    assert_eq!(two.host.doc.mixer.tracks[track].inserts.len(), inserts);
+    assert_eq!(two.joiner.doc.mixer.tracks[track].inserts.len(), inserts);
+    let said = two.joiner.collab.take_notices();
+    assert!(said.iter().any(|n| n.contains("mixer")), "{said:?}");
+    // The notes are still Bob's to write.
+    let lane = two.joiner.doc.lane_ids()[0];
+    let channel = two.joiner.doc.channels.keys().next().unwrap();
+    let clips = two.host.doc.clips.len();
+    two.joiner
+        .run(AddClip::new(a_clip(lane, channel, PPQN * 64)));
+    two.settle();
+    assert_eq!(two.host.doc.clips.len(), clips + 1);
+}
+
+#[test]
+fn a_person_kept_off_the_sounds_cannot_change_an_instruments_sound() {
+    let mut two = Two::new("perm-sounds", 2);
+    let bob = joiner_space(&two);
+    two.host
+        .collab
+        .set_permissions(
+            bob,
+            fontelle_model::wire::Permissions {
+                sounds: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    two.settle();
+    let channel = two.joiner.doc.channels.keys().next().unwrap();
+    let before = two.host.doc.channels[channel].patch_data.clone();
+    two.joiner
+        .run(fontelle_model::SetChannelPatch::new(channel, None));
+    two.settle();
+    assert_eq!(two.host.doc.channels[channel].patch_data, before);
+    let said = two.joiner.collab.take_notices();
+    assert!(said.iter().any(|n| n.contains("sound")), "{said:?}");
+}
+
+/// A plugin the host has is anybody's to add; one it has not got needs the
+/// permission, since nobody else will hear it either.
+#[test]
+fn a_plugin_the_host_has_not_got_needs_permission() {
+    let mut two = Two::new("perm-plugins", 2);
+    let bob = joiner_space(&two);
+    two.host
+        .collab
+        .set_permissions(
+            bob,
+            fontelle_model::wire::Permissions {
+                plugins: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    two.settle();
+    let track = a_track_that_is_not_the_master(&two.joiner.doc);
+    let inserts = two.host.doc.mixer.tracks[track].inserts.len();
+    two.joiner
+        .run(fontelle_model::AddPluginInsert::new(track, a_plugin()));
+    two.settle();
+    assert_eq!(
+        two.host.doc.mixer.tracks[track].inserts.len(),
+        inserts,
+        "a plugin the host lacks went in"
+    );
+    two.host.collab.set_plugins_here(vec![a_plugin().key]);
+    two.joiner
+        .run(fontelle_model::AddPluginInsert::new(track, a_plugin()));
+    two.settle();
+    assert_eq!(two.host.doc.mixer.tracks[track].inserts.len(), inserts + 1);
+}
+
+/// Removing somebody keeps them out for the rest of the session: the same
+/// studio joining again with the code is refused (L6).
+#[test]
+fn somebody_removed_cannot_come_back_with_the_code() {
+    let mut two = Two::new("perm-removed", 2);
+    let bob = joiner_space(&two);
+    two.host.collab.remove(bob, &mut two.host.doc).unwrap();
+    two.settle();
+    let mut again = Side {
+        collab: Collab::join(
+            Box::new(two.hub.connect()),
+            options("Joiner"),
+            two.dir.clone(),
+        ),
+        doc: Project::new("nothing yet"),
+        history: History::new(),
+        place: Place {
+            bundle: None,
+            banks: Vec::new(),
+        },
+    };
+    for _ in 0..60 {
+        two.tick();
+        again.pump();
+    }
+    let why = again.collab.ended().expect("refused");
+    assert!(why.contains("removed"), "{why}");
+    assert!(two.host.collab.peers().is_empty());
+}

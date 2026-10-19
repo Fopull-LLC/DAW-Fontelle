@@ -289,7 +289,7 @@ pub use roll_scale::{
     scale_fit, scale_fit_paths, scale_menu, scale_menu_with,
 };
 pub use share::{
-    CHAT_ROWS, COPY_CODE, ChoicePromptLayout, FETCH_AGAIN, FOLLOW, FOLLOWING, JOIN_A_SONG,
+    ALLOW, CHAT_ROWS, COPY_CODE, ChoicePromptLayout, FETCH_AGAIN, FOLLOW, FOLLOWING, JOIN_A_SONG,
     JOIN_INSTEAD, LEAVE_SESSION, MISSING_HERE, NOBODY_YET, PEER_COLOURS, PeerRowLayout,
     REMOVE_PEER, SAY_SOMETHING, SHARE_THIS_SONG, STOP_SHARING, ShareHit, SharePanelLayout,
     ShareRole, VIEW_ONLY, chat_rows, choice_prompt_hit, choice_prompt_layout, end_session_question,

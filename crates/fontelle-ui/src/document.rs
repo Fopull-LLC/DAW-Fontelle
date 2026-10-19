@@ -1290,6 +1290,8 @@ pub struct SessionPeer {
     pub colour: u8,
     /// Whether the host refuses their edits. Known to the host only.
     pub view_only: bool,
+    /// What they may touch besides the notes. Known to the host only.
+    pub permissions: fontelle_model::wire::Permissions,
 }
 
 /// Where this studio stands in a session — the panel's [`ShareRole`](crate::canvas::ShareRole).
@@ -1978,6 +1980,13 @@ pub trait StudioHost: DocumentHost {
     }
     fn take_session_notices(&mut self) -> Vec<String> {
         Vec::new()
+    }
+    /// What the person numbered `peer` may touch (the host's to say).
+    fn set_peer_permissions(
+        &mut self,
+        _peer: u16,
+        _permissions: fontelle_model::wire::Permissions,
+    ) {
     }
     /// Says `text` to everybody in the session.
     fn say(&mut self, _text: &str) {}
