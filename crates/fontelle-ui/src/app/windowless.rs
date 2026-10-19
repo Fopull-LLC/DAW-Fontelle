@@ -181,6 +181,61 @@ impl Windowless {
             .expect("a windowless studio has its document")
     }
 
+    // --- the roll's smart chords ---
+
+    /// Where a roll toolbar chip is.
+    pub fn roll_chip(&self, control: crate::canvas::RollControl) -> Option<Rect> {
+        self.app
+            .roll_bar
+            .items
+            .iter()
+            .find(|(c, _)| *c == control)
+            .map(|(_, r)| *r)
+    }
+
+    /// The middle of the roll's row for `key` at `tick`, on screen.
+    pub fn roll_point(&self, tick: fontelle_types::Tick, key: u8) -> (f32, f32) {
+        let grid = self.app.roll_layout.grid;
+        let row = crate::canvas::key_row(&self.app.roll.view, grid, key);
+        (
+            crate::canvas::tick_to_x(&self.app.roll.view, grid, tick) + 3.0,
+            row.y + row.height / 2.0,
+        )
+    }
+
+    /// The chord strip, while it is open.
+    pub fn chord_strip(&self) -> Option<crate::canvas::ChordStripLayout> {
+        self.app.chord_strip_layout()
+    }
+
+    /// The chips' chord names, while the strip is open.
+    pub fn chord_names(&self) -> Vec<String> {
+        self.app
+            .chord_strip
+            .as_ref()
+            .map(|s| s.suggestions.iter().map(|x| x.chord.label()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The keys the strip has sounding.
+    pub fn chord_sounding(&self) -> &[u8] {
+        &self.app.chord_sounding
+    }
+
+    /// The pointer's move, and the hover it brings.
+    pub fn hover_studio(&mut self, x: f32, y: f32) {
+        self.app.pointer_moved(x, y);
+        self.app.update_hover();
+    }
+
+    pub fn document_mut(&mut self) -> &mut dyn StudioHost {
+        self.app
+            .options
+            .document
+            .as_deref_mut()
+            .expect("a windowless studio has its document")
+    }
+
     /// What a frame does before it is drawn: the document's work, and the
     /// window's view of it read again.
     fn settle(&mut self) {

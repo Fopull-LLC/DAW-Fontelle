@@ -493,6 +493,8 @@ enum NameFor {
     Setting(usize),
     /// A line for the session's chat: Enter says it and asks for the next.
     Chat,
+    /// A chord for the strip's note, by name or numeral (`Cmaj7/E`, `ii7`).
+    ChordName,
 }
 
 /// What was being done when the name the others see was asked for.
@@ -543,9 +545,22 @@ impl NameFor {
             Self::YourName(_) => "Your name, as the others will see it",
             Self::Setting(_) => "Type it \u{2014} blank for the default",
             Self::Chat => "Say something to everyone \u{2014} Enter sends",
+            Self::ChordName => "A chord \u{2014} Cmaj7, F#m7b5, Bb/D, or in the key ii7",
         }
     }
 }
+
+/// The smart-chord strip on a note just placed: the note, the chords it is
+/// offered, and the chip under the pointer.
+struct ChordStripState {
+    note: fontelle_model::Note,
+    suggestions: Vec<fontelle_types::chord::Suggestion>,
+    hover: Option<usize>,
+}
+
+/// How long a hovered chord sounds before it is let go of, whether or not
+/// the pointer moves: a chord is heard, not held.
+const CHORD_HEARD_FOR: std::time::Duration = std::time::Duration::from_millis(1800);
 
 /// What a plugin chosen from the browser is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2249,6 +2264,15 @@ pub struct WindowApp {
     key_style: crate::canvas::KeyStyle,
     /// The song's key, read once a revision (`StudioHost::song_key`).
     song_key: Option<fontelle_types::KeyScale>,
+    /// The smart-chord strip open on a note just placed (phase 3), the note
+    /// waiting for its button to come up before the strip opens, the keys
+    /// sounding while a chip is hovered and since when, and the last chord
+    /// written — what *Nearest* leads from.
+    chord_strip: Option<ChordStripState>,
+    chord_pending: Option<fontelle_types::NoteId>,
+    chord_sounding: Vec<u8>,
+    chord_heard_at: Option<std::time::Instant>,
+    last_chord: Option<Vec<u8>>,
     /// The root the root chip shows: the key's while there is one, and the
     /// one a scale chosen next will be built on while there is not.
     key_root: u8,
@@ -2755,6 +2779,11 @@ impl WindowApp {
             key_map: crate::document::KeyMap::unknown(),
             key_style: crate::canvas::KeyStyle::default(),
             song_key: None,
+            chord_strip: None,
+            chord_pending: None,
+            chord_sounding: Vec::new(),
+            chord_heard_at: None,
+            last_chord: None,
             key_root: 0,
             scale_paste: None,
             clip_captions: std::collections::HashMap::new(),
@@ -3268,6 +3297,7 @@ impl WindowApp {
         // every string the (pure) renderer will look up.
         self.refresh_studio();
         let people_marks = self.people_marks();
+        let roll_chords = self.roll_chords();
         self.shape_labels();
         // Read before the surface is borrowed: the chrome below is built
         // inside a closure that already holds a mutable borrow of `self`.
@@ -3455,6 +3485,7 @@ impl WindowApp {
                     tools: &self.tools,
                     slice: self.roll.slice_stroke(),
                     live_keys: self.live_keys,
+                    chords: roll_chords.clone(),
                     vocal: self.vocal.as_ref().map(|view| {
                         vocal::roll_vocal_of(
                             &self.vocal_edit,
@@ -4525,6 +4556,7 @@ impl WindowApp {
     /// Recomputes what the pointer is over, dirtying the bar only if it
     /// changed.
     fn update_hover(&mut self) {
+        self.hover_chord_strip();
         // The sheet is over everything, so while it is up the only hover
         // that matters is its own: the row under the pointer lights up, and
         // nothing under the sheet is told about the pointer at all.
@@ -8534,6 +8566,25 @@ impl WindowApp {
             let status = self.status.clone();
             want(&mut self.labels, &mut self.text, &status);
         }
+        // The chord strip: its controls' words, each chip's name, and the
+        // small line under it.
+        if let Some(strip) = &self.chord_strip {
+            let captions: Vec<(String, String)> = strip
+                .suggestions
+                .iter()
+                .map(crate::canvas::chord_chip_caption)
+                .collect();
+            for word in crate::canvas::chord_strip_words() {
+                want(&mut self.labels, &mut self.text, word);
+            }
+            let font = self.options.theme.font.clone();
+            for (name, small) in captions {
+                want(&mut self.labels, &mut self.text, &name);
+                if !small.is_empty() {
+                    self.labels.ensure_small(&small, &font, &mut self.text);
+                }
+            }
+        }
         // Everybody else's name, beside their pointer and their marker, and
         // what they have just said.
         let said = self.bubbles.iter().map(|(_, text, _)| text.clone());
@@ -9103,6 +9154,9 @@ impl WindowApp {
         // The cut tool's whole edit lands here: a line half-drawn is
         // not a cut.
         self.apply_roll_edits(edits);
+        if let Some(id) = self.chord_pending.take() {
+            self.open_chord_strip(id);
+        }
         let beats = self.beats_per_bar();
         // **Before** the release, because after it the gesture is gone:
         // a marquee and a cut are both drawn by the canvas and known to
@@ -9872,6 +9926,14 @@ impl WindowApp {
                 }
             }
             return;
+        }
+        // The chord strip is over the grid: a press on it is its own, and a
+        // press anywhere else puts it away and goes on to what is there.
+        if self.chord_strip.is_some() {
+            if button == MouseButton::Left && self.press_chord_strip(x, y) {
+                return;
+            }
+            self.close_chord_strip();
         }
         if self.roll_layout.toolbar.contains(x, y) {
             if button == MouseButton::Left
@@ -21942,6 +22004,8 @@ impl WindowApp {
             RollControl::Keys => self.cycle_key_style(),
             RollControl::Root => self.open_key_menu(MenuTarget::KeyRoot),
             RollControl::Scale => self.open_key_menu(MenuTarget::KeyScale),
+            RollControl::Chords => self.toggle_smart_chords(),
+            RollControl::Lock => self.toggle_scale_lock(),
         }
     }
 
@@ -22875,6 +22939,11 @@ impl WindowApp {
         // module's own docs and `canvas::piano_roll`.
         if let Some(id) = added.first() {
             self.roll.note_added(*id);
+            // The strip opens on it once the button comes up: the drag that
+            // follows a press sizes the note.
+            if self.chord_strip_wanted() && self.roll.tool == crate::canvas::Tool::Draw {
+                self.chord_pending = Some(*id);
+            }
         }
         if !inserted.is_empty() {
             self.roll.notes_inserted(inserted);
@@ -23037,6 +23106,12 @@ impl WindowApp {
     fn settle_audition(&mut self) {
         if let Some(action) = self.audition.settle(std::time::Instant::now()) {
             self.send_audition([action]);
+        }
+        if self
+            .chord_heard_at
+            .is_some_and(|at| at.elapsed() >= CHORD_HEARD_FOR)
+        {
+            self.silence_chord();
         }
     }
 
@@ -23483,6 +23558,29 @@ impl WindowApp {
         // keyboard while it is open — which is what lets the plugin picker be
         // typed at rather than only scrolled. Before the start menu's guard,
         // because the name prompt is a menu over the start menu.
+        // The chord strip, while no prompt is over it: Escape leaves the
+        // single note, Tab switches rooted and containing.
+        if self.chord_strip.is_some() && self.menu.is_none() {
+            match &event.logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.close_chord_strip();
+                    return;
+                }
+                Key::Named(NamedKey::Tab) => {
+                    self.roll.chord_suggest = match self.roll.chord_suggest {
+                        fontelle_types::chord::Suggest::Rooted => {
+                            fontelle_types::chord::Suggest::Containing
+                        }
+                        fontelle_types::chord::Suggest::Containing => {
+                            fontelle_types::chord::Suggest::Rooted
+                        }
+                    };
+                    self.refresh_chord_suggestions();
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.menu_filter_key(event) {
             return;
         }
@@ -23860,6 +23958,8 @@ impl WindowApp {
             }
             Action::LaneProperty => self.cycle_lane_property(),
             Action::Ghosts => self.cycle_ghosts(),
+            Action::SmartChords => self.toggle_smart_chords(),
+            Action::ScaleLock => self.toggle_scale_lock(),
             // `A` for a slide by default: `S` is the snap and every other
             // letter in the word is a tool. FL uses a right-click menu, which
             // this window does not have yet.
@@ -24885,6 +24985,330 @@ impl WindowApp {
         }
     }
 
+    // --- smart chords (phase 3) ---
+
+    /// Whether a placed note opens the chord strip: on, in the roll, on an
+    /// instrument whose rows are pitches (a kit's are drums).
+    fn chord_strip_wanted(&self) -> bool {
+        self.roll.smart_chords
+            && self.tab == EditorTab::Roll
+            && self.vocal.is_none()
+            && !self.key_map.is_named()
+    }
+
+    fn toggle_smart_chords(&mut self) {
+        self.roll.smart_chords = !self.roll.smart_chords;
+        if !self.roll.smart_chords {
+            self.close_chord_strip();
+        }
+        self.status = if self.roll.smart_chords {
+            "Smart chords on: place a note and choose a chord".to_string()
+        } else {
+            "Smart chords off".to_string()
+        };
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(BROWSER);
+    }
+
+    fn toggle_scale_lock(&mut self) {
+        self.roll.scale_lock = !self.roll.scale_lock;
+        self.status = if self.roll.scale_lock {
+            "Notes keep to the key".to_string()
+        } else {
+            "Notes go out of the key \u{2014} the rows stay shaded".to_string()
+        };
+        self.refresh_chord_suggestions();
+        self.tree.invalidate(PANEL);
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// The chords on offer for `note`, as the strip's controls shape them.
+    fn chord_suggestions_for(
+        &self,
+        note: &fontelle_model::Note,
+    ) -> Vec<fontelle_types::chord::Suggestion> {
+        fontelle_types::chord::suggestions(
+            self.song_key.as_ref(),
+            note.key,
+            self.roll.chord_suggest,
+            self.roll.chord_extension,
+            self.roll.scale_lock,
+        )
+    }
+
+    fn open_chord_strip(&mut self, id: fontelle_types::NoteId) {
+        let Some(note) = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.notes().get(id).cloned())
+        else {
+            return;
+        };
+        let suggestions = self.chord_suggestions_for(&note);
+        if suggestions.is_empty() {
+            return;
+        }
+        self.chord_strip = Some(ChordStripState {
+            note,
+            suggestions,
+            hover: None,
+        });
+        self.tree.invalidate(PANEL);
+    }
+
+    fn refresh_chord_suggestions(&mut self) {
+        let Some(note) = self.chord_strip.as_ref().map(|s| s.note.clone()) else {
+            return;
+        };
+        let suggestions = self.chord_suggestions_for(&note);
+        if let Some(strip) = &mut self.chord_strip {
+            strip.suggestions = suggestions;
+            strip.hover = None;
+        }
+        self.silence_chord();
+        self.tree.invalidate(PANEL);
+    }
+
+    fn close_chord_strip(&mut self) {
+        self.silence_chord();
+        if self.chord_strip.take().is_some() {
+            self.tree.invalidate(PANEL);
+        }
+    }
+
+    /// Where the strip is, over the note it is for.
+    fn chord_strip_layout(&self) -> Option<crate::canvas::ChordStripLayout> {
+        let strip = self.chord_strip.as_ref()?;
+        let grid = self.roll_layout.grid;
+        let view = &self.roll.view;
+        let row = crate::canvas::key_row(view, grid, strip.note.key);
+        let x0 = crate::canvas::tick_to_x(view, grid, strip.note.start);
+        let x1 = crate::canvas::tick_to_x(view, grid, strip.note.start + strip.note.length);
+        let note = crate::layout::Rect::new(x0, row.y, (x1 - x0).max(4.0), row.height);
+        Some(crate::canvas::chord_strip_layout(
+            grid,
+            note,
+            strip.suggestions.len(),
+            &self.options.theme.metrics,
+        ))
+    }
+
+    /// The keys the `index`th chip sounds on, voiced around the strip's note.
+    fn chord_keys(&self, chord: &fontelle_types::chord::Chord) -> Vec<u8> {
+        let Some(strip) = &self.chord_strip else {
+            return Vec::new();
+        };
+        fontelle_types::chord::voice(
+            chord,
+            strip.note.key,
+            self.roll.chord_voicing,
+            self.roll.chord_inversion,
+            self.last_chord.as_deref(),
+        )
+    }
+
+    /// Sounds `keys` together, the strip's note's way — every one of them
+    /// let go of in `silence_chord`, which every way out of the strip calls.
+    fn sound_chord(&mut self, keys: Vec<u8>) {
+        self.silence_chord();
+        self.silence_audition();
+        self.end_preview();
+        let Some(strip) = &self.chord_strip else {
+            return;
+        };
+        let (velocity, pan) = (strip.note.velocity, strip.note.pan);
+        if let Some(doc) = &mut self.options.document {
+            for key in &keys {
+                doc.audition_on(*key, velocity, pan);
+            }
+        }
+        self.chord_sounding = keys;
+        self.chord_heard_at = Some(std::time::Instant::now());
+    }
+
+    fn silence_chord(&mut self) {
+        self.chord_heard_at = None;
+        let keys = std::mem::take(&mut self.chord_sounding);
+        if let Some(doc) = &mut self.options.document {
+            for key in keys {
+                doc.audition_off(key);
+            }
+        }
+    }
+
+    /// The pointer over the strip: the chip under it is heard and ghosted.
+    fn hover_chord_strip(&mut self) {
+        let Some(layout) = self.chord_strip_layout() else {
+            return;
+        };
+        let (x, y) = self.cursor;
+        let hover = match crate::canvas::chord_strip_hit(&layout, x, y) {
+            Some(crate::canvas::ChordStripHit::Chip(i)) => Some(i),
+            _ => None,
+        };
+        let Some(strip) = &self.chord_strip else {
+            return;
+        };
+        if strip.hover == hover {
+            return;
+        }
+        let chord = hover
+            .and_then(|i| strip.suggestions.get(i))
+            .map(|s| s.chord);
+        if let Some(strip) = &mut self.chord_strip {
+            strip.hover = hover;
+        }
+        match chord {
+            Some(chord) => {
+                let keys = self.chord_keys(&chord);
+                self.sound_chord(keys);
+            }
+            None => self.silence_chord(),
+        }
+        self.tree.invalidate(PANEL);
+    }
+
+    /// A press on the strip. `false` when it missed the strip.
+    fn press_chord_strip(&mut self, x: f32, y: f32) -> bool {
+        use crate::canvas::ChordStripHit;
+        let Some(layout) = self.chord_strip_layout() else {
+            return false;
+        };
+        let Some(hit) = crate::canvas::chord_strip_hit(&layout, x, y) else {
+            return false;
+        };
+        match hit {
+            ChordStripHit::Chip(i) => {
+                let chord = self
+                    .chord_strip
+                    .as_ref()
+                    .and_then(|s| s.suggestions.get(i))
+                    .map(|s| s.chord);
+                if let Some(chord) = chord {
+                    let keys = self.chord_keys(&chord);
+                    self.write_chord(keys);
+                }
+            }
+            ChordStripHit::Mode => {
+                self.roll.chord_suggest = match self.roll.chord_suggest {
+                    fontelle_types::chord::Suggest::Rooted => {
+                        fontelle_types::chord::Suggest::Containing
+                    }
+                    fontelle_types::chord::Suggest::Containing => {
+                        fontelle_types::chord::Suggest::Rooted
+                    }
+                };
+                self.refresh_chord_suggestions();
+            }
+            ChordStripHit::Extension => {
+                self.roll.chord_extension =
+                    crate::canvas::next_extension(self.roll.chord_extension);
+                self.refresh_chord_suggestions();
+            }
+            ChordStripHit::Voicing => {
+                self.roll.chord_voicing = crate::canvas::next_voicing(self.roll.chord_voicing);
+                self.refresh_chord_suggestions();
+            }
+            ChordStripHit::Inversion => {
+                self.roll.chord_inversion =
+                    crate::canvas::next_inversion(self.roll.chord_inversion);
+                self.refresh_chord_suggestions();
+            }
+            ChordStripHit::Type => {
+                self.silence_chord();
+                self.ask_for_a_name(NameFor::ChordName, String::new());
+            }
+            ChordStripHit::Inside => {}
+        }
+        true
+    }
+
+    /// Writes `keys` as a chord on the strip's note — the note itself stays
+    /// as it is, the rest go in beside it, one undo — and puts the strip
+    /// away.
+    fn write_chord(&mut self, keys: Vec<u8>) {
+        self.silence_chord();
+        let Some(strip) = self.chord_strip.take() else {
+            return;
+        };
+        let notes: Vec<fontelle_model::Note> = keys
+            .iter()
+            .filter(|k| **k != strip.note.key)
+            .map(|k| fontelle_model::Note {
+                key: *k,
+                ..strip.note.clone()
+            })
+            .collect();
+        if let Some(doc) = &mut self.options.document {
+            let ids = doc.edit(crate::canvas::RollEdit::Insert(notes));
+            doc.end_gesture();
+            self.roll.notes_inserted(ids);
+        }
+        self.last_chord = Some(keys);
+        self.tree.invalidate(PANEL);
+        self.refresh_title();
+    }
+
+    /// Enter on *Type…*: the chord named, voiced as the strip voices.
+    fn write_typed_chord(&mut self, name: &str) {
+        match fontelle_types::chord::parse_chord(name, self.song_key.as_ref()) {
+            Some(chord) => {
+                let keys = self.chord_keys(&chord);
+                if keys.is_empty() {
+                    return;
+                }
+                self.write_chord(keys);
+            }
+            None => self.show_toast(
+                format!(
+                    "\u{201c}{}\u{201d} is not a chord this knows \u{2014} try Cmaj7, F#m or ii7",
+                    name.trim()
+                ),
+                false,
+            ),
+        }
+    }
+
+    /// The strip and its ghosts, as the roll draws them.
+    fn roll_chords(&self) -> crate::render::RollChords {
+        let mut chords = crate::render::RollChords {
+            smart: self.roll.smart_chords,
+            locked: self.roll.scale_lock && self.song_key.is_some(),
+            ..Default::default()
+        };
+        let (Some(strip), Some(layout)) = (&self.chord_strip, self.chord_strip_layout()) else {
+            return chords;
+        };
+        if let Some(chord) = strip.hover.and_then(|i| strip.suggestions.get(i)) {
+            chords.ghosts = self
+                .chord_keys(&chord.chord)
+                .into_iter()
+                .filter(|k| *k != strip.note.key)
+                .map(|key| crate::document::GhostNote {
+                    start: strip.note.start,
+                    length: strip.note.length,
+                    key,
+                    color: [0, 0, 0, 0],
+                })
+                .collect();
+        }
+        chords.strip = Some(crate::render::ChordStripChrome {
+            layout,
+            captions: strip
+                .suggestions
+                .iter()
+                .map(crate::canvas::chord_chip_caption)
+                .collect(),
+            hover: strip.hover,
+            suggest: self.roll.chord_suggest,
+            extension: self.roll.chord_extension,
+            voicing: self.roll.chord_voicing,
+            inversion: self.roll.chord_inversion,
+        });
+        chords
+    }
+
     // --- presence (phase 2.2) ---
 
     /// Whether this studio is in a session somebody else could see it in.
@@ -25304,6 +25728,7 @@ impl WindowApp {
                 }
                 self.read_session_now();
             }
+            NameFor::ChordName => self.write_typed_chord(name),
             NameFor::NewProject | NameFor::SaveAs(_) => return false,
         }
         self.tree.invalidate_rect(self.layout.window);

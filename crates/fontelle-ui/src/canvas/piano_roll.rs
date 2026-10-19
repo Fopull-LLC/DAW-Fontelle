@@ -1508,6 +1508,11 @@ pub enum RollControl {
     Root,
     /// Drops the scale chooser — see `canvas::scale_menu`.
     Scale,
+    /// The smart-chord strip on a placed note, on or off — lit when on.
+    Chords,
+    /// Keeps notes in the key (lit), or lets them go out of it: the latched
+    /// form of holding Alt. The rows stay shaded either way.
+    Lock,
     /// Opens the Tools panel: the transposer, the property offset, the
     /// randomizer, and the two importers. Carries a caret for the reason the
     /// lane chip does — a small box with a word in it is a read-out, and
@@ -1533,6 +1538,8 @@ impl RollControl {
             Self::Tools => "tools",
             Self::Root => "root",
             Self::Scale => "scale",
+            Self::Chords => "chords",
+            Self::Lock => "in key",
         }
     }
 
@@ -1577,7 +1584,9 @@ impl RollControl {
             | Self::Keys
             | Self::Tools
             | Self::Root
-            | Self::Scale => return None,
+            | Self::Scale
+            | Self::Chords
+            | Self::Lock => return None,
         })
     }
 
@@ -1603,6 +1612,10 @@ impl RollControl {
             Self::Scale => {
                 "The key's scale: dims the rows outside it and fits the notes to it \u{2014} Alt draws off it"
             }
+            Self::Chords => {
+                "Offer chords on each note you place \u{2014} hover to hear, click to write"
+            }
+            Self::Lock => "Keep notes in the key, or let them go out of it",
         })
     }
 
@@ -1618,6 +1631,8 @@ impl RollControl {
             Self::Lane => Action::LaneProperty,
             Self::Ghost => Action::Ghosts,
             Self::Tools => Action::ToolsPanel,
+            Self::Chords => Action::SmartChords,
+            Self::Lock => Action::ScaleLock,
             Self::ZoomInX | Self::ZoomInY => Action::ZoomIn,
             Self::ZoomOutX | Self::ZoomOutY => Action::ZoomOut,
             _ => return None,
@@ -1640,7 +1655,7 @@ pub struct ToolbarLayout {
 /// is which is the same one the icons themselves are chosen by.
 /// No FL slide chip: a note slides by its own path now (S while drawing,
 /// `docs/note-paths-plan.md`), and `A` still marks an old-style slide.
-const TOOLBAR: [(RollControl, f32); 17] = [
+const TOOLBAR: [(RollControl, f32); 19] = [
     (RollControl::Tool(Tool::Draw), 26.0),
     (RollControl::Tool(Tool::Paint), 26.0),
     (RollControl::Tool(Tool::Select), 26.0),
@@ -1658,6 +1673,8 @@ const TOOLBAR: [(RollControl, f32); 17] = [
     (RollControl::Tools, 46.0),
     (RollControl::Root, 40.0),
     (RollControl::Scale, 116.0),
+    (RollControl::Chords, 58.0),
+    (RollControl::Lock, 56.0),
 ];
 
 /// What the lane chip says: the property, and a caret because it opens a menu.
@@ -1975,6 +1992,16 @@ pub struct PianoRoll {
     /// (a kit's rows are drums, not pitches). A note drawn, painted or
     /// dragged up and down lands on a row in it unless Alt is held.
     pub scale: Option<super::RollScale>,
+    /// Whether notes keep to `scale` (`RollControl::Lock`, K). Off, they go
+    /// where they are put, as with Alt held — the rows stay shaded.
+    pub scale_lock: bool,
+    /// The smart-chord strip on each placed note (`RollControl::Chords`, H),
+    /// and how its chips are shaped — kept from strip to strip.
+    pub smart_chords: bool,
+    pub chord_suggest: fontelle_types::chord::Suggest,
+    pub chord_extension: fontelle_types::chord::Extension,
+    pub chord_voicing: fontelle_types::chord::Voicing,
+    pub chord_inversion: fontelle_types::chord::Inversion,
     /// The note every newly drawn note is a copy of — see
     /// [`template`](Self::template).
     template: Note,
@@ -2035,6 +2062,12 @@ impl PianoRoll {
             draw_drag: DrawDrag::default(),
             ghosts: crate::document::GhostFilter::Off,
             scale: None,
+            scale_lock: true,
+            smart_chords: false,
+            chord_suggest: Default::default(),
+            chord_extension: Default::default(),
+            chord_voicing: Default::default(),
+            chord_inversion: Default::default(),
             template: BLANK_TEMPLATE,
             selection: Vec::new(),
             gesture: Gesture::None,
@@ -2056,9 +2089,14 @@ impl PianoRoll {
 
     /// `key` fitted to the scale, unless there is none or Alt is held —
     /// Alt frees the pitch the way it frees the time (§16.5).
+    /// Whether a note keeps to the scale now: the lock on, and Alt not held.
+    pub fn keeps_to_scale(&self) -> bool {
+        self.scale_lock && !self.modifiers.alt
+    }
+
     fn scaled_key(&self, key: u8) -> u8 {
         match self.scale {
-            Some(scale) if !self.modifiers.alt => fontelle_types::fit_to_scale(key, scale.mask),
+            Some(scale) if self.keeps_to_scale() => fontelle_types::fit_to_scale(key, scale.mask),
             _ => key,
         }
     }
@@ -3142,7 +3180,7 @@ impl PianoRoll {
         // the scale — a semitone for one, a tone for another — the way a drag
         // lands on the scale's rows. An octave is an octave in any scale, and
         // Alt frees the pitch here as it does everywhere.
-        if let Some(scale) = self.scale.filter(|_| !self.modifiers.alt)
+        if let Some(scale) = self.scale.filter(|_| self.keeps_to_scale())
             && tick_delta == 0
             && key_delta.abs() == 1
         {

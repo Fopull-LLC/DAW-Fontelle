@@ -156,6 +156,8 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::Stretch),
             act(Action::LaneProperty),
             act(Action::Ghosts),
+            act(Action::SmartChords),
+            act(Action::ScaleLock),
         ],
     },
     KeybindSection {

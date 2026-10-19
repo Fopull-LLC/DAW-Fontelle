@@ -587,6 +587,33 @@ pub struct RollChrome<'a> {
     /// A vocal track's layer — its words, phrases and sung pitch — when the
     /// roll is showing one.
     pub vocal: Option<vocal::RollVocal<'a>>,
+    /// Smart chords: the two switches and the strip on a placed note.
+    pub chords: RollChords,
+}
+
+/// The roll's smart chords, as drawn (phase 3).
+#[derive(Debug, Clone, Default)]
+pub struct RollChords {
+    /// The Chords chip is lit.
+    pub smart: bool,
+    /// The In key chip is lit.
+    pub locked: bool,
+    pub strip: Option<ChordStripChrome>,
+    /// The chord under the pointer, as notes ghosted where it would go.
+    pub ghosts: Vec<GhostNote>,
+}
+
+/// The strip open on a placed note.
+#[derive(Debug, Clone)]
+pub struct ChordStripChrome {
+    pub layout: crate::canvas::ChordStripLayout,
+    /// Each chip's name and small line (`canvas::chord_chip_caption`).
+    pub captions: Vec<(String, String)>,
+    pub hover: Option<usize>,
+    pub suggest: fontelle_types::chord::Suggest,
+    pub extension: fontelle_types::chord::Extension,
+    pub voicing: fontelle_types::chord::Voicing,
+    pub inversion: fontelle_types::chord::Inversion,
 }
 
 /// The instrument editor's contents (TDD §7.2).
@@ -6753,7 +6780,11 @@ pub fn draw_piano_roll(
         vocal::draw_pitch_button(scene, theme, labels, vocal);
         vocal::draw_phoneme_row(scene, theme, labels, vocal);
     }
+    draw_chord_ghosts(scene, theme, chrome);
     draw_roll_toolbar(scene, theme, labels, chrome);
+    if let Some(strip) = &chrome.chords.strip {
+        draw_chord_strip(scene, theme, labels, strip);
+    }
     draw_lane_menu(scene, theme, labels, chrome);
     draw_tools_panel(scene, theme, labels, chrome);
     // Last, over the roll's own chrome, so the mark is not drawn under the
@@ -6978,6 +7009,92 @@ fn draw_property_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
 /// The answer to "I cannot see what this can do". Every one of them has a
 /// keyboard shortcut too, and the shortcut is what a person ends up using —
 /// but only after they have found out it exists.
+/// The chord under the strip's pointer, ghosted where it would be written:
+/// in the accent, over the notes, so it reads as *this, if you click*.
+fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
+    let grid = chrome.layout.grid;
+    for ghost in &chrome.chords.ghosts {
+        let row = crate::canvas::key_row(&chrome.view, grid, ghost.key);
+        let x0 = crate::canvas::tick_to_x(&chrome.view, grid, ghost.start);
+        let x1 = crate::canvas::tick_to_x(&chrome.view, grid, ghost.start + ghost.length);
+        let r = Rect::new(x0, row.y, (x1 - x0).max(3.0), row.height)
+            .inset(1.0)
+            .intersection(&grid)
+            .clamped();
+        if r.is_empty() {
+            continue;
+        }
+        fill_rect_rounded(scene, r, 2.0, theme.palette.accent.with_alpha(0x60));
+        stroke_rect_rounded(scene, r, 2.0, 1.0, theme.palette.accent);
+    }
+}
+
+/// The smart-chord strip (`canvas::chord_strip`): its controls in a row,
+/// its chips under them — the chord's name, and its job in the key small.
+fn draw_chord_strip(scene: &mut Scene, theme: &Theme, labels: &Labels, strip: &ChordStripChrome) {
+    let p = &theme.palette;
+    let m = &theme.metrics;
+    let l = &strip.layout;
+    fill_rect_rounded(scene, l.frame, m.corner_radius, p.panel);
+    stroke_rect_rounded(scene, l.frame, m.corner_radius, 1.0, p.border);
+    let control = |scene: &mut Scene, rect: Rect, word: &str| {
+        fill_rect_rounded(scene, rect, rect.height / 2.0, p.panel_header);
+        if let Some(shaped) = labels.get(word) {
+            draw_text_clipped(
+                scene,
+                shaped,
+                rect,
+                rect.x + (rect.width - shaped.width) / 2.0,
+                rect.y + (rect.height - shaped.height) / 2.0,
+                p.text,
+            );
+        }
+    };
+    control(scene, l.mode, crate::canvas::suggest_label(strip.suggest));
+    control(scene, l.extension, strip.extension.label());
+    control(scene, l.voicing, strip.voicing.label());
+    control(scene, l.inversion, strip.inversion.label());
+    control(scene, l.type_it, crate::canvas::TYPE_CHORD);
+    for (i, (chip, (name, small))) in l.chips.iter().zip(&strip.captions).enumerate() {
+        let hot = strip.hover == Some(i);
+        fill_rect_rounded(
+            scene,
+            *chip,
+            m.corner_radius,
+            if hot { p.accent } else { p.panel_header },
+        );
+        let ink = if hot { p.panel } else { p.text };
+        let name_shaped = labels.get(name);
+        let small_shaped = (!small.is_empty())
+            .then(|| labels.get_small(small))
+            .flatten();
+        let total = name_shaped.map_or(0.0, |t| t.height) + small_shaped.map_or(0.0, |t| t.height);
+        let mut y = chip.y + (chip.height - total) / 2.0;
+        if let Some(t) = name_shaped {
+            draw_text_clipped(
+                scene,
+                t,
+                *chip,
+                chip.x + (chip.width - t.width) / 2.0,
+                y,
+                ink,
+            );
+            y += t.height;
+        }
+        if let Some(t) = small_shaped {
+            let faint = if hot { p.panel } else { p.text_muted };
+            draw_text_clipped(
+                scene,
+                t,
+                *chip,
+                chip.x + (chip.width - t.width) / 2.0,
+                y,
+                faint,
+            );
+        }
+    }
+}
+
 fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
     let p = &theme.palette;
     let m = &theme.metrics;
@@ -7006,6 +7123,8 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
             RollControl::Ghost => chrome.ghost_filter != GhostFilter::Off,
             RollControl::Tools => chrome.tools_panel.is_some(),
             RollControl::Scale => chrome.key.is_some(),
+            RollControl::Chords => chrome.chords.smart,
+            RollControl::Lock => chrome.chords.locked,
             _ => false,
         };
         // The three read-out chips always carry their frame, whether or not
@@ -7023,6 +7142,8 @@ fn draw_roll_toolbar(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: 
                 | RollControl::Tools
                 | RollControl::Root
                 | RollControl::Scale
+                | RollControl::Chords
+                | RollControl::Lock
         );
         if on || is_chip || chrome.hover == Some(*control) {
             fill_rect_rounded(

@@ -975,6 +975,7 @@ fn shoot_roll_everything(
                 scale: song_key.and_then(fontelle_ui::canvas::RollScale::of),
                 key: song_key,
                 key_root: song_key.map_or(0, |key| key.root),
+                chords: Default::default(),
                 vocal: None,
             }),
             rack: None,

@@ -280,6 +280,11 @@ pub enum Action {
     // reads back with the line passed over (`with_overrides`).
     LaneProperty,
     Ghosts,
+    /// The roll's smart-chord strip on a placed note, on or off.
+    SmartChords,
+    /// Keep notes to the song's key, or let them go out of it (the latched
+    /// form of holding Alt).
+    ScaleLock,
     // --- editing ---
     SelectAll,
     Copy,
@@ -364,7 +369,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 68] = [
+    pub const ALL: [Self; 70] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -394,6 +399,8 @@ impl Action {
         Self::RollSnap,
         Self::LaneProperty,
         Self::Ghosts,
+        Self::SmartChords,
+        Self::ScaleLock,
         Self::SelectAll,
         Self::Copy,
         Self::Cut,
@@ -470,6 +477,8 @@ impl Action {
             Self::RollSnap => "roll-snap",
             Self::LaneProperty => "lane-property",
             Self::Ghosts => "ghosts",
+            Self::SmartChords => "smart-chords",
+            Self::ScaleLock => "scale-lock",
             Self::SelectAll => "select-all",
             Self::Copy => "copy",
             Self::Cut => "cut",
@@ -549,6 +558,8 @@ impl Action {
             Self::RollSnap => "Next snap grid (piano roll)",
             Self::LaneProperty => "Next property lane: velocity, pan, pitch\u{2026}",
             Self::Ghosts => "Ghost notes from other clips",
+            Self::SmartChords => "Chords offered on a placed note",
+            Self::ScaleLock => "Keep notes in the key",
             Self::SelectAll => "Select every note",
             Self::Copy => "Copy",
             Self::Cut => "Cut",
@@ -674,6 +685,8 @@ impl Action {
             Self::RollSnap => &["G"],
             Self::LaneProperty => &["L"],
             Self::Ghosts => &["O"],
+            Self::SmartChords => &["H"],
+            Self::ScaleLock => &["K"],
             Self::SelectAll => &["Ctrl+A"],
             Self::Copy => &["Ctrl+C"],
             Self::Cut => &["Ctrl+X"],

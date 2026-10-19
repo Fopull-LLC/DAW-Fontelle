@@ -5,6 +5,7 @@ mod automation;
 mod autoscroll;
 mod browser;
 mod carry;
+mod chord_strip;
 mod disgusting_beat;
 mod effect;
 mod favorites;
@@ -66,6 +67,11 @@ pub use carry::{
     CARRY_PAD, Carried, CarryOscillator, CarryRack, CarryRelease, CarryScene, CarryTarget,
     CarryTimeline, carry_chip, carry_chip_lifted, carry_note, carry_release, carry_target,
     held_note,
+};
+pub use chord_strip::{
+    ChordStripHit, ChordStripLayout, TYPE_CHORD, chord_chip_caption, chord_strip_hit,
+    chord_strip_layout, chord_strip_words, next_extension, next_inversion, next_voicing,
+    suggest_label,
 };
 pub use effect::{
     EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,

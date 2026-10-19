@@ -573,6 +573,7 @@ fn shoot(song: &Song, shot: Shot, name: &str) -> Option<(Vec<u8>, Theme, RollLay
                 scale: None,
                 key: None,
                 key_root: 0,
+                chords: Default::default(),
                 vocal: Some(rv),
             }),
             rack: None,

@@ -272,6 +272,7 @@ fn shoot(
                 scale: None,
                 key: None,
                 key_root: 0,
+                chords: Default::default(),
                 vocal: Some(RollVocal {
                     view: &song.view,
                     editing,
