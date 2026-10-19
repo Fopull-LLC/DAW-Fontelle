@@ -1914,3 +1914,95 @@ fn the_outbox_names_each_edits_entry_and_an_entry_can_be_forgotten() {
     let undone = history.take_outgoing();
     assert_eq!(undone[0].entry, sent[1].entry);
 }
+
+/// What an edit reaches when it arrives from somebody else, which decides what
+/// it costs: **the timeline** (republished, as a local edit is), **the live
+/// values** (set in place, as a fader drag is), or **the graph** (rebuilt —
+/// which drops every voice that was sounding).
+///
+/// > *"when the other person makes changes it pauses my audio playback so
+/// > cuts my notes short"* (2026-10-18): every arriving edit rebuilt the
+/// > graph. The rule is the local one — what the studio does when this
+/// > studio makes the same edit — and anything not known to be lighter is a
+/// > rebuild.
+#[test]
+fn what_an_arriving_edit_reaches_follows_what_the_same_local_edit_does() {
+    use fontelle_model::wire::Reach;
+    let studio = a_studio();
+    let reach = |name: &str| {
+        let (_, make) = every_command()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in every_command"));
+        make(&studio).to_edit().reach()
+    };
+    for name in [
+        "AddNotes",
+        "RemoveNotes",
+        "MoveNotes",
+        "ResizeNotes",
+        "SetNoteKeys",
+        "SetNoteVelocity",
+        "AddClip",
+        "MoveClips",
+        "ResizeClips",
+        "SplitClip",
+        "SetClipLoop",
+        "AddAutomationPoint",
+        "MoveAutomationPoints",
+        "AddMarker",
+        "RenameLane",
+        "RenameClip",
+        "SetAudioClip",
+        "SetLoopRange",
+        "EditNotepad",
+    ] {
+        assert_eq!(reach(name), Reach::Timeline, "{name}");
+    }
+    for name in [
+        "SetSendLevel",
+        "SetInsertParam",
+        "SetInsertMix",
+        "SetEqBand",
+        "SetInsertBypassed",
+    ] {
+        assert_eq!(reach(name), Reach::Values, "{name}");
+    }
+    for name in [
+        "AddChannel",
+        "AddInsert",
+        "RemoveInsert",
+        "AddMixerTrack",
+        "SetTrackOutput",
+        "SetChannelRoute",
+        "AddSend",
+        "SetChannelPatch",
+        "AddAudioClip",
+    ] {
+        assert_eq!(reach(name), Reach::Graph, "{name}");
+    }
+}
+
+/// `SetNumber` and `SetFlag` reach different places by what they name.
+#[test]
+fn a_number_or_a_flag_reaches_where_its_target_lives() {
+    use fontelle_model::wire::Reach;
+    use fontelle_model::{FlagTarget, NumberTarget, SetFlag, SetNumber};
+    let studio = a_studio();
+    let number = |target| SetNumber::new(target, 0.5).to_edit().reach();
+    let flag = |target| SetFlag::new(target, true).to_edit().reach();
+    assert_eq!(number(NumberTarget::TrackGainDb(studio.bus)), Reach::Values);
+    assert_eq!(number(NumberTarget::TrackPan(studio.bus)), Reach::Values);
+    assert_eq!(number(NumberTarget::Tempo), Reach::Timeline);
+    // The channel's own level is rebuilt locally too (`set_instrument_param`).
+    assert_eq!(
+        number(NumberTarget::ChannelGainDb(studio.drums)),
+        Reach::Graph
+    );
+    assert_eq!(flag(FlagTarget::TrackMute(studio.bus)), Reach::Values);
+    assert_eq!(
+        flag(FlagTarget::ClipMuted(studio.notes_clip)),
+        Reach::Timeline
+    );
+    assert_eq!(flag(FlagTarget::TrackOutputOn(studio.bus)), Reach::Graph);
+}

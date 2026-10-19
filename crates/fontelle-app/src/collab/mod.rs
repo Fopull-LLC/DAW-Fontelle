@@ -203,8 +203,12 @@ pub struct JoinQuestion {
 /// What the session has to do after the collaboration has had its turn.
 pub(crate) enum Effect {
     /// Somebody else's edits changed the document: it is unsaved, and the
-    /// graph and the window have to catch up — what an undo does.
-    Changed,
+    /// studio has to catch up — as far as the edits [`Reach`]: the timeline,
+    /// the live values, or the whole graph (which ends every sounding voice).
+    /// A copy rebuilt from scratch (a resync, a refusal) reaches the graph.
+    ///
+    /// [`Reach`]: fontelle_model::wire::Reach
+    Changed(fontelle_model::wire::Reach),
     /// The join's copy is on disk: open it, then hand it back to
     /// [`Collab::went_live`].
     Open(PathBuf),
@@ -673,17 +677,25 @@ impl Collab {
 /// twenty edits landing in one turn were twenty rebuilds back to back — the
 /// "laggy" of Ty's report. Where the first one was is where it stays.
 fn once_changed(effects: Vec<Effect>) -> Vec<Effect> {
+    // One catch-up for the batch, as dear as the dearest edit in it, where
+    // the first of them was.
+    let dearest = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Changed(reach) => Some(*reach),
+            _ => None,
+        })
+        .max();
     let mut seen = false;
     effects
         .into_iter()
-        .filter(|effect| {
-            if matches!(effect, Effect::Changed) {
-                let first = !seen;
+        .filter_map(|effect| match effect {
+            Effect::Changed(_) if seen => None,
+            Effect::Changed(_) => {
                 seen = true;
-                first
-            } else {
-                true
+                dearest.map(Effect::Changed)
             }
+            other => Some(other),
         })
         .collect()
 }
@@ -1053,11 +1065,11 @@ impl Host {
                                 seq: self.seq,
                                 author,
                                 author_seq: local_seq,
-                                edit: applied,
+                                edit: applied.clone(),
                                 hash: Some(doc.sync_hash()),
                             },
                         );
-                        turn.effects.push(Effect::Changed);
+                        turn.effects.push(Effect::Changed(applied.reach()));
                     }
                     Err(e) => send(
                         turn.transport,
@@ -1581,7 +1593,8 @@ impl Joiner {
                             self.seq = seq;
                             self.resyncing = false;
                             self.rebuild(doc);
-                            turn.effects.push(Effect::Changed);
+                            turn.effects
+                                .push(Effect::Changed(fontelle_model::wire::Reach::Graph));
                         }
                         Err(e) => return Some(format!("The song did not arrive whole: {e}")),
                     }
@@ -1613,7 +1626,8 @@ impl Joiner {
                         taken_back(label, self.host_or_them())
                     });
                     self.rebuild(doc);
-                    turn.effects.push(Effect::Changed);
+                    turn.effects
+                        .push(Effect::Changed(fontelle_model::wire::Reach::Graph));
                 }
             }
             Msg::Joined { peer, name, colour } => {
@@ -1732,7 +1746,8 @@ impl Joiner {
             // Already in the copy this studio was given.
             if !screen_holds {
                 self.rebuild(doc);
-                turn.effects.push(Effect::Changed);
+                turn.effects
+                    .push(Effect::Changed(fontelle_model::wire::Reach::Graph));
             }
             return;
         }
@@ -1746,7 +1761,8 @@ impl Joiner {
             self.resync(turn.transport);
             if !screen_holds {
                 self.rebuild(doc);
-                turn.effects.push(Effect::Changed);
+                turn.effects
+                    .push(Effect::Changed(fontelle_model::wire::Reach::Graph));
             }
             return;
         }
@@ -1764,14 +1780,21 @@ impl Joiner {
         if mine {
             if !screen_holds {
                 self.rebuild(doc);
-                turn.effects.push(Effect::Changed);
+                turn.effects
+                    .push(Effect::Changed(fontelle_model::wire::Reach::Graph));
             }
             return;
         }
+        // What it costs here is what the edit reaches: putting this studio's
+        // pending edits back on top changes nothing the graph was not already
+        // built for. Only an edit that would not apply leaves a copy rebuilt
+        // from scratch.
+        let mut reach = edit.reach();
         if self.pending.is_empty() {
             // Nothing of ours in the way: the copy on screen is the host's.
             if apply_as(author, edit.clone().into_command().as_mut(), doc).is_err() {
                 self.rebuild(doc);
+                reach = fontelle_model::wire::Reach::Graph;
             } else {
                 healed(doc);
             }
@@ -1780,7 +1803,7 @@ impl Joiner {
         }
         // A file somebody else's edit names comes from the host (§7.2).
         turn.want_files_of(&edit, SERVER, doc);
-        turn.effects.push(Effect::Changed);
+        turn.effects.push(Effect::Changed(reach));
     }
 
     /// Asks the host for a fresh copy of its song, once until it comes.

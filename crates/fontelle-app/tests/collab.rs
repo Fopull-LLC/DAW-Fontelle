@@ -3153,3 +3153,59 @@ fn a_joiner_opening_another_song_leaves_the_session() {
     );
     assert!(pair.host.collab_live(), "the host goes on sharing");
 }
+
+// ---------------------------------- what somebody else's edit costs here ---
+//
+// > *"when the other person makes changes it pauses my audio playback so cuts
+// > my notes short"* (2026-10-18). Every arriving edit rebuilt the graph,
+// > which ends every voice that was sounding. An edit now costs what the same
+// > edit made here costs (`Edit::reach`).
+
+#[test]
+fn a_note_drawn_by_somebody_else_does_not_rebuild_the_graph() {
+    let mut pair = Pair::joined("note-no-rebuild", 2);
+    let (host, joiner) = (pair.host.graph_builds(), pair.joiner.graph_builds());
+    draw(&mut pair.joiner, PPQN, 67);
+    pair.settle();
+    draw(&mut pair.host, PPQN * 2, 69);
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        pair.host.graph_builds(),
+        host,
+        "the joiner's note cost the host a rebuild"
+    );
+    assert_eq!(
+        pair.joiner.graph_builds(),
+        joiner,
+        "the host's note cost the joiner a rebuild"
+    );
+}
+
+#[test]
+fn a_fader_moved_by_somebody_else_is_heard_without_a_rebuild() {
+    let mut pair = Pair::joined("fader-no-rebuild", 2);
+    let builds = pair.host.graph_builds();
+    pair.joiner.set_track_gain_db(0, -9.0);
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+    assert_eq!(pair.host.graph_builds(), builds, "no rebuild for a value");
+    assert_eq!(
+        pair.host.track_controls()[0].gain_db(),
+        -9.0,
+        "and the host's live fader moved"
+    );
+}
+
+#[test]
+fn an_insert_added_by_somebody_else_still_rebuilds() {
+    let mut pair = Pair::joined("insert-rebuilds", 2);
+    let builds = pair.host.graph_builds();
+    pair.joiner
+        .add_insert(0, fontelle_types::EffectKind::Filter);
+    pair.joiner.end_gesture();
+    pair.settle();
+    pair.same();
+    assert!(pair.host.graph_builds() > builds, "what is wired changed");
+}

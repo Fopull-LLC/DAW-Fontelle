@@ -7174,6 +7174,11 @@ pub struct SetNumber {
 }
 
 impl SetNumber {
+    /// What it sets.
+    pub fn target(&self) -> NumberTarget {
+        self.target
+    }
+
     pub fn new(target: NumberTarget, value: f64) -> Self {
         Self {
             label: match target {
@@ -7328,6 +7333,11 @@ pub struct SetFlag {
 }
 
 impl SetFlag {
+    /// What it sets.
+    pub fn target(&self) -> FlagTarget {
+        self.target
+    }
+
     pub fn new(target: FlagTarget, value: bool) -> Self {
         Self {
             target,

@@ -2841,11 +2841,21 @@ impl Session {
         use crate::collab::Effect;
         for effect in effects {
             match effect {
-                Effect::Changed => {
+                // As far as the edits reach, and no further: a rebuild ends
+                // every voice that was sounding, so somebody else moving a
+                // note must cost what moving it here costs — a republish.
+                Effect::Changed(reach) => {
+                    use fontelle_model::wire::Reach;
                     self.dirty = true;
-                    self.patch_cache = None;
-                    self.rebuild_graph();
-                    self.say_new_missing_plugins();
+                    match reach {
+                        Reach::Timeline => self.republish(),
+                        Reach::Values => self.publish_values(),
+                        Reach::Graph => {
+                            self.patch_cache = None;
+                            self.rebuild_graph();
+                            self.say_new_missing_plugins();
+                        }
+                    }
                     self.touch();
                 }
                 Effect::Say(line) => {
@@ -5049,6 +5059,31 @@ impl Session {
     fn publish_mixer(&mut self) {
         apply_mixer_controls(&self.project, &self.track_controls);
         apply_send_controls(&self.project, &self.send_controls);
+        self.touch();
+    }
+
+    /// Every live value the document holds — faders, pans, mutes, sends and
+    /// each effect's settings — published to the running graph, which is
+    /// what a local knob does for its one value. For values that arrived
+    /// from somebody else, without rebuilding the graph.
+    fn publish_values(&mut self) {
+        apply_mixer_controls(&self.project, &self.track_controls);
+        apply_send_controls(&self.project, &self.send_controls);
+        for (&(track, slot), controls) in self.effect_controls.iter_mut() {
+            let Some(insert) = self
+                .project
+                .mixer
+                .tracks
+                .get(track)
+                .and_then(|t| t.inserts.get(slot))
+            else {
+                continue;
+            };
+            if let Some(config) = insert.config() {
+                controls.publish(*config);
+            }
+            controls.set_bypassed(insert.bypassed);
+        }
         self.touch();
     }
 

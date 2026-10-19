@@ -242,6 +242,212 @@ edits!(
     SetVocalStyle,
 );
 
+/// What an edit changes in the running studio, and so what the studio has to
+/// redo when it arrives from somebody else — see [`Edit::reach`].
+///
+/// Ordered by cost, so a batch of edits costs its dearest (`max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Reach {
+    /// What plays when: the compiled timeline, republished. Every sound that
+    /// is ringing keeps ringing.
+    Timeline,
+    /// A live value — a fader, a send, an effect's knob — set in place on
+    /// the running graph.
+    Values,
+    /// What is wired to what, or what an instrument is: the graph rebuilt,
+    /// which ends every voice that was sounding.
+    Graph,
+}
+
+impl Edit {
+    /// What this edit reaches — the same as what the studio does when it
+    /// makes this edit itself, so an edit that arrives from somebody else
+    /// costs no more than the local one.
+    ///
+    /// > *"when the other person makes changes it pauses my audio playback so
+    /// > cuts my notes short"* (2026-10-18): every arriving edit rebuilt the
+    /// > graph, a note moved by a collaborator included.
+    ///
+    /// **Exhaustive on purpose**: a new edit does not compile until somebody
+    /// has said what it reaches, and anything not known to be lighter is
+    /// [`Reach::Graph`].
+    pub fn reach(&self) -> Reach {
+        use crate::{FlagTarget, NumberTarget};
+        match self {
+            // As dear as its dearest part; an empty one changes nothing.
+            Edit::Compound { parts, .. } => parts
+                .iter()
+                .map(Edit::reach)
+                .max()
+                .unwrap_or(Reach::Timeline),
+            // What plays when.
+            Edit::AddNotes(_)
+            | Edit::RemoveNotes(_)
+            | Edit::RestoreNotes(_)
+            | Edit::MoveNotes(_)
+            | Edit::ResizeNotes(_)
+            | Edit::SetNoteVelocity(_)
+            | Edit::RestoreNoteVelocities(_)
+            | Edit::SetNoteSlide(_)
+            | Edit::RestoreNoteSlides(_)
+            | Edit::SliceNotes(_)
+            | Edit::MergeSlices(_)
+            | Edit::SetNoteProperty(_)
+            | Edit::RestoreNoteProperties(_)
+            | Edit::NudgeNoteProperty(_)
+            | Edit::SetNotePropertyEach(_)
+            | Edit::SetNoteLengths(_)
+            | Edit::SetNoteKeys(_)
+            | Edit::SetNotePath(_)
+            | Edit::SetKey(_)
+            | Edit::AddClip(_)
+            | Edit::RemoveClip(_)
+            | Edit::RestoreClip(_)
+            | Edit::MoveClip(_)
+            | Edit::MoveClips(_)
+            | Edit::SetClipLoop(_)
+            | Edit::ResizeClip(_)
+            | Edit::ResizeClips(_)
+            | Edit::TrimClipStart(_)
+            | Edit::DuplicateClip(_)
+            | Edit::SplitClip(_)
+            | Edit::UnsplitClip(_)
+            | Edit::RenameClip(_)
+            | Edit::SetAudioClip(_)
+            | Edit::SetAudioClips(_)
+            | Edit::SetLoopRange(_)
+            | Edit::AddAutomationPoint(_)
+            | Edit::MoveAutomationPoints(_)
+            | Edit::PlaceAutomationPoints(_)
+            | Edit::RemoveAutomationPoints(_)
+            | Edit::RestoreAutomationPoints(_)
+            | Edit::SetPointCurve(_)
+            | Edit::RestorePointCurves(_)
+            | Edit::AddMarker(_)
+            | Edit::RemoveMarker(_)
+            | Edit::RestoreMarker(_)
+            | Edit::RenameLane(_)
+            | Edit::MoveLane(_)
+            | Edit::RenameProject(_)
+            | Edit::RenameMixerTrack(_)
+            | Edit::SetMixerTrackColor(_)
+            | Edit::RenameChannel(_)
+            | Edit::RenamePrefab(_)
+            | Edit::EditNotepad(_) => Reach::Timeline,
+            Edit::SetNumber(set) => match set.target() {
+                NumberTarget::TrackGainDb(_) | NumberTarget::TrackPan(_) => Reach::Values,
+                NumberTarget::Tempo | NumberTarget::BeatsPerBar => Reach::Timeline,
+                // The channel's own level and placement are rebuilt locally
+                // too (`set_instrument_param`).
+                NumberTarget::ChannelPan(_) | NumberTarget::ChannelGainDb(_) => Reach::Graph,
+            },
+            Edit::SetFlag(set) => match set.target() {
+                FlagTarget::TrackMute(_) | FlagTarget::TrackSolo(_) => Reach::Values,
+                // Sequencer mutes: what is compiled to play.
+                FlagTarget::ClipMuted(_)
+                | FlagTarget::LaneMuted(_)
+                | FlagTarget::LaneSoloed(_)
+                | FlagTarget::ChannelMuted(_)
+                | FlagTarget::ChannelSoloed(_) => Reach::Timeline,
+                FlagTarget::TrackOutputOn(_)
+                | FlagTarget::ChannelNamedKeys(_)
+                | FlagTarget::ChannelPluginMpe(_) => Reach::Graph,
+            },
+            // A live value, published to the running graph.
+            Edit::SetSendLevel(_)
+            | Edit::SetInsertParam(_)
+            | Edit::SetInsertMix(_)
+            | Edit::SetEqBand(_)
+            | Edit::SetInsertBypassed(_) => Reach::Values,
+            // Everything else changes what the graph is.
+            Edit::NotApplied(_)
+            | Edit::AddChannel(_)
+            | Edit::RemoveChannel(_)
+            | Edit::RestoreChannel(_)
+            | Edit::DuplicateChannel(_)
+            | Edit::AddLane(_)
+            | Edit::RemoveLane(_)
+            | Edit::RestoreLane(_)
+            | Edit::AddMixerTrack(_)
+            | Edit::RemoveMixerTrack(_)
+            | Edit::RestoreMixerTrack(_)
+            | Edit::MoveMixerTrack(_)
+            | Edit::DuplicateMixerTrack(_)
+            | Edit::SetMixerOrder(_)
+            | Edit::SetTrackOutput(_)
+            | Edit::AddSend(_)
+            | Edit::RemoveSend(_)
+            | Edit::RestoreSend(_)
+            | Edit::SetSendPreFader(_)
+            | Edit::SetChannelRoute(_)
+            | Edit::SetChannelKind(_)
+            | Edit::RestoreChannelKind(_)
+            | Edit::SetChannelPatch(_)
+            | Edit::AddAudioClip(_)
+            | Edit::RemoveAudioClip(_)
+            | Edit::SetTrackInput(_)
+            | Edit::ImportParts(_)
+            | Edit::UnimportParts(_)
+            | Edit::ReplaceClip(_)
+            | Edit::ApplyTrackChain(_)
+            | Edit::RestoreTrackChain(_)
+            | Edit::AddInsert(_)
+            | Edit::RemoveInsert(_)
+            | Edit::RestoreInsert(_)
+            | Edit::MoveInsert(_)
+            | Edit::SetInsertNotes(_)
+            | Edit::SetInsertKey(_)
+            | Edit::RestoreInsertConfig(_)
+            | Edit::EditLapse(_)
+            | Edit::AddPluginInsert(_)
+            | Edit::SetChannelPlugin(_)
+            | Edit::RestoreChannelPlugin(_)
+            | Edit::SetPluginParam(_)
+            | Edit::RestorePluginParam(_)
+            | Edit::ApplyPreset(_)
+            | Edit::SwitchChannelAb(_)
+            | Edit::CopyChannelAb(_)
+            | Edit::RestoreChannelAbOther(_)
+            | Edit::RestoreDeviceState(_)
+            | Edit::SetPresetRef(_)
+            | Edit::AddPrefab(_)
+            | Edit::AddPrefabInstance(_)
+            | Edit::DetachPrefab(_)
+            | Edit::RestorePrefabLink(_)
+            | Edit::RemovePrefab(_)
+            | Edit::RestorePrefab(_)
+            | Edit::MakePrefabFromClip(_)
+            | Edit::RelocateAssets(_)
+            | Edit::RestoreAssets(_)
+            | Edit::SetRoutingMode(_)
+            | Edit::LaneUpkeep(_)
+            | Edit::SetClipChannel(_)
+            | Edit::AddStudy(_)
+            | Edit::RemoveStudy(_)
+            | Edit::RestoreStudy(_)
+            | Edit::SetStudyEdits(_)
+            | Edit::SetStudyRender(_)
+            | Edit::SetStudyMarkers(_)
+            | Edit::SetStudyClean(_)
+            | Edit::SetStudyTakes(_)
+            | Edit::SetStudyOriginal(_)
+            | Edit::DeleteChannel(_)
+            | Edit::RestoreDeletedChannel(_)
+            | Edit::SetLyrics(_)
+            | Edit::SetSinger(_)
+            | Edit::SetNoteVoices(_)
+            | Edit::SetVocalLane(_)
+            | Edit::SetVocalSettings(_)
+            | Edit::SetVocalState(_)
+            | Edit::ImportVocal(_)
+            | Edit::UnimportVocal(_)
+            | Edit::FreezeVocal(_)
+            | Edit::UnfreezeVocal(_)
+            | Edit::SetVocalStyle(_) => Reach::Graph,
+        }
+    }
+}
+
 impl Edit {
     /// The bytes that cross the wire.
     pub fn to_bytes(&self) -> Vec<u8> {

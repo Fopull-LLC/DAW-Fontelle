@@ -732,7 +732,9 @@ fn an_effect_switched_off_while_somebody_reorders_the_chain_is_still_switched_of
 
 /// *"glitchy and laggy"*: twenty edits of the host's landing on a joiner in
 /// one turn were twenty rebuilds of the joiner's whole graph, back to back
-/// (every soundfont reloaded each time). **Before**: 20. **After**: one.
+/// (every soundfont reloaded each time). **Before**: 20. **Then**: one.
+/// **Now** (2026-10-18, `Edit::reach`): none — notes reach the timeline, and
+/// a rebuild would cut whatever was sounding.
 #[test]
 fn a_burst_of_edits_is_one_rebuild_of_the_graph() {
     let mut room = Room::new("burst", 1, 8, 0, true);
@@ -748,5 +750,5 @@ fn a_burst_of_edits_is_one_rebuild_of_the_graph() {
     let before = room.studios[1].graph_builds();
     room.tick(room.latency + 2);
     assert_eq!(notes_in(&room.studios[1], clip).len(), 20);
-    assert_eq!(room.studios[1].graph_builds() - before, 1);
+    assert_eq!(room.studios[1].graph_builds() - before, 0);
 }
