@@ -206,7 +206,8 @@ fn escape_at_the_password_abandons_the_join() {
 }
 
 /// *Ask first* on the panel: a newcomer raises a card on the host — their
-/// name, Let in, Block, Turn away — and waits, told whom for.
+/// name, Let in (Enter), Block, Turn away (Escape) — and waits, told
+/// whom for.
 #[test]
 fn ask_first_raises_a_card_the_host_answers() {
     let mut rig = Rig::new("ask-first", None);
@@ -223,6 +224,9 @@ fn ask_first_raises_a_card_the_host_answers() {
         "{card:?}"
     );
     assert_eq!(card.buttons, vec!["Let in", "Block", "Turn away"]);
+    // Ty, 2026-10-19: letting someone in shouldn't need a click — Enter
+    // lets them in, Escape still turns them away.
+    assert_eq!(card.default, 0, "Enter is Let in");
     let status = rig.others[carol].document().session().status;
     assert!(
         status.contains("Waiting for Alice to let you in"),

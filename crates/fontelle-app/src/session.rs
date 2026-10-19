@@ -3638,9 +3638,10 @@ impl Session {
         Some(fontelle_ui::document::SessionQuestion {
             lines,
             buttons: KNOCK_ANSWERS.map(str::to_string).to_vec(),
-            // Enter, like Escape, turns them away: letting somebody in is
-            // the one answer that should take a deliberate click.
-            default: 2,
+            // Enter lets them in (Ty, 2026-10-19: no click needed); Escape,
+            // the last button, still turns them away. The card only takes
+            // a key once it has been up a moment, so a stray Enter can't.
+            default: 0,
         })
     }
 

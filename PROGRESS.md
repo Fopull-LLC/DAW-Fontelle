@@ -82,7 +82,7 @@ sessions, etc. just ensure odd gaps like this dont make it in"*.
 - **Host controls** on the Share panel: Password (set when sharing via
   *Share with a password…*, change or clear while sharing; shown as on/off,
   never the text), *Ask first* (a card: Let in / Block / Turn away, queued;
-  Enter and Escape turn away), *Lock*. All off by default, not saved.
+  Enter lets in — Ty: no click needed — and Escape turns away), *Lock*. All off by default, not saved.
 - **Passwords**: PBKDF2-HMAC-SHA256 (200 000 rounds, code as salt) split by
   label into a proof key (HMAC of nonce + key) and a seal key; the password
   never crosses. Wrong → `WRONG_PASSWORD` + a fresh challenge; 5 on one
@@ -126,8 +126,11 @@ built; next is Ty's beta.
 - **Ruler zoom**: the wheel over the arrangement ruler, the roll's ruler
   and the song strip zooms about the pointer.
 - **Notes sound when placed** (Settings ▸ Editing, off by default).
-- **Analyze** in an audio clip's header. **Delete flecks**
-  (`canvas::particles`, only when Effects is Moving). **Monitor** per
+- **Analyze** in an audio clip's header. **The delete zap**
+  (`canvas::particles`, only when Effects is Moving): the note flashes to
+  light and collapses to a glowing line, and fine sparks cool from white to
+  its colour — Ty, 2026-10-19, of the first round flecks: *"like clumps of
+  blue dirt"*; no spark is past 2.5 px. **Monitor** per
   track (`MixerTrack::monitor`, written only when off; a silent monitor
   still drains its input). **Unplug** a cable by pulling it off a jack
   (`cable_unplugs`). **Several lanes** at once: Shift range, Ctrl toggle;

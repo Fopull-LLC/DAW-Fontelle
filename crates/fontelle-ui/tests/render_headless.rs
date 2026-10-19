@@ -9412,7 +9412,8 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     );
 }
 
-/// Flecks of a deleted note, a moment after the delete.
+/// A deleted note zapped out: the flash and its sparks at three moments —
+/// just after the delete, mid-way, and cooling.
 #[test]
 fn flecks_of_a_deleted_note_are_drawn() {
     let notes: Arena<NoteId, Note> = Arena::default();
@@ -9422,31 +9423,37 @@ fn flecks_of_a_deleted_note_are_drawn() {
     let grid = probe.layout.grid;
     let row = fontelle_ui::canvas::key_row(&probe.view, grid, 64);
     let x0 = fontelle_ui::canvas::tick_to_x(&probe.view, grid, PPQN);
-    let mut particles = fontelle_ui::canvas::Particles::default();
-    particles.burst(
-        &[Rect::new(x0, row.y, 80.0, row.height)],
-        probe.theme.palette.note.0,
-    );
-    particles.step(0.08);
-    let flecks = particles.flecks();
-    ROLL_CHORDS.with(|c| {
-        *c.borrow_mut() = fontelle_ui::render::RollChords {
-            flecks: flecks.clone(),
-            ..Default::default()
-        }
-    });
-    let shot = shoot_roll(&notes, &[]);
-    ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
-    let Some(shot) = shot else { return };
-    dump_sized(&shot.pixels, "flecks", RW, RH);
-    let lit = flecks
-        .iter()
-        .filter(|f| {
-            let c = shot.at(f.x as u32, f.y as u32);
-            near(c, shot.theme.palette.note) || c.0[0] > probe.at(f.x as u32, f.y as u32).0[0]
-        })
-        .count();
-    assert!(lit > 0, "no fleck drawn");
+    for (name, at) in [
+        ("flecks", 0.04),
+        ("flecks-mid", 0.12),
+        ("flecks-late", 0.26),
+    ] {
+        let mut particles = fontelle_ui::canvas::Particles::default();
+        particles.burst(
+            &[Rect::new(x0, row.y, 80.0, row.height)],
+            probe.theme.palette.note.0,
+        );
+        particles.step(at);
+        let flecks = particles.flecks();
+        ROLL_CHORDS.with(|c| {
+            *c.borrow_mut() = fontelle_ui::render::RollChords {
+                flecks: flecks.clone(),
+                ..Default::default()
+            }
+        });
+        let shot = shoot_roll(&notes, &[]);
+        ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
+        let Some(shot) = shot else { return };
+        dump_sized(&shot.pixels, name, RW, RH);
+        let lit = flecks
+            .iter()
+            .filter(|f| {
+                let (x, y) = (f.x as u32, f.y as u32);
+                shot.at(x, y) != probe.at(x, y)
+            })
+            .count();
+        assert!(lit > 0, "no fleck drawn at {at} s");
+    }
 }
 
 /// A signature change: the bars after it their own length, and a flag on the

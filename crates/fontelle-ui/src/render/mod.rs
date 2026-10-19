@@ -7149,16 +7149,31 @@ fn draw_property_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
 fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) {
     let grid = chrome.layout.grid;
     for fleck in &chrome.chords.flecks {
-        let r = Rect::new(
-            fleck.x - fleck.size / 2.0,
-            fleck.y - fleck.size / 2.0,
-            fleck.size,
-            fleck.size,
-        );
-        if grid.contains(fleck.x, fleck.y) {
-            let [r_, g, b, a] = fleck.colour;
-            fill_rect_rounded(scene, r, fleck.size / 2.0, Color::rgba(r_, g, b, a));
+        if !grid.contains(fleck.x, fleck.y) {
+            continue;
         }
+        let r = Rect::new(
+            fleck.x - fleck.width / 2.0,
+            fleck.y - fleck.height / 2.0,
+            fleck.width,
+            fleck.height,
+        );
+        let [r_, g, b, a] = fleck.colour;
+        // The flash glows: a soft, wider wash of its light round the line,
+        // so it reads as light going out rather than a bar shrinking.
+        if fleck.kind == crate::canvas::FleckKind::Flash {
+            for (spread, share) in [(8.0, 0.06), (6.0, 0.08), (4.0, 0.1), (2.0, 0.14)] {
+                let halo = r.inset(-spread).intersection(&grid).clamped();
+                let alpha = (f32::from(a) * share) as u8;
+                fill_rect_rounded(
+                    scene,
+                    halo,
+                    halo.height.min(halo.width) / 2.0,
+                    Color::rgba(r_, g, b, alpha),
+                );
+            }
+        }
+        fill_rect_rounded(scene, r, fleck.size / 2.0, Color::rgba(r_, g, b, a));
     }
     // A candidate key previewed: its outsiders ringed, so the why is seen.
     if let Some(mask) = chrome.chords.outline_outside {
