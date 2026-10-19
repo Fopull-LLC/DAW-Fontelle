@@ -19,6 +19,21 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — the next update, phase 6: Discord status, built and
+inert.** `fontelle-app/src/discord.rs` speaks Discord's local protocol by
+hand (no new crate): the socket/pipe paths (Flatpak and Snap folders
+included), the 8-byte framing, the activity (*"Making music in Fontelle"*,
+or *"Working on <song>"* with the second switch, *Playing* while the
+transport plays, elapsed time). `DiscordPresence::update` runs every
+`Session::pump` and only compares; a worker thread owns the socket, and what
+it does next is the pure `next_step` (retry a missing Discord every 15 s,
+send at most every 4 s, only a change, clear at once when turned off). Two
+switches under a new **Discord** heading before Updates, both off by
+default. **Inert until `DISCORD_CLIENT_ID` is set** — it is `None` until Ty
+creates the Discord application; meanwhile the switch's help line says this
+build cannot do it yet. Tests: `fontelle-app/tests/discord.rs`, including a
+fake Discord on a Unix socket.
+
 **As of 2026-10-19, latest — the next update, phase 2: session controls,
 and the chord model of phase 3.** Workspace version **0.29.0-alpha.1**
 until the beta, so a test build is refused by a release at the door.

@@ -10,6 +10,7 @@ pub mod collab;
 pub mod crashlog;
 pub mod daw_folders;
 pub mod desktop;
+pub mod discord;
 pub mod extensions;
 pub mod flopsynth;
 pub mod insert_takes;

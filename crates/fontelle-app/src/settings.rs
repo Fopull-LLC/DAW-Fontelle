@@ -254,6 +254,14 @@ pub struct Settings {
     /// another key. Off by default: placing is silent on purpose.
     #[serde(default)]
     pub sound_placed_notes: bool,
+    /// Tell a running Discord that Fontelle is open (`discord.rs`). Off by
+    /// default: what somebody is doing is theirs to broadcast.
+    #[serde(default)]
+    pub discord_status: bool,
+    /// And name the open song in it. Off by default and separately: a
+    /// working title is the part people least want seen.
+    #[serde(default)]
+    pub discord_song_name: bool,
     /// Keep backdrops moving while another window has the focus. On by
     /// default: Ty likes *"lots of moving windows"*.
     #[serde(default = "yes")]
@@ -358,6 +366,8 @@ impl Default for Settings {
             backdrop_scale_percent: fifty(),
             hold_backdrops_while_playing: false,
             sound_placed_notes: false,
+            discord_status: false,
+            discord_song_name: false,
             backdrops_when_unfocused: true,
             compatible_plugin_graphics: false,
             never_ask_compatible_graphics: false,
@@ -745,6 +755,10 @@ pub enum SettingRow {
     SoundPlacedNotes,
     /// Keep backdrops moving while another window has the focus. A switch.
     BackdropsUnfocused,
+    /// Show a Discord status while Fontelle is open. A switch.
+    DiscordStatus,
+    /// Name the open song in that status. A switch.
+    DiscordSongName,
     /// How a section's picture fits it: cover, contain, stretch, tile,
     /// natural size. A choice; listed only under a section that has one.
     PictureFit(fontelle_ui::theme::BackdropPanel),
@@ -776,7 +790,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 56] = [
+pub const SETTING_ROWS: [SettingRow; 59] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -843,6 +857,11 @@ pub const SETTING_ROWS: [SettingRow; 56] = [
     SettingRow::BackdropsUnfocused,
     SettingRow::ImportTheme,
     SettingRow::SaveTheme,
+    // Its own heading: it tells another program something, which is neither
+    // how the window looks nor who you share a song with.
+    SettingRow::Heading("Discord"),
+    SettingRow::DiscordStatus,
+    SettingRow::DiscordSongName,
     // Under its own heading, because it is about the network rather than
     // about a folder or a keyboard — and not "Sharing"'s, which is about
     // other people.
@@ -1068,6 +1087,8 @@ impl SettingRow {
             Self::HoldBackdrops => "Hold backdrops still while playing",
             Self::SoundPlacedNotes => "Notes sound when placed",
             Self::BackdropsUnfocused => "Keep backdrops moving when not focused",
+            Self::DiscordStatus => "Show what I'm doing in Discord",
+            Self::DiscordSongName => "Include the song's name",
             Self::PictureFit(panel) => picture_row_label(panel, "fit"),
             Self::PictureSize(panel) => picture_row_label(panel, "size"),
             Self::PicturePlace(panel) => picture_row_label(panel, "position"),
@@ -1240,6 +1261,13 @@ impl SettingRow {
                 "Off"
             }
             .to_string(),
+            Self::DiscordStatus => if settings.discord_status { "On" } else { "Off" }.to_string(),
+            Self::DiscordSongName => if settings.discord_song_name {
+                "On"
+            } else {
+                "Off"
+            }
+            .to_string(),
             Self::BackdropsUnfocused => if settings.backdrops_when_unfocused {
                 "On"
             } else {
@@ -1366,6 +1394,18 @@ impl SettingRow {
                 "A note you place in the roll plays once, and again when a drag moves it to another key"
             }
             Self::BackdropsUnfocused => "Off: only the window you are working in moves",
+            // Said under the switch rather than hidden: a build without the
+            // Discord application's ID cannot show anything, and a switch
+            // that turns on and does nothing, silently, reads as a bug in
+            // Discord or in the person's setup — neither of which it is.
+            Self::DiscordStatus => {
+                if crate::discord::DISCORD_CLIENT_ID.is_some() {
+                    "Discord shows you making music in Fontelle while it is open"
+                } else {
+                    "Not in this build yet: it needs Fontelle's Discord app, still to come"
+                }
+            }
+            Self::DiscordSongName => "Off: the status says only that you are making music",
             Self::PictureFit(_) => "Cover, contain, stretch to fit, tile, or its own size",
             Self::PictureSize(_) => "Larger or smaller than the fit makes it",
             Self::PicturePlace(_) => "Which corner or edge it sits against",
@@ -1426,6 +1466,8 @@ impl SettingRow {
             | Self::HoldBackdrops
             | Self::SoundPlacedNotes
             | Self::BackdropsUnfocused
+            | Self::DiscordStatus
+            | Self::DiscordSongName
             | Self::PictureFit(_)
             | Self::PictureSize(_)
             | Self::PicturePlace(_) => {}
@@ -1522,9 +1564,11 @@ impl SettingRow {
             Self::BackdropEffects | Self::BackdropRate | Self::BackdropResolution => {
                 SettingControlKind::Choice
             }
-            Self::HoldBackdrops | Self::BackdropsUnfocused | Self::SoundPlacedNotes => {
-                SettingControlKind::Switch
-            }
+            Self::HoldBackdrops
+            | Self::BackdropsUnfocused
+            | Self::SoundPlacedNotes
+            | Self::DiscordStatus
+            | Self::DiscordSongName => SettingControlKind::Switch,
             Self::PictureFit(_) | Self::PicturePlace(_) => SettingControlKind::Choice,
             Self::PictureSize(_) => SettingControlKind::Slider,
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {

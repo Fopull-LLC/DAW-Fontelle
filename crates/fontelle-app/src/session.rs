@@ -358,6 +358,9 @@ pub struct Session {
     /// rebuilt once, on the first pump — after every builder has run and the
     /// settings' plugin folders are known. See [`Session::pump`].
     plugins_hosted: bool,
+    /// What Discord is told, from a thread of its own; told the settings and
+    /// the transport every [`Session::pump`].
+    discord: crate::discord::DiscordPresence,
     /// The transform behind the EQ's graph, and the scratch it reads into.
     ///
     /// One of each rather than one per insert: only one EQ window is open at a
@@ -946,6 +949,22 @@ impl Session {
         }
         if *row == crate::settings::SettingRow::SoundPlacedNotes {
             self.settings.sound_placed_notes = !self.settings.sound_placed_notes;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::DiscordStatus {
+            self.settings.discord_status = !self.settings.discord_status;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
+        if *row == crate::settings::SettingRow::DiscordSongName {
+            self.settings.discord_song_name = !self.settings.discord_song_name;
             if let Err(e) = self.save_settings() {
                 self.message = Some(format!("could not write settings: {e}"));
             }
@@ -1607,6 +1626,7 @@ impl Session {
                 rack
             },
             plugins_hosted: false,
+            discord: crate::discord::DiscordPresence::new(),
             analyser: fontelle_dsp::SpectrumAnalyser::new(),
             spectrum_scratch: Vec::new(),
             automation_clip: None,
@@ -12171,6 +12191,10 @@ impl StudioHost for Session {
                         self.settings.sound_placed_notes
                     } else if *row == crate::settings::SettingRow::HoldBackdrops {
                         self.settings.hold_backdrops_while_playing
+                    } else if *row == crate::settings::SettingRow::DiscordStatus {
+                        self.settings.discord_status
+                    } else if *row == crate::settings::SettingRow::DiscordSongName {
+                        self.settings.discord_song_name
                     } else if *row == crate::settings::SettingRow::BackdropsUnfocused {
                         self.settings.backdrops_when_unfocused
                     } else if *row == crate::settings::SettingRow::CompatibleGraphics {
@@ -16361,6 +16385,15 @@ impl StudioHost for Session {
         if self.preset_index.drain() {
             self.touch();
         }
+        // Only a comparison here; anything that touches the socket happens
+        // on the presence's own thread, and only when this changes.
+        let playing = self.transport.as_ref().is_some_and(|t| t.is_playing());
+        let song = self
+            .settings
+            .discord_song_name
+            .then_some(self.project.meta.name.as_str());
+        self.discord
+            .update(self.settings.discord_status, song, playing);
     }
 }
 
