@@ -7104,12 +7104,21 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     };
     use fontelle_ui::document::SessionPeer;
     use fontelle_ui::render::{Notices, QuestionNotice, ShareNotice};
+    // Taller than the suite's window: the host's panel has its three locks
+    // under the code now, and two people's rows still have to fit.
+    const PW: u32 = 640;
+    const PH: u32 = 420;
 
     let Some(shared) = headless() else {
         return;
     };
     let theme = Theme::dark_default();
-    let layout = window_layout(W as f32, H as f32, &theme.metrics, DEFAULT_TIMELINE_HEIGHT);
+    let layout = window_layout(
+        PW as f32,
+        PH as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
     let bar = transport_bar_layout(layout.transport, &theme.metrics);
     let mut text = TextContext::new();
     let title = text.layout("Song", &theme.font, None);
@@ -7182,6 +7191,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
     ];
     words.push(fontelle_ui::canvas::MISSING_HERE.to_string());
     words.extend(share_panel_words(ShareRole::Joined, &peers));
+    words.extend(share_panel_words(ShareRole::Alone, &[]));
     words.push(fontelle_ui::canvas::missing_more_words(1));
     for item in &missing {
         words.extend([item.what.clone(), item.detail.clone()]);
@@ -7272,11 +7282,11 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         shared
             .lock()
             .expect("the shared renderer")
-            .render(&scene, W, H, theme.palette.window)
+            .render(&scene, PW, PH, theme.palette.window)
             .expect("rendering")
     };
     let at = |pixels: &[u8], x: f32, y: f32| {
-        let i = ((y as u32 * W + x as u32) * 4) as usize;
+        let i = ((y as u32 * PW + x as u32) * 4) as usize;
         Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]])
     };
     let ink = |a: &[u8], b: &[u8], r: Rect| {
@@ -7327,15 +7337,54 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             missing: &[],
             following: Some(peers[0].peer),
             chat: &[],
+            password_on: true,
+            ask_first: true,
+            locked: false,
         }),
         ..Default::default()
     });
-    dump_sized(&open, "share-panel", W, H);
+    dump_sized(&open, "share-panel", PW, PH);
+    // Alone: Share, Share with a password…, Join.
+    let alone = shoot(Notices {
+        share: Some(ShareNotice {
+            role: ShareRole::Alone,
+            code: None,
+            peers: &[],
+            status: "",
+            missing: &[],
+            following: None,
+            chat: &[],
+            password_on: false,
+            ask_first: false,
+            locked: false,
+        }),
+        ..Default::default()
+    });
+    dump_sized(&alone, "share-panel-alone", PW, PH);
+    let alone_panel = share_panel_layout(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Alone,
+        0,
+    );
+    assert!(
+        ink(&alone, &bare, alone_panel.share_password) > 20,
+        "no Share with a password"
+    );
     assert!(
         ink(&open, &bare, panel.code) > 200,
         "the code is not written large"
     );
     assert!(ink(&open, &bare, panel.status) > 10, "no status line");
+    // The host's three locks and each person's Block are drawn where the
+    // layout put them.
+    for control in panel.controls {
+        assert!(ink(&open, &bare, control) > 10, "a lock not drawn");
+    }
+    for row in &panel.rows {
+        assert!(ink(&open, &bare, row.block) > 10, "Block not drawn");
+    }
     let lit = |r: Rect| {
         near(
             at(&open, r.x + r.width / 2.0, r.y + r.height / 2.0),
@@ -7381,11 +7430,14 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             status,
             missing: &missing,
             following: None,
+            password_on: false,
+            ask_first: false,
+            locked: false,
             chat: &[],
         }),
         ..Default::default()
     });
-    dump_sized(&lacking, "share-panel-missing", W, H);
+    dump_sized(&lacking, "share-panel-missing", PW, PH);
     let listed = fontelle_ui::canvas::share_panel_layout_with(
         layout.window,
         bar.share,
@@ -7428,11 +7480,14 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
             status,
             missing: &[],
             following: None,
+            password_on: false,
+            ask_first: false,
+            locked: false,
             chat: &chat,
         }),
         ..Default::default()
     });
-    dump_sized(&chatting, "share-panel-chat", W, H);
+    dump_sized(&chatting, "share-panel-chat", PW, PH);
     let talked = fontelle_ui::canvas::share_panel_layout_full(
         layout.window,
         bar.share,
@@ -7462,7 +7517,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         }),
         ..Default::default()
     });
-    dump_sized(&asked, "join-question", W, H);
+    dump_sized(&asked, "join-question", PW, PH);
     let offered = shoot(Notices {
         question: Some(QuestionNotice {
             lines: &graphics_lines,
@@ -7471,7 +7526,7 @@ fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_s
         }),
         ..Default::default()
     });
-    dump_sized(&offered, "graphics-question", W, H);
+    dump_sized(&offered, "graphics-question", PW, PH);
     let prompt = choice_prompt_layout(layout.window, &theme.metrics, lines.len(), buttons.len());
     let corner = |r: Rect| at(&asked, r.x + 3.0, r.y + 3.0);
     assert!(

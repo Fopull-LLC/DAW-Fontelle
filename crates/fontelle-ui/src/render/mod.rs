@@ -92,6 +92,11 @@ pub struct ShareNotice<'a> {
     pub following: Option<u16>,
     /// The session's chat, oldest first.
     pub chat: &'a [crate::document::SaidLine],
+    /// The host's three locks: whether a password is on (never what it is),
+    /// *Ask first*, *Lock*.
+    pub password_on: bool,
+    pub ask_first: bool,
+    pub locked: bool,
 }
 
 /// A question with its answers, the safe one first and weighted. See
@@ -2495,7 +2500,45 @@ fn draw_share_panel(
         }
         draw_welcome_button(scene, theme, labels, COPY_CODE, l.copy, false);
     }
+    // The host's locks: chips lit while on, the way a person's switches are.
+    let password = if share.password_on {
+        crate::canvas::PASSWORD_ON
+    } else {
+        crate::canvas::PASSWORD_OFF
+    };
+    for ((chip, word), on) in l
+        .controls
+        .iter()
+        .zip([
+            password,
+            crate::canvas::ASK_FIRST,
+            crate::canvas::LOCK_SESSION,
+        ])
+        .zip([share.password_on, share.ask_first, share.locked])
+    {
+        draw_chip(scene, labels, p, *chip, word, on);
+    }
+    if !l.share_password.is_empty() {
+        draw_welcome_button(
+            scene,
+            theme,
+            labels,
+            crate::canvas::SHARE_WITH_PASSWORD,
+            l.share_password,
+            false,
+        );
+    }
     for (row, peer) in l.rows.iter().zip(share.peers) {
+        if !row.block.is_empty() {
+            draw_welcome_button(
+                scene,
+                theme,
+                labels,
+                crate::canvas::BLOCK_PEER,
+                row.block,
+                false,
+            );
+        }
         let [r, g, b, a] = crate::canvas::peer_colour(peer.colour);
         fill_rect_rounded(
             scene,
@@ -2509,30 +2552,7 @@ fn draw_share_panel(
             peer.permissions.sounds,
             peer.permissions.plugins,
         ]) {
-            if chip.is_empty() {
-                continue;
-            }
-            // Lit while allowed, the way the view-only switch is lit while on.
-            if on {
-                fill_rect_rounded(scene, *chip, chip.height / 2.0, p.accent.with_alpha(0x55));
-            }
-            stroke_rect_rounded(
-                scene,
-                *chip,
-                chip.height / 2.0,
-                1.0,
-                if on { p.accent } else { p.border },
-            );
-            if let Some(shaped) = labels.get(word) {
-                draw_text_clipped(
-                    scene,
-                    shaped,
-                    *chip,
-                    chip.x + (chip.width - shaped.width) / 2.0,
-                    chip.y + (chip.height - shaped.height) / 2.0,
-                    if on { p.text } else { p.text_muted },
-                );
-            }
+            draw_chip(scene, labels, p, *chip, word, on);
         }
         if !row.follow.is_empty() {
             if share.following == Some(peer.peer) {
@@ -2664,6 +2684,41 @@ fn draw_share_panel(
     draw_welcome_button(scene, theme, labels, share.role.primary(), l.primary, false);
     if let Some(join) = share.role.join() {
         draw_welcome_button(scene, theme, labels, join, l.join, false);
+    }
+}
+
+/// One of the Share panel's switch chips: `word` in a pill, lit while `on`
+/// the way the view-only switch is lit while on.
+fn draw_chip(
+    scene: &mut Scene,
+    labels: &Labels,
+    p: &crate::theme::Palette,
+    chip: Rect,
+    word: &str,
+    on: bool,
+) {
+    if chip.is_empty() {
+        return;
+    }
+    if on {
+        fill_rect_rounded(scene, chip, chip.height / 2.0, p.accent.with_alpha(0x55));
+    }
+    stroke_rect_rounded(
+        scene,
+        chip,
+        chip.height / 2.0,
+        1.0,
+        if on { p.accent } else { p.border },
+    );
+    if let Some(shaped) = labels.get(word) {
+        draw_text_clipped(
+            scene,
+            shaped,
+            chip,
+            chip.x + (chip.width - shaped.width) / 2.0,
+            chip.y + (chip.height - shaped.height) / 2.0,
+            if on { p.text } else { p.text_muted },
+        );
     }
 }
 

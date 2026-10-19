@@ -17,12 +17,15 @@
 //! Where this departs from the plan, and why, is the plan's §19.
 
 pub(crate) mod files;
+pub mod identity;
 pub(crate) mod join;
+pub(crate) mod sealed;
 pub(crate) mod singers;
 #[cfg(test)]
 mod tests;
 
 pub use files::{FetchQuestion, Trouble};
+pub use identity::Identity;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -100,8 +103,24 @@ pub const CHUNK: usize = 48 * 1024;
 
 /// Who somebody is in a session, and how long they wait before letting go of
 /// an edit left in the hand.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CollabOptions {
+    /// This studio's key pair: what it proves itself with, and what a host
+    /// blocks ([`identity`]). A fresh one unless the session hands over the
+    /// install's own.
+    pub identity: Identity,
+    /// The code this join was typed with (a host's is its relay's, asked of
+    /// the link). Signed into a joiner's proof and salted into a password's
+    /// keys, so neither is good for another session.
+    pub code: String,
+    /// Keys a host refuses, from the settings: everybody it blocked before.
+    pub blocked: Vec<Vec<u8>>,
+    /// The password a host shares with, if any. Never sent.
+    pub password: Option<String>,
+    /// How long a host waits for a connection to say hello and answer its
+    /// challenge before letting go of it — long enough for a person to type
+    /// a password.
+    pub answer_within: Duration,
     /// What the others see this person called.
     pub name: String,
     /// This studio, for the record of what two copies last agreed on (§4.5).
@@ -134,6 +153,11 @@ pub struct CollabOptions {
 impl CollabOptions {
     pub fn new(name: impl Into<String>, install: PersistentId) -> Self {
         Self {
+            identity: Identity::generate(),
+            code: String::new(),
+            blocked: Vec::new(),
+            password: None,
+            answer_within: Duration::from_secs(120),
             name: name.into(),
             install,
             fontelle: env!("CARGO_PKG_VERSION").to_string(),
@@ -144,6 +168,57 @@ impl CollabOptions {
             pace: fontelle_net::CLOUD_PACE,
         }
     }
+}
+
+impl std::fmt::Debug for CollabOptions {
+    // By hand, to leave the password out: a debug print is the last place
+    // it should turn up.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CollabOptions")
+            .field("name", &self.name)
+            .field("install", &self.install)
+            .field("identity", &self.identity)
+            .field("code", &self.code)
+            .field("password", &self.password.as_ref().map(|_| "…"))
+            .field("fontelle", &self.fontelle)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What somebody turned away, blocked or kept out of a locked session is
+/// told. Blocked people hear [`CANT_JOIN`] and nothing more — never that
+/// they were blocked, nor by what.
+pub const CANT_JOIN: &str = "You can't join this session.";
+pub const LOCKED: &str = "This session isn't taking new people right now.";
+/// A wrong password: the joiner may try again, on the same connection, up
+/// to [`MOST_TRIES`] times. Both sides are the same build (the version check
+/// comes first), so the joiner knows this sentence for the retryable one.
+pub const WRONG_PASSWORD: &str = "That password isn't right.";
+/// Wrong passwords one connection may give before it is let go of.
+pub const MOST_TRIES: u8 = 5;
+
+/// The host's answer to somebody waiting to be let in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Knock {
+    LetIn,
+    TurnAway,
+    Block,
+}
+
+/// Somebody blocked: the key they proved, and the name they gave, for the
+/// settings' list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedKey {
+    pub key: Vec<u8>,
+    pub name: String,
+}
+
+/// A join waiting on the person's password: which asking this is, and
+/// whether the last one given was wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PasswordAsk {
+    pub attempt: u32,
+    pub wrong: bool,
 }
 
 /// Somebody in the session.
@@ -219,13 +294,14 @@ pub(crate) enum Effect {
 }
 
 enum Role {
-    Host(Host),
+    Host(Box<Host>),
     Joiner(Box<Joiner>),
 }
 
 /// One shared session, from this studio's side.
 pub(crate) struct Collab {
-    transport: Box<dyn Transport>,
+    /// The link, behind the one place frames are sealed and opened.
+    transport: sealed::Sealed,
     options: CollabOptions,
     role: Role,
     /// Sentences for the person, taken by the window (toasts).
@@ -285,10 +361,15 @@ const PRESENCE_EVERY: Duration = Duration::from_millis(1000 / 15);
 
 impl Collab {
     pub fn host(transport: Box<dyn Transport>, options: CollabOptions) -> Self {
+        let host = Host {
+            blocked: options.blocked.iter().cloned().collect(),
+            password: options.password.clone().filter(|p| !p.is_empty()),
+            ..Host::default()
+        };
         Self {
-            transport,
+            transport: sealed::Sealed::new(transport, sealed::End::Host),
             options,
-            role: Role::Host(Host::default()),
+            role: Role::Host(Box::new(host)),
             notices: Vec::new(),
             ended: None,
             ended_here: false,
@@ -302,12 +383,13 @@ impl Collab {
 
     /// Starts a join: says hello, and waits for the song.
     pub fn join(
-        mut transport: Box<dyn Transport>,
+        transport: Box<dyn Transport>,
         options: CollabOptions,
         projects_dir: PathBuf,
     ) -> Self {
+        let mut transport = sealed::Sealed::new(transport, sealed::End::Joiner);
         let mut joiner = Joiner::new(projects_dir);
-        joiner.say_hello(transport.as_mut(), &options);
+        joiner.say_hello(&mut transport, &options);
         Self {
             transport,
             options,
@@ -432,18 +514,14 @@ impl Collab {
         let Role::Host(host) = &mut self.role else {
             return Err("only the person sharing the song decides that".into());
         };
-        let (id, install) = host
+        let (id, key) = host
             .peers
             .iter()
             .find(|(_, p)| p.welcomed && p.space == peer)
-            .map(|(&id, p)| (id, p.install))
+            .map(|(&id, p)| (id, p.key.clone()))
             .ok_or("that person has left")?;
-        host.allowed.insert(install, permissions);
-        send(
-            self.transport.as_mut(),
-            id,
-            &Msg::Permissions { permissions },
-        );
+        host.allowed.insert(key, permissions);
+        send(&mut self.transport, id, &Msg::Permissions { permissions });
         Ok(())
     }
 
@@ -454,7 +532,7 @@ impl Collab {
                 .peers
                 .values()
                 .find(|p| p.welcomed && p.space == peer)
-                .and_then(|p| host.allowed.get(&p.install).copied())
+                .and_then(|p| host.allowed.get(&p.key).copied())
                 .unwrap_or_default(),
             Role::Joiner(_) => Default::default(),
         }
@@ -596,15 +674,149 @@ impl Collab {
             .ok_or("that person has left")?;
         if who.view_only != view_only {
             who.view_only = view_only;
-            send(self.transport.as_mut(), id, &Msg::ViewOnly { view_only });
+            send(&mut self.transport, id, &Msg::ViewOnly { view_only });
         }
         Ok(())
     }
 
     /// The host's *remove* on somebody's row (§10.1, F49): they are told who
-    /// did it, and let go of. The code is unchanged — anybody who has it can
-    /// come back (§14.6).
+    /// did it, and let go of — a kick, and nothing more. The code is
+    /// unchanged and anybody who has it can come back, them included (Ty,
+    /// 2026-10-19: *"removing someone shouldnt block them from the session,
+    /// that should be something totally different"*). Keeping somebody out
+    /// is [`block`](Self::block).
     pub fn remove(&mut self, peer: u16, doc: &mut Project) -> Result<(), String> {
+        self.kick(peer, doc, false).map(|_| ())
+    }
+
+    /// The host's *block* on somebody's row: removed, and the key they
+    /// proved refused for the rest of the session — and, once the session
+    /// has written it into the settings, every session after. They are told
+    /// only what a removal tells them; trying again, only [`CANT_JOIN`].
+    pub fn block(&mut self, peer: u16, doc: &mut Project) -> Result<BlockedKey, String> {
+        self.kick(peer, doc, true)
+    }
+
+    /// Lets the key in again (host only): unblocked in the settings.
+    pub fn unblock(&mut self, key: &[u8]) {
+        if let Role::Host(host) = &mut self.role {
+            host.blocked.remove(key);
+        }
+    }
+
+    /// The session's password, set, changed, or cleared with `None` (host
+    /// only). **Those already in keep the keys they came in with**: every
+    /// connection was sealed as it was proven — under its own exchange, and
+    /// the password it proved if there was one — and stays so, whatever the
+    /// password becomes; nobody is ever in the clear. Only somebody joining
+    /// from now on is asked for the new one — and a challenge already out
+    /// under the old one is answered with a fresh challenge, not let through.
+    pub fn set_password(&mut self, password: Option<String>) {
+        if let Role::Host(host) = &mut self.role {
+            host.password = password.filter(|p| !p.is_empty());
+            host.password_epoch += 1;
+        }
+    }
+
+    /// Whether the session asks for a password. Never what it is.
+    pub fn has_password(&self) -> bool {
+        matches!(&self.role, Role::Host(host) if host.password.is_some())
+    }
+
+    /// *Ask before letting people in* (host only).
+    pub fn set_ask_first(&mut self, on: bool) {
+        if let Role::Host(host) = &mut self.role {
+            host.ask_first = on;
+        }
+    }
+
+    pub fn asks_first(&self) -> bool {
+        matches!(&self.role, Role::Host(host) if host.ask_first)
+    }
+
+    /// *Lock*: nobody new comes in (host only). Those in stay in.
+    pub fn set_locked(&mut self, on: bool) {
+        if let Role::Host(host) = &mut self.role {
+            host.locked = on;
+        }
+    }
+
+    pub fn is_locked(&self) -> bool {
+        matches!(&self.role, Role::Host(host) if host.locked)
+    }
+
+    /// Who is waiting to be let in, first first (host only).
+    pub fn knocks(&self) -> Vec<String> {
+        match &self.role {
+            Role::Host(host) => host
+                .knocks
+                .iter()
+                .filter_map(|id| host.peers.get(id))
+                .map(|p| p.name.clone())
+                .collect(),
+            Role::Joiner(_) => Vec::new(),
+        }
+    }
+
+    /// The host's answer to the first person waiting. It takes effect on the
+    /// next turn, which has the song to send; a block is returned at once,
+    /// for the settings.
+    pub fn answer_knock(&mut self, knock: Knock, _doc: &mut Project) -> Option<BlockedKey> {
+        let Role::Host(host) = &mut self.role else {
+            return None;
+        };
+        let id = loop {
+            let id = host.knocks.pop_front()?;
+            if host.peers.contains_key(&id) {
+                break id;
+            }
+        };
+        host.decided.push_back((id, knock));
+        let who = &host.peers[&id];
+        let blocked = (knock == Knock::Block).then(|| BlockedKey {
+            key: who.key.clone(),
+            name: who.name.clone(),
+        });
+        if let Some(blocked) = &blocked {
+            host.blocked.insert(blocked.key.clone());
+        }
+        blocked
+    }
+
+    /// The password this join is waiting on, while it is (a joiner's).
+    pub fn password_wanted(&self) -> Option<PasswordAsk> {
+        match &self.role {
+            Role::Joiner(joiner) if self.ended.is_none() && joiner.challenge.is_some() => {
+                Some(PasswordAsk {
+                    attempt: joiner.asks,
+                    wrong: joiner.wrong,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The person's password for this join. Stretched here and never sent:
+    /// what goes is a proof of it, and the connection is sealed under it.
+    pub fn give_password(&mut self, password: &str) {
+        if let Role::Joiner(joiner) = &mut self.role
+            && let Some((nonce, theirs)) = joiner.challenge.take()
+        {
+            joiner.wrong = false;
+            joiner.password = Some(password.to_string());
+            joiner.answer(&mut self.transport, &self.options, &nonce, &theirs);
+        }
+    }
+
+    /// Whose word this join is waiting on, while the host decides.
+    pub fn waiting_for_host(&self) -> Option<&str> {
+        match &self.role {
+            Role::Joiner(joiner) if self.ended.is_none() => joiner.waiting_for.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn kick(&mut self, peer: u16, doc: &mut Project, block: bool) -> Result<BlockedKey, String> {
         let Role::Host(host) = &mut self.role else {
             return Err("only the person sharing the song can remove anybody".into());
         };
@@ -615,13 +827,18 @@ impl Collab {
             .map(|(&id, _)| id)
             .ok_or("that person has left")?;
         let who = host.peers.remove(&id).expect("just found");
-        host.removed.insert(who.install);
+        // Gone from the room: coming back is a new arrival, asked about
+        // again if the host asks, and kept out while the session is locked.
+        host.members.remove(&who.key);
+        if block {
+            host.blocked.insert(who.key.clone());
+        }
         self.presence.others.remove(&who.space);
         if let Some(lost) = self.files.relink(id, None) {
             self.notices.push(lost);
         }
         send(
-            self.transport.as_mut(),
+            &mut self.transport,
             id,
             &Msg::Removed {
                 by: self.options.name.clone(),
@@ -630,9 +847,16 @@ impl Collab {
         self.transport.disconnect(id);
         // They part holding the song as it is now (§4.5).
         doc.meta.shared_revision = Some((who.install, doc.sync_hash()));
-        host.broadcast(self.transport.as_mut(), &Msg::Left { peer: who.space });
-        self.notices.push(format!("You removed {}.", who.name));
-        Ok(())
+        host.broadcast(&mut self.transport, &Msg::Left { peer: who.space });
+        self.notices.push(if block {
+            format!("You blocked {}.", who.name)
+        } else {
+            format!("You removed {}.", who.name)
+        });
+        Ok(BlockedKey {
+            key: who.key,
+            name: who.name,
+        })
     }
 
     /// How far along the file `hash` is, while it is on its way here.
@@ -661,7 +885,7 @@ impl Collab {
         if host.singers != singers {
             host.singers = singers;
             host.broadcast(
-                self.transport.as_mut(),
+                &mut self.transport,
                 &Msg::Singers {
                     singers: host.singers.clone(),
                 },
@@ -709,7 +933,7 @@ impl Collab {
         // Whoever was waiting on this studio for a file it turned down hears
         // that it is not coming, rather than waiting at 0 % for good.
         for (peer, hash) in self.files.answer(fetch) {
-            send(self.transport.as_mut(), peer, &Msg::AssetMissing { hash });
+            send(&mut self.transport, peer, &Msg::AssetMissing { hash });
         }
     }
 
@@ -745,7 +969,7 @@ impl Collab {
                 // Then the link is let go of, which closes the connection:
                 // the relay hears the host has gone now, not when the studio
                 // is next shared or closed.
-                self.transport = Box::new(Closed);
+                self.transport.let_go(Box::new(Closed));
             }
             return Vec::new();
         }
@@ -756,7 +980,7 @@ impl Collab {
         self.notices.extend(self.transport.take_notices());
         let mut effects = Vec::new();
         let mut turn = Turn {
-            transport: self.transport.as_mut(),
+            transport: &mut self.transport,
             options: &self.options,
             files: &mut self.files,
             place,
@@ -782,7 +1006,7 @@ impl Collab {
         }
         let ahead = (self.options.pace / 4) as usize;
         self.files
-            .pump(self.transport.as_mut(), &place.with(doc), ahead);
+            .pump(&mut self.transport, &place.with(doc), ahead);
         once_changed(effects)
     }
 
@@ -851,7 +1075,7 @@ impl Collab {
         };
         match answer {
             JoinAnswer::Cancel => {
-                send(self.transport.as_mut(), SERVER, &Msg::Bye);
+                send(&mut self.transport, SERVER, &Msg::Bye);
                 self.end("You cancelled the join.".to_string(), history);
                 self.ended_here = true;
                 Ok(Vec::new())
@@ -872,7 +1096,7 @@ impl Collab {
                 match joiner.finish() {
                     Ok(effect) => Ok(effect.into_iter().collect()),
                     Err(why) => {
-                        send(self.transport.as_mut(), SERVER, &Msg::Bye);
+                        send(&mut self.transport, SERVER, &Msg::Bye);
                         self.end(why, history);
                         Ok(Vec::new())
                     }
@@ -893,7 +1117,7 @@ impl Collab {
         };
         let mut effects = Vec::new();
         let mut turn = Turn {
-            transport: self.transport.as_mut(),
+            transport: &mut self.transport,
             options: &self.options,
             files: &mut self.files,
             place,
@@ -921,22 +1145,22 @@ impl Collab {
         history.break_gesture();
         match &mut self.role {
             Role::Host(host) => {
-                host.send_mine(self.transport.as_mut(), doc, history);
+                host.send_mine(&mut self.transport, doc, history);
                 for (peer, who) in &host.peers {
                     if who.welcomed {
                         doc.meta.shared_revision = Some((who.install, doc.sync_hash()));
                     }
-                    send(self.transport.as_mut(), *peer, &Msg::Bye);
+                    send(&mut self.transport, *peer, &Msg::Bye);
                 }
                 self.end("You stopped sharing.".to_string(), history);
                 self.ended_here = true;
             }
             Role::Joiner(joiner) => {
                 if joiner.stage == Stage::Live {
-                    joiner.send_mine(self.transport.as_mut(), history);
+                    joiner.send_mine(&mut self.transport, history);
                     doc.meta.shared_revision = Some((joiner.host_install, doc.sync_hash()));
                 }
-                send(self.transport.as_mut(), SERVER, &Msg::Bye);
+                send(&mut self.transport, SERVER, &Msg::Bye);
                 self.end("You left the session.".to_string(), history);
                 self.ended_here = true;
             }
@@ -1096,7 +1320,7 @@ fn send(transport: &mut dyn Transport, to: PeerId, msg: &Msg) {
 
 /// Everything a turn works with besides the document and the history.
 struct Turn<'a> {
-    transport: &'a mut dyn Transport,
+    transport: &'a mut sealed::Sealed,
     options: &'a CollabOptions,
     files: &'a mut Files,
     place: &'a Place,
@@ -1192,19 +1416,40 @@ struct Host {
     /// The number of the last edit in the one order there is.
     seq: u64,
     /// The last of each join's proposals this host has applied or refused,
-    /// by the join's session: what a joiner back after a drop is told
-    /// (`Msg::Resumed`), and what a proposal sent twice is checked against.
-    handled: BTreeMap<PersistentId, u64>,
-    /// The space each join was given, so one back after a drop gets its own.
-    spaces: BTreeMap<PersistentId, u16>,
+    /// by the join's session **and the key that proved it**: what a joiner
+    /// back after a drop is told (`Msg::Resumed`), and what a proposal sent
+    /// twice is checked against. The session id crosses in the clear before
+    /// the proof, so on its own it would let somebody else claim it.
+    handled: BTreeMap<(Vec<u8>, PersistentId), u64>,
+    /// The space each join was given, so one back after a drop gets its own
+    /// — by the same pair, for the same reason.
+    spaces: BTreeMap<(Vec<u8>, PersistentId), u16>,
     /// The singers the song uses (F93), as last said.
     singers: Vec<SingerNeed>,
-    /// What each studio may touch, by its install, so a rejoin keeps it.
-    allowed: BTreeMap<PersistentId, fontelle_model::wire::Permissions>,
-    /// Studios removed from this session, kept out of it (L6). By the
-    /// install a hello names: a casual lock, which a modified build that
-    /// names another could get past.
-    removed: std::collections::BTreeSet<PersistentId>,
+    /// What each studio may touch, by the key it proved, so a return keeps
+    /// it — and a modified build naming somebody else's install cannot take
+    /// theirs.
+    allowed: BTreeMap<Vec<u8>, fontelle_model::wire::Permissions>,
+    /// Keys refused: this session's blocks and the settings' (who was
+    /// blocked before).
+    blocked: std::collections::BTreeSet<Vec<u8>>,
+    /// Keys let in during this session and not removed since: one of these
+    /// coming back — its link dropped — is not somebody new, to be asked
+    /// about again or kept out by the lock.
+    members: std::collections::BTreeSet<Vec<u8>>,
+    /// The session's password, never sent; bumped `password_epoch` whenever
+    /// it changes, so a challenge made under the old one is made again.
+    password: Option<String>,
+    password_epoch: u64,
+    /// The password stretched under a code, kept: stretching is slow on
+    /// purpose, and every challenge would pay it.
+    stretched: Option<(String, String, std::sync::Arc<identity::PasswordKeys>)>,
+    ask_first: bool,
+    locked: bool,
+    /// Proven newcomers waiting to be let in, first first, and the answers
+    /// the host has given that the next turn carries out.
+    knocks: VecDeque<PeerId>,
+    decided: VecDeque<(PeerId, Knock)>,
     /// The plugins this computer has: one of these is anybody's to add.
     plugins_here: Vec<fontelle_types::PluginKey>,
 }
@@ -1217,6 +1462,31 @@ struct HostPeer {
     view_only: bool,
     /// Which join this is (`Msg::Session`), once it has said.
     session: Option<PersistentId>,
+    /// The public key it proved; empty until it has.
+    key: Vec<u8>,
+    /// The challenge it was set and has not answered, and the host's secret
+    /// half of the exchange in it — used once, when the answer comes.
+    challenge: Option<Challenge>,
+    exchange: Option<identity::Exchange>,
+    /// Wrong passwords on this connection (see [`MOST_TRIES`]).
+    failures: u8,
+    /// When it arrived, or was last challenged: what the host's patience
+    /// ([`CollabOptions::answer_within`]) is counted from.
+    since: Instant,
+    /// Proven, and waiting for the host to let it in.
+    knocking: bool,
+}
+
+/// A challenge set to one connection: the nonce, the host's half of the
+/// exchange, the code and password keys it was set under, and which password
+/// that was.
+#[derive(Clone)]
+struct Challenge {
+    nonce: Vec<u8>,
+    exchange: Vec<u8>,
+    code: String,
+    keys: Option<std::sync::Arc<identity::PasswordKeys>>,
+    epoch: u64,
 }
 
 impl HostPeer {
@@ -1228,9 +1498,28 @@ impl HostPeer {
             welcomed: false,
             view_only: false,
             session: None,
+            key: Vec::new(),
+            challenge: None,
+            exchange: None,
+            failures: 0,
+            since: Instant::now(),
+            knocking: false,
         }
     }
+}
 
+impl Challenge {
+    /// What the joiner is sent.
+    fn msg(&self) -> Msg {
+        Msg::Challenge {
+            nonce: self.nonce.clone(),
+            password: self.keys.is_some(),
+            exchange: self.exchange.clone(),
+        }
+    }
+}
+
+impl HostPeer {
     fn public(&self) -> Peer {
         Peer {
             peer: self.space,
@@ -1256,6 +1545,14 @@ impl Host {
         // a document nobody else could reach (F17). Whereabouts are not the
         // document, and come in all the same.
         let in_hand = history.gesture_in_hand();
+        // The host's answers to whoever was waiting — not under a drag
+        // either, since letting somebody in sends them the song.
+        if !in_hand {
+            while let Some((peer, knock)) = self.decided.pop_front() {
+                self.carry_out(turn, peer, knock, doc);
+            }
+        }
+        self.let_go_of_the_silent(turn);
         for incoming in turn.incoming(in_hand) {
             match incoming {
                 // Somebody this host already has, announced again: the
@@ -1264,8 +1561,17 @@ impl Host {
                 // again and sent the song as it is now (F38).
                 Incoming::Connected(peer) if self.peers.contains_key(&peer) => {
                     turn.files.relink(peer, Some(peer));
-                    if self.peers[&peer].welcomed {
+                    let who = &self.peers[&peer];
+                    if who.welcomed {
                         self.welcome(turn, peer, doc);
+                    } else if who.knocking {
+                        let host = turn.options.name.clone();
+                        send(turn.transport, peer, &Msg::Waiting { host });
+                    } else if who.challenge.is_some() {
+                        // The challenge, or the answer to it, may be what
+                        // was lost: a fresh one, which a joiner that knows
+                        // its password answers without asking again.
+                        self.challenge(turn, peer);
                     }
                 }
                 Incoming::Connected(peer) => {
@@ -1346,24 +1652,16 @@ impl Host {
                 name,
                 install,
             } => {
-                // Said again by a join still waiting for its welcome, which
-                // has had it by now.
-                if self.peers.get(&peer).is_some_and(|p| p.welcomed) {
+                // Said again by a join already in, or waiting on the host,
+                // which has had its answer by now.
+                if self
+                    .peers
+                    .get(&peer)
+                    .is_some_and(|p| p.welcomed || p.knocking)
+                {
                     return;
                 }
                 let options = turn.options;
-                if self.removed.contains(&install) {
-                    send(
-                        turn.transport,
-                        peer,
-                        &Msg::Refuse {
-                            reason: format!("{} removed you from this session.", options.name),
-                        },
-                    );
-                    turn.transport.disconnect(peer);
-                    self.peers.remove(&peer);
-                    return;
-                }
                 if protocol != PROTOCOL || fontelle != options.fontelle {
                     let reason = version_sentence(&options.name, &options.fontelle, &fontelle);
                     send(turn.transport, peer, &Msg::Refuse { reason });
@@ -1381,59 +1679,24 @@ impl Host {
                     ));
                     return;
                 }
-                let session = self.peers.get(&peer).and_then(|p| p.session);
-                // The same join on a new connection — its own link dropped
-                // and it joined again before the old one was noticed gone —
-                // takes the old one's place rather than being two people.
-                let replaced = session.and_then(|session| {
-                    let old = self
-                        .peers
-                        .iter()
-                        .find(|(id, p)| **id != peer && p.welcomed && p.session == Some(session))
-                        .map(|(&id, _)| id)?;
-                    turn.transport.disconnect(old);
-                    turn.files.relink(old, Some(peer));
-                    self.peers.remove(&old)
-                });
-                let free = |space: u16, peers: &BTreeMap<PeerId, HostPeer>| {
-                    peers.values().all(|p| !p.welcomed || p.space != space)
-                };
-                let space = replaced
-                    .as_ref()
-                    .map(|old| old.space)
-                    .or_else(|| {
-                        session
-                            .and_then(|session| self.spaces.get(&session).copied())
-                            .filter(|&space| free(space, &self.peers))
-                    })
-                    .or_else(|| (1..=u16::from(u8::MAX)).find(|&space| free(space, &self.peers)))
-                    .unwrap_or(u16::from(u8::MAX));
+                // Nobody is anybody yet: the hello only names them. What
+                // makes them somebody is answering the challenge — the same
+                // one again for a hello said twice, so an answer already on
+                // its way still fits it.
                 let entry = self.peers.entry(peer).or_insert_with(HostPeer::arriving);
-                entry.space = space;
-                entry.name = name.clone();
+                entry.name = name;
                 entry.install = install;
-                entry.welcomed = true;
-                entry.view_only = replaced.as_ref().is_some_and(|old| old.view_only);
-                if let Some(session) = session {
-                    self.spaces.insert(session, space);
+                match entry.challenge.clone() {
+                    Some(challenge) => send(turn.transport, peer, &challenge.msg()),
+                    None => self.challenge(turn, peer),
                 }
-                self.welcome(turn, peer, doc);
-                if replaced.is_some() {
-                    return;
-                }
-                let public = self.peers[&peer].public();
-                self.broadcast_except(
-                    turn.transport,
-                    peer,
-                    &Msg::Joined {
-                        peer: public.peer,
-                        name: public.name,
-                        colour: public.colour,
-                    },
-                );
-                turn.notices.push(format!("{name} joined"));
-                turn.effects.push(Effect::Say(format!("{name} joined")));
             }
+            Msg::Answer {
+                key,
+                signature,
+                proof,
+                exchange,
+            } => self.answered(turn, peer, key, signature, proof, exchange, doc),
             Msg::Propose { local_seq, edit } => {
                 let Some(author) = self.peers.get(&peer).filter(|p| p.welcomed) else {
                     return;
@@ -1441,7 +1704,10 @@ impl Host {
                 // Sent again after a drop, and had the first time: once is
                 // the edit, twice would be a second one.
                 if let Some(session) = author.session {
-                    let handled = self.handled.entry(session).or_default();
+                    let handled = self
+                        .handled
+                        .entry((author.key.clone(), session))
+                        .or_default();
                     if local_seq <= *handled {
                         return;
                     }
@@ -1460,11 +1726,7 @@ impl Host {
                     );
                     return;
                 }
-                let allowed = self
-                    .allowed
-                    .get(&author.install)
-                    .copied()
-                    .unwrap_or_default();
+                let allowed = self.allowed.get(&author.key).copied().unwrap_or_default();
                 let author = author.space;
                 let mixer = edit.touches_mixer();
                 let sound = edit.changes_sound();
@@ -1594,11 +1856,285 @@ impl Host {
         }
     }
 
+    /// Sets `peer` a fresh challenge and sends it: a new nonce and a new
+    /// half of the key exchange, under the session's code as the relay has it
+    /// now (it can change when the relay is lost and found again) and the
+    /// password as it is now. The host's secret half is kept on the peer,
+    /// for the answer.
+    fn challenge(&mut self, turn: &mut Turn, peer: PeerId) {
+        let code = identity::normal_code(
+            &turn
+                .transport
+                .lobby_code()
+                .unwrap_or_else(|| turn.options.code.clone()),
+        );
+        let keys = self.password.clone().map(|password| match &self.stretched {
+            Some((p, c, keys)) if *p == password && *c == code => keys.clone(),
+            _ => {
+                let keys = std::sync::Arc::new(identity::PasswordKeys::derive(&password, &code));
+                self.stretched = Some((password, code.clone(), keys.clone()));
+                keys
+            }
+        });
+        let exchange = identity::Exchange::new();
+        let challenge = Challenge {
+            nonce: identity::nonce(),
+            exchange: exchange.public().to_vec(),
+            code,
+            keys,
+            epoch: self.password_epoch,
+        };
+        let entry = self.peers.entry(peer).or_insert_with(HostPeer::arriving);
+        entry.since = Instant::now();
+        entry.challenge = Some(challenge.clone());
+        entry.exchange = Some(exchange);
+        send(turn.transport, peer, &challenge.msg());
+    }
+
+    /// Tells `peer` why, and lets go of the connection.
+    fn turn_away(&mut self, turn: &mut Turn, peer: PeerId, reason: &str) {
+        send(
+            turn.transport,
+            peer,
+            &Msg::Refuse {
+                reason: reason.to_string(),
+            },
+        );
+        turn.transport.disconnect(peer);
+        self.knocks.retain(|id| *id != peer);
+        if self.peers.remove(&peer).is_some()
+            && let Some(lost) = turn.files.relink(peer, None)
+        {
+            turn.notices.push(lost);
+        }
+    }
+
+    /// A joiner's answer to its challenge. In order: it proves the key
+    /// (or is let go of); it knows the password (or is asked again, up to
+    /// [`MOST_TRIES`] times) — checked before anything else is said, so
+    /// somebody blocked learns nothing a stranger without the password
+    /// would not; the key is not blocked; the session is not locked to it;
+    /// and then it is in, or waiting on the host.
+    #[allow(clippy::too_many_arguments)]
+    fn answered(
+        &mut self,
+        turn: &mut Turn,
+        peer: PeerId,
+        key: Vec<u8>,
+        signature: Vec<u8>,
+        proof: Option<Vec<u8>>,
+        exchange: Vec<u8>,
+        doc: &mut Project,
+    ) {
+        let Some(who) = self.peers.get(&peer).filter(|p| !p.welcomed && !p.knocking) else {
+            return;
+        };
+        let Some(challenge) = who.challenge.clone() else {
+            return;
+        };
+        let name = who.name.clone();
+        let host = turn.options.name.clone();
+        let not_proven = format!(
+            "Your studio couldn't prove who it is to {host} \u{2014} check the code and join \
+             again."
+        );
+        // Signed over both halves of the exchange: one swapped on the way,
+        // either way, and this does not verify.
+        let message = identity::join_message(
+            &challenge.nonce,
+            &challenge.code,
+            &challenge.exchange,
+            &exchange,
+        );
+        if !identity::verify(&key, &message, &signature) {
+            self.turn_away(turn, peer, &not_proven);
+            return;
+        }
+        // Set under a password that has changed since: set again, under
+        // the one there is now. Not a wrong guess — nobody guessed.
+        if challenge.epoch != self.password_epoch {
+            self.challenge(turn, peer);
+            return;
+        }
+        if let Some(keys) = &challenge.keys {
+            let right = proof
+                .as_deref()
+                .is_some_and(|proof| keys.check(&challenge.nonce, &key, proof));
+            if !right {
+                let entry = self.peers.get_mut(&peer).expect("just found");
+                entry.failures += 1;
+                if entry.failures >= MOST_TRIES {
+                    self.turn_away(
+                        turn,
+                        peer,
+                        &format!(
+                            "Too many wrong passwords \u{2014} ask {host} for it, then join \
+                             again."
+                        ),
+                    );
+                    turn.notices.push(format!(
+                        "{name} gave a wrong password {MOST_TRIES} times and was let go of."
+                    ));
+                    return;
+                }
+                send(
+                    turn.transport,
+                    peer,
+                    &Msg::Refuse {
+                        reason: WRONG_PASSWORD.to_string(),
+                    },
+                );
+                self.challenge(turn, peer);
+                return;
+            }
+        }
+        if self.blocked.contains(&key) {
+            self.turn_away(turn, peer, CANT_JOIN);
+            turn.notices.push(format!(
+                "Somebody you blocked tried to join as \u{201c}{name}\u{201d}, and was kept out."
+            ));
+            return;
+        }
+        let member = self.members.contains(&key);
+        if self.locked && !member {
+            self.turn_away(turn, peer, LOCKED);
+            turn.notices
+                .push(format!("{name} tried to join; the session is locked."));
+            return;
+        }
+        // Proven: from here on the connection is sealed, both ways (the
+        // joiner sealed its side as it answered), under keys from this
+        // connection's exchange — and the password's, when there is one.
+        let entry = self.peers.get_mut(&peer).expect("just found");
+        let Some(shared) = entry.exchange.take().and_then(|ours| ours.agree(&exchange)) else {
+            self.turn_away(turn, peer, &not_proven);
+            return;
+        };
+        turn.transport.arm(
+            peer,
+            &identity::link_keys(&shared, &challenge.nonce, challenge.keys.as_deref()),
+        );
+        let entry = self.peers.get_mut(&peer).expect("just found");
+        entry.key = key;
+        entry.challenge = None;
+        if self.ask_first && !member {
+            entry.knocking = true;
+            self.knocks.push_back(peer);
+            send(turn.transport, peer, &Msg::Waiting { host });
+            turn.notices.push(format!("{name} wants to join"));
+            return;
+        }
+        self.admit(turn, peer, doc);
+    }
+
+    /// What the host answered somebody waiting, carried out.
+    fn carry_out(&mut self, turn: &mut Turn, peer: PeerId, knock: Knock, doc: &mut Project) {
+        if !self.peers.get(&peer).is_some_and(|p| p.knocking) {
+            return;
+        }
+        match knock {
+            Knock::LetIn => {
+                self.peers.get_mut(&peer).expect("just found").knocking = false;
+                self.admit(turn, peer, doc);
+            }
+            Knock::TurnAway => {
+                let reason = format!("{} didn't let you in this time.", turn.options.name);
+                self.turn_away(turn, peer, &reason);
+            }
+            // Blocked when it was answered, so nobody slips in between.
+            Knock::Block => self.turn_away(turn, peer, CANT_JOIN),
+        }
+    }
+
+    /// Connections that never said hello, or never answered the challenge,
+    /// once the host has waited [`CollabOptions::answer_within`] for them:
+    /// let go of, rather than held open for whoever is holding them.
+    /// Somebody waiting on the host is the host's to answer, and waits.
+    fn let_go_of_the_silent(&mut self, turn: &mut Turn) {
+        let patience = turn.options.answer_within;
+        let silent: Vec<PeerId> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| !p.welcomed && !p.knocking && p.since.elapsed() >= patience)
+            .map(|(&id, _)| id)
+            .collect();
+        for peer in silent {
+            turn.transport.disconnect(peer);
+            self.peers.remove(&peer);
+            turn.files.relink(peer, None);
+        }
+    }
+
+    /// Lets a proven joiner in: a place, the song, and everybody told —
+    /// what a hello did before anybody had to prove anything.
+    fn admit(&mut self, turn: &mut Turn, peer: PeerId, doc: &mut Project) {
+        let Some(who) = self.peers.get(&peer) else {
+            return;
+        };
+        let (key, name, session) = (who.key.clone(), who.name.clone(), who.session);
+        // The same join on a new connection — its own link dropped and it
+        // joined again before the old one was noticed gone — takes the old
+        // one's place rather than being two people. Only if it proved the
+        // same key: the session id came in the clear, and is a claim.
+        let replaced = session.and_then(|session| {
+            let old = self
+                .peers
+                .iter()
+                .find(|(id, p)| {
+                    **id != peer && p.welcomed && p.session == Some(session) && p.key == key
+                })
+                .map(|(&id, _)| id)?;
+            turn.transport.disconnect(old);
+            turn.files.relink(old, Some(peer));
+            self.peers.remove(&old)
+        });
+        let free = |space: u16, peers: &BTreeMap<PeerId, HostPeer>| {
+            peers.values().all(|p| !p.welcomed || p.space != space)
+        };
+        let space = replaced
+            .as_ref()
+            .map(|old| old.space)
+            .or_else(|| {
+                session
+                    .and_then(|session| self.spaces.get(&(key.clone(), session)).copied())
+                    .filter(|&space| free(space, &self.peers))
+            })
+            .or_else(|| (1..=u16::from(u8::MAX)).find(|&space| free(space, &self.peers)))
+            .unwrap_or(u16::from(u8::MAX));
+        let entry = self.peers.get_mut(&peer).expect("just found");
+        entry.space = space;
+        entry.welcomed = true;
+        entry.knocking = false;
+        entry.view_only = replaced.as_ref().is_some_and(|old| old.view_only);
+        if let Some(session) = session {
+            self.spaces.insert((key.clone(), session), space);
+        }
+        self.members.insert(key);
+        self.welcome(turn, peer, doc);
+        if replaced.is_some() {
+            return;
+        }
+        let public = self.peers[&peer].public();
+        self.broadcast_except(
+            turn.transport,
+            peer,
+            &Msg::Joined {
+                peer: public.peer,
+                name: public.name,
+                colour: public.colour,
+            },
+        );
+        turn.notices.push(format!("{name} joined"));
+        turn.effects.push(Effect::Say(format!("{name} joined")));
+    }
+
     /// Somebody has left — said goodbye, or dropped.
     fn gone(&mut self, turn: &mut Turn, peer: PeerId, doc: &mut Project, said_goodbye: bool) {
         let Some(who) = self.peers.remove(&peer) else {
             return;
         };
+        self.knocks.retain(|id| *id != peer);
+        turn.transport.disarm(peer);
         if let Some(lost) = turn.files.relink(peer, None) {
             turn.notices.push(lost);
         }
@@ -1639,7 +2175,7 @@ impl Host {
         );
         let handled = who
             .session
-            .and_then(|session| self.handled.get(&session).copied())
+            .and_then(|session| self.handled.get(&(who.key.clone(), session)).copied())
             .unwrap_or(0);
         send(turn.transport, peer, &Msg::Resumed { handled });
         self.send_snapshot(turn.transport, peer, doc);
@@ -1679,7 +2215,7 @@ impl Host {
         if who.view_only {
             send(turn.transport, peer, &Msg::ViewOnly { view_only: true });
         }
-        if let Some(&permissions) = self.allowed.get(&who.install) {
+        if let Some(&permissions) = self.allowed.get(&who.key) {
             send(turn.transport, peer, &Msg::Permissions { permissions });
         }
         if !self.singers.is_empty() {
@@ -1861,6 +2397,23 @@ struct Joiner {
     /// again from the host's song must not take back — see
     /// [`Collab::plugin_kept_here`].
     kept_here: Vec<KeptHere>,
+    /// The host's challenge — its nonce and its half of the exchange —
+    /// while it waits on the person's password.
+    challenge: Option<(Vec<u8>, Vec<u8>)>,
+    /// The host has challenged this connection: hello is not said again.
+    challenged: bool,
+    /// How many times the password has been asked for, and whether the
+    /// last one given was wrong.
+    asks: u32,
+    wrong: bool,
+    /// The password given, kept for the life of the join: a link that drops
+    /// and joins again proves it again without asking.
+    password: Option<String>,
+    stretched: Option<(String, String, identity::PasswordKeys)>,
+    /// Who this join is waiting on to be let in.
+    waiting_for: Option<String>,
+    /// The last challenge seen, so the same one heard twice is one.
+    last_nonce: Option<Vec<u8>>,
 }
 
 impl Joiner {
@@ -1891,6 +2444,61 @@ impl Joiner {
             view_only: false,
             permissions: Default::default(),
             kept_here: Vec::new(),
+            challenge: None,
+            challenged: false,
+            asks: 0,
+            wrong: false,
+            password: None,
+            stretched: None,
+            waiting_for: None,
+            last_nonce: None,
+        }
+    }
+
+    /// Answers the host's challenge `nonce`, whose half of the exchange is
+    /// `theirs`: this studio's key, this side's half of the exchange (fresh,
+    /// used once), a signature over the nonce, the code and both halves,
+    /// and — with a password — the proof of it. Then this end of the link
+    /// is sealed, whatever the session: under the exchange's secret, and the
+    /// password's too when there is one.
+    fn answer(
+        &mut self,
+        transport: &mut sealed::Sealed,
+        options: &CollabOptions,
+        nonce: &[u8],
+        theirs: &[u8],
+    ) {
+        let code = identity::normal_code(&options.code);
+        let key = options.identity.public_key();
+        let exchange = identity::Exchange::new();
+        let ours = exchange.public().to_vec();
+        let signature = options
+            .identity
+            .sign(&identity::join_message(nonce, &code, theirs, &ours));
+        let keys = self.password.clone().map(|password| match &self.stretched {
+            Some((p, c, keys)) if *p == password && *c == code => keys.clone(),
+            _ => {
+                let keys = identity::PasswordKeys::derive(&password, &code);
+                self.stretched = Some((password, code.clone(), keys.clone()));
+                keys
+            }
+        });
+        let proof = keys.as_ref().map(|keys| keys.proof(nonce, &key));
+        send(
+            transport,
+            SERVER,
+            &Msg::Answer {
+                key,
+                signature,
+                proof,
+                exchange: ours,
+            },
+        );
+        // A half that agrees on nothing is not a real one: nothing is sealed
+        // here, the host cannot open what this side sends, and the join goes
+        // no further.
+        if let Some(shared) = exchange.agree(theirs) {
+            transport.arm(SERVER, &identity::link_keys(&shared, nonce, keys.as_ref()));
         }
     }
 
@@ -1919,7 +2527,12 @@ impl Joiner {
     ) -> Option<String> {
         // No welcome yet: the hello may have gone to a host that was away
         // from the relay, where nothing would ever answer it.
-        if self.stage == Stage::Waiting && self.hello_at.elapsed() >= turn.options.hello_again {
+        // Once challenged it has been heard: the rest of the handshake waits
+        // on a person (the password, the host's answer), not on the link.
+        if self.stage == Stage::Waiting
+            && !self.challenged
+            && self.hello_at.elapsed() >= turn.options.hello_again
+        {
             self.say_hello(turn.transport, turn.options);
         }
         if self.stage == Stage::Live {
@@ -1933,7 +2546,14 @@ impl Joiner {
                 // A connection again after the welcome: the link dropped and
                 // `fontelle-net` joined again by itself. The host knows this
                 // connection as nobody yet; hello says who it is (F39).
-                Incoming::Connected(_) if self.stage != Stage::Waiting => {
+                // A new connection is a new handshake: whatever this one was
+                // sealed under is not what the host will seal the next under,
+                // so it starts in the clear and proves itself again.
+                Incoming::Connected(_) if self.stage != Stage::Waiting || self.challenged => {
+                    turn.transport.disarm(SERVER);
+                    self.challenged = false;
+                    self.challenge = None;
+                    self.waiting_for = None;
                     self.say_hello(turn.transport, turn.options);
                 }
                 Incoming::Connected(_) => {}
@@ -2097,6 +2717,7 @@ impl Joiner {
                 self.space = peer;
                 self.host_name = host;
                 self.host_install = host_install;
+                self.waiting_for = None;
                 self.question = Some(join::question(
                     &self.projects_dir,
                     &project,
@@ -2109,7 +2730,48 @@ impl Joiner {
                 self.manifest = manifest;
                 self.stage = Stage::Asking;
             }
+            // A wrong password is the one refusal that is not the end: a
+            // fresh challenge follows it, and the person tries again.
+            Msg::Refuse { reason } if reason == WRONG_PASSWORD => {
+                self.wrong = true;
+                self.password = None;
+            }
             Msg::Refuse { reason } => return Some(reason),
+            // The same challenge again — the host answers every hello, and a
+            // hello can be said more than once before the first is heard —
+            // is the one already in hand.
+            Msg::Challenge { nonce, .. } if self.last_nonce.as_ref() == Some(&nonce) => {}
+            Msg::Challenge {
+                nonce,
+                password,
+                exchange,
+            } => {
+                // Whatever this end sealed under answered an older
+                // challenge; the next answer seals under this one's.
+                turn.transport.disarm(SERVER);
+                self.last_nonce = Some(nonce.clone());
+                self.challenged = true;
+                self.waiting_for = None;
+                match &self.password {
+                    // Proved before on this join (a link that dropped and
+                    // joined again): proved again without asking.
+                    _ if !password => {
+                        self.password = None;
+                        self.answer(turn.transport, turn.options, &nonce, &exchange);
+                    }
+                    Some(_) if !self.wrong => {
+                        self.answer(turn.transport, turn.options, &nonce, &exchange);
+                    }
+                    _ => {
+                        self.asks += 1;
+                        self.challenge = Some((nonce, exchange));
+                    }
+                }
+            }
+            Msg::Waiting { host } => {
+                self.host_name = host.clone();
+                self.waiting_for = Some(host);
+            }
             Msg::Singers { singers } => self.singers = singers,
             Msg::SnapshotChunk { index, bytes, .. } => {
                 if index == 0 {

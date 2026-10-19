@@ -19,6 +19,58 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — who may come into a shared song, on `main`, not
+released.** Ty: *"removing someone shouldnt block them from the session,
+that should be something totally different … maybe making password only
+sessions, etc. just ensure odd gaps like this dont make it in"*.
+
+- **Remove is a kick** (`Collab::remove`); the L6 refusal by install id is
+  gone, and the removed person can come back with the code.
+- **Proven identity** (`collab/identity.rs`): an Ed25519 key per install,
+  `identity.key` beside the settings file (0600 on Unix), made on first use;
+  `Session::set_identity` for tests. The join is now Hello (unchanged, so an
+  older build still reads its version refusal) → `Msg::Challenge` → `Msg::
+  Answer` (signature over a context, the nonce and the normalised code) →
+  `Msg::Waiting` while the host decides → Welcome. Everything Hello did is
+  behind the verified answer (`Host::admit`). A session id takes somebody's
+  place only with the same key; permissions, `handled` and spaces are keyed
+  by the proven key. Silent connections are let go of after
+  `answer_within` (120 s).
+- **Block** (row, and the knock card): kicks and refuses the key this
+  session; kept in `Settings::blocked` (hex key, name, when) and refused by
+  every later share; Settings ▸ Sharing ▸ *Blocked people*, one row each
+  with Unblock. The blocked hear only *"You can't join this session."*
+- **Host controls** on the Share panel: Password (set when sharing via
+  *Share with a password…*, change or clear while sharing; shown as on/off,
+  never the text), *Ask first* (a card: Let in / Block / Turn away, queued;
+  Enter and Escape turn away), *Lock*. All off by default, not saved.
+- **Passwords**: PBKDF2-HMAC-SHA256 (200 000 rounds, code as salt) split by
+  label into a proof key (HMAC of nonce + key) and a seal key; the password
+  never crosses. Wrong → `WRONG_PASSWORD` + a fresh challenge; 5 on one
+  connection → let go of. The joiner's prompt draws dots
+  (`TextEntry::masked`), never copies to the clipboard; Escape abandons the
+  join.
+- **Sealing every session** (`collab/sealed.rs`, the one choke point every
+  frame passes): an ephemeral X25519 exchange per connection rides in
+  `Challenge`/`Answer` (fields, not new variants — neither had shipped),
+  both halves signed into the joiner's proof; link keys come from its
+  secret, the nonce and — with a password — the password's seal key.
+  ChaCha20-Poly1305, a key per direction, nonce = channel + counter,
+  replays and spoiled frames dropped, clear frames on a sealed link dropped
+  unless they are the handshake's. A reconnect runs a fresh exchange.
+  Changing the password keeps those already in on their keys.
+- Tests: `collab/tests.rs` (17 new, the `Two` harness now `Two::with`),
+  `fontelle-model/tests/wire.rs`, `fontelle-ui/tests/share_panel.rs`,
+  `fontelle-app/tests/share_security_window.rs`; headless dumps looked at.
+- **Limits**: the relay cannot drop a connection the host kicks (F79 —
+  `RelayHost` has no kick), so "let go of" means forgotten and ignored; a
+  watcher of one handshake can guess passwords offline at PBKDF2's price
+  (no PAKE); without a password the exchange is unauthenticated on the
+  host's side, so a relay that answers the challenge itself as a new
+  joiner is just a joiner — the code, Ask first and Lock are what keep it
+  out; a name is still self-chosen — a key says *the same studio*, not
+  *this person*; not yet seen on `:99` with the real binary.
+
 **2026-10-19 — the next update, phases 3–5, all on `main`, not
 released.** With phase 6 below, everything in `docs/next-update-plan.md` is
 built; next is Ty's beta.

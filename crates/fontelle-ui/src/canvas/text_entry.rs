@@ -140,6 +140,24 @@ impl TextEntry {
         true
     }
 
+    /// The field as a password is drawn: a dot a character, with the caret
+    /// and the selection on the same characters they are on in the text.
+    /// What the field shows and measures — the text itself stays here, and
+    /// is never shaped or drawn.
+    pub fn masked(&self) -> TextEntry {
+        const DOT: &str = "\u{2022}";
+        let at = |byte: usize| self.text[..byte].chars().count() * DOT.len();
+        let mut shown = TextEntry::new(DOT.repeat(self.text.chars().count()));
+        match self.anchor {
+            Some(anchor) => {
+                shown.place(at(anchor), false);
+                shown.place(at(self.caret), true);
+            }
+            None => shown.place(at(self.caret), false),
+        }
+        shown
+    }
+
     /// Puts the caret at `at`, extending the selection with `select`.
     ///
     /// Clamped into the string and onto a character boundary, because the

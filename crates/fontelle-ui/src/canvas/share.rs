@@ -55,6 +55,20 @@ pub const TITLE_JOINING: &str = "Joining\u{2026}";
 pub const TITLE_JOINED: &str = "Working on this song together";
 /// The row that stands in for an empty room.
 pub const NOBODY_YET: &str = "Nobody has joined yet.";
+/// Who may come in (Ty, 2026-10-19): the host's three locks under the code,
+/// Block on a person's row — apart from ×, which only removes — and a way to
+/// share with a password from the start.
+pub const PASSWORD_ON: &str = "Password on";
+pub const PASSWORD_OFF: &str = "Password\u{2026}";
+pub const ASK_FIRST: &str = "Ask first";
+pub const LOCK_SESSION: &str = "Lock";
+pub const BLOCK_PEER: &str = "Block";
+pub const SHARE_WITH_PASSWORD: &str = "Share with a password\u{2026}";
+
+/// A password as it is drawn: a dot a character, and never the characters.
+pub fn masked(text: &str) -> String {
+    "\u{2022}".repeat(text.chars().count())
+}
 
 /// Where this studio stands in a session — what the panel shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -122,6 +136,9 @@ pub struct PeerRowLayout {
     /// On the host's panel, the switches for what they may touch:
     /// [`ALLOW`]'s three, in order. Empty on a joiner's.
     pub allow: [Rect; 3],
+    /// Block: removed, and kept out. At the end of the second row, well
+    /// away from ×, which only removes. Empty on a joiner's panel.
+    pub block: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +149,11 @@ pub struct SharePanelLayout {
     /// hosting with a code to show.
     pub code: Rect,
     pub copy: Rect,
+    /// Under the code while hosting: the password ([`PASSWORD_ON`] or
+    /// [`PASSWORD_OFF`]), [`ASK_FIRST`] and [`LOCK_SESSION`]. Empty otherwise.
+    pub controls: [Rect; 3],
+    /// [`SHARE_WITH_PASSWORD`], alone. Empty otherwise.
+    pub share_password: Rect,
     /// As many people as fit.
     pub rows: Vec<PeerRowLayout>,
     /// Where [`NOBODY_YET`] goes when the room is empty.
@@ -183,6 +205,14 @@ pub enum ShareHit {
     FetchAgain,
     /// [`SharePanelLayout::say`].
     Say,
+    /// Block on the `n`th row.
+    Block(usize),
+    /// The host's password: set, change or clear it.
+    Password,
+    AskFirst,
+    Lock,
+    /// Alone: share, with a password.
+    SharePassword,
 }
 
 const PANEL_WIDTH: f32 = 320.0;
@@ -191,6 +221,7 @@ const FETCH_AGAIN_WIDTH: f32 = 84.0;
 const VIEW_ONLY_WIDTH: f32 = 64.0;
 const FOLLOW_WIDTH: f32 = 82.0;
 const SAY_WIDTH: f32 = 64.0;
+const BLOCK_WIDTH: f32 = 56.0;
 
 /// The host's three switches on a person's row: the mixer, instruments'
 /// sounds, and plugins the host has not got.
@@ -337,6 +368,9 @@ pub fn share_panel_layout_full(
     let chat = if chats { chat.min(CHAT_ROWS) } else { 0 };
     let chat_h = chat as f32 * row;
     let code_h = if hosting { code_size + pad } else { 0.0 };
+    // The host's three locks, a row of their own under the code.
+    let controls_h = if hosting { row + pad * 0.5 } else { 0.0 };
+    let alone = role == ShareRole::Alone;
     // On the host's panel a person takes two rows: their name and controls,
     // then what they may touch (phase 2.4).
     // An empty room's one line is a line.
@@ -345,7 +379,9 @@ pub fn share_panel_layout_full(
     } else {
         row
     };
-    let buttons = if role.join().is_some() {
+    let buttons = if alone {
+        3.0 * button + pad
+    } else if role.join().is_some() {
         2.0 * button + pad * 0.5
     } else {
         button
@@ -355,6 +391,7 @@ pub fn share_panel_layout_full(
         + row
         + pad
         + code_h
+        + controls_h
         + if hosting { pad } else { 0.0 }
         + 2.0 * row
         + pad
@@ -433,6 +470,16 @@ pub fn share_panel_layout_full(
     } else {
         (Rect::ZERO, Rect::ZERO)
     };
+    let controls = if hosting {
+        let gap = pad * 0.5;
+        let h = (row * 0.8).round();
+        let w = ((inner_w - 2.0 * gap) / 3.0).max(0.0);
+        let at = y + (row - h) / 2.0;
+        y += controls_h;
+        [0, 1, 2].map(|k| Rect::new(inner_x + k as f32 * (w + gap), at, w, h))
+    } else {
+        [Rect::ZERO; 3]
+    };
     let rows: Vec<PeerRowLayout> = (0..shown)
         .map(|i| {
             let frame = Rect::new(inner_x, y + i as f32 * person_h, inner_w, person_h);
@@ -477,6 +524,23 @@ pub fn share_panel_layout_full(
                 (name_end - swatch.right() - pad).max(0.0),
                 row,
             );
+            // The second row: what they may touch, then Block at its end —
+            // under ×, not beside it, so neither is pressed for the other.
+            let (allow, block) = if hosting {
+                let gap = pad * 0.5;
+                let left = name.x;
+                let h = (row * 0.7).round();
+                let y = frame.y + row + (row - h) / 2.0;
+                let block_w = BLOCK_WIDTH.min((frame.right() - left) * 0.25).max(0.0);
+                let block = Rect::new(frame.right() - block_w, y, block_w, h);
+                let w = ((block.x - gap - left - 2.0 * gap) / 3.0).max(0.0);
+                (
+                    [0, 1, 2].map(|k| Rect::new(left + k as f32 * (w + gap), y, w, h)),
+                    block,
+                )
+            } else {
+                ([Rect::ZERO; 3], Rect::ZERO)
+            };
             PeerRowLayout {
                 frame,
                 swatch,
@@ -485,16 +549,8 @@ pub fn share_panel_layout_full(
                 view_only,
                 remove,
                 follow,
-                allow: if hosting {
-                    let gap = pad * 0.5;
-                    let left = name.x;
-                    let w = ((frame.right() - left - 2.0 * gap) / 3.0).max(0.0);
-                    let h = (row * 0.7).round();
-                    let y = frame.y + row + (row - h) / 2.0;
-                    [0, 1, 2].map(|k| Rect::new(left + k as f32 * (w + gap), y, w, h))
-                } else {
-                    [Rect::ZERO; 3]
-                },
+                allow,
+                block,
             }
         })
         .collect();
@@ -533,7 +589,15 @@ pub fn share_panel_layout_full(
     let status = Rect::new(inner_x, y, inner_w, 2.0 * row);
     y += 2.0 * row + pad;
     let primary = Rect::new(inner_x, y, inner_w, button);
-    let join = if role.join().is_some() {
+    // Alone: Share, Share with a password…, Join — sharing's two together.
+    let share_password = if alone {
+        Rect::new(inner_x, y + button + pad * 0.5, inner_w, button)
+    } else {
+        Rect::ZERO
+    };
+    let join = if alone {
+        Rect::new(inner_x, y + 2.0 * (button + pad * 0.5), inner_w, button)
+    } else if role.join().is_some() {
         Rect::new(inner_x, y + button + pad * 0.5, inner_w, button)
     } else {
         Rect::ZERO
@@ -556,8 +620,11 @@ pub fn share_panel_layout_full(
                 remove: keep(r.remove),
                 follow: keep(r.follow),
                 allow: r.allow.map(keep),
+                block: keep(r.block),
             })
             .collect(),
+        controls: controls.map(keep),
+        share_password: keep(share_password),
         chat: chat_lines.into_iter().map(keep).collect(),
         say: keep(say),
         nobody: keep(nobody),
@@ -604,7 +671,19 @@ pub fn share_hit(layout: &SharePanelLayout, x: f32, y: f32) -> Option<ShareHit> 
     if layout.say.contains(x, y) {
         return Some(ShareHit::Say);
     }
+    if layout.share_password.contains(x, y) {
+        return Some(ShareHit::SharePassword);
+    }
+    let controls = [ShareHit::Password, ShareHit::AskFirst, ShareHit::Lock];
+    for (rect, hit) in layout.controls.iter().zip(controls) {
+        if rect.contains(x, y) {
+            return Some(hit);
+        }
+    }
     for (i, row) in layout.rows.iter().enumerate() {
+        if row.block.contains(x, y) {
+            return Some(ShareHit::Block(i));
+        }
         if row.view_only.contains(x, y) {
             return Some(ShareHit::ViewOnly(i));
         }
@@ -627,8 +706,21 @@ pub fn share_hit(layout: &SharePanelLayout, x: f32, y: f32) -> Option<ShareHit> 
 pub fn share_panel_words(role: ShareRole, people: &[crate::document::SessionPeer]) -> Vec<String> {
     let mut words = vec![role.title().to_string(), role.primary().to_string()];
     words.extend(role.join().map(str::to_string));
+    if role == ShareRole::Alone {
+        words.push(SHARE_WITH_PASSWORD.to_string());
+    }
     if role == ShareRole::Hosting {
         words.extend([COPY_CODE, VIEW_ONLY, REMOVE_PEER].map(str::to_string));
+        words.extend(
+            [
+                PASSWORD_ON,
+                PASSWORD_OFF,
+                ASK_FIRST,
+                LOCK_SESSION,
+                BLOCK_PEER,
+            ]
+            .map(str::to_string),
+        );
         words.extend(ALLOW.map(str::to_string));
     }
     if role == ShareRole::Joined {

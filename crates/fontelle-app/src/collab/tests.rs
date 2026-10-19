@@ -23,25 +23,14 @@ use fontelle_types::{EffectKind, PPQN, PersistentId};
 use super::files::Place;
 use super::*;
 
-/// A joiner's link that counts what the joiner asks for.
-struct Counting {
-    inner: fontelle_net::MemoryTransport,
-    resyncs: Arc<Mutex<usize>>,
-}
-
-impl Transport for Counting {
-    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+/// Counts the fresh copies a joiner asks for, at the choke point — under
+/// it everything is sealed.
+fn counting(collab: &mut Collab, resyncs: Arc<Mutex<usize>>) {
+    collab.transport.tap_out = Some(Box::new(move |bytes| {
         if matches!(Msg::from_bytes(bytes), Ok(Msg::ResyncRequest)) {
-            *self.resyncs.lock().unwrap() += 1;
+            *resyncs.lock().unwrap() += 1;
         }
-        self.inner.send(peer, channel, bytes);
-    }
-    fn poll(&mut self) -> Vec<Incoming> {
-        self.inner.poll()
-    }
-    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
-        self.inner.stats(peer)
-    }
+    }));
 }
 
 struct Side {
@@ -101,8 +90,25 @@ fn options(name: &str) -> CollabOptions {
     options
 }
 
+/// How a [`Two`] is set up: the host's password, the password the joiner
+/// gives when asked, and what either link goes through on its way to the hub.
+#[derive(Default)]
+struct Setup {
+    host_password: Option<&'static str>,
+    joiner_password: Option<&'static str>,
+    host_link: Option<Wrap>,
+    joiner_link: Option<Wrap>,
+}
+
+/// A link's end on the hub, made into whatever the test wants it to be.
+type Wrap = Box<dyn FnOnce(&MemoryHub, fontelle_net::MemoryTransport) -> Box<dyn Transport>>;
+
 impl Two {
     fn new(name: &str, latency: u64) -> Two {
+        Two::with(name, latency, Setup::default())
+    }
+
+    fn with(name: &str, latency: u64, setup: Setup) -> Two {
         let dir = std::env::temp_dir().join(format!(
             "fontelle-collab-unit-{name}-{}",
             std::process::id()
@@ -124,8 +130,14 @@ impl Two {
             .unwrap();
         let mut host_history = History::new();
         host_history.open_outbox();
+        let mut host_options = options("Host");
+        host_options.password = setup.host_password.map(str::to_string);
+        let server: Box<dyn Transport> = match setup.host_link {
+            Some(wrap) => wrap(&hub, hub.server_endpoint()),
+            None => Box::new(hub.server_endpoint()),
+        };
         let host = Side {
-            collab: Collab::host(Box::new(hub.server_endpoint()), options("Host")),
+            collab: Collab::host(server, host_options),
             doc: song,
             history: host_history,
             place: Place {
@@ -134,12 +146,14 @@ impl Two {
             },
         };
         let resyncs = Arc::new(Mutex::new(0));
-        let link = Counting {
-            inner: hub.connect(),
-            resyncs: resyncs.clone(),
+        let link: Box<dyn Transport> = match setup.joiner_link {
+            Some(wrap) => wrap(&hub, hub.connect()),
+            None => Box::new(hub.connect()),
         };
+        let mut collab = Collab::join(link, options("Joiner"), dir.clone());
+        counting(&mut collab, resyncs.clone());
         let joiner = Side {
-            collab: Collab::join(Box::new(link), options("Joiner"), dir.clone()),
+            collab,
             doc: Project::new("nothing yet"),
             history: History::new(),
             place: Place {
@@ -155,36 +169,46 @@ impl Two {
             resyncs,
             dir,
         };
-        two.settle();
-        let mut effects = two
-            .joiner
-            .collab
-            .answer(JoinAnswer::Copy, &mut two.joiner.history)
-            .unwrap();
-        // The studio's part of a join: open the copy, hand it back.
-        for _ in 0..200 {
-            effects.extend(two.tick());
-            if let Some(path) = std::mem::take(&mut effects)
-                .into_iter()
-                .find_map(|e| match e {
-                    Effect::Open(path) => Some(path),
-                    _ => None,
-                })
-            {
-                two.joiner.doc = fontelle_model::load_project(&path).unwrap();
-                let Side {
-                    collab,
-                    doc,
-                    history,
-                    place,
-                } = &mut two.joiner;
-                collab.went_live(doc, history, place);
-                break;
-            }
-        }
-        assert!(two.joiner.collab.is_live(), "the joiner has the song open");
+        let mut joiner = two.take_joiner();
+        let live = bring_in(&mut two, &mut joiner, setup.joiner_password);
+        two.joiner = joiner;
+        assert!(live, "the joiner has the song open");
         two.settle();
         two
+    }
+
+    /// The joiner, taken out to be pumped beside the pair (a placeholder in
+    /// its place that nothing reaches).
+    fn take_joiner(&mut self) -> Side {
+        let nobody = Side {
+            collab: Collab::join(Box::new(Closed), options("Nobody"), self.dir.join("nobody")),
+            doc: Project::new("nobody"),
+            history: History::new(),
+            place: Place {
+                bundle: None,
+                banks: Vec::new(),
+            },
+        };
+        std::mem::replace(&mut self.joiner, nobody)
+    }
+
+    /// Somebody else, joining over the same hub as `name` with `identity`.
+    fn another(&self, name: &str, identity: Option<Identity>) -> Side {
+        let mut options = options(name);
+        if let Some(identity) = identity {
+            options.identity = identity;
+        }
+        let dir = self.dir.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        Side {
+            collab: Collab::join(Box::new(self.hub.connect()), options, dir),
+            doc: Project::new("nothing yet"),
+            history: History::new(),
+            place: Place {
+                bundle: None,
+                banks: Vec::new(),
+            },
+        }
     }
 
     /// One turn each; what the joiner's turn asked of its studio.
@@ -344,40 +368,18 @@ fn a_disagreement_asks_for_one_fresh_copy_not_one_an_edit() {
     assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
 }
 
-/// A joiner's link on which every song arrives with a fingerprint that is
-/// not its own — what a build that writes songs differently looks like.
-struct Damaging {
-    inner: fontelle_net::MemoryTransport,
-}
-
-impl Transport for Damaging {
-    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
-        self.inner.send(peer, channel, bytes);
-    }
-    fn poll(&mut self) -> Vec<Incoming> {
-        self.inner
-            .poll()
-            .into_iter()
-            .map(|incoming| match incoming {
-                Incoming::Message(peer, channel, bytes) => match Msg::from_bytes(&bytes) {
-                    Ok(Msg::SnapshotDone { hash, seq }) => Incoming::Message(
-                        peer,
-                        channel,
-                        Msg::SnapshotDone {
-                            hash: hash ^ 1,
-                            seq,
-                        }
-                        .to_bytes(),
-                    ),
-                    _ => Incoming::Message(peer, channel, bytes),
-                },
-                other => other,
-            })
-            .collect()
-    }
-    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
-        self.inner.stats(peer)
-    }
+/// A joiner on which every song arrives with a fingerprint that is not its
+/// own — what a build that writes songs differently looks like. Spoiled at
+/// the choke point, once opened: under it everything is sealed.
+fn damaging(collab: &mut Collab) {
+    collab.transport.tap_in = Some(Box::new(|bytes| match Msg::from_bytes(&bytes) {
+        Ok(Msg::SnapshotDone { hash, seq }) => Msg::SnapshotDone {
+            hash: hash ^ 1,
+            seq,
+        }
+        .to_bytes(),
+        _ => bytes,
+    }));
 }
 
 /// Ty, joining a friend from the phase 1 preview (2026-10-18): *"its
@@ -401,14 +403,10 @@ fn a_song_that_arrives_damaged_ends_the_join_and_says_why() {
         },
     };
     host.history.open_outbox();
+    let mut damaged = Collab::join(Box::new(hub.connect()), options("Joiner"), dir.clone());
+    damaging(&mut damaged);
     let mut joiner = Side {
-        collab: Collab::join(
-            Box::new(Damaging {
-                inner: hub.connect(),
-            }),
-            options("Joiner"),
-            dir.clone(),
-        ),
+        collab: damaged,
         doc: Project::new("nothing yet"),
         history: History::new(),
         place: Place {
@@ -871,34 +869,993 @@ fn a_plugin_the_host_has_not_got_needs_permission() {
     assert_eq!(two.host.doc.mixer.tracks[track].inserts.len(), inserts + 1);
 }
 
-/// Removing somebody keeps them out for the rest of the session: the same
-/// studio joining again with the code is refused (L6).
+// --- who may come in (Ty, 2026-10-19) ---
+//
+// *"removing someone shouldnt block them from the session, that should be
+// something totally different, and we should try our best to implement
+// security so that users can be blocked from sessions and stuff like if
+// there are bad actors and stuff, maybe making password only sessions,
+// etc. just ensure odd gaps like this dont make it in"*
+
+/// Pumps everybody until `side` has the song open or its join has ended:
+/// it gives `password` whenever it is asked for one (once an asking), and
+/// takes a copy. `true` when it is in.
+fn bring_in(two: &mut Two, side: &mut Side, password: Option<&str>) -> bool {
+    let mut effects = Vec::new();
+    let mut answered = false;
+    let mut given = None;
+    for _ in 0..400 {
+        two.tick();
+        effects.extend(side.pump());
+        if let Some(ask) = side.collab.password_wanted()
+            && given != Some(ask)
+            && let Some(password) = password
+        {
+            given = Some(ask);
+            side.collab.give_password(password);
+        }
+        if !answered && side.collab.question().is_some() {
+            effects.extend(
+                side.collab
+                    .answer(JoinAnswer::Copy, &mut side.history)
+                    .unwrap(),
+            );
+            answered = true;
+        }
+        if let Some(path) = std::mem::take(&mut effects)
+            .into_iter()
+            .find_map(|e| match e {
+                Effect::Open(path) => Some(path),
+                _ => None,
+            })
+        {
+            side.doc = fontelle_model::load_project(&path).unwrap();
+            let Side {
+                collab,
+                doc,
+                history,
+                place,
+            } = side;
+            collab.went_live(doc, history, place);
+        }
+        if side.collab.is_live() || side.collab.ended().is_some() {
+            break;
+        }
+    }
+    for _ in 0..10 {
+        two.tick();
+        side.pump();
+    }
+    side.collab.is_live()
+}
+
+/// Pumps the pair and `side` together for a while.
+fn run_with(two: &mut Two, side: &mut Side, ticks: usize) {
+    for _ in 0..ticks {
+        two.tick();
+        side.pump();
+    }
+}
+
+fn joiner_identity(two: &Two) -> Identity {
+    two.joiner.collab.options.identity.clone()
+}
+
+/// Remove is a kick, and only that: the person is told who did it and let
+/// go of, and the code still lets them in — the same studio, joining again,
+/// is back in the song.
 #[test]
-fn somebody_removed_cannot_come_back_with_the_code() {
-    let mut two = Two::new("perm-removed", 2);
+fn somebody_removed_can_come_back_with_the_code() {
+    let mut two = Two::new("removed-back", 2);
     let bob = joiner_space(&two);
     two.host.collab.remove(bob, &mut two.host.doc).unwrap();
     two.settle();
-    let mut again = Side {
-        collab: Collab::join(
-            Box::new(two.hub.connect()),
-            options("Joiner"),
-            two.dir.clone(),
-        ),
-        doc: Project::new("nothing yet"),
-        history: History::new(),
-        place: Place {
-            bundle: None,
-            banks: Vec::new(),
+    let why = two.joiner.collab.ended().expect("told").to_string();
+    assert!(why.contains("Host removed you"), "{why}");
+    assert!(two.host.collab.peers().is_empty());
+
+    let mut again = two.another("Joiner", Some(joiner_identity(&two)));
+    assert!(
+        bring_in(&mut two, &mut again, None),
+        "a removed person can come back: {:?}",
+        again.collab.ended()
+    );
+    assert_eq!(two.host.collab.peers().len(), 1);
+}
+
+/// Block is the other thing: they are let go of, and the studio that proved
+/// who it was can't come back — told only that it can't join, never why.
+/// Somebody else can still join.
+#[test]
+fn somebody_blocked_cannot_come_back_and_is_not_told_why() {
+    let mut two = Two::new("blocked", 2);
+    let bob = joiner_space(&two);
+    let identity = joiner_identity(&two);
+    let blocked = two.host.collab.block(bob, &mut two.host.doc).unwrap();
+    assert_eq!(blocked.key, identity.public_key());
+    assert_eq!(blocked.name, "Joiner");
+    two.settle();
+    assert!(two.joiner.collab.ended().is_some(), "let go of");
+    assert!(two.host.collab.peers().is_empty());
+
+    let mut again = two.another("Joiner", Some(identity.clone()));
+    assert!(!bring_in(&mut two, &mut again, None));
+    assert_eq!(again.collab.ended(), Some(CANT_JOIN));
+    // Under another name, the same key is the same person.
+    let mut renamed = two.another("Totally Not Bob", Some(identity));
+    assert!(!bring_in(&mut two, &mut renamed, None));
+    assert_eq!(renamed.collab.ended(), Some(CANT_JOIN));
+
+    let mut carol = two.another("Carol", None);
+    assert!(
+        bring_in(&mut two, &mut carol, None),
+        "somebody else still can"
+    );
+}
+
+/// Somebody blocked in an earlier session is refused in every later one:
+/// the host's settings carry the keys into the next share.
+#[test]
+fn a_key_blocked_before_is_refused_in_a_new_session() {
+    let identity = Identity::generate();
+    let blocked = identity.public_key();
+    let mut two = Two::new("blocked-before", 2);
+    // A host that starts with the list, as a share from the settings does.
+    let mut options = options("Host");
+    options.blocked = vec![blocked.clone()];
+    two.host.collab = Collab::host(Box::new(two.hub.server_endpoint()), options);
+    let mut bob = two.another("Bob", Some(identity.clone()));
+    assert!(!bring_in(&mut two, &mut bob, None));
+    assert_eq!(bob.collab.ended(), Some(CANT_JOIN));
+
+    // Unblocked, they are let in.
+    two.host.collab.unblock(&blocked);
+    let mut back = two.another("Bob", Some(identity));
+    assert!(
+        bring_in(&mut two, &mut back, None),
+        "{:?}",
+        back.collab.ended()
+    );
+}
+
+/// With a password, the right one lets you in and a wrong one asks again —
+/// saying it was wrong — rather than ending the join.
+#[test]
+fn a_password_session_lets_in_only_the_right_password() {
+    let mut two = Two::with(
+        "password",
+        2,
+        Setup {
+            host_password: Some("hunter2"),
+            joiner_password: Some("hunter2"),
+            ..Setup::default()
         },
+    );
+    assert!(two.host.collab.has_password());
+    let mut carol = two.another("Carol", None);
+    for _ in 0..40 {
+        two.tick();
+        carol.pump();
+        if carol.collab.password_wanted().is_some() {
+            break;
+        }
+    }
+    let ask = carol.collab.password_wanted().expect("asked for one");
+    assert!(!ask.wrong);
+    carol.collab.give_password("hunter3");
+    assert_eq!(carol.collab.password_wanted(), None, "answered");
+    run_with(&mut two, &mut carol, 40);
+    let again = carol.collab.password_wanted().expect("asked again");
+    assert!(again.wrong, "told it was wrong");
+    assert!(again.attempt > ask.attempt);
+    assert!(carol.collab.ended().is_none(), "and may try again");
+    assert!(bring_in(&mut two, &mut carol, Some("hunter2")));
+    assert_eq!(two.host.collab.peers().len(), 2);
+}
+
+/// Five wrong passwords on one connection, and it is let go of.
+#[test]
+fn five_wrong_passwords_end_the_join() {
+    let mut two = Two::with(
+        "password-five",
+        2,
+        Setup {
+            host_password: Some("hunter2"),
+            joiner_password: Some("hunter2"),
+            ..Setup::default()
+        },
+    );
+    let mut carol = two.another("Carol", None);
+    let mut tries = 0;
+    for _ in 0..600 {
+        two.tick();
+        carol.pump();
+        if carol.collab.password_wanted().is_some() {
+            tries += 1;
+            carol.collab.give_password("guess");
+        }
+        if carol.collab.ended().is_some() {
+            break;
+        }
+    }
+    assert_eq!(tries, 5);
+    let why = carol.collab.ended().expect("ended");
+    assert!(why.contains("Too many wrong passwords"), "{why}");
+    assert_eq!(two.host.collab.peers().len(), 1, "only the first joiner");
+}
+
+/// Escape at the password: the join ends cleanly, said as the person's own.
+#[test]
+fn a_join_abandoned_at_the_password_ends_cleanly() {
+    let mut two = Two::with(
+        "password-cancel",
+        2,
+        Setup {
+            host_password: Some("hunter2"),
+            joiner_password: Some("hunter2"),
+            ..Setup::default()
+        },
+    );
+    let mut carol = two.another("Carol", None);
+    for _ in 0..40 {
+        two.tick();
+        carol.pump();
+    }
+    assert!(carol.collab.password_wanted().is_some());
+    carol
+        .collab
+        .answer(JoinAnswer::Cancel, &mut carol.history)
+        .unwrap();
+    assert_eq!(carol.collab.ended(), Some("You cancelled the join."));
+    assert_eq!(carol.collab.password_wanted(), None);
+    run_with(&mut two, &mut carol, 20);
+    assert_eq!(two.host.collab.peers().len(), 1);
+}
+
+/// Every frame a link carried, with the channel it went on.
+type Frames = Arc<Mutex<Vec<(Channel, Vec<u8>)>>>;
+
+/// Every frame a link carries, both ways, with the channel it went on.
+struct Recording {
+    inner: Box<dyn Transport>,
+    frames: Frames,
+}
+
+impl Transport for Recording {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        self.frames.lock().unwrap().push((channel, bytes.to_vec()));
+        self.inner.send(peer, channel, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        let got = self.inner.poll();
+        for incoming in &got {
+            if let Incoming::Message(_, channel, bytes) = incoming {
+                self.frames.lock().unwrap().push((*channel, bytes.clone()));
+            }
+        }
+        got
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+    fn backlog(&self) -> usize {
+        self.inner.backlog()
+    }
+}
+
+fn recorded(frames: &Frames) -> Wrap {
+    let frames = frames.clone();
+    Box::new(move |_, link| {
+        Box::new(Recording {
+            inner: Box::new(link),
+            frames,
+        })
+    })
+}
+
+/// A password session seals everything after the handshake, both ways and
+/// on every channel — the song, the edits, whereabouts (fire-and-forget)
+/// and a file's pieces: under the choke point nothing but the handshake is
+/// in the clear, and the password itself never crosses at all.
+#[test]
+fn everything_after_the_handshake_is_sealed_whereabouts_and_files_too() {
+    sealed_throughout("sealed", Some("correct horse"));
+}
+
+/// And so does a session with no password: every connection is sealed
+/// under keys from its own key exchange, whatever the host chose.
+#[test]
+fn a_session_without_a_password_is_sealed_too() {
+    sealed_throughout("sealed-open", None);
+}
+
+fn sealed_throughout(name: &str, password: Option<&'static str>) {
+    let host_frames = Arc::new(Mutex::new(Vec::new()));
+    let joiner_frames = Arc::new(Mutex::new(Vec::new()));
+    let mut two = Two::with(
+        name,
+        2,
+        Setup {
+            host_password: password,
+            joiner_password: password,
+            host_link: Some(recorded(&host_frames)),
+            joiner_link: Some(recorded(&joiner_frames)),
+        },
+    );
+    // Whereabouts, both ways.
+    two.joiner.collab.set_presence(at(480.0));
+    two.host.collab.set_presence(at(960.0));
+    // An edit, both ways.
+    let clip = two.host.doc.clips.keys().next().unwrap();
+    two.host.run(MoveClip::new(clip, PPQN, None));
+    two.settle();
+    two.joiner.run(MoveClip::new(clip, PPQN, None));
+    two.settle();
+    // A file, in pieces.
+    let pack = two.dir.join("voice.pack");
+    let bytes: Vec<u8> = (0..(CHUNK * 2 + 777))
+        .map(|i| (i * 31 % 251) as u8)
+        .collect();
+    std::fs::write(&pack, &bytes).unwrap();
+    let hash = fontelle_assets::content_hash::hash_file(&pack).unwrap().low;
+    two.host
+        .collab
+        .offer_singers(Vec::new(), vec![(hash, pack.clone())]);
+    two.joiner.collab.fetch_singer(&SingerNeed {
+        engine: "fontelle".into(),
+        singer: "voice".into(),
+        name: "Voice".into(),
+        offer: SingerOffer::Send {
+            hash,
+            size: bytes.len() as u64,
+            file_name: "voice.pack".into(),
+            terms: None,
+        },
+    });
+    for _ in 0..200 {
+        two.tick();
+    }
+    // It all arrived.
+    assert_eq!(whereabouts(&two.host).first().map(|w| w.1), Some(480.0));
+    assert_eq!(whereabouts(&two.joiner), vec![(0, 960.0)]);
+    assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
+    let landed = two.joiner.collab.singer_pack(hash).expect("the file came");
+    assert_eq!(std::fs::read(landed).unwrap(), bytes);
+
+    for (whose, frames) in [("host", &host_frames), ("joiner", &joiner_frames)] {
+        let frames = frames.lock().unwrap();
+        let mut sealed_unreliable = 0;
+        let mut sealed = 0;
+        for (channel, frame) in frames.iter() {
+            if frame.starts_with(&fontelle_model::wire::SEALED) {
+                sealed += 1;
+                if *channel == Channel::Unreliable {
+                    sealed_unreliable += 1;
+                }
+                continue;
+            }
+            let msg = Msg::from_bytes(frame).expect("a clear frame is a message");
+            assert!(
+                matches!(
+                    msg,
+                    Msg::Session { .. }
+                        | Msg::Hello { .. }
+                        | Msg::Challenge { .. }
+                        | Msg::Answer { .. }
+                        | Msg::Refuse { .. }
+                        | Msg::Waiting { .. }
+                ),
+                "{whose}'s link carried {msg:?} in the clear"
+            );
+            let text = String::from_utf8_lossy(frame);
+            assert!(!text.contains("correct horse"), "the password crossed");
+        }
+        assert!(sealed > 10, "{whose}: {sealed} sealed frames");
+        assert!(sealed_unreliable > 0, "{whose}: whereabouts went unsealed");
+    }
+    // And through the one choke point: what it sealed is what went.
+    assert!(two.host.collab.transport.sealed_out() > 0);
+    assert!(two.joiner.collab.transport.opened_in() > 0);
+}
+
+/// A link that spoils or repeats what reaches it, on request.
+struct Spoiling {
+    inner: Box<dyn Transport>,
+    spoil: Arc<std::sync::atomic::AtomicBool>,
+    replay: Arc<std::sync::atomic::AtomicBool>,
+    last: Option<Incoming>,
+}
+
+impl Transport for Spoiling {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        self.inner.send(peer, channel, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        use std::sync::atomic::Ordering;
+        let mut got = self.inner.poll();
+        for incoming in &mut got {
+            if let Incoming::Message(_, _, bytes) = incoming {
+                if self.spoil.swap(false, Ordering::SeqCst) {
+                    let last = bytes.len() - 1;
+                    bytes[last] ^= 0x40;
+                }
+                self.last = Some(incoming.clone());
+            }
+        }
+        if self.replay.swap(false, Ordering::SeqCst)
+            && let Some(last) = self.last.clone()
+        {
+            got.push(last);
+        }
+        got
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// The choke point on its own: a sealed frame opens on the other side; one
+/// spoiled on the way, or the same one again, is dropped — never a panic;
+/// and a frame in the clear on a sealed link is dropped unless it is the
+/// handshake's.
+#[test]
+fn a_frame_that_does_not_open_is_dropped_and_so_is_a_replay() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let hub = MemoryHub::new();
+    let mut host = sealed::Sealed::new(Box::new(hub.server_endpoint()), sealed::End::Host);
+    let spoil = Arc::new(AtomicBool::new(false));
+    let replay = Arc::new(AtomicBool::new(false));
+    let mut joiner = sealed::Sealed::new(
+        Box::new(Spoiling {
+            inner: Box::new(hub.connect()),
+            spoil: spoil.clone(),
+            replay: replay.clone(),
+            last: None,
+        }),
+        sealed::End::Joiner,
+    );
+    let peer = match host.poll().as_slice() {
+        [Incoming::Connected(peer)] => *peer,
+        other => panic!("{other:?}"),
     };
+    let password = identity::PasswordKeys::derive("pw", "ABCDEF");
+    let keys = identity::link_keys(&[7; 32], &[5; 32], Some(&password));
+    host.arm(peer, &keys);
+    joiner.arm(fontelle_net::SERVER, &keys);
+    let said = |text: &str| Msg::Chat {
+        peer: 0,
+        text: text.into(),
+    };
+    let heard = |joiner: &mut sealed::Sealed| -> Vec<String> {
+        joiner
+            .poll()
+            .into_iter()
+            .filter_map(|incoming| match incoming {
+                Incoming::Message(_, _, bytes) => match Msg::from_bytes(&bytes) {
+                    Ok(Msg::Chat { text, .. }) => Some(text),
+                    Ok(Msg::Challenge { .. }) => Some("challenge".into()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+
+    host.send(peer, Channel::Reliable, &said("one").to_bytes());
+    assert_eq!(heard(&mut joiner), vec!["one"]);
+
+    spoil.store(true, Ordering::SeqCst);
+    host.send(peer, Channel::Reliable, &said("two").to_bytes());
+    assert!(heard(&mut joiner).is_empty(), "a spoiled frame opened");
+    assert_eq!(joiner.dropped_in(), 1);
+
+    host.send(peer, Channel::Unreliable, &said("three").to_bytes());
+    assert_eq!(heard(&mut joiner), vec!["three"]);
+    replay.store(true, Ordering::SeqCst);
+    assert!(heard(&mut joiner).is_empty(), "a frame heard twice");
+
+    // In the clear, under the seal: only the handshake gets through.
+    let mut raw = hub.server_endpoint();
+    raw.send(peer, Channel::Reliable, &said("forged").to_bytes());
+    raw.send(
+        peer,
+        Channel::Reliable,
+        &Msg::Challenge {
+            nonce: vec![1; 32],
+            password: true,
+            exchange: vec![2; 32],
+        }
+        .to_bytes(),
+    );
+    assert_eq!(heard(&mut joiner), vec!["challenge"]);
+    // Garbage is dropped too.
+    raw.send(peer, Channel::Reliable, &[0xfe, 0x5e, 1, 2, 3]);
+    raw.send(peer, Channel::Reliable, &[]);
+    assert!(heard(&mut joiner).is_empty());
+}
+
+/// The host changes the password while people are in: those already in keep
+/// the keys they came in with, and the session goes on for them exactly as
+/// before; the next person needs the new one.
+#[test]
+fn changing_the_password_keeps_those_already_in() {
+    let mut two = Two::with(
+        "password-change",
+        2,
+        Setup {
+            host_password: Some("first"),
+            joiner_password: Some("first"),
+            ..Setup::default()
+        },
+    );
+    two.host.collab.set_password(Some("second".into()));
+    let clip = two.host.doc.clips.keys().next().unwrap();
+    two.joiner.run(MoveClip::new(clip, PPQN, None));
+    two.settle();
+    two.host.run(MoveClip::new(clip, PPQN * 2, None));
+    two.joiner.collab.say("still here");
+    two.settle();
+    assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
+    assert_eq!(lines(&two.host).last().unwrap().1, "still here");
+
+    let mut carol = two.another("Carol", None);
+    let mut asked = 0;
+    for _ in 0..200 {
+        two.tick();
+        carol.pump();
+        if let Some(ask) = carol.collab.password_wanted() {
+            asked += 1;
+            if ask.wrong {
+                break;
+            }
+            carol.collab.give_password("first");
+        }
+    }
+    assert!(asked >= 2, "the old password let Carol in");
+    assert!(bring_in(&mut two, &mut carol, Some("second")));
+
+    // Cleared: nobody new is asked, and those in are still sealed and well.
+    two.host.collab.set_password(None);
+    assert!(!two.host.collab.has_password());
+    let mut dave = two.another("Dave", None);
+    assert!(bring_in(&mut two, &mut dave, None));
+    two.host.run(MoveClip::new(clip, PPQN, None));
+    two.settle();
+    assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
+}
+
+/// *Ask before letting people in*: a newcomer who proved who they are waits,
+/// told so, until the host lets them in — and several wait in turn.
+#[test]
+fn ask_first_holds_newcomers_until_the_host_answers() {
+    let mut two = Two::new("ask-first", 2);
+    two.host.collab.set_ask_first(true);
+    let mut carol = two.another("Carol", None);
+    let mut dave = two.another("Dave", None);
     for _ in 0..60 {
         two.tick();
-        again.pump();
+        carol.pump();
+        dave.pump();
     }
-    let why = again.collab.ended().expect("refused");
-    assert!(why.contains("removed"), "{why}");
-    assert!(two.host.collab.peers().is_empty());
+    assert_eq!(two.host.collab.knocks(), vec!["Carol", "Dave"]);
+    assert_eq!(carol.collab.waiting_for_host(), Some("Host"));
+    assert!(carol.collab.question().is_none(), "nothing sent yet");
+    assert_eq!(two.host.collab.peers().len(), 1);
+
+    assert!(
+        two.host
+            .collab
+            .answer_knock(Knock::LetIn, &mut two.host.doc)
+            .is_none()
+    );
+    assert_eq!(two.host.collab.knocks(), vec!["Dave"]);
+    assert!(bring_in(&mut two, &mut carol, None));
+
+    two.host
+        .collab
+        .answer_knock(Knock::TurnAway, &mut two.host.doc);
+    for _ in 0..40 {
+        two.tick();
+        dave.pump();
+    }
+    let why = dave.collab.ended().expect("turned away");
+    assert!(why.contains("Host didn't let you in"), "{why}");
+    assert!(two.host.collab.knocks().is_empty());
+
+    // Turned away is not blocked: Dave may knock again.
+    let mut dave = two.another("Dave", Some(dave.collab.options.identity.clone()));
+    for _ in 0..40 {
+        two.tick();
+        dave.pump();
+    }
+    assert_eq!(two.host.collab.knocks(), vec!["Dave"]);
+    let blocked = two
+        .host
+        .collab
+        .answer_knock(Knock::Block, &mut two.host.doc)
+        .expect("blocked");
+    assert_eq!(blocked.name, "Dave");
+    for _ in 0..40 {
+        two.tick();
+        dave.pump();
+    }
+    assert_eq!(dave.collab.ended(), Some(CANT_JOIN));
+}
+
+/// Somebody who leaves while waiting is no longer waiting.
+#[test]
+fn a_knock_that_leaves_is_forgotten() {
+    let mut two = Two::new("ask-first-leaves", 2);
+    two.host.collab.set_ask_first(true);
+    let mut carol = two.another("Carol", None);
+    run_with(&mut two, &mut carol, 40);
+    assert_eq!(two.host.collab.knocks(), vec!["Carol"]);
+    carol
+        .collab
+        .answer(JoinAnswer::Cancel, &mut carol.history)
+        .unwrap();
+    run_with(&mut two, &mut carol, 40);
+    assert!(two.host.collab.knocks().is_empty());
+}
+
+/// *Lock*: nobody new at all, in a sentence that says so.
+#[test]
+fn a_locked_session_takes_nobody_new() {
+    let mut two = Two::new("locked", 2);
+    two.host.collab.set_locked(true);
+    let mut carol = two.another("Carol", None);
+    assert!(!bring_in(&mut two, &mut carol, None));
+    assert_eq!(carol.collab.ended(), Some(LOCKED));
+    two.host.collab.set_locked(false);
+    let mut carol = two.another("Carol", None);
+    assert!(bring_in(&mut two, &mut carol, None));
+}
+
+/// The proof names the session it was made for: one made with another code
+/// does not get in.
+#[test]
+fn a_proof_made_for_another_session_is_refused() {
+    let mut two = Two::new("other-code", 2);
+    let mut options = options("Host");
+    options.code = "ABC123".into();
+    two.host.collab = Collab::host(Box::new(two.hub.server_endpoint()), options);
+    let mut mallory = two.another("Mallory", None);
+    mallory.collab.options.code = "ZZZ999".into();
+    assert!(!bring_in(&mut two, &mut mallory, None));
+    let why = mallory.collab.ended().unwrap();
+    assert!(why.contains("couldn't prove"), "{why}");
+
+    let mut carol = two.another("Carol", None);
+    carol.collab.options.code = "abc-123".into();
+    assert!(
+        bring_in(&mut two, &mut carol, None),
+        "however the code was typed: {:?}",
+        carol.collab.ended()
+    );
+}
+
+/// A connection that says hello and never answers the challenge is let go
+/// of once the host has waited long enough.
+#[test]
+fn a_connection_that_never_answers_is_dropped() {
+    let mut two = Two::new("silent", 2);
+    let mut options = options("Host");
+    options.answer_within = Duration::from_millis(30);
+    two.host.collab = Collab::host(Box::new(two.hub.server_endpoint()), options);
+    let mut silent = two.hub.connect();
+    silent.send(
+        fontelle_net::SERVER,
+        Channel::Reliable,
+        &Msg::Hello {
+            protocol: PROTOCOL,
+            fontelle: env!("CARGO_PKG_VERSION").into(),
+            name: "Silent".into(),
+            install: PersistentId::new(),
+        }
+        .to_bytes(),
+    );
+    for _ in 0..5 {
+        two.tick();
+    }
+    let challenged = silent
+        .poll()
+        .into_iter()
+        .any(|i| matches!(i, Incoming::Message(_, _, b) if matches!(Msg::from_bytes(&b), Ok(Msg::Challenge { .. }))));
+    assert!(challenged, "challenged first");
+    assert_eq!(host_connections(&two), 1);
+    std::thread::sleep(Duration::from_millis(40));
+    two.tick();
+    assert_eq!(host_connections(&two), 0, "still held");
+}
+
+fn host_connections(two: &Two) -> usize {
+    match &two.host.collab.role {
+        Role::Host(host) => host.peers.len(),
+        Role::Joiner(_) => unreachable!(),
+    }
+}
+
+/// What somebody may touch follows the key they proved, so being removed
+/// and coming back does not hand back what the host took away.
+#[test]
+fn permissions_follow_the_proven_key_across_a_return() {
+    let mut two = Two::new("perm-key", 2);
+    let bob = joiner_space(&two);
+    two.host
+        .collab
+        .set_permissions(
+            bob,
+            fontelle_model::wire::Permissions {
+                mixer: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    two.settle();
+    two.host.collab.remove(bob, &mut two.host.doc).unwrap();
+    two.settle();
+    let mut again = two.another("Joiner", Some(joiner_identity(&two)));
+    assert!(bring_in(&mut two, &mut again, None));
+    assert!(!again.collab.my_permissions().mixer, "kept off the mixer");
+    let mut carol = two.another("Carol", None);
+    assert!(bring_in(&mut two, &mut carol, None));
+    assert!(carol.collab.my_permissions().mixer, "somebody else is not");
+}
+
+/// The join's session id goes before the proof, in the clear: somebody
+/// else naming it must not take that person's place.
+#[test]
+fn a_session_id_alone_cannot_take_somebodys_place() {
+    let mut two = Two::new("hijack", 2);
+    let bobs = match &two.joiner.collab.role {
+        Role::Joiner(joiner) => joiner.session,
+        Role::Host(_) => unreachable!(),
+    };
+    let mut mallory = two.another("Mallory", None);
+    if let Role::Joiner(joiner) = &mut mallory.collab.role {
+        joiner.session = bobs;
+        joiner.say_hello(&mut mallory.collab.transport, &mallory.collab.options);
+    }
+    assert!(bring_in(&mut two, &mut mallory, None));
+    two.settle();
+    assert!(two.joiner.collab.is_live(), "Bob is still in");
+    let names: Vec<String> = two
+        .host
+        .collab
+        .peers()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert_ne!(
+        two.host.collab.peers()[0].peer,
+        two.host.collab.peers()[1].peer,
+        "two places, not one taken"
+    );
+}
+
+/// The joiner's own link, cut and joined again the way `fontelle-net` does
+/// it: a new connection, which says `Connected`.
+struct Rejoins {
+    hub: MemoryHub,
+    inner: fontelle_net::MemoryTransport,
+    back: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Transport for Rejoins {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        self.inner.send(peer, channel, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        if self.back.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.inner = self.hub.connect();
+            return vec![Incoming::Connected(fontelle_net::SERVER)];
+        }
+        self.inner.poll()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// In a password session a joiner whose link dropped proves itself again
+/// on the new one — with the password it gave, not asked twice — and is
+/// back in its place, sealed.
+#[test]
+fn a_password_joiner_whose_link_drops_is_back_without_being_asked() {
+    back_after_a_drop("password-rejoin", Some("pw"));
+}
+
+/// Without a password the same: the new connection runs its own key
+/// exchange, and is sealed under fresh keys.
+#[test]
+fn a_joiner_whose_link_drops_is_sealed_again_under_fresh_keys() {
+    back_after_a_drop("open-rejoin", None);
+}
+
+fn back_after_a_drop(name: &str, password: Option<&'static str>) {
+    let back = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let theirs = back.clone();
+    let mut two = Two::with(
+        name,
+        2,
+        Setup {
+            host_password: password,
+            joiner_password: password,
+            joiner_link: Some(Box::new(move |hub, link| {
+                Box::new(Rejoins {
+                    hub: hub.clone(),
+                    inner: link,
+                    back: theirs,
+                })
+            })),
+            ..Setup::default()
+        },
+    );
+    let bob = joiner_space(&two);
+    back.store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut asked = false;
+    for _ in 0..80 {
+        two.tick();
+        asked |= two.joiner.collab.password_wanted().is_some();
+    }
+    assert!(!asked, "asked for the password again");
+    assert!(two.joiner.collab.is_live());
+    assert_eq!(joiner_space(&two), bob, "in its own place");
+    let opened = two.host.collab.transport.opened_in();
+    let clip = two.host.doc.clips.keys().next().unwrap();
+    two.joiner.run(MoveClip::new(clip, PPQN, None));
+    two.settle();
+    assert_eq!(two.joiner.doc.sync_hash(), two.host.doc.sync_hash());
+    assert!(
+        two.host.collab.transport.opened_in() > opened,
+        "the new connection is sealed"
+    );
+}
+
+/// What the joiner signs names both halves of the key exchange: a relay
+/// that swaps either for its own — to sit in the middle of the sealed
+/// connection — makes the signature good for nothing, and the join is
+/// refused.
+#[test]
+fn a_swapped_exchange_key_is_refused() {
+    for (name, host_side) in [("swap-joiners-half", true), ("swap-hosts-half", false)] {
+        let mut two = Two::new(name, 2);
+        let mut mallory_in_the_middle = Side {
+            collab: Collab::join(
+                Box::new(Swapping {
+                    inner: Box::new(two.hub.connect()),
+                    answers: host_side,
+                }),
+                options("Carol"),
+                two.dir.join(name),
+            ),
+            doc: Project::new("nothing yet"),
+            history: History::new(),
+            place: Place {
+                bundle: None,
+                banks: Vec::new(),
+            },
+        };
+        assert!(!bring_in(&mut two, &mut mallory_in_the_middle, None));
+        let why = mallory_in_the_middle.collab.ended().unwrap();
+        assert!(why.contains("couldn't prove"), "{why}");
+    }
+}
+
+/// A link that puts its own exchange key in place of the joiner's (in each
+/// `Answer` it sends, with `answers`) or the host's (in each `Challenge` it
+/// hears).
+struct Swapping {
+    inner: Box<dyn Transport>,
+    answers: bool,
+}
+
+fn another_exchange_key() -> Vec<u8> {
+    identity::Exchange::new().public().to_vec()
+}
+
+impl Transport for Swapping {
+    fn send(&mut self, peer: PeerId, channel: Channel, bytes: &[u8]) {
+        match Msg::from_bytes(bytes) {
+            Ok(Msg::Answer {
+                key,
+                signature,
+                proof,
+                ..
+            }) if self.answers => {
+                let swapped = Msg::Answer {
+                    key,
+                    signature,
+                    proof,
+                    exchange: another_exchange_key(),
+                };
+                self.inner.send(peer, channel, &swapped.to_bytes());
+            }
+            _ => self.inner.send(peer, channel, bytes),
+        }
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        let answers = self.answers;
+        self.inner
+            .poll()
+            .into_iter()
+            .map(|incoming| match incoming {
+                Incoming::Message(peer, channel, bytes) if !answers => {
+                    match Msg::from_bytes(&bytes) {
+                        Ok(Msg::Challenge {
+                            nonce, password, ..
+                        }) => Incoming::Message(
+                            peer,
+                            channel,
+                            Msg::Challenge {
+                                nonce,
+                                password,
+                                exchange: another_exchange_key(),
+                            }
+                            .to_bytes(),
+                        ),
+                        _ => Incoming::Message(peer, channel, bytes),
+                    }
+                }
+                other => other,
+            })
+            .collect()
+    }
+    fn stats(&self, peer: PeerId) -> fontelle_net::LinkStats {
+        self.inner.stats(peer)
+    }
+}
+
+/// The link keys come from the exchange, the nonce and — when there is
+/// one — the password: change any of them and the keys change, so a relay
+/// that ran both halves of the exchange itself still lacks the password's.
+#[test]
+fn link_keys_mix_the_exchange_the_nonce_and_the_password() {
+    let password = identity::PasswordKeys::derive("pw", "ABCDEF");
+    let base = identity::link_keys(&[1; 32], &[2; 32], Some(&password));
+    let keys = |k: &identity::LinkKeys| (k.host_to_joiner, k.joiner_to_host);
+    assert_ne!(base.host_to_joiner, base.joiner_to_host, "a key each way");
+    for other in [
+        identity::link_keys(&[9; 32], &[2; 32], Some(&password)),
+        identity::link_keys(&[1; 32], &[9; 32], Some(&password)),
+        identity::link_keys(&[1; 32], &[2; 32], None),
+        identity::link_keys(
+            &[1; 32],
+            &[2; 32],
+            Some(&identity::PasswordKeys::derive("other", "ABCDEF")),
+        ),
+    ] {
+        assert_ne!(keys(&other), keys(&base));
+    }
+    // Both ends of one exchange agree on the secret.
+    let (host, joiner) = (identity::Exchange::new(), identity::Exchange::new());
+    let (host_public, joiner_public) = (host.public().to_vec(), joiner.public().to_vec());
+    assert_eq!(
+        host.agree(&joiner_public).unwrap(),
+        joiner.agree(&host_public).unwrap()
+    );
+}
+
+/// An install's key is kept in a file of its own, made the first time and
+/// read back after, readable by its owner alone.
+#[test]
+fn an_identity_is_made_once_and_kept() {
+    let dir = std::env::temp_dir().join(format!("fontelle-identity-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let path = dir.join("identity.key");
+    let made = Identity::load_or_create(&path).unwrap();
+    let again = Identity::load_or_create(&path).unwrap();
+    assert_eq!(made.public_key(), again.public_key());
+    assert_eq!(made.public_key().len(), 32);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    assert_ne!(Identity::generate().public_key(), made.public_key());
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Somebody who joins sees where everybody already is, not only those who

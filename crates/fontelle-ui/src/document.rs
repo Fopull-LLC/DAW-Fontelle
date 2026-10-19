@@ -1324,6 +1324,22 @@ pub struct SessionView {
     /// What the song uses that this computer has not got — plugins, and
     /// files that could not be had — each with where the song uses it.
     pub missing: Vec<MissingItem>,
+    /// The host's: whether the session asks for a password — **never the
+    /// password itself**, which no view carries.
+    pub password_on: bool,
+    /// The host's *Ask before letting people in*, and *Lock*.
+    pub ask_first: bool,
+    pub locked: bool,
+    /// A joiner's: the join is waiting on the person's password.
+    pub password_ask: Option<PasswordAsk>,
+}
+
+/// A join waiting on a password: which asking this is (a new one opens the
+/// prompt again), and whether the last one given was wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PasswordAsk {
+    pub attempt: u32,
+    pub wrong: bool,
 }
 
 /// One thing the open song uses that is not on this computer, as the Share
@@ -1963,6 +1979,18 @@ pub trait StudioHost: DocumentHost {
     /// The host's two controls on a person's row (§10.1, F49).
     fn set_peer_view_only(&mut self, _peer: u16, _view_only: bool) {}
     fn remove_peer(&mut self, _peer: u16) {}
+    /// Block on a person's row: removed, and kept out — this session and,
+    /// through the settings, every later one.
+    fn block_peer(&mut self, _peer: u16) {}
+    /// The session's password: set, changed, or cleared with `None`. Before
+    /// a share it is the password the share starts with.
+    fn set_session_password(&mut self, _password: Option<String>) {}
+    /// *Ask before letting people in*, and *Lock* (the host's).
+    fn set_session_ask_first(&mut self, _on: bool) {}
+    fn set_session_locked(&mut self, _on: bool) {}
+    /// A joiner's answer to [`SessionView::password_ask`]: the password, or
+    /// `None` to abandon the join.
+    fn answer_session_password(&mut self, _password: Option<String>) {}
     /// Asks again for the files the song names that are not here — turned
     /// down, or failed (the Share panel's *Fetch again*).
     fn fetch_missing_again(&mut self) {}

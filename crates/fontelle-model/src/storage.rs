@@ -320,7 +320,7 @@ fn meta_v0_to_v1(meta: &mut serde_json::Value) {
 /// Hand-rolled rather than pulled in: the only thing that needs a calendar is
 /// this one field, and the civil-from-days algorithm is short, exact and has
 /// no dependency to keep up to date.
-pub(crate) fn now_iso8601() -> String {
+pub fn now_iso8601() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

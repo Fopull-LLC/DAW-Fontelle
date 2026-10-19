@@ -69,8 +69,8 @@ pub use prefab::{
 pub use project::{Marker, Project, ProjectMeta, TempoMap, TempoSegment, ViewState};
 pub use recording::{notes_from_capture, notes_from_looped_capture};
 pub use storage::{
-    BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, peek_meta,
-    save_project,
+    BUNDLE_DIRS, PROJECT_FILE, PROJECT_FORMAT_VERSION, StorageError, load_project, now_iso8601,
+    peek_meta, save_project,
 };
 pub use stretch::with_stretch;
 pub use study::{

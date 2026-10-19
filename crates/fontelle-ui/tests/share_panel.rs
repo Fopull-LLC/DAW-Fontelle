@@ -47,9 +47,14 @@ fn pressables(l: &SharePanelLayout) -> Vec<(Rect, ShareHit)> {
         (l.copy, ShareHit::Copy),
         (l.join, ShareHit::Join),
     ];
+    all.push((l.share_password, ShareHit::SharePassword));
+    all.push((l.controls[0], ShareHit::Password));
+    all.push((l.controls[1], ShareHit::AskFirst));
+    all.push((l.controls[2], ShareHit::Lock));
     for (i, row) in l.rows.iter().enumerate() {
         all.push((row.view_only, ShareHit::ViewOnly(i)));
         all.push((row.remove, ShareHit::Remove(i)));
+        all.push((row.block, ShareHit::Block(i)));
         all.push((row.follow, ShareHit::Follow(i)));
         for (k, chip) in row.allow.iter().enumerate() {
             all.push((*chip, ShareHit::Allow(i, k)));
@@ -488,4 +493,85 @@ fn an_empty_room_is_one_line() {
     let empty = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Hosting, 0);
     assert!((empty.nobody.height - metrics().row_height).abs() < 0.5);
     assert!(empty.status.y - empty.nobody.bottom() < metrics().row_height * 0.5);
+}
+
+// --- who may come in (Ty, 2026-10-19) ---
+
+/// While hosting, the panel has the session's three locks under the code:
+/// a password, *Ask first*, and *Lock* — and no other panel has them.
+#[test]
+fn the_host_has_a_password_ask_first_and_lock_under_the_code() {
+    for window in [wide(), narrow()] {
+        let l = share_panel_layout(window, anchor(window), &metrics(), ShareRole::Hosting, 2);
+        for (k, control) in l.controls.iter().enumerate() {
+            assert!(!control.is_empty(), "control {k} at {window:?}");
+            assert!(within(*control, l.frame));
+            assert!(control.y >= l.code.bottom() - 0.5, "under the code");
+            assert!(
+                l.rows
+                    .first()
+                    .is_none_or(|row| control.bottom() <= row.frame.y + 0.5),
+                "above the people"
+            );
+        }
+        for role in [ShareRole::Alone, ShareRole::Joined, ShareRole::Joining] {
+            let other = share_panel_layout(window, anchor(window), &metrics(), role, 2);
+            assert!(other.controls.iter().all(|c| c.is_empty()), "{role:?}");
+        }
+    }
+}
+
+/// Block sits on each person's row on the host's panel, apart from remove,
+/// which only kicks; a joiner's rows have neither.
+#[test]
+fn every_person_on_the_hosts_panel_can_be_blocked() {
+    let host = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Hosting, 2);
+    for (i, row) in host.rows.iter().enumerate() {
+        assert!(!row.block.is_empty());
+        assert!(within(row.block, row.frame));
+        assert!(!row.block.intersects(&row.remove));
+        let (x, y) = centre(row.block);
+        assert_eq!(share_hit(&host, x, y), Some(ShareHit::Block(i)));
+    }
+    let joiner = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Joined, 2);
+    assert!(joiner.rows.iter().all(|r| r.block.is_empty()));
+}
+
+/// Alone, a password can be set as the song is shared: a third way in.
+#[test]
+fn alone_the_panel_offers_to_share_with_a_password() {
+    let l = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Alone, 0);
+    assert!(!l.share_password.is_empty());
+    assert!(within(l.share_password, l.frame));
+    let (x, y) = centre(l.share_password);
+    assert_eq!(share_hit(&l, x, y), Some(ShareHit::SharePassword));
+    for role in [ShareRole::Hosting, ShareRole::Joined, ShareRole::Starting] {
+        let other = share_panel_layout(wide(), anchor(wide()), &metrics(), role, 1);
+        assert!(other.share_password.is_empty(), "{role:?}");
+    }
+}
+
+/// The words the panel draws: the controls' and Block are shaped while
+/// hosting, and a password is only ever drawn as dots.
+#[test]
+fn the_panels_words_include_the_locks_and_a_password_is_dots() {
+    use fontelle_ui::canvas::{
+        ASK_FIRST, BLOCK_PEER, LOCK_SESSION, PASSWORD_OFF, PASSWORD_ON, SHARE_WITH_PASSWORD,
+        masked, share_panel_words,
+    };
+    let hosting = share_panel_words(ShareRole::Hosting, &[]);
+    for word in [
+        ASK_FIRST,
+        BLOCK_PEER,
+        LOCK_SESSION,
+        PASSWORD_OFF,
+        PASSWORD_ON,
+    ] {
+        assert!(hosting.iter().any(|w| w == word), "{word}");
+    }
+    let alone = share_panel_words(ShareRole::Alone, &[]);
+    assert!(alone.iter().any(|w| w == SHARE_WITH_PASSWORD));
+    assert_eq!(masked("hunter2"), "\u{2022}".repeat(7));
+    assert_eq!(masked("päss"), "\u{2022}".repeat(4), "a dot a character");
+    assert_eq!(masked(""), "");
 }
