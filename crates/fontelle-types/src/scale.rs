@@ -469,3 +469,159 @@ fn parse_note_list(text: &str) -> Option<Option<KeyScale>> {
             .map(|s| KeyScale::new(root, s.id)),
     )
 }
+
+// ------------------------------------------------------- finding a scale
+
+/// A note as *Find my scale…* weighs it: its key, and when and how long it
+/// sounds, in ticks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScaleNote {
+    pub key: u8,
+    pub start: i64,
+    pub length: i64,
+}
+
+/// One row of what *Find my scale…* offers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScaleFit {
+    /// The key it would set.
+    pub key: KeyScale,
+    /// The share of the notes' sounding time inside it, 0..=1.
+    pub fit: f32,
+    /// The pitch classes sounding outside it, the heaviest first — the why.
+    pub out: Vec<u8>,
+    /// The other keys of exactly the same notes (`C major` — or `A minor`),
+    /// the likelier home first.
+    pub also: Vec<KeyScale>,
+}
+
+/// What *Find my scale…* found.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ScaleFinding {
+    /// Best first.
+    pub rows: Vec<ScaleFit>,
+    /// So few notes that many scales fit them all: the list should say so
+    /// rather than pretend to know.
+    pub few_notes: bool,
+}
+
+/// How many rows *Find my scale…* offers.
+pub const MOST_SCALE_ROWS: usize = 12;
+
+/// The scales `notes` could be in, best first.
+///
+/// Each pitch class weighs as long as it sounds; a key's fit is the share of
+/// that weight inside it. The same notes in another order of steps — C major,
+/// A minor, D dorian — are one row, led by the note that sounds most like
+/// home (heaviest, first, last, lowest). Rows of equal fit list the familiar
+/// scales before the exotic.
+pub fn find_scales(notes: &[ScaleNote]) -> ScaleFinding {
+    let mut weight = [0f64; 12];
+    for n in notes {
+        weight[usize::from(n.key % 12)] += n.length.max(1) as f64;
+    }
+    let total: f64 = weight.iter().sum();
+    let distinct = weight.iter().filter(|w| **w > 0.0).count();
+    let few_notes = distinct < 5 || notes.len() < 6;
+    if total <= 0.0 {
+        return ScaleFinding {
+            rows: Vec::new(),
+            few_notes: true,
+        };
+    }
+    // How much each pitch class sounds like home.
+    let mut home = weight.map(|w| w / total);
+    if let Some(first) = notes.iter().min_by_key(|n| (n.start, n.key)) {
+        home[usize::from(first.key % 12)] += 0.15;
+    }
+    if let Some(last) = notes
+        .iter()
+        .max_by_key(|n| (n.start + n.length, u8::MAX - n.key))
+    {
+        home[usize::from(last.key % 12)] += 0.2;
+    }
+    if let Some(lowest) = notes.iter().min_by_key(|n| n.key) {
+        home[usize::from(lowest.key % 12)] += 0.1;
+    }
+    let family_rank = |s: &Scale| {
+        ScaleFamily::ALL
+            .iter()
+            .position(|f| *f == s.family)
+            .unwrap_or(99)
+    };
+
+    // Every root of every scale, grouped by the notes it holds.
+    struct Group {
+        mask: u16,
+        fit: f64,
+        members: Vec<(KeyScale, f64, (usize, usize))>,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    for (index, s) in SCALES.iter().enumerate() {
+        for root in 0..12u8 {
+            let mask = s.mask(root);
+            let inside: f64 = (0..12)
+                .filter(|pc| mask & (1 << pc) != 0)
+                .map(|pc| weight[pc])
+                .sum();
+            let member = (
+                KeyScale::new(root, s.id),
+                home[usize::from(root)],
+                (family_rank(s), index),
+            );
+            match groups.iter_mut().find(|g| g.mask == mask) {
+                Some(g) => g.members.push(member),
+                None => groups.push(Group {
+                    mask,
+                    fit: inside / total,
+                    members: vec![member],
+                }),
+            }
+        }
+    }
+    for g in &mut groups {
+        // The likeliest home first, then the familiar scale.
+        g.members.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.2.cmp(&b.2))
+        });
+    }
+    // Best fit first; of equal fits, the familiar scale, then the
+    // likelier home.
+    let quantised = |fit: f64| (fit * 10_000.0).round() as i64;
+    groups.sort_by(|a, b| {
+        quantised(b.fit)
+            .cmp(&quantised(a.fit))
+            .then(a.members[0].2.cmp(&b.members[0].2))
+            .then(
+                b.members[0]
+                    .1
+                    .partial_cmp(&a.members[0].1)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+    });
+    let rows = groups
+        .into_iter()
+        .take(MOST_SCALE_ROWS)
+        .map(|g| {
+            let mut out: Vec<u8> = (0..12u8)
+                .filter(|pc| weight[usize::from(*pc)] > 0.0 && g.mask & (1 << pc) == 0)
+                .collect();
+            out.sort_by(|a, b| {
+                weight[usize::from(*b)]
+                    .partial_cmp(&weight[usize::from(*a)])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut members = g.members.into_iter().map(|m| m.0);
+            let key = members.next().expect("a group has a member");
+            ScaleFit {
+                key,
+                fit: g.fit as f32,
+                out,
+                also: members.collect(),
+            }
+        })
+        .collect();
+    ScaleFinding { rows, few_notes }
+}

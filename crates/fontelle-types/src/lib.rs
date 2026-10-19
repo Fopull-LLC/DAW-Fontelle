@@ -111,8 +111,9 @@ pub use preset::{
     PresetRef, TrackChain, TrackInsert, TrackPreset,
 };
 pub use scale::{
-    KeyScale, PITCH_NAMES, SCALES, Scale, ScaleFamily, fit_to_scale, parse_scale, scale,
-    scale_matches, scale_notes, scale_text,
+    KeyScale, MOST_SCALE_ROWS, PITCH_NAMES, SCALES, Scale, ScaleFamily, ScaleFinding, ScaleFit,
+    ScaleNote, find_scales, fit_to_scale, parse_scale, scale, scale_matches, scale_notes,
+    scale_text,
 };
 pub use study::{
     DEFAULT_GLIDE_MS, PitchEdit, Study, StudyClean, StudyCompSpan, StudyDenoise, StudyEngines,
