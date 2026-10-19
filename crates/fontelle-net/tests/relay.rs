@@ -1022,3 +1022,35 @@ fn unreliable_messages_go_ahead_of_a_file_in_order() {
         &sent[before..]
     );
 }
+
+/// By hand: fire-and-forget crosses Floptle Cloud both ways — what a shared
+/// song's whereabouts ride.
+/// `cargo test -p fontelle-net --test relay -- --ignored unreliable`.
+#[test]
+#[ignore = "talks to relay.fopull.com"]
+fn unreliable_crosses_floptle_cloud() {
+    let (mut host, code) =
+        fontelle_net::host(&Relay::Cloud, env!("CARGO_PKG_VERSION")).expect("hosts");
+    let mut joiner = fontelle_net::join(&Relay::Cloud, &code).expect("joins");
+    joiner.send(SERVER, Channel::Reliable, b"here");
+    let heard = poll_until(host.as_mut(), |i| message(i).is_some()).expect("the joiner is in");
+    let peer = message(&heard).unwrap().0;
+    for _ in 0..20 {
+        joiner.send(SERVER, Channel::Unreliable, b"up");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let up = poll_until(host.as_mut(), |i| message(i).is_some_and(|m| m.1 == b"up"));
+    for _ in 0..20 {
+        host.send(peer, Channel::Unreliable, b"down");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let down = poll_until(joiner.as_mut(), |i| {
+        message(i).is_some_and(|m| m.1 == b"down")
+    });
+    println!(
+        "joiner to host: {}; host to joiner: {}",
+        up.is_some(),
+        down.is_some()
+    );
+    assert!(up.is_some() && down.is_some());
+}

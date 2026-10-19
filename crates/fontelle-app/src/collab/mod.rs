@@ -1116,9 +1116,11 @@ impl Turn<'_> {
         if in_hand {
             let mut now = Vec::new();
             for incoming in fresh {
+                // By what it says: a relay carries it on its reliable
+                // stream (`fontelle_net`'s `Reliably`).
                 let whereabouts = matches!(
                     &incoming,
-                    Incoming::Message(_, Channel::Unreliable, bytes)
+                    Incoming::Message(_, _, bytes)
                         if matches!(Msg::from_bytes(bytes), Ok(Msg::Presence { .. }))
                 );
                 if whereabouts {

@@ -339,7 +339,12 @@ pub fn share_panel_layout_full(
     let code_h = if hosting { code_size + pad } else { 0.0 };
     // On the host's panel a person takes two rows: their name and controls,
     // then what they may touch (phase 2.4).
-    let person_h = if hosting { 2.0 * row } else { row };
+    // An empty room's one line is a line.
+    let person_h = if hosting && people > 0 {
+        2.0 * row
+    } else {
+        row
+    };
     let buttons = if role.join().is_some() {
         2.0 * button + pad * 0.5
     } else {

@@ -481,3 +481,11 @@ fn the_host_can_allow_each_person_the_mixer_sounds_and_plugins() {
             .all(|r| r.allow.iter().all(|c| c.is_empty()))
     );
 }
+
+/// Nobody here yet is one line, not the two a person's row takes.
+#[test]
+fn an_empty_room_is_one_line() {
+    let empty = share_panel_layout(wide(), anchor(wide()), &metrics(), ShareRole::Hosting, 0);
+    assert!((empty.nobody.height - metrics().row_height).abs() < 0.5);
+    assert!(empty.status.y - empty.nobody.bottom() < metrics().row_height * 0.5);
+}

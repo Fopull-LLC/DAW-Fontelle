@@ -3440,3 +3440,65 @@ fn whereabouts_are_listed_with_who_they_are() {
     assert_eq!(there.len(), 1);
     assert_eq!(there[0].name, "Alice");
 }
+
+/// Whereabouts and chat over a real relay socket, the way two studios on
+/// two computers talk — fire-and-forget through the relay, not the
+/// in-process hub the other presence tests use.
+#[test]
+fn whereabouts_and_chat_cross_a_real_relay() {
+    use fontelle_ui::document::SessionRole;
+    let relay = LocalRelay::start();
+    let dir = scratch("relay-presence");
+    let _cleanup = Cleanup(dir.clone());
+    let mut alice = a_studio_on(&relay, &dir, "Alice");
+    alice.save_as("Song").unwrap();
+    StudioHost::share_song(&mut alice).unwrap();
+    until("a code", || {
+        alice.pump_session();
+        StudioHost::session(&alice).code.is_some()
+    });
+    let code = StudioHost::session(&alice).code.unwrap();
+    let mut bob = a_studio_on(&relay, &dir, "Bob");
+    StudioHost::join_song(&mut bob, &code).unwrap();
+    until("the join's question", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session_question(&bob).is_some()
+    });
+    StudioHost::answer_session_question(&mut bob, 0).unwrap();
+    until("Bob's copy", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session(&bob).role == SessionRole::Joined
+    });
+    let lane = alice.lane_ids()[1];
+    let here = fontelle_model::wire::Presence {
+        pointer: Some(fontelle_model::wire::Pointer::Arrangement {
+            tick: 480.0,
+            lane,
+            down: 0.5,
+        }),
+        ..Default::default()
+    };
+    until("Bob sees Alice's pointer", || {
+        alice.set_presence(here.clone());
+        alice.pump_session();
+        bob.pump_session();
+        bob.presences().iter().any(|p| p.presence == here)
+    });
+    until("Alice sees Bob's", || {
+        bob.set_presence(here.clone());
+        alice.pump_session();
+        bob.pump_session();
+        alice.presences().iter().any(|p| p.name == "Bob")
+    });
+    StudioHost::say(&mut bob, "hello");
+    until("Alice reads it", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session(&alice)
+            .chat
+            .iter()
+            .any(|line| line.text == "hello")
+    });
+}

@@ -115,7 +115,7 @@ impl Relay {
 /// connection to the relay" the client raises for each joiner is kept from
 /// the session, which would otherwise forget them.
 struct Hosting {
-    inner: Option<Framed<Paced<RelayHost>>>,
+    inner: Option<Framed<Paced<Reliably<RelayHost>>>>,
     relay: Relay,
     build: String,
     code: String,
@@ -153,7 +153,7 @@ impl Hosting {
     fn new(inner: RelayHost, relay: &Relay, build: &str, code: &str) -> Self {
         let token = inner.reclaim_token();
         Self {
-            inner: Some(Framed::new(Paced::new(inner, relay.pace()))),
+            inner: Some(Framed::new(Paced::new(Reliably(inner), relay.pace()))),
             relay: relay.clone(),
             build: build.to_string(),
             code: code.to_string(),
@@ -260,7 +260,7 @@ impl Hosting {
         if let Some(token) = host.reclaim_token() {
             self.token = Some(token);
         }
-        let mut inner = Framed::new(Paced::new(host, self.relay.pace()));
+        let mut inner = Framed::new(Paced::new(Reliably(host), self.relay.pace()));
         if let Some(wake) = &self.wake {
             inner.set_wake(wake.clone());
         }
@@ -304,7 +304,7 @@ impl Transport for Hosting {
             return out;
         };
         let mut incoming = inner.poll();
-        if let Some(token) = inner.get_ref().get_ref().reclaim_token() {
+        if let Some(token) = inner.get_ref().get_ref().0.reclaim_token() {
             self.token = Some(token);
         }
         // The relay itself ended the lobby — nobody joined it for half an
@@ -427,7 +427,7 @@ pub fn join(relay: &Relay, code: &str) -> Result<Box<dyn Transport>, String> {
     let code = code.trim().to_uppercase();
     let inner = RelayClient::join(&addr, &code)?;
     Ok(Box::new(Joining {
-        inner: Some(Framed::new(Paced::new(inner, relay.pace()))),
+        inner: Some(Framed::new(Paced::new(Reliably(inner), relay.pace()))),
         addr,
         code,
         pace: relay.pace(),
@@ -451,7 +451,7 @@ pub fn join(relay: &Relay, code: &str) -> Result<Box<dyn Transport>, String> {
 /// A join that never got in fails as it always did, at once, and the relay
 /// turning a join away (the lobby ended, a wrong code) is the end, not a blip.
 struct Joining {
-    inner: Option<Framed<Paced<RelayClient>>>,
+    inner: Option<Framed<Paced<Reliably<RelayClient>>>>,
     addr: String,
     code: String,
     pace: u64,
@@ -500,7 +500,7 @@ impl Transport for Joining {
             if self.inner.is_none() && Instant::now() >= self.next_try {
                 self.next_try = Instant::now() + REJOIN_EVERY;
                 if let Ok(leg) = RelayClient::join(&self.addr, &self.code) {
-                    let mut leg = Framed::new(Paced::new(leg, self.pace));
+                    let mut leg = Framed::new(Paced::new(Reliably(leg), self.pace));
                     if let Some(wake) = &self.wake {
                         leg.set_wake(wake.clone());
                     }
@@ -566,5 +566,46 @@ impl Transport for Joining {
 
     fn take_join_progress(&mut self) -> Option<String> {
         self.inner.as_mut()?.take_join_progress()
+    }
+}
+
+/// A relay leg that carries fire-and-forget messages on its reliable
+/// stream.
+///
+/// Floptle Cloud's relay forwards the reliable stream and drops datagrams,
+/// both ways: measured 2026-10-19 (`unreliable_crosses_floptle_cloud`), the
+/// day a shared song's cursors first went over it and never arrived. Above
+/// this, the pace still sees them as fire-and-forget and lets them ahead
+/// of a file; they only travel reliably, and arrive marked reliable — so a
+/// receiver tells them by what they say, not by their channel.
+pub(crate) struct Reliably<T>(pub(crate) T);
+
+impl<T: Transport> Transport for Reliably<T> {
+    fn send(&mut self, peer: PeerId, _channel: Channel, bytes: &[u8]) {
+        self.0.send(peer, Channel::Reliable, bytes);
+    }
+    fn poll(&mut self) -> Vec<Incoming> {
+        self.0.poll()
+    }
+    fn stats(&self, peer: PeerId) -> LinkStats {
+        self.0.stats(peer)
+    }
+    fn disconnect(&mut self, peer: PeerId) {
+        self.0.disconnect(peer);
+    }
+    fn take_notices(&mut self) -> Vec<String> {
+        self.0.take_notices()
+    }
+    fn take_join_progress(&mut self) -> Option<String> {
+        self.0.take_join_progress()
+    }
+    fn lobby_code(&self) -> Option<String> {
+        self.0.lobby_code()
+    }
+    fn set_wake(&mut self, wake: crate::transport::Wake) {
+        self.0.set_wake(wake);
+    }
+    fn backlog(&self) -> usize {
+        self.0.backlog()
     }
 }
