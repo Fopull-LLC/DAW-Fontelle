@@ -16717,6 +16717,14 @@ impl Session {
         device: PresetDevice,
         entry: &crate::preset_bank::PresetEntry,
     ) -> Result<(), String> {
+        // **A load ends a listen**, as choosing a channel does: the keys
+        // went on playing the row last heard through the preview voice, and
+        // the preset just loaded was not what sounded — *"stuck sounding
+        // the same"* (2026-10-18).
+        if self.previewing {
+            self.previewing = false;
+            self.publish_live_target();
+        }
         // A plugin's own preset has no file this program can read: the
         // plugin loads it, below, once the target is known.
         let preset = match entry.origin {

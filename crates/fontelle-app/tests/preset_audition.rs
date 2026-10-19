@@ -168,3 +168,24 @@ fn the_keyboard_follows_the_audition_and_comes_back_to_the_channel() {
         "and comes back to the channel when the listen ends"
     );
 }
+
+/// *"stuck sounding the same"* (2026-10-18): a row heard, then a preset
+/// loaded, and the keys went on playing the row — loading applied the
+/// preset to the channel and left the live path aimed at the preview voice.
+/// A load is the end of a listen, as choosing a channel is.
+#[test]
+fn loading_a_preset_ends_the_listen() {
+    let mut session = a_session();
+    let channel_target = session.audition_target();
+    let choir = row_of(&session, "Choir Ahh");
+    StudioHost::audition_preset(&mut session, PresetDevice::Instrument, choir)
+        .expect("the row auditions");
+    let preview = session.audition_target();
+    assert_ne!(preview, channel_target);
+    StudioHost::apply_preset(&mut session, PresetDevice::Instrument, choir);
+    assert_ne!(
+        session.audition_target(),
+        preview,
+        "the keys still play the row heard, not the preset loaded"
+    );
+}
