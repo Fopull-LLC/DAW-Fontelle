@@ -23257,6 +23257,25 @@ impl WindowApp {
         {
             return;
         }
+        // The song strip: the wheel zooms the arrangement about the moment
+        // under the pointer, brought into view first.
+        if let Some(TransportHit::Scrub(sample)) = hit(&self.bar, &self.view, x, y)
+            && let Some(doc) = &self.options.document
+        {
+            let tick = doc.playhead_song_tick(sample);
+            let grid = self.timeline_layout.grid;
+            let v = &mut self.timeline.view;
+            let mut at = crate::canvas::timeline_tick_to_x(v, grid, tick);
+            if !(grid.x..=grid.right()).contains(&at) {
+                let half =
+                    (grid.width / 2.0 / v.pixels_per_tick.max(0.0001)) as fontelle_types::Tick;
+                v.scroll_tick = (tick - half).max(0);
+                at = crate::canvas::timeline_tick_to_x(v, grid, tick);
+            }
+            timeline_zoom_x(v, grid, at, 1.15_f32.powf(dy));
+            self.tree.invalidate(TIMELINE);
+            return;
+        }
 
         if self.tab == EditorTab::Mixer
             && self.layout.panel.body.contains(x, y)
@@ -23321,10 +23340,14 @@ impl WindowApp {
                 self.modifiers.shift_key(),
                 self.modifiers.alt_key(),
             );
+            // Over the ruler the wheel zooms in time about the pointer, as
+            // FL's does: the ruler is time, and there is nothing on it to
+            // scroll down to.
+            let on_ruler = self.timeline_layout.ruler.contains(x, y);
             let v = &mut self.timeline.view;
             if ctrl && shift || alt {
                 timeline_zoom_y(v, 1.15_f32.powf(dy));
-            } else if ctrl {
+            } else if ctrl || on_ruler {
                 timeline_zoom_x(v, grid, x.max(grid.x), 1.15_f32.powf(dy));
             } else if shift || dx != 0.0 {
                 // A fraction of the bars in view, glided — see
@@ -23354,9 +23377,10 @@ impl WindowApp {
             self.modifiers.alt_key(),
         );
 
+        let on_ruler = self.roll_layout.ruler.contains(x, y);
         if ctrl && shift || alt {
             zoom_y(&mut self.roll.view, grid, y.max(grid.y), 1.15_f32.powf(dy));
-        } else if ctrl {
+        } else if ctrl || on_ruler {
             zoom_x(&mut self.roll.view, grid, x.max(grid.x), 1.15_f32.powf(dy));
         } else if shift || dx != 0.0 {
             let by = if dx != 0.0 { dx } else { dy };

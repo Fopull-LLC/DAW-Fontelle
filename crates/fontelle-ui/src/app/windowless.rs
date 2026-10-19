@@ -222,6 +222,31 @@ impl Windowless {
         &self.app.chord_sounding
     }
 
+    /// The wheel turned `dy` notches with the pointer at `(x, y)`.
+    pub fn wheel_studio(&mut self, x: f32, y: f32, dy: f32) {
+        self.app.cursor = (x, y);
+        self.app.scroll_roll(0.0, dy);
+        self.app.glide_views(10.0);
+    }
+
+    /// The arrangement's ruler and grid, and its view.
+    pub fn timeline_ruler_and_view(&self) -> (Rect, Rect, crate::canvas::TimelineView) {
+        (
+            self.app.timeline_layout.ruler,
+            self.app.timeline_layout.grid,
+            self.app.timeline.view,
+        )
+    }
+
+    /// The roll's ruler and grid, and its view.
+    pub fn roll_ruler_and_view(&self) -> (Rect, Rect, crate::canvas::RollView) {
+        (
+            self.app.roll_layout.ruler,
+            self.app.roll_layout.grid,
+            self.app.roll.view,
+        )
+    }
+
     /// The open menu's rows, and what each says.
     pub fn menu_rows(&self) -> Vec<(Rect, String)> {
         self.app
