@@ -495,6 +495,21 @@ enum NameFor {
     Chat,
     /// A chord for the strip's note, by name or numeral (`Cmaj7/E`, `ii7`).
     ChordName,
+    /// The password a session asks this join for; `true` after a wrong one.
+    /// Drawn as dots. Escape abandons the join.
+    JoinPassword(bool),
+    /// The host's password for the session: to share with, or a new one
+    /// (blank clears it). Drawn as dots.
+    SessionPassword(PasswordFor),
+}
+
+/// What the host's password prompt is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasswordFor {
+    /// Share this song, with this password.
+    Share,
+    /// The password of the session already shared.
+    Change,
 }
 
 /// What was being done when the name the others see was asked for.
@@ -546,7 +561,19 @@ impl NameFor {
             Self::Setting(_) => "Type it \u{2014} blank for the default",
             Self::Chat => "Say something to everyone \u{2014} Enter sends",
             Self::ChordName => "A chord \u{2014} Cmaj7, F#m7b5, Bb/D, or in the key ii7",
+            Self::JoinPassword(false) => "This session has a password \u{2014} type it",
+            Self::JoinPassword(true) => "That password isn't right \u{2014} try again",
+            Self::SessionPassword(PasswordFor::Share) => "A password for this session",
+            Self::SessionPassword(PasswordFor::Change) => {
+                "A new password for this session \u{2014} blank for none"
+            }
         }
+    }
+
+    /// Whether what is typed is a password: drawn as dots, measured as dots,
+    /// and never put on the clipboard.
+    fn masked(self) -> bool {
+        matches!(self, Self::JoinPassword(_) | Self::SessionPassword(_))
     }
 }
 
@@ -3720,6 +3747,9 @@ impl WindowApp {
                         missing: &self.session.missing,
                         following: self.following,
                         chat: &self.session.chat,
+                        password_on: self.session.password_on,
+                        ask_first: self.session.ask_first,
+                        locked: self.session.locked,
                     }),
                     question: self.session_question.as_ref().map(|q| {
                         crate::render::QuestionNotice {
@@ -8061,7 +8091,7 @@ impl WindowApp {
         if let Some((target, _)) = &self.menu
             && target.name_prompt().is_some()
         {
-            let entry = self.menu_filter.clone();
+            let entry = self.prompt_entry();
             let mut want: Vec<usize> = vec![entry.caret()];
             if let Some((from, to)) = entry.selection() {
                 want.push(from);
@@ -19585,6 +19615,26 @@ impl WindowApp {
                 .into_iter()
                 .map(|(entry, _)| entry)
                 .collect(),
+            MenuTarget::NameProject(purpose) if purpose.masked() => {
+                let typed = self.menu_filter.text();
+                let mut entries = crate::canvas::name_prompt_entries(
+                    purpose.title(),
+                    &crate::canvas::masked(typed),
+                );
+                // Blank is not "Untitled": for a new password it is none at
+                // all, and for a join's it is nothing yet.
+                if typed.is_empty()
+                    && let Some(last) = entries.last_mut()
+                {
+                    *last = match purpose {
+                        NameFor::SessionPassword(PasswordFor::Change) => {
+                            MenuEntry::new("No password")
+                        }
+                        _ => MenuEntry::disabled("Type the password, then Enter"),
+                    };
+                }
+                entries
+            }
             MenuTarget::NameProject(purpose) => {
                 let mut entries =
                     crate::canvas::name_prompt_entries(purpose.title(), self.menu_filter.text());
@@ -20287,7 +20337,7 @@ impl WindowApp {
     fn text_field(&self) -> Option<crate::render::TextFieldChrome> {
         let (target, _) = self.menu.as_ref()?;
         let placeholder = target.name_prompt()?;
-        let entry = &self.menu_filter;
+        let entry = &self.prompt_entry();
         let width_to = |at: usize| self.field_widths.get(&at).copied().unwrap_or(0.0);
         Some(crate::render::TextFieldChrome {
             entry: entry.clone(),
@@ -20300,7 +20350,25 @@ impl WindowApp {
         })
     }
 
+    /// The prompt's field as it is shown and measured: a password's as dots
+    /// ([`TextEntry::masked`](crate::canvas::TextEntry::masked)), anything
+    /// else as typed.
+    fn prompt_entry(&self) -> crate::canvas::TextEntry {
+        match &self.menu {
+            Some((MenuTarget::NameProject(purpose), _)) if purpose.masked() => {
+                self.menu_filter.masked()
+            }
+            _ => self.menu_filter.clone(),
+        }
+    }
+
     fn menu_filter_key(&mut self, event: &winit::event::KeyEvent) -> bool {
+        self.menu_filter_logical_key(&event.logical_key)
+    }
+
+    /// [`menu_filter_key`](Self::menu_filter_key) by the key alone — what a
+    /// test without a keyboard can send.
+    fn menu_filter_logical_key(&mut self, logical_key: &winit::keyboard::Key) -> bool {
         use winit::keyboard::{Key, NamedKey};
         let ctrl = self.modifiers.control_key();
         let shift = self.modifiers.shift_key();
@@ -20335,7 +20403,8 @@ impl WindowApp {
         {
             return false;
         }
-        match &event.logical_key {
+        let masked = matches!(target, Some(MenuTarget::NameProject(purpose)) if purpose.masked());
+        match logical_key {
             // **Enter is the press.** A name box you can only finish with the
             // mouse is a name box, and then a reach for the mouse.
             Key::Named(NamedKey::Enter) if naming => {
@@ -20350,9 +20419,20 @@ impl WindowApp {
             }
             Key::Named(NamedKey::Escape) => {
                 let bounds = self.menu_at.1;
-                self.menu = None;
+                let closed = self.menu.take();
                 self.menu_filter.clear();
                 self.tree.invalidate_rect(bounds);
+                if matches!(
+                    closed,
+                    Some((MenuTarget::NameProject(NameFor::JoinPassword(_)), _))
+                ) {
+                    self.abandon_join();
+                }
+                true
+            }
+            // A password is never copied or cut out of its field: the
+            // clipboard is shared with every other program.
+            Key::Character(c) if masked && ctrl && matches!(c.as_str(), "c" | "C" | "x" | "X") => {
                 true
             }
             key => {
@@ -20426,9 +20506,24 @@ impl WindowApp {
                 {
                     doc.cancel_import();
                 }
+                // The join waits on nothing else: a password prompt closed
+                // without one is the join abandoned, not left hanging.
+                if matches!(target, MenuTarget::NameProject(NameFor::JoinPassword(_))) {
+                    self.abandon_join();
+                }
             }
         }
         inside
+    }
+
+    /// The password prompt dismissed: the join ends, said as the person's
+    /// own doing.
+    fn abandon_join(&mut self) {
+        if let Some(doc) = &mut self.options.document {
+            doc.answer_session_password(None);
+        }
+        self.read_session_now();
+        self.tree.invalidate_rect(self.layout.window);
     }
 
     /// Puts the plugin at `which` where `purpose` says — a new channel, an
@@ -25398,7 +25493,26 @@ impl WindowApp {
         if self.share_open && session.unread > 0 {
             doc.read_chat();
         }
+        let asked_before = self.session.password_ask;
+        let ask = session.password_ask;
         self.session = session;
+        // The join wants a password: asked for — again for each fresh
+        // asking, saying when the last was wrong. And a prompt for one the
+        // join no longer wants (it ended) goes.
+        match ask {
+            Some(ask) if asked_before.is_none_or(|before| before.attempt != ask.attempt) => {
+                self.ask_for_a_name(NameFor::JoinPassword(ask.wrong), String::new());
+            }
+            None if matches!(
+                self.menu,
+                Some((MenuTarget::NameProject(NameFor::JoinPassword(_)), _))
+            ) =>
+            {
+                self.menu = None;
+                self.menu_filter.clear();
+            }
+            _ => {}
+        }
         if question.is_some() && self.session_question.is_none() {
             self.session_question_shown = Some(std::time::Instant::now());
         }
@@ -26043,7 +26157,37 @@ impl WindowApp {
                     doc.fetch_missing_again();
                 }
             }
-            ShareHit::Primary if self.session.role == SessionRole::Alone => self.start_share(),
+            // Plain *Share this song*: no password, whatever was typed for a
+            // share that never happened.
+            ShareHit::Primary if self.session.role == SessionRole::Alone => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_session_password(None);
+                }
+                self.start_share();
+            }
+            ShareHit::SharePassword => {
+                self.ask_for_a_name(NameFor::SessionPassword(PasswordFor::Share), String::new())
+            }
+            ShareHit::Password => {
+                self.ask_for_a_name(NameFor::SessionPassword(PasswordFor::Change), String::new())
+            }
+            ShareHit::AskFirst => {
+                let on = !self.session.ask_first;
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_session_ask_first(on);
+                }
+            }
+            ShareHit::Lock => {
+                let on = !self.session.locked;
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_session_locked(on);
+                }
+            }
+            ShareHit::Block(i) => {
+                if let (Some(who), Some(doc)) = (peer(i), &mut self.options.document) {
+                    doc.block_peer(who.peer);
+                }
+            }
             ShareHit::Primary => {
                 if let Some(doc) = &mut self.options.document {
                     doc.leave_song();
@@ -26228,6 +26372,36 @@ impl WindowApp {
                 self.read_session_now();
             }
             NameFor::ChordName => self.write_typed_chord(name),
+            // Nothing typed is no answer: asked again, as it was.
+            NameFor::JoinPassword(_) if name.is_empty() => {
+                self.ask_for_a_name(purpose, String::new());
+            }
+            NameFor::JoinPassword(_) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.answer_session_password(Some(name.to_string()));
+                }
+                self.read_session_now();
+            }
+            NameFor::SessionPassword(PasswordFor::Share) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_session_password((!name.is_empty()).then(|| name.to_string()));
+                }
+                self.start_share();
+            }
+            NameFor::SessionPassword(PasswordFor::Change) => {
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_session_password((!name.is_empty()).then(|| name.to_string()));
+                }
+                self.show_toast(
+                    if name.is_empty() {
+                        "No password \u{2014} anyone with the code can join".to_string()
+                    } else {
+                        "Password set \u{2014} those already here stay".to_string()
+                    },
+                    false,
+                );
+                self.read_session_now();
+            }
             NameFor::NewProject | NameFor::SaveAs(_) => return false,
         }
         self.tree.invalidate_rect(self.layout.window);

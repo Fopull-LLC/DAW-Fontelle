@@ -56,6 +56,11 @@ slotmap = "1.1.1"
 # transfer itself is `curl`'s, for the same reason the folder picker is the
 # desktop's own (`desktop.rs`) — one more subprocess and nothing more linked.
 sha2 = "0.10.9"
+# Who may join a shared song (`collab/identity.rs`, `collab/sealed.rs`): an
+# Ed25519 key per install, the password's PBKDF2 and HMAC, and the AEAD a
+# password session is sealed with. Already in the tree under `fontelle-net`'s
+# QUIC, so nothing new is built.
+ring = "0.17"
 
 # The session log's tee and the native crash handler (`logs.rs`,
 # `crashlog.rs`) — a pipe, `dup2` and `sigaction`, already in the tree for

@@ -307,6 +307,9 @@ pub use share::{
     missing_more_words, peer_colour, share_chat_rows, share_dot, share_hit, share_panel_layout,
     share_panel_layout_full, share_panel_layout_with, share_panel_words, status_lines,
 };
+pub use share::{
+    ASK_FIRST, BLOCK_PEER, LOCK_SESSION, PASSWORD_OFF, PASSWORD_ON, SHARE_WITH_PASSWORD, masked,
+};
 pub use singer_panel::{
     CARD_HEADING, FOOTNOTE_HEIGHT, SINGER_PANEL_PAD, SINGER_PANEL_SIZE, SINGER_PICTURE_HEIGHT,
     SINGER_PORTRAIT, SingerPanelButton, SingerPanelHit, SingerPanelLayout, TERMS_CHIP_WIDTH,

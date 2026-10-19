@@ -670,7 +670,38 @@ pub enum Msg {
     Permissions {
         permissions: Permissions,
     },
+    // Who may come in (Ty, 2026-10-19). After `Hello`, never in place of it:
+    // `Hello` stays as it was so a build older than this still gets the
+    // version refusal it can read.
+    /// Host to a joiner whose hello passed the version check: sign this
+    /// nonce (with the session's code) to prove which studio you are, and —
+    /// when `password` — prove you know the session's password too. Sent
+    /// again, with a fresh nonce, after a wrong password.
+    Challenge {
+        nonce: Vec<u8>,
+        password: bool,
+    },
+    /// Joiner to host: the studio's Ed25519 public key, its signature over
+    /// the join context, the nonce and the code, and — for a password
+    /// session — an HMAC of the nonce under a key derived from the password.
+    /// The password itself never crosses.
+    Answer {
+        key: Vec<u8>,
+        signature: Vec<u8>,
+        proof: Option<Vec<u8>>,
+    },
+    /// Host to a proven joiner, while the host decides whether to let them
+    /// in (*Ask before letting people in*).
+    Waiting {
+        host: String,
+    },
 }
+
+/// The first two bytes of a frame sealed under a password session's key
+/// (`fontelle-app`'s `collab::sealed`). No message starts this way: postcard
+/// writes a variant's number as a varint, and `0xfe` would be a number past
+/// a hundred and twenty-six — a frame that starts so is sealed, or garbage.
+pub const SEALED: [u8; 2] = [0xfe, 0x5e];
 
 /// What a person in a session may touch besides the notes, the clips and
 /// the arrangement — the host's to give, person by person, and enforced by

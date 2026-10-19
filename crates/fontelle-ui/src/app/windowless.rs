@@ -395,6 +395,75 @@ impl Windowless {
         self.settle();
     }
 
+    /// One turn of the shared song, and the window's view of it read again —
+    /// what each pass of the window's loop does while a song is shared.
+    pub fn pump_session(&mut self) {
+        if let Some(doc) = &mut self.app.options.document {
+            doc.pump_session();
+        }
+        self.app.read_session_now();
+    }
+
+    /// The Share panel, opened as its button opens it.
+    pub fn open_share_panel(&mut self) {
+        self.app.share_open = true;
+        self.app.read_session_now();
+    }
+
+    /// Where the Share panel's parts are, as the window lays it out now.
+    pub fn share_panel(&self) -> crate::canvas::SharePanelLayout {
+        self.app.share_panel_layout()
+    }
+
+    /// The question a session has up — a card with its answers — if any.
+    pub fn question(&self) -> Option<crate::document::SessionQuestion> {
+        self.app.session_question.clone()
+    }
+
+    /// Answers the card's `n`th button, as a click on it does.
+    pub fn answer_question(&mut self, n: usize) {
+        self.app.answer_session_question(n);
+    }
+
+    /// `text` typed into the open prompt a key at a time: `\n` is Enter,
+    /// `\u{1b}` Escape, `\u{8}` Backspace.
+    pub fn type_into_prompt(&mut self, text: &str) {
+        use winit::keyboard::{Key, NamedKey};
+        for c in text.chars() {
+            let key = match c {
+                '\n' => Key::Named(NamedKey::Enter),
+                '\u{1b}' => Key::Named(NamedKey::Escape),
+                '\u{8}' => Key::Named(NamedKey::Backspace),
+                c => Key::Character(c.to_string().into()),
+            };
+            self.app.menu_filter_logical_key(&key);
+        }
+    }
+
+    /// What the open prompt's field shows, if a prompt is open.
+    pub fn prompt_field(&self) -> Option<String> {
+        self.app
+            .text_field()
+            .map(|field| field.entry.text().to_string())
+    }
+
+    /// The settings page's rows as drawn: each row's name and the caption
+    /// on its button (empty for a row that is not one).
+    pub fn setting_labels(&self) -> Vec<(String, String)> {
+        let doc = self.document();
+        doc.settings()
+            .into_iter()
+            .zip(doc.setting_controls())
+            .map(|(entry, control)| {
+                let caption = match control {
+                    crate::canvas::SettingControl::Button { caption } => caption,
+                    _ => String::new(),
+                };
+                (entry.name, caption)
+            })
+            .collect()
+    }
+
     fn settle(&mut self) {
         if let Some(doc) = &mut self.app.options.document {
             doc.pump();

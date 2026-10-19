@@ -1365,6 +1365,7 @@ dependencies = [
  "fontelle-vocal-files",
  "libc",
  "png",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

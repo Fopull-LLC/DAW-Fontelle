@@ -220,6 +220,12 @@ pub struct Settings {
     /// [`Settings::install_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<fontelle_types::PersistentId>,
+    /// Everybody this studio has blocked from the songs it shares, by the key
+    /// they proved (`collab::identity`), with the name they gave and when.
+    /// Refused in every session after, until unblocked on the settings
+    /// page's Sharing section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<BlockedPerson>,
     /// What a new song is routed as — rack-style or lane-style
     /// (`docs/ux-routing-and-learning-plan.md` §1). `None` until the first
     /// new song asks; the answer is kept here, and the settings page's
@@ -281,6 +287,18 @@ pub struct Settings {
     /// see [`Unread`]. Never in the file under its own name.
     #[serde(skip)]
     pub unread: Unread,
+}
+
+/// Somebody blocked from this studio's shared songs ([`Settings::blocked`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedPerson {
+    /// Their public key, as hex.
+    pub key: String,
+    /// What they called themselves when they were blocked — a name anybody
+    /// can type, so it is for the list, never for deciding anything.
+    pub name: String,
+    /// When, as `YYYY-MM-DDTHH:MM:SSZ`.
+    pub when: String,
 }
 
 /// The entries of a settings file this build could not read, as the JSON
@@ -358,6 +376,7 @@ impl Default for Settings {
             display_name: None,
             relay: None,
             install: None,
+            blocked: Vec::new(),
             new_song_routing: None,
             tour_offered: false,
             audio_output: AudioOutputSettings::default(),
@@ -672,6 +691,11 @@ pub enum SettingRow {
     /// The relay to share through: blank for Floptle Cloud, or a
     /// `host:port` of your own (§9.3). Typed.
     Relay,
+    /// "Blocked people", over one [`SettingRow::Blocked`] each. Words: how
+    /// many, or nobody.
+    BlockedPeople,
+    /// The `n`th person in [`Settings::blocked`]. A button: Unblock.
+    Blocked(usize),
     /// Which audio system the studio plays through: Automatic, or one of
     /// the backends this build has. A choice; the session answers its list.
     AudioBackend,
@@ -792,7 +816,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 60] = [
+pub const SETTING_ROWS: [SettingRow; 61] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -837,6 +861,9 @@ pub const SETTING_ROWS: [SettingRow; 60] = [
     SettingRow::Heading("Sharing"),
     SettingRow::YourName,
     SettingRow::Relay,
+    // Who is kept out of the songs this studio shares; one row each under
+    // it — see `setting_rows`.
+    SettingRow::BlockedPeople,
     // How the window looks (`themes.rs`): the theme, its two easy knobs, its
     // pictures, and the way in and out for a `.fontelletheme` file.
     SettingRow::Heading("Appearance"),
@@ -927,6 +954,9 @@ pub fn setting_rows_with(
         }
         if row == SettingRow::PluginFolder {
             rows.extend((0..settings.plugin_dirs.len()).map(SettingRow::PluginDir));
+        }
+        if row == SettingRow::BlockedPeople {
+            rows.extend((0..settings.blocked.len()).map(SettingRow::Blocked));
         }
         if row == SettingRow::Heading("Extensions") {
             rows.extend((0..crate::extensions::CATALOGUE.len()).map(SettingRow::Extension));
@@ -1027,6 +1057,11 @@ impl SettingRow {
                 .get(index)
                 .map(|extension| extension.name.to_string())
                 .unwrap_or_default(),
+            Self::Blocked(index) => settings
+                .blocked
+                .get(index)
+                .map(|person| person.name.clone())
+                .unwrap_or_default(),
             other => other.static_label().to_string(),
         }
     }
@@ -1036,6 +1071,8 @@ impl SettingRow {
             Self::Heading(title) => title,
             Self::PluginDir(_) => "",
             Self::Extension(_) => "",
+            Self::Blocked(_) => "",
+            Self::BlockedPeople => "Blocked people",
             Self::AudioBackend => "Backend",
             Self::AudioDevice => "Output device",
             Self::AudioBuffer => "Buffer size",
@@ -1134,6 +1171,20 @@ impl SettingRow {
         let midi = &settings.midi_input;
         match self {
             Self::Heading(_) => String::new(),
+            Self::BlockedPeople => match settings.blocked.len() {
+                0 => "Nobody".to_string(),
+                1 => "1 person".to_string(),
+                n => format!("{n} people"),
+            },
+            // The day, which is what anybody remembers it by.
+            Self::Blocked(index) => settings
+                .blocked
+                .get(index)
+                .map(|person| {
+                    let day = person.when.split('T').next().unwrap_or_default();
+                    format!("since {day}")
+                })
+                .unwrap_or_default(),
             Self::AudioBackend => settings
                 .audio_output
                 .host
@@ -1299,6 +1350,7 @@ impl SettingRow {
             Self::Folder(_) | Self::PresetFolder => "Choose\u{2026}",
             Self::PluginFolder => "Add\u{2026}",
             Self::PluginDir(_) => "Remove",
+            Self::Blocked(_) => "Unblock",
             Self::ImportFlFolders => "Import",
             Self::RescanPlugins => "Rescan",
             Self::ImportTheme => "Import\u{2026}",
@@ -1331,6 +1383,10 @@ impl SettingRow {
     pub fn help(self) -> &'static str {
         match self {
             Self::Heading(_) => "",
+            Self::BlockedPeople => {
+                "Kept out of every song you share; Block is on a person's row in the Share panel"
+            }
+            Self::Blocked(_) => "Can't join a song you share; Unblock lets them",
             Self::AudioBackend => BACKEND_HELP,
             Self::AudioDevice => {
                 "Which output plays the studio; System default follows your desktop"
@@ -1437,6 +1493,8 @@ impl SettingRow {
             // module may not open a dialog or `dlopen` anything. What matters
             // here is that they do not quietly step the row above instead.
             Self::Heading(_)
+            | Self::BlockedPeople
+            | Self::Blocked(_)
             | Self::AudioBackend
             | Self::AudioDevice
             | Self::AudioBuffer
@@ -1551,6 +1609,8 @@ impl SettingRow {
     pub fn control_kind(self) -> SettingControlKind {
         match self {
             Self::Heading(_) => SettingControlKind::Heading,
+            // The count is words; each person's row is its Unblock.
+            Self::BlockedPeople | Self::Blocked(_) => SettingControlKind::Button,
             Self::AudioBackend | Self::AudioDevice | Self::AudioBuffer => {
                 SettingControlKind::Choice
             }

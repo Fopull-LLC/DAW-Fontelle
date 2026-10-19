@@ -101,6 +101,10 @@ const GRAPHICS_TURN_ON: &str = "Turn on and restart";
 /// on with it as it is.
 const SESSION_SAVE: &str = "Save";
 const SESSION_KEEP_WORKING: &str = "Keep working";
+/// The host's card when somebody asks to join (*Ask before letting people
+/// in*), in the order the card draws them: the last, Turn away, is what
+/// Escape answers — the one that lets nobody in.
+const KNOCK_ANSWERS: [&str; 3] = ["Let in", "Block", "Turn away"];
 const GRAPHICS_NEVER: &str = "Don't ask again";
 const GRAPHICS_NOT_NOW: &str = "Not now";
 
@@ -579,6 +583,13 @@ pub struct Session {
     /// tests wrote a soundfont folder in `/tmp` into the developer's real
     /// `~/.config/fontelle/settings.json`.
     settings_path: Option<PathBuf>,
+    /// This install's key pair for shared songs (`collab::identity`): read
+    /// from beside the settings file, made there the first time; with no
+    /// settings file, made for this session alone. `None` until first asked.
+    identity: Option<crate::collab::Identity>,
+    /// The password a share is to start with, typed before the relay has
+    /// answered with a code. Never written anywhere.
+    share_password: Option<String>,
     /// The look the window wears, from the theme library (`themes.rs`), and a
     /// count the window watches to know it changed.
     theme: fontelle_ui::Theme,
@@ -890,6 +901,15 @@ impl Session {
             self.import_query.clear();
             self.choose_import_dir();
             self.touch();
+            return;
+        }
+        // A blocked person's row is its Unblock; the count over them is
+        // words, and does nothing.
+        if let crate::settings::SettingRow::Blocked(which) = *row {
+            self.unblock(which);
+            return;
+        }
+        if *row == crate::settings::SettingRow::BlockedPeople {
             return;
         }
         // The plugin buttons, for the same reason and by the same rule: a row
@@ -1704,6 +1724,8 @@ impl Session {
             restart_request: false,
             settings,
             settings_path: None,
+            identity: None,
+            share_password: None,
             preview_index: std::cell::RefCell::new(crate::preview_index::PreviewIndex::default()),
             preview_jobs: std::cell::RefCell::new(None),
             previews_started: std::cell::Cell::new(false),
@@ -2619,6 +2641,13 @@ impl Session {
         if let Some(wake) = &self.wake {
             transport.set_wake(wake.clone());
         }
+        // Whoever the settings block is refused however the share began.
+        let mut options = options;
+        for key in self.blocked_keys() {
+            if !options.blocked.contains(&key) {
+                options.blocked.push(key);
+            }
+        }
         self.collab = Some(crate::collab::Collab::host(transport, options));
         self.tell_plugins_here();
         self.told_end = false;
@@ -3508,7 +3537,111 @@ impl Session {
         }
         let mut options = crate::collab::CollabOptions::new(self.settings.your_name(), install);
         options.pace = fontelle_net::Relay::from_setting(self.settings.relay.as_deref()).pace();
+        options.identity = self.identity();
+        options.blocked = self.blocked_keys();
         options
+    }
+
+    /// This install's key pair: the one beside the settings file, made there
+    /// the first time it is asked for. Without a settings file — or with one
+    /// whose folder cannot be written — one for this session alone, which
+    /// says so: blocks against it would not outlive the session.
+    fn identity(&mut self) -> crate::collab::Identity {
+        if let Some(identity) = &self.identity {
+            return identity.clone();
+        }
+        let made = match self.settings_path.as_ref().and_then(|p| p.parent()) {
+            Some(dir) => crate::collab::Identity::load_or_create(&dir.join("identity.key"))
+                .unwrap_or_else(|e| {
+                    self.message = Some(format!(
+                        "could not keep this studio's key ({e}) \u{2014} using one for now"
+                    ));
+                    crate::collab::Identity::generate()
+                }),
+            None => crate::collab::Identity::generate(),
+        };
+        self.identity = Some(made.clone());
+        made
+    }
+
+    /// Who this studio proves itself as in shared songs, instead of the key
+    /// beside the settings file — for tests.
+    pub fn set_identity(&mut self, identity: crate::collab::Identity) {
+        self.identity = Some(identity);
+    }
+
+    /// Every key the settings block, read back from hex.
+    fn blocked_keys(&self) -> Vec<Vec<u8>> {
+        self.settings
+            .blocked
+            .iter()
+            .filter_map(|person| crate::collab::identity::unhex(&person.key))
+            .collect()
+    }
+
+    /// Writes somebody just blocked into the settings, so every later share
+    /// refuses them too.
+    fn keep_blocked(&mut self, blocked: crate::collab::BlockedKey) {
+        let key = crate::collab::identity::hex(&blocked.key);
+        if !self.settings.blocked.iter().any(|p| p.key == key) {
+            self.settings.blocked.push(crate::settings::BlockedPerson {
+                key,
+                name: blocked.name,
+                when: fontelle_model::now_iso8601(),
+            });
+        }
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.touch();
+    }
+
+    /// Settings ▸ Sharing's Unblock on the `which`th blocked person: off the
+    /// list, and let in again by a session being shared now.
+    fn unblock(&mut self, which: usize) {
+        if which >= self.settings.blocked.len() {
+            return;
+        }
+        let gone = self.settings.blocked.remove(which);
+        if let (Some(collab), Some(key)) = (
+            self.collab.as_mut(),
+            crate::collab::identity::unhex(&gone.key),
+        ) {
+            collab.unblock(&key);
+        }
+        self.message = Some(format!("{} can join your songs again", gone.name));
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+        self.touch();
+    }
+
+    /// Takes somebody out of the session and keeps them out (Block).
+    pub fn block_peer(&mut self, peer: u16) -> Result<(), String> {
+        let collab = self.collab.as_mut().ok_or("nothing is shared")?;
+        let blocked = collab.block(peer, &mut self.project)?;
+        self.keep_blocked(blocked);
+        Ok(())
+    }
+
+    /// The question a knock raises on the host: the first person waiting.
+    fn knock_question(&self) -> Option<fontelle_ui::document::SessionQuestion> {
+        let collab = self.collab.as_ref().filter(|c| c.ended().is_none())?;
+        let knocks = collab.knocks();
+        let first = knocks.first()?;
+        let mut lines = vec![format!("{first} wants to join.")];
+        lines.push(match knocks.len() - 1 {
+            0 => "Let them into the song?".to_string(),
+            1 => "Let them into the song? One more is waiting after them.".to_string(),
+            n => format!("Let them into the song? {n} more are waiting after them."),
+        });
+        Some(fontelle_ui::document::SessionQuestion {
+            lines,
+            buttons: KNOCK_ANSWERS.map(str::to_string).to_vec(),
+            // Enter, like Escape, turns them away: letting somebody in is
+            // the one answer that should take a deliberate click.
+            default: 2,
+        })
     }
 
     /// Shares the open song through the relay the settings name, the relay
@@ -3539,7 +3672,8 @@ impl Session {
         };
         self.sharing = None;
         let shared = answer.and_then(|(transport, _code)| {
-            let options = self.collab_options();
+            let mut options = self.collab_options();
+            options.password = self.share_password.take();
             self.share(transport, options)
         });
         if let Err(why) = shared {
@@ -11442,7 +11576,10 @@ impl StudioHost for Session {
         }
         let relay = fontelle_net::Relay::from_setting(self.settings.relay.as_deref());
         let transport = fontelle_net::join(&relay, &code)?;
-        let options = self.collab_options();
+        let mut options = self.collab_options();
+        // Signed into the proof of who this studio is, and the salt of a
+        // password's keys: good for this session's code and no other.
+        options.code = code;
         // The window has asked about anything unsaved before it got here
         // (§4.4, rule 3): a Don't Save is an answer.
         self.begin_join(transport, options)
@@ -11469,6 +11606,10 @@ impl StudioHost for Session {
                 buttons,
                 default: 0,
             });
+        }
+        // Somebody at the door waits on the host, whatever else is asked.
+        if let Some(question) = self.knock_question() {
+            return Some(question);
         }
         if let Some(plugin) = &self.graphics_offer {
             return Some(fontelle_ui::document::SessionQuestion {
@@ -11555,6 +11696,19 @@ impl StudioHost for Session {
             }
             return Ok(());
         }
+        if self.knock_question().is_some() {
+            let knock = match answer {
+                0 => crate::collab::Knock::LetIn,
+                1 => crate::collab::Knock::Block,
+                _ => crate::collab::Knock::TurnAway,
+            };
+            let collab = self.collab.as_mut().expect("a knock is a session's");
+            if let Some(blocked) = collab.answer_knock(knock, &mut self.project) {
+                self.keep_blocked(blocked);
+            }
+            self.touch();
+            return Ok(());
+        }
         if self.graphics_offer.take().is_some() {
             self.answer_graphics_offer(answer);
             return Ok(());
@@ -11604,6 +11758,53 @@ impl StudioHost for Session {
         if let Err(why) = Session::remove_peer(self, peer) {
             self.session_notices.push(why);
         }
+    }
+
+    fn block_peer(&mut self, peer: u16) {
+        if let Err(why) = Session::block_peer(self, peer) {
+            self.session_notices.push(why);
+        }
+    }
+
+    fn set_session_password(&mut self, password: Option<String>) {
+        let password = password.filter(|p| !p.is_empty());
+        match self
+            .collab
+            .as_mut()
+            .filter(|c| c.is_host() && c.ended().is_none())
+        {
+            Some(collab) => collab.set_password(password),
+            // Not shared yet: kept for the share the relay is answering.
+            None => self.share_password = password,
+        }
+        self.touch();
+    }
+
+    fn set_session_ask_first(&mut self, on: bool) {
+        if let Some(collab) = self.collab.as_mut() {
+            collab.set_ask_first(on);
+            self.touch();
+        }
+    }
+
+    fn set_session_locked(&mut self, on: bool) {
+        if let Some(collab) = self.collab.as_mut() {
+            collab.set_locked(on);
+            self.touch();
+        }
+    }
+
+    fn answer_session_password(&mut self, password: Option<String>) {
+        let Some(collab) = self.collab.as_mut() else {
+            return;
+        };
+        match password {
+            Some(password) => collab.give_password(&password),
+            None => {
+                let _ = collab.answer(crate::collab::JoinAnswer::Cancel, &mut self.history);
+            }
+        }
+        self.touch();
     }
 
     fn fetch_missing_again(&mut self) {
@@ -18444,6 +18645,13 @@ impl Session {
                 "Give somebody the code \u{2014} they join from their start menu".to_string()
             }
             SessionRole::Hosting => format!("{} here with you", people_here(&peers)),
+            SessionRole::Joining if collab.password_wanted().is_some() => {
+                "This session has a password\u{2026}".to_string()
+            }
+            SessionRole::Joining if collab.waiting_for_host().is_some() => format!(
+                "Waiting for {} to let you in\u{2026}",
+                collab.waiting_for_host().unwrap_or("the host")
+            ),
             SessionRole::Joining if host.is_empty() => "Waiting for the song\u{2026}".to_string(),
             SessionRole::Joining => format!("{host} is sending the song\u{2026}"),
             _ => {
@@ -18502,6 +18710,15 @@ impl Session {
             missing: Vec::new(),
             chat,
             unread: collab.chat_unread(),
+            password_on: collab.has_password(),
+            ask_first: collab.asks_first(),
+            locked: collab.is_locked(),
+            password_ask: collab
+                .password_wanted()
+                .map(|ask| fontelle_ui::document::PasswordAsk {
+                    attempt: ask.attempt,
+                    wrong: ask.wrong,
+                }),
         }
     }
 }
