@@ -3,6 +3,7 @@
 //! (INVARIANT 4). If an addition here needs any of those, escalate rather than reach
 //! for "just this one thing from the model layer."
 
+pub mod bundled_sounds;
 mod drum_kit;
 pub mod factory_samples;
 pub mod flopsynth;

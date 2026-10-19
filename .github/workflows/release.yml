@@ -116,8 +116,9 @@ jobs:
           mkdir -p "dist/$NAME"
           cp "target/${{ matrix.target }}/release/fontelle" "dist/$NAME/"
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$NAME/"
-          # Third-party notices (basic-pitch's Apache-2.0 NOTICE) travel with
-          # the program, as their licences ask.
+          # Third-party notices (basic-pitch's Apache-2.0 NOTICE, every
+          # shipped sound's licence in licenses/SOUNDS.md) travel with the
+          # program, as their licences ask.
           cp -R licenses "dist/$NAME/"
           if [ "${{ runner.os }}" = "Linux" ]; then
             cp packaging/linux/com.fopull.Fontelle.desktop packaging/linux/com.fopull.Fontelle.png packaging/linux/install.sh "dist/$NAME/"
