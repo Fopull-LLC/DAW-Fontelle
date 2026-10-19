@@ -237,6 +237,14 @@ pub struct Settings {
     /// learning-plan.md` §5: offered, *never starting by itself*).
     #[serde(default)]
     pub tour_offered: bool,
+    /// How many times the studio has been launched, counted until the start
+    /// menu's support line has been said and not after — the count is for
+    /// that and nothing else, and never leaves this file (hub card 0427).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub launches: u32,
+    /// Whether that line has been shown: once is the most it is ever said.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_line_said: bool,
     /// Which backend, device and buffer the studio plays through
     /// ([`AudioOutputSettings`]). All automatic until chosen.
     #[serde(default, skip_serializing_if = "AudioOutputSettings::is_automatic")]
@@ -351,6 +359,10 @@ fn is_hundred(percent: &u16) -> bool {
     *percent == 100
 }
 
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -379,6 +391,8 @@ impl Default for Settings {
             blocked: Vec::new(),
             new_song_routing: None,
             tour_offered: false,
+            launches: 0,
+            support_line_said: false,
             audio_output: AudioOutputSettings::default(),
             backdrop_effects: None,
             backdrop_fps: thirty(),
@@ -396,6 +410,14 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// One more launch, while the support line is still to be said; after
+    /// that there is nothing to count for.
+    pub fn count_launch(&mut self) {
+        if !self.support_line_said {
+            self.launches = self.launches.saturating_add(1);
+        }
+    }
+
     /// Which releases the start menu's check may offer.
     pub fn update_channel(&self) -> crate::updates::Channel {
         if self.beta_updates {

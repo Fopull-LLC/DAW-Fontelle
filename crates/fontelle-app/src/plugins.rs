@@ -1612,6 +1612,23 @@ pub fn plugin_slots(project: &Project) -> Vec<PluginSlot> {
     slots
 }
 
+/// The plugin formats `project` uses, each once and in the formats' own
+/// order — "CLAP, VST3", or empty for none. What a bug report says about the
+/// song's plugins (hub card 0427): the formats, because a fault is often a
+/// format's, and never which plugins, which are nobody's business.
+pub fn plugin_formats_label(project: &Project) -> String {
+    let used: HashSet<fontelle_types::PluginFormat> = wanted_slots(project)
+        .into_values()
+        .map(|state| state.key.format)
+        .collect();
+    fontelle_types::PluginFormat::ALL
+        .into_iter()
+        .filter(|format| used.contains(format))
+        .map(|format| format.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Every plugin the document is asking for, and what it should be set to.
 fn wanted_slots(project: &Project) -> HashMap<PluginSlot, PluginState> {
     let mut wanted = HashMap::new();

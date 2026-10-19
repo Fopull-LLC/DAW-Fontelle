@@ -774,6 +774,9 @@ fn play_or_render(
             // created and nothing is guessed at (INVARIANT 10): with no folder
             // configured the Projects tab says so and offers to pick one.
             session.open_projects();
+            // One more launch, for the start menu's support line — said
+            // once, from the tenth (`canvas::support_line_due`).
+            session.count_launch();
             // The start menu's update check, if the settings allow one. Built
             // here rather than started: the window starts it when the menu
             // goes up, so a launch straight into a project asks nothing.

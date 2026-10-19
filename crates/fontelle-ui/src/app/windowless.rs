@@ -361,6 +361,28 @@ impl Windowless {
         self.settle();
     }
 
+    /// The start menu put up, as a launch puts it up.
+    pub fn open_welcome(&mut self) {
+        self.app.open_welcome();
+        self.settle();
+    }
+
+    /// The start menu's card, while it is up.
+    pub fn welcome_layout(&self) -> Option<crate::canvas::WelcomeLayout> {
+        self.app.welcome.as_ref().map(|w| w.layout.clone())
+    }
+
+    /// The guide, as `?` opens it.
+    pub fn open_help(&mut self) {
+        self.app.open_help();
+        self.settle();
+    }
+
+    /// The guide's card as it is laid out now.
+    pub fn help_layout(&self) -> crate::canvas::HelpLayout {
+        self.app.help_layout()
+    }
+
     /// The settings page, on the section headed `title`.
     pub fn open_settings(&mut self, title: &str) {
         self.app.open_settings_page_at(title);

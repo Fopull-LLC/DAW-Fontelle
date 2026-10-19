@@ -5297,15 +5297,19 @@ fn shoot_welcome_status(
     let (line, button) = fontelle_ui::canvas::update_line(&status, "0.1.0");
     let progress = fontelle_ui::canvas::update_progress(&status);
     let with_credit = ASIO_SHOWN.with(|c| c.get());
-    let welcome = fontelle_ui::canvas::with_asio_credit(
-        welcome_layout(
-            layout.window,
+    let welcome = fontelle_ui::canvas::with_support_line(
+        fontelle_ui::canvas::with_asio_credit(
+            welcome_layout(
+                layout.window,
+                &theme.metrics,
+                recent.len(),
+                button.is_some() || progress.is_some(),
+            ),
             &theme.metrics,
-            recent.len(),
-            button.is_some() || progress.is_some(),
+            with_credit,
         ),
         &theme.metrics,
-        with_credit,
+        SUPPORT_SHOWN.with(|c| c.get()),
     );
     let credit = welcome.asio_credit.map(|c| {
         text.layout(
@@ -5325,6 +5329,9 @@ fn shoot_welcome_status(
         fontelle_ui::canvas::FOOTER_TEXT,
         fontelle_ui::canvas::WEBSITE_LABEL,
         fontelle_ui::canvas::REPOSITORY_LABEL,
+        fontelle_ui::canvas::LOGS_LABEL,
+        fontelle_ui::canvas::SUPPORT_LINE_LEAD,
+        fontelle_ui::canvas::SUPPORT_LINE_LINK,
         "Version 0.1.0",
         "\u{00d7}",
     ] {
@@ -5390,7 +5397,7 @@ fn shoot_welcome_status(
                 recover_button: None,
                 progress,
                 recent,
-                hover: Some(fontelle_ui::canvas::WelcomeHit::NewProject),
+                hover: Some(SUPPORT_HOVER.with(|c| c.get())),
                 message: &message,
                 asio_credit: credit.as_ref(),
             }),
@@ -5941,6 +5948,77 @@ fn settings_page_rows() -> (
 }
 
 thread_local! {
+    /// Whether the start menu shots carry the support line (hub card 0427),
+    /// and what the pointer is on.
+    static SUPPORT_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SUPPORT_HOVER: std::cell::Cell<fontelle_ui::canvas::WelcomeHit> =
+        const { std::cell::Cell::new(fontelle_ui::canvas::WelcomeHit::NewProject) };
+}
+
+/// The line said once: quiet words, the address in the accent with its
+/// rule, a × at the end — and the card's ways in still clear of it.
+#[test]
+fn the_support_line_is_one_quiet_row_above_the_footer() {
+    SUPPORT_SHOWN.with(|c| c.set(true));
+    for (theme, hover, suffix) in [
+        (Theme::dark_default(), None, "start-menu-support"),
+        (
+            Theme::light_default(),
+            Some(fontelle_ui::canvas::WelcomeHit::Support),
+            "start-menu-support-hover",
+        ),
+    ] {
+        SUPPORT_HOVER.with(|c| c.set(hover.unwrap_or(fontelle_ui::canvas::WelcomeHit::NewProject)));
+        let Some(shot) = shoot_welcome_status(
+            theme,
+            &recent_projects(),
+            fontelle_ui::UpdateStatus::UpToDate,
+            suffix,
+        ) else {
+            break;
+        };
+        let l = fontelle_ui::canvas::with_support_line(
+            fontelle_ui::canvas::welcome_layout(
+                shot.layout.window,
+                &shot.theme.metrics,
+                recent_projects().len(),
+                false,
+            ),
+            &shot.theme.metrics,
+            true,
+        );
+        let line = l.support.expect("the line");
+        let ink = if hover.is_some() {
+            shot.theme.palette.text
+        } else {
+            shot.theme.palette.accent
+        };
+        // Text is antialiased and its rule may straddle two pixel rows, so
+        // "in the ink" is within a few steps of it, not exactly it.
+        let close = |c: Color| {
+            c.0.iter()
+                .zip(ink.0.iter())
+                .all(|(x, y)| x.abs_diff(*y) <= 24)
+        };
+        let mut lit = 0;
+        for y in line.y as u32..line.bottom() as u32 {
+            for x in line.x as u32..line.right() as u32 {
+                let i = ((y * shot.width + x) * 4) as usize;
+                if close(Color(shot.pixels[i..i + 4].try_into().expect("four bytes"))) {
+                    lit += 1;
+                }
+            }
+        }
+        assert!(
+            lit > 40,
+            "{suffix}: the address is not drawn as a link ({lit})"
+        );
+    }
+    SUPPORT_SHOWN.with(|c| c.set(false));
+    SUPPORT_HOVER.with(|c| c.set(fontelle_ui::canvas::WelcomeHit::NewProject));
+}
+
+thread_local! {
     /// Whether the shots below are of a studio that offers ASIO: the
     /// settings page gains its Audio output section with Steinberg's logo
     /// beside the backend, and the start menu its credit.
@@ -6247,6 +6325,9 @@ fn shoot_guide(
     let readout = text.layout("0", &theme.font, None);
 
     let mut labels = Labels::new();
+    for (_, label) in fontelle_ui::canvas::HELP_LINKS {
+        labels.ensure(label, &theme.font, &mut text);
+    }
     for s in [
         HELP_TITLE,
         HELP_CLOSE,

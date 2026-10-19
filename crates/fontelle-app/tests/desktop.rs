@@ -253,12 +253,20 @@ fn no_picker_is_titled_for_a_folder_it_is_not_asking_for() {
 fn a_web_page_opens_in_the_desktops_own_browser() {
     // The start menu's footer links: fopull.com, the repository, a release
     // page. The same program that reveals a folder, handed a URL, on every
-    // desktop but Windows — where `explorer` shows folders and `start` is
-    // what opens a link.
+    // desktop but Windows — where `explorer` shows folders, and a link goes
+    // to the URL protocol handler directly.
     let (program, args) = open_url_command("https://fopull.com");
     assert!(args.iter().any(|a| a == "https://fopull.com"));
+    // A report's address carries `&` between its fields and `%` in them,
+    // and `cmd /c start` reads the first as "and then run" and the second
+    // as a variable: the link must reach the browser as one argument that
+    // no shell reads.
+    let report = "https://fopull.com/roadmap/fontelle/report?kind=bug&env_os=Linux%20%28x%29";
+    let (program_for_report, args) = open_url_command(report);
+    assert!(args.iter().any(|a| a == report), "{args:?}");
+    assert_ne!(program_for_report, "cmd");
     if cfg!(target_os = "windows") {
-        assert_eq!(program, "cmd");
+        assert_eq!(program, "rundll32");
     } else if cfg!(target_os = "macos") {
         assert_eq!(program, "open");
     } else {

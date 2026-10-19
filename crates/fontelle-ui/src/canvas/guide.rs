@@ -407,6 +407,34 @@ pub const HELP_TITLE: &str = "Guide";
 pub const HELP_CLOSE: &str = "\u{2715}";
 pub const HELP_SHORTCUTS: &str = "Keyboard shortcuts";
 
+/// The guide's ways out of the app (hub card 0427), on the heading's row:
+/// the nav column is full — fourteen sections and the shortcuts page reach
+/// the foot of a 720-high window — and a link that opens the browser is not
+/// a page of the guide, so it should not sit in the list as if it were one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpLink {
+    /// The board's bug form, with the version, system and formats filled in.
+    ReportBug,
+    /// The board's feature form, likewise.
+    RequestFeature,
+    /// The support page.
+    Support,
+}
+
+/// The links, left to right, with their words.
+pub const HELP_LINKS: [(HelpLink, &str); 3] = [
+    (HelpLink::ReportBug, "Report a bug"),
+    (HelpLink::RequestFeature, "Request a feature"),
+    (HelpLink::Support, "Support Fontelle"),
+];
+
+/// Each link's cell: room for its words and the outward mark after them.
+/// Fixed, like the start menu's footer links, so the layout needs no text.
+const LINK_WIDTHS: [f32; 3] = [112.0, 140.0, 134.0];
+const LINK_GAP: f32 = 18.0;
+/// What the title keeps before the links give way to it.
+const TITLE_ROOM: f32 = 80.0;
+
 const CARD_WIDTH: f32 = 980.0;
 const MARGIN: f32 = 24.0;
 const PADDING: f32 = 20.0;
@@ -442,6 +470,9 @@ pub struct HelpLayout {
     pub nav: Vec<Rect>,
     /// The keyboard shortcuts page, last in the list.
     pub shortcuts: Rect,
+    /// [`HELP_LINKS`], in order, on the heading's row; all empty when the
+    /// card is too narrow for them beside the title.
+    pub links: Vec<(HelpLink, Rect)>,
     pub section: usize,
     pub body: Rect,
     /// The chosen section's titles and paragraphs that meet the body.
@@ -482,10 +513,31 @@ pub fn help_layout(
     let close = Rect::new(inner.right() - title_h, inner.y, title_h, title_h)
         .intersection(&inner)
         .clamped();
+    // The links right to left from the close button, all or none.
+    let needed: f32 = LINK_WIDTHS.iter().sum::<f32>() + LINK_GAP * (LINK_WIDTHS.len() as f32 - 1.0);
+    let links_x = (close.x - LINK_GAP - needed).round();
+    let fits = !close.is_empty() && links_x >= inner.x + TITLE_ROOM;
+    let mut x = links_x;
+    let links: Vec<(HelpLink, Rect)> = HELP_LINKS
+        .iter()
+        .zip(LINK_WIDTHS)
+        .map(|((link, _), width)| {
+            let rect = if fits {
+                Rect::new(x, inner.y, width, title_h)
+                    .intersection(&inner)
+                    .clamped()
+            } else {
+                Rect::ZERO
+            };
+            x += width + LINK_GAP;
+            (*link, rect)
+        })
+        .collect();
+    let title_end = if fits { links_x } else { close.x };
     let title = Rect::new(
         inner.x,
         inner.y,
-        (close.x - inner.x - 8.0).max(0.0),
+        (title_end - inner.x - 8.0).max(0.0),
         title_h,
     )
     .intersection(&inner)
@@ -575,6 +627,7 @@ pub fn help_layout(
         close,
         nav,
         shortcuts,
+        links,
         section,
         body,
         blocks,
@@ -597,6 +650,8 @@ pub enum HelpHit {
     Close,
     Section(usize),
     Shortcuts,
+    /// One of [`HELP_LINKS`]: the browser, with the page open behind it.
+    Link(HelpLink),
     Card,
     Outside,
 }
@@ -610,6 +665,9 @@ pub fn help_hit(layout: &HelpLayout, x: f32, y: f32) -> HelpHit {
     }
     if layout.shortcuts.contains(x, y) {
         return HelpHit::Shortcuts;
+    }
+    if let Some((link, _)) = layout.links.iter().find(|(_, r)| r.contains(x, y)) {
+        return HelpHit::Link(*link);
     }
     if layout.frame.contains(x, y) {
         HelpHit::Card

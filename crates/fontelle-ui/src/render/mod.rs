@@ -1343,6 +1343,40 @@ fn draw_help(
             );
         }
     }
+    // The ways out (hub card 0427): links as the start menu's footer draws
+    // them, each with the mark that says it leaves the app.
+    for ((link, cell), (_, caption)) in l.links.iter().zip(crate::canvas::HELP_LINKS) {
+        if cell.is_empty() {
+            continue;
+        }
+        let Some(text) = labels.get(caption) else {
+            continue;
+        };
+        let ink = if chrome.hover == Some(HelpHit::Link(*link)) {
+            p.text
+        } else {
+            p.accent
+        };
+        let mark = OUTWARD_MARK;
+        let x = (cell.right() - mark - 5.0 - text.width).max(cell.x);
+        let y = centred_y(*cell, text.height);
+        draw_text_clipped(scene, text, *cell, x, y, ink);
+        fill_rect(
+            scene,
+            Rect::new(x, y + text.height - 1.0, text.width.min(cell.width), 1.0),
+            ink,
+        );
+        draw_outward_mark(
+            scene,
+            Rect::new(
+                cell.right() - mark,
+                centred_y(*cell, mark) - 1.0,
+                mark,
+                mark,
+            ),
+            ink,
+        );
+    }
     if !l.body.is_empty() && !l.nav.is_empty() {
         fill_rect(
             scene,
@@ -3052,6 +3086,83 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         LOGS_LABEL,
         l.logs,
         hot(WelcomeHit::Logs),
+    );
+
+    // The support line (hub card 0427): quiet words in the muted ink, the
+    // address in the accent as the link it is — the whole line answers the
+    // pointer — and a × that only warms when pointed at.
+    if let Some(line) = l.support {
+        let lead = labels.get(crate::canvas::SUPPORT_LINE_LEAD);
+        let lead_w = lead.map_or(0.0, |t| t.width);
+        if let Some(text) = lead {
+            draw_text_clipped(
+                scene,
+                text,
+                line,
+                line.x,
+                line.y + (line.height - text.height) / 2.0,
+                p.text_muted,
+            );
+        }
+        if let Some(text) = labels.get(crate::canvas::SUPPORT_LINE_LINK) {
+            let ink = if hot(WelcomeHit::Support) {
+                p.text
+            } else {
+                p.accent
+            };
+            let x = line.x + lead_w;
+            let y = line.y + (line.height - text.height) / 2.0;
+            draw_text_clipped(scene, text, line, x, y, ink);
+            fill_rect(
+                scene,
+                Rect::new(
+                    x,
+                    y + text.height - 1.0,
+                    text.width.min((line.right() - x).max(0.0)),
+                    1.0,
+                ),
+                ink,
+            );
+        }
+    }
+    if let (Some(cross), Some(text)) = (l.support_dismiss, labels.get("\u{00d7}")) {
+        let ink = if hot(WelcomeHit::DismissSupport) {
+            p.text
+        } else {
+            p.text_muted
+        };
+        draw_text_clipped(
+            scene,
+            text,
+            cross,
+            cross.x + (cross.width - text.width) / 2.0,
+            cross.y + (cross.height - text.height) / 2.0,
+            ink,
+        );
+    }
+}
+
+/// How big the outward mark after a link that leaves the app is.
+const OUTWARD_MARK: f32 = 8.0;
+
+/// ↗, drawn rather than set: the chrome's own faces have no arrow for it,
+/// and a fallback face found on one system and not another would make the
+/// mark a box on the other.
+fn draw_outward_mark(scene: &mut Scene, area: Rect, ink: Color) {
+    let (left, top) = (area.x as f64, area.y as f64);
+    let (right, bottom) = (area.right() as f64, area.bottom() as f64);
+    let mut path = BezPath::new();
+    path.move_to((left + 0.5, bottom - 0.5));
+    path.line_to((right - 0.5, top + 0.5));
+    path.move_to((left + 2.5, top + 0.5));
+    path.line_to((right - 0.5, top + 0.5));
+    path.line_to((right - 0.5, bottom - 2.5));
+    scene.stroke(
+        &Stroke::new(1.25),
+        Affine::IDENTITY,
+        ink.to_peniko(),
+        None,
+        &path,
     );
 }
 
