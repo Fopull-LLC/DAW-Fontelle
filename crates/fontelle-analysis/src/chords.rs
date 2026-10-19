@@ -29,54 +29,10 @@ impl From<&NoteEvent> for TimedPitch {
     }
 }
 
-/// The chord qualities read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum Quality {
-    Major,
-    Minor,
-    Diminished,
-    Augmented,
-    Sus2,
-    Sus4,
-    Dominant7,
-    Major7,
-    Minor7,
-    Power,
-}
-
-/// A chord: a root pitch class (0 = C) and a quality.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct Chord {
-    pub root: u8,
-    pub quality: Quality,
-}
-
-impl Chord {
-    /// `"Am"`, `"F#7"`, `"Csus4"`, `"G5"`.
-    pub fn label(&self) -> String {
-        let root = NAMES[usize::from(self.root % 12)];
-        let suffix = match self.quality {
-            Quality::Major => "",
-            Quality::Minor => "m",
-            Quality::Diminished => "dim",
-            Quality::Augmented => "aug",
-            Quality::Sus2 => "sus2",
-            Quality::Sus4 => "sus4",
-            Quality::Dominant7 => "7",
-            Quality::Major7 => "maj7",
-            Quality::Minor7 => "m7",
-            Quality::Power => "5",
-        };
-        format!("{root}{suffix}")
-    }
-
-    /// Its pitch classes, one bit each, bit 0 = C.
-    pub fn mask(&self) -> u16 {
-        intervals(self.quality)
-            .iter()
-            .fold(0, |m, i| m | 1 << ((self.root + i) % 12))
-    }
-}
+/// The chord model is the studio's own (`fontelle_types::chord`): the
+/// chord lane names chords the way the roll's chord strip does, and a
+/// detected chord is one the strip could write.
+pub use fontelle_types::chord::{Chord, Quality};
 
 /// One stretch of the chord lane.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -88,11 +44,6 @@ pub struct ChordSpan {
     /// How well the chord's template matches what sounds, 0..1.
     pub confidence: f32,
 }
-
-/// Chord names use sharps, as the chord lane prints them.
-const NAMES: [&str; 12] = [
-    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-];
 
 const QUALITIES: [Quality; 10] = [
     Quality::Major,
@@ -108,18 +59,7 @@ const QUALITIES: [Quality; 10] = [
 ];
 
 fn intervals(quality: Quality) -> &'static [u8] {
-    match quality {
-        Quality::Major => &[0, 4, 7],
-        Quality::Minor => &[0, 3, 7],
-        Quality::Diminished => &[0, 3, 6],
-        Quality::Augmented => &[0, 4, 8],
-        Quality::Sus2 => &[0, 2, 7],
-        Quality::Sus4 => &[0, 5, 7],
-        Quality::Dominant7 => &[0, 4, 7, 10],
-        Quality::Major7 => &[0, 4, 7, 11],
-        Quality::Minor7 => &[0, 3, 7, 10],
-        Quality::Power => &[0, 7],
-    }
+    quality.intervals()
 }
 
 /// What a chord rooted on the bass note gains.
@@ -191,7 +131,7 @@ fn read_step(notes: &[TimedPitch], a: f64, b: f64) -> (Option<Chord>, f32) {
             };
             let score = cosine + bonus;
             if best.is_none_or(|(_, s, _)| score > s) {
-                best = Some((Chord { root, quality }, score, cosine));
+                best = Some((Chord::new(root, quality), score, cosine));
             }
         }
     }
@@ -275,7 +215,7 @@ fn read_line(notes: &[TimedPitch], a: f64, b: f64) -> (Option<Chord>, f32) {
             // A seventh only when its fourth tone is there: the triad wins a
             // tie, being the simpler reading of the same notes.
             if best.is_none_or(|(_, s)| share > s + 1e-4) {
-                best = Some((Chord { root, quality }, share));
+                best = Some((Chord::new(root, quality), share));
             }
         }
     }

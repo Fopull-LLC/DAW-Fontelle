@@ -16,6 +16,7 @@ mod analyze_insert;
 mod asset;
 mod audio_clip;
 mod base64;
+pub mod chord;
 mod curve;
 mod disgusting_beat;
 mod disgusting_beat_presets;
