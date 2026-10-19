@@ -240,6 +240,8 @@ edits!(
     FreezeVocal,
     UnfreezeVocal,
     SetVocalStyle,
+    // The next update: where the time signature changes.
+    SetMeterChange,
 );
 
 /// What an edit changes in the running studio, and so what the studio has to
@@ -300,6 +302,7 @@ impl Edit {
             | Edit::SetNoteKeys(_)
             | Edit::SetNotePath(_)
             | Edit::SetKey(_)
+            | Edit::SetMeterChange(_)
             | Edit::AddClip(_)
             | Edit::RemoveClip(_)
             | Edit::RestoreClip(_)

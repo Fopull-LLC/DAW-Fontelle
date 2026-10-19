@@ -29,6 +29,7 @@ mod id;
 mod import;
 mod instrument;
 mod lfo_shape;
+mod meter;
 mod notepad;
 mod pan;
 mod param;
@@ -95,6 +96,7 @@ pub use id::{
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
+pub use meter::{Meter, MeterChange, MeterLine};
 pub use notepad::{
     NOTEPAD_CAPTION_CHARS, NotepadConfig, NotepadEdit, NotepadPages, NotepadPreset, NotepadSize,
     NotepadTheme,

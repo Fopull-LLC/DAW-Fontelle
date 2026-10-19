@@ -751,6 +751,9 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 vec![1, 2, 3],
             ))
         }),
+        ("SetMeterChange", |_| {
+            Box::new(fontelle_model::SetMeterChange::new(3, Some((7, 8))))
+        }),
         ("SetKey", |_| {
             Box::new(SetKey::new(Some(fontelle_types::KeyScale::new(
                 4,

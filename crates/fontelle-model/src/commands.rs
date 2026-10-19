@@ -4649,6 +4649,91 @@ impl Command for SetKey {
     }
 }
 
+/// Sets the time signature from bar `bar` on (Ty, 2026-10-18), or — with
+/// `None` — takes the change at that bar away. A change already on that bar
+/// is replaced, not doubled.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetMeterChange {
+    bar: u32,
+    to: Option<(u32, u32)>,
+    /// `None` until applied; then what that bar had, which may be nothing.
+    #[serde(with = "crate::wire::nested")]
+    previous: Option<Option<(u32, u32)>>,
+}
+
+impl SetMeterChange {
+    pub fn new(bar: u32, to: Option<(u32, u32)>) -> Self {
+        Self {
+            bar,
+            to,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetMeterChange {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetMeterChange(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.bar == 0 {
+            return Err(CommandError(
+                "bar 1 has the song's own signature, not a change".into(),
+            ));
+        }
+        if let Some((top, bottom)) = self.to
+            && (!(1..=32).contains(&top) || ![1, 2, 4, 8, 16].contains(&bottom))
+        {
+            return Err(CommandError(format!(
+                "{top}/{bottom} is not a signature this keeps"
+            )));
+        }
+        let at = doc.meter_changes.iter().position(|c| c.bar == self.bar);
+        let previous = at.map(|i| (doc.meter_changes[i].top, doc.meter_changes[i].bottom));
+        if let Some(i) = at {
+            doc.meter_changes.remove(i);
+        }
+        if let Some((top, bottom)) = self.to {
+            doc.meter_changes.push(fontelle_types::MeterChange {
+                bar: self.bar,
+                top,
+                bottom,
+            });
+            doc.meter_changes.sort_by_key(|c| c.bar);
+        }
+        self.previous.get_or_insert(previous);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetMeterChange::new(self.bar, *previous)),
+            None => Box::new(NotApplied::new("changing the time signature")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        if self.to.is_some() {
+            "Change the time signature"
+        } else {
+            "Remove a time signature change"
+        }
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
 // --- Importing -------------------------------------------------------------
 
 /// One part of a file being brought in: an instrument, a row, and its notes.
