@@ -739,6 +739,7 @@ fn how_long(bytes: u64, pace: u64) -> String {
 mod tests {
     use super::how_long;
 
+    #[cfg(unix)]
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "fontelle-files-{name}-{}-{:?}",
