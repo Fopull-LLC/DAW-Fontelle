@@ -167,7 +167,7 @@ fn the_selection_slides_by_one_snap_unit() {
     let mut roll = PianoRoll::new(view());
     roll.select(ids.clone());
 
-    let step = roll.step(4);
+    let step = roll.arrow_delta(&arena, true, false, false);
     assert_eq!(step, PPQN / 4, "a sixteenth, which is what the snap says");
 
     let edits = roll.nudge(&arena, step, 0);
@@ -177,15 +177,45 @@ fn the_selection_slides_by_one_snap_unit() {
 
 #[test]
 fn the_step_follows_the_snap_and_is_never_zero() {
+    let (arena, ids) = notes(&[(PPQN, PPQN, 60)]);
     let mut roll = PianoRoll::new(view());
+    roll.select(ids);
     roll.view.snap = SnapDivision::Bar;
-    assert_eq!(roll.step(4), PPQN * 4);
+    assert_eq!(
+        roll.arrow_delta(&arena, true, false, false),
+        PPQN * 3,
+        "to the next bar line"
+    );
+    assert_eq!(
+        roll.arrow_delta(&arena, false, false, false),
+        -PPQN,
+        "back to the last"
+    );
     roll.view.snap = SnapDivision::Beat;
-    assert_eq!(roll.step(4), PPQN);
+    assert_eq!(roll.arrow_delta(&arena, true, false, false), PPQN);
+    // Ctrl is a bar whatever the snap says.
+    assert_eq!(roll.arrow_delta(&arena, true, true, false), PPQN * 3);
     // With the snap off an arrow key still has to mean *something*, or the
     // keyboard stops working the moment you turn free positioning on.
     roll.view.snap = SnapDivision::None;
-    assert!(roll.step(4) > 0);
+    assert!(roll.arrow_delta(&arena, true, false, false) > 0);
+    assert!(roll.arrow_delta(&arena, false, false, false) < 0);
+}
+
+/// Steps are the bar's own: a beat in 7/8 is an eighth, a bar seven of them.
+#[test]
+fn a_step_is_the_signature_the_note_is_in() {
+    use fontelle_types::{Meter, Signature};
+    let (arena, ids) = notes(&[(0, PPQN, 60)]);
+    let mut roll = PianoRoll::new(view());
+    roll.select(ids);
+    roll.set_meter(fontelle_ui::canvas::MeterView::song(Meter::with_song(
+        &Signature::new(7, 8),
+        &[],
+    )));
+    roll.view.snap = SnapDivision::Beat;
+    assert_eq!(roll.arrow_delta(&arena, true, false, false), PPQN / 2);
+    assert_eq!(roll.arrow_delta(&arena, true, true, false), 7 * PPQN / 2);
 }
 
 #[test]
@@ -212,7 +242,7 @@ fn shift_arrows_lengthen_and_shorten() {
     let mut roll = PianoRoll::new(view());
     roll.select(ids.clone());
 
-    let step = roll.step(4);
+    let step = roll.arrow_delta(&arena, true, false, true);
     let edits = roll.resize_selection(&arena, step);
     apply(&mut arena, &edits);
     assert_eq!(arena[ids[0]].length, PPQN + PPQN / 4);

@@ -355,15 +355,18 @@ fn the_read_clamps_to_the_history_it_has() {
 fn looking_ahead_reports_its_latency_and_delays_by_it() {
     let mut config = DisgustingBeatConfig::new();
     assert_eq!(
-        config.latency_samples(BPM, 4, SR),
+        config.latency_samples(BPM, fontelle_types::BarSize::default(), SR),
         0,
         "off is a zero-latency insert"
     );
     config.look = DisgustingBeatLook::Beat;
-    let beat = config.latency_samples(BPM, 4, SR);
+    let beat = config.latency_samples(BPM, fontelle_types::BarSize::default(), SR);
     assert_eq!(beat, SR as u32 / 2, "a beat at 120 bpm is half a second");
     config.look = DisgustingBeatLook::Bar;
-    assert_eq!(config.latency_samples(BPM, 4, SR), SR as u32 * 2);
+    assert_eq!(
+        config.latency_samples(BPM, fontelle_types::BarSize::default(), SR),
+        SR as u32 * 2
+    );
 
     // And a flat curve under lookahead is that delay, exactly: the graph
     // compensates it, so what it must *be* is a pure delay.
@@ -1259,5 +1262,70 @@ fn the_stretch_after_the_last_point_holds_instead_of_sprinting_back() {
          played back at {worst:.2}x there \u{2014} {:+.1} semitones of \
          speed-up nobody asked for",
         12.0 * worst.max(1e-9).log2()
+    );
+}
+
+/// Ty, 2026-10-19: everything follows the signature the song is in. A
+/// pattern a bar long starts again on every bar line — a 7/8 bar after a
+/// bar of 4/4 included — and one longer than a bar counts its bars from
+/// where the signature changed, not from the top of the song.
+#[test]
+fn a_bar_pattern_restarts_on_the_bar_lines_of_whatever_signature() {
+    use fontelle_types::BarSize;
+    for (length, bar_ticks) in [
+        (DisgustingBeatLength::Bar, 3360.0),
+        (DisgustingBeatLength::TwoBars, 6720.0),
+    ] {
+        let mut bank = DisgustingBeatBank::new();
+        bank.scenes[0]
+            .lane_mut(DisgustingBeatLaneKind::Time)
+            .unwrap()
+            .length = length;
+        let grid = grid_of(&bank);
+        let config = DisgustingBeatConfig::new();
+        let mut disgusting_beat = prepared();
+        let mut music = MusicalTime::playing(BPM, SR);
+        // One bar of 4/4 (3840 ticks), then 7/8 (3360 a bar): the third
+        // 7/8 bar starts at 3840 + 2 × 3360.
+        music.bar = BarSize {
+            quarters: 3.5,
+            beats: 7,
+        };
+        music.span_start = 3840.0;
+        music.bar_start = 3840.0 + 2.0 * 3360.0;
+        music.next_bar = music.bar_start + 3360.0;
+        music.tick = music.bar_start;
+        let mut left = vec![0.0f32; 64];
+        let mut right = left.clone();
+        let mut channels: [&mut [f32]; 2] = [&mut left[..], &mut right[..]];
+        disgusting_beat.process(&mut channels, NoteInput::default(), &grid, &config, music);
+        let phase = disgusting_beat.frame().phase;
+        let walked = (64.0 * music.ticks_per_sample / bar_ticks) as f32;
+        assert!(
+            (phase - walked).abs() < 0.001,
+            "{length:?}: phase {phase}, a bar line {walked} ago"
+        );
+    }
+}
+
+/// "1 beat" is one of the bar's own beats: an eighth in 7/8.
+#[test]
+fn a_beat_is_the_signatures_beat() {
+    use fontelle_types::BarSize;
+    let seven_eight = BarSize {
+        quarters: 3.5,
+        beats: 7,
+    };
+    assert_eq!(
+        DisgustingBeatLength::Beat.ticks(seven_eight),
+        PPQN as f64 / 2.0
+    );
+    assert_eq!(
+        DisgustingBeatLength::Bar.ticks(seven_eight),
+        3.5 * PPQN as f64
+    );
+    assert_eq!(
+        DisgustingBeatLength::Bar.ticks(BarSize::default()),
+        4.0 * PPQN as f64
     );
 }

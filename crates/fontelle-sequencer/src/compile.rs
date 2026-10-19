@@ -502,7 +502,7 @@ pub fn compile_with(
                 ticks_per_sample: segment.bpm / 60.0 * PPQN as f64 / tempo.sample_rate_hz(),
             })
             .collect(),
-        beats_per_bar: project.beats_per_bar.max(1),
+        meter: project.meter(),
     }
 }
 

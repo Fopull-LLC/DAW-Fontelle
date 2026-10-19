@@ -139,7 +139,12 @@ fn a_tune_reports_the_latency_the_document_says_it_costs() {
             };
             let expected = config.latency_samples(SR);
             assert_eq!(
-                insert_latency_samples(&EffectConfig::Tune(config), SR, 120.0, 4),
+                insert_latency_samples(
+                    &EffectConfig::Tune(config),
+                    SR,
+                    120.0,
+                    fontelle_types::BarSize::default()
+                ),
                 expected,
                 "the document's answer for {range:?} in {mode:?}"
             );

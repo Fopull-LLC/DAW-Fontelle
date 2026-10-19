@@ -95,7 +95,7 @@ fn notes_from_analyze_paste_snapped_like_any_others() {
         vec![note(PPQN * 2 + 31, PPQN, 57), note(PPQN * 3 + 2, PPQN, 60)],
         Some(PPQN * 2 + 31),
     );
-    let edits = roll.paste(PPQN * 8 + 17, 4);
+    let edits = roll.paste(PPQN * 8 + 17);
     let pasted = inserted(&edits);
     assert_eq!(pasted.len(), 2);
     // The first on the grid (a step is a sixteenth), the rest as played.

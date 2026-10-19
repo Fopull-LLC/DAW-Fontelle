@@ -351,18 +351,18 @@ fn a_whole_tempo_drag_is_one_undo_entry() {
 fn the_time_signature_is_settable_and_the_grid_follows_it() {
     let mut session = session();
     assert_eq!(
-        session.beats_per_bar(),
-        4,
+        session.meter().song(),
+        fontelle_types::Signature::new(4, 4),
         "4/4 until somebody says otherwise"
     );
 
-    session.set_beats_per_bar(3);
-    assert_eq!(session.beats_per_bar(), 3);
+    session.set_meter_change(0, Some(fontelle_types::Signature::new(6, 8)));
+    assert_eq!(session.meter().song(), fontelle_types::Signature::new(6, 8));
     assert!(session.is_dirty());
 
     session.end_gesture();
     session.undo();
-    assert_eq!(session.beats_per_bar(), 4);
+    assert_eq!(session.meter().song(), fontelle_types::Signature::new(4, 4));
 }
 
 // ------------------------------------------- selecting, routing, building ---

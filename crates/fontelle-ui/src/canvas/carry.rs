@@ -26,11 +26,11 @@
 //! Pure, per §2.5 of `docs/first-usable-plan.md`: no document, no window, and
 //! tested in `fontelle-ui/tests/carry.rs`.
 
-use fontelle_types::{PPQN, Tick};
+use fontelle_types::Tick;
 
 use crate::canvas::{
-    RackHit, RackLayout, TimelineLayout, TimelineView, lane_to_y, rack_hit, timeline_snap,
-    timeline_tick_to_x, timeline_x_to_tick, y_to_lane,
+    RackHit, RackLayout, TimelineLayout, TimelineView, lane_to_y, rack_hit, timeline_tick_to_x,
+    timeline_x_to_tick, y_to_lane,
 };
 use crate::layout::Rect;
 
@@ -171,7 +171,8 @@ pub struct CarryRack<'a> {
 pub struct CarryTimeline<'a> {
     pub layout: &'a TimelineLayout,
     pub view: &'a TimelineView,
-    pub beats_per_bar: u32,
+    /// The song's meter: what a drop snaps to.
+    pub meter: &'a super::MeterView,
     /// How many lanes the project has, because an imported sound arrives on a
     /// **new** one after the last of them — see [`CarryTarget::Clip`].
     pub lanes: usize,
@@ -323,7 +324,7 @@ fn carry_place(scene: &CarryScene<'_>, x: f32, y: f32) -> CarryTarget {
         // Snap to whatever grid the arrangement is on, so a dropped clip lines
         // up with the bars and beats already there rather than landing a few
         // pixels off — the "snapping to my current grid" the report asks for.
-        let tick = timeline_snap(timeline.view, loose, timeline.beats_per_bar).max(0);
+        let tick = timeline.meter.snap(loose, timeline.view.snap).max(0);
         let height = timeline.view.lane_height.min(grid.height);
         // **The row under the pointer**, not always a new one at the foot: a
         // drop over an existing row lands on it (`Some(index)`), and only a
@@ -406,7 +407,7 @@ pub fn carry_note(
     target: &CarryTarget,
     channels: &[String],
     oscillators: &[String],
-    beats_per_bar: u32,
+    meter: &fontelle_types::Meter,
 ) -> String {
     let name = |index: usize| match channels.get(index) {
         Some(name) if !name.is_empty() => format!("Onto {name}"),
@@ -425,12 +426,8 @@ pub fn carry_note(
         CarryTarget::NewChannel { .. } => "A new channel".to_string(),
         CarryTarget::Open => "A new row in view".to_string(),
         CarryTarget::Clip { tick, lane, .. } => match lane {
-            Some(index) => format!(
-                "Onto row {} at bar {}",
-                index + 1,
-                bar_label(*tick, beats_per_bar)
-            ),
-            None => format!("A new row at bar {}", bar_label(*tick, beats_per_bar)),
+            Some(index) => format!("Onto row {} at bar {}", index + 1, bar_label(*tick, meter)),
+            None => format!("A new row at bar {}", bar_label(*tick, meter)),
         },
         CarryTarget::Nowhere => "Nowhere to put this".to_string(),
         CarryTarget::Panel => String::new(),
@@ -501,16 +498,12 @@ pub enum CarryRelease {
 ///
 /// One-based, like [`crate::transport::format_bars_beats`], because a musician
 /// counts from one and the transport read-out three inches away already does.
-fn bar_label(tick: Tick, beats_per_bar: u32) -> String {
-    let beats = Tick::from(beats_per_bar.max(1));
-    let bar = PPQN * beats;
-    let tick = tick.max(0);
-    let number = tick / bar + 1;
-    let beat = (tick % bar) / PPQN;
+fn bar_label(tick: Tick, meter: &fontelle_types::Meter) -> String {
+    let (bar, beat, _) = meter.beat_at(tick.max(0));
     if beat == 0 {
-        format!("{number}")
+        format!("{}", bar + 1)
     } else {
-        format!("{number}.{}", beat + 1)
+        format!("{}.{}", bar + 1, beat + 1)
     }
 }
 

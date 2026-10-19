@@ -137,11 +137,6 @@ fn song_is_empty(project: &Project) -> bool {
     })
 }
 
-fn time_signature(beats: u32, unit: u32) -> String {
-    let unit = unit.max(1);
-    format!("{}/{}", (beats * unit).div_ceil(4), unit)
-}
-
 /// Whether vocal track `id` has notes in `data` (or `data` is its own).
 fn sings_in(data: &fontelle_model::NoteData, id: ChannelId) -> bool {
     data.channel == id
@@ -233,14 +228,18 @@ impl Session {
                 .and_then(|lane| self.vocal_on_row(*lane).map(|c| (c, *lane))),
             (None, None) => None,
         };
-        let beats = if empty {
-            song.beats_per_bar
+        // Onto the bar line at or before where it was put, in the meter the
+        // song will have: the file's own signature when it brings it.
+        let file_signature = fontelle_types::Signature::new(song.beats_per_bar, song.beat_unit);
+        // The file's own bars, which its parts are cut to.
+        let file_meter = fontelle_types::Meter::with_song(&file_signature, &[]);
+        let meter = if empty {
+            file_meter.clone()
         } else {
-            self.project.beats_per_bar
+            self.project.meter()
         };
-        let bar = PPQN * i64::from(beats.max(1));
         let tick = self.project.tempo_map.sample_to_tick(at.max(0)).max(0);
-        let offset = tick.div_euclid(bar) * bar;
+        let offset = meter.tick_of_bar(meter.bar_at(tick).0);
         let mut left_out = song.unmapped.clone();
         let parts: Vec<&files::SongPart> = match target {
             Some(_) => {
@@ -257,7 +256,7 @@ impl Session {
         };
         let clips: Vec<_> = parts
             .iter()
-            .map(|p| files::clip_of(p, offset, bar))
+            .map(|p| files::clip_of(p, offset, &file_meter))
             .collect();
         let notes: usize = clips.iter().map(|c| c.notes.len()).sum();
         // Sung by the bank the file was written for, when it is here.
@@ -279,7 +278,7 @@ impl Session {
         };
         let mut command = ImportVocal::new(&what, clips, landing);
         if empty {
-            command = command.with_tempo(song.tempo.clone(), song.beats_per_bar);
+            command = command.with_tempo(song.tempo.clone(), file_signature.clone());
         }
         let made = self
             .apply_for::<ImportVocal>(Box::new(command))?
@@ -312,7 +311,7 @@ impl Session {
         let tempo = if empty {
             format!(
                 " \u{2014} with its tempo, {file_bpm:.0} bpm in {}",
-                time_signature(song.beats_per_bar, song.beat_unit)
+                file_signature.label()
             )
         } else {
             let here = self.project.tempo_map.tempo_at(0);

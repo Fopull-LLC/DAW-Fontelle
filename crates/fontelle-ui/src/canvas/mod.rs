@@ -17,6 +17,7 @@ mod keybinds;
 mod keymap;
 mod lyrics;
 mod menu;
+mod meter_view;
 mod mixer;
 mod note_clipboard;
 mod notepad;
@@ -246,6 +247,7 @@ pub use lyrics::{
     LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, TRANSLATE_TERMS, TermsRow, language_name,
     line_text, neighbour, singer_menu_rows, terms_menu_rows, terms_menu_rows_with,
 };
+pub use meter_view::{MeterView, grid_step};
 pub use mixer::{
     CHAIN_DOT, CHAIN_DOT_GAP, FADER_DETENT_PX, InsertRowLayout, Jacks, MAX_FADER_DB, MAX_SEND_DB,
     MAX_STRIP_WIDTH, MIN_FADER_DB, MIN_PATCH_HEIGHT, MIN_SEND_DB, MIN_STRIP_WIDTH, MixerControl,
@@ -281,9 +283,9 @@ pub use piano_roll::{
     lane_baseline_y, lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout,
     lane_value_of_y, lane_y_of_value, legato_edits, legato_edits_to, note_at_tick, note_marks,
     path_handles, path_line, pitch_y, roll_layout, roll_layout_with_keys, roll_past_end,
-    slice_cuts, snap_caption, snap_tick, snap_unit, subdivision_unit, tick_to_x, toolbar_hit,
-    toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
-    x_to_tick, y_to_key, zoom_x, zoom_y,
+    slice_cuts, snap_caption, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout,
+    tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key,
+    zoom_x, zoom_y,
 };
 pub use preedit::{Composed, Preedit, compose};
 pub use prefabs::{
@@ -337,14 +339,11 @@ pub use timeline::{
     content_fraction, content_ticks, fade_anatomy, fade_caption, fade_curve, fetching_caption,
     ghost_clip, ghost_clip_hint, ghost_pulse, lane_scroll_to_show, lane_switches, lane_to_y,
     lane_track_chip, loop_marks, slice_marks, time_selection, timeline_beat_labels, timeline_grab,
-    timeline_grid_units, timeline_hit, timeline_layout, timeline_snap, timeline_tick_to_x,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick,
-    timeline_zoom_x, timeline_zoom_y, visible_lanes, y_to_lane,
+    timeline_grid_units, timeline_hit, timeline_layout, timeline_tick_to_x, timeline_toolbar_hit,
+    timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
+    timeline_zoom_y, visible_lanes, y_to_lane,
 };
-pub use timeline::{
-    clip_meter_lines, meter_flags, timeline_bar_numbers, timeline_beat_labels_in,
-    timeline_grid_lines,
-};
+pub use timeline::{clip_meter_lines, meter_flags, timeline_bar_numbers, timeline_grid_lines};
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
     tools_dialog_hit, tools_dialog_layout,

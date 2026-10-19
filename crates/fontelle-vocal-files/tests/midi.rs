@@ -222,3 +222,16 @@ fn written_and_read_back_the_words_notes_tempo_and_bend_return() {
         );
     }
 }
+
+/// A 7/8 song is written as seven eighths and read back as it was.
+#[test]
+fn a_signature_goes_round_as_written() {
+    let mut song = VocalSong::new("Odd");
+    song.beats_per_bar = 7;
+    song.beat_unit = 8;
+    let mut part = SongPart::new("Lead");
+    part.notes = vec![vocal_note(0, 480, 60, "a")];
+    song.parts.push(part);
+    let back = midi::read(&midi::write(&song), "x").unwrap();
+    assert_eq!((back.beats_per_bar, back.beat_unit), (7, 8));
+}

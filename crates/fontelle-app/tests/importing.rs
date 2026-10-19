@@ -855,3 +855,67 @@ fn a_folder_of_sounds_counts_them_in_words() {
     );
     assert_eq!(BankFilter::Files(FolderKind::Midi).count(2), "2 mid");
 }
+
+// ------------------------------------------------ a file's signature ---
+
+/// A one-part `.mid` in `top`/2^`power`, with a signature change to 5/16 a
+/// bar later, and one note.
+fn build_midi_in(top: u8, power: u8) -> Vec<u8> {
+    let mut out = b"MThd".to_vec();
+    out.extend_from_slice(&6u32.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&96u16.to_be_bytes());
+    let mut track = Vec::new();
+    varint(0, &mut track);
+    track.extend_from_slice(&[0xff, 0x58, 0x04, top, power, 24, 8]);
+    varint(0, &mut track);
+    track.extend_from_slice(&[0x90, 60, 100]);
+    varint(48, &mut track);
+    track.extend_from_slice(&[0x80, 60, 64]);
+    // A bar of `top` beats of 1/2^power, at 96 a quarter.
+    let bar = u32::from(top) * 96 * 4 / (1u32 << power);
+    varint(bar - 48, &mut track);
+    track.extend_from_slice(&[0xff, 0x58, 0x04, 5, 4, 6, 8]);
+    varint(0, &mut track);
+    track.extend_from_slice(&[0xff, 0x2f, 0x00]);
+    out.extend_from_slice(b"MTrk");
+    out.extend_from_slice(&(track.len() as u32).to_be_bytes());
+    out.extend_from_slice(&track);
+    out
+}
+
+/// Ty, 2026-10-19: signatures go wherever music goes. A file opened into an
+/// empty song brings its signatures with it, as it brings its tempo.
+#[test]
+fn a_midi_file_brings_its_signatures_into_an_empty_song() {
+    let dir = scratch("midi-meter-empty");
+    std::fs::write(dir.join("Seven.mid"), build_midi_in(7, 3)).unwrap();
+    let mut session = common::a_session_for(fontelle_model::Project::new("empty"));
+    use_folder(&mut session, FolderKind::Midi, &dir);
+    session.open_import(row_named(&session, "Seven")).unwrap();
+    let meter = DocumentHost::meter(&session);
+    assert_eq!(meter.song(), fontelle_types::Signature::new(7, 8));
+    assert_eq!(
+        meter.changes(),
+        vec![fontelle_types::MeterChange::new(1, 5, 16)]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Into a song already under way, the song keeps its own signatures — the
+/// file's are right for the file — and says the file's.
+#[test]
+fn a_midi_file_leaves_a_songs_signatures_alone_and_says_so() {
+    let dir = scratch("midi-meter-busy");
+    std::fs::write(dir.join("Seven.mid"), build_midi_in(7, 3)).unwrap();
+    let mut session = a_session(&dir);
+    use_folder(&mut session, FolderKind::Midi, &dir);
+    session.open_import(row_named(&session, "Seven")).unwrap();
+    let said = session.take_message().unwrap_or_default();
+    let meter = DocumentHost::meter(&session);
+    assert_eq!(meter.song(), fontelle_types::Signature::new(4, 4));
+    assert!(meter.changes().is_empty());
+    assert!(said.contains("7/8"), "{said}");
+    std::fs::remove_dir_all(&dir).ok();
+}

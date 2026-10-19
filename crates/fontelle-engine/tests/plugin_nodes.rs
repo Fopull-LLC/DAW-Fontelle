@@ -909,7 +909,8 @@ fn the_transport_is_said_in_a_plugins_terms() {
         bpm: 120.0,
         position_tick: fontelle_types::PPQN as f64 * 9.5,
         ticks_per_sample: fontelle_types::PPQN as f64 * 2.0 / 48_000.0,
-        beats_per_bar: 4,
+        bar: fontelle_types::Meter::default().here(fontelle_types::PPQN * 19 / 2),
+        ..Default::default()
     };
     let transport = fontelle_engine::plugin_transport(&snapshot, 48_000.0);
     assert!(transport.playing);

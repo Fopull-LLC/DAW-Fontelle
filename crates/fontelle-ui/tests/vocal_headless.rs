@@ -166,7 +166,11 @@ fn shoot(
     let (layout, mut labels) = base(&mut text, &theme);
     let title = text.layout("Roll", &theme.font, None);
     let view = TransportView::unavailable();
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let readout = text.layout(
+        &format_readout(&view, &fontelle_types::Meter::constant(4)),
+        &theme.font,
+        None,
+    );
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
     let key_map = KeyMap::unknown();
@@ -249,7 +253,7 @@ fn shoot(
                 notes: &song.notes,
                 selection: &selection,
                 playhead_tick: Some(PPQN * 2 + PPQN / 2),
-                beats_per_bar: 4,
+                meter: &fontelle_ui::canvas::MeterView::default(),
                 tool: Tool::Draw,
                 snap: SnapDivision::Beat,
                 lane_property: LaneProperty::Velocity,

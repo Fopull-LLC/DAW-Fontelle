@@ -45,7 +45,7 @@ fn view() -> DisgustingBeatView {
         clamped: false,
         filled_seconds: 4.0,
         memory: vec![(0.5, 0.3); 512],
-        beats_per_bar: 4,
+        bar: fontelle_types::BarSize::default(),
         bpm: 120.0,
         trail: vec![0.0; 512],
         tool: DisgustingBeatTool::Points,

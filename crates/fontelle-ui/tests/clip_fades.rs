@@ -288,11 +288,11 @@ fn a_note_blocks_corners_are_still_its_body() {
 // ----------------------------------------------------------- gestures ---
 
 fn press_at(timeline: &mut Timeline, clips: &[ClipInfo], x: f32, y: f32) -> Vec<ArrangeEdit> {
-    timeline.press(MouseButton::Left, x, y, &layout(), clips, 4)
+    timeline.press(MouseButton::Left, x, y, &layout(), clips)
 }
 
 fn drag_to(timeline: &mut Timeline, clips: &[ClipInfo], x: f32, y: f32) -> Vec<ArrangeEdit> {
-    timeline.drag(x, y, &layout(), clips, 4)
+    timeline.drag(x, y, &layout(), clips)
 }
 
 #[test]
@@ -656,7 +656,7 @@ fn a_double_click_on_a_handle_removes_the_fade_and_on_a_node_straightens_it() {
     let mut timeline = Timeline::new(view());
 
     let (x, y) = centre(anatomy.handle_in);
-    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips);
     assert_eq!(
         edits,
         vec![ArrangeEdit::SetFade {
@@ -667,7 +667,7 @@ fn a_double_click_on_a_handle_removes_the_fade_and_on_a_node_straightens_it() {
     );
 
     let (x, y) = centre(anatomy.handle_out);
-    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips);
     assert_eq!(
         edits,
         vec![ArrangeEdit::SetFade {
@@ -678,7 +678,7 @@ fn a_double_click_on_a_handle_removes_the_fade_and_on_a_node_straightens_it() {
     );
 
     let (x, y) = centre(anatomy.node_in.unwrap());
-    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips, 4);
+    let edits = timeline.double_press(MouseButton::Left, x, y, &layout(), &clips);
     assert_eq!(
         edits,
         vec![ArrangeEdit::SetFadeTension {

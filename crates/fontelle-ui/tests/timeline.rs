@@ -210,14 +210,7 @@ fn clicking_a_clip_selects_it_and_asks_for_it_to_be_opened() {
     let clips = clips(&[(0, BAR, BAR * 4), (1, 0, BAR)]);
     let block = clip_rect(&t.view, l.grid, &clips[0]);
 
-    let edits = t.press(
-        MouseButton::Left,
-        block.x + 20.0,
-        block.y + 4.0,
-        &l,
-        &clips,
-        4,
-    );
+    let edits = t.press(MouseButton::Left, block.x + 20.0, block.y + 4.0, &l, &clips);
     assert!(edits.is_empty(), "selecting is not an edit: {edits:?}");
     assert_eq!(t.selection(), &[clips[0].id]);
     assert_eq!(
@@ -236,14 +229,14 @@ fn dragging_a_clip_moves_it_by_whole_bars_and_never_before_the_start() {
     let block = clip_rect(&t.view, l.grid, &clips[0]);
     let y = block.y + 4.0;
 
-    t.press(MouseButton::Left, block.x + 20.0, y, &l, &clips, 4);
+    t.press(MouseButton::Left, block.x + 20.0, y, &l, &clips);
 
     // A nudge shorter than a bar is not a move, and not a history entry.
-    let none = t.drag(block.x + 21.0, y, &l, &clips, 4);
+    let none = t.drag(block.x + 21.0, y, &l, &clips);
     assert!(none.is_empty(), "a sub-bar drag moved it: {none:?}");
 
     let one_bar = BAR as f32 * t.view.pixels_per_tick;
-    let moved = t.drag(block.x + 20.0 + one_bar, y, &l, &clips, 4);
+    let moved = t.drag(block.x + 20.0 + one_bar, y, &l, &clips);
     let [
         ArrangeEdit::Move {
             ids,
@@ -259,7 +252,7 @@ fn dragging_a_clip_moves_it_by_whole_bars_and_never_before_the_start() {
     assert_eq!(*lane_delta, 0);
 
     // And dragged hard left it stops at bar 1 rather than going negative.
-    let back = t.drag(l.grid.x - 500.0, y, &l, &clips, 4);
+    let back = t.drag(l.grid.x - 500.0, y, &l, &clips);
     let total: Tick = back
         .iter()
         .map(|e| match e {
@@ -282,20 +275,12 @@ fn dragging_a_clip_down_a_row_changes_its_lane() {
     let clips = clips(&[(0, 0, BAR * 4)]);
     let block = clip_rect(&t.view, l.grid, &clips[0]);
 
-    t.press(
-        MouseButton::Left,
-        block.x + 20.0,
-        block.y + 4.0,
-        &l,
-        &clips,
-        4,
-    );
+    t.press(MouseButton::Left, block.x + 20.0, block.y + 4.0, &l, &clips);
     let moved = t.drag(
         block.x + 20.0,
         block.y + t.view.lane_height * 2.0 + 4.0,
         &l,
         &clips,
-        4,
     );
     let [ArrangeEdit::Move { lane_delta, .. }] = &moved[..] else {
         panic!("expected one move, got {moved:?}");
@@ -311,9 +296,9 @@ fn dragging_a_clips_right_edge_resizes_it() {
     let block = clip_rect(&t.view, l.grid, &clips[0]);
     let y = block.y + 4.0;
 
-    t.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips, 4);
+    t.press(MouseButton::Left, block.right() - 2.0, y, &l, &clips);
     let one_bar = BAR as f32 * t.view.pixels_per_tick;
-    let edits = t.drag(block.right() - 2.0 + one_bar, y, &l, &clips, 4);
+    let edits = t.drag(block.right() - 2.0 + one_bar, y, &l, &clips);
     let [ArrangeEdit::Resize { ids, tick_delta }] = &edits[..] else {
         panic!("expected one resize, got {edits:?}");
     };
@@ -334,7 +319,6 @@ fn right_clicking_a_clip_deletes_it() {
         block.y + 4.0,
         &l,
         &clips,
-        4,
     );
     assert_eq!(edits, vec![ArrangeEdit::Remove(vec![clips[0].id])]);
 }
@@ -347,7 +331,7 @@ fn the_selection_can_be_duplicated_muted_and_deleted() {
 
     // Duplicate lands after the end of what was selected, rounded to a bar, so
     // a phrase copied twice is twice as long rather than an overlap.
-    let [ArrangeEdit::Duplicate { ids, tick_offset }] = &t.duplicate(&clips, 4)[..] else {
+    let [ArrangeEdit::Duplicate { ids, tick_offset }] = &t.duplicate(&clips)[..] else {
         panic!("expected a duplicate");
     };
     assert_eq!(ids.len(), 2);
@@ -390,11 +374,10 @@ fn a_marquee_over_the_arrangement_selects_what_it_covers() {
         l.grid.bottom() - 4.0,
         &l,
         &clips,
-        4,
     );
-    t.drag(from.x + 1.0, from.y + 1.0, &l, &clips, 4);
+    t.drag(from.x + 1.0, from.y + 1.0, &l, &clips);
     assert!(t.marquee().is_some(), "there is a box to draw");
-    t.release_over(from.x + 1.0, from.y + 1.0, &l, &clips, 4);
+    t.release_over(from.x + 1.0, from.y + 1.0, &l, &clips);
 
     let selected = t.selection();
     assert_eq!(selected.len(), 2, "got {selected:?}");
@@ -533,7 +516,7 @@ fn a_stroke_across_a_clip_cuts_it_where_it_crossed() {
         (x, row_middle(&v, g, 0) - 20.0),
         (x, row_middle(&v, g, 0) + 20.0),
         SnapDivision::Bar,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert_eq!(cuts.len(), 1, "one clip crossed");
     assert_eq!(
@@ -558,7 +541,15 @@ fn a_diagonal_stroke_cuts_each_row_at_its_own_bar() {
         fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR * 5),
         row_middle(&v, g, 1),
     );
-    let cuts = fontelle_ui::canvas::clip_cuts(&v, g, &clips, from, to, SnapDivision::Bar, 4);
+    let cuts = fontelle_ui::canvas::clip_cuts(
+        &v,
+        g,
+        &clips,
+        from,
+        to,
+        SnapDivision::Bar,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+    );
     assert_eq!(cuts.len(), 2);
     assert_eq!(cuts[0].1, BAR, "the top row where the stroke started");
     assert_eq!(cuts[1].1, BAR * 5, "and the one below where it ended");
@@ -579,7 +570,7 @@ fn a_horizontal_stroke_cuts_nothing() {
         (g.x + 10.0, y),
         (g.x + 300.0, y),
         SnapDivision::Bar,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert!(cuts.is_empty());
 }
@@ -594,7 +585,18 @@ fn a_press_without_a_drag_cuts_nothing() {
         fontelle_ui::canvas::timeline_tick_to_x(&v, g, BAR),
         row_middle(&v, g, 0),
     );
-    assert!(fontelle_ui::canvas::clip_cuts(&v, g, &clips, at, at, SnapDivision::Bar, 4).is_empty());
+    assert!(
+        fontelle_ui::canvas::clip_cuts(
+            &v,
+            g,
+            &clips,
+            at,
+            at,
+            SnapDivision::Bar,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4))
+        )
+        .is_empty()
+    );
 }
 
 /// A cut aimed at a bar the clip does not cover is refused rather than
@@ -612,7 +614,7 @@ fn a_stroke_past_a_clips_end_cuts_nothing() {
         (x, row_middle(&v, g, 0) - 20.0),
         (x, row_middle(&v, g, 0) + 20.0),
         SnapDivision::Bar,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert!(cuts.is_empty());
 }
@@ -633,7 +635,7 @@ fn a_cut_lands_on_the_grid() {
         (x, row_middle(&v, g, 0) - 20.0),
         (x, row_middle(&v, g, 0) + 20.0),
         SnapDivision::Bar,
-        4,
+        &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
     );
     assert_eq!(
         cuts[0].1,
@@ -654,15 +656,15 @@ fn the_cut_tool_emits_its_edit_when_the_button_comes_up() {
     let x = fontelle_ui::canvas::timeline_tick_to_x(&t.view, l.grid, BAR * 2);
     let y = row_middle(&t.view, l.grid, 0);
 
-    let edits = t.press(MouseButton::Left, x, y - 20.0, &l, &clips, 4);
+    let edits = t.press(MouseButton::Left, x, y - 20.0, &l, &clips);
     assert!(edits.is_empty(), "nothing happens on the way down");
-    t.drag(x, y + 20.0, &l, &clips, 4);
+    t.drag(x, y + 20.0, &l, &clips);
     assert!(
         t.slice_line().is_some(),
         "the stroke is visible while drawn"
     );
 
-    let edits = t.release_over(x, y + 20.0, &l, &clips, 4);
+    let edits = t.release_over(x, y + 20.0, &l, &clips);
     match edits.as_slice() {
         [ArrangeEdit::Split { cuts }] => {
             assert_eq!(cuts, &vec![(clips[0].id, BAR * 2)]);

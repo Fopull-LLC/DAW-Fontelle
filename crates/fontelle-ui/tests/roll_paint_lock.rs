@@ -64,11 +64,11 @@ fn painter() -> PianoRoll {
 fn stroke(roll: &mut PianoRoll, start_key: u8, path: &[(i64, u8)]) -> Arena<NoteId, Note> {
     let mut arena = Arena::default();
     let (x, y) = at(&roll.view, 0, start_key);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     host(roll, &mut arena, &edits);
     for (beat, key) in path {
         let (x, y) = at(&roll.view, PPQN * beat, *key);
-        let edits = roll.drag(x, y, grid(), &arena, 4);
+        let edits = roll.drag(x, y, grid(), &arena);
         host(roll, &mut arena, &edits);
     }
     roll.release();
@@ -118,7 +118,7 @@ fn shift_can_be_taken_up_and_let_go_of_mid_stroke() {
     let mut roll = painter();
     let mut arena = Arena::default();
     let (x, y) = at(&roll.view, 0, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     for (beat, key, shift) in [(1, 64, true), (2, 64, false), (3, 50, false)] {
         roll.set_modifiers(Modifiers {
@@ -126,7 +126,7 @@ fn shift_can_be_taken_up_and_let_go_of_mid_stroke() {
             ..Modifiers::default()
         });
         let (x, y) = at(&roll.view, PPQN * beat, key);
-        let edits = roll.drag(x, y, grid(), &arena, 4);
+        let edits = roll.drag(x, y, grid(), &arena);
         host(&mut roll, &mut arena, &edits);
     }
     assert_eq!(
@@ -143,10 +143,10 @@ fn the_draw_tools_drag_is_untouched_by_the_lock() {
     roll.tool = Tool::Draw;
     let mut arena = Arena::default();
     let (x, y) = at(&roll.view, 0, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     let (x, y) = at(&roll.view, PPQN, 64);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     for edit in &edits {
         if let RollEdit::Move {
             ids,

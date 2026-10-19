@@ -4651,23 +4651,54 @@ impl Command for SetKey {
 
 /// Sets the time signature from bar `bar` on (Ty, 2026-10-18), or — with
 /// `None` — takes the change at that bar away. A change already on that bar
-/// is replaced, not doubled.
+/// is replaced, not doubled. Bar 0 is the song's own signature, which can be
+/// set to anything a change can and never taken away.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetMeterChange {
     bar: u32,
-    to: Option<(u32, u32)>,
+    to: Option<fontelle_types::Signature>,
     /// `None` until applied; then what that bar had, which may be nothing.
     #[serde(with = "crate::wire::nested")]
-    previous: Option<Option<(u32, u32)>>,
+    previous: Option<Option<fontelle_types::Signature>>,
 }
 
 impl SetMeterChange {
-    pub fn new(bar: u32, to: Option<(u32, u32)>) -> Self {
+    pub fn new(bar: u32, to: Option<fontelle_types::Signature>) -> Self {
         Self {
             bar,
             to,
             previous: None,
         }
+    }
+}
+
+/// What bar `bar` has: the song's own signature at 0, a change or nothing
+/// after.
+fn meter_at(doc: &Project, bar: u32) -> Option<fontelle_types::Signature> {
+    if bar == 0 {
+        return Some(doc.signature());
+    }
+    doc.meter_changes
+        .iter()
+        .find(|c| c.bar == bar)
+        .map(fontelle_types::MeterChange::signature)
+}
+
+/// Puts `to` on bar `bar`, or takes what is there away.
+fn put_meter(doc: &mut Project, bar: u32, to: Option<&fontelle_types::Signature>) {
+    if bar == 0 {
+        if let Some(to) = to {
+            doc.beats_per_bar = to.top;
+            doc.beat_unit = to.bottom;
+            doc.beat_groups = to.groups.clone();
+        }
+        return;
+    }
+    doc.meter_changes.retain(|c| c.bar != bar);
+    if let Some(to) = to {
+        doc.meter_changes
+            .push(fontelle_types::MeterChange::at(bar, to));
+        doc.meter_changes.sort_by_key(|c| c.bar);
     }
 }
 
@@ -4677,38 +4708,29 @@ impl Command for SetMeterChange {
     }
 
     fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
-        if self.bar == 0 {
+        if self.bar == 0 && self.to.is_none() {
             return Err(CommandError(
-                "bar 1 has the song's own signature, not a change".into(),
+                "bar 1 always has a signature: the song's own".into(),
             ));
         }
-        if let Some((top, bottom)) = self.to
-            && (!(1..=32).contains(&top) || ![1, 2, 4, 8, 16].contains(&bottom))
-        {
-            return Err(CommandError(format!(
-                "{top}/{bottom} is not a signature this keeps"
-            )));
+        if let Some(to) = &self.to {
+            to.check()
+                .map_err(|why| CommandError(format!("{} \u{2014} {why}", to.label())))?;
         }
-        let at = doc.meter_changes.iter().position(|c| c.bar == self.bar);
-        let previous = at.map(|i| (doc.meter_changes[i].top, doc.meter_changes[i].bottom));
-        if let Some(i) = at {
-            doc.meter_changes.remove(i);
-        }
-        if let Some((top, bottom)) = self.to {
-            doc.meter_changes.push(fontelle_types::MeterChange {
-                bar: self.bar,
-                top,
-                bottom,
-            });
-            doc.meter_changes.sort_by_key(|c| c.bar);
-        }
+        let previous = meter_at(doc, self.bar);
+        // Kept without a grouping that is the signature's own anyway.
+        let to = self.to.clone().map(|s| {
+            let groups = s.groups.clone();
+            s.with_groups(groups)
+        });
+        put_meter(doc, self.bar, to.as_ref());
         self.previous.get_or_insert(previous);
         Ok(())
     }
 
     fn invert(&self) -> Box<dyn Command> {
         match &self.previous {
-            Some(previous) => Box::new(SetMeterChange::new(self.bar, *previous)),
+            Some(previous) => Box::new(SetMeterChange::new(self.bar, previous.clone())),
             None => Box::new(NotApplied::new("changing the time signature")),
         }
     }
@@ -4719,6 +4741,87 @@ impl Command for SetMeterChange {
         } else {
             "Remove a time signature change"
         }
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+/// Moves the time signature change at bar `from` to bar `to` (Ty,
+/// 2026-10-19: *"they absolutely need to be moveable"*). A change already at
+/// `to` is replaced by it, and one undo puts both back.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MoveMeterChange {
+    from: u32,
+    to: u32,
+    /// `None` until applied; then what `to` had, which may be nothing.
+    #[serde(with = "crate::wire::nested")]
+    displaced: Option<Option<fontelle_types::Signature>>,
+}
+
+impl MoveMeterChange {
+    pub fn new(from: u32, to: u32) -> Self {
+        Self {
+            from,
+            to,
+            displaced: None,
+        }
+    }
+}
+
+impl Command for MoveMeterChange {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::MoveMeterChange(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.from == 0 || self.to == 0 {
+            return Err(CommandError(
+                "bar 1's signature is the song's own and stays on bar 1".into(),
+            ));
+        }
+        let moving = doc
+            .meter_changes
+            .iter()
+            .find(|c| c.bar == self.from)
+            .map(fontelle_types::MeterChange::signature)
+            .ok_or_else(|| CommandError(format!("there is no change at bar {}", self.from + 1)))?;
+        if self.from == self.to {
+            self.displaced.get_or_insert(Some(moving));
+            return Ok(());
+        }
+        let displaced = meter_at(doc, self.to);
+        put_meter(doc, self.from, None);
+        put_meter(doc, self.to, Some(&moving));
+        self.displaced.get_or_insert(displaced);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.displaced {
+            Some(displaced) if self.from != self.to => Box::new(Compound::new(
+                "Move the time signature change back",
+                vec![
+                    Box::new(MoveMeterChange::new(self.to, self.from)),
+                    Box::new(SetMeterChange::new(self.to, displaced.clone())),
+                ],
+            )),
+            Some(_) => Box::new(Compound::new("Nothing moved", Vec::new())),
+            None => Box::new(NotApplied::new("moving the time signature change")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Move a time signature change"
     }
 
     fn merge_with(&mut self, _next: &dyn Command) -> bool {
@@ -7331,7 +7434,8 @@ impl Command for SetNumber {
                 // Clamped here rather than trusted from the caller: this is
                 // the only way into the field, and a bar of zero beats divides
                 // by zero in every grid that counts by it.
-                let beats = (self.value.round() as i64).clamp(1, 16) as u32;
+                let beats =
+                    (self.value.round() as i64).clamp(1, i64::from(fontelle_types::MAX_TOP)) as u32;
                 std::mem::replace(&mut doc.beats_per_bar, beats) as f64
             }
         };

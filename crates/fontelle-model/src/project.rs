@@ -287,25 +287,39 @@ fn default_beats_per_bar() -> u32 {
     4
 }
 
+fn default_beat_unit() -> u32 {
+    4
+}
+
+fn is_quarter(unit: &u32) -> bool {
+    *unit == 4
+}
+
 /// The whole document (TDD §10.1). Owned exclusively by the model thread; every
 /// mutation goes through a `Command` (INVARIANT 9).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Project {
     pub meta: ProjectMeta,
     pub tempo_map: TempoMap,
-    /// The time signature's numerator: how many beats there are in a bar.
-    ///
-    /// **The denominator is always four and is not stored**, because [`PPQN`]
-    /// is ticks per *quarter* note — a denominator other than four is a change
-    /// to what a tick means in every conversion in this crate, not a document
-    /// field. A time-signature *track* (§6.2's remaining gap) is where a piece
-    /// that changes metre mid-song goes; this is the one signature the grid,
-    /// the bar numbers and the read-out all count by.
+    /// The song's own time signature's top: how many beats there are in a
+    /// bar from bar 1. With [`beat_unit`](Self::beat_unit) and
+    /// [`beat_groups`](Self::beat_groups) it is the signature
+    /// [`signature`](Self::signature) answers; see `fontelle_types::meter`
+    /// for why any bottom is a beat of whole ticks.
     ///
     /// Defaulted rather than required, so a project written before this field
     /// existed opens in the 4/4 it was made in.
     #[serde(default = "default_beats_per_bar")]
     pub beats_per_bar: u32,
+    /// The song's own signature's bottom: the beat is 1/`beat_unit` of a
+    /// whole note. Written only when it is not 4, so a song in quarters
+    /// saves as it did before there was a choice.
+    #[serde(default = "default_beat_unit", skip_serializing_if = "is_quarter")]
+    pub beat_unit: u32,
+    /// How the song's own beats are grouped (3+3+2), or empty for the
+    /// signature's own grouping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub beat_groups: Vec<u32>,
     /// Where the time signature changes (Ty, 2026-10-18): each holds from its
     /// bar until the next; [`beats_per_bar`](Self::beats_per_bar) is the
     /// song's own, from bar 1. Kept in bar order, one a bar
@@ -534,9 +548,15 @@ impl Project {
     /// whatever order it iterates. It is empty in every project today —
     /// nothing can create an override — and §18's F53 is the row that says
     /// what to do before anything does.
+    /// The song's own signature, from bar 1.
+    pub fn signature(&self) -> fontelle_types::Signature {
+        fontelle_types::Signature::new(self.beats_per_bar, self.beat_unit)
+            .with_groups(self.beat_groups.clone())
+    }
+
     /// The song's meter: its own signature from bar 1, and its changes.
     pub fn meter(&self) -> fontelle_types::Meter {
-        fontelle_types::Meter::new(self.beats_per_bar, &self.meter_changes)
+        fontelle_types::Meter::with_song(&self.signature(), &self.meter_changes)
     }
 
     pub fn sync_hash(&self) -> u64 {
@@ -665,6 +685,8 @@ impl Project {
             },
             tempo_map: TempoMap::default(),
             beats_per_bar: default_beats_per_bar(),
+            beat_unit: default_beat_unit(),
+            beat_groups: Vec::new(),
             meter_changes: Vec::new(),
             key: None,
             channels: Arena::default(),

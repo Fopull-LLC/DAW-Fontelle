@@ -215,7 +215,7 @@ fn the_files_tempo_and_metre_come_and_go_with_the_import() {
                         voice: None,
                     },
                 )
-                .with_tempo(tempo.clone(), 3),
+                .with_tempo(tempo.clone(), fontelle_types::Signature::new(3, 4)),
             ),
             &mut project,
         )
@@ -245,7 +245,7 @@ fn an_import_crosses_the_wire_as_the_same_edit() {
             start_tick: 0,
             bpm: 100.0,
         }],
-        4,
+        fontelle_types::Signature::new(4, 4),
     );
     import.apply(&mut here).unwrap();
     let edit = Edit::from_bytes(&import.to_edit().to_bytes()).unwrap();

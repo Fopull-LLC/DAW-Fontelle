@@ -142,6 +142,8 @@ struct Studio {
 
 fn a_studio() -> Studio {
     let mut project = Project::new("wire");
+    // A signature change for `MoveMeterChange` to move.
+    project.meter_changes = vec![fontelle_types::MeterChange::new(3, 5, 8)];
     let master = project.mixer.master.unwrap();
     let part = applied(AddMixerTrack::new("Part"), &mut project)
         .track()
@@ -648,7 +650,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                         start_tick: 0,
                         bpm: 90.0,
                     }],
-                    3,
+                    fontelle_types::Signature::new(3, 4),
                 ),
             )
         }),
@@ -752,7 +754,13 @@ fn every_command() -> Vec<(&'static str, Make)> {
             ))
         }),
         ("SetMeterChange", |_| {
-            Box::new(fontelle_model::SetMeterChange::new(3, Some((7, 8))))
+            Box::new(fontelle_model::SetMeterChange::new(
+                3,
+                Some(fontelle_types::Signature::new(7, 8).with_groups(vec![3, 2, 2])),
+            ))
+        }),
+        ("MoveMeterChange", |_| {
+            Box::new(fontelle_model::MoveMeterChange::new(3, 5))
         }),
         ("SetKey", |_| {
             Box::new(SetKey::new(Some(fontelle_types::KeyScale::new(

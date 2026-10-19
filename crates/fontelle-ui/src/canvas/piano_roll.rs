@@ -765,19 +765,8 @@ impl SnapDivision {
     }
 }
 
-/// How many ticks one snap line is from the next. **Zero means no snap.**
-pub fn snap_unit(snap: SnapDivision, beats_per_bar: u32) -> Tick {
-    match snap {
-        SnapDivision::Bar => PPQN * Tick::from(beats_per_bar.max(1)),
-        SnapDivision::Beat => PPQN,
-        SnapDivision::Step => PPQN / 4,
-        SnapDivision::Division(n) => PPQN / Tick::from(n.max(1)),
-        SnapDivision::Triplet => PPQN / 3,
-        SnapDivision::None => 0,
-    }
-}
-
-/// The finest grid the roll *draws*, which is not the same thing as the snap.
+/// The finest grid the roll *draws*, as a note value counted from each bar
+/// line — which is not the same thing as the snap.
 ///
 /// Reported from using the window: *"it's kind of hard to tell the time right
 /// now so ensure between bars or measures there's more dividers so I can see
@@ -787,33 +776,19 @@ pub fn snap_unit(snap: SnapDivision, beats_per_bar: u32) -> Tick {
 ///
 /// The grid is the ruler you read the time off; the snap is where a note is
 /// allowed to land. They are related and they are not the same, so this shows
-/// the snap when the snap is fine enough to be useful as a ruler, and the
+/// the snap when it is a note value fine enough to be useful as a ruler, and
 /// **eighths** otherwise. An eighth is the coarsest division that still shows
-/// an offbeat, which is what the report is actually asking for.
+/// an offbeat, which is what the report is actually asking for. The bars and
+/// the signature's own beats are drawn from the meter, on top.
 ///
 /// The renderer drops any level whose lines would be a few pixels apart, so
 /// this being fine at a very low zoom costs nothing.
-pub fn subdivision_unit(snap: SnapDivision, beats_per_bar: u32) -> Tick {
+pub fn subdivision_unit(snap: SnapDivision) -> Tick {
     let eighth = PPQN / 2;
-    let unit = snap_unit(snap, beats_per_bar);
-    if unit > 0 && unit < eighth {
-        unit
-    } else {
-        eighth
+    match super::grid_step(snap) {
+        Some(fontelle_types::GridStep::Ticks(unit)) if unit > 0 && unit < eighth => unit,
+        _ => eighth,
     }
-}
-
-/// Rounds to the **nearest** line, not the one before.
-///
-/// Nearest is what makes a grid feel like a magnet instead of a ratchet: a
-/// note dropped a hair past a line should stay where it looks like it is.
-pub fn snap_tick(tick: Tick, snap: SnapDivision, beats_per_bar: u32) -> Tick {
-    let unit = snap_unit(snap, beats_per_bar);
-    if unit <= 0 {
-        return tick;
-    }
-    let tick = tick.max(0);
-    ((tick + unit / 2) / unit * unit).max(0)
 }
 
 /// The length and path that the points placed so far and the pointer's
@@ -1823,6 +1798,11 @@ enum Gesture {
     Moving {
         applied_tick: Tick,
         applied_key: i16,
+        /// Where the grabbed note started: what lands on the grid. A drag
+        /// moves the selection so that **this** sits on a line — a note
+        /// placed off the grid is dragged onto it — and every other note keeps
+        /// its distance from it.
+        anchor: Tick,
         /// The limits, **measured once when the gesture started**.
         ///
         /// This is the whole of the flicker fix. These used to be recomputed
@@ -1836,6 +1816,8 @@ enum Gesture {
     /// Dragging a note's right edge.
     Resizing {
         applied_tick: Tick,
+        /// Where the grabbed note ended: what lands on the grid.
+        anchor: Tick,
         /// The shortest note in the selection **when the gesture started**.
         /// Same reason as [`Gesture::Moving`]'s limits: measured live, it
         /// shrinks as the drag shortens the note, and the clamp chases it.
@@ -2038,9 +2020,11 @@ pub struct PianoRoll {
     /// Where the pointer last was over the grid, unsnapped — where S puts a
     /// point, since a key press carries no position of its own.
     pointer: (Tick, u8),
-    /// The bar the last press or drag was measured in, for the same reason:
-    /// a bar snap needs it and a key press does not bring it.
-    beats_per_bar: u32,
+    /// The song's meter as this clip sees it: what every snap, step and
+    /// copy here is measured in — a bar as long as the signature it is in,
+    /// a beat that signature's beat. Set by the window whenever the clip or
+    /// the meter changes ([`set_meter`](Self::set_meter)).
+    meter: super::MeterView,
 }
 
 /// How far the pointer may wander between press and release and still have
@@ -2079,8 +2063,17 @@ impl PianoRoll {
             clipboard: super::NoteClipboard::new(),
             drawn: None,
             pointer: (0, 0),
-            beats_per_bar: 4,
+            meter: super::MeterView::default(),
         }
+    }
+
+    /// Tells the roll the song's meter as its clip sees it.
+    pub fn set_meter(&mut self, meter: super::MeterView) {
+        self.meter = meter;
+    }
+
+    pub fn meter(&self) -> &super::MeterView {
+        &self.meter
     }
 
     pub fn selection(&self) -> &[NoteId] {
@@ -2288,6 +2281,7 @@ impl PianoRoll {
                 self.gesture = Gesture::Moving {
                     applied_tick: 0,
                     applied_key: 0,
+                    anchor: start,
                     limits: MoveLimits {
                         min_tick: -start,
                         min_key: -i16::from(key),
@@ -2299,6 +2293,7 @@ impl PianoRoll {
                 self.origin = (end, key);
                 self.gesture = Gesture::Resizing {
                     applied_tick: 0,
+                    anchor: end,
                     shortest: length,
                 };
             }
@@ -2379,7 +2374,7 @@ impl PianoRoll {
         let Some(note) = notes.get(id) else {
             return Vec::new();
         };
-        let snapped = snap_tick(self.pointer.0, self.live_snap(), self.beats_per_bar) - note.start;
+        let snapped = self.meter.snap(self.pointer.0, self.live_snap()) - note.start;
         let end = snapped.max(note.length);
         // A note that already has a path is drawn *on*: its points up to its
         // end stay, and the end becomes the next one.
@@ -2429,7 +2424,6 @@ impl PianoRoll {
         y: f32,
         grid: Rect,
         notes: &Arena<NoteId, Note>,
-        beats_per_bar: u32,
     ) -> Vec<RollEdit> {
         // The first press of the pair began a gesture; a double-click is its
         // own thing, and a drag after it must not carry on with that one.
@@ -2449,7 +2443,7 @@ impl PianoRoll {
             }
             _ => {
                 let tick = x_to_tick(&self.view, grid, x);
-                let at = snap_tick(tick, self.live_snap(), beats_per_bar) - note.start;
+                let at = self.meter.snap(tick, self.live_snap()) - note.start;
                 if at <= 0 || at >= note.length || path.iter().any(|p| p.at == at) {
                     return Vec::new();
                 }
@@ -2473,10 +2467,9 @@ impl PianoRoll {
         start: Tick,
         key: u8,
         fixed: &[fontelle_model::PathPoint],
-        beats_per_bar: u32,
     ) -> fontelle_model::PathPoint {
         let earliest = fixed.last().map_or(1, |point| point.at);
-        let at = (snap_tick(self.pointer.0, self.live_snap(), beats_per_bar) - start).max(earliest);
+        let at = (self.meter.snap(self.pointer.0, self.live_snap()) - start).max(earliest);
         fontelle_model::PathPoint {
             at,
             offset: self.offset_of(self.pointer.1, key),
@@ -2535,7 +2528,6 @@ impl PianoRoll {
         y: f32,
         grid: Rect,
         notes: &Arena<NoteId, Note>,
-        beats_per_bar: u32,
     ) -> Vec<RollEdit> {
         let hit = hit_test(&self.view, grid, notes, x, y);
 
@@ -2555,7 +2547,6 @@ impl PianoRoll {
             x_to_tick(&self.view, grid, x),
             y_to_key(&self.view, grid, y),
         );
-        self.beats_per_bar = beats_per_bar;
 
         if button == MouseButton::Right || self.tool == Tool::Delete {
             self.gesture = Gesture::Erasing;
@@ -2607,11 +2598,13 @@ impl PianoRoll {
                     },
                     NotePart::RightEdge => Gesture::Resizing {
                         applied_tick: 0,
+                        anchor: notes.get(id).map_or(self.origin.0, |n| n.start + n.length),
                         shortest: self.shortest_selected(notes),
                     },
                     _ => Gesture::Moving {
                         applied_tick: 0,
                         applied_key: 0,
+                        anchor: notes.get(id).map_or(self.origin.0, |n| n.start),
                         limits: MoveLimits::of(&self.selection, notes),
                     },
                 };
@@ -2634,7 +2627,7 @@ impl PianoRoll {
                     return Vec::new();
                 }
                 let snap = self.live_snap();
-                let start = snap_tick(tick, snap, beats_per_bar);
+                let start = self.meter.snap(tick, snap);
                 let key = self.scaled_key(key);
                 let note = self.drawn_note(start, key, self.template_length());
                 // Where the pointer *pressed*, not where the note landed: a
@@ -2673,7 +2666,6 @@ impl PianoRoll {
         y: f32,
         grid: Rect,
         notes: &Arena<NoteId, Note>,
-        beats_per_bar: u32,
     ) -> Vec<RollEdit> {
         // **Before anything else.** A drag that has wandered off the grid —
         // onto the keyboard reaching for bar 1, onto the ruler reaching for a
@@ -2701,7 +2693,6 @@ impl PianoRoll {
         let tick = x_to_tick(&self.view, grid, x);
         let key = y_to_key(&self.view, grid, y);
         self.pointer = (tick, key);
-        self.beats_per_bar = beats_per_bar;
 
         match self.gesture.clone() {
             Gesture::Pathing {
@@ -2712,7 +2703,7 @@ impl PianoRoll {
                 applied,
                 ..
             } => {
-                let live = self.live_point(start, note_key, &fixed, beats_per_bar);
+                let live = self.live_point(start, note_key, &fixed);
                 self.path_step(id, start, note_key, fixed, live, applied)
             }
 
@@ -2732,7 +2723,7 @@ impl PianoRoll {
                     .and_then(|i| base.path.get(i))
                     .map_or(0, |p| p.at);
                 let latest = base.path.get(index + 1).map_or(Tick::MAX, |p| p.at);
-                let snapped = snap_tick(tick, self.live_snap(), beats_per_bar) - base.start;
+                let snapped = self.meter.snap(tick, self.live_snap()) - base.start;
                 let at = snapped.clamp(earliest, latest);
                 let offset = self.offset_of(key, base.key);
                 let mut path = base.path.clone();
@@ -2787,7 +2778,7 @@ impl PianoRoll {
 
             Gesture::Painting { last, row } => {
                 let snap = self.live_snap();
-                let start = snap_tick(tick, snap, beats_per_bar);
+                let start = self.meter.snap(tick, snap);
                 // On the press's row unless Shift is held **now** — live, so
                 // a stroke can step off the row for a fill and come back.
                 let key = if self.modifiers.shift {
@@ -2816,6 +2807,7 @@ impl PianoRoll {
             Gesture::Moving {
                 applied_tick,
                 applied_key,
+                anchor,
                 limits,
             } => {
                 if self.selection.is_empty() {
@@ -2824,7 +2816,7 @@ impl PianoRoll {
                 // Snap the *destination*, not the delta: a note that started
                 // off the grid should land on it, which is what dragging a
                 // sloppily-placed note onto the beat is for.
-                let mut wanted_tick = self.snapped_delta(tick, beats_per_bar, limits);
+                let mut wanted_tick = self.snapped_delta(tick, anchor, limits);
                 let mut wanted_key = (i16::from(self.scaled_key(key)) - i16::from(self.origin.1))
                     .clamp(limits.min_key, limits.max_key);
 
@@ -2850,6 +2842,7 @@ impl PianoRoll {
                 self.gesture = Gesture::Moving {
                     applied_tick: wanted_tick,
                     applied_key: wanted_key,
+                    anchor,
                     limits,
                 };
                 vec![RollEdit::Move {
@@ -2861,17 +2854,26 @@ impl PianoRoll {
 
             Gesture::Resizing {
                 applied_tick,
+                anchor,
                 shortest,
             } => {
                 if self.selection.is_empty() {
                     return Vec::new();
                 }
-                let unit = snap_unit(self.live_snap(), beats_per_bar);
+                // The grabbed note's end lands on a line of the grid — of the
+                // bar it is in, however long that bar is.
+                let snap = self.live_snap();
                 let raw = tick - self.origin.0;
-                let wanted = if unit > 0 {
-                    (raw as f64 / unit as f64).round() as Tick * unit
+                let wanted = if super::grid_step(snap).is_some() {
+                    self.meter.snap(anchor + raw, snap) - anchor
                 } else {
                     raw
+                };
+                let from = self.meter.line_at_or_before(anchor, snap);
+                let unit = if super::grid_step(snap).is_some() {
+                    self.meter.next(from, snap) - from
+                } else {
+                    0
                 };
                 // Never past nothing: the shortest a note may become is one
                 // snap unit, or one tick with snap off. Measured against the
@@ -2884,6 +2886,7 @@ impl PianoRoll {
                 }
                 self.gesture = Gesture::Resizing {
                     applied_tick: wanted,
+                    anchor,
                     shortest,
                 };
                 vec![RollEdit::Resize {
@@ -3147,16 +3150,47 @@ impl PianoRoll {
 
     // ---------------------------------------------------- from the keyboard ---
 
-    /// What one arrow key is worth in ticks: the snap division in force.
+    /// How far one arrow key moves the selection, signed: from the
+    /// earliest selected note's start (or, `resize`, the first one's end) to
+    /// the next line of the grid in force — the bar's, with `by_bar` — or the
+    /// last one before it. A bar is the bar the note is in, so Ctrl+Right in
+    /// a 7/8 bar moves seven eighths.
     ///
     /// Never zero. With free positioning on there is still a sensible smallest
     /// nudge, and an arrow key that does nothing because the snap chip says
     /// "none" is a keyboard that stops working when you turn a *drawing* aid
     /// off.
-    pub fn step(&self, beats_per_bar: u32) -> Tick {
-        match snap_unit(self.view.snap, beats_per_bar) {
-            0 => FINE_STEP,
-            unit => unit,
+    pub fn arrow_delta(
+        &self,
+        notes: &Arena<NoteId, Note>,
+        forward: bool,
+        by_bar: bool,
+        resize: bool,
+    ) -> Tick {
+        let selected = || self.selection.iter().filter_map(|id| notes.get(*id));
+        let anchor = if resize {
+            selected().map(|n| n.start + n.length).min()
+        } else {
+            selected().map(|n| n.start).min()
+        }
+        .unwrap_or(0);
+        let snap = if by_bar {
+            SnapDivision::Bar
+        } else {
+            self.view.snap
+        };
+        if super::grid_step(snap).is_none() {
+            return if forward { FINE_STEP } else { -FINE_STEP };
+        }
+        let to = if forward {
+            self.meter.next(anchor, snap)
+        } else {
+            self.meter.previous(anchor, snap)
+        };
+        match to - anchor {
+            0 if forward => FINE_STEP,
+            0 => -FINE_STEP,
+            by => by,
         }
     }
 
@@ -3342,11 +3376,11 @@ impl PianoRoll {
     /// The snap happens here rather than at the call site because the roll is
     /// what owns the division, `Alt` included (see `live_snap`): a rule
     /// enforced by the caller is a rule the next caller forgets.
-    pub fn paste(&mut self, at: Tick, beats_per_bar: u32) -> Vec<RollEdit> {
+    pub fn paste(&mut self, at: Tick) -> Vec<RollEdit> {
         if self.clipboard.is_empty() {
             return Vec::new();
         }
-        let at = snap_tick(at.max(0), self.live_snap(), beats_per_bar).max(0);
+        let at = self.meter.snap(at.max(0), self.live_snap()).max(0);
         let notes: Vec<Note> = self
             .clipboard
             .notes()
@@ -3363,7 +3397,7 @@ impl PianoRoll {
     ///
     /// Rounded up to the next bar, which is what makes duplicating a phrase
     /// produce a phrase twice as long rather than an overlap nobody asked for.
-    pub fn duplicate(&mut self, notes: &Arena<NoteId, Note>, beats_per_bar: u32) -> Vec<RollEdit> {
+    pub fn duplicate(&mut self, notes: &Arena<NoteId, Note>) -> Vec<RollEdit> {
         let phrase = self.selected_phrase(notes);
         if phrase.is_empty() {
             return Vec::new();
@@ -3383,14 +3417,13 @@ impl PianoRoll {
             .max()
             .unwrap_or(earliest);
 
-        let bar = PPQN * Tick::from(beats_per_bar.max(1));
-        // `div_ceil` on a signed integer is still unstable, so this is it by
-        // hand — and `end` is never negative, which is what makes it this short.
-        let landing = (end + bar - 1) / bar * bar;
+        // As many whole bars on as the phrase spans, on the same beat of its
+        // bar — bars of whatever signature they are in.
+        let offset = self.meter.copy_starts(earliest, end, 1)[0] - earliest;
         let copies: Vec<Note> = phrase
             .into_iter()
             .map(|note| Note {
-                start: note.start + landing,
+                start: note.start + offset,
                 ..note
             })
             .collect();
@@ -3464,11 +3497,15 @@ impl PianoRoll {
     ///
     /// `limits` is the gesture's, captured at the press — never the live
     /// document's. See [`MoveLimits`].
-    fn snapped_delta(&self, pointer_tick: Tick, beats_per_bar: u32, limits: MoveLimits) -> Tick {
-        let unit = snap_unit(self.live_snap(), beats_per_bar);
+    ///
+    /// The grabbed note's start, `anchor`, moved as far as the pointer has
+    /// and snapped onto the grid there: a bar is a bar of the signature it
+    /// lands in, and a note placed off the grid is dragged onto it.
+    fn snapped_delta(&self, pointer_tick: Tick, anchor: Tick, limits: MoveLimits) -> Tick {
+        let snap = self.live_snap();
         let raw = pointer_tick - self.origin.0;
-        let wanted = if unit > 0 {
-            (raw as f64 / unit as f64).round() as Tick * unit
+        let wanted = if super::grid_step(snap).is_some() {
+            self.meter.snap(anchor + raw, snap) - anchor
         } else {
             raw
         };

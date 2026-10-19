@@ -27,7 +27,7 @@ fn a_part_is_a_clip_from_the_bar_of_its_first_note() {
         Lane::Dynamics,
         LaneCurve::from_points(vec![(BAR + PPQN, -6.0), (BAR * 2, 0.0)]),
     );
-    let clip = clip_of(&part, 0, BAR);
+    let clip = clip_of(&part, 0, &fontelle_types::Meter::constant(4));
     assert_eq!(clip.name, "Lead");
     assert_eq!(clip.start, BAR);
     // To the end of the bar the last note ends in.
@@ -43,7 +43,7 @@ fn a_part_is_a_clip_from_the_bar_of_its_first_note() {
     );
 
     // Dropped at bar 9: everything nine bars on, by beats.
-    let later = clip_of(&part, BAR * 8, BAR);
+    let later = clip_of(&part, BAR * 8, &fontelle_types::Meter::constant(4));
     assert_eq!(later.start, BAR * 9);
     assert_eq!(later.notes[0].start, PPQN);
 }

@@ -1,25 +1,17 @@
-//! The metronome, from the side that has to hand it a tempo.
+//! The metronome, from the side that builds it.
 //!
-//! Reported from using the window: *"the metronome is not audible"*. The
-//! `MetronomeNode` itself was right and had eight tests
-//! (`fontelle-engine/tests/metronome.rs`) — it clicks once a beat, accents the
-//! downbeat, lands on the beat after a seek, and adds into its bus rather than
-//! over it. What it did not have was a beat.
+//! Reported from using the window: *"the metronome is not audible"* — the
+//! node had no beat, because the one thing that told it one was never
+//! called. And 2026-10-19: *"the metronome absolutely needs to match the
+//! correct signature you are in"* — a beat pushed in from outside could only
+//! ever be one signature at one tempo.
 //!
-//! `Metronome::new` starts at **zero samples per beat**, which is the "no
-//! tempo yet" value, and a node with no tempo is silent rather than dividing
-//! by zero. The only thing that ever called `set_beat` was
-//! `Session::publish_metronome`, and the window's `Session` held no metronome
-//! to publish to: `Session::new` never took one, so `rebuild_graph` passed
-//! `None` and `realise` minted a fresh one every time.
-//!
-//! Which is two bugs in one wire, and both are here:
-//!
-//! 1. A realised graph clicks at the project's own tempo, with nobody having
-//!    to remember to tell it.
-//! 2. The switch on the transport bar stays connected to the node the graph is
-//!    playing, across every rebuild — choosing a soundfont must not silently
-//!    orphan the metronome button.
+//! So the click has no beat of its own any more. The transport hands it each
+//! block's beats off the compiled timeline's meter and tempo table
+//! (`fontelle-engine/tests/meter_clock.rs`), and what is left to check from
+//! this side is the wire: a song compiled the way the studio compiles it
+//! clicks in its own signature, and the switch on the transport bar stays
+//! connected to the node the graph is playing across every rebuild.
 
 mod common;
 
@@ -27,7 +19,7 @@ use std::path::PathBuf;
 
 use fontelle_app::{RealiseOptions, SampleLibrary, Session, demo_project, realise};
 use fontelle_types::CompiledTimeline;
-use fontelle_ui::document::{DocumentHost, StudioHost};
+use fontelle_ui::document::StudioHost;
 
 use common::SR;
 
@@ -73,24 +65,70 @@ fn studio(dir: &std::path::Path) -> Session {
     .with_settings_path(dir.join("settings.json"))
 }
 
-// ------------------------------------------------- a click with a tempo ---
+// ------------------------------------------------- a click with a meter ---
 
-#[test]
-fn realising_a_project_tells_the_click_where_the_beats_are() {
-    // The bug, stated as the fix: nobody should have to call `set_beat` for a
-    // metronome to be audible. `realise` is the one place that sees both the
-    // project's tempo map and the node it is building, so it is where the
-    // answer belongs.
-    let project = demo_project(60, 120.0, SR);
-    let realised =
-        realise(&project, &SampleLibrary::new(), options()).expect("the demo must realise");
-
-    assert_eq!(
-        realised.metronome.samples_per_beat(),
-        BEAT_AT_120,
-        "a realised graph must know how long a beat is, or its click is silent"
+/// Every click a compiled `project` hands out over its first `bars` bars,
+/// as (sample, accent).
+fn clicks_of(project: &fontelle_model::Project, bars: u32) -> Vec<(i64, fontelle_types::Accent)> {
+    use fontelle_engine::{BLOCK_SIZE, Transport, TransportReader, TransportState};
+    let timeline = fontelle_sequencer::compile(
+        project,
+        &std::collections::HashMap::new(),
+        &std::collections::HashMap::new(),
     );
-    assert_eq!(realised.metronome.beats_per_bar(), project.beats_per_bar);
+    let end = project
+        .tempo_map
+        .tick_to_sample(project.meter().tick_of_bar(bars));
+    let transport = Transport::new();
+    transport.set_state(TransportState::Playing);
+    let mut reader = TransportReader::new();
+    let mut clicks = Vec::new();
+    let mut at = 0;
+    while at < end {
+        let step = reader.next_step(&transport, &timeline, BLOCK_SIZE, BLOCK_SIZE, false);
+        for (offset, accent) in step.snapshot.clicks.iter() {
+            clicks.push((step.range.start + i64::from(offset), accent));
+        }
+        at += step.frames as i64;
+    }
+    clicks.retain(|c| c.0 < end);
+    clicks
+}
+
+/// A song in 7/8 felt 3+2+2, compiled as the studio compiles it, clicks
+/// seven eighths a bar, the bar's first loudest and each group's first next.
+#[test]
+fn a_song_clicks_in_its_own_signature() {
+    use fontelle_types::Accent::{Bar, Beat, Group};
+    let mut project = demo_project(60, 120.0, SR);
+    project.beats_per_bar = 7;
+    project.beat_unit = 8;
+    project.beat_groups = vec![3, 2, 2];
+    let clicks = clicks_of(&project, 1);
+    let eighth = i64::from(BEAT_AT_120) / 2;
+    assert_eq!(
+        clicks.iter().map(|c| c.0).collect::<Vec<_>>(),
+        (0..7).map(|i| i * eighth).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        clicks.iter().map(|c| c.1).collect::<Vec<_>>(),
+        vec![Bar, Beat, Beat, Group, Beat, Group, Beat]
+    );
+}
+
+/// And a change part way through is followed from its own bar line.
+#[test]
+fn a_signature_change_is_clicked_from_its_bar() {
+    let mut project = demo_project(60, 120.0, SR);
+    project.meter_changes = vec![fontelle_types::MeterChange::new(1, 3, 4)];
+    let clicks = clicks_of(&project, 3);
+    let beat = i64::from(BEAT_AT_120);
+    let bars: Vec<i64> = clicks
+        .iter()
+        .filter(|c| c.1 == fontelle_types::Accent::Bar)
+        .map(|c| c.0)
+        .collect();
+    assert_eq!(bars, vec![0, 4 * beat, 7 * beat]);
 }
 
 #[test]
@@ -102,48 +140,6 @@ fn the_click_is_still_off_by_default() {
     let realised =
         realise(&project, &SampleLibrary::new(), options()).expect("the demo must realise");
     assert!(!realised.metronome.is_on());
-}
-
-#[test]
-fn a_project_at_another_tempo_gets_another_beat() {
-    // Measured through the tempo map rather than divided out of a BPM, which
-    // is the rule `seconds_per_tick` follows and the reason it stays right
-    // when the map grows segments.
-    let project = demo_project(60, 60.0, SR);
-    let realised =
-        realise(&project, &SampleLibrary::new(), options()).expect("the demo must realise");
-    assert_eq!(
-        realised.metronome.samples_per_beat(),
-        SR,
-        "one beat a second at 60 BPM"
-    );
-}
-
-// ------------------------------------------ the switch stays connected ---
-
-#[test]
-fn the_studio_hands_the_click_its_tempo_too() {
-    let dir = scratch("tempo");
-    let session = studio(&dir);
-    assert_eq!(
-        session.metronome().samples_per_beat(),
-        BEAT_AT_120,
-        "the session's click must know the tempo the moment it is built"
-    );
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn changing_the_tempo_moves_the_beats() {
-    let dir = scratch("retempo");
-    let mut session = studio(&dir);
-    session.set_tempo(60.0);
-    assert_eq!(
-        session.metronome().samples_per_beat(),
-        SR,
-        "the click counts in samples, so a new tempo is a new beat length"
-    );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -172,11 +168,6 @@ fn the_switch_survives_a_graph_rebuild() {
     assert!(
         after.is_on(),
         "the click was switched on and a rebuild turned it off"
-    );
-    assert_eq!(
-        after.samples_per_beat(),
-        BEAT_AT_120,
-        "a rebuild must not lose the beat"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

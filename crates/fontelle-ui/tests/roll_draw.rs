@@ -86,7 +86,7 @@ fn host(roll: &mut PianoRoll, arena: &mut Arena<NoteId, Note>, edits: &[RollEdit
 /// Press on empty grid, and hand the id back the way the window does.
 fn draw(roll: &mut PianoRoll, arena: &mut Arena<NoteId, Note>, tick: Tick, key: u8) -> NoteId {
     let (x, y) = at(&roll.view, tick, key);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), arena);
     host(roll, arena, &edits);
     *roll
         .selection()
@@ -104,7 +104,7 @@ fn the_drag_after_drawing_a_note_moves_it() {
     let length = arena[id].length;
 
     let (x, y) = at(&roll.view, PPQN * 3, 60);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
 
     assert_eq!(
@@ -127,7 +127,7 @@ fn the_drag_after_drawing_a_note_transposes_it_too() {
     let id = draw(&mut roll, &mut arena, PPQN, 60);
 
     let (x, y) = at(&roll.view, PPQN, 67);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     assert_eq!(arena[id].key, 67);
 }
@@ -138,14 +138,14 @@ fn a_note_drawn_at_bar_one_is_not_dragged_before_it() {
     let mut arena = Arena::default();
     let id = draw(&mut roll, &mut arena, 0, 60);
 
-    let edits = roll.drag(grid().x - 400.0, grid().y + 100.0, grid(), &arena, 4);
+    let edits = roll.drag(grid().x - 400.0, grid().y + 100.0, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     assert_eq!(arena[id].start, 0);
 
     // And the clamp does not then oscillate, which is the bug `roll_gestures`
     // is named after — the limits of *this* gesture are the drawn note's own.
     for _ in 0..4 {
-        let again = roll.drag(grid().x - 400.0, grid().y + 100.0, grid(), &arena, 4);
+        let again = roll.drag(grid().x - 400.0, grid().y + 100.0, grid(), &arena);
         assert!(again.is_empty(), "a stationary pointer asked for {again:?}");
     }
 }
@@ -183,15 +183,9 @@ fn the_right_edge_still_resizes_a_note_that_was_just_drawn() {
         tick_to_x(&roll.view, grid(), end) - 2.0,
         key_to_y(&roll.view, grid(), 60) + 1.0,
     );
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
-    let edits = roll.drag(
-        tick_to_x(&roll.view, grid(), PPQN * 2),
-        y,
-        grid(),
-        &arena,
-        4,
-    );
+    let edits = roll.drag(tick_to_x(&roll.view, grid(), PPQN * 2), y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     assert!(
         arena[id].length > PPQN / 4,
@@ -208,7 +202,7 @@ fn the_old_draw_and_size_gesture_is_still_there_for_anyone_who_wants_it() {
     let id = draw(&mut roll, &mut arena, 0, 60);
 
     let (x, y) = at(&roll.view, PPQN * 2, 60);
-    let edits = roll.drag(x, y, grid(), &arena, 4);
+    let edits = roll.drag(x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
     assert_eq!(arena[id].start, 0, "sizing does not move the note");
     assert_eq!(arena[id].length, PPQN * 2);
@@ -229,12 +223,12 @@ fn the_paint_tool_is_unaffected_and_still_lays_a_note_per_cell() {
     roll.tool = fontelle_ui::canvas::Tool::Paint;
     let mut arena = Arena::default();
     let (x, y) = at(&roll.view, 0, 60);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     host(&mut roll, &mut arena, &edits);
 
     for step in 1..4 {
         let (x, y) = at(&roll.view, PPQN * step, 60);
-        let edits = roll.drag(x, y, grid(), &arena, 4);
+        let edits = roll.drag(x, y, grid(), &arena);
         host(&mut roll, &mut arena, &edits);
     }
     assert_eq!(arena.len(), 4);

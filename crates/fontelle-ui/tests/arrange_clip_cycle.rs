@@ -71,12 +71,12 @@ fn at(timeline: &Timeline, tick: Tick, lane: usize) -> (f32, f32) {
 fn click(timeline: &mut Timeline, clips: &[ClipInfo], travel: Tick) {
     let l = layout();
     let (x, y) = at(timeline, BAR + PPQN * 2, 1);
-    timeline.press(MouseButton::Left, x, y, &l, clips, 4);
+    timeline.press(MouseButton::Left, x, y, &l, clips);
     let (x2, y2) = at(timeline, BAR + PPQN * 2 + travel, 1);
     if travel != 0 {
-        timeline.drag(x2, y2, &l, clips, 4);
+        timeline.drag(x2, y2, &l, clips);
     }
-    timeline.release_over(x2, y2, &l, clips, 4);
+    timeline.release_over(x2, y2, &l, clips);
 }
 
 #[test]

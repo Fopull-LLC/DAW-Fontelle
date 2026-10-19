@@ -165,9 +165,9 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
 
     // --- 2. The song's own tempo and metre, off the defaults.
     s.set_tempo(92.0);
-    s.set_beats_per_bar(3);
+    s.set_meter_change(0, Some(fontelle_types::Signature::new(7, 8)));
     assert_eq!(s.tempo(), 92.0);
-    assert_eq!(s.beats_per_bar(), 3);
+    assert_eq!(s.meter().song(), fontelle_types::Signature::new(7, 8));
 
     // --- 3. Two instruments, one of them from a folder inside the bank.
     //
@@ -365,7 +365,11 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
     s.open_project(index).expect("and opens");
 
     assert_eq!(s.tempo(), 92.0, "the tempo survived the round trip");
-    assert_eq!(s.beats_per_bar(), 3, "so did the metre");
+    assert_eq!(
+        s.meter().song(),
+        fontelle_types::Signature::new(7, 8),
+        "so did the metre"
+    );
     assert_eq!(s.channels().len(), 3, "and every channel");
     let strips = s.mixer_strips();
     assert_eq!(strips.len(), 3, "and the mixer that was built by hand");

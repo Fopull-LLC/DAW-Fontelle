@@ -33,7 +33,7 @@ use vello::wgpu;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 
 use fontelle_model::{Arena, Note};
-use fontelle_types::{NoteId, PPQN, Tick};
+use fontelle_types::{NoteId, Tick};
 
 use crate::canvas::{
     BrowserHit, BrowserLayout, InstrumentLayout, InstrumentView, LaneProperty, ParamKind, RackHit,
@@ -433,7 +433,6 @@ pub struct TimelineChrome<'a> {
     /// Where the playhead is in the *song*, and where the time marker is.
     pub playhead_tick: Tick,
     pub marker_tick: Tick,
-    pub beats_per_bar: u32,
     pub marquee: Option<Rect>,
     /// Whether the arrangement is the panel the keyboard is talking to, so
     /// Delete and Ctrl+D visibly belong to one canvas rather than to both.
@@ -507,6 +506,8 @@ pub struct TimelineChrome<'a> {
     pub meter: &'a fontelle_types::Meter,
     /// The change chosen on the ruler, which the signature box edits.
     pub meter_selected: Option<u32>,
+    /// While a flag is dragged: the bar it would land on.
+    pub meter_moving: Option<u32>,
     /// The rest of a shift- or ctrl-clicked set of rows, lit the same.
     pub also_selected: &'a [usize],
     /// How strongly to draw the ghost of a first clip, 0..1, while the
@@ -536,7 +537,9 @@ pub struct RollChrome<'a> {
     /// Where the playhead is *within the clip*, or `None` when the transport
     /// is somewhere this clip does not cover.
     pub playhead_tick: Option<Tick>,
-    pub beats_per_bar: u32,
+    /// The song's meter as the open clip sees it: the bars, beats and every
+    /// finer line are where it puts them.
+    pub meter: &'a crate::canvas::MeterView,
     /// What the mouse is doing, so the toolbar can light the tool that is on.
     pub tool: Tool,
     pub snap: SnapDivision,
@@ -617,10 +620,6 @@ pub struct RollChords {
     pub outline_outside: Option<u16>,
     /// What is left of notes just deleted (`canvas::Particles`).
     pub flecks: Vec<crate::canvas::Fleck>,
-    /// The song's meter and where the open clip starts in it, when the song
-    /// changes signature: the roll's bars then follow it
-    /// (`canvas::clip_meter_lines`). `None` draws the plain grid.
-    pub meter: Option<(fontelle_types::Meter, Tick)>,
 }
 
 /// The strip open on a placed note.
@@ -6516,55 +6515,42 @@ pub fn draw_piano_roll(
     // so setting the snap to bars emptied the bar. The grid is the ruler you
     // read the time off; the snap is where a note may land. See
     // [`subdivision_unit`](crate::canvas::subdivision_unit).
-    let bar = PPQN * Tick::from(chrome.beats_per_bar.max(1));
-    let sub = crate::canvas::subdivision_unit(v.snap, chrome.beats_per_bar);
-    // A song that changes signature: beats and bars where its meter puts
-    // them, the subdivisions evenly under them.
-    let metered = chrome.chords.meter.as_ref();
-    if let Some((meter, clip_start)) = metered {
-        for (tick, line) in crate::canvas::clip_meter_lines(meter, *clip_start, ticks.clone()) {
-            let colour = match line {
-                fontelle_types::MeterLine::Bar(_) => p.grid_line_strong,
-                fontelle_types::MeterLine::Beat => p.grid_line,
-            };
-            if (meter.beat_ticks(0) as f32) * v.pixels_per_tick < 4.0
-                && matches!(line, fontelle_types::MeterLine::Beat)
-            {
-                continue;
-            }
+    // Bars, groups and beats where the song's meter puts them, in the clip's
+    // own ticks; the subdivisions from each bar line, so they meet it in any
+    // signature.
+    let meter = chrome.meter;
+    let sub = crate::canvas::subdivision_unit(v.snap);
+    let wide = |unit: Tick| (unit as f32) * v.pixels_per_tick >= 4.0;
+    if wide(sub) {
+        for tick in meter.fine_lines(ticks.clone(), sub) {
             let x = tick_to_x(v, grid, tick).floor();
             fill_rect(
                 scene,
                 Rect::new(x, grid.y, 1.0, grid.height).intersection(&grid),
-                colour,
+                p.grid_line_sub,
             );
         }
     }
-    let levels: &[(Tick, Color)] = if metered.is_some() {
-        &[(sub, p.grid_line_sub)]
-    } else {
-        &[
-            (sub, p.grid_line_sub),
-            (PPQN, p.grid_line),
-            (bar, p.grid_line_strong),
-        ]
-    };
-    for &(unit, colour) in levels {
-        if unit <= 0 || (unit as f32) * v.pixels_per_tick < 4.0 {
-            // Lines closer together than a few pixels are a grey wash, not a
-            // grid.
-            continue;
-        }
-        let mut tick = ticks.start - ticks.start.rem_euclid(unit);
-        while tick < ticks.end {
-            let x = tick_to_x(v, grid, tick).floor();
-            fill_rect(
-                scene,
-                Rect::new(x, grid.y, 1.0, grid.height).intersection(&grid),
-                colour,
-            );
-            tick += unit;
-        }
+    let beats_shown = wide(meter.beat_ticks_at(ticks.start.max(0)));
+    for (tick, line) in crate::canvas::clip_meter_lines(meter.meter(), meter.start(), ticks.clone())
+    {
+        let colour = match line {
+            fontelle_types::MeterLine::Bar(_) => p.grid_line_strong,
+            fontelle_types::MeterLine::Group | fontelle_types::MeterLine::Beat => {
+                // Lines closer together than a few pixels are a grey wash,
+                // not a grid.
+                if !beats_shown {
+                    continue;
+                }
+                p.grid_line
+            }
+        };
+        let x = tick_to_x(v, grid, tick).floor();
+        fill_rect(
+            scene,
+            Rect::new(x, grid.y, 1.0, grid.height).intersection(&grid),
+            colour,
+        );
     }
 
     // The onion skin: other instruments' notes, behind this one's. Faint and
@@ -8693,13 +8679,8 @@ fn draw_timeline(
     // The ghost of a first clip, on an arrangement with none — under where
     // the clip it promises will be. See `canvas::ghost_clip`.
     if let Some(strength) = chrome.ghost
-        && let Some(ghost) = crate::canvas::ghost_clip(
-            v,
-            l.grid,
-            chrome.clips,
-            chrome.lanes.len(),
-            chrome.beats_per_bar,
-        )
+        && let Some(ghost) =
+            crate::canvas::ghost_clip(v, l.grid, chrome.clips, chrome.lanes.len(), chrome.meter)
     {
         draw_ghost_clip(
             scene,
@@ -8999,7 +8980,7 @@ fn draw_timeline(
             from,
             to,
             v.snap,
-            chrome.beats_per_bar,
+            &crate::canvas::MeterView::song(chrome.meter.clone()),
         ) {
             fill_rect(scene, mark, p.meter_peak);
             // A cap at each end, so a mark on a clip whose colour is close to
@@ -9747,6 +9728,23 @@ fn draw_timeline_ruler(
             }
         }
     }
+    // A flag being dragged: where it would land, a line down the ruler in
+    // the accent.
+    if let Some(bar) = chrome.meter_moving {
+        let x = timeline_tick_to_x(v, l.grid, chrome.meter.tick_of_bar(bar)).floor();
+        if x >= l.grid.x {
+            fill_rect(
+                scene,
+                Rect::new(x - 1.0, l.ruler.y, 3.0, l.ruler.height).intersection(&l.ruler),
+                p.accent,
+            );
+            fill_rect(
+                scene,
+                Rect::new(x, l.grid.y, 1.0, l.grid.height).intersection(&l.grid),
+                p.accent.with_alpha(0x99),
+            );
+        }
+    }
     // Where the signature changes: a flag on the ruler saying to what, lit
     // when it is the one the signature box is editing.
     for (bar, flag) in crate::canvas::meter_flags(v, l.grid, l.ruler, chrome.meter) {
@@ -9758,8 +9756,7 @@ fn draw_timeline_ruler(
             if lit { p.accent } else { p.panel_header },
         );
         stroke_rect_rounded(scene, flag, flag.height / 2.0, 1.0, p.accent);
-        let (top, bottom) = chrome.meter.signature(bar);
-        if let Some(text) = labels.get(&format!("{top}/{bottom}")) {
+        if let Some(text) = labels.get(&chrome.meter.signature_of(bar).label()) {
             draw_text_clipped(
                 scene,
                 text,
@@ -9771,7 +9768,7 @@ fn draw_timeline_ruler(
         }
     }
     // Zoomed in past the point where a bar fits, the beats are numbered too.
-    for (tick, name) in crate::canvas::timeline_beat_labels_in(v, l.grid, chrome.meter) {
+    for (tick, name) in crate::canvas::timeline_beat_labels(v, l.grid, chrome.meter) {
         let x = timeline_tick_to_x(v, l.grid, tick).floor();
         if x < l.grid.x {
             continue;
@@ -10612,71 +10609,45 @@ fn draw_ruler_strip(
     if l.ruler.is_empty() {
         return;
     }
-    let beats_per_bar = chrome.beats_per_bar;
     fill_rect(scene, l.ruler, p.panel_header);
 
-    let bar = PPQN * Tick::from(beats_per_bar.max(1));
     let ticks = visible_ticks(v, l.grid);
     // Numbered only when the numbers would not collide — at a zoom where two
     // bars are eight pixels apart, a wall of digits is less legible than none.
-    let label_every = label_stride(bar as f32 * v.pixels_per_tick);
-    // A song that changes signature: the bars where its meter puts them.
-    if let Some((meter, clip_start)) = &chrome.chords.meter {
-        for (tick, line) in crate::canvas::clip_meter_lines(meter, *clip_start, ticks.clone()) {
-            let fontelle_types::MeterLine::Bar(n) = line else {
-                continue;
-            };
-            let x = tick_to_x(v, l.grid, tick).floor();
-            if x < l.grid.x {
-                continue;
-            }
-            fill_rect(
-                scene,
-                Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
-                p.grid_line_strong,
-            );
-            let number = i64::from(n) + 1;
-            if let Some(stride) = label_every
-                && labelled_bar(number, stride)
-                && let Some(text) = labels.get(&number.to_string())
-            {
-                draw_text_clipped(
-                    scene,
-                    text,
-                    l.ruler,
-                    x + 3.0,
-                    l.ruler.y + (l.ruler.height - text.height) / 2.0,
-                    p.text_muted,
-                );
-            }
-        }
-    }
-    let mut tick = ticks.start - ticks.start.rem_euclid(bar);
-    while chrome.chords.meter.is_none() && tick < ticks.end {
+    let label_every =
+        label_stride(chrome.meter.bar_ticks_at(ticks.start.max(0)) as f32 * v.pixels_per_tick);
+    // The bars where the song's meter puts them, numbered from the clip's
+    // first, as the clip sees them.
+    for (tick, line) in
+        crate::canvas::clip_meter_lines(chrome.meter.meter(), chrome.meter.start(), ticks.clone())
+    {
+        let fontelle_types::MeterLine::Bar(n) = line else {
+            continue;
+        };
         let x = tick_to_x(v, l.grid, tick).floor();
-        if x >= l.grid.x {
-            fill_rect(
-                scene,
-                Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
-                p.grid_line_strong,
-            );
-            // One-based, because bar 1 is where a musician says a song starts.
-            let number = tick / bar + 1;
-            if let Some(stride) = label_every
-                && labelled_bar(number, stride)
-                && let Some(text) = labels.get(&number.to_string())
-            {
-                draw_text_clipped(
-                    scene,
-                    text,
-                    l.ruler,
-                    x + 3.0,
-                    l.ruler.y + (l.ruler.height - text.height) / 2.0,
-                    p.text_muted,
-                );
-            }
+        if x < l.grid.x {
+            continue;
         }
-        tick += bar;
+        fill_rect(
+            scene,
+            Rect::new(x, l.ruler.y, 1.0, l.ruler.height).intersection(&l.ruler),
+            p.grid_line_strong,
+        );
+        // One-based, because bar 1 is where a musician says a song starts.
+        let number = i64::from(n) + 1;
+        if let Some(stride) = label_every
+            && labelled_bar(number, stride)
+            && let Some(text) = labels.get(&number.to_string())
+        {
+            draw_text_clipped(
+                scene,
+                text,
+                l.ruler,
+                x + 3.0,
+                l.ruler.y + (l.ruler.height - text.height) / 2.0,
+                p.text_muted,
+            );
+        }
     }
 
     // The time selection, the same strip the arrangement's ruler draws, in
@@ -15380,7 +15351,7 @@ fn draw_disgusting_beat_lane(
     // zero line and the curve would each be drawn against a different top.
     let plot = crate::canvas::plot_area(area);
 
-    let beats = lane.length.beats(view.beats_per_bar) * view.config.rate.stretch();
+    let beats = lane.length.beats(view.bar) * view.config.rate.stretch();
 
     // The beat grid, and the snap under it.
     if let Some(per_beat) = view.snap.per_beat() {

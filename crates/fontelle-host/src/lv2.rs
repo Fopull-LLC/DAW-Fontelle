@@ -213,11 +213,17 @@ impl TimeWriter {
             float,
             &(if t.playing { 1.0f32 } else { 0.0 }).to_ne_bytes(),
         );
+        // LV2 counts in the bar's own beat (`time:beatUnit`): `barBeat` runs
+        // 0 to `beatsPerBar` and the tempo is in those beats a minute — so a
+        // 7/8 bar is seven eighths long, not three and a half quarters, and
+        // its tempo twice the quarter-note one. Fontelle's positions are in
+        // quarters, so both are scaled here.
+        let per_quarter = f64::from(t.denominator.max(1)) / 4.0;
         property(bar, long, &i64::from(t.bar_number).to_ne_bytes());
         property(
             bar_beat,
             float,
-            &((t.beats - t.bar_start_beats) as f32).to_ne_bytes(),
+            &(((t.beats - t.bar_start_beats) * per_quarter) as f32).to_ne_bytes(),
         );
         property(
             beat_unit,
@@ -229,7 +235,7 @@ impl TimeWriter {
             float,
             &f32::from(t.numerator.max(1)).to_ne_bytes(),
         );
-        property(bpm, float, &(t.tempo as f32).to_ne_bytes());
+        property(bpm, float, &((t.tempo * per_quarter) as f32).to_ne_bytes());
         let used = at;
         let Ok(event) =
             livi::event::LV2AtomEventBuilder::<TIME_BODY>::new(0, object, &body[..used])

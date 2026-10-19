@@ -19,9 +19,8 @@
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 use fontelle_ui::transport::{
-    MAX_BEATS_PER_BAR, MAX_TEMPO, MIN_BEATS_PER_BAR, MIN_TEMPO, TransportHit, TransportView,
-    action, beats_per_bar_at, format_signature, format_tempo, hit, nudge_tempo, parse_tempo,
-    signature_menu_entries, tempo_at, transport_bar_layout,
+    MAX_TEMPO, MIN_TEMPO, TransportHit, TransportView, action, format_tempo, hit, nudge_tempo,
+    parse_tempo, tempo_at, transport_bar_layout,
 };
 
 const RATE: f64 = 48_000.0;
@@ -283,67 +282,31 @@ fn text_that_is_not_a_tempo_is_refused_rather_than_guessed_at() {
 
 // ------------------------------------------------------- the time signature ---
 
+/// Ty, 2026-10-19: *"signatures NEED to be flexible enough to let you chose
+/// whatever top or division number you want so youre not just locked to
+/// x/4."* The box drops the common signatures in quarters, halves, eighths
+/// and sixteenths — the one in force greyed — and a row to type any other.
 #[test]
-fn clicking_the_signature_drops_a_list_of_every_metre_with_the_current_one_greyed() {
-    // *"instead it should be a dropdown instead of just iterating through
-    // pre set list of options when being clicked."* The list is every value
-    // the box can hold, in order, each written the way the box writes it —
-    // and the one in force is greyed, so the list says where you are.
-    let entries = signature_menu_entries(4);
-    assert_eq!(
-        entries.len(),
-        (MAX_BEATS_PER_BAR - MIN_BEATS_PER_BAR + 1) as usize,
-        "one row per metre"
-    );
-    for (row, entry) in entries.iter().enumerate() {
-        let beats = beats_per_bar_at(row);
-        assert_eq!(entry.label, format_signature(beats));
-        assert_eq!(
-            entry.enabled,
-            beats != 4,
-            "row {row} ({}) should be {}",
-            entry.label,
-            if beats == 4 { "greyed" } else { "live" }
-        );
-    }
-    assert_eq!(beats_per_bar_at(0), MIN_BEATS_PER_BAR);
-    assert_eq!(
-        beats_per_bar_at(entries.len() - 1),
-        MAX_BEATS_PER_BAR,
-        "the last row is the widest metre"
-    );
-    assert_eq!(
-        beats_per_bar_at(usize::MAX),
-        MAX_BEATS_PER_BAR,
-        "a row past the end is clamped, never a panic"
-    );
-}
-
-#[test]
-fn the_signature_reads_over_a_quarter_note_because_that_is_what_it_is() {
-    // The denominator is not settable and the box does not pretend it is:
-    // `PPQN` is ticks per *quarter*, so a denominator other than 4 is a change
-    // to what a tick means everywhere, not a control.
-    assert_eq!(format_signature(4), "4/4");
-    assert_eq!(format_signature(3), "3/4");
-    assert_eq!(format_signature(7), "7/4");
-}
-
-// --- signature changes (the next update, §6b) ---
-
-/// The signature box edits the song's own signature, or the change chosen
-/// on the ruler; and it offers to add a change where the marker is.
-#[test]
-fn the_signature_menu_edits_the_song_or_the_change_and_adds_one_at_the_marker() {
-    use fontelle_ui::transport::{MeterRow, MeterTarget, meter_menu};
-    let (entries, rows) = meter_menu(MeterTarget::Song, (4, 4), 9, false);
+fn the_signature_menu_offers_the_common_ones_and_any_other_typed() {
+    use fontelle_types::Signature;
+    use fontelle_ui::transport::{MeterRow, MeterTarget, TYPE_A_SIGNATURE, meter_menu};
+    let (entries, rows) = meter_menu(MeterTarget::Song, &Signature::new(4, 4), 9, false);
     assert_eq!(entries.len(), rows.len());
     assert!(entries[0].label.contains("song"), "{}", entries[0].label);
-    assert!(rows.contains(&MeterRow::Signature(3, 4)));
-    assert!(
-        !rows.contains(&MeterRow::Signature(7, 8)),
-        "the song's own is in quarters"
-    );
+    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
+    for wanted in ["3/4", "4/4", "2/2", "6/8", "7/8", "12/8", "5/16"] {
+        assert!(
+            labels.contains(&wanted),
+            "{wanted} is not offered: {labels:?}"
+        );
+    }
+    let four = labels.iter().position(|l| *l == "4/4").unwrap();
+    assert!(!entries[four].enabled, "the one in force is greyed");
+    let typed = rows
+        .iter()
+        .position(|r| *r == MeterRow::Type)
+        .expect("a typed row");
+    assert_eq!(entries[typed].label, TYPE_A_SIGNATURE);
     let add = rows
         .iter()
         .position(|r| *r == MeterRow::AddAt(9))
@@ -353,25 +316,40 @@ fn the_signature_menu_edits_the_song_or_the_change_and_adds_one_at_the_marker() 
         "{}",
         entries[add].label
     );
+}
 
-    let (entries, rows) = meter_menu(MeterTarget::Change(9), (7, 8), 9, true);
+/// Editing a change: the same signatures, and a way to take it away.
+#[test]
+fn the_signature_menu_edits_a_change() {
+    use fontelle_types::Signature;
+    use fontelle_ui::transport::{MeterRow, MeterTarget, meter_menu};
+    let (entries, rows) = meter_menu(MeterTarget::Change(9), &Signature::new(7, 8), 9, true);
     assert!(entries[0].label.contains("bar 10"), "{}", entries[0].label);
-    assert!(rows.contains(&MeterRow::Signature(7, 8)));
     assert!(rows.contains(&MeterRow::Remove(9)));
+    assert!(rows.contains(&MeterRow::Type));
     assert!(!rows.iter().any(|r| matches!(r, MeterRow::AddAt(_))));
-    // The one in force is greyed.
-    let at = rows
-        .iter()
-        .position(|r| *r == MeterRow::Signature(7, 8))
-        .unwrap();
+    let at = entries.iter().position(|e| e.label == "7/8").unwrap();
     assert!(!entries[at].enabled);
+    // A grouped one is said as it is grouped, in the heading.
+    let (entries, _) = meter_menu(
+        MeterTarget::Change(9),
+        &Signature::new(7, 8).with_groups(vec![3, 2, 2]),
+        9,
+        true,
+    );
+    assert!(entries[0].label.contains("3+2+2/8"), "{}", entries[0].label);
 }
 
 /// At bar 1 there is nothing to add: that is the song's own.
 #[test]
 fn no_change_is_offered_at_bar_one() {
     use fontelle_ui::transport::{MeterRow, MeterTarget, meter_menu};
-    let (_, rows) = meter_menu(MeterTarget::Song, (4, 4), 0, false);
+    let (_, rows) = meter_menu(
+        MeterTarget::Song,
+        &fontelle_types::Signature::new(4, 4),
+        0,
+        false,
+    );
     assert!(!rows.iter().any(|r| matches!(r, MeterRow::AddAt(_))));
 }
 
@@ -380,18 +358,11 @@ fn no_change_is_offered_at_bar_one() {
 #[test]
 fn the_read_out_counts_by_the_meter() {
     use fontelle_types::{Meter, MeterChange};
-    use fontelle_ui::transport::format_bars_beats_in;
-    let meter = Meter::new(
-        4,
-        &[MeterChange {
-            bar: 1,
-            top: 7,
-            bottom: 8,
-        }],
-    );
-    assert_eq!(format_bars_beats_in(0.0, &meter), "1.1.000");
-    assert_eq!(format_bars_beats_in(4.0, &meter), "2.1.000");
+    use fontelle_ui::transport::format_bars_beats;
+    let meter = Meter::new(4, &[MeterChange::new(1, 7, 8)]);
+    assert_eq!(format_bars_beats(0.0, &meter), "1.1.000");
+    assert_eq!(format_bars_beats(4.0, &meter), "2.1.000");
     // Half a quarter into bar 2: its second eighth.
-    assert_eq!(format_bars_beats_in(4.5, &meter), "2.2.000");
-    assert_eq!(format_bars_beats_in(4.0 + 3.5, &meter), "3.1.000");
+    assert_eq!(format_bars_beats(4.5, &meter), "2.2.000");
+    assert_eq!(format_bars_beats(4.0 + 3.5, &meter), "3.1.000");
 }

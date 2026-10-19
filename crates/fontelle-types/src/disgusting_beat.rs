@@ -192,22 +192,35 @@ impl DisgustingBeatLength {
         }
     }
 
-    /// How many beats long this is in a bar of `beats_per_bar`.
-    pub fn beats(self, beats_per_bar: u32) -> f64 {
-        let bar = beats_per_bar.max(1) as f64;
+    /// How many quarter notes long this is in a bar of `bar`'s size. A
+    /// beat is the bar's own: an eighth in 7/8.
+    pub fn quarters(self, bar: BarSize) -> f64 {
+        let beat = bar.beat_quarters();
         match self {
-            Self::Beat => 1.0,
-            Self::TwoBeats => 2.0,
-            Self::ThreeBeats => 3.0,
-            Self::Bar => bar,
-            Self::TwoBars => bar * 2.0,
-            Self::FourBars => bar * 4.0,
+            Self::Beat => beat,
+            Self::TwoBeats => beat * 2.0,
+            Self::ThreeBeats => beat * 3.0,
+            Self::Bar => bar.quarters,
+            Self::TwoBars => bar.quarters * 2.0,
+            Self::FourBars => bar.quarters * 4.0,
         }
     }
 
+    /// How many of the bar's own beats long this is — what the window's
+    /// grid is divided in.
+    pub fn beats(self, bar: BarSize) -> f64 {
+        self.quarters(bar) / bar.beat_quarters().max(f64::MIN_POSITIVE)
+    }
+
     /// And in ticks, which is what the phase is walked in (INVARIANT 5).
-    pub fn ticks(self, beats_per_bar: u32) -> f64 {
-        self.beats(beats_per_bar) * PPQN as f64
+    pub fn ticks(self, bar: BarSize) -> f64 {
+        self.quarters(bar) * PPQN as f64
+    }
+
+    /// Whether a pattern this long fits in one bar, and so starts again on
+    /// every bar line.
+    pub fn within_a_bar(self, bar: BarSize) -> bool {
+        self.quarters(bar) <= bar.quarters + 1e-9
     }
 }
 
@@ -1236,12 +1249,12 @@ impl DisgustingBeatLook {
         }
     }
 
-    /// How many beats of latency this costs.
-    pub fn beats(self, beats_per_bar: u32) -> f64 {
+    /// How many quarter notes of latency this costs.
+    pub fn quarters(self, bar: BarSize) -> f64 {
         match self {
             Self::Off => 0.0,
-            Self::Beat => 1.0,
-            Self::Bar => beats_per_bar.max(1) as f64,
+            Self::Beat => bar.beat_quarters(),
+            Self::Bar => bar.quarters,
         }
     }
 }
@@ -1505,6 +1518,38 @@ const fn chooser(
     }
 }
 
+/// How big a bar is: how many quarter notes long, and how many beats it
+/// has. 4/4 is four and four, 7/8 three and a half and seven.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarSize {
+    pub quarters: f64,
+    pub beats: u32,
+}
+
+impl Default for BarSize {
+    fn default() -> Self {
+        Self {
+            quarters: 4.0,
+            beats: 4,
+        }
+    }
+}
+
+impl BarSize {
+    /// `top` beats of 1/`bottom`.
+    pub fn of(top: u32, bottom: u32) -> Self {
+        Self {
+            quarters: f64::from(top.max(1)) * 4.0 / f64::from(bottom.max(1)),
+            beats: top.max(1),
+        }
+    }
+
+    /// How long one of its beats is, in quarter notes.
+    pub fn beat_quarters(&self) -> f64 {
+        self.quarters / f64::from(self.beats.max(1))
+    }
+}
+
 /// Where the song is, as an effect that has to land on a beat needs it.
 ///
 /// Built from [`TransportSnapshot`] by the node, so the DSP stays a function
@@ -1519,8 +1564,20 @@ pub struct MusicalTime {
     pub tick: f64,
     /// How far the song moves per sample from here, in ticks. Never zero.
     pub ticks_per_sample: f64,
-    pub beats_per_bar: u32,
+    /// The bar `tick` is in: its size, where it starts and the next one
+    /// does, and where its signature's stretch began — what a pattern locks
+    /// to (Ty, 2026-10-19: everything follows the signature the song is in).
+    pub bar: BarSize,
+    pub bar_start: f64,
+    pub next_bar: f64,
+    pub span_start: f64,
     pub bpm: f32,
+    /// The tempo and bar size at the top of the song: what the look-ahead is
+    /// measured in. Fixed for the whole song, because the graph compensates
+    /// a latency once — a look-ahead that followed the tempo or the bar
+    /// would move this track against every other one at each change.
+    pub opening_bpm: f32,
+    pub song_bar: BarSize,
     /// Whether the song is advancing.
     ///
     /// A stopped transport does not move `tick`, and an insert being
@@ -1537,8 +1594,13 @@ impl MusicalTime {
         Self {
             tick: 0.0,
             ticks_per_sample: bpm as f64 / 60.0 * PPQN as f64 / sample_rate.max(1.0) as f64,
-            beats_per_bar: 4,
+            bar: BarSize::default(),
+            bar_start: 0.0,
+            next_bar: 4.0 * PPQN as f64,
+            span_start: 0.0,
             bpm,
+            opening_bpm: bpm,
+            song_bar: BarSize::default(),
             rolling: false,
         }
     }
@@ -1566,21 +1628,17 @@ impl DisgustingBeatConfig {
     /// tempo-dependent, so this is computed at `prepare` time and held: a
     /// latency that changed per block would be a latency nothing could
     /// compensate.
-    pub fn latency_samples(&self, bpm: f32, beats_per_bar: u32, sample_rate: f32) -> u32 {
-        let beats = self.look.beats(beats_per_bar);
-        if beats <= 0.0 {
+    pub fn latency_samples(&self, bpm: f32, bar: BarSize, sample_rate: f32) -> u32 {
+        let quarters = self.look.quarters(bar);
+        if quarters <= 0.0 {
             return 0;
         }
-        let seconds = beats * 60.0 / bpm.max(1.0) as f64;
+        let seconds = quarters * 60.0 / bpm.max(1.0) as f64;
         (seconds * sample_rate.max(1.0) as f64).round() as u32
     }
 }
 
 /// How long one lane is, in ticks, once the rate has stretched it.
-pub fn lane_ticks(
-    length: DisgustingBeatLength,
-    rate: DisgustingBeatRate,
-    beats_per_bar: u32,
-) -> f64 {
-    (length.ticks(beats_per_bar) * rate.stretch()).max(1.0)
+pub fn lane_ticks(length: DisgustingBeatLength, rate: DisgustingBeatRate, bar: BarSize) -> f64 {
+    (length.ticks(bar) * rate.stretch()).max(1.0)
 }

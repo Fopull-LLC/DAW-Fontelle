@@ -205,7 +205,7 @@ pub fn read(bytes: &[u8], name: &str) -> Result<VocalSong, String> {
     if let Some((n, d)) = scan.signature {
         let unit = 2u32.pow(u32::from(d).min(6));
         song.beat_unit = unit;
-        song.beats_per_bar = ((f64::from(n) * 4.0 / f64::from(unit)).round() as u32).max(1);
+        song.beats_per_bar = u32::from(n).max(1);
     }
     let use_texts = scan.tracks.iter().all(|t| t.lyrics.is_empty());
     for (index, track) in scan.tracks.iter().enumerate() {
@@ -327,8 +327,9 @@ pub fn write(song: &VocalSong) -> Vec<u8> {
     let mut conductor = Track::new();
     conductor.meta(0, 0, 0x03, song.name.as_bytes());
     let unit = song.beat_unit.max(1);
-    let numerator = (song.beats_per_bar * unit).div_ceil(4).clamp(1, 255) as u8;
-    let denominator = unit.trailing_zeros() as u8;
+    let numerator = song.beats_per_bar.clamp(1, 255) as u8;
+    // The file writes the beat as a power of two: the nearest one.
+    let denominator = f64::from(unit).log2().round().clamp(0.0, 6.0) as u8;
     conductor.meta(0, 1, 0x58, &[numerator, denominator, 24, 8]);
     for segment in &song.tempo {
         let us = (60_000_000.0 / segment.bpm.max(0.01)).round() as u32;

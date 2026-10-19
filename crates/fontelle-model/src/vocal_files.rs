@@ -65,6 +65,20 @@ pub struct MadeVocal {
     pub new_track: bool,
 }
 
+/// Makes `signature` the song's own — put in range first, since it came
+/// from a file.
+fn set_signature(doc: &mut Project, signature: &fontelle_types::Signature) {
+    let mut signature = signature.clone();
+    signature.top = signature.top.clamp(1, fontelle_types::MAX_TOP);
+    signature.bottom = signature.bottom.clamp(1, fontelle_types::MAX_BOTTOM);
+    if signature.check().is_err() {
+        signature.groups.clear();
+    }
+    doc.beats_per_bar = signature.top;
+    doc.beat_unit = signature.bottom;
+    doc.beat_groups = signature.groups;
+}
+
 /// A vocal song file's parts brought into the song, with the file's tempo
 /// and bar when asked ([`with_tempo`](Self::with_tempo)) — one undo step.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,12 +86,12 @@ pub struct ImportVocal {
     parts: Vec<VocalClipImport>,
     landing: VocalLanding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    tempo: Option<(Vec<TempoSegment>, u32)>,
+    tempo: Option<(Vec<TempoSegment>, fontelle_types::Signature)>,
     /// What it made, so a redo mints the same ids.
     made: Vec<MadeVocal>,
     /// The song's tempo and bar before, when this changed them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_tempo: Option<(Vec<TempoSegment>, u32)>,
+    previous_tempo: Option<(Vec<TempoSegment>, fontelle_types::Signature)>,
     label: String,
 }
 
@@ -97,9 +111,13 @@ impl ImportVocal {
         }
     }
 
-    /// Also sets the song's tempo map and bar (beats a bar) to the file's.
-    pub fn with_tempo(mut self, segments: Vec<TempoSegment>, beats_per_bar: u32) -> Self {
-        self.tempo = Some((segments, beats_per_bar));
+    /// Also sets the song's tempo map and its own signature to the file's.
+    pub fn with_tempo(
+        mut self,
+        segments: Vec<TempoSegment>,
+        signature: fontelle_types::Signature,
+    ) -> Self {
+        self.tempo = Some((segments, signature));
         self
     }
 
@@ -243,11 +261,11 @@ impl Command for ImportVocal {
                 }
             }
         }
-        if let Some((segments, beats)) = &self.tempo {
-            let before = (doc.tempo_map.segments().to_vec(), doc.beats_per_bar);
+        if let Some((segments, signature)) = &self.tempo {
+            let before = (doc.tempo_map.segments().to_vec(), doc.signature());
             let rate = doc.tempo_map.sample_rate_hz();
             doc.tempo_map = TempoMap::from_segments(segments.clone(), rate);
-            doc.beats_per_bar = (*beats).clamp(1, 16);
+            set_signature(doc, signature);
             self.previous_tempo.get_or_insert(before);
         }
         self.made = made;
@@ -292,7 +310,7 @@ impl Command for ImportVocal {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UnimportVocal {
     made: Vec<MadeVocal>,
-    tempo: Option<(Vec<TempoSegment>, u32)>,
+    tempo: Option<(Vec<TempoSegment>, fontelle_types::Signature)>,
     label: String,
 }
 
@@ -309,10 +327,10 @@ impl Command for UnimportVocal {
                 doc.channels.remove(ids.channel);
             }
         }
-        if let Some((segments, beats)) = &self.tempo {
+        if let Some((segments, signature)) = &self.tempo {
             let rate = doc.tempo_map.sample_rate_hz();
             doc.tempo_map = TempoMap::from_segments(segments.clone(), rate);
-            doc.beats_per_bar = *beats;
+            set_signature(doc, signature);
         }
         Ok(())
     }

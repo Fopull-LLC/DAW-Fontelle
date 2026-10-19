@@ -88,8 +88,8 @@ pub fn read(text: &str, name: &str) -> Result<VocalSong, String> {
     if signatures.len() > 1 {
         song.unmapped("time signature changes (the first is kept)");
     }
-    song.beats_per_bar = ((beats * 4.0 / unit).round() as u32).max(1);
-    song.beat_unit = unit as u32;
+    song.beats_per_bar = (beats.round() as u32).max(1);
+    song.beat_unit = (unit.round() as u32).max(1);
     let pre_measure = number_of(master, &["preMeasure"]).unwrap_or(0.0);
     let pre = pre_measure * beats * resolution * 4.0 / unit;
     let tick = |t: f64| -> Tick { ((t - pre) * PPQN as f64 / resolution).round() as Tick };

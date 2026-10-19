@@ -112,11 +112,11 @@ fn dragging_a_note_off_the_left_of_the_grid_does_not_teleport_it() {
     let id = arena.keys().next().unwrap();
 
     let (x, y) = at(&roll.view, PPQN * 2, 60);
-    roll.press(MouseButton::Left, x + 20.0, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x + 20.0, y, grid(), &arena);
 
     // Straight off the left-hand end of the grid, and up above the ruler: the
     // exact gesture that used to fling the note to key 127 at tick 0.
-    let edits = roll.drag(grid().x - 300.0, grid().y - 200.0, grid(), &arena, 4);
+    let edits = roll.drag(grid().x - 300.0, grid().y - 200.0, grid(), &arena);
     let [
         RollEdit::Move {
             ids,
@@ -208,7 +208,7 @@ fn a_new_note_is_a_copy_of_the_template() {
     });
 
     let (x, y) = at(&roll.view, PPQN, 64);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     let [RollEdit::Add { note }] = &edits[..] else {
         panic!("expected one add, got {edits:?}");
     };
@@ -232,7 +232,7 @@ fn clicking_a_note_makes_it_the_template() {
     });
 
     let (x, y) = at(&roll.view, PPQN + PPQN / 2, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &arena);
     assert_eq!(roll.selection(), &[long]);
 
     let template = roll.template();
@@ -245,7 +245,7 @@ fn clicking_a_note_makes_it_the_template() {
     roll.release();
     roll.view.snap = SnapDivision::None;
     let (x, y) = at(&roll.view, 0, 70);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &arena);
     let [RollEdit::Add { note }] = &edits[..] else {
         panic!("expected one add, got {edits:?}");
     };

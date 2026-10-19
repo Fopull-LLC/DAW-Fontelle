@@ -154,7 +154,11 @@ fn shoot_sized(
     let title = text.layout("Fontelle", &theme.font, None);
 
     let bar = transport_bar_layout(layout.transport, &theme.metrics);
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let readout = text.layout(
+        &format_readout(&view, &fontelle_types::Meter::constant(4)),
+        &theme.font,
+        None,
+    );
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
 
@@ -850,7 +854,11 @@ fn shoot_roll_everything(
     let mut text = TextContext::new();
     let title = text.layout("Roll", &theme.font, None);
     let view = TransportView::unavailable();
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let readout = text.layout(
+        &format_readout(&view, &fontelle_types::Meter::constant(4)),
+        &theme.font,
+        None,
+    );
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
     let roll_l = fontelle_ui::canvas::roll_layout_with_keys(
@@ -870,6 +878,7 @@ fn shoot_roll_everything(
     // nothing at all, which would make a blank strip look like a pass.
     let mut labels = Labels::new();
     let chords = ROLL_CHORDS.with(|c| c.borrow().clone());
+    let roll_meter = ROLL_METER.with(|m| m.borrow().clone()).unwrap_or_default();
     if let Some(strip) = &chords.strip {
         for word in fontelle_ui::canvas::chord_strip_words() {
             labels.ensure(word, &theme.font, &mut text);
@@ -958,7 +967,7 @@ fn shoot_roll_everything(
                 notes,
                 selection,
                 playhead_tick: None,
-                beats_per_bar: 4,
+                meter: &roll_meter,
                 tool: Tool::Draw,
                 snap,
                 lane_property: LaneProperty::Velocity,
@@ -1380,7 +1389,11 @@ fn shoot_timeline_recording(
     let mut text = TextContext::new();
     let title = text.layout("Roll", &theme.font, None);
     let view = TransportView::unavailable();
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let readout = text.layout(
+        &format_readout(&view, &fontelle_types::Meter::constant(4)),
+        &theme.font,
+        None,
+    );
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
     let l = timeline_layout(layout.timeline.body, &theme.metrics);
@@ -1500,7 +1513,6 @@ fn shoot_timeline_recording(
                 selection,
                 playhead_tick: 0,
                 marker_tick: 0,
-                beats_per_bar: 4,
                 marquee: None,
                 slice: None,
                 magnet: None,
@@ -1516,6 +1528,7 @@ fn shoot_timeline_recording(
                 selected_lane,
                 meter: &shot_meter,
                 meter_selected: shot_selected,
+                meter_moving: None,
                 also_selected: &[],
                 ghost,
                 captions: &captions,
@@ -2129,7 +2142,11 @@ fn shoot_mixer_lit(
     let mut text = TextContext::new();
     let title = text.layout("Mix", &theme.font, None);
     let view = TransportView::unavailable();
-    let readout = text.layout(&format_readout(&view, 4), &theme.font, None);
+    let readout = text.layout(
+        &format_readout(&view, &fontelle_types::Meter::constant(4)),
+        &theme.font,
+        None,
+    );
     let tempo = text.layout("120.00", &theme.font, None);
     let signature = text.layout("4/4", &theme.font, None);
 
@@ -5022,7 +5039,7 @@ fn shoot_carry(
         )
     });
     let note = target
-        .map(|target| carry_note(&target, &names, &[], 4))
+        .map(|target| carry_note(&target, &names, &[], &fontelle_types::Meter::constant(4)))
         .unwrap_or_default();
 
     let mut labels = Labels::new();
@@ -6771,7 +6788,7 @@ fn disgusting_beat_draws_its_memory_and_its_curves() {
                 }
             })
             .collect(),
-        beats_per_bar: 4,
+        bar: fontelle_types::BarSize::default(),
         bpm: 120.0,
         tool: fontelle_ui::canvas::DisgustingBeatTool::Hold,
         snap: fontelle_ui::canvas::DisgustingBeatSnap::Sixteenth,
@@ -7679,6 +7696,9 @@ thread_local! {
     static SHOT_METER: std::cell::RefCell<Option<(fontelle_types::Meter, Option<u32>)>> =
         const { std::cell::RefCell::new(None) };
     /// The roll's smart chords, for the next roll shot.
+    /// The meter the next roll shot counts in; 4/4 when `None`.
+    static ROLL_METER: std::cell::RefCell<Option<fontelle_ui::canvas::MeterView>> =
+        const { std::cell::RefCell::new(None) };
     static ROLL_CHORDS: std::cell::RefCell<fontelle_ui::render::RollChords> =
         std::cell::RefCell::new(Default::default());
     /// Everybody else in a session, for the next timeline shot.
@@ -7778,7 +7798,14 @@ fn an_empty_arrangement_shows_the_ghost_of_a_first_clip_and_its_tip() {
             DEFAULT_TIMELINE_HEIGHT,
         );
         let l = timeline_layout(layout.timeline.body, &theme.metrics);
-        let ghost = ghost_clip(&shot.view, l.grid, &[], 4, 4).expect("a ghost");
+        let ghost = ghost_clip(
+            &shot.view,
+            l.grid,
+            &[],
+            4,
+            &fontelle_types::Meter::constant(4),
+        )
+        .expect("a ghost");
         let differs = (ghost.x as u32 + 2..ghost.right() as u32 - 2)
             .flat_map(|x| (ghost.y as u32 + 2..ghost.bottom() as u32 - 2).map(move |y| (x, y)))
             .filter(|(x, y)| pixel(&shot.pixels, RW, *x, *y) != pixel(&bare.pixels, RW, *x, *y))
@@ -9276,7 +9303,6 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     ROLL_CHORDS.with(|c| {
         *c.borrow_mut() = fontelle_ui::render::RollChords {
             outline_outside: None,
-            meter: None,
             flecks: Vec::new(),
             smart: true,
             locked: true,
@@ -9373,14 +9399,7 @@ fn flecks_of_a_deleted_note_are_drawn() {
 #[test]
 fn a_signature_change_draws_its_bars_and_its_flag() {
     use fontelle_types::{Meter, MeterChange};
-    let meter = Meter::new(
-        4,
-        &[MeterChange {
-            bar: 2,
-            top: 3,
-            bottom: 4,
-        }],
-    );
+    let meter = Meter::new(4, &[MeterChange::new(2, 3, 4)]);
     SHOT_METER.with(|slot| *slot.borrow_mut() = Some((meter.clone(), Some(2))));
     let shot = shoot_timeline(&[]);
     SHOT_METER.with(|slot| *slot.borrow_mut() = None);
@@ -9401,22 +9420,10 @@ fn a_signature_change_draws_its_bars_and_its_flag() {
 #[test]
 fn the_roll_draws_the_meter() {
     use fontelle_types::{Meter, MeterChange};
-    let meter = Meter::new(
-        4,
-        &[MeterChange {
-            bar: 1,
-            top: 3,
-            bottom: 4,
-        }],
-    );
-    ROLL_CHORDS.with(|c| {
-        *c.borrow_mut() = fontelle_ui::render::RollChords {
-            meter: Some((meter, 0)),
-            ..Default::default()
-        }
-    });
+    let meter = Meter::new(4, &[MeterChange::new(1, 3, 4)]);
+    ROLL_METER.with(|m| *m.borrow_mut() = Some(fontelle_ui::canvas::MeterView::clip(meter, 0)));
     let shot = shoot_roll(&Arena::default(), &[]);
-    ROLL_CHORDS.with(|c| *c.borrow_mut() = Default::default());
+    ROLL_METER.with(|m| *m.borrow_mut() = None);
     let Some(shot) = shot else { return };
     dump_sized(&shot.pixels, "roll-meter", RW, RH);
 }

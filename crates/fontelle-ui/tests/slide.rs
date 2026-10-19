@@ -74,11 +74,11 @@ fn drawn_after_clicking_a_slide(tool: Tool) -> Vec<Note> {
     roll.tool = tool;
     // Click the triangle: it becomes the template, as any clicked note does.
     let (x, y) = at(&roll.view, 0, 60);
-    roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    roll.press(MouseButton::Left, x, y, grid(), &notes);
     roll.release();
     // Then draw somewhere empty.
     let (x, y) = at(&roll.view, PPQN * 2, 64);
-    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes, 4);
+    let edits = roll.press(MouseButton::Left, x, y, grid(), &notes);
     roll.release();
     edits
         .into_iter()

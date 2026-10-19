@@ -61,7 +61,7 @@ fn select_first(timeline: &mut Timeline, items: &[ClipInfo]) {
     let x = fontelle_ui::canvas::timeline_tick_to_x(&timeline.view, l.grid, items[0].start) + 4.0;
     let y = fontelle_ui::canvas::lane_to_y(&timeline.view, l.grid, items[0].lane)
         + timeline.view.lane_height / 2.0;
-    timeline.press(MouseButton::Left, x, y, &l, items, 4);
+    timeline.press(MouseButton::Left, x, y, &l, items);
     timeline.release();
 }
 
@@ -110,7 +110,7 @@ fn cutting_copies_before_it_removes() {
 #[test]
 fn pasting_puts_the_clipboard_down_at_the_tick_it_is_given() {
     let mut timeline = Timeline::new(TimelineView::default());
-    let edits = timeline.paste(PPQN * 16, 4);
+    let edits = timeline.paste(PPQN * 16);
     assert_eq!(edits, vec![ArrangeEdit::Paste { at: PPQN * 16 }]);
 }
 
@@ -122,7 +122,7 @@ fn a_paste_is_snapped_to_the_arrangements_own_grid() {
         snap: fontelle_ui::canvas::SnapDivision::Bar,
         ..TimelineView::default()
     });
-    let edits = timeline.paste(PPQN * 5, 4);
+    let edits = timeline.paste(PPQN * 5);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Paste { at: PPQN * 4 }],
@@ -134,7 +134,7 @@ fn a_paste_is_snapped_to_the_arrangements_own_grid() {
 fn a_paste_before_the_start_of_the_song_lands_at_the_start() {
     let mut timeline = Timeline::new(TimelineView::default());
     assert_eq!(
-        timeline.paste(-PPQN * 4, 4),
+        timeline.paste(-PPQN * 4),
         vec![ArrangeEdit::Paste { at: 0 }]
     );
 }
@@ -149,7 +149,7 @@ fn repeating_a_clip_lays_copies_end_to_end() {
     let items = clips(&[(0, PPQN * 4, 0)]);
     select_first(&mut timeline, &items);
 
-    let edits = timeline.repeat(&items, 3, 4);
+    let edits = timeline.repeat(&items, 3);
     assert_eq!(edits.len(), 3, "three more of it");
     let offsets: Vec<Tick> = edits
         .iter()
@@ -169,7 +169,7 @@ fn repeating_a_clip_lays_copies_end_to_end() {
 fn repeating_nothing_asks_for_nothing() {
     let mut timeline = Timeline::new(TimelineView::default());
     let items = clips(&[(0, PPQN * 4, 0)]);
-    assert!(timeline.repeat(&items, 3, 4).is_empty());
+    assert!(timeline.repeat(&items, 3).is_empty());
 }
 
 /// What makes "repeat" repeat rather than pile copies in one spot.
@@ -200,7 +200,7 @@ fn a_duplicated_clip_becomes_the_selection_so_the_next_one_lands_after_it() {
     );
 
     // So the next repeat is measured from the copy, not from the original.
-    let edits = timeline.repeat(&after, 1, 4);
+    let edits = timeline.repeat(&after, 1);
     assert_eq!(
         edits,
         vec![ArrangeEdit::Duplicate {
@@ -297,10 +297,22 @@ mod clip_menu {
     fn a_selected_clips_menu_acts_on_the_whole_selection() {
         let items = clips(&[(0, PPQN * 4, 0), (PPQN * 4, PPQN * 2, 0), (0, PPQN, 1)]);
         let selection = vec![items[0].id, items[1].id];
-        let edits = clip_menu_edits(ClipMenuRow::Delete, &items[0], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Delete,
+            &items[0],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(edits, vec![ArrangeEdit::Remove(selection.clone())]);
 
-        let edits = clip_menu_edits(ClipMenuRow::Mute, &items[1], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Mute,
+            &items[1],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(
             edits,
             vec![ArrangeEdit::SetMuted {
@@ -310,7 +322,13 @@ mod clip_menu {
         );
 
         // The selection again, after itself, on the next bar — what Ctrl+D does.
-        let edits = clip_menu_edits(ClipMenuRow::Duplicate, &items[0], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Duplicate,
+            &items[0],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(
             edits,
             vec![ArrangeEdit::Duplicate {
@@ -320,7 +338,13 @@ mod clip_menu {
         );
 
         // Each clip loops over its own length.
-        let edits = clip_menu_edits(ClipMenuRow::Loop, &items[0], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Loop,
+            &items[0],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(
             edits,
             vec![
@@ -340,9 +364,21 @@ mod clip_menu {
     fn an_unselected_clips_menu_acts_on_that_clip_alone() {
         let items = clips(&[(0, PPQN * 4, 0), (PPQN * 4, PPQN * 2, 0), (0, PPQN, 1)]);
         let selection = vec![items[0].id, items[1].id];
-        let edits = clip_menu_edits(ClipMenuRow::Delete, &items[2], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Delete,
+            &items[2],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(edits, vec![ArrangeEdit::Remove(vec![items[2].id])]);
-        let edits = clip_menu_edits(ClipMenuRow::Duplicate, &items[2], &selection, &items, 4);
+        let edits = clip_menu_edits(
+            ClipMenuRow::Duplicate,
+            &items[2],
+            &selection,
+            &items,
+            &fontelle_ui::canvas::MeterView::song(fontelle_types::Meter::constant(4)),
+        );
         assert_eq!(
             edits,
             vec![ArrangeEdit::Duplicate {

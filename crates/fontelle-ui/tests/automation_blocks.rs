@@ -332,7 +332,6 @@ fn clicking_the_curve_makes_a_point_there_on_the_grid() {
         area.y + 1.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     assert_eq!(edits.len(), 1);
     match &edits[0] {
@@ -359,7 +358,7 @@ fn a_new_point_is_picked_up_by_the_press_that_made_it() {
     let AutomationBlock { area, .. } = automation_block(block, &clip);
     let x = area.x + BAR as f32 * t.view.pixels_per_tick;
     let y = area.y + area.height / 2.0;
-    t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip), 4);
+    t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip));
     let made = point_ids(1)[0];
     t.points_inserted(clip.id, vec![made]);
     assert_eq!(t.point_selection(), &[made]);
@@ -370,7 +369,6 @@ fn a_new_point_is_picked_up_by_the_press_that_made_it() {
         y + area.height / 2.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     assert_eq!(edits.len(), 1);
     match &edits[0] {
@@ -400,14 +398,14 @@ fn dragging_a_point_emits_deltas_relative_to_the_last_step() {
     let AutomationBlock { area, handles, .. } = automation_block(block, &clip);
     let (id, rect) = handles[0];
     let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-    let edits = t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip), 4);
+    let edits = t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip));
     assert!(edits.is_empty(), "grabbing a point changes nothing yet");
     assert_eq!(t.point_selection(), &[id]);
 
     let beat = PPQN as f32 * t.view.pixels_per_tick;
-    let first = t.drag(x + beat, y, &l, std::slice::from_ref(&clip), 4);
-    let second = t.drag(x + beat * 2.0, y, &l, std::slice::from_ref(&clip), 4);
-    let held = t.drag(x + beat * 2.0 + 1.0, y, &l, std::slice::from_ref(&clip), 4);
+    let first = t.drag(x + beat, y, &l, std::slice::from_ref(&clip));
+    let second = t.drag(x + beat * 2.0, y, &l, std::slice::from_ref(&clip));
+    let held = t.drag(x + beat * 2.0 + 1.0, y, &l, std::slice::from_ref(&clip));
     for edits in [&first, &second] {
         assert!(
             matches!(
@@ -430,9 +428,9 @@ fn a_stationary_pointer_asks_for_nothing() {
     let AutomationBlock { handles, .. } = automation_block(block, &clip);
     let (_, rect) = handles[1];
     let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-    t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip), 4);
+    t.press(MouseButton::Left, x, y, &l, std::slice::from_ref(&clip));
     for _ in 0..5 {
-        assert!(t.drag(x, y, &l, std::slice::from_ref(&clip), 4).is_empty());
+        assert!(t.drag(x, y, &l, std::slice::from_ref(&clip)).is_empty());
     }
 }
 
@@ -449,7 +447,6 @@ fn a_right_click_on_a_point_asks_for_its_menu_rather_than_erasing_the_clip() {
         rect.y + rect.height / 2.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     assert!(
         edits.is_empty(),
@@ -466,7 +463,6 @@ fn a_right_click_on_a_point_asks_for_its_menu_rather_than_erasing_the_clip() {
         area.y + 2.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     assert!(edits.is_empty(), "{edits:?}");
     assert_eq!(t.take_point_menu(), None);
@@ -478,7 +474,6 @@ fn a_right_click_on_a_point_asks_for_its_menu_rather_than_erasing_the_clip() {
         block.y + 2.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     assert_eq!(edits, vec![ArrangeEdit::Remove(vec![clip.id])]);
 }
@@ -496,7 +491,6 @@ fn deleting_and_reshaping_the_selected_points_are_edits_on_their_clip() {
         rect.y + rect.height / 2.0,
         &l,
         std::slice::from_ref(&clip),
-        4,
     );
     t.release();
 
@@ -541,7 +535,6 @@ fn selecting_a_clip_drops_the_point_selection_from_another() {
         rect.y + rect.height / 2.0,
         &l,
         &clips,
-        4,
     );
     t.release();
     assert_eq!(t.point_selection().len(), 1);
@@ -553,7 +546,6 @@ fn selecting_a_clip_drops_the_point_selection_from_another() {
         block_b.y + 2.0,
         &l,
         &clips,
-        4,
     );
     t.release();
     assert!(t.point_selection().is_empty());

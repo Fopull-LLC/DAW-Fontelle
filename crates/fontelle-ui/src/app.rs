@@ -42,7 +42,7 @@ use crate::canvas::{
     browser_layout, browser_layout_split, clamp_to_grid, edge_scroll_rate, fader_db_at,
     format_gain_db, format_pan, instrument_hit, instrument_layout, knob_value, lane_height_at,
     mixer_hit, next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label,
-    route_menu_hit, route_menu_layout, scrolled, snap_tick, timeline_hit, timeline_layout,
+    route_menu_hit, route_menu_layout, scrolled, timeline_hit, timeline_layout,
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
     timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
@@ -67,8 +67,7 @@ use crate::text::{Labels, TextContext, TextLayout};
 use crate::theme::Theme;
 use crate::transport::{
     Meter, TransportAction, TransportBarLayout, TransportHit, TransportHost, TransportView, action,
-    apply, format_signature, format_tempo, hit, parse_tempo, sample_at, tempo_at,
-    transport_bar_layout,
+    apply, format_tempo, hit, parse_tempo, sample_at, tempo_at, transport_bar_layout,
 };
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
@@ -108,6 +107,15 @@ const TRACK_COLOUR_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
+    /// A signature change's flag, taken hold of on the arrangement's ruler:
+    /// `from` is its bar, `to` the bar line nearest the pointer now. A press
+    /// that never travels is a click on the flag — `was` is whether it was
+    /// already the one chosen, which a click lets go of.
+    MeterFlag {
+        from: u32,
+        to: u32,
+        was: bool,
+    },
     /// Selecting text in the notepad's page by dragging across it.
     NotepadSelect,
     /// A vocal roll's lane stroke, expression handle or phoneme start —
@@ -495,6 +503,9 @@ enum NameFor {
     Chat,
     /// A chord for the strip's note, by name or numeral (`Cmaj7/E`, `ii7`).
     ChordName,
+    /// A time signature for bar `bar` (0 is the song's own): any top over
+    /// any bottom, grouped or not (`7/8`, `4/3`, `3+3+2/8`).
+    Signature(u32),
 }
 
 /// What was being done when the name the others see was asked for.
@@ -546,6 +557,7 @@ impl NameFor {
             Self::Setting(_) => "Type it \u{2014} blank for the default",
             Self::Chat => "Say something to everyone \u{2014} Enter sends",
             Self::ChordName => "A chord \u{2014} Cmaj7, F#m7b5, Bb/D, or in the key ii7",
+            Self::Signature(_) => crate::transport::SIGNATURE_PROMPT,
         }
     }
 }
@@ -1073,10 +1085,6 @@ const TIMELINE: WidgetId = WidgetId::new(4);
 /// expensive enough for it to matter, because that is the only time it is
 /// cheap to get right.
 const TRANSPORT: WidgetId = WidgetId::new(1);
-
-/// Until the time signature is in the document, 4/4 — which is what the
-/// importer and the demo both assume anyway.
-const BEATS_PER_BAR: u32 = 4;
 
 /// The window's application id — must equal `fontelle_app::desktop::APP_ID`.
 #[cfg(target_os = "linux")]
@@ -2073,7 +2081,7 @@ pub struct WindowApp {
     /// neither moved does no shaping at all. `NAN` and zero are the "nothing
     /// yet" values, and both compare unequal to any real one.
     shaped_tempo: f64,
-    shaped_beats: u32,
+    shaped_signature: String,
     /// What a tempo drag started from, and where the pointer was when it did.
     /// The same shape as `knob`, for the same reason.
     value_drag: Option<(f64, f32)>,
@@ -2774,7 +2782,7 @@ impl WindowApp {
             tempo_text: TextLayout::default(),
             signature_text: TextLayout::default(),
             shaped_tempo: f64::NAN,
-            shaped_beats: 0,
+            shaped_signature: String::new(),
             value_drag: None,
             labels: Labels::new(),
             rack: rack_layout(layout.rack.body, &options.theme.metrics, 0, 0),
@@ -3264,20 +3272,6 @@ impl WindowApp {
         self.tree.invalidate_rect(self.layout.window);
     }
 
-    /// The time signature's numerator, from the document — or 4/4 when there
-    /// is no document behind the window.
-    ///
-    /// One accessor rather than the constant scattered about, because the
-    /// signature is a document value now and a grid that counts by a different
-    /// number from the read-out beside it is worse than one that is wrong
-    /// everywhere.
-    fn beats_per_bar(&self) -> u32 {
-        self.options
-            .document
-            .as_ref()
-            .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar())
-    }
-
     /// How many frames actually reached the GPU. The evidence for §16.3.
     pub fn frames_drawn(&self) -> u64 {
         self.frames
@@ -3334,7 +3328,6 @@ impl WindowApp {
         self.shape_labels();
         // Read before the surface is borrowed: the chrome below is built
         // inside a closure that already holds a mutable borrow of `self`.
-        let beats_per_bar = self.beats_per_bar();
         let output_label = self.output_caption();
         let cable_lines = if self.tab == EditorTab::Mixer {
             self.cables.lines()
@@ -3491,7 +3484,7 @@ impl WindowApp {
                     notes: doc.notes(),
                     selection: self.roll.selection(),
                     playhead_tick: doc.playhead_tick(self.view.position_sample),
-                    beats_per_bar: doc.beats_per_bar(),
+                    meter: self.roll.meter(),
                     tool: self.roll.tool,
                     snap: self.roll.view.snap,
                     lane_property: self.roll.lane_property,
@@ -3616,7 +3609,6 @@ impl WindowApp {
                     selection: self.timeline.selection(),
                     playhead_tick: self.song_playhead,
                     marker_tick: self.song_marker,
-                    beats_per_bar,
                     marquee: self.timeline.marquee(),
                     focused: self.focus == Focus::Timeline,
                     toolbar: self.timeline_bar.clone(),
@@ -3641,6 +3633,10 @@ impl WindowApp {
                     selected_lane: self.selected_lane,
                     meter: &self.meter,
                     meter_selected: self.meter_selected,
+                    meter_moving: match self.drag {
+                        Drag::MeterFlag { from, to, .. } if from != to => Some(to),
+                        _ => None,
+                    },
                     also_selected: &self.lane_set,
                     ghost,
                     captions: &self.clip_captions,
@@ -4297,7 +4293,7 @@ impl WindowApp {
         // transport should not be doing it at all.
         if view.position_sample != self.view.position_sample || !self.view.available {
             self.readout = self.text.layout(
-                &crate::transport::format_readout_in(&view, &self.meter),
+                &crate::transport::format_readout(&view, &self.meter),
                 &self.options.theme.font,
                 None,
             );
@@ -4347,7 +4343,9 @@ impl WindowApp {
             // A curve is dragged in both directions at once, so neither
             // resize cursor is the truth: a hand is.
             Drag::DisgustingBeatCurve | Drag::DisgustingBeatScene(_) => Some(Pointer::Grabbing),
-            Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler => Some(Pointer::Grabbing),
+            Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler | Drag::MeterFlag { .. } => {
+                Some(Pointer::Grabbing)
+            }
             Drag::NotepadSelect => Some(Pointer::Text),
             Drag::MenuScroll
             | Drag::ListScroll(_)
@@ -7411,12 +7409,32 @@ impl WindowApp {
         self.sync_cables();
     }
 
+    /// Keeps the roll's meter on the song's, seen from the open clip's start:
+    /// every snap and step in the roll is measured in it. Asked each pass,
+    /// since the clip that is open can change without anything else doing.
+    fn sync_roll_meter(&mut self) {
+        let Some(start) = self
+            .options
+            .document
+            .as_ref()
+            .map(|doc| doc.song_tick_of_clip_tick(0))
+        else {
+            return;
+        };
+        let roll = self.roll.meter();
+        if roll.start() != start || roll.meter() != &self.meter {
+            self.roll
+                .set_meter(crate::canvas::MeterView::clip(self.meter.clone(), start));
+        }
+    }
+
     /// Re-reads the studio's lists, but only when it says they have changed.
     ///
     /// The alternative — asking for `Vec<ChannelInfo>` every frame — allocates
     /// once a frame for a list that changes when somebody clicks something.
     fn refresh_studio(&mut self) {
         self.refresh_theme();
+        self.sync_roll_meter();
         if self
             .options
             .document
@@ -7495,6 +7513,13 @@ impl WindowApp {
         self.lanes = doc.lanes();
         self.meter = doc.meter();
         self.timeline.set_meter(self.meter.clone());
+        // The roll's too, in the open clip's ticks — the clip it opens may
+        // be another one after this refresh.
+        let start = doc.song_tick_of_clip_tick(0);
+        if self.roll.meter().start() != start || self.roll.meter().meter() != &self.meter {
+            self.roll
+                .set_meter(crate::canvas::MeterView::clip(self.meter.clone(), start));
+        }
         // A change taken away is no longer chosen.
         if let Some(bar) = self.meter_selected
             && !self.meter.changes().iter().any(|c| c.bar == bar)
@@ -8523,23 +8548,18 @@ impl WindowApp {
         }
         // The box says the change chosen on the ruler while one is, or the
         // song's own signature.
-        let (top, bottom) = match self.meter_selected {
-            Some(bar) => self.meter.signature(bar),
-            None => (self.beats_per_bar(), 4),
-        };
-        let showing = top * 100 + bottom;
-        if self.shaped_beats != showing {
-            let signature = if bottom == 4 && self.meter_selected.is_none() {
-                format_signature(top)
-            } else {
-                format!("{top}/{bottom}")
-            };
-            self.signature_text = self.text.layout(&signature, &font, None);
-            self.shaped_beats = showing;
+        let showing = match self.meter_selected {
+            Some(bar) => self.meter.signature_of(bar),
+            None => self.meter.song(),
+        }
+        .label();
+        if self.shaped_signature != showing {
+            self.signature_text = self.text.layout(&showing, &font, None);
+            self.shaped_signature = showing;
         }
         // And each change's flag says what it changes to.
         for change in self.meter.changes() {
-            let text = format!("{}/{}", change.top, change.bottom);
+            let text = change.signature().label();
             self.labels.ensure(&text, &font, &mut self.text);
         }
 
@@ -8923,7 +8943,7 @@ impl WindowApp {
                     }
                 }
             }
-            for (_, name) in crate::canvas::timeline_beat_labels_in(
+            for (_, name) in crate::canvas::timeline_beat_labels(
                 &self.timeline.view,
                 self.timeline_layout.grid,
                 &self.meter,
@@ -9055,22 +9075,22 @@ impl WindowApp {
                     self.labels.ensure(&key_name(key), &font, &mut self.text);
                 }
             }
-            let beats = self
-                .options
-                .document
-                .as_ref()
-                .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
-            let bar = fontelle_types::PPQN * i64::from(beats.max(1));
+            // The bar numbers the roll's ruler draws: the meter's, in the
+            // clip's own count — the same call the renderer makes.
+            let ticks = crate::canvas::visible_ticks(&self.roll.view, self.roll_layout.grid);
+            let meter = self.roll.meter().clone();
+            let bar = meter.bar_ticks_at(ticks.start.max(0));
             if let Some(stride) = label_stride(bar as f32 * self.roll.view.pixels_per_tick) {
-                let ticks = crate::canvas::visible_ticks(&self.roll.view, self.roll_layout.grid);
-                let mut tick = ticks.start - ticks.start.rem_euclid(bar);
-                while tick < ticks.end {
-                    let number = tick / bar + 1;
-                    if labelled_bar(number, stride) {
-                        self.labels
-                            .ensure(&number.to_string(), &font, &mut self.text);
+                for (_, line) in
+                    crate::canvas::clip_meter_lines(meter.meter(), meter.start(), ticks)
+                {
+                    if let fontelle_types::MeterLine::Bar(n) = line {
+                        let number = i64::from(n) + 1;
+                        if labelled_bar(number, stride) {
+                            self.labels
+                                .ensure(&number.to_string(), &font, &mut self.text);
+                        }
                     }
-                    tick += bar;
                 }
             }
         }
@@ -9152,6 +9172,11 @@ impl WindowApp {
     /// The button came up over the studio's own window.
     fn studio_released(&mut self) {
         if self.release_theme_editor() {
+            return;
+        }
+        if let Drag::MeterFlag { from, to, was } = self.drag {
+            self.drag = Drag::None;
+            self.drop_meter_flag(from, to, was);
             return;
         }
         // A ruler drag lands where it was let go, not a frame later.
@@ -9283,7 +9308,6 @@ impl WindowApp {
         if let Some(id) = self.chord_pending.take() {
             self.open_chord_strip(id);
         }
-        let beats = self.beats_per_bar();
         // **Before** the release, because after it the gesture is gone:
         // a marquee and a cut are both drawn by the canvas and known to
         // nothing in the document, so the frame that clears them has to
@@ -9294,7 +9318,7 @@ impl WindowApp {
         let overlay = self.timeline.draws_overlay() || self.roll.draws_overlay();
         let edits = self
             .timeline
-            .release_over(x, y, &self.timeline_layout, &self.clips, beats);
+            .release_over(x, y, &self.timeline_layout, &self.clips);
         // A click on a clip's name — down and up in one place.
         let name_click = self
             .name_press
@@ -10243,6 +10267,7 @@ impl WindowApp {
             Drag::Keys => self.audition_at(y),
             Drag::Timeline => self.drag_timeline(),
             Drag::TimelineRuler => self.mark_on_timeline(x),
+            Drag::MeterFlag { from, was, .. } => self.drag_meter_flag(from, was, x),
             Drag::Divider => self.drag_divider(y),
             Drag::SidebarSeam => self.drag_sidebar_seam(x),
             Drag::SidebarSplit => self.drag_sidebar_split(y),
@@ -11615,8 +11640,8 @@ impl WindowApp {
     }
 
     fn preview_selection(&mut self, tick: fontelle_types::Tick, snap: SnapDivision) {
-        let beats = self.beats_per_bar();
-        let picked = crate::canvas::time_selection(self.select_anchor, tick, snap, beats);
+        let picked =
+            crate::canvas::time_selection(self.select_anchor, tick, snap, self.timeline.meter());
         if picked == self.select_preview {
             return;
         }
@@ -12317,7 +12342,7 @@ impl WindowApp {
                     return;
                 }
                 let beats = view.lanes.get(lane).map_or(4.0, |lane| {
-                    lane.length.beats(view.beats_per_bar) * view.config.rate.stretch()
+                    lane.length.beats(view.bar) * view.config.rate.stretch()
                 });
                 let at = view.snap.snap(phase, beats);
                 match view.tool {
@@ -12490,7 +12515,7 @@ impl WindowApp {
         // volume lane under a four-beat time lane is the whole point of
         // per-lane lengths, and a sixteenth of one is not a sixteenth of the
         // other.
-        let beats = lane.length.beats(view.beats_per_bar) * view.config.rate.stretch();
+        let beats = lane.length.beats(view.bar) * view.config.rate.stretch();
         let at = view.snap.snap(phase, beats);
         let Some(doc) = &mut self.options.document else {
             return;
@@ -13163,8 +13188,8 @@ impl WindowApp {
             None => MeterTarget::Song,
         };
         let current = match target {
-            MeterTarget::Song => (self.beats_per_bar(), 4),
-            MeterTarget::Change(bar) => self.meter.signature(bar),
+            MeterTarget::Song => self.meter.song(),
+            MeterTarget::Change(bar) => self.meter.signature_of(bar),
         };
         // Read off the marker itself: the song position the frame keeps is
         // a frame behind a click that has just moved it.
@@ -13175,27 +13200,16 @@ impl WindowApp {
             .map_or(self.song_marker, |doc| doc.playhead_song_tick(self.marker));
         let marker_bar = self.meter.bar_at(marker).0;
         let there = self.meter.changes().iter().any(|c| c.bar == marker_bar);
-        let (entries, rows) = crate::transport::meter_menu(target, current, marker_bar, there);
+        let (entries, rows) = crate::transport::meter_menu(target, &current, marker_bar, there);
         (entries, rows, target)
     }
 
-    fn set_meter_change(&mut self, bar: u32, to: Option<(u32, u32)>) {
+    fn set_meter_change(&mut self, bar: u32, to: Option<fontelle_types::Signature>) {
         if let Some(doc) = &mut self.options.document {
             doc.set_meter_change(bar, to);
             doc.end_gesture();
         }
         self.refresh_studio();
-        self.refresh_title();
-        self.tree.invalidate(TRANSPORT);
-        self.tree.invalidate(TIMELINE);
-        self.tree.invalidate(PANEL);
-    }
-
-    fn set_beats_per_bar(&mut self, beats: u32) {
-        if let Some(doc) = &mut self.options.document {
-            doc.set_beats_per_bar(beats);
-            doc.end_gesture();
-        }
         self.refresh_title();
         self.tree.invalidate(TRANSPORT);
         self.tree.invalidate(TIMELINE);
@@ -16499,11 +16513,21 @@ impl WindowApp {
             .find(|(_, r)| r.contains(x, y))
             .map(|(bar, _)| bar);
             let was = self.meter_selected;
-            self.meter_selected = flag.filter(|bar| was != Some(*bar));
+            // Chosen at the press, so a drag carries the one it holds; a
+            // click that never travelled lets it go again on release if it
+            // was the one already chosen.
+            self.meter_selected = flag;
             if was != self.meter_selected {
                 self.tree.invalidate(TRANSPORT);
             }
-            if flag.is_some() && button == MouseButton::Left {
+            if let Some(bar) = flag
+                && button == MouseButton::Left
+            {
+                self.drag = Drag::MeterFlag {
+                    from: bar,
+                    to: bar,
+                    was: was == Some(bar),
+                };
                 self.tree.invalidate(TIMELINE);
                 return;
             }
@@ -16659,23 +16683,11 @@ impl WindowApp {
             .flatten()
             .map(|id| (id, x, y));
         let edits = if doubled {
-            self.timeline.double_press(
-                button,
-                x,
-                y,
-                &self.timeline_layout,
-                &self.clips,
-                self.beats_per_bar(),
-            )
+            self.timeline
+                .double_press(button, x, y, &self.timeline_layout, &self.clips)
         } else {
-            self.timeline.press(
-                button,
-                x,
-                y,
-                &self.timeline_layout,
-                &self.clips,
-                self.beats_per_bar(),
-            )
+            self.timeline
+                .press(button, x, y, &self.timeline_layout, &self.clips)
         };
         self.drag = Drag::Timeline;
         self.apply_arrange_edits(edits);
@@ -16778,13 +16790,7 @@ impl WindowApp {
             v.top_lane = (v.top_lane as i64 - rows as i64).max(0) as usize;
             self.tree.invalidate(TIMELINE);
         }
-        let edits = self.timeline.drag(
-            x,
-            y,
-            &self.timeline_layout,
-            &self.clips,
-            self.beats_per_bar(),
-        );
+        let edits = self.timeline.drag(x, y, &self.timeline_layout, &self.clips);
         // A marquee **or a cut**: both paint something the document knows
         // nothing about, so neither dirties the panel by producing an edit.
         // See `Timeline::draws_overlay` — this used to name the marquee alone,
@@ -16797,6 +16803,50 @@ impl WindowApp {
         }
     }
 
+    /// A flag held on the ruler, following the pointer to the nearest bar
+    /// line (Ty, 2026-10-19: *"they absolutely need to be moveable"*). Never
+    /// onto bar 1, whose signature is the song's own.
+    fn drag_meter_flag(&mut self, from: u32, was: bool, x: f32) {
+        let grid = self.timeline_layout.grid;
+        let (x, _) = clamp_to_grid(grid, x, grid.y);
+        let tick = timeline_x_to_tick(&self.timeline.view, grid, x).max(0);
+        let (bar, into) = self.meter.bar_at(tick);
+        let nearest = if into * 2 >= self.meter.bar_ticks(bar) {
+            bar + 1
+        } else {
+            bar
+        };
+        let to = nearest.max(1);
+        if self.drag != (Drag::MeterFlag { from, to, was }) {
+            self.drag = Drag::MeterFlag { from, to, was };
+            self.tree.invalidate(TIMELINE);
+        }
+    }
+
+    /// The flag let go: moved to the bar it was over — one undo — or, if it
+    /// never left its own, a click on it.
+    fn drop_meter_flag(&mut self, from: u32, to: u32, was: bool) {
+        if to == from {
+            if was {
+                self.meter_selected = None;
+                self.tree.invalidate(TRANSPORT);
+            }
+            self.tree.invalidate(TIMELINE);
+            return;
+        }
+        if let Some(doc) = &mut self.options.document {
+            doc.move_meter_change(from, to);
+            doc.end_gesture();
+        }
+        self.meter_selected = Some(to);
+        self.status = format!("The signature change moved to bar {}", to + 1);
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(TRANSPORT);
+        self.tree.invalidate(TIMELINE);
+        self.tree.invalidate(PANEL);
+    }
+
     /// The arrangement's ruler: the time marker, in song ticks.
     fn mark_on_timeline(&mut self, x: f32) {
         let grid = self.timeline_layout.grid;
@@ -16805,7 +16855,7 @@ impl WindowApp {
         let tick = if self.modifiers.alt_key() {
             tick
         } else {
-            self.timeline.snapped(tick, self.beats_per_bar())
+            self.timeline.snapped(tick)
         };
         let Some(sample) = self
             .options
@@ -17718,18 +17768,18 @@ impl WindowApp {
                         .map(|doc| doc.record_mode() == crate::transport::RecordMode::Audio)
                         .unwrap_or(false);
                 if counted {
-                    let beat = self
-                        .options
-                        .document
-                        .as_ref()
-                        .map_or(0, |doc| doc.samples_per_beat());
-                    let beats = self
-                        .options
-                        .document
-                        .as_ref()
-                        .map_or(4, |doc| doc.beats_per_bar())
-                        .min(crate::transport::COUNT_IN_BEATS);
-                    let count = crate::transport::count_in_samples(beat, beats);
+                    // One bar of the signature the take starts in, in its
+                    // beats, at the tempo at the marker — what the engine
+                    // clicks it in.
+                    let count = self.options.document.as_ref().map_or(0, |doc| {
+                        let at = doc.playhead_song_tick(self.marker);
+                        let (bar, _) = self.meter.bar_at(at);
+                        let (top, bottom) = self.meter.signature(bar);
+                        let quarter = doc.samples_per_beat() as f64 * doc.tempo()
+                            / doc.tempo_at(self.marker).max(1.0);
+                        let beat = quarter * 4.0 / f64::from(bottom.max(1));
+                        crate::transport::count_in_samples(beat, top)
+                    });
                     // Waiting for the engine to say the count is over; with
                     // no tempo there is no count, and the first tick after
                     // this starts the tape.
@@ -17938,7 +17988,6 @@ impl WindowApp {
         let Some(doc) = &self.options.document else {
             return;
         };
-        let beats_per_bar = doc.beats_per_bar();
         // **A double-click on a note** puts a point of its path there, or
         // takes out the point it lands on — and only on a note, so a
         // double-click on bare grid draws as it always did.
@@ -17986,16 +18035,10 @@ impl WindowApp {
         );
         let edits = if doubled && on_note && matches!(self.roll.tool, Tool::Draw | Tool::Select) {
             self.roll
-                .double_press(x, y, self.roll_layout.grid, doc.notes(), beats_per_bar)
+                .double_press(x, y, self.roll_layout.grid, doc.notes())
         } else {
-            self.roll.press(
-                button,
-                x,
-                y,
-                self.roll_layout.grid,
-                doc.notes(),
-                beats_per_bar,
-            )
+            self.roll
+                .press(button, x, y, self.roll_layout.grid, doc.notes())
         };
         self.apply_roll_edits(edits);
         // A press asks for no sound of its own any more — it only *offers*
@@ -18089,7 +18132,7 @@ impl WindowApp {
                 .then(|| CarryTimeline {
                     layout: &self.timeline_layout,
                     view: &self.timeline.view,
-                    beats_per_bar: self.beats_per_bar(),
+                    meter: self.timeline.meter(),
                     lanes: self.lanes.len(),
                     length: self.carry_length,
                 }),
@@ -18238,7 +18281,7 @@ impl WindowApp {
             .into_iter()
             .map(|osc| osc.name)
             .collect();
-        let note = crate::canvas::carry_note(&target, &names, &oscillators, self.beats_per_bar());
+        let note = crate::canvas::carry_note(&target, &names, &oscillators, &self.meter);
         let note = if self.hovering.is_some() {
             // A soundfont is the one desktop file that opens as something
             // other than rows: it goes on the channel that is selected.
@@ -18316,7 +18359,7 @@ impl WindowApp {
             return;
         };
         let loose = crate::canvas::timeline_x_to_tick(&self.timeline.view, grid, x);
-        let from = self.timeline.snapped(loose, self.beats_per_bar()).max(0);
+        let from = self.timeline.snapped(loose).max(0);
         if self.carry_length_for.as_ref() == Some(&(key.clone(), from)) {
             return;
         }
@@ -22076,15 +22119,25 @@ impl WindowApp {
             (MenuTarget::Signature, index) => {
                 use crate::transport::{MeterRow, MeterTarget};
                 let (_, rows, target) = self.meter_menu();
-                match (rows.get(index).copied(), target) {
-                    (Some(MeterRow::Signature(top, _)), MeterTarget::Song) => {
-                        self.set_beats_per_bar(top);
+                let at = match target {
+                    MeterTarget::Song => 0,
+                    MeterTarget::Change(bar) => bar,
+                };
+                match rows.get(index).copied() {
+                    Some(MeterRow::Preset(preset)) => {
+                        if let Some((top, bottom)) = crate::transport::METER_PRESETS.get(preset) {
+                            self.set_meter_change(
+                                at,
+                                Some(fontelle_types::Signature::new(*top, *bottom)),
+                            );
+                        }
                     }
-                    (Some(MeterRow::Signature(top, bottom)), MeterTarget::Change(bar)) => {
-                        self.set_meter_change(bar, Some((top, bottom)));
+                    Some(MeterRow::Type) => {
+                        let now = self.meter.signature_of(at).label();
+                        self.ask_for_a_name(NameFor::Signature(at), now);
                     }
-                    (Some(MeterRow::AddAt(bar)), _) => {
-                        let here = self.meter.signature(bar);
+                    Some(MeterRow::AddAt(bar)) => {
+                        let here = self.meter.signature_of(bar);
                         self.set_meter_change(bar, Some(here));
                         self.meter_selected = Some(bar);
                         self.status = format!(
@@ -22092,11 +22145,11 @@ impl WindowApp {
                             bar + 1
                         );
                     }
-                    (Some(MeterRow::Remove(bar)), _) => {
+                    Some(MeterRow::Remove(bar)) => {
                         self.set_meter_change(bar, None);
                         self.meter_selected = None;
                     }
-                    _ => {}
+                    Some(MeterRow::Heading) | None => {}
                 }
             }
             // A jump in the tour, to the first step of the section.
@@ -23126,12 +23179,10 @@ impl WindowApp {
         } else {
             self.roll.view.snap
         };
-        let beats_per_bar = self
-            .options
-            .document
-            .as_ref()
-            .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
-        let tick = snap_tick(x_to_tick(&self.roll.view, grid, x), snap, beats_per_bar);
+        let tick = self
+            .roll
+            .meter()
+            .snap(x_to_tick(&self.roll.view, grid, x), snap);
         let Some(sample) = self
             .options
             .document
@@ -23227,10 +23278,9 @@ impl WindowApp {
     }
 
     fn drag_roll(&mut self) {
-        let Some(doc) = &self.options.document else {
+        if self.options.document.is_none() {
             return;
-        };
-        let beats_per_bar = doc.beats_per_bar();
+        }
         let (x, y) = self.cursor;
         let grid = self.roll_layout.grid;
 
@@ -23253,7 +23303,7 @@ impl WindowApp {
         let Some(doc) = &self.options.document else {
             return;
         };
-        let edits = self.roll.drag(x, y, grid, doc.notes(), beats_per_bar);
+        let edits = self.roll.drag(x, y, grid, doc.notes());
         // A marquee or a cut changes nothing in the document and everything on
         // screen, so it has to dirty the panel on its own account.
         let overlay = self.roll.draws_overlay();
@@ -24524,12 +24574,7 @@ impl WindowApp {
                 .document
                 .as_ref()
                 .map_or(0, |doc| doc.playhead_song_tick(self.marker));
-            let beats = self
-                .options
-                .document
-                .as_ref()
-                .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
-            let edits = self.timeline.paste(at, beats);
+            let edits = self.timeline.paste(at);
             self.apply_arrange_edits(edits);
             if let Some(doc) = &mut self.options.document {
                 doc.end_gesture();
@@ -24547,12 +24592,7 @@ impl WindowApp {
             .unwrap_or_else(|| x_to_tick(&self.roll.view, self.roll_layout.grid, self.cursor.0));
         // The roll snaps it — see `PianoRoll::paste`. Neither of the two ticks
         // above is ever on a line by itself.
-        let beats = self
-            .options
-            .document
-            .as_ref()
-            .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
-        let edits = self.roll.paste(at, beats);
+        let edits = self.roll.paste(at);
         self.apply_roll_edits(edits);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
@@ -24740,7 +24780,7 @@ impl WindowApp {
                 clip,
                 self.timeline.selection(),
                 &self.clips,
-                self.beats_per_bar(),
+                self.timeline.meter(),
             ),
         };
         self.apply_arrange_edits(edits);
@@ -24833,12 +24873,7 @@ impl WindowApp {
     /// The selection again, laid after itself. `Ctrl+D` on the arrangement and
     /// the Repeat button both come here.
     fn repeat_timeline(&mut self) {
-        let beats = self
-            .options
-            .document
-            .as_ref()
-            .map_or(BEATS_PER_BAR, |doc| doc.beats_per_bar());
-        let edits = self.timeline.repeat(&self.clips, 1, beats);
+        let edits = self.timeline.repeat(&self.clips, 1);
         self.apply_arrange_edits(edits);
         if let Some(doc) = &mut self.options.document {
             doc.end_gesture();
@@ -24870,10 +24905,7 @@ impl WindowApp {
             return;
         }
         let edits = match &self.options.document {
-            Some(doc) => {
-                let beats = doc.beats_per_bar();
-                self.roll.duplicate(doc.notes(), beats)
-            }
+            Some(doc) => self.roll.duplicate(doc.notes()),
             None => Vec::new(),
         };
         self.apply_roll_edits(edits);
@@ -24908,24 +24940,21 @@ impl WindowApp {
         let Some(doc) = &self.options.document else {
             return;
         };
-        let beats_per_bar = doc.beats_per_bar();
-        let bar = fontelle_types::PPQN * fontelle_types::Tick::from(beats_per_bar.max(1));
 
+        // One step is to the next line of the grid (Ctrl: the next bar
+        // line) from where the selection is — a bar of whatever signature it
+        // is in, so Ctrl+Right in 7/8 moves seven eighths.
         if self.focus == Focus::Timeline {
-            let step = if ctrl {
-                bar
+            let resize = shift && dx != 0;
+            let step = if dx == 0 {
+                0
             } else {
-                self.timeline_step(beats_per_bar)
+                self.timeline.arrow_delta(&self.clips, dx > 0, ctrl, resize)
             };
-            let edits = if shift && dx != 0 {
-                self.timeline
-                    .resize_selection(&self.clips, step * fontelle_types::Tick::from(dx as i8))
+            let edits = if resize {
+                self.timeline.resize_selection(&self.clips, step)
             } else {
-                self.timeline.nudge(
-                    &self.clips,
-                    step * fontelle_types::Tick::from(dx as i8),
-                    -dy,
-                )
+                self.timeline.nudge(&self.clips, step, -dy)
             };
             self.apply_arrange_edits(edits);
             if let Some(doc) = &mut self.options.document {
@@ -24942,12 +24971,7 @@ impl WindowApp {
         }
         let notes = doc.notes();
         let edits = if dx != 0 {
-            let step = if ctrl {
-                bar
-            } else {
-                self.roll.step(beats_per_bar)
-            };
-            let by = step * fontelle_types::Tick::from(dx as i8);
+            let by = self.roll.arrow_delta(notes, dx > 0, ctrl, shift);
             if shift {
                 self.roll.resize_selection(notes, by)
             } else {
@@ -24969,14 +24993,6 @@ impl WindowApp {
             doc.end_gesture();
         }
         self.tree.invalidate(PANEL);
-    }
-
-    /// One arrow key's worth of song time on the arrangement.
-    fn timeline_step(&self, beats_per_bar: u32) -> fontelle_types::Tick {
-        match crate::canvas::snap_unit(self.timeline.view.snap, beats_per_bar) {
-            0 => fontelle_types::PPQN,
-            unit => unit,
-        }
     }
 
     /// `P` and `E` — the two tools both canvases have — go to whichever one
@@ -25761,15 +25777,6 @@ impl WindowApp {
     /// The strip and its ghosts, as the roll draws them.
     fn roll_chords(&self) -> crate::render::RollChords {
         let mut chords = crate::render::RollChords {
-            meter: (!self.meter.changes().is_empty())
-                .then(|| {
-                    self.options
-                        .document
-                        .as_ref()
-                        .map(|doc| doc.song_tick_of_clip_tick(0))
-                        .map(|start| (self.meter.clone(), start))
-                })
-                .flatten(),
             flecks: self.particles.flecks(),
             smart: self.roll.smart_chords,
             locked: self.roll.scale_lock && self.song_key.is_some(),
@@ -26228,6 +26235,16 @@ impl WindowApp {
                 self.read_session_now();
             }
             NameFor::ChordName => self.write_typed_chord(name),
+            NameFor::Signature(bar) => match fontelle_types::Signature::parse(name) {
+                Ok(signature) => self.set_meter_change(bar, Some(signature)),
+                // Said, and asked again with what was typed, so a slip is
+                // one key to fix rather than the whole thing to retype.
+                Err(why) => {
+                    self.show_toast(format!("{name} \u{2014} {why}"), false);
+                    self.ask_for_a_name(NameFor::Signature(bar), name.to_string());
+                    return true;
+                }
+            },
             NameFor::NewProject | NameFor::SaveAs(_) => return false,
         }
         self.tree.invalidate_rect(self.layout.window);

@@ -70,8 +70,9 @@ pub struct DisgustingBeatView {
     /// from the present, a stutter draws a saw, a reverse draws a line
     /// climbing back into the past.
     pub trail: Vec<f32>,
-    /// The beats in a bar, for the grid's own divisions.
-    pub beats_per_bar: u32,
+    /// The size of the bar the playhead is in: what "1 beat" and "1 bar"
+    /// mean on the lanes.
+    pub bar: fontelle_types::BarSize,
     /// The tempo, which is what turns a lane-length into seconds — the
     /// canopy draws the memory in time and the lanes draw it in bars.
     pub bpm: f32,
@@ -289,7 +290,7 @@ impl DisgustingBeatView {
     pub fn time_beats(&self) -> f64 {
         self.lanes
             .first()
-            .map(|lane| lane.length.beats(self.beats_per_bar) * self.config.rate.stretch())
+            .map(|lane| lane.length.beats(self.bar) * self.config.rate.stretch())
             .unwrap_or(4.0)
     }
 
@@ -915,7 +916,7 @@ pub fn disgusting_beat_readout(
 
 /// How many beats one lane runs for, with the rate knob's stretch in it.
 fn lane_beats(view: &DisgustingBeatView, lane: &LaneView) -> f64 {
-    lane.length.beats(view.beats_per_bar) * view.config.rate.stretch()
+    lane.length.beats(view.bar) * view.config.rate.stretch()
 }
 
 /// Where a point sits in the lane's rectangle.

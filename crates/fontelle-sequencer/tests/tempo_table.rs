@@ -128,28 +128,33 @@ fn ticks_per_sample_is_the_rate_inside_the_segment() {
 }
 
 #[test]
-fn the_beats_in_a_bar_come_from_the_project() {
+fn the_meter_comes_from_the_project() {
     let mut project = Project::new("Waltz");
     project.beats_per_bar = 3;
     let timeline = compile(&project);
-    assert_eq!(timeline.beats_per_bar, 3);
+    assert_eq!(timeline.meter.signature(0), (3, 4));
 
-    let mut project = Project::new("Common");
-    project.beats_per_bar = 4;
+    // Its own bottom, and its changes, travel too.
+    let mut project = Project::new("Odd");
+    project.beats_per_bar = 6;
+    project.beat_unit = 8;
+    project.meter_changes = vec![fontelle_types::MeterChange::new(2, 5, 16)];
     let timeline = compile(&project);
-    assert_eq!(timeline.beats_per_bar, 4);
+    assert_eq!(timeline.meter.signature(0), (6, 8));
+    assert_eq!(timeline.meter.signature(2), (5, 16));
+    assert_eq!(timeline.meter, project.meter());
 }
 
 #[test]
 fn an_uncompiled_timeline_answers_tick_zero_and_four_beats_a_bar() {
     // `CompiledTimeline::default()` is reachable in several places that never
     // compile a project, and every one of its answers has to be musical
-    // rather than zero — `beats_per_bar` of nothing is a division by zero on
+    // rather than zero — a bar of nothing is a division by zero on
     // the audio thread.
     let timeline = CompiledTimeline::empty();
     assert_eq!(timeline.tick_at(0), 0);
     assert_eq!(timeline.tick_at(48_000), PPQN * 2, "at the default tempo");
-    assert_eq!(timeline.beats_per_bar, 4);
+    assert_eq!(timeline.meter.signature(0), (4, 4));
     assert!(timeline.ticks_per_sample_at(0) > 0.0);
 }
 

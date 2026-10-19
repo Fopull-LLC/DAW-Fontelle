@@ -50,12 +50,12 @@ pub use audio_clip::{
 pub use base64::{decode_base64, encode_base64};
 pub use curve::CurveShape;
 pub use disgusting_beat::{
-    CurvePoint, DISGUSTING_BEAT_LANES, DISGUSTING_BEAT_MEMORY_SECONDS, DISGUSTING_BEAT_POINTS,
-    DISGUSTING_BEAT_SCENES, DisgustingBeatBank, DisgustingBeatConfig, DisgustingBeatEdit,
-    DisgustingBeatGrid, DisgustingBeatLane, DisgustingBeatLaneKind, DisgustingBeatLength,
-    DisgustingBeatLook, DisgustingBeatNotes, DisgustingBeatPoint, DisgustingBeatQuality,
-    DisgustingBeatRate, DisgustingBeatScene, DisgustingBeatSync, DisgustingBeatTone, MusicalTime,
-    RtLane, RtPoint, RtScene, curve_at, lane_ticks,
+    BarSize, CurvePoint, DISGUSTING_BEAT_LANES, DISGUSTING_BEAT_MEMORY_SECONDS,
+    DISGUSTING_BEAT_POINTS, DISGUSTING_BEAT_SCENES, DisgustingBeatBank, DisgustingBeatConfig,
+    DisgustingBeatEdit, DisgustingBeatGrid, DisgustingBeatLane, DisgustingBeatLaneKind,
+    DisgustingBeatLength, DisgustingBeatLook, DisgustingBeatNotes, DisgustingBeatPoint,
+    DisgustingBeatQuality, DisgustingBeatRate, DisgustingBeatScene, DisgustingBeatSync,
+    DisgustingBeatTone, MusicalTime, RtLane, RtPoint, RtScene, curve_at, lane_ticks,
 };
 pub use disgusting_beat_presets::DisgustingBeatPreset as DisgustingBeatFactoryPreset;
 pub use effect::{
@@ -85,8 +85,8 @@ pub use effect_presets::{
     ShifterPreset, UtilityPreset, WidthPreset,
 };
 pub use event::{
-    CompiledTimeline, DEFAULT_BEATS_PER_BAR, DEFAULT_BPM, DEFAULT_SAMPLE_RATE, EventPayload,
-    EventSink, TempoSpan, TimedEvent, VoiceOrigin,
+    CompiledTimeline, DEFAULT_BPM, DEFAULT_SAMPLE_RATE, EventPayload, EventSink, TempoSpan,
+    TimedEvent, VoiceOrigin,
 };
 pub use favorite::Favorite;
 pub use id::{
@@ -96,7 +96,9 @@ pub use id::{
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
-pub use meter::{Meter, MeterChange, MeterLine};
+pub use meter::{
+    Accent, BarHere, GridStep, MAX_BOTTOM, MAX_TOP, Meter, MeterChange, MeterLine, Signature,
+};
 pub use notepad::{
     NOTEPAD_CAPTION_CHARS, NotepadConfig, NotepadEdit, NotepadPages, NotepadPreset, NotepadSize,
     NotepadTheme,

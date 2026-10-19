@@ -249,10 +249,10 @@ fn dragging_with_the_cut_tool_produces_a_slice_and_not_a_note() {
     roll.set_modifiers(Modifiers::default());
 
     let (x, y) = at(&v, PPQN * 2, 60);
-    let edits = roll.press(MouseButton::Left, x, y - 40.0, layout.grid, &notes, 4);
+    let edits = roll.press(MouseButton::Left, x, y - 40.0, layout.grid, &notes);
     assert!(edits.is_empty(), "a cut happens on release, not on press");
 
-    roll.drag(x, y + 40.0, layout.grid, &notes, 4);
+    roll.drag(x, y + 40.0, layout.grid, &notes);
     let edits = roll.release_over(x, y + 40.0, layout.grid, &notes);
 
     match edits.as_slice() {
@@ -279,8 +279,8 @@ fn the_stroke_is_visible_while_it_is_being_drawn() {
     roll.set_modifiers(Modifiers::default());
 
     assert_eq!(roll.slice_stroke(), None, "nothing is being drawn yet");
-    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);
-    roll.drag(240.0, 180.0, layout.grid, &notes, 4);
+    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes);
+    roll.drag(240.0, 180.0, layout.grid, &notes);
     assert_eq!(roll.slice_stroke(), Some(((100.0, 100.0), (240.0, 180.0))));
 
     roll.release_over(240.0, 180.0, layout.grid, &notes);
@@ -318,8 +318,8 @@ fn a_gesture_that_paints_its_own_mark_asks_for_the_frame_it_needs() {
     );
 
     roll.tool = Tool::Slice;
-    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);
-    roll.drag(240.0, 180.0, layout.grid, &notes, 4);
+    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes);
+    roll.drag(240.0, 180.0, layout.grid, &notes);
     assert!(
         roll.draws_overlay(),
         "a half-drawn cut is on screen and nothing in the document says so, \
@@ -332,8 +332,8 @@ fn a_gesture_that_paints_its_own_mark_asks_for_the_frame_it_needs() {
     // The marquee is the other one, and the only one the window used to know
     // about.
     roll.tool = Tool::Select;
-    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes, 4);
-    roll.drag(240.0, 180.0, layout.grid, &notes, 4);
+    roll.press(MouseButton::Left, 100.0, 100.0, layout.grid, &notes);
+    roll.drag(240.0, 180.0, layout.grid, &notes);
     assert!(roll.draws_overlay());
 }
 
@@ -352,15 +352,15 @@ fn the_arrangements_own_marks_ask_for_their_frames_too() {
 
     timeline.set_tool(TimelineTool::Slice);
     let (x, y) = (l.grid.x + 40.0, l.grid.y + 20.0);
-    timeline.press(MouseButton::Left, x, y, &l, &[], 4);
-    timeline.drag(x + 60.0, y + 30.0, &l, &[], 4);
+    timeline.press(MouseButton::Left, x, y, &l, &[]);
+    timeline.drag(x + 60.0, y + 30.0, &l, &[]);
     assert!(
         timeline.draws_overlay(),
         "a half-drawn cut across the arrangement is on screen and nothing \
          asks for the frame that would show it"
     );
 
-    timeline.release_over(x + 60.0, y + 30.0, &l, &[], 4);
+    timeline.release_over(x + 60.0, y + 30.0, &l, &[]);
     assert!(!timeline.draws_overlay());
 }
 

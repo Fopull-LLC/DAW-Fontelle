@@ -10,9 +10,7 @@ pub struct VocalSong {
     pub name: String,
     /// Tempo changes from tick 0, in order; never empty.
     pub tempo: Vec<TempoSegment>,
-    /// The (first) time signature. Fontelle's bar counts quarter notes
-    /// (`Project::beats_per_bar`), so a reader turns `6/8` into 3 here and
-    /// keeps the written one in `beat_unit` for a writer.
+    /// The (first) time signature, as written: `6/8` is six over eight.
     pub beats_per_bar: u32,
     pub beat_unit: u32,
     pub parts: Vec<SongPart>,
@@ -107,7 +105,8 @@ impl VocalSong {
             });
         }
         self.tempo.sort_by_key(|s| s.start_tick);
-        self.beats_per_bar = self.beats_per_bar.clamp(1, 16);
+        self.beats_per_bar = self.beats_per_bar.clamp(1, fontelle_types::MAX_TOP);
+        self.beat_unit = self.beat_unit.clamp(1, fontelle_types::MAX_BOTTOM);
     }
 }
 

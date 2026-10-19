@@ -990,7 +990,7 @@ pub fn realise_hosting(
                     &slot.config,
                     options.sample_rate as f32,
                     project.tempo_map.tempo_at(0) as f32,
-                    project.beats_per_bar,
+                    fontelle_types::BarSize::of(project.beats_per_bar, project.beat_unit),
                 ),
             })
             .sum()
@@ -1224,13 +1224,9 @@ pub fn realise_hosting(
     // does not move it, and before the limiter so it cannot clip. It is not
     // music: it is not saved, it does not bounce, and it belongs to no channel.
     let metronome = metronome.unwrap_or_else(|| std::sync::Arc::new(Metronome::new()));
-    // **And it is told where the beats are, here.** `Metronome::new` starts at
-    // zero samples per beat — the "no tempo yet" value, which clicks nothing
-    // rather than dividing by it — so a metronome nobody publishes to is a
-    // metronome nobody can hear. This is the one place that sees both the
-    // project's tempo map and the node being built out of it, so remembering
-    // to call `set_beat` stops being anybody's job.
-    metronome.set_beat(beat_samples(project), project.beats_per_bar);
+    // Where the beats are is not its to be told: the transport hands it each
+    // block's beats off the compiled timeline's meter and tempo table, so the
+    // click follows a signature or a tempo change to the tick.
     schedule.push(ScheduledNode {
         id: NodeId::default(),
         node: Box::new(MetronomeNode::new(std::sync::Arc::clone(&metronome))),
@@ -1319,14 +1315,10 @@ fn graph_latency(graph: &CompiledGraph, buffer_count: usize) -> u32 {
 ///
 /// Measured **through the tempo map** rather than divided out of a BPM: that
 /// is the rule `Session::seconds_per_tick` follows, and it is what keeps the
-/// answer right when the map grows segments. A **constant** beat, which is
-/// exact for a song at one tempo and drifts across a tempo change — see
-/// `fontelle_engine::Metronome::set_beat` for why the RT side cannot be handed
-/// the map itself (INVARIANT 3).
-///
-/// One function rather than the same subtraction in `realise` and in
-/// `Session`, because two copies of it is somewhere for the click the graph
-/// plays and the click the tempo box moves to drift apart.
+/// answer right when the map grows segments. A quarter note at the top of
+/// the song: what a count-in is measured from, scaled by the tempo where it
+/// counts (the click itself is the meter's, beat by beat, on the audio
+/// thread).
 pub fn beat_samples(project: &Project) -> u32 {
     let map = &project.tempo_map;
     let beat = map.tick_to_sample(fontelle_types::PPQN) - map.tick_to_sample(0);
