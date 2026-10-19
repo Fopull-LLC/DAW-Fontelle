@@ -19,6 +19,45 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — any time signature, moveable, followed everywhere; on
+`main`, 0.29.0-alpha.2, `PROTOCOL` 3, not released.** Ty: *"the metronome
+absolutely needs to match the correct signature you are in, they
+absolutely need to be moveable, and signatures NEED to be flexible enough
+… so youre not just locked to x/4."*
+
+- **The meter** (`fontelle_types::meter`): `Signature` any top 1–64 over
+  any bottom 1–64 (4/3 and 5/7 too), with groupings (3+3+2/8, typed or the
+  signature's own: compound in threes, odd eighths 2…+3). Bar lines are
+  rounded from each stretch's start, so a bottom that does not divide 3840
+  never drifts; `GridStep` snapping and `next_line`/`previous_line` restart
+  every grid on each bar line. The song's own is `beats_per_bar` +
+  `beat_unit` + `beat_groups` (written only off 4/4's defaults);
+  `SetMeterChange(0, …)` sets it, `MoveMeterChange` moves a change.
+- **The click**: the transport hands each block its beats (`Clicks` on the
+  snapshot, worked out off the compiled timeline's meter and tempo table,
+  allocation-free) and the metronome plays three strengths. The count-in is
+  a bar of the signature at the marker, counted back from it with that
+  bar's accents. `Metronome::set_beat` is gone. Plugins get the bar's own
+  signature, number and start (LV2 in its beat unit). DisgustingBeat's
+  patterns restart on bar lines; its look-ahead is the opening tempo and
+  bar, which is what the graph compensates.
+- **The window**: the signature box offers common signatures and *Type a
+  signature…*; flags drag to the nearest bar line. `canvas::MeterView`
+  (song or clip ticks) is the only answer to "how long is a bar" in the UI:
+  snaps, arrows (Ctrl = a bar of its own signature), duplicates/repeats
+  (whole bars on, same place in the bar), the grids' fine lines, the roll's
+  ruler. A drag lands the **grabbed** note or clip on the grid (it used to
+  round the drag distance). `DocumentHost::beats_per_bar` is gone.
+- **Files**: MIDI export writes every signature (non-power-of-two bottoms
+  as the nearest the format can say); MIDI import reads them (taken into an
+  empty song, said otherwise); vocal files keep the written signature (a
+  6/8 file was announced as 12/8). New clips and takes are whole bars.
+- Tests: `fontelle-types/tests/meter.rs`, `fontelle-engine/tests/
+  meter_clock*.rs`, `fontelle-ui/tests/meter_view.rs`, `fontelle-app/tests/
+  meter_window.rs`, `click.rs`, `importing.rs`, `midi_export.rs`.
+- **Not done**: a MIDI file cannot say a bottom that is not a power of two,
+  so 4/3 exports as 4/4 with every note in place.
+
 **2026-10-19 — who may come into a shared song, on `main`, not
 released.** Ty: *"removing someone shouldnt block them from the session,
 that should be something totally different … maybe making password only
