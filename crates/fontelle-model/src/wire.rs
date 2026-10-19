@@ -499,7 +499,10 @@ pub(crate) mod nested {
 /// (§8.3); this is what still tells two test builds of one version apart.
 ///
 /// 2: solo is no longer written (each studio's own).
-pub const PROTOCOL: u32 = 2;
+/// 3: any time signature (a song's own bottom and groupings, written when
+/// not plain quarters), changes moved as one edit, and the proven, sealed
+/// join (challenge, answer, waiting).
+pub const PROTOCOL: u32 = 3;
 
 /// What a shared song says about itself when somebody joins it — enough for
 /// the joiner to find its own copy and say which is newer (§4.3).

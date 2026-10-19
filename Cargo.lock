@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-analysis"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "audioadapter-buffers",
  "criterion",
@@ -1336,7 +1336,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-app"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "dbus",
  "encoding_rs",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-asio-host"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-audio-ipc",
  "windows-sys 0.61.2",
@@ -1385,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-assets"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-core",
  "fontelle-dsp",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-audio-ipc"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -1411,11 +1411,11 @@ dependencies = [
 
 [[package]]
 name = "fontelle-bridge-abi"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 
 [[package]]
 name = "fontelle-core"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "criterion",
  "fontelle-dsp",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-diffsinger"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-lang",
  "fontelle-sing",
@@ -1440,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-dsp"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-engine"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "alsa",
  "audio_thread_priority",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-fx"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "criterion",
  "fontelle-dsp",
@@ -1483,7 +1483,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-host"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "clack-extensions",
  "clack-host",
@@ -1512,14 +1512,14 @@ dependencies = [
 
 [[package]]
 name = "fontelle-lang"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "sha2",
 ]
 
 [[package]]
 name = "fontelle-midi"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-types",
  "midir",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-model"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-sing",
  "fontelle-types",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-net"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "postcard",
  "quinn",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-plugin"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "baseview",
  "fontelle-core",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-sequencer"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-model",
  "fontelle-types",
@@ -1581,7 +1581,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-sing"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1589,25 +1589,25 @@ dependencies = [
 
 [[package]]
 name = "fontelle-singer-abi"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 
 [[package]]
 name = "fontelle-testbridge"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-bridge-abi",
 ]
 
 [[package]]
 name = "fontelle-testlv2"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "lv2_raw 0.3.2",
 ]
 
 [[package]]
 name = "fontelle-testplug"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "clack-extensions",
  "clack-plugin",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-testsinger"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-sing",
  "fontelle-singer-abi",
@@ -1626,14 +1626,14 @@ dependencies = [
 
 [[package]]
 name = "fontelle-testvst3"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "vst3",
 ]
 
 [[package]]
 name = "fontelle-types"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-ui"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "base64 0.22.1",
  "baseview",
@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-utau"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-vocal"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "encoding_rs",
  "fontelle-diffsinger",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "fontelle-vocal-files"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "encoding_rs",
  "fontelle-model",
@@ -6364,7 +6364,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.29.0-alpha.1"
+version = "0.29.0-alpha.2"
 dependencies = [
  "fontelle-core",
  "fontelle-types",

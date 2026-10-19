@@ -1,4 +1,4 @@
-protocol 2
+protocol 3
 Compressor
 Drum
 Envelope
