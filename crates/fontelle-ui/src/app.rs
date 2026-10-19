@@ -6585,7 +6585,23 @@ impl WindowApp {
             EditorKind::Effect if self.tune.is_some() => self.press_tune_editor(button, x, y),
             EditorKind::Effect if self.eq.is_none() => self.press_insert_panel(button, x, y),
             EditorKind::Effect => self.press_effect_editor(button, x, y),
-            EditorKind::AudioClip => self.press_audio_editor(button, x, y),
+            EditorKind::AudioClip => {
+                // The header's *Analyze Musically*, on the clip open here.
+                let header = self
+                    .editors
+                    .iter()
+                    .find(|e| e.kind == EditorKind::AudioClip)
+                    .map(|e| e.panel.header)
+                    .unwrap_or(crate::layout::Rect::ZERO);
+                if button == MouseButton::Left
+                    && crate::canvas::audio_analyze_button(header).contains(x, y)
+                    && let Some(id) = self.audio_clip.as_ref().map(|open| open.id)
+                {
+                    self.analyze_musically(id);
+                    return;
+                }
+                self.press_audio_editor(button, x, y)
+            }
             EditorKind::Analyze => self.press_analyze(button, x, y),
         }
     }
@@ -8385,6 +8401,13 @@ impl WindowApp {
             for caption in captions {
                 want(&mut self.labels, &mut self.text, &caption);
             }
+        }
+        if self.audio_clip.is_some() {
+            want(
+                &mut self.labels,
+                &mut self.text,
+                crate::canvas::ANALYZE_CLIP,
+            );
         }
         if let Some(open) = &self.audio_clip {
             // Cloned out first: `want` borrows `self.labels` and `self.text`

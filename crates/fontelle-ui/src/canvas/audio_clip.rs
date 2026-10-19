@@ -973,3 +973,22 @@ pub fn copy_audio_field(field: AudioField, from: &AudioClipData, to: &mut AudioC
         AudioField::Drive => to.filter.drive = from.filter.drive,
     }
 }
+
+/// The header's button: *Analyze Musically* on the clip the window has open.
+pub const ANALYZE_CLIP: &str = "Analyze Musically";
+
+/// Where [`ANALYZE_CLIP`] sits: at the header's right end, clear of the
+/// clip's name on the left. Empty on a window too narrow for both.
+pub fn audio_analyze_button(header: Rect) -> Rect {
+    const WIDTH: f32 = 140.0;
+    if header.width < WIDTH * 2.0 {
+        return Rect::ZERO;
+    }
+    let height = (header.height * 0.75).round();
+    Rect::new(
+        header.right() - WIDTH - 6.0,
+        header.y + (header.height - height) / 2.0,
+        WIDTH,
+        height,
+    )
+}

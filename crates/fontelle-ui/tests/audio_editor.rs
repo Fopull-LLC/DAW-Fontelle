@@ -953,3 +953,21 @@ mod several {
         assert_eq!(short.fade_out.frames, short.source_frames());
     }
 }
+
+/// *Analyze Musically*, in the window's header beside the clip's name: the
+/// clip is already open there, and the arrangement's right-click is the one
+/// other way to it.
+#[test]
+fn the_header_offers_analyze_musically() {
+    let header = fontelle_ui::layout::Rect::new(0.0, 0.0, 420.0, 28.0);
+    let button = fontelle_ui::canvas::audio_analyze_button(header);
+    assert!(!button.is_empty());
+    assert!(button.intersection(&header) == button, "outside the header");
+    assert!(
+        button.x > header.x + header.width / 2.0,
+        "not at the right end"
+    );
+    // Too narrow a window keeps the name and drops the button.
+    let narrow = fontelle_ui::layout::Rect::new(0.0, 0.0, 120.0, 28.0);
+    assert!(fontelle_ui::canvas::audio_analyze_button(narrow).is_empty());
+}

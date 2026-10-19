@@ -43,6 +43,7 @@ mod vocal_pitch;
 mod voicebank_page;
 mod welcome;
 
+pub use audio_clip::{ANALYZE_CLIP, audio_analyze_button};
 pub use audio_clip::{
     AUDIO_ROWS, AudioControl, AudioEditorLayout, AudioField, MASTER_ROUTE, MAX_CLIP_PITCH,
     MIN_CLIP_PITCH, audio_editor_hit, audio_editor_layout, audio_knob_rect, audio_row_choices,

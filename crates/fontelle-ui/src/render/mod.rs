@@ -3195,7 +3195,20 @@ pub fn draw_editor_window(
         EditorWindowChrome::Tune(tune) => draw_tune(scene, theme, labels, tune),
         EditorWindowChrome::Effect(effect) => draw_effect(scene, theme, labels, effect),
         EditorWindowChrome::Insert(insert) => draw_instrument(scene, theme, labels, insert),
-        EditorWindowChrome::AudioClip(clip) => draw_audio_editor(scene, theme, labels, clip),
+        EditorWindowChrome::AudioClip(clip) => {
+            draw_audio_editor(scene, theme, labels, clip);
+            let button = crate::canvas::audio_analyze_button(layout.header);
+            if !button.is_empty() {
+                draw_welcome_button(
+                    scene,
+                    theme,
+                    labels,
+                    crate::canvas::ANALYZE_CLIP,
+                    button,
+                    false,
+                );
+            }
+        }
         EditorWindowChrome::Notepad(notepad) => draw_notepad(scene, theme, labels, notepad),
         EditorWindowChrome::DisgustingBeat(disgusting_beat) => {
             draw_disgusting_beat(scene, theme, labels, disgusting_beat)
