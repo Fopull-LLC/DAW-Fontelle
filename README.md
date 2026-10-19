@@ -209,7 +209,10 @@ they stay under that licence, with that credit.
 
 The factory kits' recordings (`assets/flopsynth/samples/kit/`) are Fontelle's
 own drum machine, cut hit by hit; `assets/flopsynth/samples/kit/README.md` says
-how.
+how. Every sound Fontelle ships is listed, with its licence's text, in
+[`licenses/SOUNDS.md`](licenses/SOUNDS.md); a sound under a licence that does
+not allow redistribution (non-commercial, no-derivatives, personal-use-only)
+is refused by the build.
 
 The note detection model (`crates/fontelle-analysis/models/`) is Spotify's
 [basic-pitch](https://github.com/spotify/basic-pitch), Apache-2.0, Copyright

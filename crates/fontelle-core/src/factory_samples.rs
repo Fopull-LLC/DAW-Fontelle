@@ -28,6 +28,10 @@
 //! (`fontelle-app/examples/kit_samples.rs`) — one recording per key, each
 //! named as the roll names it, so a preset can be a kit and a zone lock
 //! can make one hit an instrument.
+//!
+//! A new set needs an entry in [`crate::bundled_sounds`] before it
+//! compiles (`FactorySampleSet::bundled` is an exhaustive match): whose it
+//! is, and a licence that lets us ship it.
 
 use std::sync::{Arc, OnceLock};
 

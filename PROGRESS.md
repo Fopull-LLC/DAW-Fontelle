@@ -19,6 +19,27 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — the SoundFont suite designed, and the licence rule for
+shipped sounds built (hub card 0430), on `main`, not released.**
+
+- **Design, nothing built**: `docs/soundfont-suite.md` — envelope trims
+  that shorten as well as lengthen (scale the voice's own envelope, the way
+  `note_release_scale` already does; a new optional `Note` field because
+  `release: 0` must keep meaning "the font's own"), a SoundFont maker with
+  a v1/not-v1 table (`.sf2` export first, `.sf3` export Ty's call), and an
+  in-app library that downloads from the author's URL after showing the
+  licence. Ty decides; then a card per piece (the doc's §5).
+- **Built** (`fontelle_core::bundled_sounds`, `licenses/SOUNDS.md`):
+  `SoundLicence` is the permitted list (MIT, CC0, CC BY 3.0/4.0, public
+  domain, Apache-2.0, GeneralUser GS's own, ours) with no variant for a
+  refused one; `SoundLicence::judge` reads a licence as written and says
+  why NC/ND/SA/GPL/personal-use are refused; every entry `include_str!`s
+  its text; `FactorySampleSet::bundled` is exhaustive. The Salamander
+  grand's CC BY 3.0 text is now in `licenses/sounds/` (no archive carried
+  it before). Tests: `fontelle-core/tests/bundled_sounds.rs` — fails CI on
+  any `.sf2/.sf3/.sfz/.sfark/.dls` in the tree or recording under `assets/`
+  with no entry.
+
 **2026-10-19 — any time signature, moveable, followed everywhere;
 0.29.0-beta.1, `PROTOCOL` 3, released as a beta on Ty's word.** Ty: *"the metronome
 absolutely needs to match the correct signature you are in, they
