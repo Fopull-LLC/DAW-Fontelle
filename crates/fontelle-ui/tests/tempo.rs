@@ -366,3 +366,22 @@ fn the_read_out_counts_by_the_meter() {
     assert_eq!(format_bars_beats(4.5, &meter), "2.2.000");
     assert_eq!(format_bars_beats(4.0 + 3.5, &meter), "3.1.000");
 }
+
+/// The signature box is as wide as what it says: "3+2+2/8" is not cut to
+/// "3+2+2/", and the boxes after it move along to make room.
+#[test]
+fn the_signature_box_widens_for_a_long_signature() {
+    use fontelle_ui::transport::transport_bar_layout_with;
+    let bar = Rect::new(0.0, 0.0, 1400.0, 40.0);
+    let metrics = Theme::dark_default().metrics;
+    let plain = transport_bar_layout(bar, &metrics);
+    let wide = transport_bar_layout_with(bar, &metrics, plain.signature.width + 40.0);
+    assert!((wide.signature.width - (plain.signature.width + 40.0)).abs() < 0.5);
+    assert!(
+        wide.mode.x >= plain.mode.x + 39.5,
+        "the next box moves along"
+    );
+    // Never narrower than it always was.
+    let narrow = transport_bar_layout_with(bar, &metrics, 5.0);
+    assert_eq!(narrow.signature.width, plain.signature.width);
+}

@@ -223,6 +223,18 @@ const METER_WIDTH: f32 = 96.0;
 const MIN_RULER_WIDTH: f32 = 80.0;
 
 pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout {
+    transport_bar_layout_with(bar, metrics, SIGNATURE_WIDTH)
+}
+
+/// [`transport_bar_layout`] with the signature box `signature_width` wide —
+/// as wide as what it says, so "3+2+2/8" is not cut short — and never
+/// narrower than it always was.
+pub fn transport_bar_layout_with(
+    bar: Rect,
+    metrics: &Metrics,
+    signature_width: f32,
+) -> TransportBarLayout {
+    let signature_width = signature_width.max(SIGNATURE_WIDTH);
     let pad = metrics.panel_padding;
     let gap = pad * 0.5;
     let inner = bar.inset(gap);
@@ -275,7 +287,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
     let boxes: [f32; 5] = [
         READOUT_WIDTH,
         TEMPO_WIDTH,
-        SIGNATURE_WIDTH,
+        signature_width,
         MODE_WIDTH,
         button,
     ];
@@ -303,7 +315,7 @@ pub fn transport_bar_layout(bar: Rect, metrics: &Metrics) -> TransportBarLayout 
         Rect::ZERO
     };
     let signature = if shown > 2 {
-        take(&mut x, SIGNATURE_WIDTH)
+        take(&mut x, signature_width)
     } else {
         Rect::ZERO
     };

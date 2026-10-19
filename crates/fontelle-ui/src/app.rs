@@ -3313,7 +3313,7 @@ impl WindowApp {
             &self.options.theme.metrics,
             &self.docks(),
         );
-        self.bar = transport_bar_layout(self.layout.transport, &self.options.theme.metrics);
+        self.bar = self.transport_bar();
         self.relayout_panels();
         self.tree.insert(TRANSPORT, self.layout.transport);
         self.tree.insert(PANEL, self.layout.panel.frame);
@@ -8586,6 +8586,12 @@ impl WindowApp {
         if self.shaped_signature != showing {
             self.signature_text = self.text.layout(&showing, &font, None);
             self.shaped_signature = showing;
+            // As wide as what it now says.
+            let bar = self.transport_bar();
+            if bar != self.bar {
+                self.bar = bar;
+                self.tree.invalidate(TRANSPORT);
+            }
         }
         // And each change's flag says what it changes to.
         for change in self.meter.changes() {
@@ -10941,6 +10947,17 @@ impl WindowApp {
         self.refresh_studio();
         self.refresh_title();
         self.tree.invalidate(PANEL);
+    }
+
+    /// The transport bar's layout, its signature box as wide as the
+    /// signature it shows.
+    fn transport_bar(&self) -> crate::transport::TransportBarLayout {
+        let pad = self.options.theme.metrics.panel_padding;
+        crate::transport::transport_bar_layout_with(
+            self.layout.transport,
+            &self.options.theme.metrics,
+            self.signature_text.width + 2.0 * pad + 8.0,
+        )
     }
 
     /// Wears the host's theme when it has changed — chosen, imported or
