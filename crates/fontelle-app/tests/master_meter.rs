@@ -136,6 +136,11 @@ fn the_meter_the_bar_reads_survives_a_graph_rebuild() {
     for block in 0..4 {
         let range = block * BLOCK_SIZE as i64..(block + 1) * BLOCK_SIZE as i64;
         let events = empty.events_for_block(&mut cursor, range.clone());
+        // The transport hands the click its beats: the downbeat, in the first.
+        let mut transport = transport;
+        if block == 0 {
+            transport.clicks.push(0, fontelle_types::Accent::Bar);
+        }
         graph.process_block(events, transport, range);
     }
 

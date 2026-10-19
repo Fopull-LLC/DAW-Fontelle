@@ -501,8 +501,7 @@ impl Default for TransportSnapshot {
     ///
     /// It exists so that the places that build one by hand — most of them
     /// tests — can name the two or three fields they care about and let the
-    /// musical ones be musical. `beats_per_bar` of zero is a division by zero
-    /// on the audio thread.
+    /// musical ones be musical: 4/4, with nothing to click.
     fn default() -> Self {
         Self {
             state: TransportState::Stopped,

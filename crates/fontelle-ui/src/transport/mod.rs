@@ -384,7 +384,7 @@ impl TransportHit {
             Self::ToggleRecord => "Arm recording: play, and keep the take",
             Self::ToggleMetronome => "The click, on every beat",
             Self::Tempo => "Tempo \u{2014} drag, or click and type",
-            Self::Signature => "Beats in a bar \u{2014} click to choose",
+            Self::Signature => "Time signature \u{2014} any you like; a change chosen on the ruler",
             Self::Mode => "Song plays the arrangement; Clip plays only the clip you are editing",
             Self::Help => "Every keyboard shortcut",
             Self::Share => "Work on this song with someone \u{2014} share it, or join theirs",

@@ -321,8 +321,8 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beat_groups: Vec<u32>,
     /// Where the time signature changes (Ty, 2026-10-18): each holds from its
-    /// bar until the next; [`beats_per_bar`](Self::beats_per_bar) is the
-    /// song's own, from bar 1. Kept in bar order, one a bar
+    /// bar until the next; [`signature`](Self::signature) is the song's own,
+    /// from bar 1. Kept in bar order, one a bar
     /// ([`SetMeterChange`](crate::SetMeterChange)). Written only when there
     /// are some, so a song without saves exactly as it did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
