@@ -29,8 +29,8 @@ pub use lfo::{LfoLive, LfoState, free_phase};
 pub use mod_matrix::{Curve, ModDest, ModMatrix, ModRoute, ModSource};
 pub use patch::{
     FILTER_FM_OCTAVES, FilterSlot, Layer, Lfo, LfoMode, MACRO_COUNT, MAX_PATCH_FX, Macro, Patch,
-    PatchFx, SILENT_DB, SampleZone, Source, UserSample, UserWavetable, ZoneAudio, ZoneId, key_ranges,
-    note_name,
+    PatchFx, SILENT_DB, SampleZone, Source, UserSample, UserWavetable, ZoneAudio, ZoneId,
+    key_ranges, note_name,
 };
 pub use patch_format::{
     LoadedPatch, PATCH_FORMAT_VERSION, PatchFormatError, UnresolvedSample, referenced_samples,
