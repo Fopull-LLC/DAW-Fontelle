@@ -20,7 +20,7 @@ codebase that cost real time to rediscover.
 ## Where things stand (maintained; the entries below are history)
 
 **2026-10-19 — the Grand Piano is the Salamander C5 in stereo, and
-nothing clicks; on `main`, not released.** Ty: *"the default piano is also
+nothing clicks; released in 0.29.0.** Ty: *"the default piano is also
 extremely clicky sounding and not very realistic ... make the default grand
 piano preset for flopsynth just sound a lot more natural and professional and
 clean like a real grand piano."*
@@ -152,7 +152,7 @@ shipped sounds built (hub card 0430), on `main`, not released.**
   with no entry.
 
 **2026-10-19 — any time signature, moveable, followed everywhere;
-0.29.0-beta.1, `PROTOCOL` 3, released as a beta on Ty's word.** Ty: *"the metronome
+released as 0.29.0 (stable) on Ty's word, 2026-10-20; `PROTOCOL` 3.** Ty: *"the metronome
 absolutely needs to match the correct signature you are in, they
 absolutely need to be moveable, and signatures NEED to be flexible enough
 … so youre not just locked to x/4."*
