@@ -40,6 +40,7 @@ fn note(start: i64, length: i64, key: u8, velocity: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

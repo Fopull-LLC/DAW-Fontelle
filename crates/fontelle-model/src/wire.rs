@@ -243,6 +243,8 @@ edits!(
     // The next update: where the time signature changes.
     SetMeterChange,
     MoveMeterChange,
+    // The roll-tools round (`docs/roll-tools-plan.md` §4.3): a note muted.
+    SetNoteMuted,
 );
 
 /// What an edit changes in the running studio, and so what the studio has to
@@ -301,6 +303,7 @@ impl Edit {
             | Edit::SetNotePropertyEach(_)
             | Edit::SetNoteLengths(_)
             | Edit::SetNoteKeys(_)
+            | Edit::SetNoteMuted(_)
             | Edit::SetNotePath(_)
             | Edit::SetKey(_)
             | Edit::SetMeterChange(_)

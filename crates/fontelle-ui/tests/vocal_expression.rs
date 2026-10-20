@@ -65,6 +65,7 @@ fn note(start: i64, key: u8) -> Note {
         channel: None,
         lyric: "ka".into(),
         voice: None,
+        muted: false,
     }
 }
 

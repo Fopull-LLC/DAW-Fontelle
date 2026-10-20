@@ -34,6 +34,7 @@ fn a_note(start: i64, key: u8, lyric: &str) -> Note {
         channel: None,
         lyric: lyric.to_string(),
         voice: None,
+        muted: false,
     }
 }
 

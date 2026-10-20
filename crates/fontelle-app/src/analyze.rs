@@ -658,6 +658,7 @@ pub(crate) fn notes_for_roll(
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             };
             if keep_bends {
                 note.fine_pitch = n.cents.round().clamp(-1200.0, 1200.0) as i16;

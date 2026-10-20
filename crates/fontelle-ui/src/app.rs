@@ -46,10 +46,7 @@ use crate::canvas::{
     timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
     timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
-use crate::canvas::{
-    ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout, tools_dialog_hit,
-    tools_dialog_layout,
-};
+use crate::canvas::{ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout};
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
 use crate::layout::{
     DEFAULT_TIMELINE_HEIGHT, Docks, EditorKind, EditorTab, EditorTabs, PanelLayout, WindowLayout,
@@ -72,6 +69,7 @@ use crate::transport::{
 use crate::widget::{Sleep, WidgetId, WidgetTree, autosave_due, sleep_budget};
 
 mod analyze;
+mod roll_tools;
 pub mod theme_editor;
 mod vocal;
 mod vocal_files;
@@ -118,6 +116,20 @@ enum Drag {
     },
     /// Selecting text in the notepad's page by dragging across it.
     NotepadSelect,
+    /// A tool dialog held by its title: `dx, dy` is where in it the pointer
+    /// took hold.
+    ToolTitle {
+        dx: i32,
+        dy: i32,
+    },
+    /// A press on a tool dialog's value: a click steps it when the button
+    /// comes up, a drag across it scrubs it a step per few pixels.
+    ToolValue {
+        row: crate::canvas::ToolRow,
+        from: i32,
+        applied: i32,
+        moved: bool,
+    },
     /// Selecting in whatever one-line field has the keyboard, by dragging
     /// across it (`WindowApp::press_field`).
     FieldSelect,
@@ -1563,11 +1575,17 @@ pub struct WindowApp {
     /// to put the same one straight back. Cleared on release, so the press
     /// after it opens normally.
     dismissed: Option<MenuTarget>,
-    /// What the Tools panel is set to — the transpose distance, the property
-    /// the offset acts on, the randomizer's strength. Window state, not the
-    /// document's: which property you last adjusted is no more part of a song
-    /// than which tool is selected is.
+    /// What the roll's tools are set to. Window state, not the document's —
+    /// kept in the user's settings (`DocumentHost::roll_tool_settings`), read
+    /// at start and written when a dialog closes or applies.
     tools: Tools,
+    /// Where the tool dialog was dragged to, from the roll panel's corner —
+    /// it opens there again (`docs/roll-tools-plan.md` §3.4).
+    tools_at: Option<(f32, f32)>,
+    /// The last tool applied, for Ctrl+Shift+T.
+    last_tool: Option<ToolKind>,
+    /// The tool dialog's row under the pointer, for its tip.
+    hover_tool: Option<crate::canvas::ToolRow>,
     /// The Import tab's rows, re-read when the studio's revision moves.
     imports: Vec<crate::document::LibraryEntry>,
     /// Which kind of file the Import tab is showing. Mirrored from the host
@@ -2632,7 +2650,15 @@ impl WindowApp {
             dismissed: None,
             plugin_editor_open: false,
             session_open: false,
-            tools: Tools::default(),
+            tools: options
+                .document
+                .as_ref()
+                .and_then(|doc| doc.roll_tool_settings())
+                .and_then(|json| Tools::from_json(&json))
+                .unwrap_or_default(),
+            tools_at: None,
+            last_tool: None,
+            hover_tool: None,
             imports: Vec::new(),
             import_kind: fontelle_types::FolderKind::Midi,
             audio_clip: None,
@@ -4469,7 +4495,8 @@ impl WindowApp {
         }
         match self.drag {
             Drag::None => None,
-            Drag::Vocal => Some(Pointer::Grabbing),
+            Drag::Vocal | Drag::ToolTitle { .. } => Some(Pointer::Grabbing),
+            Drag::ToolValue { .. } => Some(Pointer::ResizeX),
             // A fade keeps the cursor it was taken hold of with: the handle
             // is dragged along, the node up and down, and the pointer's
             // travel over the body must not turn either into a hand.
@@ -4741,6 +4768,7 @@ impl WindowApp {
     /// changed.
     fn update_hover(&mut self) {
         self.hover_chord_strip();
+        self.hover_tool = self.tool_row_at(self.cursor.0, self.cursor.1);
         // A candidate scale previewed follows the pointer down the list.
         if matches!(self.menu, Some((MenuTarget::FindScale, _))) {
             self.tree.invalidate(PANEL);
@@ -4947,6 +4975,19 @@ impl WindowApp {
         // (F64, seen on `:99`).
         if self.share_open || self.session_question.is_some() {
             return None;
+        }
+        // An open tool dialog's rows explain themselves; the rest of it, and
+        // the chip that opened it, say nothing — that chip's tip was drawn
+        // across the dialog's own title (seen on `:99`, 2026-10-20).
+        if let Some(panel) = &self.tools_panel {
+            if let Some(row) = self.hover_tool {
+                return Some(self.tools.tip(row).to_string());
+            }
+            if panel.frame.contains(self.cursor.0, self.cursor.1)
+                || self.hover_control == Some(RollControl::Tools)
+            {
+                return None;
+            }
         }
         // The bar is above the panels, and the tabs above the panel they head,
         // so the order here is the order `press` reads them in.
@@ -7874,6 +7915,7 @@ impl WindowApp {
         };
         self.status = doc.take_message().unwrap_or(fallback);
         self.settings_status = doc.settings_status();
+        self.refresh_tool_dialog();
 
         // An editor whose subject has gone — the insert was deleted — closes
         // rather than showing whatever is at that index now. The window *is*
@@ -8717,7 +8759,8 @@ impl WindowApp {
                 .flat_map(|(row, _)| [self.tools.label(*row), self.tools.value(*row)])
                 .filter(|caption| !caption.is_empty())
                 .collect();
-            captions.push(panel.kind.title().to_string());
+            captions.push(panel.title_text.clone());
+            captions.extend(["\u{2039}".to_string(), "\u{203a}".to_string()]);
             for caption in captions {
                 want(&mut self.labels, &mut self.text, &caption);
             }
@@ -9379,6 +9422,9 @@ impl WindowApp {
     /// The button came up over the studio's own window.
     fn studio_released(&mut self) {
         if self.release_theme_editor() {
+            return;
+        }
+        if self.release_tool_drag() {
             return;
         }
         if let Drag::MeterFlag { from, to, was } = self.drag {
@@ -10491,6 +10537,7 @@ impl WindowApp {
             Drag::LaneGrip => self.drag_lane_grip(y),
             Drag::NotepadSelect => self.drag_notepad_select(x, y),
             Drag::FieldSelect => self.drag_field_select(x),
+            Drag::ToolTitle { .. } | Drag::ToolValue { .. } => self.drag_tool(),
             Drag::RollRuler => self.mark_at_roll(x),
             Drag::BarRuler => self.mark_on_bar(x),
             Drag::Keys => self.audition_at(y),
@@ -20314,13 +20361,19 @@ impl WindowApp {
             MenuTarget::RollTools => crate::canvas::TOOL_MENU
                 .iter()
                 .enumerate()
-                .map(|(index, item)| {
-                    let entry = MenuEntry::new(item.label_in(&self.keymap));
-                    if index == crate::canvas::ToolKind::ALL.len() {
-                        entry.after_rule()
-                    } else {
-                        entry
+                .map(|(index, item)| match item {
+                    // A group's name: greyed, so it reads as a heading and
+                    // a press on it does nothing, with a rule above all but
+                    // the first.
+                    crate::canvas::ToolMenuItem::Heading(name) => {
+                        let heading = MenuEntry::disabled(*name);
+                        if index == 0 {
+                            heading
+                        } else {
+                            heading.after_rule()
+                        }
                     }
+                    item => MenuEntry::new(item.label_in(&self.keymap)),
                 })
                 .collect(),
             // A point's shapes, then its removal. The shape it has is greyed,
@@ -22277,7 +22330,7 @@ impl WindowApp {
                     let action = *action;
                     self.run_tool(action);
                 }
-                None => {}
+                Some(crate::canvas::ToolMenuItem::Heading(_)) | None => {}
             },
             (MenuTarget::RecordMode, index) if index == crate::transport::RecordMode::ALL.len() => {
                 self.record_into_analysis();
@@ -23265,7 +23318,7 @@ impl WindowApp {
                 "No {} folder yet \u{2014} choose one here, and it will be remembered",
                 kind.tab_label()
             );
-            self.tools_panel = None;
+            self.close_tool_dialog();
             self.open_settings_page_at("Import from");
             return;
         }
@@ -23275,7 +23328,7 @@ impl WindowApp {
         }
         // The panel has done its job; leaving it up would cover the list it
         // just opened.
-        self.tools_panel = None;
+        self.close_tool_dialog();
         self.file_scroll = 0;
         self.preset_scroll = 0;
         // The lists are read on a revision change and the studio's has not
@@ -23309,9 +23362,7 @@ impl WindowApp {
     fn toggle_tools_panel(&mut self) {
         // A dialog already open is what the chip shuts, so the chip is still
         // the way out of whatever it let you in to.
-        if self.tools_panel.take().is_some() {
-            self.shape_labels();
-            self.tree.invalidate(PANEL);
+        if self.close_tool_dialog() {
             return;
         }
         let chip = self.tools_chip();
@@ -23321,157 +23372,6 @@ impl WindowApp {
             chip.bottom(),
             self.roll_layout.frame,
         );
-    }
-
-    /// Opens one tool's dialog under the chip.
-    fn open_tool_dialog(&mut self, kind: ToolKind) {
-        self.silence_tool_hearing();
-        self.sync_tool_grid();
-        self.tools_panel = Some(tools_dialog_layout(
-            kind,
-            self.tools_chip(),
-            self.roll_layout.frame,
-            &self.options.theme.metrics,
-        ));
-        self.shape_labels();
-        self.tree.invalidate(PANEL);
-    }
-
-    /// A press while a tool's dialog is open.
-    ///
-    /// **The dialog stays up** unless the press missed it, which is the
-    /// difference between this and a menu: a menu is a question you answer
-    /// once, and this is a bench you work at — set an amount, apply it, look
-    /// at the result, apply it again. A press that missed closes it, the way
-    /// clicking away from anything does.
-    fn press_tools_panel(&mut self, x: f32, y: f32) {
-        let Some(panel) = &self.tools_panel else {
-            return;
-        };
-        let Some(row) = tools_dialog_hit(panel, x, y) else {
-            if !panel.frame.contains(x, y) {
-                self.tools_panel = None;
-                self.silence_tool_hearing();
-                self.tree.invalidate(PANEL);
-            }
-            return;
-        };
-        self.sync_tool_grid();
-        match self.tools.action(row) {
-            Some(action) => self.run_tool(action),
-            // A value steps forward on a click and back on a Ctrl+click —
-            // the same pair of gestures the settings tab uses, and for the
-            // same reason: there is no text field in this window, and a value
-            // you can reach in a few clicks is quicker than one you type.
-            None => {
-                let delta = if self.modifiers.control_key() { -1 } else { 1 };
-                self.tools.nudge(row, delta);
-                // Heard again as it now is, if it was being heard: the
-                // point of hearing it is hearing what the press changed.
-                if self.tool_hearing.is_some() {
-                    self.hear_tool();
-                }
-            }
-        }
-        self.shape_labels();
-        self.tree.invalidate(PANEL);
-    }
-
-    /// Carries out one of the Tools panel's actions.
-    fn run_tool(&mut self, action: ToolAction) {
-        // The two importers are not edits: reading a file is the window's
-        // job, and what they do is send the browser to the right folder.
-        if matches!(action, ToolAction::ImportMidi | ToolAction::ImportScore) {
-            self.open_import_browser(action);
-            return;
-        }
-        // Saving the song out is a file operation like the importers, not an
-        // edit to the selection — so it does not go through the selection
-        // check below.
-        if matches!(action, ToolAction::ExportMidi) {
-            self.export_midi();
-            return;
-        }
-        if matches!(action, ToolAction::Hear) {
-            self.hear_tool();
-            return;
-        }
-        self.silence_tool_hearing();
-        let selection = self.roll.selection().to_vec();
-        if selection.is_empty() {
-            // Said out loud rather than silently doing nothing: a tool that
-            // appears to be broken is worse than one that says what it wants.
-            self.status = "Select some notes first \u{2014} the tools act on what you have chosen"
-                .to_string();
-            return;
-        }
-        let edits = match &self.options.document {
-            Some(doc) => {
-                // A looped clip's notes are one period, played again: the
-                // period is the end a last note reaches, or it would run on
-                // through every pass after it on the screen.
-                let period = self
-                    .clips
-                    .iter()
-                    .find(|clip| clip.open && clip.kind == crate::document::ClipKind::Notes)
-                    .and_then(|clip| clip.loop_length);
-                self.tools.clip_end = match (doc.clip_length(), period) {
-                    (Some(length), Some(period)) => Some(length.min(period)),
-                    (length, _) => length,
-                };
-                self.tools.run(action, &selection, doc.notes())
-            }
-            None => Vec::new(),
-        };
-        if edits.is_empty() {
-            return;
-        }
-        self.apply_roll_edits(edits);
-        // Each press is one edit and one undo entry, so the gesture ends
-        // here — a second press of Randomize must not merge into the first.
-        if let Some(doc) = &mut self.options.document {
-            doc.end_gesture();
-        }
-        self.status = match action {
-            ToolAction::Transpose => format!(
-                "Moved {} note(s) by {:+} semitone(s)",
-                selection.len(),
-                self.tools.semitones
-            ),
-            ToolAction::Add => format!(
-                "Added {} to the {} of {} note(s)",
-                self.tools.amount,
-                self.tools.property.label(),
-                selection.len()
-            ),
-            ToolAction::Subtract => format!(
-                "Took {} off the {} of {} note(s)",
-                self.tools.amount,
-                self.tools.property.label(),
-                selection.len()
-            ),
-            ToolAction::Randomize => format!(
-                "Randomised the {} of {} note(s)",
-                self.tools.property.label(),
-                selection.len()
-            ),
-            ToolAction::Arpeggiate => format!(
-                "Arpeggiated {} note(s) \u{2014} {} at {}",
-                selection.len(),
-                self.tools.arp.direction.label(),
-                self.tools.value(crate::canvas::ToolRow::ArpRate)
-            ),
-            ToolAction::Legato => format!("Joined up {} note(s)", selection.len()),
-            ToolAction::Quantize => format!(
-                "Quantized {} note(s) to {}",
-                selection.len(),
-                self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
-            ),
-            ToolAction::ImportMidi
-            | ToolAction::ImportScore
-            | ToolAction::ExportMidi
-            | ToolAction::Hear => String::new(),
-        };
     }
 
     /// Saves the whole song out as a `.mid`, and says where it went.
@@ -24132,155 +24032,6 @@ impl WindowApp {
             self.silence_chord();
         }
         self.step_tool_hearing();
-    }
-
-    /// Sounds and lets go of whatever the tool being heard has due now.
-    fn step_tool_hearing(&mut self) {
-        // However the dialog went — a press away, Escape, the menu again —
-        // what it was playing goes with it.
-        if self.tools_panel.is_none() {
-            self.silence_tool_hearing();
-            return;
-        }
-        let Some(hearing) = &mut self.tool_hearing else {
-            return;
-        };
-        let now = hearing.began.elapsed().as_secs_f64();
-        let mut ons = Vec::new();
-        let mut offs = Vec::new();
-        for (i, &(from, to, key, velocity, pan)) in hearing.notes.iter().enumerate() {
-            let due = now >= from && now < to;
-            if due && !hearing.on[i] {
-                hearing.on[i] = true;
-                ons.push((key, velocity, pan));
-            } else if !due && hearing.on[i] {
-                hearing.on[i] = false;
-                offs.push(key);
-            }
-        }
-        let over = hearing.notes.iter().all(|n| now >= n.1);
-        if let Some(doc) = &mut self.options.document {
-            // Offs first: a note struck again on its own key must not be
-            // let go of by the one before it.
-            for key in offs {
-                doc.audition_off(key);
-            }
-            for (key, velocity, pan) in ons {
-                doc.audition_on(key, velocity, pan);
-            }
-        }
-        if over {
-            self.tool_hearing = None;
-        }
-    }
-
-    /// Stops the tool being heard, letting go of every note it has on.
-    fn silence_tool_hearing(&mut self) {
-        let Some(hearing) = self.tool_hearing.take() else {
-            return;
-        };
-        if let Some(doc) = &mut self.options.document {
-            for (i, (_, _, key, _, _)) in hearing.notes.iter().enumerate() {
-                if hearing.on[i] {
-                    doc.audition_off(*key);
-                }
-            }
-        }
-    }
-
-    /// Plays the open dialog's result once — *Hear it* — from its first
-    /// note, at the song's tempo (Ty, 2026-10-20: *"make arpeggiator let
-    /// you preview changes"*).
-    fn hear_tool(&mut self) {
-        self.silence_tool_hearing();
-        self.silence_chord();
-        self.end_preview();
-        let notes = self.tool_preview();
-        let Some(first) = notes.iter().map(|n| n.start).min() else {
-            self.status = "Select some notes first \u{2014} the tools act on what you have chosen"
-                .to_string();
-            return;
-        };
-        let seconds_per_tick = 60.0 / self.tempo.max(1.0) / fontelle_types::PPQN as f64;
-        let notes: Vec<(f64, f64, u8, u8, i8)> = notes
-            .iter()
-            .map(|n| {
-                let from = (n.start - first) as f64 * seconds_per_tick;
-                // A hair short of the next step, so a legato run is heard
-                // as notes and not one smear.
-                let to = from + (n.length as f64 * seconds_per_tick - 0.005).max(0.02);
-                (from, to, n.key, n.velocity, n.pan)
-            })
-            .collect();
-        let on = vec![false; notes.len()];
-        self.tool_hearing = Some(ToolHearing {
-            notes,
-            began: std::time::Instant::now(),
-            on,
-        });
-        self.step_tool_hearing();
-    }
-
-    /// The open tool dialog's result, as notes: what the roll ghosts and
-    /// *Hear it* plays.
-    fn tool_preview(&self) -> Vec<fontelle_model::Note> {
-        let (Some(panel), Some(doc)) = (&self.tools_panel, &self.options.document) else {
-            return Vec::new();
-        };
-        self.tools
-            .preview(panel.kind, self.roll.selection(), doc.notes())
-    }
-
-    /// The roll's snap as a grid in ticks, for Quantize to follow.
-    fn sync_tool_grid(&mut self) {
-        let unit = self.roll.meter().unit_at(0, self.roll.view.snap);
-        self.tools.roll_grid = if unit > 0 {
-            unit
-        } else {
-            fontelle_types::PPQN / 4
-        };
-    }
-
-    /// Ctrl+Q: Quantize at its dialog's settings, on the selected notes —
-    /// or on every note of the clip when none are, which is what a quick
-    /// quantize of a part you have just played in wants.
-    fn quantize_now(&mut self) {
-        self.sync_tool_grid();
-        let Some(doc) = &self.options.document else {
-            return;
-        };
-        if self.roll_showing().is_none() {
-            self.status = "Open a clip in the piano roll to quantize its notes".to_string();
-            return;
-        }
-        let mut ids = self.roll.selection().to_vec();
-        if ids.is_empty() {
-            ids = doc.notes().keys().collect();
-        }
-        if ids.is_empty() {
-            self.status = "There are no notes here to quantize".to_string();
-            return;
-        }
-        let edits = self.tools.run(ToolAction::Quantize, &ids, doc.notes());
-        if edits.is_empty() {
-            self.status = format!(
-                "Already on the grid \u{2014} {} note(s) at {}",
-                ids.len(),
-                self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
-            );
-            return;
-        }
-        self.apply_roll_edits(edits);
-        if let Some(doc) = &mut self.options.document {
-            doc.end_gesture();
-        }
-        self.status = format!(
-            "Quantized {} note(s) to {}",
-            ids.len(),
-            self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
-        );
-        self.tree.invalidate(PANEL);
-        self.refresh_title();
     }
 
     /// F11: the studio window full screen on the monitor it is on, or back.
@@ -24986,6 +24737,12 @@ impl WindowApp {
             return;
         }
 
+        // A tool's dialog takes Enter (apply) and Escape (close) while it is
+        // open.
+        if self.tool_key(&event.logical_key) {
+            return;
+        }
+
         // Esc is not a binding: every prompt and page relies on it being
         // itself, so it is answered here and cannot be given away.
         if event.logical_key == Key::Named(NamedKey::Escape) {
@@ -25002,8 +24759,7 @@ impl WindowApp {
                 self.tree.invalidate_rect(menu.frame);
                 return;
             }
-            if self.tools_panel.take().is_some() {
-                self.tree.invalidate(PANEL);
+            if self.close_tool_dialog() {
                 return;
             }
             if self.lane_menu.take().is_some() {
@@ -25096,6 +24852,9 @@ impl WindowApp {
             Action::SplitAtMarker => self.split_at_marker(),
             // Mute what is selected on the arrangement. **Shifted** by
             // default, since Ctrl+M became the metronome — see `global_key`.
+            // In the roll it mutes the notes (`docs/roll-tools-plan.md`
+            // §4.3); on the arrangement, the clips.
+            Action::MuteClips if self.focus == Focus::Roll => self.run_tool(ToolAction::ToggleMute),
             Action::MuteClips => {
                 let edits = self.timeline.toggle_mute(&self.clips);
                 self.apply_arrange_edits(edits);
@@ -25193,6 +24952,19 @@ impl WindowApp {
             // The Tools panel. `T` for tools, and no FL binding to clash with
             // — FL has no equivalent panel.
             Action::ToolsPanel => self.toggle_tools_panel(),
+            // The roll's tools without their dialogs, and the keys that open
+            // one (`docs/roll-tools-plan.md` §5).
+            Action::Glue => self.run_tool(ToolAction::Glue),
+            Action::QuickChop => self.run_tool(ToolAction::QuickChop),
+            Action::QuantizeStarts => self.run_tool(ToolAction::QuantizeStarts),
+            Action::RepeatTool => self.repeat_tool(),
+            Action::OpenArpeggiate => self.open_tool_dialog(ToolKind::Arpeggiate),
+            Action::OpenChop => self.open_tool_dialog(ToolKind::Chop),
+            Action::OpenLengths => self.open_tool_dialog(ToolKind::Lengths),
+            Action::OpenFlip => self.open_tool_dialog(ToolKind::Flip),
+            Action::OpenFlam => self.open_tool_dialog(ToolKind::Flam),
+            Action::OpenThinOut => self.open_tool_dialog(ToolKind::ThinOut),
+            Action::OpenLevels => self.open_tool_dialog(ToolKind::Levels),
             // The cut tool. `C` is FL's, and `Ctrl+C` is copy — the modifier
             // is what keeps them apart, as it does for `B` (paint) and
             // `Ctrl+D` (duplicate).
@@ -26578,13 +26350,21 @@ impl WindowApp {
             outline_outside: self.scale_preview().and_then(|fit| fit.key.mask()),
             ..Default::default()
         };
-        // An open tool's result, ghosted where it would be written, and
-        // following every setting pressed (Ty, 2026-10-20: *"make
-        // arpeggiator let you preview changes"*).
-        if self.tools_panel.is_some() {
-            chords.ghosts = self
-                .tool_preview()
-                .into_iter()
+        // An open tool's answer: what it writes ghosted where it would go,
+        // and what it changes or removes dimmed, so before and after read at
+        // a glance (`docs/roll-tools-plan.md` §3.5) — following every setting
+        // pressed (Ty, 2026-10-20: *"make arpeggiator let you preview
+        // changes"*).
+        if let Some((_, result)) = self.tool_preview() {
+            chords.previews = result
+                .rewrite
+                .iter()
+                .map(|(_, n)| n.clone())
+                .chain(result.insert.iter().cloned())
+                .collect();
+            chords.ghosts = chords
+                .previews
+                .iter()
                 .map(|note| crate::document::GhostNote {
                     start: note.start,
                     length: note.length,
@@ -26592,6 +26372,7 @@ impl WindowApp {
                     color: [0; 4],
                 })
                 .collect();
+            chords.dimmed = result.touched();
         }
         let (Some(strip), Some(layout)) = (&self.chord_strip, self.chord_strip_layout()) else {
             return chords;

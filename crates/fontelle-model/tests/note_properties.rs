@@ -25,6 +25,7 @@ fn blank() -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

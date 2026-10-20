@@ -86,6 +86,7 @@ fn note(start_beats: f64, beats: f64, key: u8, lyric: &str) -> Note {
         channel: None,
         lyric: lyric.to_string(),
         voice: None,
+        muted: false,
     }
 }
 

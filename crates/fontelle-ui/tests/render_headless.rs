@@ -597,6 +597,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
@@ -914,14 +915,19 @@ fn shoot_roll_everything(
             .map(|(_, rect)| *rect)
             .unwrap_or(Rect::ZERO);
         fontelle_ui::canvas::tools_dialog_layout(
-            fontelle_ui::canvas::ToolKind::Adjust,
-            chip,
+            fontelle_ui::canvas::ToolKind::Levels,
+            &tools.rows(fontelle_ui::canvas::ToolKind::Levels),
+            "Levels \u{2014} whole clip (0)".to_string(),
+            (chip.x, chip.bottom()),
             roll_l.frame,
             &theme.metrics,
         )
     });
     if let Some(panel) = &tools_panel {
-        labels.ensure(panel.kind.title(), &theme.font, &mut text);
+        labels.ensure(&panel.title_text, &theme.font, &mut text);
+        for glyph in ["\u{2039}", "\u{203a}"] {
+            labels.ensure(glyph, &theme.font, &mut text);
+        }
         for (row, _) in &panel.rows {
             for caption in [tools.label(*row), tools.value(*row)] {
                 if !caption.is_empty() {
@@ -3275,9 +3281,12 @@ fn the_tools_panel_is_actually_painted_over_the_grid() {
         .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
         .map(|(_, rect)| *rect)
         .expect("the toolbar has a tools chip");
+    let tools = fontelle_ui::canvas::Tools::default();
     let panel = fontelle_ui::canvas::tools_dialog_layout(
-        fontelle_ui::canvas::ToolKind::Adjust,
-        chip,
+        fontelle_ui::canvas::ToolKind::Levels,
+        &tools.rows(fontelle_ui::canvas::ToolKind::Levels),
+        "Levels \u{2014} whole clip (0)".to_string(),
+        (chip.x, chip.bottom()),
         open.layout.frame,
         &theme.metrics,
     );
@@ -3329,9 +3338,12 @@ fn the_tools_panels_rows_have_words_on_them() {
         .find(|(control, _)| *control == fontelle_ui::canvas::RollControl::Tools)
         .map(|(_, rect)| *rect)
         .expect("the toolbar has a tools chip");
+    let tools = fontelle_ui::canvas::Tools::default();
     let panel = fontelle_ui::canvas::tools_dialog_layout(
-        fontelle_ui::canvas::ToolKind::Adjust,
-        chip,
+        fontelle_ui::canvas::ToolKind::Levels,
+        &tools.rows(fontelle_ui::canvas::ToolKind::Levels),
+        "Levels \u{2014} whole clip (0)".to_string(),
+        (chip.x, chip.bottom()),
         open.layout.frame,
         &theme.metrics,
     );
@@ -9442,6 +9454,8 @@ fn the_chord_strip_and_its_ghosts_are_drawn() {
     ROLL_CHORDS.with(|c| {
         *c.borrow_mut() = fontelle_ui::render::RollChords {
             outline_outside: None,
+            previews: Vec::new(),
+            dimmed: Vec::new(),
             flecks: Vec::new(),
             smart: true,
             locked: true,

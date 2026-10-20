@@ -85,6 +85,7 @@ fn drawing_a_note_puts_it_in_the_document_and_on_the_timeline() {
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             },
         });
         source.current().events.len()
@@ -125,6 +126,7 @@ fn undo_takes_the_note_back_off_the_timeline_too() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     let with_note = source.current().events.len();
@@ -165,6 +167,7 @@ fn redo_puts_it_back() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     let with_note = source.current().events.len();
@@ -267,6 +270,7 @@ fn a_fresh_session_is_clean_and_an_edit_makes_it_dirty() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     assert!(session.is_dirty(), "an edited project did not go dirty");
@@ -301,6 +305,7 @@ fn removing_a_note_takes_its_events_with_it() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     let before = source.current().events.len();

@@ -48,10 +48,10 @@ pub use commands::{
     SetAudioClips, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
     SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
     SetInsertParam, SetKey, SetLoopRange, SetMeterChange, SetMixerOrder, SetMixerTrackColor,
-    SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef, SetSendLevel,
-    SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart,
+    SetNoteKeys, SetNoteLengths, SetNoteMuted, SetNotePath, SetNoteProperty, SetNotePropertyEach,
+    SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef,
+    SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip,
+    SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
 pub use lane_routing::{
@@ -78,8 +78,14 @@ pub use study::{
     SetStudyOriginal, SetStudyRender, SetStudyTakes,
 };
 pub use tools::{
-    ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, QuantizeSpec,
-    RandomMode, RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, quantized, randomised,
+    ArpDirection, ArpSpec, CHORD_CATCH, ChopSpec, ChopVelocity, FlamPitch, FlamSpec, HumanizeSpec,
+    LengthsMode, LengthsSpec, LevelsMode, LevelsSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS,
+    MAX_CHOP_PATTERN, MAX_FLAM_COUNT, MAX_RANDOM_AMOUNT, QuantizeSpec, RandomMode, RandomSpec,
+    SelectHow, ShuffleHow, ShuffleSpec, ShuffleWhat, StrumDirection, StrumSpec, ThinSpec,
+    ToolResult, arpeggiated, chopped, chords_of, flammed, flipped_in_pitch, flipped_in_time, glued,
+    humanized, legato_lengths, legato_lengths_to, lengthened, levelled, made_mono, quantized,
+    randomised, selected_where, shuffled, stretched, strummed, thinned, transposed,
+    trimmed_overlaps, without_doubles,
 };
 pub use vocal::{
     AutoGlide, AutoVibrato, BUILTIN_ENGINE_PREFIX, LaneCurve, LaneKey, LaneSpec, NoteVoice,

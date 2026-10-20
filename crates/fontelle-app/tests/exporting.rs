@@ -101,6 +101,7 @@ fn a_note(session: &mut Session) {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
 }

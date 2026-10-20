@@ -90,6 +90,7 @@ fn a_song_played_by_a_plugin(dir: &Path) -> Session {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     session

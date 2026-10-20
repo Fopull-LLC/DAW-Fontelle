@@ -97,6 +97,7 @@ fn draw(session: &mut Session, beat: i64, key: u8) -> NoteId {
             // a drawn note sings the language's syllable, not that.
             lyric: "hel-".into(),
             voice: None,
+            muted: false,
         },
     })[0]
 }

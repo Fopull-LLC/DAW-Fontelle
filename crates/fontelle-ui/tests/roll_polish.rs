@@ -64,6 +64,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
@@ -205,6 +206,7 @@ fn a_new_note_is_a_copy_of_the_template() {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     });
 
     let (x, y) = at(&roll.view, PPQN, 64);

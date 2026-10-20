@@ -905,6 +905,7 @@ fn a_reopened_song_sung_already_loads_no_singer_until_an_edit() {
                     channel: None,
                     lyric: "a".into(),
                     voice: None,
+                    muted: false,
                 },
             })[0],
         );

@@ -175,8 +175,6 @@ fn every_roll_toolbar_control_explains_itself() {
             Tool::Delete,
             Tool::Select,
             Tool::Slice,
-            Tool::Mute,
-            Tool::Slip,
         ]
         .into_iter()
         .map(RollControl::Tool),

@@ -97,6 +97,7 @@ pub fn replay_notes(
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             }
         })
         .collect()

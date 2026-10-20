@@ -199,6 +199,7 @@ fn draw(session: &mut Session, beat: i64, key: u8, lyric: &str) -> NoteId {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     })[0];
     session.set_lyrics(&[id], vec![lyric.into()]).unwrap();

@@ -670,3 +670,50 @@ fn a_menu_can_be_opened_scrolled_to_a_row() {
     menu.scroll_to(9999);
     assert_eq!(menu.scroll(), menu.max_scroll(), "a row that is not one");
 }
+
+/// A heading — a greyed row — never ends a column with what it heads at the
+/// top of the next: seen on `:99` in the roll's tools menu, where "Length"
+/// sat at the foot of one column and Legato at the head of the next.
+#[test]
+fn a_heading_is_never_parted_from_what_it_heads() {
+    let mut exercised = false;
+    for (height, group, groups) in (200..520)
+        .step_by(20)
+        .flat_map(|h| (2..9).flat_map(move |g| (3..8).map(move |n| (h, g, n))))
+    {
+        let bounds = Rect::new(0.0, 0.0, 1180.0, height as f32);
+        let mut entries = Vec::new();
+        for g in 0..groups {
+            entries.push(MenuEntry::disabled(format!("Group {g}")));
+            for i in 0..group {
+                entries.push(MenuEntry::new(format!("Item {g}.{i}")));
+            }
+        }
+        let count = entries.len();
+        let menu = context_menu_layout((10.0, 10.0), bounds, &metrics(), font_size(), entries);
+        if menu.columns() < 2 {
+            continue;
+        }
+        // Where a plain count-per-column split would have put each row: the
+        // case is real only if one heading would have ended a column.
+        let naive = count.div_ceil(menu.columns());
+        exercised |= (0..count - 1).any(|i| !menu.entries[i].enabled && i % naive == naive - 1);
+        for (index, row) in menu.rows.iter().enumerate() {
+            assert!(!row.is_empty(), "row {index} of {count} is not showing");
+            if index + 1 < count && !menu.entries[index].enabled {
+                let next = menu.rows[index + 1];
+                assert!(
+                    (next.x - row.x).abs() < 0.01,
+                    "groups of {group}: heading {index} ends a column"
+                );
+            }
+            if menu.entries[index].enabled {
+                assert_eq!(
+                    context_menu_hit(&menu, row.x + 4.0, row.y + 4.0),
+                    Some(index)
+                );
+            }
+        }
+    }
+    assert!(exercised, "no menu here would have parted a heading");
+}

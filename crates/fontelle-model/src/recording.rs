@@ -151,6 +151,7 @@ pub fn notes_from_looped_capture(
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
     }
 

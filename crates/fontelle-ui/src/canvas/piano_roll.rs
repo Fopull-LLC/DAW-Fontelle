@@ -1242,6 +1242,18 @@ pub enum RollEdit {
     },
     /// A phrase, pasted or duplicated, already positioned.
     Insert(Vec<Note>),
+    /// A roll tool's whole answer, as **one** entry in the history
+    /// (`docs/roll-tools-plan.md` §3.1): the notes it rewrites keep their
+    /// ids, the ones it removes go, the new ones arrive — and one undo takes
+    /// all of it back. The host answers with the new notes' ids.
+    ///
+    /// The arpeggiator used to answer with a `Remove` and an `Insert`, which
+    /// the history could not merge: one Ctrl+Z took the run away and left
+    /// the clip empty (seen on `:99`, 2026-10-20).
+    Apply {
+        label: String,
+        result: fontelle_model::ToolResult,
+    },
     Remove(Vec<NoteId>),
     /// Deltas, and **relative to the previous step of the same drag** — that is
     /// what `MoveNotes` takes and what lets `merge_with` coalesce a drag into
@@ -1461,8 +1473,6 @@ pub enum Tool {
     Delete,
     Select,
     Slice,
-    Mute,
-    Slip,
 }
 
 impl Tool {
@@ -1474,8 +1484,6 @@ impl Tool {
             Self::Delete => "Erase notes you press or sweep over",
             Self::Select => "Select notes; drag on empty grid to marquee",
             Self::Slice => "Cut notes in two where you drag across them",
-            Self::Mute => "Mute notes you press",
-            Self::Slip => "Slide a note's content without moving the note",
         }
     }
 
@@ -1487,8 +1495,6 @@ impl Tool {
             Self::Delete => "Del",
             Self::Select => "Sel",
             Self::Slice => "Slice",
-            Self::Mute => "Mute",
-            Self::Slip => "Slip",
         }
     }
 }
@@ -1579,10 +1585,6 @@ impl RollControl {
             // The cut tool: the scissors, which is the one picture nobody
             // has to be taught.
             Self::Tool(Tool::Slice) => Icon::Cut,
-            // Mute and Slip are on the tool list and not on the toolbar yet;
-            // when they get there they get a glyph, and until then they keep
-            // their caption rather than a wrong picture.
-            Self::Tool(Tool::Mute | Tool::Slip) => return None,
             Self::ZoomOutX => Icon::Minus,
             Self::ZoomInX => Icon::Plus,
             Self::ZoomOutY => Icon::ArrowDown,
@@ -1627,7 +1629,9 @@ impl RollControl {
             Self::Lane => "Which property the lane draws",
             Self::Ghost => "Show other instruments' notes behind these",
             Self::Keys => "The strip down the side: a keyboard, or a list of names",
-            Self::Tools => "Transpose, adjust, randomize \u{2014} and import a file",
+            Self::Tools => {
+                "Quantize, strum, chop, arpeggiate and more \u{2014} and MIDI files in and out"
+            }
             Self::Root => "The key's root note",
             Self::Scale => {
                 "The key's scale: dims the rows outside it and fits the notes to it \u{2014} Alt draws off it"
@@ -3586,6 +3590,7 @@ const BLANK_TEMPLATE: Note = Note {
     channel: None,
     lyric: String::new(),
     voice: None,
+    muted: false,
 };
 
 /// A pixel as a place in the music: a fractional tick and a fractional key,

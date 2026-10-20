@@ -23,11 +23,11 @@ use fontelle_model::{
     SetAudioClips, SetChannelKind, SetChannelPatch, SetChannelPlugin, SetChannelRoute, SetClipLoop,
     SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
     SetInsertParam, SetKey, SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor,
-    SetNoteKeys, SetNoteLengths, SetNotePath, SetNoteProperty, SetNotePropertyEach, SetNoteSlide,
-    SetNoteVelocity, SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef,
-    SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput, SetVocalLane,
-    SetVocalSettings, SetVocalState, SliceNotes, SplitClip, SwitchChannelAb, TrimClipStart,
-    VocalVoice, load_project, peek_meta, save_project,
+    SetNoteKeys, SetNoteLengths, SetNoteMuted, SetNotePath, SetNoteProperty, SetNotePropertyEach,
+    SetNoteSlide, SetNoteVelocity, SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput,
+    SetVocalLane, SetVocalSettings, SetVocalState, SliceNotes, SplitClip, SwitchChannelAb,
+    TrimClipStart, VocalVoice, load_project, peek_meta, save_project,
 };
 use fontelle_model::{FreezeVocal, ImportVocal, UnfreezeVocal, VocalClipImport, VocalLanding};
 use fontelle_types::{
@@ -68,6 +68,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
@@ -637,6 +638,7 @@ fn every_command() -> Vec<(&'static str, Make)> {
                             channel: None,
                             lyric: "la".into(),
                             voice: None,
+                            muted: false,
                         }],
                         vocal: None,
                     }],
@@ -774,6 +776,13 @@ fn every_command() -> Vec<(&'static str, Make)> {
                 s.notes_clip,
                 s.notes.clone(),
                 vec![61, 62, 63],
+            ))
+        }),
+        ("SetNoteMuted", |s| {
+            Box::new(SetNoteMuted::new(
+                s.notes_clip,
+                s.notes.clone(),
+                vec![true, false, true],
             ))
         }),
         ("SetNoteLengths", |s| {
@@ -1197,6 +1206,10 @@ fn wire_variant_order_is_pinned() {
         (
             r#"{"DeleteChannel":{"channel":{"idx":1,"version":1},"removed":null}}"#,
             "DeleteChannel",
+        ),
+        (
+            r#"{"SetNoteMuted":{"home":{"Clip":{"idx":1,"version":1}},"ids":[{"idx":1,"version":1}],"muted":[true],"previous":[],"label":"Mute a note"}}"#,
+            "SetNoteMuted",
         ),
     ];
     for (json, tag) in pinned {

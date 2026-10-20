@@ -87,6 +87,7 @@ impl PlacedNote {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         };
         note.pitch_at(at)
     }
@@ -452,7 +453,8 @@ fn placed_notes(project: &Project) -> Vec<PlacedNote> {
             let offset = clip.repeat_start(repeat);
             // A stable note order within a pass keeps the file byte-identical
             // run to run.
-            let mut notes: Vec<_> = note_data.notes.values().collect();
+            // A muted note is not played, so it is not exported either.
+            let mut notes: Vec<_> = note_data.notes.values().filter(|n| !n.muted).collect();
             notes.sort_by_key(|n| (n.start, n.key));
             for note in notes {
                 // A slide sounds no voice of its own — see the module docs.

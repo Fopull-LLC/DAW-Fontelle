@@ -30,6 +30,7 @@ fn note(beat: i64, lyric: &str) -> Note {
         channel: None,
         lyric: lyric.to_string(),
         voice: None,
+        muted: false,
     }
 }
 

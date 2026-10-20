@@ -369,13 +369,35 @@ pub enum Action {
     /// The roll's Quantize at its dialog's settings, on the selected notes
     /// or every note of the clip — FL's quick quantize (Ty, 2026-10-20).
     Quantize,
+    /// Touching notes on a key joined into one (FL's Glue).
+    Glue,
+    /// The notes chopped by the roll's snap (FL's Quick chop).
+    QuickChop,
+    /// Starts onto the snap at full strength, the ends left alone (FL's Shift+Q).
+    QuantizeStarts,
+    /// The last roll tool again, at its settings, on what is chosen now.
+    RepeatTool,
+    /// The Arpeggiate dialog (FL's Alt+A).
+    OpenArpeggiate,
+    /// The Chop dialog (FL's Alt+U).
+    OpenChop,
+    /// The Lengths dialog (FL's Articulate, Alt+L).
+    OpenLengths,
+    /// The Flip dialog (FL's Alt+Y).
+    OpenFlip,
+    /// The Flam dialog (FL's Alt+F).
+    OpenFlam,
+    /// The Thin out dialog (FL's Claw machine, Alt+W).
+    OpenThinOut,
+    /// The Levels dialog (FL's Scale levels, Alt+X).
+    OpenLevels,
     /// The window full screen, or back (Ty, 2026-10-20: *"add f11 to
     /// toggle fullscreen"*).
     Fullscreen,
 }
 
 impl Action {
-    pub const ALL: [Self; 72] = [
+    pub const ALL: [Self; 83] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -447,6 +469,17 @@ impl Action {
         Self::AnalyzeMarkerTool,
         Self::Voicebanks,
         Self::Quantize,
+        Self::Glue,
+        Self::QuickChop,
+        Self::QuantizeStarts,
+        Self::RepeatTool,
+        Self::OpenArpeggiate,
+        Self::OpenChop,
+        Self::OpenLengths,
+        Self::OpenFlip,
+        Self::OpenFlam,
+        Self::OpenThinOut,
+        Self::OpenLevels,
         Self::Fullscreen,
     ];
 
@@ -527,6 +560,17 @@ impl Action {
             Self::AnalyzeMarkerTool => "analyze-marker-tool",
             Self::Voicebanks => "voicebanks",
             Self::Quantize => "quantize",
+            Self::Glue => "glue",
+            Self::QuickChop => "quick-chop",
+            Self::QuantizeStarts => "quantize-starts",
+            Self::RepeatTool => "repeat-tool",
+            Self::OpenArpeggiate => "tool-arpeggiate",
+            Self::OpenChop => "tool-chop",
+            Self::OpenLengths => "tool-lengths",
+            Self::OpenFlip => "tool-flip",
+            Self::OpenFlam => "tool-flam",
+            Self::OpenThinOut => "tool-thin-out",
+            Self::OpenLevels => "tool-levels",
             Self::Fullscreen => "fullscreen",
         }
     }
@@ -624,6 +668,17 @@ impl Action {
             Self::AnalyzeMarkerTool => "Analyze Musically: the Marker tool (Slice)",
             Self::Voicebanks => "Voicebanks & Find singers: install and find free singers",
             Self::Quantize => "Quantize the selected notes (all, with none selected) to the grid",
+            Self::Glue => "Glue touching notes on the same key into one",
+            Self::QuickChop => "Chop the notes into pieces the length of the snap",
+            Self::QuantizeStarts => "Quantize only the starts, to the snap, at full strength",
+            Self::RepeatTool => "Run the last roll tool again, at its settings",
+            Self::OpenArpeggiate => "Open the Arpeggiate tool",
+            Self::OpenChop => "Open the Chop tool",
+            Self::OpenLengths => "Open the Lengths tool (legato, staccato, fixed…)",
+            Self::OpenFlip => "Open the Flip tool",
+            Self::OpenFlam => "Open the Flam tool",
+            Self::OpenThinOut => "Open the Thin out tool",
+            Self::OpenLevels => "Open the Levels tool",
             Self::Fullscreen => "Full screen on or off",
         }
     }
@@ -742,6 +797,17 @@ impl Action {
             Self::AnalyzeMarkerTool => &["K"],
             Self::Voicebanks => &["Ctrl+Shift+Y"],
             Self::Quantize => &["Ctrl+Q"],
+            Self::Glue => &["Ctrl+G"],
+            Self::QuickChop => &["Ctrl+U"],
+            Self::QuantizeStarts => &["Shift+Q"],
+            Self::RepeatTool => &["Ctrl+Shift+T"],
+            Self::OpenArpeggiate => &["Alt+A"],
+            Self::OpenChop => &["Alt+U"],
+            Self::OpenLengths => &["Alt+L"],
+            Self::OpenFlip => &["Alt+Y"],
+            Self::OpenFlam => &["Alt+F"],
+            Self::OpenThinOut => &["Alt+W"],
+            Self::OpenLevels => &["Alt+X"],
             Self::Fullscreen => &["F11"],
         }
     }

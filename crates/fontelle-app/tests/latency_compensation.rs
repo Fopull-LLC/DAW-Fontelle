@@ -182,6 +182,7 @@ fn render_two_tracks(lookahead_ms: f32) -> Vec<f32> {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
         project.clips.insert(Clip {
             name: None,

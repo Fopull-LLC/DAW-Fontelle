@@ -43,6 +43,7 @@ fn a_note(start: Tick, key: u8) -> fontelle_model::Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

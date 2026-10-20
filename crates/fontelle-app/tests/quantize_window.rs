@@ -34,6 +34,7 @@ fn a_note(start: i64, key: u8) -> fontelle_model::Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
@@ -101,7 +102,7 @@ fn the_arpeggiators_run_is_ghosted_and_follows_its_settings() {
     let second = w.tool_ghosts();
     assert_ne!(first, second, "the ghost did not follow the setting");
     // Hearing it sounds the run's first note; nothing was written.
-    w.press_tool_row(ToolRow::ArpHear);
+    w.press_tool_row(ToolRow::Hear);
     assert_eq!(w.document().notes().len(), 3, "hearing it wrote it");
     w.close_tool();
     assert!(w.tool_ghosts().is_empty(), "the ghost went with the dialog");

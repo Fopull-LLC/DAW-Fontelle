@@ -18,6 +18,44 @@
 use crate::note::{Note, NoteProperty};
 use fontelle_types::Tick;
 
+mod chop;
+mod flam;
+mod flip;
+mod glue;
+mod humanize;
+mod lengths;
+mod levels;
+mod overlaps;
+mod result;
+mod select;
+mod shuffle;
+mod speed;
+mod strum;
+mod thin;
+mod transpose;
+
+pub use chop::{ChopSpec, ChopVelocity, MAX_CHOP_PATTERN, chopped};
+pub use flam::{FlamPitch, FlamSpec, MAX_FLAM_COUNT, flammed};
+pub use flip::{flipped_in_pitch, flipped_in_time};
+pub use glue::glued;
+pub use humanize::{HumanizeSpec, humanized};
+pub use lengths::{LengthsMode, LengthsSpec, lengthened};
+pub use levels::{LevelsMode, LevelsSpec, levelled};
+pub use overlaps::{made_mono, trimmed_overlaps, without_doubles};
+pub use result::ToolResult;
+pub use select::{SelectHow, selected_where};
+pub use shuffle::{ShuffleHow, ShuffleSpec, ShuffleWhat, shuffled};
+pub use speed::stretched;
+pub use strum::{StrumDirection, StrumSpec, chords_of, strummed};
+pub use thin::{ThinSpec, thinned};
+pub use transpose::transposed;
+
+/// How close two starts must be to count as one chord: a thirty-second of a
+/// beat. A chord played in by hand is never sample-exact, and a strum, a
+/// flam or a mono pass that split a hand-played chord into three "events"
+/// would be answering a question nobody asked.
+pub const CHORD_CATCH: Tick = fontelle_types::PPQN / 32;
+
 /// Every note stretched — or pulled back — until it touches the one after it.
 ///
 /// > *"if i press ctrl l with a note selection in the piano roll it makes all
@@ -88,7 +126,7 @@ pub fn legato_lengths_to(spans: &[(Tick, Tick)], end: Option<Tick>) -> Vec<Tick>
 }
 
 /// How far a randomizer moves things, and in what sense.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RandomSpec {
     /// How much, as a percentage. `0` is the identity in both modes — a dial
     /// whose bottom is not "leave it alone" is one you cannot back away from.
@@ -98,7 +136,7 @@ pub struct RandomSpec {
 }
 
 /// The two things "randomize" can reasonably mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RandomMode {
     /// A wobble around what is already there. The humanising one: a phrase
     /// shaped by hand keeps its shape, and no note strays further than
@@ -185,7 +223,7 @@ pub fn randomised(values: &[i32], property: NoteProperty, spec: RandomSpec, seed
 /// Written out rather than depended on: it is eight lines, it is the standard
 /// finaliser, and a random-number crate in the *document* layer would be a
 /// dependency the audio thread's crate graph did not need.
-fn split_mix(seed: u64) -> u64 {
+pub(crate) fn split_mix(seed: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -217,7 +255,7 @@ mod tests {
 // ------------------------------------------------------- the arpeggiator ---
 
 /// Which way an arpeggio walks the chord.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ArpDirection {
     /// Lowest to highest, then round again.
     #[default]
@@ -260,7 +298,8 @@ impl ArpDirection {
 
 /// What Quantize does: the grid, how far towards it, and whether the ends
 /// go too.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct QuantizeSpec {
     /// The distance between lines, in ticks, counted from tick 0 of the
     /// clip. Nothing moves when it is zero or less.
@@ -271,6 +310,14 @@ pub struct QuantizeSpec {
     /// Whether each note's end goes to its own line too, rather than riding
     /// along with the start at the length it had.
     pub ends: bool,
+    /// How late the off-beat lines are, 0..=1 — the arpeggiator's swing,
+    /// with the same arithmetic: every second line of the grid is moved
+    /// `grid × swing × ½` later (Logic's Q-Swing, Cubase's swing).
+    pub swing: f32,
+    /// Notes already this close to their line are left alone — Logic's
+    /// Q-Range. `0` moves everything. What keeps a played part's near-misses
+    /// sounding played while the wrong notes are corrected.
+    pub range: Tick,
 }
 
 impl Default for QuantizeSpec {
@@ -279,6 +326,8 @@ impl Default for QuantizeSpec {
             grid: fontelle_types::PPQN / 4,
             strength: 1.0,
             ends: false,
+            swing: 0.0,
+            range: 0,
         }
     }
 }
@@ -296,8 +345,17 @@ pub fn quantized(spans: &[(Tick, Tick)], spec: QuantizeSpec) -> Vec<(Tick, Tick)
         return spans.to_vec();
     }
     let strength = spec.strength.clamp(0.0, 1.0);
+    let swing = spec.swing.clamp(0.0, 1.0);
     let toward = |t: Tick| {
-        let line = (t + spec.grid / 2).div_euclid(spec.grid) * spec.grid;
+        let index = (t + spec.grid / 2).div_euclid(spec.grid);
+        let mut line = index * spec.grid;
+        // Every second line late, by the arpeggiator's rule.
+        if index.rem_euclid(2) == 1 {
+            line += (spec.grid as f32 * swing * 0.5) as Tick;
+        }
+        if (line - t).abs() <= spec.range.max(0) {
+            return t;
+        }
         t + ((line - t) as f32 * strength).round() as Tick
     };
     spans
@@ -314,7 +372,8 @@ pub fn quantized(spans: &[(Tick, Tick)], spec: QuantizeSpec) -> Vec<(Tick, Tick)
 }
 
 /// What an arpeggio is made of.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ArpSpec {
     /// One step, in ticks — the grid the run sits on.
     pub step: Tick,

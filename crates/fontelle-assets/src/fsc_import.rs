@@ -415,6 +415,7 @@ fn read_note(record: &[u8], width: usize, ppq: u32, fine_written: bool) -> FscNo
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     }
 }

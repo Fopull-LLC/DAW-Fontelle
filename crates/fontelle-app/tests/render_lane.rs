@@ -222,6 +222,7 @@ fn a_note_on_row_zero(session: &mut Session) {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
 }

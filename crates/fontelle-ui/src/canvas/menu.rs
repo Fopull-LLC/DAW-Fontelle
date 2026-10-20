@@ -367,6 +367,24 @@ impl ContextMenu {
     }
 }
 
+/// Which place each entry takes in a menu of `columns` columns of
+/// `per_column`, when no heading — a greyed row followed by a live one — may
+/// be the last of its column. `None` when that does not fit.
+fn heading_slots(entries: &[MenuEntry], per_column: usize, columns: usize) -> Option<Vec<usize>> {
+    let per_column = per_column.max(1);
+    let mut slots = Vec::with_capacity(entries.len());
+    let mut slot = 0;
+    for (index, entry) in entries.iter().enumerate() {
+        let heads = !entry.enabled && entries.get(index + 1).is_some_and(|next| next.enabled);
+        if heads && slot % per_column == per_column - 1 {
+            slot += 1;
+        }
+        slots.push(slot);
+        slot += 1;
+    }
+    (slot <= per_column * columns).then_some(slots)
+}
+
 /// Where each row sits at a given scroll, and which are showing at all.
 ///
 /// A row is placed only when it fits **whole**: half a caption sliding under
@@ -582,6 +600,23 @@ pub fn context_menu_layout(
             (count, 1)
         }
     };
+    // A heading never ends a column with what it heads at the top of the
+    // next (seen on `:99`: the tools menu's "Generate" at the foot of one
+    // column, Arpeggiate at the head of the next). Each such heading takes
+    // the next column's first place instead, and a column grows by a row
+    // when that is what it takes to fit.
+    let mut slots = None;
+    let mut per_column = per_column;
+    if columns > 1 {
+        while per_column <= fit_rows {
+            if let Some(found) = heading_slots(&entries, per_column, columns) {
+                slots = Some(found);
+                break;
+            }
+            per_column += 1;
+        }
+        per_column = per_column.min(fit_rows);
+    }
     let content = row * per_column as f32;
     let height = (content + MENU_PAD * 2.0).min(bounds.height);
     let width = if columns > 1 {
@@ -611,7 +646,21 @@ pub fn context_menu_layout(
     let frame = Rect::new(x, y, width, height).intersection(&bounds);
 
     let scrolls = content > (frame.height - MENU_PAD * 2.0) + 0.01;
-    let rows = place_rows(frame, row, 0.0, count, per_column, column_width, scrolls);
+    let rows = match &slots {
+        Some(slots) if !scrolls => {
+            let places = place_rows(
+                frame,
+                row,
+                0.0,
+                per_column * columns,
+                per_column,
+                column_width,
+                false,
+            );
+            slots.iter().map(|slot| places[*slot]).collect()
+        }
+        _ => place_rows(frame, row, 0.0, count, per_column, column_width, scrolls),
+    };
 
     ContextMenu {
         frame,

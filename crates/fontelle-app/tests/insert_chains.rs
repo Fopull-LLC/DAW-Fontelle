@@ -185,6 +185,7 @@ impl Rig {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
         project.clips.insert(Clip {
             name: None,

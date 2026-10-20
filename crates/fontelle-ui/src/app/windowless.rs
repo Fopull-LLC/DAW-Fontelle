@@ -543,20 +543,146 @@ impl Windowless {
         self.app.open_tool_dialog(kind);
     }
 
-    /// A press on `row` of the open tool's dialog.
+    /// A press on `row` of the open tool's dialog, and the button let go
+    /// where it went down: a button pressed, a value stepped on.
     pub fn press_tool_row(&mut self, row: crate::canvas::ToolRow) {
-        let Some(rect) = self.app.tools_panel.as_ref().and_then(|panel| {
-            panel
-                .rows
-                .iter()
-                .find(|(r, _)| *r == row)
-                .map(|(_, rect)| *rect)
-        }) else {
-            panic!("{row:?} is not on the open dialog");
+        let rect = self.tool_row_rect(row);
+        let (x, y) = match self.app.tools.control(row) {
+            crate::canvas::ToolControl::Steps => {
+                let (_, value, _) = crate::canvas::step_arrows(rect);
+                (value.x + value.width / 2.0, value.y + value.height / 2.0)
+            }
+            _ => (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
         };
-        self.app
-            .press_tools_panel(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        self.app.cursor = (x, y);
+        self.app.press_tools_panel(x, y);
+        self.app.studio_released();
         self.settle();
+    }
+
+    /// Where `row` of the open dialog is.
+    pub fn tool_row_rect(&self, row: crate::canvas::ToolRow) -> Rect {
+        self.app
+            .tools_panel
+            .as_ref()
+            .and_then(|panel| {
+                panel
+                    .rows
+                    .iter()
+                    .find(|(r, _)| *r == row)
+                    .map(|(_, rect)| *rect)
+            })
+            .unwrap_or_else(|| panic!("{row:?} is not on the open dialog"))
+    }
+
+    /// One of `row`'s arrows pressed: `-1` back, `1` on.
+    pub fn press_tool_step(&mut self, row: crate::canvas::ToolRow, delta: i32) {
+        let (back, _, forward) = crate::canvas::step_arrows(self.tool_row_rect(row));
+        let at = if delta < 0 { back } else { forward };
+        let (x, y) = (at.x + at.width / 2.0, at.y + at.height / 2.0);
+        self.app.cursor = (x, y);
+        self.app.press_tools_panel(x, y);
+        self.app.studio_released();
+        self.settle();
+    }
+
+    /// A press on `row`'s value dragged `dx` pixels across, and let go.
+    pub fn drag_tool_value(&mut self, row: crate::canvas::ToolRow, dx: f32) {
+        let (_, value, _) = crate::canvas::step_arrows(self.tool_row_rect(row));
+        let (x, y) = (value.x + value.width / 2.0, value.y + value.height / 2.0);
+        self.app.cursor = (x, y);
+        self.app.press_tools_panel(x, y);
+        for i in 1..=8 {
+            self.app.cursor = (x + dx * i as f32 / 8.0, y);
+            self.app.drag_pointer();
+        }
+        self.app.studio_released();
+        self.settle();
+    }
+
+    /// The open dialog taken by its title and moved `(dx, dy)`.
+    pub fn drag_tool_title(&mut self, dx: f32, dy: f32) {
+        let title = self
+            .app
+            .tools_panel
+            .as_ref()
+            .expect("a dialog is open")
+            .title;
+        let (x, y) = (title.x + title.width / 2.0, title.y + title.height / 2.0);
+        self.app.cursor = (x, y);
+        self.app.press_tools_panel(x, y);
+        for i in 1..=4 {
+            self.app.cursor = (x + dx * i as f32 / 4.0, y + dy * i as f32 / 4.0);
+            self.app.drag_pointer();
+        }
+        self.app.studio_released();
+        self.settle();
+    }
+
+    /// The open tool dialog, as laid out now.
+    pub fn tool_dialog(&self) -> Option<crate::canvas::ToolsDialog> {
+        self.app.tools_panel.clone()
+    }
+
+    /// What the tools are set to.
+    pub fn tools(&self) -> &crate::canvas::Tools {
+        &self.app.tools
+    }
+
+    /// Enter, as the studio's keyboard takes it.
+    pub fn press_enter(&mut self) {
+        let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter);
+        self.app.tool_key(&key);
+        self.settle();
+    }
+
+    /// Escape, as the studio's keyboard takes it.
+    pub fn press_escape(&mut self) {
+        let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        if !self.app.tool_key(&key) {
+            self.app.roll.clear_selection();
+        }
+        self.settle();
+    }
+
+    /// The tools menu opened from its chip, and its row starting `label`
+    /// pressed.
+    pub fn choose_tool_menu(&mut self, label: &str) {
+        self.app.studio_action(crate::canvas::Action::ToolsPanel);
+        self.settle();
+        let row = self
+            .menu_rows()
+            .into_iter()
+            .find(|(_, l)| l.starts_with(label))
+            .unwrap_or_else(|| panic!("no {label:?} on the tools menu"));
+        let (x, y) = (row.0.x + row.0.width / 2.0, row.0.y + row.0.height / 2.0);
+        self.click_studio(x, y);
+        self.settle();
+    }
+
+    /// The roll's selection.
+    pub fn selected_notes(&self) -> Vec<fontelle_types::NoteId> {
+        self.app.roll.selection().to_vec()
+    }
+
+    /// The roll's selection set to `ids`.
+    pub fn select_notes(&mut self, ids: &[fontelle_types::NoteId]) {
+        self.app.roll.select(ids.to_vec());
+    }
+
+    /// The open tool's notes as it would leave them.
+    pub fn tool_previews(&self) -> Vec<fontelle_model::Note> {
+        self.app.roll_chords().previews
+    }
+
+    /// The notes the open tool dims.
+    pub fn tool_dimmed(&self) -> Vec<fontelle_types::NoteId> {
+        self.app.roll_chords().dimmed
+    }
+
+    /// The tip the pointer would show now.
+    pub fn tip_now(&self) -> Option<String> {
+        self.app.current_tip()
     }
 
     /// The open tool's dialog shut, as a press away from it shuts it.

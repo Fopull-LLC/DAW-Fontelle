@@ -1,23 +1,22 @@
-//! The piano roll's Tools panel: what is on it, what a click does, and what
-//! comes out the other end as an edit.
+//! The piano roll's tools, without a window: the menu, each dialog's rows,
+//! what a press on them does, and what a tool answers.
 //!
-//! Asked for as *"a tools tab which has various tools such as a randomizer, a
-//! transposer — and it should also let you transpose all of your selections
-//! velocity or pan or whatever all at once adding or subtracting a value"*.
-//!
-//! The shape it takes is the settings tab's, because that shape is already in
-//! this window and already understood: **rows of a name and a value, where a
-//! click steps the value forward and a Ctrl+click steps it back.** No text
-//! field is involved — there is not one in this window — and a value you can
-//! reach in a handful of clicks is quicker than one you have to type anyway.
-//!
-//! Everything here is pure. The panel is geometry, the settings are numbers,
-//! and what a tool *does* is a list of [`RollEdit`]s — so all of it is
-//! checkable without a window, a document, or a mouse.
+//! `docs/roll-tools-plan.md` (Ty, 2026-10-20: *"spend some time putting
+//! together a plan to make the tools section start feeling feature
+//! complete"*). Everything here is pure: the dialog is geometry, the settings
+//! are numbers, and a tool's answer is a `ToolResult` — the same answer the
+//! roll ghosts, *Hear it* plays and Apply writes.
 
-use fontelle_model::{Note, NoteProperty, RandomMode};
+use fontelle_model::{
+    Arena, ChopSpec, FlamSpec, LevelsMode, Note, StrumDirection, ToolResult, chopped, glued,
+    quantized, strummed,
+};
 use fontelle_types::{NoteId, PPQN};
-use fontelle_ui::canvas::{LaneProperty, RollEdit, TOOL_ROWS, ToolAction, ToolRow, Tools};
+use fontelle_ui::canvas::{
+    Keymap, TOOL_MENU, ToolAction, ToolControl, ToolKind, ToolMenuItem, ToolPress, ToolRow, Tools,
+    pattern_cells, step_arrows, tools_dialog_hit, tools_dialog_layout, tools_dialog_place,
+    tools_dialog_press, tools_dialog_size,
+};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -25,21 +24,16 @@ fn metrics() -> fontelle_ui::theme::Metrics {
     Theme::dark_default().metrics
 }
 
-/// A chip on a toolbar at the top of a tall panel — the ordinary case.
-fn chip() -> Rect {
-    Rect::new(120.0, 4.0, 40.0, 18.0)
-}
-
 fn bounds() -> Rect {
-    Rect::new(0.0, 0.0, 800.0, 600.0)
+    Rect::new(0.0, 0.0, 1000.0, 700.0)
 }
 
-fn a_note(key: u8, velocity: u8) -> Note {
+fn note(start: i64, length: i64, key: u8) -> Note {
     Note {
-        start: 0,
-        length: PPQN,
+        start,
+        length,
         key,
-        velocity,
+        velocity: 100,
         pan: 0,
         fine_pitch: 0,
         release: 0,
@@ -50,874 +44,521 @@ fn a_note(key: u8, velocity: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
-/// Three selected notes, and an arena holding them.
-fn selection() -> (fontelle_model::Arena<NoteId, Note>, Vec<NoteId>) {
-    let mut notes = fontelle_model::Arena::default();
-    let ids = vec![
-        notes.insert(a_note(60, 40)),
-        notes.insert(a_note(64, 100)),
-        notes.insert(a_note(67, 120)),
-    ];
-    (notes, ids)
+fn scope(notes: Vec<Note>) -> Vec<(NoteId, Note)> {
+    let mut arena: Arena<NoteId, Note> = Arena::new();
+    notes
+        .into_iter()
+        .map(|n| (arena.insert(n.clone()), n))
+        .collect()
 }
 
-// -------------------------------------------------------------- the rows ---
+/// Two bars of triads, a bar each: something every tool has an answer for.
+fn chords() -> Vec<(NoteId, Note)> {
+    let bar = PPQN * 4;
+    scope(vec![
+        note(0, bar, 60),
+        note(0, bar, 64),
+        note(0, bar, 67),
+        note(bar, bar, 62),
+        note(bar, bar, 65),
+        note(bar, bar, 69),
+    ])
+}
+
+fn dialog(kind: ToolKind, tools: &Tools) -> fontelle_ui::canvas::ToolsDialog {
+    let rows = tools.rows(kind);
+    tools_dialog_layout(
+        kind,
+        &rows,
+        kind.title().to_string(),
+        (300.0, 40.0),
+        bounds(),
+        &metrics(),
+    )
+}
+
+fn centre(r: Rect) -> (f32, f32) {
+    (r.x + r.width / 2.0, r.y + r.height / 2.0)
+}
+
+// ---------------------------------------------------------------- the menu ---
 
 #[test]
-fn every_row_says_what_it_is_and_what_it_is_at() {
-    // The same rule the settings tab follows: a row with no name cannot be
-    // identified, and a row with no value cannot be read. An *action* row is
-    // the exception — it is a button, and its name is the whole of it.
-    let tools = Tools::default();
-    for row in TOOL_ROWS {
-        assert!(!tools.label(row).is_empty(), "{row:?} has no name");
-        if tools.action(row).is_some() {
-            continue;
-        }
+fn every_tool_is_on_the_menu_under_its_heading() {
+    let headings: Vec<&str> = TOOL_MENU
+        .iter()
+        .filter_map(|item| match item {
+            ToolMenuItem::Heading(h) => Some(*h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        headings,
+        vec![
+            "Timing", "Pitch", "Levels", "Length", "Shape", "Generate", "Select", "Files"
+        ]
+    );
+    for kind in ToolKind::ALL {
         assert!(
-            !tools.value(row).is_empty(),
-            "{row:?} does not say what it is at"
+            TOOL_MENU.contains(&ToolMenuItem::Open(kind)),
+            "{kind:?} cannot be reached"
         );
     }
+    assert!(matches!(TOOL_MENU[0], ToolMenuItem::Heading(_)));
 }
 
 #[test]
-fn the_tools_that_were_asked_for_are_all_reachable_from_the_chip() {
-    let mut actions: Vec<ToolAction> = TOOL_ROWS
+fn the_files_are_under_their_own_heading_at_the_end() {
+    let files = TOOL_MENU
         .iter()
-        .filter_map(|row| Tools::default().action(*row))
-        .collect();
-    // The two importers are entries on the menu rather than rows in a dialog:
-    // a file browser is where they take their settings.
-    actions.extend(
-        fontelle_ui::canvas::TOOL_MENU
-            .iter()
-            .filter_map(|item| match item {
-                fontelle_ui::canvas::ToolMenuItem::Run(action) => Some(*action),
-                fontelle_ui::canvas::ToolMenuItem::Open(_) => None,
-            }),
+        .position(|i| *i == ToolMenuItem::Heading("Files"))
+        .unwrap();
+    let after: Vec<ToolMenuItem> = TOOL_MENU[files + 1..].to_vec();
+    assert_eq!(
+        after,
+        vec![
+            ToolMenuItem::Run(ToolAction::ImportMidi),
+            ToolMenuItem::Run(ToolAction::ImportScore),
+            ToolMenuItem::Run(ToolAction::ExportMidi),
+        ]
     );
-    for wanted in [
-        ToolAction::Transpose,
-        ToolAction::Add,
-        ToolAction::Subtract,
-        ToolAction::Randomize,
-        ToolAction::Legato,
-        ToolAction::ImportMidi,
-        ToolAction::ImportScore,
-    ] {
-        assert!(actions.contains(&wanted), "no row does {wanted:?}");
-    }
 }
 
 #[test]
-fn an_action_row_is_not_a_value_to_step() {
-    // Clicking "Randomize" must randomize, not quietly change the amount
-    // above it — which is what a row that was both would do.
-    let mut tools = Tools::default();
-    let before = tools;
-    for row in TOOL_ROWS {
-        if tools.action(row).is_some() {
-            tools.nudge(row, 1);
+fn a_menu_row_carries_its_shortcut() {
+    let keymap = Keymap::default();
+    let label = |item: ToolMenuItem| item.label_in(&keymap);
+    assert_eq!(
+        label(ToolMenuItem::Run(ToolAction::Glue)),
+        "Glue \u{2014} Ctrl+G"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Run(ToolAction::QuickChop)),
+        "Quick chop \u{2014} Ctrl+U"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Run(ToolAction::QuantizeStarts)),
+        "Quantize starts \u{2014} Shift+Q"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Open(ToolKind::Arpeggiate)),
+        "Arpeggiate\u{2026} \u{2014} Alt+A"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Open(ToolKind::Chop)),
+        "Chop\u{2026} \u{2014} Alt+U"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Open(ToolKind::Quantize)),
+        "Quantize\u{2026} \u{2014} Ctrl+Q"
+    );
+    assert_eq!(
+        label(ToolMenuItem::Run(ToolAction::Legato)),
+        "Legato \u{2014} Ctrl+L"
+    );
+    assert_eq!(label(ToolMenuItem::Heading("Shape")), "Shape");
+}
+
+// ----------------------------------------------------------------- the rows ---
+
+#[test]
+fn every_row_of_every_dialog_has_a_name_a_value_and_a_tip() {
+    let mut tools = Tools {
+        song_key: Some(0b1010_1011_0101),
+        ..Tools::default()
+    };
+    tools.strum.direction = StrumDirection::Random;
+    for kind in ToolKind::ALL {
+        for row in tools.rows(kind) {
+            assert!(!tools.label(row).is_empty(), "{kind:?} {row:?} has no name");
+            if tools.control(row) == ToolControl::Steps {
+                assert!(
+                    !tools.value(row).is_empty(),
+                    "{kind:?} {row:?} has no value"
+                );
+            }
+            assert!(!tools.tip(row).is_empty(), "{kind:?} {row:?} has no tip");
         }
     }
-    assert_eq!(tools, before);
-}
-
-// --------------------------------------------------------------- values ---
-
-#[test]
-fn transpose_says_its_direction_as_well_as_its_size() {
-    // "+0" against "0" is the difference between a number that can go either
-    // way and one that might not — the same rule the MIDI transpose row
-    // follows.
-    let up = Tools {
-        semitones: 0,
-        ..Tools::default()
-    };
-    assert!(up.value(ToolRow::Transpose).starts_with('+'));
-    let down = Tools {
-        semitones: -5,
-        ..Tools::default()
-    };
-    assert!(down.value(ToolRow::Transpose).starts_with('-'));
+    for row in [ToolRow::Reset, ToolRow::Hear, ToolRow::Apply] {
+        assert!(!tools.tip(row).is_empty());
+        assert_eq!(tools.control(row), ToolControl::Button);
+    }
 }
 
 #[test]
-fn transpose_stops_at_two_octaves_rather_than_wrapping() {
-    // A number's ends are ends: running off one and arriving at the other is
-    // a control that cannot be trusted to a held press.
+fn a_dialog_shows_only_the_rows_its_mode_uses() {
     let mut tools = Tools::default();
-    for _ in 0..200 {
-        tools.nudge(ToolRow::Transpose, 1);
+    tools.levels.mode = LevelsMode::Add;
+    let add = tools.rows(ToolKind::Levels);
+    assert!(add.contains(&ToolRow::LevelsAmount));
+    assert!(!add.contains(&ToolRow::LevelsLow));
+    tools.levels.mode = LevelsMode::Limit;
+    let limit = tools.rows(ToolKind::Levels);
+    assert!(limit.contains(&ToolRow::LevelsLow) && limit.contains(&ToolRow::LevelsHigh));
+    assert!(!limit.contains(&ToolRow::LevelsAmount));
+    tools.levels.mode = LevelsMode::Ramp;
+    let ramp = tools.rows(ToolKind::Levels);
+    assert!(ramp.contains(&ToolRow::LevelsFrom) && ramp.contains(&ToolRow::LevelsTo));
+}
+
+#[test]
+fn scale_steps_are_offered_only_when_the_song_has_a_key() {
+    let mut tools = Tools::default();
+    assert!(!tools.rows(ToolKind::Transpose).contains(&ToolRow::InKey));
+    tools.song_key = Some(0b1010_1011_0101);
+    assert!(tools.rows(ToolKind::Transpose).contains(&ToolRow::InKey));
+}
+
+#[test]
+fn a_seed_is_shown_where_there_is_something_random() {
+    let mut tools = Tools::default();
+    assert!(tools.rows(ToolKind::Humanize).contains(&ToolRow::Seed));
+    assert!(tools.rows(ToolKind::Shuffle).contains(&ToolRow::Seed));
+    assert!(!tools.rows(ToolKind::Strum).contains(&ToolRow::Seed));
+    tools.strum.direction = StrumDirection::Random;
+    assert!(tools.rows(ToolKind::Strum).contains(&ToolRow::Seed));
+}
+
+#[test]
+fn values_are_said_in_words_people_use() {
+    let tools = Tools {
+        tempo: 120.0,
+        ..Tools::default()
+    };
+    assert_eq!(tools.value(ToolRow::Property), "Velocity");
+    assert_eq!(tools.value(ToolRow::RandomMode), "Wobble");
+    assert!(
+        tools.value(ToolRow::StrumTime).ends_with(" ms"),
+        "{}",
+        tools.value(ToolRow::StrumTime)
+    );
+    assert_eq!(tools.label(ToolRow::Semitones), "Semitones");
+    assert_eq!(tools.value(ToolRow::Semitones), "+12");
+    let steps = Tools {
+        in_key: true,
+        song_key: Some(0b1010_1011_0101),
+        ..Tools::default()
+    };
+    assert_eq!(steps.label(ToolRow::Semitones), "Scale steps");
+}
+
+#[test]
+fn a_number_stops_at_its_ends_and_a_choice_goes_round() {
+    let mut tools = Tools::default();
+    for _ in 0..60 {
+        tools.nudge(ToolRow::Semitones, 1);
     }
     assert_eq!(tools.semitones, 24);
-    for _ in 0..400 {
-        tools.nudge(ToolRow::Transpose, -1);
+    let first = tools.levels.mode;
+    let mut seen = 0;
+    loop {
+        tools.nudge(ToolRow::LevelsMode, 1);
+        seen += 1;
+        if tools.levels.mode == first {
+            break;
+        }
+        assert!(seen < 20, "the modes never came round");
     }
-    assert_eq!(tools.semitones, -24);
+    assert_eq!(seen, 6, "six modes, then the first again");
+    tools.nudge(ToolRow::Seed, -1);
+    tools.nudge(ToolRow::Seed, -1);
+    assert!(tools.humanize.seed >= 1);
 }
 
 #[test]
-fn the_property_row_cycles_through_all_six() {
-    // A set with no ends wraps, which is the other half of the same rule.
+fn the_pattern_row_is_cells_that_toggle() {
     let mut tools = Tools::default();
-    let mut seen = vec![tools.property];
-    for _ in 0..5 {
-        tools.nudge(ToolRow::Property, 1);
-        seen.push(tools.property);
-    }
-    seen.sort_by_key(|p| format!("{p:?}"));
-    seen.dedup();
-    assert_eq!(seen.len(), 6, "all six properties are reachable");
-
-    // And it comes back round rather than stopping.
-    let mut tools = Tools::default();
-    let first = tools.property;
-    for _ in 0..6 {
-        tools.nudge(ToolRow::Property, 1);
-    }
-    assert_eq!(tools.property, first);
+    assert_eq!(tools.control(ToolRow::ChopPattern), ToolControl::Pattern);
+    let before = tools.chop.pattern;
+    tools.toggle_cell(ToolRow::ChopPattern, 1);
+    assert_eq!(tools.chop.pattern, before ^ 0b10);
+    tools.toggle_cell(ToolRow::ChopPattern, 1);
+    assert_eq!(tools.chop.pattern, before);
 }
 
 #[test]
-fn the_amount_walks_a_ladder_so_a_useful_value_is_a_few_clicks_away() {
-    // Stepping by one would be twenty clicks to reach twenty, which is the
-    // difference between a tool and a chore.
+fn reset_puts_one_tool_back_and_leaves_the_others() {
     let mut tools = Tools::default();
-    let mut reached = vec![tools.amount];
-    for _ in 0..20 {
-        tools.nudge(ToolRow::Amount, 1);
-        reached.push(tools.amount);
-    }
-    assert!(reached.contains(&10), "10 should be on the ladder");
-    assert!(reached.contains(&20), "20 should be on the ladder");
-    assert!(
-        reached.iter().position(|v| *v == 20).unwrap() <= 10,
-        "20 is more than ten clicks away: {reached:?}"
+    tools.nudge(ToolRow::StrumTime, 1);
+    tools.nudge(ToolRow::ChopGate, -1);
+    tools.reset(ToolKind::Strum);
+    assert_eq!(tools.strum, Tools::default().strum);
+    assert_ne!(tools.chop, Tools::default().chop);
+}
+
+// ------------------------------------------------------------ the answers ---
+
+#[test]
+fn every_dialog_has_an_answer_at_its_defaults() {
+    let tools = Tools {
+        clip_end: Some(PPQN * 8),
+        ..Tools::default()
+    };
+    // A little off the grid, so Quantize has something to do too.
+    let gappy = scope(
+        (0..8)
+            .map(|i| note(i * PPQN / 4 + 7, 60, 60 + (i % 4) as u8))
+            .collect(),
     );
-    // The ladder only goes up, and stops.
-    assert!(reached.windows(2).all(|w| w[1] >= w[0]), "{reached:?}");
-}
-
-#[test]
-fn the_amount_never_reaches_zero_because_an_offset_of_nothing_is_not_a_tool() {
-    let mut tools = Tools::default();
-    for _ in 0..50 {
-        tools.nudge(ToolRow::Amount, -1);
-    }
-    assert!(tools.amount >= 1, "got {}", tools.amount);
-}
-
-#[test]
-fn the_randomizers_amount_reaches_both_ends_of_its_dial() {
-    let mut tools = Tools::default();
-    for _ in 0..50 {
-        tools.nudge(ToolRow::RandomAmount, -1);
-    }
-    assert_eq!(tools.random_amount, 0, "nothing at all is a legal setting");
-    for _ in 0..50 {
-        tools.nudge(ToolRow::RandomAmount, 1);
-    }
-    assert_eq!(tools.random_amount, 100);
-}
-
-#[test]
-fn the_randomizers_mode_toggles() {
-    let mut tools = Tools::default();
-    assert_eq!(tools.random_mode, RandomMode::Around);
-    tools.nudge(ToolRow::RandomMode, 1);
-    assert_eq!(tools.random_mode, RandomMode::Anywhere);
-    tools.nudge(ToolRow::RandomMode, 1);
-    assert_eq!(tools.random_mode, RandomMode::Around);
-}
-
-// -------------------------------------------------------------- the edits ---
-
-#[test]
-fn transposing_moves_every_selected_note_and_nothing_else() {
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        semitones: 12,
-        ..Tools::default()
-    };
-    let edits = tools.run(ToolAction::Transpose, &ids, &notes);
-    assert_eq!(edits.len(), 1);
-    match &edits[0] {
-        RollEdit::Move {
-            ids: moved,
-            tick_delta,
-            key_delta,
-        } => {
-            assert_eq!(moved, &ids);
-            assert_eq!(*tick_delta, 0, "a transpose does not move a note in time");
-            assert_eq!(*key_delta, 12);
-        }
-        other => panic!("expected a move, got {other:?}"),
-    }
-}
-
-#[test]
-fn transposing_by_nothing_does_nothing() {
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        semitones: 0,
-        ..Tools::default()
-    };
-    assert!(tools.run(ToolAction::Transpose, &ids, &notes).is_empty());
-}
-
-#[test]
-fn adding_and_subtracting_are_the_same_amount_the_two_ways() {
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        property: LaneProperty::Velocity,
-        amount: 10,
-        ..Tools::default()
-    };
-
-    let up = tools.run(ToolAction::Add, &ids, &notes);
-    let down = tools.run(ToolAction::Subtract, &ids, &notes);
-    match (&up[0], &down[0]) {
-        (
-            RollEdit::NudgeProperty {
-                delta: plus,
-                property: a,
-                ids: up_ids,
-            },
-            RollEdit::NudgeProperty {
-                delta: minus,
-                property: b,
-                ..
-            },
-        ) => {
-            assert_eq!(*plus, 10);
-            assert_eq!(*minus, -10);
-            assert_eq!(a, b);
-            assert_eq!(*a, NoteProperty::Velocity);
-            assert_eq!(up_ids, &ids);
-        }
-        other => panic!("expected two nudges, got {other:?}"),
-    }
-}
-
-#[test]
-fn the_offset_acts_on_whichever_property_the_row_says() {
-    // *"transpose all of your selections velocity or pan or whatever"* — the
-    // property row is what "or whatever" is.
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        property: LaneProperty::Pan,
-        ..Tools::default()
-    };
-    let edits = tools.run(ToolAction::Add, &ids, &notes);
-    match &edits[0] {
-        RollEdit::NudgeProperty { property, .. } => assert_eq!(*property, NoteProperty::Pan),
-        other => panic!("expected a nudge, got {other:?}"),
-    }
-}
-
-#[test]
-fn randomizing_produces_one_value_for_every_selected_note() {
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        random_amount: 50,
-        ..Tools::default()
-    };
-    let edits = tools.run(ToolAction::Randomize, &ids, &notes);
-    match &edits[0] {
-        RollEdit::SetPropertyEach {
-            ids: named,
-            values,
-            property,
-        } => {
-            assert_eq!(named, &ids);
-            assert_eq!(values.len(), ids.len());
-            assert_eq!(*property, NoteProperty::Velocity);
-        }
-        other => panic!("expected a value each, got {other:?}"),
-    }
-}
-
-#[test]
-fn randomizing_reads_the_notes_that_are_there_rather_than_starting_from_zero() {
-    // `Around` is a wobble around what is already written, so the notes have
-    // to be read. A randomizer that ignored them would flatten the phrase and
-    // then jitter the flat version.
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        random_amount: 5,
-        random_mode: RandomMode::Around,
-        ..Tools::default()
-    };
-    let edits = tools.run(ToolAction::Randomize, &ids, &notes);
-    let RollEdit::SetPropertyEach { values, .. } = &edits[0] else {
-        panic!("expected a value each");
-    };
-    // The notes were at 40, 100 and 120, and a 5% wobble cannot cross them.
-    assert!(values[0] < values[1], "{values:?}");
-    assert!(values[1] < values[2], "{values:?}");
-}
-
-#[test]
-fn rolling_again_gives_a_different_answer() {
-    // The seed steps on every roll, which is what "Randomize" pressed twice
-    // has to mean.
-    let (notes, ids) = selection();
-    let mut tools = Tools {
-        random_amount: 100,
-        ..Tools::default()
-    };
-    let first = tools.run(ToolAction::Randomize, &ids, &notes);
-    let second = tools.run(ToolAction::Randomize, &ids, &notes);
-    assert_ne!(first, second, "pressing it twice must roll twice");
-}
-
-#[test]
-fn a_tool_with_nothing_selected_does_nothing_at_all() {
-    // And says so by producing no edit, rather than by producing a command
-    // over an empty list that lands in the history as an entry that did
-    // nothing.
-    let (notes, _) = selection();
-    let mut tools = Tools {
-        semitones: 12,
-        ..Tools::default()
-    };
-    for action in [
-        ToolAction::Transpose,
-        ToolAction::Add,
-        ToolAction::Subtract,
-        ToolAction::Randomize,
-    ] {
+    for kind in ToolKind::ALL {
+        let a = tools.result(kind, &chords());
+        let b = tools.result(kind, &gappy);
         assert!(
-            tools.run(action, &[], &notes).is_empty(),
-            "{action:?} did something to an empty selection"
+            !(a.is_empty() && b.is_empty()),
+            "{kind:?} did nothing at its defaults"
         );
     }
 }
 
 #[test]
-fn the_two_import_rows_produce_no_edit_because_they_are_the_windows_to_make() {
-    // Reading a file is not something this crate may do (INVARIANT 2), so the
-    // panel names the action and the window carries it out.
-    let (notes, ids) = selection();
+fn a_dialog_answers_with_the_models_own_function() {
+    let tools = Tools::default();
+    let s = chords();
+    assert_eq!(tools.result(ToolKind::Strum, &s), strummed(&s, tools.strum));
+    assert_eq!(tools.result(ToolKind::Chop, &s), chopped(&s, tools.chop));
+}
+
+#[test]
+fn applying_a_random_tool_rolls_the_next_one() {
     let mut tools = Tools::default();
-    for action in [ToolAction::ImportMidi, ToolAction::ImportScore] {
-        assert!(tools.run(action, &ids, &notes).is_empty());
-    }
+    let s = chords();
+    let first = tools.result(ToolKind::Humanize, &s);
+    tools.applied(ToolKind::Humanize);
+    assert_ne!(first, tools.result(ToolKind::Humanize, &s));
+}
+
+#[test]
+fn the_quick_tools_use_the_snap() {
+    let tools = Tools {
+        roll_grid: PPQN / 4,
+        quantize: fontelle_model::QuantizeSpec {
+            strength: 0.5,
+            ..Default::default()
+        },
+        ..Tools::default()
+    };
+    let s = scope(vec![note(0, PPQN, 60), note(PPQN, PPQN, 60)]);
+    assert_eq!(
+        tools.instant(ToolAction::QuickChop, &s),
+        Some(chopped(
+            &s,
+            ChopSpec {
+                step: PPQN / 4,
+                ..ChopSpec::default()
+            }
+        ))
+    );
+    assert_eq!(tools.instant(ToolAction::Glue, &s), Some(glued(&s)));
+    let late = scope(vec![note(PPQN / 4 + 30, 100, 60)]);
+    let starts = tools.instant(ToolAction::QuantizeStarts, &late).unwrap();
+    let full = quantized(
+        &[(PPQN / 4 + 30, 100)],
+        fontelle_model::QuantizeSpec {
+            grid: PPQN / 4,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        starts.after(&late)[0].start,
+        full[0].0,
+        "full strength, whatever the dialog says"
+    );
+    let _ = FlamSpec::default();
+    let _ = ToolResult::default();
+}
+
+#[test]
+fn settings_survive_a_round_trip_and_garbage_is_refused() {
+    let mut tools = Tools::default();
+    tools.nudge(ToolRow::ChopGate, -1);
+    tools.nudge(ToolRow::StrumDirection, 1);
+    tools.roll_grid = 7;
+    let back = Tools::from_json(&tools.to_json()).expect("it reads back");
+    assert_eq!(back.chop, tools.chop);
+    assert_eq!(back.strum, tools.strum);
+    assert_eq!(
+        back.roll_grid,
+        Tools::default().roll_grid,
+        "what the window sets is not kept"
+    );
+    assert!(Tools::from_json("not json").is_none());
+    let partial = Tools::from_json("{\"semitones\": 5}").expect("missing is default");
+    assert_eq!(partial.semitones, 5);
+    assert_eq!(partial.chop, Tools::default().chop);
 }
 
 // ------------------------------------------------------------- geometry ---
 
 #[test]
-fn the_panel_hangs_off_its_chip_and_stays_inside_the_window() {
-    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
-    assert!(!panel.frame.is_empty());
-    assert!(
-        panel.frame.y >= chip().bottom() - 0.01,
-        "it opens downwards"
+fn the_dialog_is_where_it_was_put_and_inside_the_window() {
+    let tools = Tools::default();
+    let d = dialog(ToolKind::Strum, &tools);
+    assert_eq!((d.frame.x, d.frame.y), (300.0, 40.0));
+    assert!(d.frame.right() <= bounds().right() && d.frame.bottom() <= bounds().bottom());
+    let far = tools_dialog_layout(
+        ToolKind::Strum,
+        &tools.rows(ToolKind::Strum),
+        String::new(),
+        (990.0, 690.0),
+        bounds(),
+        &metrics(),
     );
-    assert!(panel.frame.right() <= bounds().right() + 0.01);
-    assert!(panel.frame.bottom() <= bounds().bottom() + 0.01);
-    assert_eq!(panel.rows.len(), ToolKind::Adjust.rows().len());
+    assert!(far.frame.right() <= bounds().right() + 0.01);
+    assert!(far.frame.bottom() <= bounds().bottom() + 0.01);
 }
 
 #[test]
-fn a_chip_near_the_bottom_opens_the_panel_upwards() {
-    // A panel that hung off the bottom would be a list of tools half of which
-    // nobody can reach.
-    let low = Rect::new(120.0, 560.0, 40.0, 18.0);
-    let panel = tools_dialog_layout(ToolKind::Adjust, low, bounds(), &metrics());
-    assert!(panel.frame.bottom() <= bounds().bottom() + 0.01);
-    assert!(panel.frame.y < low.y, "it opened upwards");
+fn the_buttons_share_the_bottom_row() {
+    let tools = Tools::default();
+    let d = dialog(ToolKind::Chop, &tools);
+    let at = |row| d.rows.iter().find(|(r, _)| *r == row).unwrap().1;
+    let (reset, hear, apply) = (at(ToolRow::Reset), at(ToolRow::Hear), at(ToolRow::Apply));
+    assert_eq!(reset.y, hear.y);
+    assert_eq!(hear.y, apply.y);
+    assert!(reset.right() <= hear.x && hear.right() <= apply.x);
+    let settings_bottom = d
+        .rows
+        .iter()
+        .filter(|(r, _)| !matches!(r, ToolRow::Reset | ToolRow::Hear | ToolRow::Apply))
+        .map(|(_, rect)| rect.bottom())
+        .fold(0.0, f32::max);
+    assert!(apply.y >= settings_bottom - 0.01, "under the settings");
 }
 
 #[test]
-fn a_chip_near_the_right_edge_slides_the_panel_back_inside() {
-    let right = Rect::new(780.0, 4.0, 40.0, 18.0);
-    let panel = tools_dialog_layout(ToolKind::Adjust, right, bounds(), &metrics());
-    assert!(panel.frame.right() <= bounds().right() + 0.01);
-    assert!(panel.frame.x >= bounds().x - 0.01);
+fn a_value_row_has_arrows_that_step_it_and_a_middle_that_is_the_row() {
+    let tools = Tools::default();
+    let d = dialog(ToolKind::Strum, &tools);
+    let rect = d
+        .rows
+        .iter()
+        .find(|(r, _)| *r == ToolRow::StrumTime)
+        .unwrap()
+        .1;
+    let (back, value, forward) = step_arrows(rect);
+    assert!(back.right() <= value.x && value.right() <= forward.x);
+    let press = |(x, y)| tools_dialog_press(&d, &tools, x, y);
+    assert_eq!(
+        press(centre(back)),
+        Some(ToolPress::Step(ToolRow::StrumTime, -1))
+    );
+    assert_eq!(
+        press(centre(forward)),
+        Some(ToolPress::Step(ToolRow::StrumTime, 1))
+    );
+    assert_eq!(
+        press(centre(value)),
+        Some(ToolPress::Row(ToolRow::StrumTime))
+    );
+    assert_eq!(press(centre(d.title)), Some(ToolPress::Title));
+    assert_eq!(press((5.0, 690.0)), None);
+    assert_eq!(
+        tools_dialog_hit(&d, centre(value).0, centre(value).1),
+        Some(ToolRow::StrumTime)
+    );
 }
 
 #[test]
-fn a_click_on_a_row_finds_that_row() {
-    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
-    for (row, rect) in &panel.rows {
-        if rect.is_empty() {
-            continue;
-        }
-        let hit = tools_dialog_hit(
-            &panel,
-            rect.x + rect.width / 2.0,
-            rect.y + rect.height / 2.0,
+fn a_press_on_a_pattern_cell_is_that_cell() {
+    let tools = Tools::default();
+    let d = dialog(ToolKind::Chop, &tools);
+    let rect = d
+        .rows
+        .iter()
+        .find(|(r, _)| *r == ToolRow::ChopPattern)
+        .unwrap()
+        .1;
+    let cells = pattern_cells(rect, tools.chop.pattern_len);
+    assert_eq!(cells.len(), usize::from(tools.chop.pattern_len));
+    for (i, cell) in cells.iter().enumerate() {
+        assert!(rect.contains(cell.x, cell.y));
+        let (x, y) = centre(*cell);
+        assert_eq!(
+            tools_dialog_press(&d, &tools, x, y),
+            Some(ToolPress::Cell(ToolRow::ChopPattern, i))
         );
-        assert_eq!(hit, Some(*row), "clicking {row:?} found {hit:?}");
     }
 }
 
 #[test]
-fn a_click_that_missed_the_panel_hits_nothing() {
-    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
-    assert_eq!(tools_dialog_hit(&panel, 5.0, 590.0), None);
+fn the_dialog_opens_on_the_side_away_from_the_selection() {
+    let grid = Rect::new(100.0, 100.0, 800.0, 400.0);
+    let size = tools_dialog_size(&Tools::default().rows(ToolKind::Strum), &metrics());
+    let right = tools_dialog_place(size, grid, Some((600.0, 850.0)), None, bounds());
+    assert!(
+        right.0 + size.0 <= 600.0,
+        "selection on the right, dialog on the left"
+    );
+    let left = tools_dialog_place(size, grid, Some((150.0, 300.0)), None, bounds());
+    assert!(
+        left.0 >= 300.0,
+        "selection on the left, dialog on the right"
+    );
+    let chosen = tools_dialog_place(
+        size,
+        grid,
+        Some((150.0, 300.0)),
+        Some((20.0, 30.0)),
+        bounds(),
+    );
+    assert_eq!(chosen, (20.0, 30.0), "where it was dragged to wins");
+    let off = tools_dialog_place(size, grid, None, Some((5000.0, -40.0)), bounds());
+    assert!(
+        off.0 + size.0 <= bounds().right() + 0.01 && off.1 >= 0.0,
+        "but never off the window"
+    );
 }
 
 #[test]
-fn a_window_too_short_for_the_whole_panel_still_shows_what_it_can() {
-    // Better than the alternative every other menu in this window takes,
-    // which is to draw nothing: a short window must still be one you can
-    // transpose in.
+fn a_window_too_short_for_the_dialog_still_shows_what_it_can() {
+    let tools = Tools::default();
     let short = Rect::new(0.0, 0.0, 800.0, 90.0);
-    let panel = tools_dialog_layout(
-        ToolKind::Adjust,
-        Rect::new(10.0, 2.0, 40.0, 16.0),
+    let d = tools_dialog_layout(
+        ToolKind::Arpeggiate,
+        &tools.rows(ToolKind::Arpeggiate),
+        String::new(),
+        (10.0, 0.0),
         short,
         &metrics(),
     );
-    assert!(!panel.frame.is_empty());
-    assert!(panel.frame.bottom() <= short.bottom() + 0.01);
-    let reachable = panel.rows.iter().filter(|(_, r)| !r.is_empty()).count();
-    assert!(reachable > 0, "nothing on the panel can be clicked");
-    // And a row that fell off the end hit-tests as absent rather than as the
-    // row that happens to be drawn where it would have been.
-    for (row, rect) in &panel.rows {
-        if rect.is_empty() {
-            continue;
-        }
-        assert_eq!(
-            tools_dialog_hit(&panel, rect.x + 1.0, rect.y + rect.height / 2.0),
-            Some(*row)
-        );
-    }
-}
-
-#[test]
-fn nothing_on_the_panel_is_drawn_outside_it() {
-    let panel = tools_dialog_layout(ToolKind::Adjust, chip(), bounds(), &metrics());
-    for (row, rect) in &panel.rows {
-        if rect.is_empty() {
-            continue;
-        }
+    assert!(d.frame.bottom() <= short.bottom() + 0.01);
+    assert!(d.rows.iter().any(|(_, r)| !r.is_empty()));
+    for (_, rect) in &d.rows {
         assert!(
-            panel.frame.intersection(rect) == *rect,
-            "{row:?} at {rect:?} is outside {:?}",
-            panel.frame
-        );
-    }
-}
-
-// ------------------------------------------------- one tool at a time ---
-//
-// Reported from using the window:
-//
-// > *"right now you split the functionality between the settings and tools
-// > button in the piano roll so i currently have to chose how much i want it
-// > transposed in the settings and then click transpose in the tools to
-// > actually do it. this is really annoying. please make it so like fl studio
-// > these menus pop up as their own menu i can then make tweaks in to chose
-// > how i want the tool to apply then i click apply."*
-//
-// The first sentence is a misreading of the window and the misreading is the
-// window's fault: the settings tab's *"Transpose"* is the MIDI keyboard's and
-// has nothing to do with the roll, but it is one word in a list of settings
-// and the roll's transposer is one word in a list of tools, so of course they
-// read as two halves of one thing. Two fixes, and this file is the second:
-// the settings row now says whose transpose it is, and the Tools chip now
-// opens a **menu of tools** where each one is its own small dialog with its
-// own settings and its own Apply — rather than one bench with every tool's
-// settings on it at once, where the amount you were about to apply sat three
-// rows above a button belonging to a different tool.
-
-use fontelle_ui::canvas::{
-    TOOL_MENU, ToolKind, ToolMenuItem, tools_dialog_hit, tools_dialog_layout,
-};
-
-#[test]
-fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
-    let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
-    assert_eq!(
-        labels.len(),
-        9,
-        "five tools that ask something, legato, the two importers, and the MIDI \
-         export: {labels:?}"
-    );
-    for item in TOOL_MENU {
-        assert!(!item.label().is_empty(), "{item:?} has no name");
-    }
-    // The three that take settings say so with an ellipsis, the FL habit and
-    // everybody else's: a menu entry that opens something is spelled
-    // differently from one that does something.
-    for kind in ToolKind::ALL {
-        let entry = TOOL_MENU
-            .iter()
-            .find(|item| matches!(item, ToolMenuItem::Open(k) if *k == kind))
-            .unwrap_or_else(|| panic!("{kind:?} is not on the menu"));
-        assert!(
-            entry.label().ends_with('\u{2026}'),
-            "{kind:?} opens a dialog and its entry does not say so: {}",
-            entry.label()
+            rect.is_empty()
+                || (d.frame.contains(rect.x, rect.y) && rect.bottom() <= d.frame.bottom() + 0.01)
         );
     }
 }
 
 #[test]
-fn every_tool_dialog_holds_that_tools_settings_and_no_other_tools() {
-    // The whole complaint. A dialog that also shows the randomizer's strength
-    // is the bench again, and the reason a transpose amount three rows away
-    // from an Apply button read as living somewhere else entirely.
-    for kind in ToolKind::ALL {
-        let mine = kind.rows();
-        assert!(!mine.is_empty(), "{kind:?} has no settings at all");
-        for other in ToolKind::ALL {
-            if other == kind {
-                continue;
-            }
-            for row in other.rows() {
-                assert!(
-                    !mine.contains(row),
-                    "{kind:?}'s dialog shows {row:?}, which belongs to {other:?}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn every_tool_dialog_ends_in_the_button_that_applies_it() {
-    // *"i can then make tweaks in to chose how i want the tool to apply then i
-    // click apply."* The apply is the last thing in the dialog, under the
-    // settings it applies, because that is the order you do them in.
+fn mute_mutes_what_is_playing_and_unmutes_what_is_all_muted() {
     let tools = Tools::default();
-    for kind in ToolKind::ALL {
-        let rows = kind.rows();
-        let (last, rest) = rows.split_last().expect("a dialog has rows");
-        assert!(
-            tools.action(*last).is_some(),
-            "{kind:?}'s dialog does not end in a button"
-        );
-        // Every row above it is a setting, with one exception that is not one:
-        // Adjust applies two ways — add and take off — and the two buttons sit
-        // together at the bottom.
-        for row in rest {
-            if tools.action(*row).is_some() {
-                assert!(
-                    tools.action(rows[rows.len() - 2]).is_some(),
-                    "{kind:?} has a button above a setting"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn a_dialog_is_titled_with_the_tool_it_is() {
-    for kind in ToolKind::ALL {
-        assert!(!kind.title().is_empty(), "{kind:?} has no title");
-        let l = tools_dialog_layout(kind, chip(), bounds(), &metrics());
-        assert_eq!(l.kind, kind);
-        assert!(!l.title.is_empty(), "{kind:?}'s dialog has no title bar");
-        assert!(
-            l.title.intersection(&l.frame) == l.title,
-            "the title escapes the dialog"
-        );
-        for (row, rect) in &l.rows {
-            assert!(
-                rect.is_empty() || !rect.intersects(&l.title),
-                "{row:?} is drawn over the title"
-            );
-        }
-    }
-}
-
-#[test]
-fn a_click_on_a_dialog_row_finds_that_row() {
-    let l = tools_dialog_layout(ToolKind::Randomize, chip(), bounds(), &metrics());
-    for (row, rect) in &l.rows {
-        let (x, y) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-        assert_eq!(tools_dialog_hit(&l, x, y), Some(*row));
-    }
-    assert_eq!(
-        tools_dialog_hit(&l, l.frame.right() + 20.0, l.frame.y),
-        None
+    let s = scope(vec![
+        note(0, 240, 60),
+        Note {
+            muted: true,
+            ..note(240, 240, 62)
+        },
+    ]);
+    let muted = tools.instant(ToolAction::ToggleMute, &s).unwrap();
+    assert!(
+        muted.after(&s).iter().all(|n| n.muted),
+        "any playing: mute them all"
+    );
+    let all = scope(muted.after(&s));
+    let back = tools.instant(ToolAction::ToggleMute, &all).unwrap();
+    assert!(
+        back.after(&all).iter().all(|n| !n.muted),
+        "all muted: let them play"
     );
     assert_eq!(
-        tools_dialog_hit(&l, l.title.x + 2.0, l.title.y + 2.0),
-        None,
-        "the title is not a row to click"
+        ToolMenuItem::Run(ToolAction::ToggleMute).label_in(&Keymap::default()),
+        "Mute or unmute \u{2014} Ctrl+Shift+M"
     );
-}
-
-#[test]
-fn a_tool_dialog_hangs_off_its_chip_and_stays_inside_the_window() {
-    for kind in ToolKind::ALL {
-        let l = tools_dialog_layout(kind, chip(), bounds(), &metrics());
-        assert_eq!(
-            l.frame.intersection(&bounds()),
-            l.frame,
-            "{kind:?}'s dialog escapes the window"
-        );
-        assert!(l.frame.y >= chip().bottom() - 0.001 || l.frame.bottom() <= chip().y + 0.001);
-        for (row, rect) in &l.rows {
-            assert_eq!(
-                rect.intersection(&l.frame),
-                *rect,
-                "{row:?} is drawn outside {kind:?}'s dialog"
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------- legato ---
-
-#[test]
-fn legato_is_on_the_menu_with_its_shortcut_on_it() {
-    // *"if i press ctrl l ..."* — the key is the point, and a key nobody is
-    // told about is a key nobody presses. It sits with the tools rather than
-    // with the importers because it is an edit to the selection like they
-    // are; it simply has nothing to ask first, so no ellipsis.
-    let entry = TOOL_MENU
-        .iter()
-        .find(|item| matches!(item, ToolMenuItem::Run(ToolAction::Legato)))
-        .expect("legato is on the menu");
-    assert!(entry.label().contains("Legato"));
-    // The key on the row comes from the keymap, so a rebinding shows here.
-    let map = fontelle_ui::canvas::Keymap::default();
-    assert!(
-        entry.label_in(&map).contains("Ctrl+L"),
-        "{}",
-        entry.label_in(&map)
-    );
-    assert_eq!(
-        entry.action(),
-        Some(fontelle_ui::canvas::Action::LegatoOrPlayMode)
-    );
-    assert!(
-        !entry.label().ends_with('\u{2026}'),
-        "it asks nothing, so it must not promise a dialog"
-    );
-}
-
-#[test]
-fn the_menus_legato_and_the_keyboards_are_the_same_edit() {
-    // Two ways in, one implementation — `canvas::legato_edits`. A menu row
-    // and a shortcut that drifted apart would be the worst kind of bug: both
-    // work, and they disagree.
-    use fontelle_model::{Arena, Note};
-    use fontelle_types::{NoteId, PPQN};
-
-    let mut arena: Arena<NoteId, Note> = Arena::default();
-    let ids: Vec<NoteId> = [(0, PPQN / 4, 60u8), (PPQN, PPQN / 4, 62)]
-        .iter()
-        .map(|(start, length, key)| {
-            arena.insert(Note {
-                start: *start,
-                length: *length,
-                key: *key,
-                velocity: 100,
-                pan: 0,
-                fine_pitch: 0,
-                release: 0,
-                mod_x: 0,
-                mod_y: 0,
-                slide: false,
-                path: Vec::new(),
-                channel: None,
-                lyric: String::new(),
-                voice: None,
-            })
-        })
-        .collect();
-
-    let through_the_menu = Tools::default().run(ToolAction::Legato, &ids, &arena);
-    let through_the_key = fontelle_ui::canvas::legato_edits(&ids, &arena);
-    assert_eq!(through_the_menu, through_the_key);
-    assert!(!through_the_key.is_empty(), "there was a gap to close");
-}
-
-/// **The tallest dialog still fits.**
-///
-/// Arpeggiate has eight rows where the other three have two to four, and
-/// `tools_dialog_layout` clips a row that ran off the end to an empty
-/// rectangle — which draws as nothing and hit-tests as absent. That is the
-/// right behaviour for a window somebody has dragged too small, and the wrong
-/// thing to ship: a dialog whose Apply button is the row that vanished is a
-/// tool that cannot be used at all. Measured at the size the window opens at.
-#[test]
-fn the_arpeggiators_dialog_fits_and_every_row_of_it_can_be_reached() {
-    let panel = tools_dialog_layout(ToolKind::Arpeggiate, chip(), bounds(), &metrics());
-    assert_eq!(
-        panel.rows.len(),
-        ToolKind::Arpeggiate.rows().len(),
-        "the dialog dropped a row"
-    );
-    for (row, rect) in &panel.rows {
-        assert!(
-            rect.height > 1.0 && rect.width > 1.0,
-            "{row:?} was clipped away to nothing"
-        );
-        // And a press in the middle of it finds that row rather than its
-        // neighbour, which is what "can be reached" means.
-        let found = tools_dialog_hit(
-            &panel,
-            rect.x + rect.width / 2.0,
-            rect.y + rect.height / 2.0,
-        );
-        assert_eq!(found, Some(*row), "{row:?} is not where it was drawn");
-    }
-    assert!(
-        panel.frame.bottom() <= bounds().bottom() + 0.5,
-        "the dialog runs off the bottom of the window"
-    );
-}
-
-// -------------------------------------------------------------- quantize ---
-// Ty, 2026-10-20: *"add quantize tool and make ctrl q shortcut"* and *"make
-// arpeggiator let you preview changes"*.
-
-/// Notes a little off the sixteenths, and an arena holding them.
-fn played() -> (fontelle_model::Arena<NoteId, Note>, Vec<NoteId>) {
-    let mut notes = fontelle_model::Arena::default();
-    let mut at = |start: i64, length: i64, key: u8| {
-        let mut note = a_note(key, 100);
-        note.start = start;
-        note.length = length;
-        notes.insert(note)
-    };
-    let ids = vec![
-        at(PPQN / 4 + 9, 100, 60),
-        at(PPQN / 2 - 11, 90, 62),
-        at(PPQN, 80, 64),
-    ];
-    (notes, ids)
-}
-
-#[test]
-fn quantize_is_on_the_menu_with_ctrl_q_on_it() {
-    let entry = TOOL_MENU
-        .iter()
-        .find(|item| matches!(item, ToolMenuItem::Open(ToolKind::Quantize)))
-        .expect("quantize is on the menu");
-    let map = fontelle_ui::canvas::Keymap::default();
-    assert!(
-        entry.label_in(&map).contains("Ctrl+Q"),
-        "{}",
-        entry.label_in(&map)
-    );
-    assert_eq!(entry.action(), Some(fontelle_ui::canvas::Action::Quantize));
-    assert!(
-        ToolKind::Quantize
-            .rows()
-            .iter()
-            .any(|row| Tools::default().action(*row) == Some(ToolAction::Quantize)),
-        "its dialog has its button"
-    );
-}
-
-#[test]
-fn quantize_retimes_the_selection_as_one_edit_and_keeps_the_notes() {
-    let (notes, ids) = played();
-    let mut tools = Tools {
-        roll_grid: PPQN / 4,
-        ..Tools::default()
-    };
-    let edits = tools.run(ToolAction::Quantize, &ids, &notes);
-    assert_eq!(
-        edits,
-        vec![RollEdit::Retime {
-            ids: ids.clone(),
-            starts: vec![PPQN / 4, PPQN / 2, PPQN],
-            lengths: vec![100, 90, 80],
-        }],
-        "one edit, the same notes moved — not a remove and an insert, which \
-         would lose the selection"
-    );
-    // Already on the grid: nothing to do, and no empty entry in the history.
-    let (mut on, ids) = played();
-    for (i, id) in ids.iter().enumerate() {
-        on.get_mut(*id).unwrap().start = (i as i64 + 1) * PPQN / 4;
-    }
-    assert!(tools.run(ToolAction::Quantize, &ids, &on).is_empty());
-}
-
-#[test]
-fn the_quantize_grid_follows_the_rolls_snap_until_one_is_chosen() {
-    let mut tools = Tools {
-        roll_grid: PPQN / 2,
-        ..Tools::default()
-    };
-    assert!(
-        tools.value(ToolRow::QuantizeGrid).contains("snap"),
-        "{}",
-        tools.value(ToolRow::QuantizeGrid)
-    );
-    assert!(tools.value(ToolRow::QuantizeGrid).contains("1/8"));
-    assert_eq!(tools.quantize_spec().grid, PPQN / 2);
-    tools.nudge(ToolRow::QuantizeGrid, 1);
-    assert!(!tools.value(ToolRow::QuantizeGrid).contains("snap"));
-    tools.roll_grid = PPQN / 8;
-    assert_ne!(
-        tools.quantize_spec().grid,
-        PPQN / 8,
-        "a chosen grid stays chosen when the snap changes"
-    );
-    // Down: the strength starts at its top rung, a full quick quantize.
-    for row in [ToolRow::QuantizeStrength, ToolRow::QuantizeEnds] {
-        let before = tools.value(row);
-        tools.nudge(row, -1);
-        assert_ne!(tools.value(row), before, "{row:?} does not step");
-    }
-}
-
-/// The dialogs that rearrange notes show what they would make before it is
-/// made: the result, as notes, for the roll to ghost.
-#[test]
-fn a_tools_result_can_be_seen_before_it_is_applied() {
-    let (notes, ids) = selection();
-    let tools = Tools::default();
-    let chord: Vec<Note> = ids
-        .iter()
-        .map(|id| notes.get(*id).unwrap().clone())
-        .collect();
-    assert_eq!(
-        tools.preview(ToolKind::Arpeggiate, &ids, &notes),
-        fontelle_model::arpeggiated(&chord, tools.arp)
-    );
-    let mut stepped = tools;
-    stepped.nudge(ToolRow::ArpRate, 1);
-    assert_ne!(
-        stepped.preview(ToolKind::Arpeggiate, &ids, &notes),
-        tools.preview(ToolKind::Arpeggiate, &ids, &notes),
-        "a setting changed and the preview did not"
-    );
-    let (played_notes, played_ids) = played();
-    let tools = Tools {
-        roll_grid: PPQN / 4,
-        ..Tools::default()
-    };
-    let starts: Vec<i64> = tools
-        .preview(ToolKind::Quantize, &played_ids, &played_notes)
-        .iter()
-        .map(|n| n.start)
-        .collect();
-    assert_eq!(starts, vec![PPQN / 4, PPQN / 2, PPQN]);
-    assert!(
-        tools.preview(ToolKind::Arpeggiate, &[], &notes).is_empty(),
-        "nothing selected, nothing to show"
-    );
-}
-
-#[test]
-fn the_arpeggiator_and_quantize_can_be_heard_before_they_are_applied() {
-    let tools = Tools::default();
-    for kind in [ToolKind::Arpeggiate, ToolKind::Quantize] {
-        assert!(
-            kind.rows()
-                .iter()
-                .any(|row| tools.action(*row) == Some(ToolAction::Hear)),
-            "{kind:?} has no way to hear it"
-        );
-    }
 }

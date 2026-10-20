@@ -148,6 +148,7 @@ fn a_note_on_a_clip_on_a_timeline_reaches_the_sampler_through_the_compiled_graph
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     });
     project.clips.insert(Clip {
         name: None,

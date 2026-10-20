@@ -15,6 +15,7 @@ fn spec(grid: i64) -> QuantizeSpec {
         grid,
         strength: 1.0,
         ends: false,
+        ..QuantizeSpec::default()
     }
 }
 
@@ -73,4 +74,26 @@ fn notes_already_on_the_grid_are_left_as_they_are() {
 fn no_grid_changes_nothing() {
     let notes = [(13, 120), (77, 7)];
     assert_eq!(quantized(&notes, spec(0)), notes.to_vec());
+}
+
+/// Swing, the arpeggiator's arithmetic: every second line `grid × swing × ½`
+/// later, the down-beats untouched (Logic's Q-Swing).
+#[test]
+fn swing_moves_the_off_beat_lines_late() {
+    let mut swung = spec(SIXTEENTH);
+    swung.swing = 1.0;
+    let out = quantized(&[(SIXTEENTH + 5, 60), (2 * SIXTEENTH - 5, 60)], swung);
+    assert_eq!(
+        out,
+        vec![(SIXTEENTH + SIXTEENTH / 2, 60), (2 * SIXTEENTH, 60)]
+    );
+}
+
+/// Logic's Q-Range: a note already near its line keeps its feel.
+#[test]
+fn a_range_leaves_the_near_misses_alone() {
+    let mut gentle = spec(SIXTEENTH);
+    gentle.range = 20;
+    let out = quantized(&[(SIXTEENTH + 10, 60), (SIXTEENTH * 2 + 50, 60)], gentle);
+    assert_eq!(out, vec![(SIXTEENTH + 10, 60), (SIXTEENTH * 2, 60)]);
 }

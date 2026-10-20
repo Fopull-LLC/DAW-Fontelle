@@ -46,6 +46,7 @@ fn a_clip_reaches_the_strips_of_every_channel_it_plays_and_audio_the_one_it_is_r
         channel,
         lyric: String::new(),
         voice: None,
+        muted: false,
     };
     if let ClipSource::Notes(data) = &mut project.clips.get_mut(clip).unwrap().source {
         data.notes.insert(note(60, None));

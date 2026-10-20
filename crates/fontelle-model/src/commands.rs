@@ -4587,6 +4587,100 @@ impl Command for SetNoteKeys {
     }
 }
 
+/// Mutes or unmutes notes, a flag each (`docs/roll-tools-plan.md` §4.3): a
+/// muted note stays in the clip and is not played. One command, so the tool
+/// that set a whole selection is one undo.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetNoteMuted {
+    home: NoteHome,
+    ids: Vec<NoteId>,
+    muted: Vec<bool>,
+    previous: Vec<bool>,
+    label: String,
+}
+
+impl SetNoteMuted {
+    pub fn new(home: impl Into<NoteHome>, ids: Vec<NoteId>, muted: Vec<bool>) -> Self {
+        let verb = if muted.iter().all(|m| *m) {
+            "Mute"
+        } else {
+            "Unmute"
+        };
+        Self {
+            label: note_count_label(verb, ids.len()),
+            home: home.into(),
+            ids,
+            muted,
+            previous: Vec::new(),
+        }
+    }
+}
+
+impl Command for SetNoteMuted {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetNoteMuted(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        if self.muted.len() != self.ids.len() {
+            return Err(CommandError(format!(
+                "{} flags for {} notes",
+                self.muted.len(),
+                self.ids.len()
+            )));
+        }
+        let data = notes_of(doc, self.home)?;
+        // Every check before every write, as `SetNoteKeys` does.
+        if let Some(id) = self.ids.iter().find(|id| data.notes.get(**id).is_none()) {
+            return Err(CommandError(format!("no note {id:?} in this clip")));
+        }
+        if self.previous.is_empty() {
+            self.previous = self
+                .ids
+                .iter()
+                .filter_map(|id| data.notes.get(*id).map(|note| note.muted))
+                .collect();
+        }
+        for (id, muted) in self.ids.iter().zip(&self.muted) {
+            if let Some(note) = data.notes.get_mut(*id) {
+                note.muted = *muted;
+            }
+        }
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        if self.previous.is_empty() {
+            return Box::new(NotApplied::new("muting notes"));
+        }
+        Box::new(SetNoteMuted::new(
+            self.home,
+            self.ids.clone(),
+            self.previous.clone(),
+        ))
+    }
+
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.ids.len() * std::mem::size_of::<NoteId>()
+            + self.muted.len()
+            + self.previous.len()
+            + self.label.len()
+    }
+}
+
 /// Sets the song's key ([`Project::key`]), or clears it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SetKey {

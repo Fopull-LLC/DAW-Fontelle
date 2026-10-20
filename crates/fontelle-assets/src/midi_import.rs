@@ -786,6 +786,7 @@ fn push_note(notes: &mut Arena<NoteId, Note>, key: u8, start: &Pending, end: Tic
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     });
 }
 

@@ -33,6 +33,7 @@ fn choosing_a_found_scale_sets_the_key_and_moves_nothing() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         })
         .collect();
     fontelle_model::AddNotes::new(clip, tune)

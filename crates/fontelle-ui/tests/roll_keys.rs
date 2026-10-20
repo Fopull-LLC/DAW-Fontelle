@@ -46,6 +46,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 
@@ -498,12 +499,19 @@ fn legato_carries_the_last_note_to_the_end_of_the_clip() {
 }
 
 #[test]
-fn the_tools_menus_legato_reaches_the_end_too() {
+fn the_lengths_tools_legato_reaches_the_end_too() {
     let (arena, ids) = notes(&[(0, PPQN / 4, 60), (PPQN, PPQN / 4, 62)]);
-    let mut tools = fontelle_ui::canvas::Tools {
+    let tools = fontelle_ui::canvas::Tools {
         clip_end: Some(PPQN * 4),
         ..Default::default()
     };
-    let edits = tools.run(fontelle_ui::canvas::ToolAction::Legato, &ids, &arena);
-    assert_eq!(lengths(&edits, &ids), vec![PPQN, PPQN * 3]);
+    let scope: Vec<_> = ids
+        .iter()
+        .map(|id| (*id, arena.get(*id).unwrap().clone()))
+        .collect();
+    let after = tools
+        .result(fontelle_ui::canvas::ToolKind::Lengths, &scope)
+        .after(&scope);
+    let got: Vec<i64> = after.iter().map(|n| n.length).collect();
+    assert_eq!(got, vec![PPQN, PPQN * 3]);
 }

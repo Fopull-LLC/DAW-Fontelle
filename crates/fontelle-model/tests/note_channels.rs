@@ -46,6 +46,7 @@ fn a_note(key: u8, channel: Option<ChannelId>) -> Note {
         channel,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

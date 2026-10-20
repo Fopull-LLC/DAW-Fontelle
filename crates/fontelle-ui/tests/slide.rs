@@ -41,6 +41,7 @@ fn note(start: Tick, key: u8, slide: bool) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

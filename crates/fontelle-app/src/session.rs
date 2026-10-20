@@ -8519,6 +8519,7 @@ impl DocumentHost for Session {
                 self.insert(clip, vec![note])
             }
             RollEdit::Insert(notes) => self.insert(clip, notes),
+            RollEdit::Apply { label, result } => self.apply_tool(clip, label, result),
             RollEdit::Remove(ids) => {
                 self.run(Box::new(RemoveNotes::new(clip, ids)));
                 Vec::new()
@@ -8945,6 +8946,28 @@ impl Session {
         if self.holds_no_notes(clip) {
             return Vec::new();
         }
+        self.tag_for_insert(clip, &mut notes);
+        // Through `apply_for` like every other command that hands its ids
+        // back. It used to call `History::apply` itself, which made a **third**
+        // way into the history — and the third way was the one that forgot to
+        // move the revision, so notes drawn in the roll never reached the
+        // block on the arrangement. Two ways in are enough to keep honest.
+        let ids = match self.apply_for::<AddNotes>(Box::new(AddNotes::new(clip, notes))) {
+            Ok(add) => add.ids().to_vec(),
+            Err(e) => {
+                eprintln!("Fontelle: {e}");
+                self.message = Some(e);
+                return Vec::new();
+            }
+        };
+        self.republish();
+        ids
+    }
+
+    /// What every note written into `clip` gets: the channel the rack has
+    /// selected, and on a vocal track a syllable to sing — shared by
+    /// [`insert`](Self::insert) and a roll tool's new notes.
+    fn tag_for_insert(&self, clip: fontelle_model::NoteHome, notes: &mut [Note]) {
         // **On the selected channel**, whatever the note said and whatever
         // the clip's own channel is: the rack's selection is the instrument
         // every interaction means. A note drawn, pasted or recorded while
@@ -8963,7 +8986,7 @@ impl Session {
                     c.vocal.as_ref().map_or("en", |v| v.language.as_str()),
                 )
             });
-        for note in &mut notes {
+        for note in notes.iter_mut() {
             note.channel = match (selected, home) {
                 (Some(selected), Some(home)) if selected == home => None,
                 (Some(selected), _) => Some(selected),
@@ -8975,19 +8998,113 @@ impl Session {
                 note.lyric = syllable.to_string();
             }
         }
-        // Through `apply_for` like every other command that hands its ids
-        // back. It used to call `History::apply` itself, which made a **third**
-        // way into the history — and the third way was the one that forgot to
-        // move the revision, so notes drawn in the roll never reached the
-        // block on the arrangement. Two ways in are enough to keep honest.
-        let ids = match self.apply_for::<AddNotes>(Box::new(AddNotes::new(clip, notes))) {
-            Ok(add) => add.ids().to_vec(),
+    }
+
+    /// A roll tool's answer, as one compound — one undo — that keeps the
+    /// rewritten notes' ids. Answers with the new notes' ids.
+    fn apply_tool(
+        &mut self,
+        clip: fontelle_model::NoteHome,
+        label: String,
+        result: fontelle_model::ToolResult,
+    ) -> Vec<NoteId> {
+        use fontelle_model::{Command, NoteProperty};
+        const PROPERTIES: [NoteProperty; 6] = [
+            NoteProperty::Velocity,
+            NoteProperty::Pan,
+            NoteProperty::FinePitch,
+            NoteProperty::Release,
+            NoteProperty::ModX,
+            NoteProperty::ModY,
+        ];
+        let mut parts: Vec<Box<dyn Command>> = Vec::new();
+        let mut lengths: (Vec<NoteId>, Vec<fontelle_types::Tick>) = (Vec::new(), Vec::new());
+        let mut values: Vec<(Vec<NoteId>, Vec<i32>)> =
+            vec![(Vec::new(), Vec::new()); PROPERTIES.len()];
+        let mut muting: (Vec<NoteId>, Vec<bool>) = (Vec::new(), Vec::new());
+        for (id, new) in &result.rewrite {
+            let Some(old) = self.roll_notes.get(*id) else {
+                continue;
+            };
+            let moved = new.start - old.start;
+            let keyed = i16::from(new.key) - i16::from(old.key);
+            if moved != 0 || keyed != 0 {
+                parts.push(Box::new(fontelle_model::MoveNotes::new(
+                    clip,
+                    vec![*id],
+                    moved,
+                    keyed,
+                )));
+            }
+            if new.length != old.length {
+                lengths.0.push(*id);
+                lengths.1.push(new.length);
+            }
+            for (slot, property) in PROPERTIES.iter().enumerate() {
+                if property.get(new) != property.get(old) {
+                    values[slot].0.push(*id);
+                    values[slot].1.push(property.get(new));
+                }
+            }
+            if new.path != old.path {
+                parts.push(Box::new(fontelle_model::SetNotePath::new(
+                    clip,
+                    *id,
+                    new.path.clone(),
+                )));
+            }
+            if new.muted != old.muted {
+                muting.0.push(*id);
+                muting.1.push(new.muted);
+            }
+        }
+        if !muting.0.is_empty() {
+            parts.push(Box::new(fontelle_model::SetNoteMuted::new(
+                clip, muting.0, muting.1,
+            )));
+        }
+        if !lengths.0.is_empty() {
+            parts.push(Box::new(fontelle_model::SetNoteLengths::new(
+                clip, lengths.0, lengths.1,
+            )));
+        }
+        for (slot, (ids, vals)) in values.into_iter().enumerate() {
+            if !ids.is_empty() {
+                parts.push(Box::new(fontelle_model::SetNotePropertyEach::new(
+                    clip,
+                    ids,
+                    PROPERTIES[slot],
+                    vals,
+                )));
+            }
+        }
+        if !result.remove.is_empty() {
+            parts.push(Box::new(RemoveNotes::new(clip, result.remove)));
+        }
+        let mut insert = result.insert;
+        if !insert.is_empty() {
+            self.tag_for_insert(clip, &mut insert);
+            parts.push(Box::new(AddNotes::new(clip, insert)));
+        }
+        if parts.is_empty() {
+            return Vec::new();
+        }
+        let ids = match self.apply_for::<fontelle_model::Compound>(Box::new(
+            fontelle_model::Compound::new(label, parts),
+        )) {
+            Ok(done) => done
+                .parts()
+                .iter()
+                .filter_map(|part| part.as_any().downcast_ref::<AddNotes>())
+                .flat_map(|add| add.ids().to_vec())
+                .collect(),
             Err(e) => {
                 eprintln!("Fontelle: {e}");
                 self.message = Some(e);
                 return Vec::new();
             }
         };
+        self.let_go();
         self.republish();
         ids
     }
@@ -13457,6 +13574,20 @@ impl StudioHost for Session {
 
     fn set_keymap_overrides(&mut self, overrides: Vec<(String, String)>) {
         self.settings.keybinds = overrides.into_iter().collect();
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
+    fn roll_tool_settings(&self) -> Option<String> {
+        self.settings.roll_tools.clone()
+    }
+
+    fn set_roll_tool_settings(&mut self, json: String) {
+        if self.settings.roll_tools.as_deref() == Some(json.as_str()) {
+            return;
+        }
+        self.settings.roll_tools = Some(json);
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }

@@ -152,6 +152,7 @@ fn project_with_a_held_note() -> (Project, fontelle_types::ChannelId) {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     });
     project.clips.insert(Clip {
         name: None,

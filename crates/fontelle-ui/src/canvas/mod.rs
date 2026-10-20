@@ -350,8 +350,9 @@ pub use timeline::{
     MeterPin, clip_meter_lines, meter_flags, meter_pins, timeline_bar_numbers, timeline_grid_lines,
 };
 pub use tools::{
-    TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
-    tools_dialog_hit, tools_dialog_layout,
+    TOOL_MENU, ToolAction, ToolControl, ToolKind, ToolMenuItem, ToolPress, ToolRow, Tools,
+    ToolsDialog, pattern_cells, step_arrows, tools_dialog_hit, tools_dialog_layout,
+    tools_dialog_place, tools_dialog_press, tools_dialog_size,
 };
 pub use tune::{
     KEYBOARD_FLOOR, KEYBOARD_HEIGHT, KEYBOARD_KEYS, KEYBOARD_OCTAVES, NO_MIDI, TRACE_SECONDS,

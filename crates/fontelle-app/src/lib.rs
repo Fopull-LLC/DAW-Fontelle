@@ -205,6 +205,7 @@ pub fn demo_project(root_key: u8, bpm: f64, sample_rate: u32) -> Project {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
     };
 

@@ -88,6 +88,13 @@ pub struct Note {
     /// `Project::format_needed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<Box<crate::NoteVoice>>,
+    /// Kept in the clip, drawn hollow, never played — FL Studio's note mute
+    /// (`docs/roll-tools-plan.md` §4.3). Left out of the file when false, so
+    /// a song with no muted note is written exactly as before. Not a format
+    /// bump, as a note's path was not: an older build reads the note and
+    /// plays it, which is the note as it was before it was muted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
 }
 
 /// One point on a note's [path](Note::path).

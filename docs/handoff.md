@@ -16,6 +16,27 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-20 evening (0.31.0-beta.1: the roll's tools).**
+`PROGRESS.md`'s top entry and `docs/roll-tools-plan.md`. Things to know:
+
+(a) **A new roll tool** is a pure function in `fontelle-model/src/tools/`
+returning a `ToolResult`, plus a `ToolKind` (or a `ToolAction` if it has no
+dialog) in `fontelle-ui/src/canvas/tools/mod.rs`: its rows in `rows`, and a
+line in each of `label`, `value`, `tip`, `nudge`, `reset`, `result`. The
+window side needs nothing — `app/roll_tools.rs` is generic over the kind.
+Never answer with separate `Remove` and `Insert` edits again: that was the
+arpeggiator's two undos.
+
+(b) **`Note` has a `muted` field**, so a new `Note { .. }` literal needs
+`muted: false`. A muted note is skipped by the sequencer and MIDI export;
+anything else that turns notes into sound or files should skip it too.
+**The vocal renderer does not**, so muting is refused on a vocal track
+(`run_tool`, `ToggleMute`) until it does.
+
+(c) **The status line does not hold a tool's sentence**: `refresh_studio`
+rewrites `status` from the browser every refresh. A test that reads
+`w.status()` after an edit reads the browser's line.
+
 **Updated 2026-10-20 (v0.30.0: the feedback round and the install ping).**
 `PROGRESS.md`'s top entry. Things to know:
 

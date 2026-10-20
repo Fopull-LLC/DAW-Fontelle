@@ -2314,6 +2314,18 @@ pub trait StudioHost: DocumentHost {
         let _ = overrides;
     }
 
+    /// The roll tools' settings as the settings file keeps them
+    /// (`Tools::to_json`), if any were kept. The window owns them; the host
+    /// only remembers them.
+    fn roll_tool_settings(&self) -> Option<String> {
+        None
+    }
+
+    /// Remembers the roll tools' settings for the next launch.
+    fn set_roll_tool_settings(&mut self, json: String) {
+        let _ = json;
+    }
+
     // ------------------------------------------------- files to import ---
 
     /// Tells the host which of the browser's lists is on screen.

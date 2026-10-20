@@ -60,6 +60,7 @@ fn notes(items: &[(Tick, Tick, u8)]) -> Arena<NoteId, Note> {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
     }
     arena

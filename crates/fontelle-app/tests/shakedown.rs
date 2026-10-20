@@ -286,6 +286,7 @@ fn a_whole_piece_made_the_way_a_person_makes_one() {
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             },
         });
         s.end_gesture();
@@ -459,6 +460,7 @@ fn undoing_the_whole_session_gets_back_to_where_it_started() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         },
     });
     s.end_gesture();
@@ -561,6 +563,7 @@ fn the_piece_you_made_is_audible_in_the_file_you_rendered() {
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             },
         });
         s.end_gesture();

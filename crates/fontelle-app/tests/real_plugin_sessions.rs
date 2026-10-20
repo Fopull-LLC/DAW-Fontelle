@@ -660,6 +660,7 @@ fn a_real_instrument_is_in_an_export_and_in_a_row_rendered_to_audio() {
                 channel: None,
                 lyric: String::new(),
                 voice: None,
+                muted: false,
             },
         });
         session.save_as("Render").expect("saves");
@@ -808,6 +809,7 @@ fn a_real_instrument_opened_from_its_saved_state_sounds_the_same() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
 
         let mut rack = studio_rack();
@@ -976,6 +978,7 @@ fn one_note_through_the_rack() {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     });
     if std::env::var_os("FONTELLE_REAL_SESSION_FIRST").is_some() {
         let dir = scratch("one-note");

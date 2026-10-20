@@ -65,6 +65,7 @@ fn note(start: Tick, length: Tick, key: u8) -> Note {
         channel: None,
         lyric: String::new(),
         voice: None,
+        muted: false,
     }
 }
 

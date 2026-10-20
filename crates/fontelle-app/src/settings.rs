@@ -147,6 +147,12 @@ pub struct Settings {
     /// is not a broken one.
     #[serde(default)]
     pub keybinds: std::collections::BTreeMap<String, String>,
+    /// The piano roll's tools as they were last set, as the window writes
+    /// them (`fontelle-ui`'s `Tools::to_json`) — kept as text so this crate
+    /// does not have to know every tool's shape, and a tool added later is
+    /// its default here rather than a file that will not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll_tools: Option<String>,
     /// The projects the start menu lists, newest first — every bundle this
     /// machine last opened, made or saved under a name. See
     /// [`Settings::remember_project`] for the shape of the list.
@@ -391,6 +397,7 @@ impl Default for Settings {
             plugin_dirs: Vec::new(),
             favorites: Vec::new(),
             keybinds: std::collections::BTreeMap::new(),
+            roll_tools: None,
             recent_projects: Vec::new(),
             check_for_updates: true,
             beta_updates: false,

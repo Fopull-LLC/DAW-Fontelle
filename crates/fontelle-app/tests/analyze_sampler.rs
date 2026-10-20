@@ -92,6 +92,7 @@ fn render_notes(
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
     }
     AddClip::new(Clip {

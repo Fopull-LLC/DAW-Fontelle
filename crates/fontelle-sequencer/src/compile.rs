@@ -284,7 +284,9 @@ pub fn compile_with(
         for repeat in 0..clip.repeats() {
             let offset = clip.repeat_start(repeat);
 
-            for note in note_data.notes.values() {
+            // A muted note is kept in the clip and never played
+            // (`docs/roll-tools-plan.md` §4.3).
+            for note in note_data.notes.values().filter(|n| !n.muted) {
                 // Only the notes inside one period belong to a repeat. A note
                 // written past the period is content the loop does not
                 // contain — it is what the clip would play if it were not
@@ -819,6 +821,7 @@ mod tests {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         });
 
         project.clips.insert(Clip {

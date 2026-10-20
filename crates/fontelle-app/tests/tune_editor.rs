@@ -178,6 +178,7 @@ fn the_trace_reads_back_what_the_node_wrote() {
             channel: None,
             lyric: String::new(),
             voice: None,
+            muted: false,
         }],
     )
     .apply(&mut project)

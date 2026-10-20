@@ -128,5 +128,6 @@ pub fn vocal_note(start: Tick, length: Tick, key: u8, lyric: impl Into<String>) 
         channel: None,
         lyric: lyric.into(),
         voice: None,
+        muted: false,
     }
 }

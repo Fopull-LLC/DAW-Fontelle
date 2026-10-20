@@ -28,6 +28,7 @@ pub fn note(start: Tick, length: Tick, key: u8, lyric: &str) -> Note {
         channel: None,
         lyric: lyric.to_string(),
         voice: None,
+        muted: false,
     }
 }
 

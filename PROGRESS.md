@@ -19,6 +19,60 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-20 (evening) — the roll's tools round; for 0.31.0-beta.1.**
+Ty: *"spend some time putting together a plan to make the tools section
+start feeling feature complete"*, then *"great plan now follow through
+release on beta"*. `docs/roll-tools-plan.md` is the plan and its status
+note; §7's decisions were taken as recommended.
+
+- **One shape for every tool** (`fontelle_model::ToolResult`: rewrite /
+  remove / insert) and **one edit** for it (`RollEdit::Apply` →
+  `Session::apply_tool`, a `Compound` of existing commands — one undo, ids
+  kept, no new wire tag but mute's). Fixed the arpeggiator's two undos
+  (the first emptied the clip, seen on `:99`) and its delete burst.
+- **The model** (`fontelle-model/src/tools/`, one file a tool, one test file
+  each): strum (+ `chords_of`, `CHORD_CATCH`), chop, glue, flip in time
+  and pitch (in key by scale step), levels (add/set/scale/compress/limit/
+  ramp — replaces Adjust), lengths (legato with gap/staccato/fixed/at
+  least/at most/trim), doubles/overlaps/mono, flam, thin out (FL's claw),
+  shuffle (Live's Recombine), speed, humanize (timing and length — §7 Q4
+  reverses September's "no timing"; pitch still out), transpose in scale
+  steps and kept in a range, select-by, and quantize's swing and range.
+- **The window** (`app/roll_tools.rs`, so `app.rs` did not grow): a tool
+  acts on the selection or the whole clip and its title says which; the
+  result stays selected; Enter applies, Escape closes, the dialog survives
+  an undo; it opens on the side of the grid away from the notes and is
+  dragged by its title (remembered); every value row is `‹ value ›` with
+  click/Ctrl+click, arrows and a horizontal drag (never the wheel); Reset,
+  *Hear it* and Apply on every dialog; rows follow the mode; tips on hover
+  (`Tools::tip` had no caller); the chip's tip says what is there now and
+  goes quiet while its dialog is up; the preview dims what changes, ghosts
+  the answer, points at ghosts off the view, and shows new values in the
+  property lane. Settings kept in `settings.json` (`roll_tools`).
+- **The menu**: groups under greyed headings (Timing, Pitch, Levels,
+  Length, Shape, Generate, Select, Files). **Keys**: Ctrl+G glue, Ctrl+U
+  quick chop, Shift+Q starts only, Ctrl+Shift+T repeat last, Alt+A/U/L/Y/
+  F/W/X open arpeggiate/chop/lengths/flip/flam/thin out/levels. Strum,
+  Quantize's dialog and Humanize have no Alt key: Alt+S/Q/R are the vocal
+  pitch keys in the same context.
+- **Note mute**: `Note::muted` (skipped when false, no format bump — an
+  older build plays it), `SetNoteMuted` (wire tag appended), skipped by the
+  compiler and MIDI export, drawn hollow; "Mute or unmute" on the menu and
+  Ctrl+Shift+M while the roll has the keyboard. The unbuilt `Tool::Mute`
+  and `Tool::Slip` are gone.
+- **Not built**: typing a value into a row, a drawn curve, FL's mute
+  pencil, the docked drawer. **Known, not this round's**: a tool's status
+  line is replaced at the next refresh by the browser's (`refresh_studio`
+  rebuilds `status` from the browser every time) — pre-existing.
+- Tests: fontelle-model `tool_result`, `strum`, `chop`, `glue`, `flip`,
+  `levels`, `lengths`, `overlaps`, `flam`, `thin`, `shuffle`, `speed`,
+  `humanize`, `transposing`, `selecting`, `note_mute`, `quantize` (+2),
+  `wire` (+1); fontelle-sequencer `note_mute`; fontelle-ui `tools_panel`
+  (rewritten, 23), `context_menu` (+1: a heading is never the last row of
+  a column — the generic menu split had parted "Generate" from Arpeggiate);
+  fontelle-app `roll_tools_window` (23, including the title following an
+  undo and mute refused on a vocal track).
+
 **2026-10-20 — the feedback round after 0.29.0, and the install ping;
 released in 0.30.0.** Ty, after testing with other people: ten reports.
 `docs/feedback-round-2026-10-20.md` has each one's cause and fix.

@@ -630,6 +630,12 @@ pub struct RollChords {
     pub outline_outside: Option<u16>,
     /// What is left of notes just deleted (`canvas::Particles`).
     pub flecks: Vec<crate::canvas::Fleck>,
+    /// An open tool's notes as it would leave them — the ones it rewrites
+    /// and the ones it adds — for the property lane to show their values.
+    pub previews: Vec<fontelle_model::Note>,
+    /// The notes an open tool changes or removes, drawn dimmed under its
+    /// ghosts.
+    pub dimmed: Vec<fontelle_types::NoteId>,
 }
 
 /// The strip open on a placed note.
@@ -6848,6 +6854,13 @@ pub fn draw_piano_roll(
             );
             continue;
         }
+        // A muted note is hollow: its outline and nothing in it, so it is
+        // plainly still there and plainly not playing — FL draws mute the
+        // same way (`docs/roll-tools-plan.md` §4.3).
+        if note.muted {
+            stroke_rect_rounded(scene, block.inset(1.0), 2.0, 1.0, fill);
+            continue;
+        }
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
@@ -7069,6 +7082,7 @@ pub fn draw_piano_roll(
 /// One tool's dialog. **Last, over everything**, for the reason the lane menu
 /// is: it is not part of the layout it covers.
 fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RollChrome<'_>) {
+    use crate::canvas::{ToolControl, ToolRow};
     let Some(panel) = chrome.tools_panel else {
         return;
     };
@@ -7085,10 +7099,10 @@ fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         p.panel_header,
     );
 
-    // The title, which is what says whose settings these are — and the reason
-    // a row inside can be called "Semitones" rather than "Transpose by".
+    // The title: whose settings these are and what they act on — and the
+    // handle the dialog is dragged by.
     if !panel.title.is_empty()
-        && let Some(text) = labels.get(panel.kind.title())
+        && let Some(text) = labels.get(&panel.title_text)
     {
         draw_text_clipped(
             scene,
@@ -7100,44 +7114,99 @@ fn draw_tools_panel(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         );
     }
 
+    let middle = |text: &TextLayout, r: Rect| r.y + (r.height - text.height) / 2.0;
     for (row, rect) in &panel.rows {
         if rect.is_empty() {
             continue;
         }
-        let action = chrome.tools.action(*row).is_some();
-        // An action row carries a frame so it reads as a button rather than
-        // as another read-out — the same reasoning that put a frame on the
-        // toolbar's chips.
-        if action {
-            fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, p.panel);
-        }
-        let ink = p.text;
         let inset = m.panel_padding.min(rect.width);
-        if let Some(text) = labels.get(&chrome.tools.label(*row)) {
-            draw_text_clipped(
-                scene,
-                text,
-                *rect,
-                rect.x + inset,
-                rect.y + (rect.height - text.height) / 2.0,
-                ink,
-            );
-        }
-        // The value is right-aligned against the row's far edge, so a column
-        // of them reads down the panel rather than wandering with the names.
-        let value = chrome.tools.value(*row);
-        if value.is_empty() {
-            continue;
-        }
-        if let Some(text) = labels.get(&value) {
-            draw_text_clipped(
-                scene,
-                text,
-                *rect,
-                rect.right() - inset - text.width,
-                rect.y + (rect.height - text.height) / 2.0,
-                p.accent,
-            );
+        let label = chrome.tools.label(*row);
+        match chrome.tools.control(*row) {
+            // A button reads as one: a frame, its name in the middle, and
+            // Apply in the accent because it is the one that writes.
+            ToolControl::Button => {
+                let apply = *row == ToolRow::Apply;
+                let ground = if apply {
+                    p.accent.with_alpha(0x50)
+                } else {
+                    p.panel
+                };
+                fill_rect_rounded(scene, rect.inset(1.0), m.corner_radius, ground);
+                if apply {
+                    stroke_rect_rounded(scene, rect.inset(1.0), m.corner_radius, 1.0, p.accent);
+                }
+                if let Some(text) = labels.get(&label) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        *rect,
+                        rect.x + (rect.width - text.width) / 2.0,
+                        middle(text, *rect),
+                        p.text,
+                    );
+                }
+            }
+            ToolControl::Pattern => {
+                if let Some(text) = labels.get(&label) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        *rect,
+                        rect.x + inset,
+                        middle(text, *rect),
+                        p.text,
+                    );
+                }
+                let pattern = chrome.tools.chop.pattern;
+                for (i, cell) in crate::canvas::pattern_cells(*rect, chrome.tools.chop.pattern_len)
+                    .iter()
+                    .enumerate()
+                {
+                    if pattern & (1 << i) != 0 {
+                        fill_rect_rounded(scene, *cell, 2.0, p.accent);
+                    } else {
+                        stroke_rect_rounded(scene, *cell, 2.0, 1.0, p.border);
+                    }
+                }
+            }
+            // `‹ value ›`: arrows that say the value can be stepped, which
+            // the old dialog left to be guessed (`docs/roll-tools-plan.md`
+            // U1).
+            ToolControl::Steps => {
+                if let Some(text) = labels.get(&label) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        *rect,
+                        rect.x + inset,
+                        middle(text, *rect),
+                        p.text,
+                    );
+                }
+                let (back, value, forward) = crate::canvas::step_arrows(*rect);
+                for (glyph, at) in [("\u{2039}", back), ("\u{203a}", forward)] {
+                    if let Some(text) = labels.get(glyph) {
+                        draw_text_clipped(
+                            scene,
+                            text,
+                            at,
+                            at.x + (at.width - text.width) / 2.0,
+                            middle(text, at),
+                            p.text_muted,
+                        );
+                    }
+                }
+                if let Some(text) = labels.get(&chrome.tools.value(*row)) {
+                    draw_text_clipped(
+                        scene,
+                        text,
+                        value,
+                        value.x + (value.width - text.width) / 2.0,
+                        middle(text, value),
+                        p.accent,
+                    );
+                }
+            }
         }
     }
 }
@@ -7276,6 +7345,25 @@ fn draw_property_lane(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome:
         let selected = chrome.selection.contains(&id);
         fill_rect(scene, bar, if selected { p.note_selected } else { p.note });
     }
+    // An open tool's notes as it would leave them, their values beside the
+    // ones there now in the accent — Levels and Humanize change nothing the
+    // grid can show (`docs/roll-tools-plan.md` §3.5).
+    for note in &chrome.chords.previews {
+        if note.start + note.length < ticks.start || note.start > ticks.end {
+            continue;
+        }
+        let x = tick_to_x(v, chrome.layout.grid, note.start) + 4.0;
+        let value = lane_y_of_value(property, lane, property.of(note));
+        let (top, height) = if value <= baseline {
+            (value, baseline - value)
+        } else {
+            (baseline, value - baseline)
+        };
+        let bar = Rect::new(x, top, 3.0, height.max(2.0)).intersection(&lane);
+        if !bar.is_empty() {
+            fill_rect(scene, bar, p.accent);
+        }
+    }
 }
 
 /// The toolbar: the tools, the snap chip, the zooms.
@@ -7330,6 +7418,67 @@ fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) 
                 stroke_rect_rounded(scene, r, 2.0, 2.0, theme.palette.meter_peak);
             }
         }
+    }
+    // What an open tool changes or removes, dimmed under its ghosts: a veil
+    // of the grid's own ground over the note and its outline kept, so before
+    // and after read at a glance (`docs/roll-tools-plan.md` §3.5).
+    for id in &chrome.chords.dimmed {
+        let Some(note) = chrome.notes.get(*id) else {
+            continue;
+        };
+        let row = crate::canvas::key_row(&chrome.view, grid, note.key);
+        let x0 = crate::canvas::tick_to_x(&chrome.view, grid, note.start);
+        let x1 = crate::canvas::tick_to_x(&chrome.view, grid, note.start + note.length);
+        let r = Rect::new(x0, row.y, (x1 - x0).max(3.0), row.height)
+            .inset(1.0)
+            .intersection(&grid)
+            .clamped();
+        if r.is_empty() {
+            continue;
+        }
+        fill_rect_rounded(scene, r, 2.0, theme.palette.panel.with_alpha(0xC0));
+        stroke_rect_rounded(scene, r, 2.0, 1.0, theme.palette.note.with_alpha(0x90));
+    }
+    // A ghost the view cannot show — a transpose up an octave from the top
+    // of the screen — is pointed at from the edge it went past (§3.5, U4).
+    // Only one whose time is on screen: a ghost off to the side is not
+    // "above" or "below" anything the eye can follow.
+    let (mut above, mut below) = (None::<f32>, None::<f32>);
+    for ghost in &chrome.chords.ghosts {
+        let row = crate::canvas::key_row(&chrome.view, grid, ghost.key);
+        let x = crate::canvas::tick_to_x(&chrome.view, grid, ghost.start);
+        if x < grid.x || x > grid.right() {
+            continue;
+        }
+        let x = x.clamp(grid.x + 8.0, (grid.right() - 8.0).max(grid.x + 8.0));
+        if row.bottom() <= grid.y {
+            above.get_or_insert(x);
+        } else if row.y >= grid.bottom() {
+            below.get_or_insert(x);
+        }
+    }
+    for (x, up) in above
+        .map(|x| (x, true))
+        .into_iter()
+        .chain(below.map(|x| (x, false)))
+    {
+        let (tip, base) = if up {
+            (grid.y + 2.0, grid.y + 10.0)
+        } else {
+            (grid.bottom() - 2.0, grid.bottom() - 10.0)
+        };
+        let mut arrow = BezPath::new();
+        arrow.move_to((x as f64, tip as f64));
+        arrow.line_to((x as f64 - 7.0, base as f64));
+        arrow.line_to((x as f64 + 7.0, base as f64));
+        arrow.close_path();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.palette.accent.to_peniko(),
+            None,
+            &arrow,
+        );
     }
     for ghost in &chrome.chords.ghosts {
         let row = crate::canvas::key_row(&chrome.view, grid, ghost.key);
