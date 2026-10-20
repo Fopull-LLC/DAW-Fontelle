@@ -309,3 +309,130 @@ pub fn said_bubble(text: &str) -> String {
         )
     }
 }
+
+// ------------------------------------------------------------- smoothing
+
+/// How quickly a glide closes on where it is going: about this many seconds
+/// to cover two thirds of the way. Short enough that a cursor still feels
+/// live; long enough to join fifteen messages a second into a line.
+const CURSOR_EASE_S: f32 = 0.05;
+const PLAYHEAD_EASE_S: f64 = 0.08;
+/// A marker that moves further than this at once was put there (a click on
+/// the ruler, a jump to the start), and is drawn there, not slid there.
+const PLAYHEAD_SNAP_TICKS: f64 = fontelle_types::PPQN as f64 * 4.0;
+/// How long a playing marker runs on past its last message before it waits
+/// for the next: a lost message must not carry it off into the song.
+const RUN_ON_S: f64 = 0.3;
+
+/// Somebody's time marker as drawn: eased between the moments it is heard,
+/// and run on at the pace it was heard moving while they play.
+///
+/// Ty, 2026-10-20: *"add smoothing to collaboration syncing on cursor and
+/// time bar."* Whereabouts arrive fifteen times a second (`PRESENCE_EVERY`
+/// in the app), and a marker drawn where each put it moved in steps. Time
+/// is in seconds from any start the caller likes; ticks are song ticks.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayheadGlide {
+    /// The last tick heard, and when.
+    heard: Option<(f64, f64)>,
+    playing: bool,
+    /// Ticks a second, learned from the messages while playing.
+    rate: f64,
+    shown: Option<f64>,
+}
+
+impl PlayheadGlide {
+    /// What the last message said. The same message read again (the window
+    /// reads whereabouts every pass) changes nothing — not even when it was
+    /// heard, which is what the pace is measured from.
+    pub fn hear(&mut self, tick: f64, playing: bool, now: f64) {
+        if let Some((was, at)) = self.heard {
+            if was == tick && playing == self.playing {
+                return;
+            }
+            if playing && self.playing && now > at {
+                let pace = (tick - was) / (now - at);
+                if pace > 0.0 {
+                    self.rate = if self.rate > 0.0 {
+                        self.rate * 0.6 + pace * 0.4
+                    } else {
+                        pace
+                    };
+                }
+            }
+        }
+        if !playing {
+            self.rate = 0.0;
+        }
+        self.heard = Some((tick, now));
+        self.playing = playing;
+    }
+
+    /// Where it is drawn now, `dt` seconds after the last frame.
+    pub fn advance(&mut self, now: f64, dt: f32) -> f64 {
+        let Some((tick, at)) = self.heard else {
+            return self.shown.unwrap_or(0.0);
+        };
+        let target = tick + self.rate * (now - at).clamp(0.0, RUN_ON_S);
+        let shown = match self.shown {
+            Some(shown) if (target - shown).abs() <= PLAYHEAD_SNAP_TICKS => {
+                let dt = f64::from(dt.max(0.0));
+                let moved = shown + self.rate * dt;
+                let eased = moved + (target - moved) * (1.0 - (-dt / PLAYHEAD_EASE_S).exp());
+                // Never backwards while it plays: a message a hair behind
+                // the run-on is not the music going back.
+                if self.playing {
+                    eased.max(shown)
+                } else {
+                    eased
+                }
+            }
+            _ => target,
+        };
+        self.shown = Some(shown);
+        shown
+    }
+
+    /// Where it was drawn last, once it has been.
+    pub fn shown(&self) -> Option<f64> {
+        self.shown
+    }
+
+    /// Whether it has come to rest where it was put.
+    pub fn settled(&self) -> bool {
+        match (self.heard, self.shown) {
+            (Some((tick, _)), Some(shown)) => !self.playing && (tick - shown).abs() < 0.5,
+            _ => true,
+        }
+    }
+}
+
+/// A cursor `dt` seconds on from `from` towards `to`: eased while it stays
+/// on the screen (or stays an arrow at the same edge), and straight there
+/// when it changes from one to the other or comes or goes.
+pub fn glide_spot(from: Option<Spot>, to: Option<Spot>, dt: f32) -> Option<Spot> {
+    let k = 1.0 - (-dt.max(0.0) / CURSOR_EASE_S).exp();
+    let ease = |a: f32, b: f32| {
+        let at = a + (b - a) * k;
+        if (b - at).abs() < 0.25 { b } else { at }
+    };
+    match (from, to) {
+        (Some(Spot::Here { x, y }), Some(Spot::Here { x: tx, y: ty })) => Some(Spot::Here {
+            x: ease(x, tx),
+            y: ease(y, ty),
+        }),
+        (
+            Some(Spot::Off { x, y, toward }),
+            Some(Spot::Off {
+                x: tx,
+                y: ty,
+                toward: towards,
+            }),
+        ) if toward == towards => Some(Spot::Off {
+            x: ease(x, tx),
+            y: ease(y, ty),
+            toward,
+        }),
+        _ => to,
+    }
+}

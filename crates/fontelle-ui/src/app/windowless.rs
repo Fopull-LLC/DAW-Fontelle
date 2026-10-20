@@ -524,6 +524,94 @@ impl Windowless {
             .collect()
     }
 
+    /// `action` done as its key does it: a global one wherever, any other
+    /// as the studio's.
+    pub fn act(&mut self, action: crate::canvas::Action) {
+        if !self.app.global_action(action) {
+            self.app.studio_action(action);
+        }
+        self.settle();
+    }
+
+    /// Every note of the open clip selected, as Ctrl+A does.
+    pub fn select_all_notes(&mut self) {
+        self.app.studio_action(crate::canvas::Action::SelectAll);
+    }
+
+    /// One tool's dialog opened, as its row on the Tools menu opens it.
+    pub fn open_tool(&mut self, kind: crate::canvas::ToolKind) {
+        self.app.open_tool_dialog(kind);
+    }
+
+    /// A press on `row` of the open tool's dialog.
+    pub fn press_tool_row(&mut self, row: crate::canvas::ToolRow) {
+        let Some(rect) = self.app.tools_panel.as_ref().and_then(|panel| {
+            panel
+                .rows
+                .iter()
+                .find(|(r, _)| *r == row)
+                .map(|(_, rect)| *rect)
+        }) else {
+            panic!("{row:?} is not on the open dialog");
+        };
+        self.app
+            .press_tools_panel(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        self.settle();
+    }
+
+    /// The open tool's dialog shut, as a press away from it shuts it.
+    pub fn close_tool(&mut self) {
+        let away = self.app.layout.window;
+        self.app
+            .press_tools_panel(away.right() - 1.0, away.bottom() - 1.0);
+    }
+
+    /// What the roll ghosts for the open tool, as `(start, length, key)`.
+    pub fn tool_ghosts(&self) -> Vec<(fontelle_types::Tick, fontelle_types::Tick, u8)> {
+        if self.app.tools_panel.is_none() {
+            return Vec::new();
+        }
+        self.app
+            .roll_chords()
+            .ghosts
+            .iter()
+            .map(|g| (g.start, g.length, g.key))
+            .collect()
+    }
+
+    /// Whether the studio window is full screen.
+    pub fn fullscreen(&self) -> bool {
+        self.app.fullscreen
+    }
+
+    /// Where the open prompt's field is, while one is open.
+    pub fn prompt_field_rect(&self) -> Option<Rect> {
+        match self.app.active_field() {
+            Some((super::TypingField::Prompt, rect, _)) => Some(rect),
+            _ => None,
+        }
+    }
+
+    /// Row `lane`'s name opened for typing, as its menu's Rename does.
+    pub fn start_lane_rename(&mut self, lane: usize) {
+        self.app.start_rename(super::MenuTarget::Lane(lane));
+    }
+
+    /// Where the name being typed is, while a rename is on.
+    pub fn rename_field_rect(&self) -> Option<Rect> {
+        match self.app.active_field() {
+            Some((super::TypingField::Rename, rect, _)) => Some(rect),
+            _ => None,
+        }
+    }
+
+    /// The rename's text, caret and selection, while a rename is on.
+    pub fn rename_entry(&self) -> Option<FieldState> {
+        self.app.renaming.as_ref()?;
+        let e = &self.app.rename_entry;
+        Some((e.text().to_string(), e.caret(), e.selection()))
+    }
+
     fn settle(&mut self) {
         if let Some(doc) = &mut self.app.options.document {
             doc.pump();
@@ -532,3 +620,6 @@ impl Windowless {
         self.app.relayout_editors();
     }
 }
+
+/// A field's text, caret and selection, as a test reads them.
+pub type FieldState = (String, usize, Option<(usize, usize)>);

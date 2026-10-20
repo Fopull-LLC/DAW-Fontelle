@@ -260,3 +260,32 @@ mod desktop_clipboard {
         assert_eq!(entry.text(), "");
     }
 }
+
+// ------------------------------------------------------- a press in a field
+
+/// Ty, 2026-10-20: *"every typing input right now isnt a box you can click
+/// inside, clicking at all actually stops the entering process."* A press
+/// in a field arrives as an x; the caret goes to the character boundary
+/// nearest it, measured by the caller's shaper (the canvas cannot shape).
+#[test]
+fn a_press_puts_the_caret_at_the_nearest_boundary() {
+    // Seven points a character, as a monospace face would be.
+    let width = |s: &str| s.chars().count() as f32 * 7.0;
+    let entry = TextEntry::new("Chorus");
+    assert_eq!(entry.index_at_x(-5.0, width), 0, "before the text");
+    assert_eq!(entry.index_at_x(2.0, width), 0);
+    assert_eq!(entry.index_at_x(5.0, width), 1, "past half a character");
+    assert_eq!(entry.index_at_x(15.0, width), 2);
+    assert_eq!(entry.index_at_x(500.0, width), "Chorus".len(), "after it");
+}
+
+#[test]
+fn a_press_never_lands_inside_a_character() {
+    let width = |s: &str| s.chars().count() as f32 * 7.0;
+    let entry = TextEntry::new("Café ñ");
+    for x in 0..60 {
+        let at = entry.index_at_x(x as f32, width);
+        assert!(entry.text().is_char_boundary(at), "{x} gave {at}");
+    }
+    assert_eq!(entry.index_at_x(33.0, width), "Café ".len());
+}

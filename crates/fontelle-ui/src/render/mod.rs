@@ -407,6 +407,9 @@ pub struct BrowserChrome<'a> {
     pub focus_preset: Option<usize>,
     /// Whether the search box has the keyboard, so the caret is drawn.
     pub searching: bool,
+    /// The box as a field while it has the keyboard — caret and selection
+    /// where they are, measured by the window. `None` draws the box plain.
+    pub search_field: Option<TextFieldChrome>,
     /// What the pointer is over, so a button can light up.
     pub hover: Option<BrowserHit>,
     /// Which of the panel's lists is showing.
@@ -4300,6 +4303,7 @@ pub fn draw_context_menu(
 /// placing a caret means measuring the text in front of it and only the layer
 /// that shapes text can do that (INVARIANT 2). The window measures; this
 /// paints.
+#[derive(Debug, Clone)]
 pub struct TextFieldChrome {
     /// **Owned**, not borrowed: the window builds this while it still holds
     /// itself immutably and then hands it to a draw that needs the scene
@@ -6850,6 +6854,27 @@ pub fn draw_piano_roll(
         );
     }
 
+    // Where two notes on one key overlap, a faint cross-hatch over the
+    // stretch they share: drawn as one block, the second strike was
+    // invisible (Ty, 2026-10-20: *"add subtle cross pattern showing when
+    // notes overlap in the piano roll"*).
+    for (key, from, to) in crate::canvas::note_overlaps(chrome.notes) {
+        if !keys.contains(&i32::from(key)) || to < ticks.start || from > ticks.end {
+            continue;
+        }
+        let row = crate::canvas::key_row(v, grid, key);
+        let x0 = tick_to_x(v, grid, from);
+        let x1 = tick_to_x(v, grid, to);
+        let r = Rect::new(x0, row.y, (x1 - x0).max(1.0), row.height)
+            .inset(1.0)
+            .intersection(&grid)
+            .clamped();
+        if r.is_empty() {
+            continue;
+        }
+        draw_cross_hatch(scene, r, p.window.with_alpha(0x48));
+    }
+
     // Its words in the notes, what they were sung as, the sung pitch.
     if let Some(vocal) = &chrome.vocal {
         vocal::draw_pitch_line(scene, theme, v, grid, vocal);
@@ -7317,6 +7342,36 @@ fn draw_chord_ghosts(scene: &mut Scene, theme: &Theme, chrome: &RollChrome<'_>) 
         fill_rect_rounded(scene, r, 2.0, theme.palette.accent.with_alpha(0x60));
         stroke_rect_rounded(scene, r, 2.0, 1.0, theme.palette.accent);
     }
+}
+
+/// Diagonal lines both ways across `r`, clipped to it, `HATCH` apart.
+fn draw_cross_hatch(scene: &mut Scene, r: Rect, ink: Color) {
+    const HATCH: f64 = 7.0;
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(r.x as f64, r.y as f64, r.right() as f64, r.bottom() as f64),
+    );
+    let (x, y, w, h) = (r.x as f64, r.y as f64, r.width as f64, r.height as f64);
+    let mut lines = BezPath::new();
+    let mut at = -h;
+    while at < w + h {
+        lines.move_to(Point::new(x + at, y));
+        lines.line_to(Point::new(x + at + h, y + h));
+        lines.move_to(Point::new(x + at + h, y));
+        lines.line_to(Point::new(x + at, y + h));
+        at += HATCH;
+    }
+    scene.stroke(
+        &Stroke::new(1.0),
+        Affine::IDENTITY,
+        ink.to_peniko(),
+        None,
+        &lines,
+    );
+    scene.pop_layer();
 }
 
 /// The smart-chord strip (`canvas::chord_strip`): its controls in a row,
@@ -9926,6 +9981,34 @@ fn draw_timeline_ruler(
             );
         }
     }
+    // Where each change really is: a pin on its bar line, with a leader
+    // across to its flag — the flag sits clear of the bar's number, which
+    // left the line itself unmarked (Ty, 2026-10-20). Under the flags, so
+    // each flag covers the end of its own leader.
+    for (bar, pin) in crate::canvas::meter_pins(v, l.grid, l.ruler, chrome.meter) {
+        let ink = if chrome.meter_selected == Some(bar) {
+            p.accent
+        } else {
+            p.accent.with_alpha(0xc0)
+        };
+        fill_rect(scene, pin.stem, ink.with_alpha(0x90));
+        fill_rect(scene, pin.leader, ink.with_alpha(0x90));
+        let h = pin.head;
+        if !h.is_empty() {
+            let mut point = BezPath::new();
+            point.move_to(Point::new(h.x as f64, h.y as f64));
+            point.line_to(Point::new(h.right() as f64, h.y as f64));
+            point.line_to(Point::new((h.x + h.width / 2.0) as f64, h.bottom() as f64));
+            point.close_path();
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                ink.to_peniko(),
+                None,
+                &point,
+            );
+        }
+    }
     // Where the signature changes: a flag on the ruler saying to what, lit
     // when it is the one the signature box is editing.
     for (bar, flag) in crate::canvas::meter_flags(v, l.grid, l.ruler, chrome.meter) {
@@ -10240,8 +10323,13 @@ fn draw_browser(
         );
     }
 
-    // The search field.
-    if !l.search.is_empty() {
+    // The search field: a field like any other while it has the keyboard,
+    // so the caret is where the caret is and a press can move it.
+    if !l.search.is_empty()
+        && let Some(field) = &chrome.search_field
+    {
+        draw_text_field(scene, theme, labels, l.search, field);
+    } else if !l.search.is_empty() {
         fill_rect_rounded(scene, l.search, 3.0, p.window);
         if chrome.searching {
             scene.stroke(
@@ -11482,6 +11570,9 @@ pub struct FlopsynthChrome<'a> {
     /// Whether the Presets search box has the keyboard, so it can be drawn
     /// with the lit outline and a caret the way a focused field is.
     pub searching: bool,
+    /// The box as a field while it has the keyboard (see
+    /// [`BrowserChrome::search_field`]).
+    pub search_field: Option<TextFieldChrome>,
     /// This frame of the sky through the canopy — see [`SkyFrame`]. `None`
     /// draws a still one.
     pub sky: Option<&'a SkyFrame>,
@@ -13924,7 +14015,11 @@ fn draw_flop_presets(
             page.list.bottom() - page.search.y + 4.0,
         ),
     );
-    if !page.search.is_empty() {
+    if !page.search.is_empty()
+        && let Some(field) = &chrome.search_field
+    {
+        draw_text_field(scene, theme, labels, page.search, field);
+    } else if !page.search.is_empty() {
         let typing = !view.browse.query.is_empty();
         // Lit whenever it has the keyboard, not only once something is typed —
         // that is what says a click landed and this is where keys now go.

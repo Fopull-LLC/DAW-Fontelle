@@ -78,8 +78,8 @@ pub use study::{
     SetStudyOriginal, SetStudyRender, SetStudyTakes,
 };
 pub use tools::{
-    ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, RandomMode,
-    RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, randomised,
+    ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, MAX_RANDOM_AMOUNT, QuantizeSpec,
+    RandomMode, RandomSpec, arpeggiated, legato_lengths, legato_lengths_to, quantized, randomised,
 };
 pub use vocal::{
     AutoGlide, AutoVibrato, BUILTIN_ENGINE_PREFIX, LaneCurve, LaneKey, LaneSpec, NoteVoice,

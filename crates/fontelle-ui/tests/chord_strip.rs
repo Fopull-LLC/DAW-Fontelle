@@ -7,7 +7,10 @@
 //! chords rooted on the note and chords containing it.
 
 use fontelle_types::chord::{Chord, Quality, Suggestion};
-use fontelle_ui::canvas::{ChordStripHit, chord_chip_caption, chord_strip_hit, chord_strip_layout};
+use fontelle_ui::canvas::{
+    ChordStripHit, chord_chip_caption, chord_strip_hit, chord_strip_layout,
+    chord_strip_layout_with_room,
+};
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::Theme;
 
@@ -118,4 +121,18 @@ fn a_chip_names_the_chord_and_its_job() {
         borrowed: false,
     };
     assert_eq!(chord_chip_caption(&plain).1, "");
+}
+
+/// Placed for the most chips it could hold, a strip by the right edge does
+/// not slide when a control gives it more: only its right edge moves.
+#[test]
+fn a_strip_with_room_keeps_its_corner_as_it_grows() {
+    let m = Theme::dark_default().metrics;
+    let note = note_at(GRID.right() - 120.0, 600.0);
+    let few = chord_strip_layout_with_room(GRID, note, 3, 10, &m);
+    let many = chord_strip_layout_with_room(GRID, note, 10, 10, &m);
+    assert_eq!((few.frame.x, few.frame.y), (many.frame.x, many.frame.y));
+    assert_eq!(few.mode, many.mode);
+    assert!(few.frame.width < many.frame.width);
+    assert!(many.frame.right() <= GRID.right() + 0.5);
 }

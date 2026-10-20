@@ -3980,6 +3980,7 @@ fn shoot_flopsynth_view(
             hover_at: (f32::MIN, f32::MIN),
             tooltip: None,
             searching: false,
+            search_field: None,
             sky: sky.as_ref(),
             skin: None,
             arc_values: Vec::new(),
@@ -5671,6 +5672,7 @@ fn shoot_settings_controls() {
                 selected_file: None,
                 selected_preset: None,
                 searching: false,
+                search_field: None,
                 focus_preset: None,
                 hover: None,
                 settings_controls: &controls,
@@ -9557,6 +9559,17 @@ fn a_signature_change_draws_its_bars_and_its_flag() {
         near(c, shot.theme.palette.accent),
         "the chosen flag is not lit: {c:?}"
     );
+    // And a pin on the bar line itself, where the change really is (Ty,
+    // 2026-10-20: *"like a pin in the time bar"*).
+    let pins =
+        fontelle_ui::canvas::meter_pins(&shot.view, shot.layout.grid, shot.layout.ruler, &meter);
+    assert_eq!(pins.len(), 1);
+    let head = pins[0].1.head;
+    let c = shot.at((head.x + head.width / 2.0) as u32, (head.y + 1.0) as u32);
+    assert!(
+        near(c, shot.theme.palette.accent),
+        "no pin head on the bar line: {c:?}"
+    );
 }
 
 /// The roll over a clip in a song that changes to 3/4: its bars follow.
@@ -9569,4 +9582,39 @@ fn the_roll_draws_the_meter() {
     ROLL_METER.with(|m| *m.borrow_mut() = None);
     let Some(shot) = shot else { return };
     dump_sized(&shot.pixels, "roll-meter", RW, RH);
+}
+
+/// Two notes on one key that overlap: the stretch they share is
+/// cross-hatched, faintly, and the rest of each note is plain (Ty,
+/// 2026-10-20: *"add subtle cross pattern showing when notes overlap"*).
+#[test]
+fn overlapping_notes_are_cross_hatched_where_they_overlap() {
+    let mut notes = Arena::default();
+    notes.insert(note(0, PPQN * 2, 64));
+    notes.insert(note(PPQN, PPQN * 2, 64));
+    let Some(shot) = shoot_roll(&notes, &[]) else {
+        return;
+    };
+    dump_sized(&shot.pixels, "roll-overlap", RW, RH);
+    let grid = shot.layout.grid;
+    let row = fontelle_ui::canvas::key_row(&shot.view, grid, 64);
+    let fill = shot.theme.palette.note;
+    let off = |from: Tick, to: Tick| {
+        let x0 = fontelle_ui::canvas::tick_to_x(&shot.view, grid, from) as u32 + 3;
+        let x1 = fontelle_ui::canvas::tick_to_x(&shot.view, grid, to) as u32 - 3;
+        let mut n = 0;
+        for x in x0..x1 {
+            for y in (row.y as u32 + 2)..(row.bottom() as u32 - 2) {
+                if !near(shot.at(x, y), fill) {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    assert_eq!(off(PPQN / 4, PPQN * 3 / 4), 0, "a lone stretch is hatched");
+    assert!(
+        off(PPQN + PPQN / 4, PPQN * 2 - PPQN / 4) > 6,
+        "no hatch where they overlap"
+    );
 }

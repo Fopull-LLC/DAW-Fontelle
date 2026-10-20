@@ -814,6 +814,42 @@ fn drawn_shape(
     (length, path)
 }
 
+/// Where notes on one key sound over each other: `(key, from, to)` for each
+/// stretch where two or more do, merged, in key then time order.
+///
+/// Ty, 2026-10-20: *"add subtle cross pattern showing when notes overlap in
+/// the piano roll."* Two overlapping notes on a key draw as one long block,
+/// and the second strike cannot be seen; the roll hatches these stretches.
+/// Notes that only touch do not overlap.
+pub fn note_overlaps(notes: &Arena<NoteId, Note>) -> Vec<(u8, Tick, Tick)> {
+    let mut by_key: std::collections::BTreeMap<u8, Vec<(Tick, i32)>> = Default::default();
+    for note in notes.values() {
+        let events = by_key.entry(note.key).or_default();
+        events.push((note.start, 1));
+        events.push((note.start + note.length.max(1), -1));
+    }
+    let mut out: Vec<(u8, Tick, Tick)> = Vec::new();
+    for (key, mut events) in by_key {
+        // An end before a start on the same tick: touching is not sharing.
+        events.sort_by_key(|(at, step)| (*at, *step));
+        let mut depth = 0;
+        let mut from = 0;
+        for (at, step) in events {
+            let was = depth;
+            depth += step;
+            if was < 2 && depth >= 2 {
+                from = at;
+            } else if was >= 2 && depth < 2 && at > from {
+                match out.last_mut() {
+                    Some(last) if last.0 == key && last.2 >= from => last.2 = at,
+                    _ => out.push((key, from, at)),
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------- hit-testing ---
 
 /// Which bit of a note is under the pointer.
@@ -1228,6 +1264,15 @@ pub enum RollEdit {
     /// an entry per note would need as many presses of Ctrl+Z to take back.
     SetLengths {
         ids: Vec<NoteId>,
+        lengths: Vec<Tick>,
+    },
+    /// A start and a length per named note, in `ids` order, as one edit —
+    /// what Quantize makes. Each note moves by its own amount, which is
+    /// what neither [`RollEdit::Move`] (one delta for all) nor
+    /// [`RollEdit::SetLengths`] can say.
+    Retime {
+        ids: Vec<NoteId>,
+        starts: Vec<Tick>,
         lengths: Vec<Tick>,
     },
     /// A key for each named note, as one edit — fitting notes to a scale,

@@ -109,3 +109,112 @@ fn a_click_on_the_ruler_still_moves_the_marker() {
     assert_eq!(all.len(), 1, "one click, one seek: {all:?}");
     assert!(all[0] > 0);
 }
+
+/// A transport whose state the test can read while the window holds it.
+#[derive(Default)]
+struct Shared {
+    playing: bool,
+    /// Every call, in order: `play`, `stop`, or `seek <sample>`.
+    calls: Vec<String>,
+    at: i64,
+}
+
+struct Watched(Arc<Mutex<Shared>>);
+
+impl TransportHost for Watched {
+    fn view(&mut self) -> TransportView {
+        let s = self.0.lock().unwrap();
+        TransportView {
+            available: true,
+            playing: s.playing,
+            position_sample: s.at,
+            length_samples: 48_000 * 60,
+            sample_rate: 48_000.0,
+            ..TransportView::default()
+        }
+    }
+    fn play(&mut self) {
+        let mut s = self.0.lock().unwrap();
+        s.playing = true;
+        s.calls.push("play".into());
+    }
+    fn stop(&mut self) {
+        let mut s = self.0.lock().unwrap();
+        s.playing = false;
+        s.calls.push("stop".into());
+    }
+    fn seek(&mut self, sample: i64) {
+        let mut s = self.0.lock().unwrap();
+        s.at = sample;
+        s.calls.push(format!("seek {sample}"));
+    }
+    fn set_looping(&mut self, _on: bool) {}
+}
+
+fn watched(playing: bool) -> (fontelle_ui::Windowless, Arc<Mutex<Shared>>) {
+    let shared = Arc::new(Mutex::new(Shared {
+        playing,
+        ..Shared::default()
+    }));
+    let session = common::a_session_for(common::a_clip_project(8));
+    let mut w = fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    )
+    .with_host(Box::new(Watched(shared.clone())));
+    // A frame, so the window has read that the song is playing.
+    w.frame(0.016);
+    shared.lock().unwrap().calls.clear();
+    (w, shared)
+}
+
+/// Ty, 2026-10-20: *"pause playback while moving around your time marker
+/// via clicking and dragging and if you were playing before starting the
+/// move just resume after."*
+#[test]
+fn dragging_the_marker_while_playing_pauses_and_plays_on_from_where_it_is_let_go() {
+    let (mut w, shared) = watched(true);
+    let ruler = w.timeline_ruler();
+    let y = ruler.y + ruler.height / 2.0;
+    w.press_studio(MouseButton::Left, ruler.x + 40.0, y);
+    assert!(
+        !shared.lock().unwrap().playing,
+        "the song played on under the drag: {:?}",
+        shared.lock().unwrap().calls
+    );
+    for i in 0..40 {
+        w.move_studio(ruler.x + 40.0 + i as f32 * 10.0, y);
+        w.frame(0.016);
+        assert!(!shared.lock().unwrap().playing, "it started again mid-drag");
+    }
+    w.release_studio(MouseButton::Left);
+    let s = shared.lock().unwrap();
+    assert!(s.playing, "it did not play on: {:?}", s.calls);
+    let play = s.calls.iter().rposition(|c| c == "play").unwrap();
+    let seek = s.calls[..play]
+        .iter()
+        .rposition(|c| c.starts_with("seek"))
+        .expect("a seek before the play");
+    let to: i64 = s.calls[seek][5..].parse().unwrap();
+    assert!(
+        to > 0 && s.at >= to,
+        "it plays from where the marker was let go: {:?}",
+        s.calls
+    );
+}
+
+/// Stopped, a drag stays stopped.
+#[test]
+fn dragging_the_marker_while_stopped_does_not_start_the_song() {
+    let (mut w, shared) = watched(false);
+    let ruler = w.timeline_ruler();
+    let y = ruler.y + ruler.height / 2.0;
+    w.press_studio(MouseButton::Left, ruler.x + 40.0, y);
+    w.move_studio(ruler.x + 300.0, y);
+    w.frame(0.016);
+    w.release_studio(MouseButton::Left);
+    let s = shared.lock().unwrap();
+    assert!(!s.playing, "{:?}", s.calls);
+    assert!(!s.calls.iter().any(|c| c == "play"), "{:?}", s.calls);
+}

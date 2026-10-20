@@ -492,6 +492,12 @@ fn an_ended_session_lets_go_of_its_link() {
     host.history.open_outbox();
     host.pump();
     host.collab.leave(&mut host.doc, &mut host.history);
+    host.pump();
+    assert!(
+        !dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "let go before the goodbye could be written (`LAST_WORDS`)"
+    );
+    std::thread::sleep(LAST_WORDS + Duration::from_millis(50));
     for _ in 0..3 {
         host.pump();
     }

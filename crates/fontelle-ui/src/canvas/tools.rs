@@ -41,8 +41,8 @@
 //! the action and produce no edit — the window carries them out.
 
 use fontelle_model::{
-    Arena, ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, Note, RandomMode, RandomSpec,
-    randomised,
+    Arena, ArpDirection, ArpSpec, MAX_ARP_OCTAVES, MAX_ARP_REPEATS, Note, QuantizeSpec, RandomMode,
+    RandomSpec, quantized, randomised,
 };
 use fontelle_types::{NoteId, Tick};
 
@@ -74,6 +74,8 @@ fn step_label(step: Tick) -> String {
     let ratio = beat / (step.max(1) as f32);
     // Triplets are the ones whose ratio is a third off a whole number.
     for (divisor, name) in [
+        (0.25, "1/1"),
+        (0.5, "1/2"),
         (1.0, "1/4"),
         (1.5, "1/4T"),
         (2.0, "1/8"),
@@ -118,7 +120,17 @@ pub enum ToolRow {
     ArpRepeats,
     ArpSwing,
     ArpRamp,
+    /// Plays the run the settings make, once, before it is written.
+    ArpHear,
     ArpeggiateNow,
+    /// Quantize's grid: the roll's snap, or a division chosen here.
+    QuantizeGrid,
+    /// How much of the way to the grid each note goes.
+    QuantizeStrength,
+    /// The starts only, or the ends too.
+    QuantizeEnds,
+    QuantizeHear,
+    QuantizeNow,
 }
 
 /// What an action row does when it is pressed.
@@ -145,6 +157,12 @@ pub enum ToolAction {
     /// Save the whole song out as a Standard MIDI File. Not an edit — like the
     /// importers, it is a file operation the window carries out.
     ExportMidi,
+    /// Pull the selected notes onto the grid — see
+    /// [`fontelle_model::quantized`].
+    Quantize,
+    /// Play the open dialog's result once ([`Tools::preview`]). Not an edit:
+    /// the window plays it.
+    Hear,
 }
 
 /// One of the three tools that take settings before they do anything.
@@ -162,16 +180,19 @@ pub enum ToolKind {
     Randomize,
     /// The arpeggiator: a chord becomes a run.
     Arpeggiate,
+    /// Notes onto the grid (Ty, 2026-10-20).
+    Quantize,
 }
 
 impl ToolKind {
     /// In the order the menu lists them: move it, change it, mess it up, play
     /// it.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Transpose,
         Self::Adjust,
         Self::Randomize,
         Self::Arpeggiate,
+        Self::Quantize,
     ];
 
     /// The dialog's own title, across the top of it.
@@ -185,6 +206,7 @@ impl ToolKind {
             Self::Adjust => "Adjust",
             Self::Randomize => "Randomize",
             Self::Arpeggiate => "Arpeggiate",
+            Self::Quantize => "Quantize",
         }
     }
 
@@ -219,7 +241,15 @@ impl ToolKind {
                 ToolRow::ArpRepeats,
                 ToolRow::ArpSwing,
                 ToolRow::ArpRamp,
+                ToolRow::ArpHear,
                 ToolRow::ArpeggiateNow,
+            ],
+            Self::Quantize => &[
+                ToolRow::QuantizeGrid,
+                ToolRow::QuantizeStrength,
+                ToolRow::QuantizeEnds,
+                ToolRow::QuantizeHear,
+                ToolRow::QuantizeNow,
             ],
         }
     }
@@ -245,6 +275,7 @@ impl ToolMenuItem {
         match self {
             Self::Run(ToolAction::Legato) => Some(super::keymap::Action::LegatoOrPlayMode),
             Self::Run(ToolAction::ExportMidi) => Some(super::keymap::Action::ExportMidi),
+            Self::Open(ToolKind::Quantize) => Some(super::keymap::Action::Quantize),
             _ => None,
         }
     }
@@ -275,11 +306,12 @@ impl ToolMenuItem {
 }
 
 /// The menu the Tools chip opens, in the order it lists it.
-pub const TOOL_MENU: [ToolMenuItem; 8] = [
+pub const TOOL_MENU: [ToolMenuItem; 9] = [
     ToolMenuItem::Open(ToolKind::Transpose),
     ToolMenuItem::Open(ToolKind::Adjust),
     ToolMenuItem::Open(ToolKind::Randomize),
     ToolMenuItem::Open(ToolKind::Arpeggiate),
+    ToolMenuItem::Open(ToolKind::Quantize),
     // With the three that ask something first, because it is an edit to the
     // selection like they are — it simply has nothing to ask.
     ToolMenuItem::Run(ToolAction::Legato),
@@ -294,7 +326,7 @@ pub const TOOL_MENU: [ToolMenuItem; 8] = [
 /// Derived from [`ToolKind::rows`] rather than written out beside it: a second
 /// list is a second thing to keep in step, and the one that goes stale is
 /// always the one nothing draws.
-pub const TOOL_ROWS: [ToolRow; 17] = [
+pub const TOOL_ROWS: [ToolRow; 23] = [
     ToolRow::Transpose,
     ToolRow::TransposeNow,
     ToolRow::Property,
@@ -311,8 +343,28 @@ pub const TOOL_ROWS: [ToolRow; 17] = [
     ToolRow::ArpRepeats,
     ToolRow::ArpSwing,
     ToolRow::ArpRamp,
+    ToolRow::ArpHear,
     ToolRow::ArpeggiateNow,
+    ToolRow::QuantizeGrid,
+    ToolRow::QuantizeStrength,
+    ToolRow::QuantizeEnds,
+    ToolRow::QuantizeHear,
+    ToolRow::QuantizeNow,
 ];
+
+/// The divisions Quantize's grid row steps through after the roll's snap.
+const QUANTIZE_GRIDS: [Tick; 7] = [
+    fontelle_types::PPQN,
+    fontelle_types::PPQN / 2,
+    fontelle_types::PPQN / 3,
+    fontelle_types::PPQN / 4,
+    fontelle_types::PPQN / 6,
+    fontelle_types::PPQN / 8,
+    fontelle_types::PPQN / 12,
+];
+
+/// Quantize's strength, in percent: a ladder, stopping at both ends.
+const QUANTIZE_STRENGTHS: [i32; 10] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
 /// How far a transpose goes either way. Two octaves is as far as anybody moves
 /// a part; past it you have chosen the wrong octave.
@@ -359,6 +411,15 @@ pub struct Tools {
     /// Where the open clip ends, which legato carries the last notes to.
     /// The window sets it before a run; `None` leaves them as they are.
     pub clip_end: Option<Tick>,
+    /// Quantize's strength, ends, and the grid it uses when
+    /// [`quantize_snap`](Self::quantize_snap) is off.
+    pub quantize: QuantizeSpec,
+    /// Whether Quantize's grid is the roll's snap, as most people expect a
+    /// quick quantize to be.
+    pub quantize_snap: bool,
+    /// The roll's snap as ticks, which the window sets before a run and a
+    /// draw: what Quantize uses while it follows the snap.
+    pub roll_grid: Tick,
 }
 
 impl Default for Tools {
@@ -375,6 +436,9 @@ impl Default for Tools {
             seed: 1,
             arp: ArpSpec::default(),
             clip_end: None,
+            quantize: QuantizeSpec::default(),
+            quantize_snap: true,
+            roll_grid: fontelle_types::PPQN / 4,
         }
     }
 }
@@ -403,7 +467,12 @@ impl Tools {
             ToolRow::ArpRepeats => "Repeat".to_string(),
             ToolRow::ArpSwing => "Swing".to_string(),
             ToolRow::ArpRamp => "Ramp".to_string(),
+            ToolRow::ArpHear | ToolRow::QuantizeHear => "Hear it".to_string(),
             ToolRow::ArpeggiateNow => "Arpeggiate selection".to_string(),
+            ToolRow::QuantizeGrid => "Grid".to_string(),
+            ToolRow::QuantizeStrength => "Strength".to_string(),
+            ToolRow::QuantizeEnds => "Ends".to_string(),
+            ToolRow::QuantizeNow => "Quantize selection".to_string(),
         }
     }
 
@@ -425,6 +494,15 @@ impl Tools {
             ToolRow::ArpRepeats => format!("\u{d7}{}", self.arp.repeats),
             ToolRow::ArpSwing => format!("{}%", (self.arp.swing * 100.0).round() as i32),
             ToolRow::ArpRamp => format!("{:+}%", (self.arp.velocity_ramp * 100.0).round() as i32),
+            ToolRow::QuantizeGrid if self.quantize_snap => {
+                format!("snap ({})", step_label(self.roll_grid))
+            }
+            ToolRow::QuantizeGrid => step_label(self.quantize.grid),
+            ToolRow::QuantizeStrength => {
+                format!("{}%", (self.quantize.strength * 100.0).round() as i32)
+            }
+            ToolRow::QuantizeEnds if self.quantize.ends => "starts and ends".to_string(),
+            ToolRow::QuantizeEnds => "starts only".to_string(),
             _ => String::new(),
         }
     }
@@ -438,6 +516,8 @@ impl Tools {
             ToolRow::SubtractNow => ToolAction::Subtract,
             ToolRow::RandomizeNow => ToolAction::Randomize,
             ToolRow::ArpeggiateNow => ToolAction::Arpeggiate,
+            ToolRow::QuantizeNow => ToolAction::Quantize,
+            ToolRow::ArpHear | ToolRow::QuantizeHear => ToolAction::Hear,
             _ => return None,
         })
     }
@@ -464,6 +544,13 @@ impl Tools {
                 "How the weight moves across the run \u{2014} falling, flat, climbing"
             }
             ToolRow::ArpeggiateNow => "Turn every selected chord into a run",
+            ToolRow::ArpHear | ToolRow::QuantizeHear => {
+                "Play what it would make, once \u{2014} it is shown in the roll as you change it"
+            }
+            ToolRow::QuantizeGrid => "The lines notes go to: the roll's snap, or one chosen here",
+            ToolRow::QuantizeStrength => "How much of the way to the line each note goes",
+            ToolRow::QuantizeEnds => "Move the starts only, or put the ends on the grid too",
+            ToolRow::QuantizeNow => "Pull every selected note onto the grid (Ctrl+Q)",
         })
     }
 
@@ -529,6 +616,28 @@ impl Tools {
                 self.arp.velocity_ramp =
                     (self.arp.velocity_ramp + step as f32 * 0.1).clamp(-1.0, 1.0);
             }
+            // The snap, then each division, round and round: a set, not a
+            // range.
+            ToolRow::QuantizeGrid => {
+                let at = if self.quantize_snap {
+                    0
+                } else {
+                    QUANTIZE_GRIDS
+                        .iter()
+                        .position(|g| *g == self.quantize.grid)
+                        .map_or(0, |i| i + 1)
+                } as i32;
+                let next = (at + step).rem_euclid(QUANTIZE_GRIDS.len() as i32 + 1) as usize;
+                self.quantize_snap = next == 0;
+                if next > 0 {
+                    self.quantize.grid = QUANTIZE_GRIDS[next - 1];
+                }
+            }
+            ToolRow::QuantizeStrength => {
+                let now = (self.quantize.strength * 100.0).round() as i32;
+                self.quantize.strength = ladder_step(&QUANTIZE_STRENGTHS, now, step) as f32 / 100.0;
+            }
+            ToolRow::QuantizeEnds => self.quantize.ends = !self.quantize.ends,
             // Unreachable: every remaining variant is an action, caught above.
             _ => {}
         }
@@ -625,6 +734,88 @@ impl Tools {
             // The window's to carry out — this crate may not read or write a
             // file.
             ToolAction::ImportMidi | ToolAction::ImportScore | ToolAction::ExportMidi => Vec::new(),
+            ToolAction::Quantize => {
+                let spans: Vec<(Tick, Tick)> = selection
+                    .iter()
+                    .filter_map(|id| notes.get(*id).map(|n| (n.start, n.length)))
+                    .collect();
+                if spans.len() != selection.len() {
+                    return Vec::new();
+                }
+                let made = quantized(&spans, self.quantize_spec());
+                if made == spans {
+                    return Vec::new();
+                }
+                // One edit that moves the notes there are, rather than a
+                // remove and an insert: the notes keep who they are, so the
+                // selection, and anybody else's in a shared song, stays on
+                // them.
+                vec![RollEdit::Retime {
+                    ids: selection.to_vec(),
+                    starts: made.iter().map(|(start, _)| *start).collect(),
+                    lengths: made.iter().map(|(_, length)| *length).collect(),
+                }]
+            }
+            // The window plays it; there is nothing to write.
+            ToolAction::Hear => Vec::new(),
+        }
+    }
+
+    /// What Quantize uses: its own settings, on the roll's snap while it
+    /// follows it.
+    pub fn quantize_spec(&self) -> QuantizeSpec {
+        QuantizeSpec {
+            grid: if self.quantize_snap {
+                self.roll_grid
+            } else {
+                self.quantize.grid
+            },
+            ..self.quantize
+        }
+    }
+
+    /// What `kind`'s dialog would make of `selection`, as notes — for the
+    /// roll to ghost while the dialog is open, and for *Hear it* to play.
+    ///
+    /// Ty, 2026-10-20: *"make arpeggiator let you preview changes."* Every
+    /// setting changes what this returns, so the ghost follows each press.
+    /// Empty for the tools whose result is a change of a property rather
+    /// than of where notes are, which the roll's notes already show.
+    pub fn preview(
+        &self,
+        kind: ToolKind,
+        selection: &[NoteId],
+        notes: &Arena<NoteId, Note>,
+    ) -> Vec<Note> {
+        let chosen: Vec<Note> = selection
+            .iter()
+            .filter_map(|id| notes.get(*id).cloned())
+            .collect();
+        if chosen.is_empty() {
+            return Vec::new();
+        }
+        match kind {
+            ToolKind::Arpeggiate => fontelle_model::arpeggiated(&chosen, self.arp),
+            ToolKind::Quantize => {
+                let spans: Vec<(Tick, Tick)> = chosen.iter().map(|n| (n.start, n.length)).collect();
+                quantized(&spans, self.quantize_spec())
+                    .into_iter()
+                    .zip(chosen)
+                    .map(|((start, length), note)| Note {
+                        start,
+                        length,
+                        ..note
+                    })
+                    .collect()
+            }
+            ToolKind::Transpose => chosen
+                .into_iter()
+                .map(|note| Note {
+                    key: (i32::from(note.key) + self.semitones).clamp(0, 127) as u8,
+                    ..note
+                })
+                .collect(),
+            ToolKind::Adjust | ToolKind::Randomize => Vec::new(),
         }
     }
 }

@@ -118,6 +118,9 @@ enum Drag {
     },
     /// Selecting text in the notepad's page by dragging across it.
     NotepadSelect,
+    /// Selecting in whatever one-line field has the keyboard, by dragging
+    /// across it (`WindowApp::press_field`).
+    FieldSelect,
     /// A vocal roll's lane stroke, expression handle or phoneme start —
     /// which one is in `vocal_edit`.
     Vocal,
@@ -595,11 +598,42 @@ struct ChordStripState {
     note: fontelle_model::Note,
     suggestions: Vec<fontelle_types::chord::Suggestion>,
     hover: Option<usize>,
+    /// Where the strip sits, worked out as it opens and kept until it
+    /// closes, so a control press never moves it (`WindowApp::chord_reach`).
+    reach: ChordReach,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChordReach {
+    chips: usize,
+    low: u8,
+    high: u8,
+}
+
+/// A tool's result being played once, from its dialog's *Hear it*
+/// (`WindowApp::hear_tool`): each note sounded at its time from the first,
+/// at the song's tempo, through the same audition the roll's notes use.
+struct ToolHearing {
+    /// `(from, to, key, velocity, pan)` in seconds from the first note.
+    notes: Vec<(f64, f64, u8, u8, i8)>,
+    began: std::time::Instant,
+    /// Which of `notes` are sounding now.
+    on: Vec<bool>,
 }
 
 /// How long a hovered chord sounds before it is let go of, whether or not
 /// the pointer moves: a chord is heard, not held.
 const CHORD_HEARD_FOR: std::time::Duration = std::time::Duration::from_millis(1800);
+
+/// The one-line fields a press can land in while they have the keyboard
+/// (`WindowApp::active_field`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypingField {
+    Prompt,
+    Tempo,
+    Search,
+    Rename,
+}
 
 /// What a plugin chosen from the browser is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2332,6 +2366,20 @@ pub struct WindowApp {
     chord_pending: Option<fontelle_types::NoteId>,
     chord_sounding: Vec<u8>,
     chord_heard_at: Option<std::time::Instant>,
+    /// The open tool's result, being played once (`ToolHearing`).
+    tool_hearing: Option<ToolHearing>,
+    /// Whether the studio window is full screen (F11).
+    fullscreen: bool,
+    /// Each other person's cursor and time marker as drawn, gliding between
+    /// the moments they are heard (`glide_people`), by peer.
+    people_glides:
+        std::collections::HashMap<u16, (Option<crate::canvas::Spot>, crate::canvas::PlayheadGlide)>,
+    /// What `people_glides` measure time from.
+    glide_clock: std::time::Instant,
+    /// The browser's and the Flopsynth presets' search boxes as fields,
+    /// measured in `shape_labels` while each has the keyboard.
+    search_field: Option<crate::render::TextFieldChrome>,
+    flop_search_field: Option<crate::render::TextFieldChrome>,
     last_chord: Option<Vec<u8>>,
     /// The root the root chip shows: the key's while there is one, and the
     /// one a scale chosen next will be built on while there is not.
@@ -2394,6 +2442,9 @@ pub struct WindowApp {
     /// Where a ruler drag wants the playhead, not yet sent: a drag seeks once
     /// a frame (`flush_scrub`), not once a pointer move — see `mark`.
     scrub_to: Option<fontelle_types::Sample>,
+    /// Whether the song was playing when a ruler drag stopped it, so that
+    /// letting go plays it on from there (`pause_for_scrub`).
+    scrub_resume: bool,
     /// How tall the property lane was when it was last showing, so the button
     /// that hides it can put it back the size it was.
     lane_height_shown: f32,
@@ -2433,6 +2484,8 @@ pub struct WindowApp {
     /// Single, double and triple clicks in the notepad's page: a place, a
     /// word, a line.
     notepad_clicks: crate::pointer::ClickCount,
+    /// The same for a one-line field: a place, a word, all of it.
+    field_clicks: crate::pointer::ClickCount,
     /// The four scroll positions the wheel drives, gliding — see
     /// `canvas::Glide`. Ticks sideways in each canvas; rows down the
     /// arrangement and keys up the roll, both fractional.
@@ -2545,6 +2598,7 @@ impl WindowApp {
             pending_editors: Vec::new(),
             autoscroll: None,
             notepad_clicks: crate::pointer::ClickCount::default(),
+            field_clicks: crate::pointer::ClickCount::default(),
             pointer_window: None,
             frames: 0,
             started: std::time::Instant::now(),
@@ -2850,6 +2904,12 @@ impl WindowApp {
             chord_pending: None,
             chord_sounding: Vec::new(),
             chord_heard_at: None,
+            tool_hearing: None,
+            fullscreen: false,
+            people_glides: std::collections::HashMap::new(),
+            glide_clock: std::time::Instant::now(),
+            search_field: None,
+            flop_search_field: None,
             last_chord: None,
             key_root: 0,
             scale_paste: None,
@@ -2922,6 +2982,7 @@ impl WindowApp {
             last_autosave: std::time::Instant::now(),
             marker: 0,
             scrub_to: None,
+            scrub_resume: false,
             lane_height_shown: DEFAULT_LANE_HEIGHT,
             animating: false,
             glide_timeline_x: crate::canvas::Glide::at(0.0),
@@ -3653,6 +3714,7 @@ impl WindowApp {
                     selected_file: self.selected_file,
                     selected_preset: self.selected_preset,
                     searching: self.searching,
+                    search_field: self.search_field.clone(),
                     focus_preset: self.preset_focus,
                     hover: self.hover_browser,
                     settings_controls: if self.browser_mode == BrowserMode::Settings {
@@ -4416,7 +4478,7 @@ impl WindowApp {
             Drag::RollRuler | Drag::BarRuler | Drag::TimelineRuler | Drag::MeterFlag { .. } => {
                 Some(Pointer::Grabbing)
             }
-            Drag::NotepadSelect => Some(Pointer::Text),
+            Drag::NotepadSelect | Drag::FieldSelect => Some(Pointer::Text),
             Drag::MenuScroll
             | Drag::ListScroll(_)
             | Drag::LaneGrip
@@ -7088,6 +7150,7 @@ impl WindowApp {
                         (!rect.is_empty()).then(|| (tip.to_string(), rect))
                     }),
                     searching: self.flop_searching,
+                    search_field: self.flop_search_field.clone(),
                     sky: self.sky_frame.as_ref(),
                     skin: Some(&self.skin),
                     arc_values: self.flop_arc_values(std::time::Instant::now()),
@@ -8180,6 +8243,56 @@ impl WindowApp {
             }
         }
 
+        // The two search boxes, by the same measurement, while each has the
+        // keyboard: a field draws its caret where the caret is, and a press
+        // in it can move it (`press_field`).
+        let measured = |text: &mut TextContext,
+                        entry: &crate::canvas::TextEntry,
+                        placeholder: &'static str,
+                        caret_on: bool| {
+            let mut width_to = |at: usize| {
+                if at == 0 {
+                    0.0
+                } else {
+                    text.layout(&entry.text()[..at], &font, None).width
+                }
+            };
+            crate::render::TextFieldChrome {
+                entry: entry.clone(),
+                caret_x: width_to(entry.caret()),
+                selection: entry
+                    .selection()
+                    .map(|(from, to)| (width_to(from), width_to(to))),
+                placeholder,
+                caret_on,
+            }
+        };
+        self.search_field = self.searching.then(|| {
+            measured(
+                &mut self.text,
+                &self.search_entry,
+                crate::render::search_hint(self.browser_mode),
+                self.caret_on,
+            )
+        });
+        self.flop_search_field = self.flop_searching.then(|| {
+            measured(
+                &mut self.text,
+                &self.flop_search_entry,
+                crate::render::PRESET_SEARCH_HINT,
+                self.caret_on,
+            )
+        });
+        for field in [&self.search_field, &self.flop_search_field]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            want_field(&mut self.labels, &mut self.text, field.entry.text());
+            want_field(&mut self.labels, &mut self.text, field.placeholder);
+        }
+
         // The tempo box's, by the same measurement, while it is a field.
         self.tempo_marks = self.tempo_entry.as_ref().map(|entry| {
             let text = entry.text();
@@ -9260,8 +9373,17 @@ impl WindowApp {
             self.drop_meter_flag(from, to, was);
             return;
         }
-        // A ruler drag lands where it was let go, not a frame later.
+        // A ruler drag lands where it was let go, not a frame later — and
+        // plays on from there if it stopped the song.
         self.flush_scrub();
+        if std::mem::take(&mut self.scrub_resume)
+            && matches!(
+                self.drag,
+                Drag::TimelineRuler | Drag::BarRuler | Drag::RollRuler
+            )
+        {
+            self.transport(TransportHit::Play);
+        }
         let was_control = matches!(
             self.drag,
             Drag::Knob
@@ -9489,13 +9611,14 @@ impl WindowApp {
     /// seconds after the last. Whether anything is still moving.
     fn frame_motion(&mut self, dt: f32) -> bool {
         self.flush_scrub();
+        let people = self.glide_people(dt);
         let scrolling = self.autoscroll_frame(dt);
         let flying = self.particles.is_moving();
         if flying {
             self.particles.step(dt);
             self.tree.invalidate(PANEL);
         }
-        self.glide_views(dt) || scrolling || flying
+        self.glide_views(dt) || scrolling || flying || people
     }
 
     /// Middle-click autoscroll begins at `(x, y)`: in the studio's window
@@ -9882,6 +10005,15 @@ impl WindowApp {
                 return;
             }
         }
+        // A press inside the field that has the keyboard is a place in it,
+        // not the end of it (Ty, 2026-10-20: *"every typing input right now
+        // isnt a box you can click inside, clicking at all actually stops
+        // the entering process"*). Anywhere else carries on below, where a
+        // press away from a field still ends it.
+        if button == winit::event::MouseButton::Left && self.press_field(x, y) {
+            self.request_redraw_if_dirty();
+            return;
+        }
         // The settings page opened from the start menu's gear is over the
         // menu; its drop-downs are menus over the page.
         if self.welcome.is_some() && self.settings_page.is_some() {
@@ -10073,6 +10205,7 @@ impl WindowApp {
                 // matter of hitting one pixel.
                 if matches!(what, TransportHit::Scrub(_)) {
                     self.drag = Drag::BarRuler;
+                    self.pause_for_scrub();
                 }
             }
             return;
@@ -10241,6 +10374,7 @@ impl WindowApp {
             }
             if self.roll_layout.ruler.contains(x, y) {
                 self.drag = Drag::RollRuler;
+                self.pause_for_scrub();
                 self.mark_at_roll(x);
                 return;
             }
@@ -10343,6 +10477,7 @@ impl WindowApp {
             Drag::Lane => self.drag_lane(),
             Drag::LaneGrip => self.drag_lane_grip(y),
             Drag::NotepadSelect => self.drag_notepad_select(x, y),
+            Drag::FieldSelect => self.drag_field_select(x),
             Drag::RollRuler => self.mark_at_roll(x),
             Drag::BarRuler => self.mark_on_bar(x),
             Drag::Keys => self.audition_at(y),
@@ -14092,7 +14227,7 @@ impl WindowApp {
             return;
         }
         if let Some(hit) = crate::canvas::presets_hit(&self.flopsynth_layout, x, y) {
-            self.press_flop_presets(hit);
+            self.press_flop_presets(hit, x, y);
             return;
         }
         // A badge: a drag to a knob, or — let go where it was pressed — a
@@ -14277,7 +14412,7 @@ impl WindowApp {
     /// bar's own `ApplyPreset` — so a loaded preset's edits are never lost
     /// to a stray click, and the page invents no mechanism of its own. A
     /// star is the favourite the bar's star is.
-    fn press_flop_presets(&mut self, hit: crate::canvas::PresetsHit) {
+    fn press_flop_presets(&mut self, hit: crate::canvas::PresetsHit, x: f32, y: f32) {
         use crate::canvas::{PresetDevice, PresetsHit};
         // The double-click clock is read for a row only: a shelf pressed
         // twice is not two of anything.
@@ -14305,11 +14440,34 @@ impl WindowApp {
             // the way the browser's search box works. Until then typing does
             // not land here (see `flop_searching`).
             PresetsHit::Search => {
+                let had = self.flop_searching;
                 self.flop_searching = true;
                 // The entry picks up whatever the query is, caret at the end.
                 if self.flop_search_entry.text() != self.flop_browse.query {
                     self.flop_search_entry =
                         crate::canvas::TextEntry::new(self.flop_browse.query.clone());
+                }
+                // Already typing: the press is a place in the text, like a
+                // press in any other field (`press_field`).
+                if had {
+                    let text_x = self.flopsynth_layout.presets.search.x + 6.0;
+                    let font = self.options.theme.font.clone();
+                    let shaper = &mut self.text;
+                    let at = self
+                        .flop_search_entry
+                        .index_at_x(x - text_x, |s| shaper.layout(s, &font, None).width);
+                    let clicks = self.field_clicks.press(
+                        x,
+                        y,
+                        self.input_clock.stamp(std::time::Instant::now()),
+                    );
+                    let shift = self.modifiers.shift_key();
+                    match clicks {
+                        1 => self.flop_search_entry.place(at, shift),
+                        2 => crate::canvas::notepad_select_word(&mut self.flop_search_entry, at),
+                        _ => self.flop_search_entry.select_all(),
+                    }
+                    self.caret_on = true;
                 }
                 self.tree.invalidate(PANEL);
             }
@@ -16633,6 +16791,7 @@ impl WindowApp {
             match button {
                 MouseButton::Left => {
                     self.drag = Drag::TimelineRuler;
+                    self.pause_for_scrub();
                     self.mark_on_timeline(x);
                 }
                 // The right button drags a time selection out — *"right
@@ -22393,6 +22552,179 @@ impl WindowApp {
         }
     }
 
+    /// The one-line field that has the keyboard, if any: which, where it is
+    /// on screen, and where its text starts — the same offsets the renderer
+    /// draws it at.
+    fn active_field(&self) -> Option<(TypingField, crate::layout::Rect, f32)> {
+        use crate::layout::Rect;
+        if let Some((target, menu)) = &self.menu
+            && target.name_prompt().is_some()
+        {
+            let row = menu.rows.first()?.inset(2.0);
+            return Some((TypingField::Prompt, row, row.x + 6.0));
+        }
+        if self.tempo_entry.is_some() {
+            let field = self.bar.tempo.inset(2.0);
+            return Some((TypingField::Tempo, field, field.x + 6.0));
+        }
+        if let Some(target) = &self.renaming {
+            let (rect, text_x) = match target {
+                MenuTarget::Channel(index) => {
+                    let row = self.rack.rows.iter().find(|r| r.index == *index)?;
+                    (row.name, row.name.x + 6.0)
+                }
+                MenuTarget::Prefab(index) => {
+                    let row = self.prefab_panel.rows.iter().find(|r| r.index == *index)?;
+                    (row.name, row.name.x + 6.0)
+                }
+                MenuTarget::MixerTrack(index) => {
+                    if self.tab != EditorTab::Mixer {
+                        return None;
+                    }
+                    let strip = self
+                        .mixer
+                        .strips
+                        .iter()
+                        .chain(self.mixer.master.iter())
+                        .find(|s| s.index == *index)?;
+                    (strip.name, strip.name.x + 2.0)
+                }
+                MenuTarget::Lane(lane) => {
+                    let grid = self.timeline_layout.grid;
+                    let headers = self.timeline_layout.headers;
+                    let top = crate::canvas::lane_to_y(&self.timeline.view, grid, *lane);
+                    let header = Rect::new(
+                        headers.x,
+                        top,
+                        headers.width,
+                        self.timeline.view.lane_height,
+                    );
+                    // Short of the mute and solo, which still answer a press.
+                    let (mute, _) = crate::canvas::lane_switches(header);
+                    let chip = crate::canvas::lane_track_chip(header);
+                    let end = if chip.is_empty() {
+                        mute.x
+                    } else {
+                        chip.x.min(mute.x)
+                    };
+                    let name = if mute.is_empty() {
+                        header
+                    } else {
+                        Rect::new(
+                            header.x,
+                            header.y,
+                            (end - 4.0 - header.x).max(0.0),
+                            header.height,
+                        )
+                    };
+                    (name.intersection(&headers), header.x + 8.0)
+                }
+                _ => return None,
+            };
+            return Some((TypingField::Rename, rect, text_x));
+        }
+        if self.searching {
+            let field = self.browser.search;
+            return Some((TypingField::Search, field, field.x + 6.0));
+        }
+        None
+    }
+
+    fn field_entry_mut(&mut self, field: TypingField) -> Option<&mut crate::canvas::TextEntry> {
+        match field {
+            TypingField::Prompt => Some(&mut self.menu_filter),
+            TypingField::Tempo => self.tempo_entry.as_mut(),
+            TypingField::Search => Some(&mut self.search_entry),
+            TypingField::Rename => Some(&mut self.rename_entry),
+        }
+    }
+
+    /// The byte in `field`'s text nearest `x` on screen, measured with the
+    /// font it is drawn in. A password prompt draws dots, so it is measured
+    /// as dots and the answer carried back to the text by character.
+    fn field_index_at(&mut self, field: TypingField, text_x: f32, x: f32) -> usize {
+        let entry = match field {
+            TypingField::Prompt => self.prompt_entry(),
+            TypingField::Tempo => self.tempo_entry.clone().unwrap_or_default(),
+            TypingField::Search => self.search_entry.clone(),
+            TypingField::Rename => self.rename_entry.clone(),
+        };
+        let font = self.options.theme.font.clone();
+        let shaper = &mut self.text;
+        let shown = entry.index_at_x(x - text_x, |prefix| {
+            shaper.layout(prefix, &font, None).width
+        });
+        let chars = entry.text()[..shown].chars().count();
+        let real = match field {
+            TypingField::Prompt => self.menu_filter.text().to_string(),
+            _ => entry.text().to_string(),
+        };
+        real.char_indices()
+            .nth(chars)
+            .map_or(real.len(), |(at, _)| at)
+    }
+
+    /// A press while a field has the keyboard: `true` when it landed inside
+    /// that field and was spent there — the caret where it landed, Shift
+    /// stretching the selection to it, a double-click taking the word, a
+    /// third click all of it, and a drag selecting from it.
+    fn press_field(&mut self, x: f32, y: f32) -> bool {
+        let Some((field, rect, text_x)) = self.active_field() else {
+            return false;
+        };
+        if !rect.contains(x, y) {
+            return false;
+        }
+        let at = self.field_index_at(field, text_x, x);
+        let clicks =
+            self.field_clicks
+                .press(x, y, self.input_clock.stamp(std::time::Instant::now()));
+        let shift = self.modifiers.shift_key();
+        let Some(entry) = self.field_entry_mut(field) else {
+            return false;
+        };
+        match clicks {
+            1 => entry.place(at, shift),
+            2 => crate::canvas::notepad_select_word(entry, at),
+            _ => entry.select_all(),
+        }
+        if clicks == 1 {
+            self.drag = Drag::FieldSelect;
+        }
+        // The caret shows at once where it went, rather than in whatever
+        // half of its blink the press happened to land.
+        self.caret_on = true;
+        self.invalidate_field(field);
+        true
+    }
+
+    /// A drag that began in a field: the selection runs from where it
+    /// began to the pointer.
+    fn drag_field_select(&mut self, x: f32) {
+        let Some((field, _, text_x)) = self.active_field() else {
+            self.drag = Drag::None;
+            return;
+        };
+        let at = self.field_index_at(field, text_x, x);
+        if let Some(entry) = self.field_entry_mut(field) {
+            entry.place(at, true);
+        }
+        self.invalidate_field(field);
+    }
+
+    fn invalidate_field(&mut self, field: TypingField) {
+        match field {
+            TypingField::Prompt => {
+                if let Some((_, menu)) = &self.menu {
+                    self.tree.invalidate_rect(menu.frame);
+                }
+            }
+            TypingField::Tempo => self.tree.invalidate(TRANSPORT),
+            TypingField::Search => self.tree.invalidate(BROWSER),
+            TypingField::Rename => self.invalidate_names(),
+        }
+    }
+
     /// Starts a rename. Every keystroke after this goes into the name until
     /// Enter or Escape ends it.
     fn start_rename(&mut self, target: MenuTarget) {
@@ -22980,6 +23312,8 @@ impl WindowApp {
 
     /// Opens one tool's dialog under the chip.
     fn open_tool_dialog(&mut self, kind: ToolKind) {
+        self.silence_tool_hearing();
+        self.sync_tool_grid();
         self.tools_panel = Some(tools_dialog_layout(
             kind,
             self.tools_chip(),
@@ -23004,10 +23338,12 @@ impl WindowApp {
         let Some(row) = tools_dialog_hit(panel, x, y) else {
             if !panel.frame.contains(x, y) {
                 self.tools_panel = None;
+                self.silence_tool_hearing();
                 self.tree.invalidate(PANEL);
             }
             return;
         };
+        self.sync_tool_grid();
         match self.tools.action(row) {
             Some(action) => self.run_tool(action),
             // A value steps forward on a click and back on a Ctrl+click —
@@ -23017,6 +23353,11 @@ impl WindowApp {
             None => {
                 let delta = if self.modifiers.control_key() { -1 } else { 1 };
                 self.tools.nudge(row, delta);
+                // Heard again as it now is, if it was being heard: the
+                // point of hearing it is hearing what the press changed.
+                if self.tool_hearing.is_some() {
+                    self.hear_tool();
+                }
             }
         }
         self.shape_labels();
@@ -23038,6 +23379,11 @@ impl WindowApp {
             self.export_midi();
             return;
         }
+        if matches!(action, ToolAction::Hear) {
+            self.hear_tool();
+            return;
+        }
+        self.silence_tool_hearing();
         let selection = self.roll.selection().to_vec();
         if selection.is_empty() {
             // Said out loud rather than silently doing nothing: a tool that
@@ -23103,9 +23449,15 @@ impl WindowApp {
                 self.tools.value(crate::canvas::ToolRow::ArpRate)
             ),
             ToolAction::Legato => format!("Joined up {} note(s)", selection.len()),
-            ToolAction::ImportMidi | ToolAction::ImportScore | ToolAction::ExportMidi => {
-                String::new()
-            }
+            ToolAction::Quantize => format!(
+                "Quantized {} note(s) to {}",
+                selection.len(),
+                self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
+            ),
+            ToolAction::ImportMidi
+            | ToolAction::ImportScore
+            | ToolAction::ExportMidi
+            | ToolAction::Hear => String::new(),
         };
     }
 
@@ -23408,6 +23760,25 @@ impl WindowApp {
             return;
         }
         self.seek_to(sample);
+    }
+
+    /// A ruler drag that starts while the song plays stops it, and letting
+    /// go plays it on from wherever the marker was dropped.
+    ///
+    /// Ty, 2026-10-20: *"pause playback while moving around your time marker
+    /// via clicking and dragging and if you were playing before starting the
+    /// move just resume after."* Not while recording: stopping would end
+    /// the take, and a take is never ended by a slip of the mouse.
+    fn pause_for_scrub(&mut self) {
+        if !self.view.playing || self.view.recording {
+            return;
+        }
+        if let Some(host) = &mut self.options.host {
+            host.stop();
+        }
+        self.view.playing = false;
+        self.scrub_resume = true;
+        self.tree.invalidate(TRANSPORT);
     }
 
     /// The seek a ruler drag has been holding, sent now.
@@ -23747,6 +24118,172 @@ impl WindowApp {
         {
             self.silence_chord();
         }
+        self.step_tool_hearing();
+    }
+
+    /// Sounds and lets go of whatever the tool being heard has due now.
+    fn step_tool_hearing(&mut self) {
+        // However the dialog went — a press away, Escape, the menu again —
+        // what it was playing goes with it.
+        if self.tools_panel.is_none() {
+            self.silence_tool_hearing();
+            return;
+        }
+        let Some(hearing) = &mut self.tool_hearing else {
+            return;
+        };
+        let now = hearing.began.elapsed().as_secs_f64();
+        let mut ons = Vec::new();
+        let mut offs = Vec::new();
+        for (i, &(from, to, key, velocity, pan)) in hearing.notes.iter().enumerate() {
+            let due = now >= from && now < to;
+            if due && !hearing.on[i] {
+                hearing.on[i] = true;
+                ons.push((key, velocity, pan));
+            } else if !due && hearing.on[i] {
+                hearing.on[i] = false;
+                offs.push(key);
+            }
+        }
+        let over = hearing.notes.iter().all(|n| now >= n.1);
+        if let Some(doc) = &mut self.options.document {
+            // Offs first: a note struck again on its own key must not be
+            // let go of by the one before it.
+            for key in offs {
+                doc.audition_off(key);
+            }
+            for (key, velocity, pan) in ons {
+                doc.audition_on(key, velocity, pan);
+            }
+        }
+        if over {
+            self.tool_hearing = None;
+        }
+    }
+
+    /// Stops the tool being heard, letting go of every note it has on.
+    fn silence_tool_hearing(&mut self) {
+        let Some(hearing) = self.tool_hearing.take() else {
+            return;
+        };
+        if let Some(doc) = &mut self.options.document {
+            for (i, (_, _, key, _, _)) in hearing.notes.iter().enumerate() {
+                if hearing.on[i] {
+                    doc.audition_off(*key);
+                }
+            }
+        }
+    }
+
+    /// Plays the open dialog's result once — *Hear it* — from its first
+    /// note, at the song's tempo (Ty, 2026-10-20: *"make arpeggiator let
+    /// you preview changes"*).
+    fn hear_tool(&mut self) {
+        self.silence_tool_hearing();
+        self.silence_chord();
+        self.end_preview();
+        let notes = self.tool_preview();
+        let Some(first) = notes.iter().map(|n| n.start).min() else {
+            self.status = "Select some notes first \u{2014} the tools act on what you have chosen"
+                .to_string();
+            return;
+        };
+        let seconds_per_tick = 60.0 / self.tempo.max(1.0) / fontelle_types::PPQN as f64;
+        let notes: Vec<(f64, f64, u8, u8, i8)> = notes
+            .iter()
+            .map(|n| {
+                let from = (n.start - first) as f64 * seconds_per_tick;
+                // A hair short of the next step, so a legato run is heard
+                // as notes and not one smear.
+                let to = from + (n.length as f64 * seconds_per_tick - 0.005).max(0.02);
+                (from, to, n.key, n.velocity, n.pan)
+            })
+            .collect();
+        let on = vec![false; notes.len()];
+        self.tool_hearing = Some(ToolHearing {
+            notes,
+            began: std::time::Instant::now(),
+            on,
+        });
+        self.step_tool_hearing();
+    }
+
+    /// The open tool dialog's result, as notes: what the roll ghosts and
+    /// *Hear it* plays.
+    fn tool_preview(&self) -> Vec<fontelle_model::Note> {
+        let (Some(panel), Some(doc)) = (&self.tools_panel, &self.options.document) else {
+            return Vec::new();
+        };
+        self.tools
+            .preview(panel.kind, self.roll.selection(), doc.notes())
+    }
+
+    /// The roll's snap as a grid in ticks, for Quantize to follow.
+    fn sync_tool_grid(&mut self) {
+        let unit = self.roll.meter().unit_at(0, self.roll.view.snap);
+        self.tools.roll_grid = if unit > 0 {
+            unit
+        } else {
+            fontelle_types::PPQN / 4
+        };
+    }
+
+    /// Ctrl+Q: Quantize at its dialog's settings, on the selected notes —
+    /// or on every note of the clip when none are, which is what a quick
+    /// quantize of a part you have just played in wants.
+    fn quantize_now(&mut self) {
+        self.sync_tool_grid();
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        if self.roll_showing().is_none() {
+            self.status = "Open a clip in the piano roll to quantize its notes".to_string();
+            return;
+        }
+        let mut ids = self.roll.selection().to_vec();
+        if ids.is_empty() {
+            ids = doc.notes().keys().collect();
+        }
+        if ids.is_empty() {
+            self.status = "There are no notes here to quantize".to_string();
+            return;
+        }
+        let edits = self.tools.run(ToolAction::Quantize, &ids, doc.notes());
+        if edits.is_empty() {
+            self.status = format!(
+                "Already on the grid \u{2014} {} note(s) at {}",
+                ids.len(),
+                self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
+            );
+            return;
+        }
+        self.apply_roll_edits(edits);
+        if let Some(doc) = &mut self.options.document {
+            doc.end_gesture();
+        }
+        self.status = format!(
+            "Quantized {} note(s) to {}",
+            ids.len(),
+            self.tools.value(crate::canvas::ToolRow::QuantizeGrid)
+        );
+        self.tree.invalidate(PANEL);
+        self.refresh_title();
+    }
+
+    /// F11: the studio window full screen on the monitor it is on, or back.
+    fn toggle_fullscreen(&mut self) {
+        self.fullscreen = !self.fullscreen;
+        if let Some(live) = &self.live {
+            live.window.set_fullscreen(
+                self.fullscreen
+                    .then_some(winit::window::Fullscreen::Borderless(None)),
+            );
+        }
+        self.status = if self.fullscreen {
+            "Full screen \u{2014} F11 to come back".to_string()
+        } else {
+            String::new()
+        };
     }
 
     /// Stops whatever is sounding immediately — the pointer has been taken
@@ -24110,13 +24647,20 @@ impl WindowApp {
     /// business (`canvas::keymap`, `Context::Global`): §16.5 says every
     /// binding is remappable, and the shortcuts page is where.
     fn global_key(&mut self, event: &winit::event::KeyEvent) -> bool {
-        use crate::canvas::{Action, Context};
+        use crate::canvas::Context;
         // Asked in the studio's context: the global actions answer in every
         // context, and this function is only ever the *global* half of a
         // window's keys — the editor windows ask their own half first.
         let Some(action) = self.action_of(event, Context::Studio) else {
             return false;
         };
+        self.global_action(action)
+    }
+
+    /// [`global_key`](Self::global_key) by the action alone: `true` when it
+    /// was a global one, and so done.
+    fn global_action(&mut self, action: crate::canvas::Action) -> bool {
+        use crate::canvas::{Action, Context};
         if action.context() != Context::Global {
             return false;
         }
@@ -24156,6 +24700,7 @@ impl WindowApp {
             Action::Voicebanks => {
                 self.open_voicebank_page(crate::canvas::VoicebankTab::Installed);
             }
+            Action::Fullscreen => self.toggle_fullscreen(),
             _ => return false,
         }
         true
@@ -24575,6 +25120,7 @@ impl WindowApp {
             // legato needs a note selection in the roll, and the play mode
             // is not about notes at all.
             Action::LegatoOrPlayMode => self.legato_or_play_mode(),
+            Action::Quantize => self.quantize_now(),
             Action::Search => {
                 self.searching = true;
                 self.search_entry = crate::canvas::TextEntry::new(self.query.clone());
@@ -24667,6 +25213,7 @@ impl WindowApp {
             | Action::ExportMidi
             | Action::Help
             | Action::Voicebanks
+            | Action::Fullscreen
             | Action::RemoveBand
             | Action::AnalyzeCopyNotes
             | Action::AnalyzeCopyScale
@@ -25736,10 +26283,12 @@ impl WindowApp {
         if suggestions.is_empty() {
             return;
         }
+        let reach = self.chord_reach(&note);
         self.chord_strip = Some(ChordStripState {
             note,
             suggestions,
             hover: None,
+            reach,
         });
         self.tree.invalidate(PANEL);
     }
@@ -25764,30 +26313,69 @@ impl WindowApp {
         }
     }
 
-    /// Where the strip is: just above the note and every key its chips
-    /// would add, so a hovered chord's ghosts are never under it (a close
-    /// chord goes up from its note, where the strip would otherwise sit).
+    /// Where the strip goes for `note`: clear of every key the chords on
+    /// offer *now* would add, and room on the right for the most chips any
+    /// setting of its controls could give (both modes, every extension, in
+    /// the key and out of it).
+    ///
+    /// Not clear of every key *any* setting could reach: over every voicing
+    /// that is two octaves and more, and put the strip a hand's width from
+    /// its note. A hovered chord voiced wider after a press can reach under
+    /// the strip; the strip staying put is worth more.
+    fn chord_reach(&self, note: &fontelle_model::Note) -> ChordReach {
+        use fontelle_types::chord::{Extension, Suggest};
+        let mut reach = ChordReach {
+            chips: 0,
+            low: note.key,
+            high: note.key,
+        };
+        for suggestion in self.chord_suggestions_for(note) {
+            for key in fontelle_types::chord::voice(
+                &suggestion.chord,
+                note.key,
+                self.roll.chord_voicing,
+                self.roll.chord_inversion,
+                self.last_chord.as_deref(),
+            ) {
+                reach.low = reach.low.min(key);
+                reach.high = reach.high.max(key);
+            }
+        }
+        for suggest in [Suggest::Rooted, Suggest::Containing] {
+            for extension in Extension::ALL {
+                for locked in [false, true] {
+                    let offered = fontelle_types::chord::suggestions(
+                        self.song_key.as_ref(),
+                        note.key,
+                        suggest,
+                        extension,
+                        locked,
+                    );
+                    reach.chips = reach.chips.max(offered.len());
+                }
+            }
+        }
+        reach
+    }
+
+    /// Where the strip is: just above the note and every key any chip could
+    /// add, so a hovered chord's ghosts are never under it (a close chord
+    /// goes up from its note, where the strip would otherwise sit) — and the
+    /// same place whatever its controls say ([`ChordReach`]).
     fn chord_strip_layout(&self) -> Option<crate::canvas::ChordStripLayout> {
         let strip = self.chord_strip.as_ref()?;
         let grid = self.roll_layout.grid;
         let view = &self.roll.view;
-        let keys: Vec<u8> = strip
-            .suggestions
-            .iter()
-            .flat_map(|s| self.chord_keys(&s.chord))
-            .chain([strip.note.key])
-            .collect();
-        let high = keys.iter().copied().max().unwrap_or(strip.note.key);
-        let low = keys.iter().copied().min().unwrap_or(strip.note.key);
-        let top = crate::canvas::key_row(view, grid, high).y;
-        let bottom = crate::canvas::key_row(view, grid, low).bottom();
+        let top = crate::canvas::key_row(view, grid, strip.reach.high).y;
+        let bottom = crate::canvas::key_row(view, grid, strip.reach.low).bottom();
         let x0 = crate::canvas::tick_to_x(view, grid, strip.note.start);
         let x1 = crate::canvas::tick_to_x(view, grid, strip.note.start + strip.note.length);
         let span = crate::layout::Rect::new(x0, top, (x1 - x0).max(4.0), (bottom - top).max(1.0));
-        Some(crate::canvas::chord_strip_layout(
+        Some(crate::canvas::chord_strip_layout_with_room(
             grid,
             span,
             strip.suggestions.len(),
+            strip.reach.chips,
             &self.options.theme.metrics,
         ))
     }
@@ -25977,6 +26565,21 @@ impl WindowApp {
             outline_outside: self.scale_preview().and_then(|fit| fit.key.mask()),
             ..Default::default()
         };
+        // An open tool's result, ghosted where it would be written, and
+        // following every setting pressed (Ty, 2026-10-20: *"make
+        // arpeggiator let you preview changes"*).
+        if self.tools_panel.is_some() {
+            chords.ghosts = self
+                .tool_preview()
+                .into_iter()
+                .map(|note| crate::document::GhostNote {
+                    start: note.start,
+                    length: note.length,
+                    key: note.key,
+                    color: [0; 4],
+                })
+                .collect();
+        }
         let (Some(strip), Some(layout)) = (&self.chord_strip, self.chord_strip_layout()) else {
             return chords;
         };
@@ -26154,8 +26757,62 @@ impl WindowApp {
         }
     }
 
-    /// Everybody else's whereabouts as drawn on this frame.
+    /// Everybody else's cursor and time marker, a frame further along
+    /// their glides. Whether any is still moving.
+    ///
+    /// Ty, 2026-10-20: *"add smoothing to collaboration syncing on cursor
+    /// and time bar."* The cursor glides on the screen, where it is drawn —
+    /// it can cross from one lane to another, which no place in the song
+    /// can be between; the marker glides in the song's ticks, so it runs on
+    /// at the pace it is heard playing whatever this window's zoom.
+    fn glide_people(&mut self, dt: f32) -> bool {
+        if self.people.is_empty() {
+            let had = !self.people_glides.is_empty();
+            self.people_glides.clear();
+            return had;
+        }
+        let now = self.glide_clock.elapsed().as_secs_f64();
+        let raw = self.raw_people_marks();
+        let mut moving = false;
+        self.people_glides
+            .retain(|peer, _| raw.iter().any(|m| m.peer == *peer));
+        for (person, marks) in self.people.iter().zip(&raw) {
+            let glide = self.people_glides.entry(marks.peer).or_default();
+            let before = glide.0;
+            glide.0 = crate::canvas::glide_spot(glide.0, marks.cursor, dt);
+            glide
+                .1
+                .hear(person.presence.playhead, person.presence.playing, now);
+            glide.1.advance(now, dt);
+            moving |= glide.0 != marks.cursor || !glide.1.settled() || glide.0 != before;
+        }
+        if moving {
+            self.tree.invalidate(TIMELINE);
+            self.tree.invalidate(PANEL);
+        }
+        moving
+    }
+
+    /// Everybody else's whereabouts as drawn on this frame: where they were
+    /// heard to be, through their glides.
     fn people_marks(&self) -> Vec<crate::canvas::Marks> {
+        let mut marks = self.raw_people_marks();
+        let timeline = (!self.layout.timeline.frame.is_empty())
+            .then_some((&self.timeline.view, self.timeline_layout.grid));
+        for mark in &mut marks {
+            let Some((cursor, playhead)) = self.people_glides.get(&mark.peer) else {
+                continue;
+            };
+            mark.cursor = *cursor;
+            if let (Some((view, grid)), Some(tick)) = (timeline, playhead.shown()) {
+                mark.playhead = crate::canvas::arrangement_playhead_x(view, grid, tick);
+            }
+        }
+        marks
+    }
+
+    /// [`people_marks`](Self::people_marks) where each was last heard to be.
+    fn raw_people_marks(&self) -> Vec<crate::canvas::Marks> {
         if self.people.is_empty() {
             return Vec::new();
         }
@@ -26688,6 +27345,20 @@ impl WindowApp {
         // it sounding until something else happens to it.
         if let Some(due) = self.audition.due() {
             wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        // A tool's *Hear it*, for the same reason: its next note on or off.
+        if let Some(hearing) = &self.tool_hearing {
+            let now_s = hearing.began.elapsed().as_secs_f64();
+            let next = hearing
+                .notes
+                .iter()
+                .flat_map(|n| [n.0, n.1])
+                .filter(|t| *t > now_s)
+                .fold(f64::INFINITY, f64::min);
+            if next.is_finite() {
+                let due = hearing.began + std::time::Duration::from_secs_f64(next);
+                wake = Some(wake.map_or(due, |w| w.min(due)));
+            }
         }
 
         // And a tip waiting out its dwell, for exactly the same reason: the

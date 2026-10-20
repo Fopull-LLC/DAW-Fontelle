@@ -142,6 +142,7 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::Search),
             act(Action::ZoomIn),
             act(Action::ZoomOut),
+            act(Action::Fullscreen),
         ],
     },
     KeybindSection {
@@ -168,6 +169,7 @@ pub const KEYBIND_SECTIONS: &[KeybindSection] = &[
             act(Action::Cut),
             act(Action::Paste),
             act(Action::Duplicate),
+            act(Action::Quantize),
             act(Action::SplitAtMarker),
             act(Action::DeleteSelection),
             act(Action::MuteClips),

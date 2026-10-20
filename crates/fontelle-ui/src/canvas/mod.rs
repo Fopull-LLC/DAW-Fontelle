@@ -74,8 +74,8 @@ pub use carry::{
 };
 pub use chord_strip::{
     ChordStripHit, ChordStripLayout, TYPE_CHORD, chord_chip_caption, chord_strip_hit,
-    chord_strip_layout, chord_strip_words, next_extension, next_inversion, next_voicing,
-    suggest_label,
+    chord_strip_layout, chord_strip_layout_with_room, chord_strip_words, next_extension,
+    next_inversion, next_voicing, suggest_label,
 };
 pub use effect::{
     EQ_MAX_DB, EQ_MAX_HZ, EQ_MIN_HZ, EqField, EqHandle, EqHit, EqLayout, InsertInfo, NO_KEY,
@@ -163,9 +163,9 @@ pub use plugin_menu::{
     PluginPresetMenu, SHOW_IN_BROWSER, plugin_preset_menu,
 };
 pub use presence::{
-    Marks, Places, SAID_SECONDS, Spot, Toward, arrangement_playhead_x, arrangement_pointer,
-    arrangement_spot, follow_roll, follow_timeline, person_marks, roll_pointer, roll_spot,
-    said_bubble, seen_roll, seen_timeline,
+    Marks, Places, PlayheadGlide, SAID_SECONDS, Spot, Toward, arrangement_playhead_x,
+    arrangement_pointer, arrangement_spot, follow_roll, follow_timeline, glide_spot, person_marks,
+    roll_pointer, roll_spot, said_bubble, seen_roll, seen_timeline,
 };
 pub use preset_bar::{
     NO_PRESET, PLUGIN_HEADER_HEIGHT, PLUGIN_PRESETS_HEADING, PRESET_MENU_HEADING, PluginHeaderView,
@@ -282,10 +282,10 @@ pub use piano_roll::{
     edge_scroll_rate, ghost_menu, hit_test, key_row, key_to_y, keyboard_width, keyboard_width_for,
     lane_baseline_y, lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout,
     lane_value_of_y, lane_y_of_value, legato_edits, legato_edits_to, note_at_tick, note_marks,
-    path_handles, path_line, pitch_y, roll_layout, roll_layout_with_keys, roll_past_end,
-    slice_cuts, snap_caption, subdivision_unit, tick_to_x, toolbar_hit, toolbar_layout,
-    tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks, x_to_tick, y_to_key,
-    zoom_x, zoom_y,
+    note_overlaps, path_handles, path_line, pitch_y, roll_layout, roll_layout_with_keys,
+    roll_past_end, slice_cuts, snap_caption, subdivision_unit, tick_to_x, toolbar_hit,
+    toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
+    x_to_tick, y_to_key, zoom_x, zoom_y,
 };
 pub use preedit::{Composed, Preedit, compose};
 pub use prefabs::{
@@ -346,7 +346,9 @@ pub use timeline::{
     timeline_toolbar_layout, timeline_visible_ticks, timeline_x_to_tick, timeline_zoom_x,
     timeline_zoom_y, visible_lanes, y_to_lane,
 };
-pub use timeline::{clip_meter_lines, meter_flags, timeline_bar_numbers, timeline_grid_lines};
+pub use timeline::{
+    MeterPin, clip_meter_lines, meter_flags, meter_pins, timeline_bar_numbers, timeline_grid_lines,
+};
 pub use tools::{
     TOOL_MENU, TOOL_ROWS, ToolAction, ToolKind, ToolMenuItem, ToolRow, Tools, ToolsDialog,
     tools_dialog_hit, tools_dialog_layout,

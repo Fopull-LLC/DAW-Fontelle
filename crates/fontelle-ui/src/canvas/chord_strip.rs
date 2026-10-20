@@ -78,15 +78,38 @@ pub fn chord_strip_layout(
     chips: usize,
     metrics: &Metrics,
 ) -> ChordStripLayout {
+    chord_strip_layout_with_room(grid, note, chips, chips, metrics)
+}
+
+/// [`chord_strip_layout`], placed as if it held `room_for` chips.
+///
+/// The window passes the most chips any setting of the strip's controls
+/// could give, and the `note` span it opened with, so pressing a control
+/// changes the chips and only ever moves the strip's right edge: its corner
+/// and its controls stay under the pointer (Ty, 2026-10-20: *"chords tool is
+/// constantly moving around when clicking through the settings"*).
+pub fn chord_strip_layout_with_room(
+    grid: Rect,
+    note: Rect,
+    chips: usize,
+    room_for: usize,
+    metrics: &Metrics,
+) -> ChordStripLayout {
     let row = metrics.row_height.max(1.0);
     let pad = 4.0;
     let control_h = (row * 0.9).round();
     let chip_h = (row * 1.6).round();
-    let chips_w = chips as f32 * CHIP_WIDTH + chips.saturating_sub(1) as f32 * GAP;
+    let chips_w = |n: usize| n as f32 * CHIP_WIDTH + n.saturating_sub(1) as f32 * GAP;
     let controls_w = CONTROLS.iter().sum::<f32>() + GAP * (CONTROLS.len() - 1) as f32;
-    let width = (chips_w.max(controls_w) + 2.0 * pad).min(grid.width.max(0.0));
+    let wide = |n: usize| (chips_w(n).max(controls_w) + 2.0 * pad).min(grid.width.max(0.0));
+    let width = wide(chips);
     let height = (pad * 3.0 + control_h + chip_h).min(grid.height.max(0.0));
-    let x = note.x.min(grid.right() - width).max(grid.x);
+    // Slid in from the right edge as far as the widest it could become, so
+    // growing never slides it.
+    let x = note
+        .x
+        .min(grid.right() - wide(room_for.max(chips)))
+        .max(grid.x);
     let above = note.y - 4.0 - height;
     let y = if above >= grid.y {
         above

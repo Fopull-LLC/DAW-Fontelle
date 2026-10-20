@@ -312,6 +312,8 @@ pub(crate) struct Collab {
     /// than somebody else or the network. The person who did it needs no
     /// card to tell them.
     ended_here: bool,
+    /// When it ended, for [`LAST_WORDS`].
+    ended_at: Option<Instant>,
     /// The history's generation last seen with an edit in the hand, and
     /// since when — see [`CollabOptions::idle_break`].
     held: Option<(u64, Instant)>,
@@ -359,6 +361,17 @@ struct Presences {
 /// cursor that moves smoothly enough, and a few hundred bytes a second.
 const PRESENCE_EVERY: Duration = Duration::from_millis(1000 / 15);
 
+/// How long an ended session keeps its link open after the goodbye.
+///
+/// The pace's backlog empties the moment the goodbye is handed to the
+/// connection, not when it has gone: a QUIC connection closed then drops
+/// whatever its stream had not yet written. Over a real relay the host's
+/// Bye never reached its joiners, who were left in a session nobody was
+/// hosting (2026-10-20, `sharing_a_new_song_does_not_bring_back_the_last_\
+/// sessions_card`). Half a second is long enough for the writer to send it
+/// and short enough that closing the window does not seem to hang.
+const LAST_WORDS: Duration = Duration::from_millis(500);
+
 impl Collab {
     pub fn host(transport: Box<dyn Transport>, options: CollabOptions) -> Self {
         let host = Host {
@@ -373,6 +386,7 @@ impl Collab {
             notices: Vec::new(),
             ended: None,
             ended_here: false,
+            ended_at: None,
             held: None,
             files: Files::default(),
             presence: Presences::default(),
@@ -397,6 +411,7 @@ impl Collab {
             notices: Vec::new(),
             ended: None,
             ended_here: false,
+            ended_at: None,
             held: None,
             files: Files::default(),
             presence: Presences::default(),
@@ -614,7 +629,9 @@ impl Collab {
 
     /// Over, and still sending what was said last (see [`Collab::pump`]).
     pub fn flushing(&self) -> bool {
-        self.ended.is_some() && self.transport.backlog() > 0
+        self.ended.is_some()
+            && (self.transport.backlog() > 0
+                || self.ended_at.is_some_and(|at| at.elapsed() < LAST_WORDS))
     }
 
     /// Waits, for no longer than `at_most`, for an ended session's last
@@ -1171,6 +1188,7 @@ impl Collab {
         history.close_outbox();
         history.set_mint_space(None);
         self.ended = Some(why);
+        self.ended_at = Some(Instant::now());
     }
 }
 

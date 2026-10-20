@@ -79,3 +79,62 @@ fn with_smart_chords_off_no_strip() {
     w.click_studio(x, y);
     assert!(w.chord_strip().is_none());
 }
+
+/// Ty, 2026-10-20: *"chords tool is constantly moving around when clicking
+/// through the settings."* Every control reshapes the chips — more of them,
+/// fewer, reaching higher or lower — and the strip used to follow, so the
+/// next control was no longer under the pointer. It stays where it opened.
+#[test]
+fn the_strip_stays_put_while_its_controls_are_pressed() {
+    let mut w = a_window();
+    let chip = w.roll_chip(RollControl::Chords).expect("the chip");
+    let (x, y) = centre(chip);
+    w.click_studio(x, y);
+    let (x, y) = w.roll_point(0, 67);
+    w.click_studio(x, y);
+    let opened = w.chord_strip().expect("the strip opens on the note");
+    let mut names = std::collections::HashSet::new();
+    for _round in 0..4 {
+        for control in [
+            opened.extension,
+            opened.voicing,
+            opened.inversion,
+            opened.mode,
+        ] {
+            let (x, y) = centre(control);
+            w.click_studio(x, y);
+            let now = w.chord_strip().expect("a control press keeps it open");
+            names.insert(w.chord_names());
+            // Its corner stays; only its right edge follows the chips.
+            assert_eq!(
+                (now.frame.x, now.frame.y, now.frame.height),
+                (opened.frame.x, opened.frame.y, opened.frame.height),
+                "the strip moved"
+            );
+            assert_eq!(
+                (
+                    now.mode,
+                    now.extension,
+                    now.voicing,
+                    now.inversion,
+                    now.type_it
+                ),
+                (
+                    opened.mode,
+                    opened.extension,
+                    opened.voicing,
+                    opened.inversion,
+                    opened.type_it
+                ),
+                "a control moved"
+            );
+            for chip in &now.chips {
+                assert!(
+                    chip.intersection(&now.frame) == *chip,
+                    "a chip outside the strip"
+                );
+            }
+        }
+    }
+    assert!(names.len() > 1, "the controls never changed the chords");
+}

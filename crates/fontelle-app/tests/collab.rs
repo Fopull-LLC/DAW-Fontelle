@@ -2547,6 +2547,9 @@ fn the_session_says_whether_it_is_open() {
     assert!(pair.joiner.pump_session(), "joined");
     pair.joiner.leave_session();
     pair.settle();
+    // The link stays open a moment for the goodbye to be written
+    // (`LAST_WORDS`), and the window keeps looking while it is.
+    std::thread::sleep(std::time::Duration::from_millis(600));
     assert!(!pair.joiner.pump_session(), "alone again");
     let mut alone = a_session();
     assert!(!alone.pump_session(), "nobody shared anything");
@@ -3408,6 +3411,76 @@ fn leaving_yourself_is_a_line_not_a_card() {
     pair.host.leave_session();
     pair.settle();
     assert!(end_card(&pair.host).is_none());
+}
+
+/// Ty, 2026-10-20: *"when leaving a shared session, then making a new song,
+/// and pressing share, it pops up the screen saying that the previous person
+/// in the last session stopped sharing but were not even in the session
+/// anymore."* The card for an ended session is shown once; sharing the next
+/// song must not bring it back.
+#[test]
+fn sharing_a_new_song_does_not_bring_back_the_last_sessions_card() {
+    use fontelle_ui::document::SessionRole;
+    let relay = LocalRelay::start();
+    let dir = scratch("old-card");
+    let _cleanup = Cleanup(dir.clone());
+    let mut alice = a_studio_on(&relay, &dir, "Alice");
+    alice.save_as("Song").unwrap();
+    StudioHost::share_song(&mut alice).unwrap();
+    until("a code", || {
+        alice.pump_session();
+        StudioHost::session(&alice).code.is_some()
+    });
+    let code = StudioHost::session(&alice).code.unwrap();
+    let mut bob = a_studio_on(&relay, &dir, "Bob");
+    StudioHost::join_song(&mut bob, &code).unwrap();
+    until("the join's question", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session_question(&bob).is_some()
+    });
+    StudioHost::answer_session_question(&mut bob, 0).unwrap();
+    until("Bob's copy", || {
+        alice.pump_session();
+        bob.pump_session();
+        StudioHost::session(&bob).role == SessionRole::Joined
+    });
+
+    alice.leave_session();
+    until("Bob's card", || {
+        alice.pump_session();
+        bob.pump_session();
+        end_card(&bob).is_some()
+    });
+    let keep = end_card(&bob)
+        .unwrap()
+        .buttons
+        .iter()
+        .position(|b| b == "Keep working")
+        .unwrap();
+    StudioHost::answer_session_question(&mut bob, keep).unwrap();
+    assert!(end_card(&bob).is_none(), "the card is answered");
+
+    // A new song of Bob's own, shared.
+    bob.new_project_named("Mine").unwrap();
+    StudioHost::share_song(&mut bob).unwrap();
+    until("Bob's code", || {
+        bob.pump_session();
+        assert!(
+            end_card(&bob).is_none(),
+            "the last session's card came back: {:?}",
+            end_card(&bob).map(|q| q.lines)
+        );
+        StudioHost::session(&bob).code.is_some()
+    });
+    for _ in 0..20 {
+        bob.pump_session();
+        assert!(
+            end_card(&bob).is_none(),
+            "the card came back after the code"
+        );
+    }
+    assert_eq!(StudioHost::session(&bob).role, SessionRole::Hosting);
 }
 
 // --- presence (phase 2.2) ---

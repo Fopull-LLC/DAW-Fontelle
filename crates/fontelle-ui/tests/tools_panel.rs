@@ -540,8 +540,8 @@ fn the_chip_opens_a_menu_of_tools_rather_than_every_tools_settings_at_once() {
     let labels: Vec<String> = TOOL_MENU.iter().map(|item| item.label()).collect();
     assert_eq!(
         labels.len(),
-        8,
-        "four tools that ask something, legato, the two importers, and the MIDI \
+        9,
+        "five tools that ask something, legato, the two importers, and the MIDI \
          export: {labels:?}"
     );
     for item in TOOL_MENU {
@@ -771,4 +771,153 @@ fn the_arpeggiators_dialog_fits_and_every_row_of_it_can_be_reached() {
         panel.frame.bottom() <= bounds().bottom() + 0.5,
         "the dialog runs off the bottom of the window"
     );
+}
+
+// -------------------------------------------------------------- quantize ---
+// Ty, 2026-10-20: *"add quantize tool and make ctrl q shortcut"* and *"make
+// arpeggiator let you preview changes"*.
+
+/// Notes a little off the sixteenths, and an arena holding them.
+fn played() -> (fontelle_model::Arena<NoteId, Note>, Vec<NoteId>) {
+    let mut notes = fontelle_model::Arena::default();
+    let mut at = |start: i64, length: i64, key: u8| {
+        let mut note = a_note(key, 100);
+        note.start = start;
+        note.length = length;
+        notes.insert(note)
+    };
+    let ids = vec![
+        at(PPQN / 4 + 9, 100, 60),
+        at(PPQN / 2 - 11, 90, 62),
+        at(PPQN, 80, 64),
+    ];
+    (notes, ids)
+}
+
+#[test]
+fn quantize_is_on_the_menu_with_ctrl_q_on_it() {
+    let entry = TOOL_MENU
+        .iter()
+        .find(|item| matches!(item, ToolMenuItem::Open(ToolKind::Quantize)))
+        .expect("quantize is on the menu");
+    let map = fontelle_ui::canvas::Keymap::default();
+    assert!(
+        entry.label_in(&map).contains("Ctrl+Q"),
+        "{}",
+        entry.label_in(&map)
+    );
+    assert_eq!(entry.action(), Some(fontelle_ui::canvas::Action::Quantize));
+    assert!(
+        ToolKind::Quantize
+            .rows()
+            .iter()
+            .any(|row| Tools::default().action(*row) == Some(ToolAction::Quantize)),
+        "its dialog has its button"
+    );
+}
+
+#[test]
+fn quantize_retimes_the_selection_as_one_edit_and_keeps_the_notes() {
+    let (notes, ids) = played();
+    let mut tools = Tools {
+        roll_grid: PPQN / 4,
+        ..Tools::default()
+    };
+    let edits = tools.run(ToolAction::Quantize, &ids, &notes);
+    assert_eq!(
+        edits,
+        vec![RollEdit::Retime {
+            ids: ids.clone(),
+            starts: vec![PPQN / 4, PPQN / 2, PPQN],
+            lengths: vec![100, 90, 80],
+        }],
+        "one edit, the same notes moved — not a remove and an insert, which \
+         would lose the selection"
+    );
+    // Already on the grid: nothing to do, and no empty entry in the history.
+    let (mut on, ids) = played();
+    for (i, id) in ids.iter().enumerate() {
+        on.get_mut(*id).unwrap().start = (i as i64 + 1) * PPQN / 4;
+    }
+    assert!(tools.run(ToolAction::Quantize, &ids, &on).is_empty());
+}
+
+#[test]
+fn the_quantize_grid_follows_the_rolls_snap_until_one_is_chosen() {
+    let mut tools = Tools {
+        roll_grid: PPQN / 2,
+        ..Tools::default()
+    };
+    assert!(
+        tools.value(ToolRow::QuantizeGrid).contains("snap"),
+        "{}",
+        tools.value(ToolRow::QuantizeGrid)
+    );
+    assert!(tools.value(ToolRow::QuantizeGrid).contains("1/8"));
+    assert_eq!(tools.quantize_spec().grid, PPQN / 2);
+    tools.nudge(ToolRow::QuantizeGrid, 1);
+    assert!(!tools.value(ToolRow::QuantizeGrid).contains("snap"));
+    tools.roll_grid = PPQN / 8;
+    assert_ne!(
+        tools.quantize_spec().grid,
+        PPQN / 8,
+        "a chosen grid stays chosen when the snap changes"
+    );
+    // Down: the strength starts at its top rung, a full quick quantize.
+    for row in [ToolRow::QuantizeStrength, ToolRow::QuantizeEnds] {
+        let before = tools.value(row);
+        tools.nudge(row, -1);
+        assert_ne!(tools.value(row), before, "{row:?} does not step");
+    }
+}
+
+/// The dialogs that rearrange notes show what they would make before it is
+/// made: the result, as notes, for the roll to ghost.
+#[test]
+fn a_tools_result_can_be_seen_before_it_is_applied() {
+    let (notes, ids) = selection();
+    let tools = Tools::default();
+    let chord: Vec<Note> = ids
+        .iter()
+        .map(|id| notes.get(*id).unwrap().clone())
+        .collect();
+    assert_eq!(
+        tools.preview(ToolKind::Arpeggiate, &ids, &notes),
+        fontelle_model::arpeggiated(&chord, tools.arp)
+    );
+    let mut stepped = tools;
+    stepped.nudge(ToolRow::ArpRate, 1);
+    assert_ne!(
+        stepped.preview(ToolKind::Arpeggiate, &ids, &notes),
+        tools.preview(ToolKind::Arpeggiate, &ids, &notes),
+        "a setting changed and the preview did not"
+    );
+    let (played_notes, played_ids) = played();
+    let tools = Tools {
+        roll_grid: PPQN / 4,
+        ..Tools::default()
+    };
+    let starts: Vec<i64> = tools
+        .preview(ToolKind::Quantize, &played_ids, &played_notes)
+        .iter()
+        .map(|n| n.start)
+        .collect();
+    assert_eq!(starts, vec![PPQN / 4, PPQN / 2, PPQN]);
+    assert!(
+        tools.preview(ToolKind::Arpeggiate, &[], &notes).is_empty(),
+        "nothing selected, nothing to show"
+    );
+}
+
+#[test]
+fn the_arpeggiator_and_quantize_can_be_heard_before_they_are_applied() {
+    let tools = Tools::default();
+    for kind in [ToolKind::Arpeggiate, ToolKind::Quantize] {
+        assert!(
+            kind.rows()
+                .iter()
+                .any(|row| tools.action(*row) == Some(ToolAction::Hear)),
+            "{kind:?} has no way to hear it"
+        );
+    }
 }

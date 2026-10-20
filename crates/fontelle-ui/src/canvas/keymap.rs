@@ -366,10 +366,16 @@ pub enum Action {
     /// The Voicebanks page — installed singers and Find singers — from
     /// anywhere, a vocal track in the roll or not.
     Voicebanks,
+    /// The roll's Quantize at its dialog's settings, on the selected notes
+    /// or every note of the clip — FL's quick quantize (Ty, 2026-10-20).
+    Quantize,
+    /// The window full screen, or back (Ty, 2026-10-20: *"add f11 to
+    /// toggle fullscreen"*).
+    Fullscreen,
 }
 
 impl Action {
-    pub const ALL: [Self; 70] = [
+    pub const ALL: [Self; 72] = [
         Self::Play,
         Self::Stop,
         Self::Metronome,
@@ -440,6 +446,8 @@ impl Action {
         Self::AnalyzeNoiseTool,
         Self::AnalyzeMarkerTool,
         Self::Voicebanks,
+        Self::Quantize,
+        Self::Fullscreen,
     ];
 
     /// The name the settings file knows this by. **Never renamed**: a file
@@ -518,6 +526,8 @@ impl Action {
             Self::AnalyzeNoiseTool => "analyze-noise-tool",
             Self::AnalyzeMarkerTool => "analyze-marker-tool",
             Self::Voicebanks => "voicebanks",
+            Self::Quantize => "quantize",
+            Self::Fullscreen => "fullscreen",
         }
     }
 
@@ -613,6 +623,8 @@ impl Action {
             Self::AnalyzeNoiseTool => "Analyze Musically: the Noise tool (Clean)",
             Self::AnalyzeMarkerTool => "Analyze Musically: the Marker tool (Slice)",
             Self::Voicebanks => "Voicebanks & Find singers: install and find free singers",
+            Self::Quantize => "Quantize the selected notes (all, with none selected) to the grid",
+            Self::Fullscreen => "Full screen on or off",
         }
     }
 
@@ -629,7 +641,8 @@ impl Action {
             | Self::ExportWav
             | Self::ExportMidi
             | Self::Help
-            | Self::Voicebanks => Context::Global,
+            | Self::Voicebanks
+            | Self::Fullscreen => Context::Global,
             Self::RemoveBand
             | Self::AnalyzeCopyNotes
             | Self::AnalyzeCopyScale
@@ -728,6 +741,8 @@ impl Action {
             Self::AnalyzeNoiseTool => &["N"],
             Self::AnalyzeMarkerTool => &["K"],
             Self::Voicebanks => &["Ctrl+Shift+Y"],
+            Self::Quantize => &["Ctrl+Q"],
+            Self::Fullscreen => &["F11"],
         }
     }
 

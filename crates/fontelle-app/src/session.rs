@@ -3730,7 +3730,11 @@ impl Session {
             let _ = tx.send(fontelle_net::host(&relay, env!("CARGO_PKG_VERSION")));
         });
         self.sharing = Some(rx);
-        self.told_end = false;
+        // `told_end` stays as it is until the new session is in place
+        // (`share`): until then `self.collab` is still the last one, and
+        // clearing it here showed that session's ending card again (Ty,
+        // 2026-10-20: *"it pops up the screen saying that the previous
+        // person in the last session stopped sharing"*).
         self.touch();
         Ok(())
     }
@@ -8495,6 +8499,37 @@ impl DocumentHost for Session {
                 // the whole phrase back — see `fontelle_model::SetNoteLengths`.
                 self.run(Box::new(fontelle_model::SetNoteLengths::new(
                     clip, ids, lengths,
+                )));
+                self.let_go();
+                Vec::new()
+            }
+            // Quantize: each note to its own start, and the lengths with
+            // them — one command, so one undo, and the notes keep their ids.
+            RollEdit::Retime {
+                ids,
+                starts,
+                lengths,
+            } => {
+                let mut parts: Vec<Box<dyn fontelle_model::Command>> = Vec::new();
+                for (id, start) in ids.iter().zip(&starts) {
+                    let Some(now) = self.roll_notes.get(*id).map(|n| n.start) else {
+                        continue;
+                    };
+                    if *start != now {
+                        parts.push(Box::new(fontelle_model::MoveNotes::new(
+                            clip,
+                            vec![*id],
+                            start - now,
+                            0,
+                        )));
+                    }
+                }
+                parts.push(Box::new(fontelle_model::SetNoteLengths::new(
+                    clip, ids, lengths,
+                )));
+                self.run(Box::new(fontelle_model::Compound::new(
+                    "Quantize".to_string(),
+                    parts,
                 )));
                 self.let_go();
                 Vec::new()

@@ -181,6 +181,26 @@ impl TextEntry {
         };
     }
 
+    /// The character boundary nearest `x` points from the text's left edge,
+    /// with `width_of` measuring a prefix as it is drawn.
+    ///
+    /// The canvas cannot shape text (INVARIANT 2), so the window hands its
+    /// shaper in. A press in a field is this and then [`place`](Self::place)
+    /// (Ty, 2026-10-20: *"every typing input right now isnt a box you can
+    /// click inside"*). One measurement per character: these are names and
+    /// numbers, not pages.
+    pub fn index_at_x(&self, x: f32, mut width_of: impl FnMut(&str) -> f32) -> usize {
+        let mut best = (0, x.abs());
+        for (at, c) in self.text.char_indices() {
+            let end = at + c.len_utf8();
+            let distance = (width_of(&self.text[..end]) - x).abs();
+            if distance < best.1 {
+                best = (end, distance);
+            }
+        }
+        best.0
+    }
+
     /// Left by one character, or by one **word** with `word`, extending the
     /// selection with `select`.
     ///

@@ -209,6 +209,33 @@ fn the_defaults_are_the_bindings_the_window_has_always_had() {
     assert_eq!(bound(Action::RemoveBand), "Delete / Backspace");
 }
 
+/// Ty, 2026-10-20: *"add quantize tool and make ctrl q shortcut"* and *"add
+/// f11 to toggle fullscreen"*. Ctrl+Q is FL's quick quantize; F11 is every
+/// desktop program's full screen, so it is heard everywhere.
+#[test]
+fn ctrl_q_quantizes_and_f11_is_full_screen() {
+    use fontelle_ui::canvas::Context;
+    let map = Keymap::default();
+    assert_eq!(map.label(Action::Quantize), "Ctrl+Q");
+    assert_eq!(map.label(Action::Fullscreen), "F11");
+    assert_eq!(Action::Quantize.id(), "quantize");
+    assert_eq!(Action::Fullscreen.id(), "fullscreen");
+    assert_eq!(
+        map.action(&chord("Ctrl+Q"), Context::Studio),
+        Some(Action::Quantize)
+    );
+    assert_eq!(
+        map.action(&chord("F11"), Context::Studio),
+        Some(Action::Fullscreen)
+    );
+    assert_eq!(
+        map.action(&chord("F11"), Context::Editor),
+        Some(Action::Fullscreen),
+        "an editor window goes full screen too"
+    );
+    assert_eq!(Action::Fullscreen.context(), Context::Global);
+}
+
 #[test]
 fn no_two_actions_that_can_both_hear_a_key_share_a_default_for_it() {
     // `D` is the delete tool in the studio and Delete removes an EQ band in

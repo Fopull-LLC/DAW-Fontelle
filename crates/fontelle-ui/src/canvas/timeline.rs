@@ -4338,6 +4338,50 @@ pub fn meter_flags(
         .collect()
 }
 
+/// A signature change's pin on the ruler: where the change really is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeterPin {
+    /// The head, at the top of the ruler, centred on the bar line — drawn as
+    /// a point downwards.
+    pub head: Rect,
+    /// A line down the ruler, on the bar line.
+    pub stem: Rect,
+    /// From the stem across to the change's flag, so the two read as one.
+    pub leader: Rect,
+}
+
+/// Where each signature change's pin is ([`MeterPin`]), by the bar it
+/// starts — beside [`meter_flags`], whose flags sit right of their line.
+///
+/// Ty, 2026-10-20: *"kind of hard to tell where time change markers are
+/// right now due to the offset add a little marker indicator into the time
+/// bar at the top to show where its actually placed like a pin."* No pin
+/// for a line scrolled off the left; its flag may still be showing.
+pub fn meter_pins(
+    view: &TimelineView,
+    grid: Rect,
+    ruler: Rect,
+    meter: &fontelle_types::Meter,
+) -> Vec<(u32, MeterPin)> {
+    meter_flags(view, grid, ruler, meter)
+        .into_iter()
+        .filter_map(|(bar, flag)| {
+            let x = timeline_tick_to_x(view, grid, meter.tick_of_bar(bar));
+            if x < grid.x || x > grid.right() {
+                return None;
+            }
+            let head = Rect::new(x - 4.0, ruler.y, 8.0, 6.0).intersection(&ruler);
+            let stem = Rect::new(x.floor(), ruler.y, 1.0, ruler.height).intersection(&ruler);
+            // Along the top, level with the head: through the middle it
+            // crossed the bar's number.
+            let reach = flag.x + flag.height / 2.0 - x.floor();
+            let leader =
+                Rect::new(x.floor(), ruler.y + 1.0, reach.max(0.0), 1.0).intersection(&ruler);
+            Some((bar, MeterPin { head, stem, leader }))
+        })
+        .collect()
+}
+
 /// The meter's lines over `range` of a clip that starts at song tick
 /// `clip_start`, in the clip's own ticks — a bar numbered from the clip's
 /// first bar, as the roll numbers them.

@@ -258,6 +258,61 @@ impl ArpDirection {
     }
 }
 
+/// What Quantize does: the grid, how far towards it, and whether the ends
+/// go too.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuantizeSpec {
+    /// The distance between lines, in ticks, counted from tick 0 of the
+    /// clip. Nothing moves when it is zero or less.
+    pub grid: Tick,
+    /// 0..=1: how much of the way to its line each note goes. One is FL's
+    /// quick quantize; less keeps some of the playing in it.
+    pub strength: f32,
+    /// Whether each note's end goes to its own line too, rather than riding
+    /// along with the start at the length it had.
+    pub ends: bool,
+}
+
+impl Default for QuantizeSpec {
+    fn default() -> Self {
+        Self {
+            grid: fontelle_types::PPQN / 4,
+            strength: 1.0,
+            ends: false,
+        }
+    }
+}
+
+/// Each `(start, length)` pulled onto `spec`'s grid, in the order given.
+///
+/// > *"add quantize tool and make ctrl q shortcut"* (Ty, 2026-10-20)
+///
+/// A start goes to its **nearest** line (halfway goes forward), never before
+/// the clip's start. With [`QuantizeSpec::ends`] the end goes to its own
+/// nearest line, and a note whose end would land on its start keeps one
+/// grid step: quantizing must not delete a note.
+pub fn quantized(spans: &[(Tick, Tick)], spec: QuantizeSpec) -> Vec<(Tick, Tick)> {
+    if spec.grid <= 0 {
+        return spans.to_vec();
+    }
+    let strength = spec.strength.clamp(0.0, 1.0);
+    let toward = |t: Tick| {
+        let line = (t + spec.grid / 2).div_euclid(spec.grid) * spec.grid;
+        t + ((line - t) as f32 * strength).round() as Tick
+    };
+    spans
+        .iter()
+        .map(|&(start, length)| {
+            let to = toward(start).max(0);
+            if !spec.ends {
+                return (to, length);
+            }
+            let length = toward(start + length) - to;
+            (to, if length <= 0 { spec.grid } else { length })
+        })
+        .collect()
+}
+
 /// What an arpeggio is made of.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ArpSpec {
