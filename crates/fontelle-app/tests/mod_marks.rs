@@ -149,8 +149,8 @@ fn a_revisions_marks_for_the_grand_piano_are_a_fraction_of_a_frame() {
 /// §3.3: one ring per route, in the **source's** colour — so the marks
 /// carry every route to a control, oldest first, each with its source's
 /// family, and the newest's depth is still the depth the old ring showed.
-/// The Grand Piano's cutoff has three: an envelope, the velocity and a
-/// macro.
+/// The Grand Piano's cutoff has two: the Init patch's envelope and the
+/// Lid macro. (Three until 2026-10-19 — the velocity opened the old lid.)
 #[test]
 fn a_mark_carries_every_route_with_its_sources_family() {
     use fontelle_ui::document::SourceFamily;
@@ -163,12 +163,8 @@ fn a_mark_carries_every_route_with_its_sources_family() {
     let families: Vec<SourceFamily> = cutoff.rings.iter().map(|ring| ring.family).collect();
     assert_eq!(
         families,
-        [
-            SourceFamily::Envelope,
-            SourceFamily::Note,
-            SourceFamily::Macro
-        ],
-        "ENV 2, Velocity, Brightness"
+        [SourceFamily::Envelope, SourceFamily::Macro],
+        "ENV 2, Lid"
     );
     assert_eq!(
         cutoff.depth,
@@ -188,10 +184,10 @@ fn a_mark_carries_every_route_with_its_sources_family() {
     // macros read the patch, and the list is as long as the sources.
     let values = session.mod_source_values();
     assert_eq!(values.len(), session.mod_sources().len());
-    let brightness = session
+    let lid = session
         .mod_sources()
         .iter()
-        .position(|s| s == "Brightness")
+        .position(|s| s == "Lid")
         .unwrap();
-    assert!((0.0..=1.0).contains(&values[brightness]));
+    assert!((0.0..=1.0).contains(&values[lid]));
 }

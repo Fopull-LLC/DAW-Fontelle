@@ -37,9 +37,33 @@ fn names(json: &serde_json::Value, into: &mut BTreeSet<String>) {
     }
 }
 
+/// The tour's song, and channels on the Modelled Piano and the Felt Piano
+/// beside it: the tour
+/// is the richest song built in code, but its Keys channel is the Grand
+/// Piano, which since 2026-10-19 is two recordings and nothing else — so the
+/// string, the per-layer gain and pan, the oscillator position a patch can
+/// write (the Modelled Piano's string and routes, the Felt Piano's key across
+/// the field) would drop out of the list for want of a channel that uses them,
+/// and this would read a fixture's change as the format's.
+fn song() -> fontelle_model::Project {
+    use fontelle_model::Command;
+    let mut song = fontelle_app::tour::tour_project(48_000);
+    for name in ["Modelled Piano", "Felt Piano"] {
+        let patch = fontelle_core::flopsynth::presets::FACTORY
+            .iter()
+            .find(|row| row.name == name)
+            .map(|row| (row.build)())
+            .expect("the bank has it");
+        fontelle_model::AddChannel::new(name, patch.to_data(&Default::default()).ok())
+            .apply(&mut song)
+            .expect("a song takes a channel");
+    }
+    song
+}
+
 #[test]
 fn what_a_song_writes_moves_only_with_the_protocol() {
-    let song = fontelle_app::tour::tour_project(48_000);
+    let song = song();
     let mut written = BTreeSet::new();
     names(&serde_json::to_value(&song).unwrap(), &mut written);
     let wrote = format!(

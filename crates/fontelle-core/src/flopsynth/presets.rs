@@ -2313,10 +2313,10 @@ bank! {
         .off(C)
         .off(SUB)
         .off(NOISE)
-        // **The lid.** Open: the filter stands at the top of hearing and
-        // the strength's own recording is the tone. The Lid macro closes it
-        // for a darker, felted piano.
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 20_000.0, 0.1)
+        // **The lid.** Open: the filter stands at 18 kHz, over everything
+        // the C5's recordings hold, so the strength's own recording is the
+        // tone. The Lid macro closes it for a darker, felted piano.
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 18_000.0, 0.1)
         .route(ModSource::Macro(0), ModDest::FilterCutoff(0), -0.45)
         .mac(0, "Lid")
         // **The envelope is the recording's.** No decay of its own; the

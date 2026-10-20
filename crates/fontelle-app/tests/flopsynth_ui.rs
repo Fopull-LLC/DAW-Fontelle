@@ -1304,15 +1304,32 @@ fn assert_page_fits_showing(
 }
 
 #[test]
-fn the_modulation_page_fits_the_window_with_the_grand_pianos_routes() {
-    // The project a studio opens on: the Grand Piano, eleven routes.
-    let session = common::a_session_for(fontelle_app::blank_project(8, 120.0, SR));
+fn the_modulation_page_fits_the_window_with_a_full_matrix() {
+    // The bank's busiest matrix, the Modelled Piano's twenty-three routes,
+    // on the channel a studio opens on. (This was the Grand Piano's eleven
+    // until 2026-10-19, when the Grand Piano became two recordings and five
+    // routes.)
+    let mut project = fontelle_app::blank_project(8, 120.0, SR);
+    let modelled = fontelle_core::flopsynth::presets::FACTORY
+        .iter()
+        .find(|row| row.name == "Modelled Piano")
+        .map(|row| (row.build)())
+        .expect("the bank has a Modelled Piano");
+    let channel = project.channels.keys().next().expect("a channel");
+    fontelle_app::set_channel_patch(
+        &mut project,
+        channel,
+        &modelled,
+        &fontelle_app::SampleLibrary::new(),
+    )
+    .expect("a factory patch serialises");
+    let session = common::a_session_for(project);
     let view = session
         .flopsynth(fontelle_ui::canvas::FlopsynthPage::Modulation)
         .expect("Flopsynth's window");
     assert!(
-        view.routes.len() >= 8,
-        "the piano's matrix is what this test is for; it has {} routes",
+        view.routes.len() >= 20,
+        "a full matrix is what this test is for; it has {} routes",
         view.routes.len()
     );
     assert_page_fits(&session, fontelle_ui::canvas::FlopsynthPage::Modulation);
@@ -1457,9 +1474,10 @@ fn every_card_declares_its_knob_sizes_and_the_synth_page_is_two_bands() {
             c.group.name
         );
     }
-    // The Grand Piano: two sampled oscillators, one string.
+    // The Grand Piano: two sampled oscillators, and C left as the Init
+    // patch's table.
     assert_eq!(large_of("OSC A"), ["START"]);
-    assert_eq!(large_of("OSC C"), ["BRIGHT"]);
+    assert_eq!(large_of("OSC C"), ["WT POS"]);
     assert_eq!(large_of("Filter 1"), ["CUTOFF"]);
     assert!(
         large_of("SUB").is_empty(),
@@ -1672,8 +1690,8 @@ fn a_knob_has_a_preset_value_a_default_and_takes_a_typed_value() {
     let loaded = value(&session, &cutoff);
     assert_eq!(
         display(&session, &cutoff),
-        "9.00 kHz",
-        "the Grand Piano's filter"
+        "18.00 kHz",
+        "the Grand Piano's filter, the lid open"
     );
     let preset = session
         .instrument_param_preset_value(&cutoff)
@@ -2301,8 +2319,8 @@ fn every_source_has_a_short_name_for_a_narrow_badge() {
     assert_eq!(short("Aftertouch"), "AT");
     assert_eq!(short("Note X"), "X");
     // A named macro: its first three letters; an unnamed one its number.
-    let brightness = view.sources.iter().position(|s| s == "Brightness").unwrap();
-    assert_eq!(view.source_short[brightness], "BRI");
+    let lid = view.sources.iter().position(|s| s == "Release").unwrap();
+    assert_eq!(view.source_short[lid], "REL");
     let m5 = view.sources.iter().position(|s| s == "M5").unwrap();
     assert_eq!(view.source_short[m5], "M5");
     for short in &view.source_short {
