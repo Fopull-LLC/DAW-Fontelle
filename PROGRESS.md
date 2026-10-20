@@ -19,6 +19,53 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-20 — the feedback round after 0.29.0, and the install ping;
+released in 0.30.0.** Ty, after testing with other people: ten reports.
+`docs/feedback-round-2026-10-20.md` has each one's cause and fix.
+
+- **Fields take a click** (*"clicking at all actually stops the entering
+  process"*): a press inside the field that has the keyboard places the
+  caret (`TextEntry::index_at_x`, measured with the window's shaper),
+  Shift extends, a drag selects, a double-click takes the word, a third
+  click all of it (`WindowApp::press_field`, `Drag::FieldSelect`). Covers
+  the name prompt, the tempo box, the browser and Flopsynth searches (now
+  drawn by `draw_text_field`, caret where it is) and the rack, prefab,
+  lane and mixer renames. Not the DisgustingBeat scene chips or lyrics.
+- **Collab**: other people's cursors and markers glide (F96,
+  `canvas::PlayheadGlide`, `glide_spot`); sharing a new song no longer
+  brings back the last session's card (F94); an ended session keeps its
+  link `LAST_WORDS` (0.5 s) so the Bye is written — over a real relay it
+  was lost (F95).
+- **Chord strip** stays put: its corner and controls are fixed when it
+  opens (`chord_strip_layout_with_room`); only its right edge follows the
+  chips. Placing it clear of every voicing put it 125 px from its note.
+- **Quantize**: a Tools dialog (grid = the snap or chosen, strength, ends)
+  and Ctrl+Q (`Action::Quantize`; the selection, or the whole clip).
+  `fontelle_model::quantized`; one `RollEdit::Retime` = a `Compound` of
+  per-note `MoveNotes` and a `SetNoteLengths`, so ids and selection stay.
+- **Previews**: an open Arpeggiate, Quantize or Transpose dialog ghosts
+  its result (`Tools::preview` → `RollChords::ghosts`); *Hear it* plays
+  it once at the song's tempo (`ToolHearing`), again on each setting
+  change while it plays.
+- **Overlaps** cross-hatched (`canvas::note_overlaps`,
+  `draw_cross_hatch`); **F11** full screen (`Action::Fullscreen`);
+  **a ruler drag pauses** a playing song and plays on from the drop
+  (`pause_for_scrub`; never while recording); **meter pins** on the bar
+  line with a leader to the flag (`canvas::meter_pins`).
+- **Install ping (hub 0428)**: `install_ping.rs`, to the hub's
+  `contracts/install-ping.md`. Notice in the start menu's quiet row
+  (`canvas::StartLine::Ping`) on the first menu, nothing sent until a
+  later launch; Settings ▸ Privacy ▸ Count this install (off deletes
+  `install-ping.json` beside the settings); `FOPULL_NO_PING`. Verified
+  against the live endpoint (204, 204 same day, 400 on a bad id); the
+  live check is `--ignored` in `tests/install_ping.rs`.
+- Tests: `text_fields_window.rs`, `quantize_window.rs`, `install_ping.rs`,
+  `scrub.rs` (2 new), `chord_strip_window.rs` (1), `collab.rs` (1),
+  fontelle-ui `presence_glide.rs`, `meter_pins.rs`, `roll_overlaps.rs`,
+  `tools_panel.rs` (5), `keymap.rs` (1), `text_entry.rs` (2), headless
+  hatch/pin/notice-width; fontelle-model `quantize.rs`.
+- Not done: Steam store screenshots and trailer (0429, due 2026-10-27).
+
 **2026-10-19 — the Grand Piano is the Salamander C5 in stereo, and
 nothing clicks; released in 0.29.0.** Ty: *"the default piano is also
 extremely clicky sounding and not very realistic ... make the default grand

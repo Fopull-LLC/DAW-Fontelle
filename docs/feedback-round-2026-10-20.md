@@ -21,9 +21,9 @@ once all of it is closed.
 
 - **0428, install ping**: the contract merged (caef4af). Built to the
   contract, with the notice on first launch, nothing sent on that launch,
-  a Settings toggle and `FOPULL_NO_PING`. The link in the contract (§5,
-  `fopull.com/privacy#install-ping`) is still the 404 named in my review;
-  the client uses the live page, `https://fopull.com/legal/privacy#install-ping`.
+  a Settings toggle and `FOPULL_NO_PING`. The contract's link
+  (`fopull.com/privacy#install-ping`) now redirects to the live policy, so
+  the notice uses it as written.
 - **0429**: the store screenshots and trailer, due Mon 2026-10-27.
 
 ## Caveats

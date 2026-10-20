@@ -16,6 +16,22 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-20 (v0.30.0: the feedback round and the install ping).**
+`PROGRESS.md`'s top entry. Things to know:
+
+(a) **One-line fields** are listed in `WindowApp::active_field` with their
+on-screen rect and text start — the same offsets the renderer draws at. A
+new typed field goes there (and in `field_entry_mut`) or a press in it will
+end it.
+
+(b) **An ended collab session holds its link `LAST_WORDS`** (0.5 s) before
+letting go, so the goodbye is written. A test that asserts the window stops
+pumping after a leave has to wait that long.
+
+(c) **The install ping never runs in tests**: only `main` calls
+`Session::start_install_ping`. The live check is `--ignored` and counts the
+machine as an install.
+
 **Updated 2026-10-05 (v0.25.1: collaboration that survives drops).**
 `PROGRESS.md`'s top entry; `docs/collab-plan.md` §18 rows F65–F79 and §19's
 last section. Things to know before touching a shared session:
