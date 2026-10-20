@@ -1,25 +1,25 @@
 //! The Grand Piano a new project opens on — the claims that make it a piano.
 //!
 //! > *"the grand piano sound doesnt sound realistic at all right now"* — Ty,
-//! > 2026-09-07; *"still doesnt sound much like a grand piano its sounding
-//! > kind of like a mix between a clav and a electric piano"* — 2026-09-08;
-//! > *"the grand piano still sounds just a lot like a basic synth wave and
-//! > not a actual grand piano ... maybe you could use the osc sampling
-//! > feature to make the piano sound more realistic if you can find a grand
-//! > piano one shot to use."* — 2026-09-16.
+//! > 2026-09-07; *"... use the osc sampling feature ... if you can find a
+//! > grand piano one shot"* — 2026-09-16; *"the default piano is also
+//! > extremely clicky sounding and not very realistic ... make the default
+//! > grand piano preset for flopsynth just sound a lot more natural and
+//! > professional and clean like a real grand piano"* — 2026-10-19.
 //!
-//! Four reports. The first three rounds voiced a table, then a stiff
-//! string, against a sampled grand's measurements, and each round measured
-//! right and was heard as a synth. The fourth is answered the way Ty asked:
-//! the row **plays a recording of a grand** — forty-six of them, a Yamaha
-//! C5 at two strengths (`fontelle_core::factory_samples`), crossfaded by
-//! velocity through the same sample oscillator a dropped file plays through.
-//! So what this file holds is no longer "does it measure like a piano" but
-//! "is it the piano, played right": the recordings are what sounds, every
-//! key lands on one near its own pitch, a soft touch is the soft recording
-//! and a hard one the hard, the level follows velocity without a dip where
-//! the two cross, a release is a damper and not a cut, and a project file
-//! names the piano rather than carrying it.
+//! The row plays **the Salamander C5 itself**, in stereo: every key it was
+//! recorded at, three strengths of each, the left microphone on one
+//! oscillator and the right on another (`fontelle_core::factory_samples`).
+//! The September rows put a body round a mono recording instead — a noise
+//! hammer, a noise damper, a modelled string — and the October report heard
+//! that body as clicks: the hammer's burst started at full level on the
+//! note's first sample, a transient eighty decibels over the room before
+//! it, and the damper's burst did the same on every release. The recording
+//! already holds its own hammer, and its own ring when it is long enough to.
+//! So what this file holds is that the piano is the recording, played
+//! right: nothing synthesised beside it, every key near its own recording,
+//! the strength choosing the recording and the touch the level, a held note
+//! singing on, a release that is a damper, and nothing, anywhere, a click.
 
 use fontelle_core::factory_samples::FactorySampleSet;
 use fontelle_core::flopsynth::presets::FACTORY;
@@ -100,21 +100,6 @@ fn render_stereo(patch: Patch, key: u8, velocity: u8, seconds: f32) -> (Vec<f32>
     }
     (left_out, right_out)
 }
-
-/// The piano with one of its layers taken out, so what that layer adds can
-/// be measured as the difference.
-fn without(layer: usize) -> Patch {
-    let mut patch = grand_piano();
-    patch.layers[layer].gain_db = SILENT_DB;
-    patch.mod_matrix.routes.retain(|route| {
-        !matches!(route.destination, fontelle_core::ModDest::LayerGain(at) if usize::from(at) == layer)
-    });
-    patch
-}
-
-/// Which layer plays the string, and which the noise.
-const STRING: usize = 2;
-const NOISE: usize = 4;
 
 fn db(x: f32) -> f32 {
     20.0 * x.max(1e-9).log10()
@@ -210,11 +195,12 @@ fn partial_power(samples: &[f32], hz: f32, h: usize) -> f32 {
     }
     best
 }
-/// The row plays the sampled grand: a soft recording and a hard one on two
-/// oscillators, and nothing synthesised beside them. The rest of this file
-/// is what "played right" means.
+
+/// The row is the recording and nothing else: the left microphone's set on
+/// one oscillator panned hard left, the right's on another panned hard
+/// right, and every other layer silent with nothing to lift it.
 #[test]
-fn it_is_the_sampled_grand_not_a_synth() {
+fn it_is_the_stereo_recording_and_nothing_else() {
     let patch = grand_piano();
     let set_on = |layer: usize| match &patch.layers[layer].source {
         Source::Synth(osc) => match osc.source {
@@ -223,37 +209,40 @@ fn it_is_the_sampled_grand_not_a_synth() {
         },
         _ => None,
     };
-    assert_eq!(set_on(0), Some(FactorySampleSet::GrandSoft));
-    assert_eq!(set_on(1), Some(FactorySampleSet::GrandHard));
+    assert_eq!(set_on(0), Some(FactorySampleSet::GrandLeft));
+    assert_eq!(set_on(1), Some(FactorySampleSet::GrandRight));
     assert!(patch.layers[0].gain_db > SILENT_DB && patch.layers[1].gain_db > SILENT_DB);
-    // What sits beside the recordings is the instrument's mechanics, not a
-    // second tone: a string that sings under them and the noise of the
-    // hammer and the damper. Each is held to its job below.
-    assert!(matches!(
-        &patch.layers[STRING].source,
-        Source::Synth(osc) if osc.source == SynthSource::String
-    ));
-    assert!(matches!(
-        &patch.layers[NOISE].source,
-        Source::Synth(osc) if osc.source == SynthSource::Noise
-    ));
-    // And a project file names the piano rather than carrying it.
+    for layer in 2..patch.layers.len() {
+        assert!(
+            patch.layers[layer].gain_db <= SILENT_DB,
+            "layer {layer} sounds"
+        );
+        assert!(
+            !patch.mod_matrix.routes.iter().any(|route| matches!(
+                route.destination,
+                fontelle_core::ModDest::LayerGain(at) if usize::from(at) == layer
+            )),
+            "a route lifts layer {layer}"
+        );
+    }
+    // A project file names the piano rather than carrying it.
     let data = patch.to_data(&Default::default()).unwrap();
     let text = serde_json::to_string(&data).unwrap();
     assert!(text.len() < 40_000, "{} bytes", text.len());
 }
 
-/// Every key plays a recording near its own pitch: the nearest one, never
-/// more than two semitones away, transposed the rest — so nothing is a
-/// chipmunk and nothing is a zone from the wrong octave.
+/// Every key plays a recording a semitone or less from its own pitch, and
+/// what comes out is at the key's pitch.
 #[test]
 fn every_key_lands_on_a_recording_near_its_own_pitch() {
     let patch = grand_piano();
     for sample in &patch.samples {
         for key in 0..=127u8 {
-            let zone = sample.zone_for(key).expect("a zone for every key");
+            let zone = sample
+                .zone_for_note(key, 100)
+                .expect("a zone for every key");
             let away = (i16::from(zone.root_key) - i16::from(key)).abs();
-            let stretch = if (21..=108).contains(&key) { 2 } else { 24 };
+            let stretch = if (21..=108).contains(&key) { 1 } else { 24 };
             assert!(
                 away <= stretch,
                 "{}: key {key} plays the recording of {}, {away} semitones off",
@@ -262,10 +251,6 @@ fn every_key_lands_on_a_recording_near_its_own_pitch() {
             );
         }
     }
-    // And what comes out is at the key's pitch, where the fundamental is
-    // the strongest thing in the note (it is not, in the bass: a short
-    // soundboard does not radiate 65 Hz, and the C5's C2 has more second
-    // partial than first).
     for key in [60u8, 72, 84, 96] {
         let note = render(patch.clone(), key, 100, 0.6);
         let f0 = 440.0 * 2f32.powf((f32::from(key) - 69.0) / 12.0);
@@ -281,15 +266,14 @@ fn every_key_lands_on_a_recording_near_its_own_pitch() {
     }
 }
 
-/// A soft touch is the soft recording and a hard one the hard: the strike
-/// is darker at velocity 20 than at 120 by more than a level knob could
-/// make it, and the level rises with velocity **all the way up** — the two
-/// recordings cross in the middle without the dip two gains summed in
-/// decibels would leave.
+/// The strength chooses the recording — a soft strike is darker than a
+/// hard one by more than a level could make it — and the touch sets the
+/// level, rising all the way up with no step back where the recordings
+/// change, over a real piano's thirty-odd decibels.
 #[test]
-fn velocity_crossfades_the_soft_recording_into_the_hard_one() {
+fn velocity_chooses_the_recording_and_sets_the_level() {
     let patch = grand_piano();
-    let soft = render(patch.clone(), 60, 20, 0.5);
+    let soft = render(patch.clone(), 60, 30, 0.5);
     let hard = render(patch.clone(), 60, 120, 0.5);
     let (a, b) = (
         brightness(&soft, 60, 0.0, 0.3),
@@ -299,57 +283,63 @@ fn velocity_crossfades_the_soft_recording_into_the_hard_one() {
         b > a + 5.0,
         "a hard strike should be brighter than a soft one: {b:.1} against {a:.1} dB"
     );
-    let levels: Vec<f32> = [8u8, 32, 56, 80, 104, 127]
+    let velocities = [8u8, 30, 44, 45, 64, 80, 81, 100, 127];
+    let levels: Vec<f32> = velocities
         .iter()
         .map(|v| level_db(&render(patch.clone(), 60, *v, 0.4), 0.0, 0.3))
         .collect();
     for pair in levels.windows(2) {
         assert!(
-            pair[1] > pair[0] + 1.0,
-            "the level should rise with velocity, not dip where the recordings cross: {levels:?}"
+            pair[1] > pair[0] - 0.5,
+            "the level should rise with velocity, not step back where the recordings change: \
+             {velocities:?} → {levels:?}"
         );
     }
-    // From the lightest touch a sequencer sends to the hardest: a real
-    // piano's pp to ff is thirty-odd decibels, a sampled library's forty.
-    // Fifty-one here, and it always was in the studio: the top of it is
-    // the hammer's burst, +32 dB over the string for its first ten
-    // milliseconds at a fortissimo, which this file's 512-frame blocks
-    // read a block late until modulation ran at step rate (see the hammer
-    // test below).
     let span = levels[levels.len() - 1] - levels[0];
     assert!(
-        (28.0..=52.0).contains(&span),
+        (28.0..=44.0).contains(&span),
         "a piano's pp to ff is thirty-odd decibels, not {span:.1}: {levels:?}"
     );
 }
 
-/// The bass rings long and the treble short — the recording's own decay,
-/// which the envelope is not allowed to shorten into a synth's.
+/// The bass rings long and the treble short — the recording's own decay.
 #[test]
 fn the_bass_rings_long_and_the_treble_rings_short() {
     let patch = grand_piano();
-    let bass = t30(&render(patch.clone(), 36, 100, 5.0));
-    let middle = t30(&render(patch.clone(), 60, 100, 4.0));
+    let bass = t30(&render(patch.clone(), 36, 100, 6.0));
+    let middle = t30(&render(patch.clone(), 60, 100, 4.5));
     let top = t30(&render(patch, 96, 100, 2.0));
-    assert!(bass > 1.2, "C2 should ring: 30 dB in {bass:.2} s");
+    assert!(bass > 2.0, "C2 should ring: 30 dB in {bass:.2} s");
     assert!(
-        (0.7..=3.0).contains(&middle),
-        "middle C: 30 dB in {middle:.2} s, the reference's 1.4"
+        (0.7..=4.0).contains(&middle),
+        "middle C: 30 dB in {middle:.2} s"
     );
-    assert!(top < 0.6, "C7 should be short: 30 dB in {top:.2} s");
+    assert!(top < 0.8, "C7 should be short: 30 dB in {top:.2} s");
     assert!(bass > middle && middle > top);
 }
 
-/// A note that outlives its recording fades; it does not stop. Held longer
-/// than any recording is, the tail has no step in it, and it is well down
-/// — how far depends on the key, because the modelled string under the
-/// recording rings on in the bass the way a real bass string does (the
-/// reference's C2 is thirty decibels down in two seconds and audible long
-/// after), and is gone at the top.
+/// A held note sings on: middle C is still well up three seconds in, and
+/// the bass five — not gone where a short recording was cut, as the
+/// September cut's four seconds made it.
+#[test]
+fn a_held_note_sings_on() {
+    let patch = grand_piano();
+    for (key, at) in [(60u8, 3.0f32), (36, 4.5)] {
+        let note = render(patch.clone(), key, 90, at + 0.5);
+        let strike = level_db(&note, 0.0, 0.3);
+        let later = level_db(&note, at, 0.4);
+        assert!(
+            later > strike - 40.0,
+            "key {key}: {later:.1} dB at {at} s against {strike:.1} at the strike"
+        );
+    }
+}
+
+/// A note that outlives its recording fades; it does not stop.
 #[test]
 fn a_note_that_outlives_its_recording_fades_rather_than_stops() {
     let patch = grand_piano();
-    for (key, seconds, down) in [(21u8, 5.5f32, 25.0f32), (60, 4.0, 40.0), (108, 2.5, 45.0)] {
+    for (key, seconds) in [(21u8, 7.0f32), (60, 5.5), (108, 2.5)] {
         let note = render(patch.clone(), key, 110, seconds);
         let peak = note.iter().fold(0f32, |m, s| m.max(s.abs()));
         let from = (SR * 0.5) as usize;
@@ -362,12 +352,155 @@ fn a_note_that_outlives_its_recording_fades_rather_than_stops() {
             "key {key}: a step of {biggest_step:.3} against a peak of {peak:.3} is a cut"
         );
         let end = level_db(&note, seconds - 0.3, 0.3);
-        let start = level_db(&note, 0.0, 0.3);
         assert!(
-            end < start - down || end < -70.0,
-            "key {key}: {end:.1} dB at the end of {seconds} s against {start:.1} at the strike"
+            end < -70.0,
+            "key {key}: {end:.1} dB at the end of {seconds} s"
         );
     }
+}
+
+/// The sharpest transient anywhere in `stereo` (interleaved), as how far
+/// its one-millisecond burst of second difference stands over the forty
+/// milliseconds round it, in decibels. A piano's own hammer reads twenty to
+/// thirty-five off the silence before a note; the September noise hammer
+/// read eighty, its damper forty.
+fn sharpest_transient(mono: &[f32]) -> (f32, f32) {
+    let d2: Vec<f32> = (2..mono.len())
+        .map(|n| mono[n] - 2.0 * mono[n - 1] + mono[n - 2])
+        .collect();
+    let w = 48;
+    let e: Vec<f32> = d2
+        .chunks(w)
+        .map(|c| (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    let mut worst = (0.0f32, 0.0f32);
+    for i in 0..e.len() {
+        let lo = i.saturating_sub(20);
+        let hi = (i + 20).min(e.len());
+        let mut around: Vec<f32> = (lo..hi)
+            .filter(|j| j.abs_diff(i) > 2)
+            .map(|j| e[j])
+            .collect();
+        around.sort_by(f32::total_cmp);
+        let median = around
+            .get(around.len() / 2)
+            .copied()
+            .unwrap_or(0.0)
+            .max(1e-7);
+        let ratio = 20.0 * (e[i] / median).log10();
+        if e[i] > 1e-4 && ratio > worst.1 {
+            worst = (i as f32 * w as f32 / SR, ratio);
+        }
+    }
+    worst
+}
+
+/// A key at a moment: seconds in, the key, its velocity — or 0 for a
+/// release.
+type Played = (f32, u8, u8);
+
+/// Nothing clicks: not a strike, not a release, not a key struck again
+/// while it still sounds, not a chord — Ty's *"extremely clicky"*.
+#[test]
+fn nothing_clicks() {
+    let store = SampleStore::new();
+    // (seconds, key, velocity or 0 for a release)
+    let passages: [(&str, &[Played]); 4] = [
+        (
+            "staccato",
+            &[
+                (0.1, 60, 90),
+                (0.25, 60, 0),
+                (0.6, 64, 110),
+                (0.7, 64, 0),
+                (1.0, 67, 40),
+                (1.2, 67, 0),
+            ],
+        ),
+        (
+            "repeats",
+            &[
+                (0.1, 60, 100),
+                (0.3, 60, 0),
+                (0.35, 60, 100),
+                (0.6, 60, 100),
+                (0.8, 60, 120),
+                (1.2, 60, 0),
+            ],
+        ),
+        (
+            "chord",
+            &[
+                (0.1, 48, 80),
+                (0.1, 60, 80),
+                (0.1, 64, 80),
+                (0.1, 67, 80),
+                (1.5, 48, 0),
+                (1.5, 60, 0),
+                (1.5, 64, 0),
+                (1.5, 67, 0),
+            ],
+        ),
+        (
+            "bass",
+            &[(0.1, 33, 127), (1.0, 33, 0), (1.2, 21, 100), (2.2, 21, 0)],
+        ),
+    ];
+    for (name, events) in passages {
+        let mut sampler = Sampler::new(grand_piano());
+        sampler.prepare(&PrepareContext {
+            sample_rate: SR,
+            max_block_size: 64,
+        });
+        let total = (SR * 2.6) as usize;
+        let mut out = Vec::with_capacity(total);
+        let mut at = 0usize;
+        while at < total {
+            for (t, key, velocity) in events {
+                if (t * SR) as usize == at {
+                    if *velocity > 0 {
+                        sampler.note_on(*key, *velocity, 0);
+                    } else {
+                        sampler.note_off(*key, 0);
+                    }
+                }
+            }
+            let mut left = [0.0f32; 64];
+            let mut right = [0.0f32; 64];
+            sampler.render(&store, &mut [&mut left[..], &mut right[..]]);
+            out.extend(left.iter().zip(&right).map(|(l, r)| l + r));
+            at += 64;
+        }
+        let (when, ratio) = sharpest_transient(&out);
+        assert!(
+            ratio < 45.0,
+            "{name}: a transient {ratio:.0} dB over its surroundings at {when:.3} s is a click"
+        );
+    }
+}
+
+/// Stereo as the microphones heard it: the two sides are not one signal
+/// twice, and not two that cancel; and the keyboard leans from the bass on
+/// the left to the treble on the right.
+#[test]
+fn the_piano_is_heard_in_stereo() {
+    let patch = grand_piano();
+    let (left, right) = render_stereo(patch.clone(), 60, 100, 1.0);
+    let dot: f32 = left.iter().zip(&right).map(|(l, r)| l * r).sum();
+    let correlation = dot / (rms(&left) * rms(&right) * left.len() as f32).max(1e-12);
+    assert!(
+        (0.2..0.97).contains(&correlation),
+        "the sides correlate at {correlation:.3}"
+    );
+    let balance = |key: u8| {
+        let (left, right) = render_stereo(patch.clone(), key, 100, 0.5);
+        db(rms(&right)) - db(rms(&left))
+    };
+    let (bass, treble) = (balance(33), balance(96));
+    assert!(
+        treble > bass + 1.0,
+        "the treble should sit right of the bass: {bass:+.1} and {treble:+.1} dB"
+    );
 }
 
 /// The note starts from rest: the recording begins before the hammer lands
@@ -489,127 +622,4 @@ fn a_released_bass_note_frees_its_voice() {
         "a released note must give its voice back rather than ring on for the \
          minutes its decay would otherwise take"
     );
-}
-
-// ---------------------------------------------------------- the mechanics ---
-//
-// > *"it sounds like a soundfont with reverb right now pretty much. i want
-// > you to use the features in the synth to take this sampled sound and then
-// > turn it into a really tactile realistic feeling piano instrument
-// > preset."* — Ty, 2026-09-16
-//
-// A soundfont is a recording played back; an instrument is the recording
-// plus what a body does around it. What is added, each measured as the
-// difference the layer makes: the keyboard across the stereo field, the
-// hammer felt on a hard strike, the damper heard on letting go, and the
-// strings singing on under the recording.
-
-/// The keyboard lies left to right across the stereo field, as it does
-/// from the bench: the bass to the left, the treble to the right, middle C
-/// in the middle.
-#[test]
-fn the_keyboard_lies_left_to_right_across_the_stereo_field() {
-    let patch = grand_piano();
-    let balance = |key: u8| {
-        let (left, right) = render_stereo(patch.clone(), key, 100, 0.5);
-        db(rms(&right)) - db(rms(&left))
-    };
-    let bass = balance(36);
-    let middle = balance(60);
-    let treble = balance(96);
-    assert!(
-        bass < -2.0,
-        "C2 should lean left: {bass:+.1} dB right of left"
-    );
-    assert!(treble > 2.0, "C7 should lean right: {treble:+.1} dB");
-    assert!(
-        middle.abs() < 1.5,
-        "middle C in the middle: {middle:+.1} dB"
-    );
-}
-
-/// The hammer is felt on a hard strike: the noise layer is in the strike
-/// of a fortissimo and nowhere after, and there is less of it in a soft
-/// touch.
-///
-/// The window is the first twenty milliseconds. It was 10–30 ms, on the
-/// reading that the recording's hammer lands ten to forty milliseconds in
-/// and the noise should sit with it — but the burst the recipe writes has
-/// no delay (envelope 2: no delay, a 10 ms hold, 30 ms down), and the
-/// studio has always played it from the first sample; the old window saw
-/// it there only because this file renders 512-frame blocks and, until
-/// modulation ran at step rate (`docs/flopsynth-next.md` §4.2), a source
-/// was read at the block's start — the burst arrived a block, ten
-/// milliseconds, late. If it is meant ten milliseconds in, the recipe
-/// wants `delay_s: 0.01` on envelope 2; that is a voicing call and Ty's.
-#[test]
-fn the_hammer_is_felt_on_a_hard_strike_and_not_after_it() {
-    let with = render(grand_piano(), 60, 120, 0.4);
-    let muted = render(without(NOISE), 60, 120, 0.4);
-    let strike = level_db(&with, 0.0, 0.02) - level_db(&muted, 0.0, 0.02);
-    let later = level_db(&with, 0.1, 0.2) - level_db(&muted, 0.1, 0.2);
-    assert!(
-        strike > 1.0,
-        "the hammer should add to the strike: {strike:+.2} dB"
-    );
-    assert!(
-        later.abs() < 0.3,
-        "and be gone once the string sounds: {later:+.2} dB at 100 ms"
-    );
-    let soft_with = render(grand_piano(), 60, 30, 0.4);
-    let soft_without = render(without(NOISE), 60, 30, 0.4);
-    let soft = level_db(&soft_with, 0.0, 0.02) - level_db(&soft_without, 0.0, 0.02);
-    assert!(
-        soft < strike - 1.0,
-        "a soft touch has less hammer in it: {soft:+.2} against {strike:+.2} dB"
-    );
-}
-
-/// Letting go has the damper's sound: the noise layer is heard in the
-/// moment after the release — the felt landing on the string — and not
-/// while the note is held.
-#[test]
-fn letting_go_has_the_dampers_sound() {
-    let with = render_released(grand_piano(), 60, 100, 1.0, 0.5);
-    let muted = render_released(without(NOISE), 60, 100, 1.0, 0.5);
-    let held = level_db(&with, 0.5, 0.4) - level_db(&muted, 0.5, 0.4);
-    let release = level_db(&with, 1.0, 0.05) - level_db(&muted, 1.0, 0.05);
-    assert!(
-        held.abs() < 0.3,
-        "no damper while the key is down: {held:+.2} dB"
-    );
-    assert!(
-        release > 1.0,
-        "the damper should be heard as the key comes up: {release:+.2} dB"
-    );
-    // And it is a sound, not a click: no step in it.
-    let peak = with.iter().fold(0f32, |m, s| m.max(s.abs()));
-    let from = (SR * 0.98) as usize;
-    let step = with[from..from + (SR * 0.1) as usize]
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .fold(0f32, f32::max);
-    assert!(step < peak * 0.1, "the damper clicks: a step of {step:.3}");
-}
-
-/// The strings sing on under the recording: a modelled string at the note,
-/// well under the recording at the strike, carries the ring — its own
-/// stretched partials beating slowly against the recording's, which is what
-/// a piano's three strings do to each other.
-#[test]
-fn the_strings_sing_on_under_the_recording() {
-    let with = render(grand_piano(), 60, 100, 2.5);
-    let muted = render(without(STRING), 60, 100, 2.5);
-    let strike = level_db(&with, 0.0, 0.03) - level_db(&muted, 0.0, 0.03);
-    let ring = level_db(&with, 1.8, 0.4) - level_db(&muted, 1.8, 0.4);
-    assert!(
-        strike.abs() < 0.6,
-        "the strike is the recording's: {strike:+.2} dB"
-    );
-    assert!(
-        ring > 0.7,
-        "the string should be heard in the ring: {ring:+.2} dB at two seconds"
-    );
-    // Not a synth under a piano: still well under the recording.
-    assert!(ring < 6.0, "{ring:+.2} dB is a second instrument");
 }

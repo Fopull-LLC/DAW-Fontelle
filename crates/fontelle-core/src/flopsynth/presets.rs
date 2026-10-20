@@ -965,46 +965,6 @@ impl Build {
         self
     }
 
-    /// An inverted route scaled by a second source — `(1 − source) × via`.
-    /// What a thing that happens *as the note lets go* wants: `1 − env`
-    /// rises through an envelope's release, and the via is what keeps it
-    /// at nothing on the first block, where every envelope reads zero
-    /// before it has advanced and `1 − 0` would be a burst.
-    fn inverted_via(
-        mut self,
-        source: ModSource,
-        destination: ModDest,
-        depth: f32,
-        via: ModSource,
-    ) -> Self {
-        self.patch.mod_matrix.routes.push(ModRoute {
-            source,
-            destination,
-            depth,
-            curve: Curve::Linear,
-            via: Some(via),
-            invert: true,
-            bypass: false,
-        });
-        self
-    }
-
-    /// A route through a curve: `Exponential` is the source squared, so it
-    /// stays near nothing over most of the travel and arrives late — what
-    /// a thing that only a *hard* strike has wants.
-    fn curved(mut self, source: ModSource, destination: ModDest, depth: f32, curve: Curve) -> Self {
-        self.patch.mod_matrix.routes.push(ModRoute {
-            source,
-            destination,
-            depth,
-            curve,
-            via: None,
-            invert: false,
-            bypass: false,
-        });
-        self
-    }
-
     /// A route snapped to whole steps — how a continuous source becomes an
     /// interval rather than a slide.
     fn stepped(mut self, source: ModSource, destination: ModDest, depth: f32, steps: u8) -> Self {
@@ -2322,175 +2282,70 @@ bank! {
     // The FM e-pianos are here because two-operator FM is what a DX7 e-piano
     // *is*.
     //
-    // **The grand is a string now, not a table.** Three rounds of voicing a
-    // struck-string *table* against a sampled grand (`examples/piano_probe.rs`,
-    // `tests/grand_piano.rs`) got the levels and the decays right and the
-    // sound still read as an electric piano, and `examples/piano_partials.rs`
-    // found why: a table is periodic, so its partials are exact multiples of
-    // the fundamental, while a real string is stiff and its twelfth partial
-    // at middle C sits **48 cents sharp**. No level, decay or filter can move
-    // a partial, so the row moved to `SynthSource::String` — a bank of
-    // partials placed where a stiff string puts them, each dying at its own
-    // rate — and the numbers below are the same reference's readings again.
-    //
-    // What the reference actually is, key by key:
-    //
-    // - **Rich.** At middle C its partials 2, 3 and 4 sit 2, 9 and 7 dB
-    //   under the fundamental, and they are *still* within 13 dB a second
-    //   later. The ring is a string, not a sine.
-    // - **Richer at the bottom, purer at the top.** C2's second partial is
-    //   8 dB *over* its fundamental (a short soundboard cannot radiate 65
-    //   Hz); C6 and C7 are within a few dB of a sine.
-    // - **Fast.** Thirty decibels go in 2.0 s at C2, 1.4 s at C4, 0.17 s at
-    //   C7 — the prompt sound leaving — and what is left rings on quietly.
-    // - **Quieter going up**: the top octave is ten decibels under the
-    //   middle, and the bass a shade over it.
+    // **The grand is the Salamander C5, in stereo, and nothing else.**
+    // Five reports went into this row. The first three voiced a table and
+    // then a stiff string against a sampled grand and were heard as a
+    // synth; the fourth made it a recording; the fifth (*"a soundfont with
+    // reverb"*) put a body round that recording — a noise hammer, a noise
+    // damper, a modelled string singing under it — and the sixth, on
+    // 2026-10-19, heard the body: *"extremely clicky sounding and not very
+    // realistic ... make the default grand piano preset for flopsynth just
+    // sound a lot more natural and professional and clean like a real grand
+    // piano."* The hammer's burst started at full on a note's first sample,
+    // a transient eighty decibels over the silence before it, and the
+    // damper's did the same on every release; the string was there to keep
+    // a four-second recording ringing. So the body is gone and the recording
+    // is better: every key the C5 was sampled at, three strengths of each,
+    // both microphones, six seconds in the bass (`factory_samples`,
+    // `examples/grand_stereo_samples.rs`). It already has the hammer, the
+    // ring and the room the two microphones stood in.
     Keys: "Grand Piano" => init()
-        // **A recording of a grand.** Four reports, three rounds of voicing
-        // a table and then a stiff string against a sampled grand's
-        // measurements, each measuring right and each heard as a synth —
-        // and the fourth said what to do instead: *"use the osc sampling
-        // feature ... if you can find a grand piano one shot to use."* So
-        // this row is forty-six recordings of a Yamaha C5 (the Salamander
-        // Grand Piano, CC BY 3.0 — `assets/flopsynth/samples/grand/README.md`
-        // is the credit), the bottom A and every four semitones up, played
-        // through the same sample oscillator a dropped file plays through.
-        //
-        // And then the fifth report: *"it sounds like a soundfont with
-        // reverb ... use the features in the synth to take this sampled
-        // sound and turn it into a really tactile realistic feeling piano."*
-        // A soundfont is a recording played back. What is around the
-        // recordings here is what a body does: the keyboard laid across the
-        // stereo field, a hammer felt on a hard strike, a damper heard on
-        // letting go, a modelled string singing on under the recording.
-        // `tests/grand_piano.rs` measures each as the difference its layer
-        // makes.
-        //
-        // **Two recordings, crossfaded by velocity.** A soft strike is not a
-        // quiet hard one — its hammer is on the string longer and the top
-        // never arrives — and no filter makes one from the other. So the
-        // piano played at velocity 40 is on A and at 120 on B, and velocity
-        // slides between them: the soft one loses twelve decibels on the
-        // way up, the hard one climbs thirty from twenty-four under to six
-        // over. Those numbers are chosen against each other so the sum of
-        // the two never *dips* mid-way — two equal crossfades in decibels
-        // leave a seventeen-decibel hole where they cross — and so a hard
-        // strike is the hard recording, with the soft one eighteen under
-        // it; the weight is the voice's own velocity curve, below.
-        .sampled(A, 0.0, crate::factory_samples::FactorySampleSet::GrandSoft)
-        .route(ModSource::Velocity, ModDest::LayerGain(A as u8), -12.0 / 96.0)
-        .sampled(B, -24.0, crate::factory_samples::FactorySampleSet::GrandHard)
-        .route(ModSource::Velocity, ModDest::LayerGain(B as u8), 30.0 / 96.0)
+        // **The two microphones.** The left one's set on A panned hard
+        // left, the right one's on B panned hard right; the two sets are
+        // laid out zone for zone alike, so a note picks the same recording
+        // on both and the stereo is the recording's own.
+        .sampled(A, 0.0, crate::factory_samples::FactorySampleSet::GrandLeft)
+        .sampled(B, 0.0, crate::factory_samples::FactorySampleSet::GrandRight)
+        .pan(A, -1.0)
+        .pan(B, 1.0)
         .filter_route(A, FilterRoute::F1)
         .filter_route(B, FilterRoute::F1)
-        // **The strings sing on.** A modelled string at the note (the
-        // stiff-string source), dark, fading in over env 1's thirty
-        // milliseconds so the strike is the recording's alone, then some
-        // fourteen decibels under it — and ringing on its own decay, which
-        // the recording's cut cannot shorten, with partials stretched by a
-        // different stiffness than the C5's, so the two beat slowly
-        // against each other the way a piano's three strings do. From a
-        // second or so in it is most of what is heard: it is what keeps the
-        // ring alive under a held chord, and what a recording played back
-        // has not got. Its level follows velocity like the strings'. (A
-        // string's sum is normalised to one where a recording peaks well
-        // under it, so the number here reads some four decibels hotter
-        // than it says.)
-        .string(C, -53.0, 0.3, 0.55, 0.13, 0.9)
-        .route(ModSource::Envelope(1), ModDest::LayerGain(C as u8), 0.25)
-        .pos(C, 0.12)
-        .route(ModSource::Velocity, ModDest::OscPosition(C as u8), 0.3)
-        .route(ModSource::Velocity, ModDest::LayerGain(C as u8), 18.0 / 96.0)
-        // Quieter in the bass, where the recording rings long enough on
-        // its own and a modelled string under it would go on for ever.
-        .route(ModSource::Key, ModDest::LayerGain(C as u8), 0.15)
-        .uni(C, 2, 1.5)
-        .locked(C)
-        .blend(C, 0.5)
-        .width(C, 0.0)
-        .filter_route(C, FilterRoute::F1)
+        .off(C)
         .off(SUB)
-        // **The hammer, and the damper.** The noise layer, dark, through
-        // its own low-pass (filter 2), does two things at two moments. At
-        // the strike it is the hammer's thud, gated by env 2 — held ten
-        // milliseconds and gone in thirty more, which is where the
-        // recording's own hammer lands (its first ten milliseconds are the
-        // room before it); a shorter gate is not heard at all, because the
-        // matrix reads an envelope once a block and a block is ten
-        // milliseconds — and scaled by velocity **squared**: the voice's own
-        // curve is the square too, and the thud has to fall away faster
-        // than the note does or a pianissimo would be all thud. On letting
-        // go it is the damper landing on the string: env 3 sits at full
-        // while the key is down and drops the instant the key comes up,
-        // and the noise reads `1 − env 3` — **times env 1**, which is at
-        // full while the key is down and only leaves over a hundred and
-        // fifty milliseconds after, because every envelope reads zero on a
-        // note's first block and `1 − 0` alone was a burst at every strike
-        // — so the felt is heard as the key rises and never before, and
-        // the amp envelope's release takes it away with the note. Below
-        // the recording rather than at the floor: the voice skips a layer
-        // at `SILENT_DB` until a route lifts it, one block late, and a
-        // hammer a block late is no hammer.
-        .noise(0.75, -88.0)
-        .filter_route(NOISE, FilterRoute::F2)
-        .filter(1, FilterModel::Clean, SvfMode::Lowpass, 1_100.0, 0.25)
-        .env(1, 0.03, 0.0, 1.0, 0.15)
-        .env(2, 0.0, 0.03, 0.0, 0.01)
-        .hold(2, 0.01)
-        .route(ModSource::Envelope(2), ModDest::LayerGain(NOISE as u8), 0.62)
-        .curved(ModSource::Velocity, ModDest::LayerGain(NOISE as u8), 0.6, Curve::Exponential)
-        .env(3, 0.0, 0.0, 1.0, 0.004)
-        .inverted_via(
-            ModSource::Envelope(3),
-            ModDest::LayerGain(NOISE as u8),
-            0.9,
-            ModSource::Envelope(1),
-        )
-        // **The keyboard across the field.** From the bench the bass is on
-        // the left and the treble on the right: every layer sits left of
-        // centre and slides right with the key, middle C landing in the
-        // middle.
-        .pan(A, -0.55).pan(B, -0.55).pan(C, -0.55).pan(NOISE, -0.55)
-        .route(ModSource::Key, ModDest::LayerPan(A as u8), 1.15)
-        .route(ModSource::Key, ModDest::LayerPan(B as u8), 1.15)
-        .route(ModSource::Key, ModDest::LayerPan(C as u8), 1.15)
-        .route(ModSource::Key, ModDest::LayerPan(NOISE as u8), 1.15)
-        // **The lid**, open: a gentle 12 dB low-pass at the top of the
-        // range, closed a little by a soft touch so a pianissimo is darker
-        // still, and the Brightness macro's handle.
-        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 9_000.0, 0.1)
-        .route(ModSource::Velocity, ModDest::FilterCutoff(0), 0.12)
-        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), 0.25)
-        // **The envelope is the recording's.** No decay of its own: the
-        // recording rings the way the string did and fades where it was
-        // cut (a bass note is kept four seconds, the top just over one).
-        // The release is the damper — a fifth of a second at the top,
-        // half a second in the bass, because a long string takes longer to
-        // stop (and the damper's own sound, above, rides on it).
-        .amp(0.0, 0.0, 1.0, 0.2)
+        .off(NOISE)
+        // **The lid.** Open: the filter stands at the top of hearing and
+        // the strength's own recording is the tone. The Lid macro closes it
+        // for a darker, felted piano.
+        .filter(0, FilterModel::Clean, SvfMode::Lowpass, 20_000.0, 0.1)
+        .route(ModSource::Macro(0), ModDest::FilterCutoff(0), -0.45)
+        .mac(0, "Lid")
+        // **The envelope is the recording's.** No decay of its own; the
+        // release is the damper — a quarter second, longer in the bass
+        // where the string is heavier.
+        .amp(0.0, 0.0, 1.0, 0.25)
         .curve(0, EnvelopeCurve::Decibel, 0.0)
         .inverted(ModSource::Key, ModDest::EnvelopeStageTime(0, 5), 0.2)
-        // **The weight.** The voice's own velocity curve is a soundfont's
-        // (the square of velocity: forty-eight decibels from 8 to 127),
-        // which on top of the crossfade's own six is a fortissimo seventy
-        // decibels over a whisper. A real piano's pp to ff is thirty-odd,
-        // so this leans against the curve from the bottom: twelve decibels
-        // back at the lightest touch, nothing at the hardest.
+        // The Release macro lets the damper down slower, up to four times
+        // as long — the half-pedal a player reaches for in a slow piece.
+        .route(ModSource::Macro(1), ModDest::EnvelopeStageTime(0, 5), 0.5)
+        .mac(1, "Release")
+        // **The weight.** Each strength is cut to the hard one's level, so
+        // the recordings change the tone and velocity alone makes the
+        // level. The voice's own curve is a soundfont's square, forty-eight
+        // decibels from 8 to 127; a piano's pp to ff is thirty-odd, so this
+        // leans against it from the bottom.
         .inverted(ModSource::Velocity, ModDest::Amp, 0.5)
-        .route(ModSource::Macro(1), ModDest::LayerGain(B as u8), 0.15)
-        .mac(0, "Brightness").mac(1, "Hardness")
-        // **Under the lid, not in a hall** — the report's *"soundfont with
-        // reverb"* was the room. What is left is the case: small, short,
-        // dark, a few milliseconds off the strike so the hammer is dry.
+        // **The room around the strings**, short and quiet — the
+        // microphones already heard the case.
         .fx(EffectConfig::Reverb(ReverbConfig {
-            size: 0.14,
-            decay_s: 0.7,
-            damping_hz: 4_500.0,
-            pre_delay_ms: 6.0,
-            width: 0.8,
-            mix: 0.07,
+            size: 0.18,
+            decay_s: 0.9,
+            damping_hz: 6_000.0,
+            pre_delay_ms: 8.0,
+            width: 0.9,
+            mix: 0.06,
         }))
-        .out(-11.2),
+        .out(-7.3),
     // **The modelled one.** The string source the third round built — a
     // stiff string's stretched partials, damped from the top, struck a
     // seventh of the way along — voiced against a sampled grand's

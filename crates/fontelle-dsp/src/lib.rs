@@ -32,7 +32,7 @@ pub use envelope::{
     shape_progress,
 };
 pub use filter::{DcBlocker, SvfCoeffs, SvfFilter, SvfMode};
-pub use interpolation::{Interpolation, interpolate};
+pub use interpolation::{Frames, Interpolation, Pcm, interpolate};
 pub use meter::PeakRmsMeter;
 pub use modal::{MAX_MODES, ModalBank, ModalMode};
 pub use oscillator::{OscKind, Oscillator};

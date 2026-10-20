@@ -227,7 +227,7 @@ impl StoredSample {
                     fine_cents: zone.fine_cents,
                     key_range: zone.key_range,
                     sample_rate: zone.sample_rate,
-                    samples: encode_pcm16(&zone.samples),
+                    samples: encode_pcm16(&zone.samples.to_f32()),
                     vel_range: zone.vel_range,
                     gain_db: zone.gain_db,
                     loop_frames: zone.loop_frames,

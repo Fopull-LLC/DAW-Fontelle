@@ -215,24 +215,6 @@ fn every_preset_sounds() {
 fn every_preset_stays_inside_full_scale() {
     for row in FACTORY {
         let out = render_chord((row.build)(), &[60, 64, 67, 72], 127, 1.5, 2.5);
-        // **The Grand Piano is Ty's voicing and is not touched here**
-        // (`docs/flopsynth-next.md` §10). Its hammer — the noise burst
-        // Envelope 2 gates, +59 dB at the strike and a further +57 at full
-        // velocity — puts a four-note chord at velocity 127 at 2.3 times
-        // full scale, and did so in the studio from the day it was voiced:
-        // the gate rendered 512-frame blocks and read the burst a block
-        // late, which is 10 ms, past the whole of its hold. Held at what it
-        // measures, so the next thing that moves it is noticed; the master's
-        // limiter is what stands between this and the output. Ty's to voice
-        // or to leave.
-        if row.name == "Grand Piano" {
-            assert!(
-                (2.0..=2.6).contains(&peak(&out)),
-                "the Grand Piano peaked at {:.3}; it measured 2.318",
-                peak(&out)
-            );
-            continue;
-        }
         assert!(
             peak(&out) <= 0.98,
             "{} peaked at {:.3} on a four-note chord at velocity 127",
@@ -532,7 +514,7 @@ fn derived_tags_say_what_the_row_is() {
     // The phrase reaches for a macro by name.
     let notes = presets::notes_of(grand, &(grand.build)());
     assert!(
-        notes.contains("Brightness") || notes.contains("Hardness"),
+        notes.contains("Lid") || notes.contains("Release"),
         "{notes}"
     );
 }

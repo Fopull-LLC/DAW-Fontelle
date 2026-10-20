@@ -32,8 +32,8 @@
 //! neither of the other two can be (see [`StringModel`]).
 
 use crate::{
-    Decimator, Interpolation, MAX_OVERSAMPLE, Oversampling, WAVETABLE_LEVELS, Wavetable,
-    WavetableId, interpolate, wavetable_level_for,
+    Decimator, Interpolation, MAX_OVERSAMPLE, Oversampling, Pcm, WAVETABLE_LEVELS, Wavetable,
+    WavetableId, wavetable_level_for,
 };
 
 /// The most voices one oscillator's unison stack may have.
@@ -672,8 +672,8 @@ impl StringModel {
 /// held by an `Arc` off this thread.
 #[derive(Debug, Clone, Copy)]
 pub struct SampleData<'a> {
-    /// Mono, −1..=1.
-    pub samples: &'a [f32],
+    /// Mono, −1..=1, as floats or sixteen-bit frames.
+    pub samples: Pcm<'a>,
     /// The rate it was recorded at, which is what makes a 44.1 kHz file play
     /// in tune in a 48 kHz session.
     pub sample_rate: f32,
@@ -1423,7 +1423,7 @@ impl SynthState {
             return 0.0;
         }
         let at = self.noise_state.head;
-        let sample = interpolate(data.samples, at, data.interpolation) * data.gain;
+        let sample = data.samples.read(at, data.interpolation) * data.gain;
         let next = at + 1.0;
         self.noise_state.head = if next >= (len - 1) as f64 { 0.0 } else { next };
         let colour = osc.noise_colour.clamp(0.0, 1.0);
@@ -1685,12 +1685,12 @@ impl SynthState {
                 continue;
             }
             let at = (*head + fm).clamp(0.0, last);
-            let mut sample = interpolate(data.samples, at, data.interpolation);
+            let mut sample = data.samples.read(at, data.interpolation);
             if looping && fade > 0.0 && *head > loop_end - fade {
                 // Into the seam: blend towards where the loop restarts.
                 let t = ((*head - (loop_end - fade)) / fade).clamp(0.0, 1.0) as f32;
                 let wrapped = (at - loop_len).clamp(0.0, last);
-                let ahead = interpolate(data.samples, wrapped, data.interpolation);
+                let ahead = data.samples.read(wrapped, data.interpolation);
                 sample += (ahead - sample) * t;
             }
             sample *= rm * data.gain;
@@ -1786,8 +1786,7 @@ impl SynthState {
                 if !(0.0..=last).contains(&at) {
                     continue;
                 }
-                let sample =
-                    interpolate(data.samples, at, data.interpolation) * window * rm * data.gain;
+                let sample = data.samples.read(at, data.interpolation) * window * rm * data.gain;
                 let (gl, gr) = stack.gains[voice];
                 left += sample * gl;
                 right += sample * gr;

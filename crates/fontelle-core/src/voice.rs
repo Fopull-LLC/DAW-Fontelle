@@ -596,6 +596,10 @@ impl Default for LayerPlayback {
 /// half its fields unused for either is how a renderer ends up silently
 /// skipping the variant nobody filled in, which is what `Source::Oscillator`
 /// did for as long as this enum did not exist.
+// Large, and boxing a variant is not open to it: it is `Copy`, and it is
+// built on the audio thread, where nothing may allocate (INVARIANT 1). The
+// `Synth` variant — an oscillator's whole description — is most of it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy)]
 enum PreparedSource<'a> {
     /// PCM straight out of the `SampleStore` — no copy, no allocation.
@@ -2324,8 +2328,11 @@ impl Voice {
                                 slot.active = false;
                                 continue;
                             }
-                            let sample =
-                                fontelle_dsp::interpolate(data, slot.position, *interpolation);
+                            let sample = fontelle_dsp::interpolate::<[f32]>(
+                                data,
+                                slot.position,
+                                *interpolation,
+                            );
                             slot.position += f64::from(live.pitch_ratio * *rate_ratio);
                             (sample, sample)
                         }
@@ -2616,7 +2623,7 @@ impl Voice {
                             })
                             .map_or(SynthInput::None, |zone| {
                                 SynthInput::Sample(fontelle_dsp::SampleData {
-                                    samples: &zone.samples,
+                                    samples: zone.samples.pcm(),
                                     sample_rate: zone.sample_rate as f32,
                                     root_hz: zone.root_hz(),
                                     // The layer's pin or the session's,
@@ -2656,7 +2663,7 @@ impl Voice {
                                 })
                                 .map_or(SynthInput::None, |zone| {
                                     SynthInput::Sample(fontelle_dsp::SampleData {
-                                        samples: &zone.samples,
+                                        samples: zone.samples.pcm(),
                                         sample_rate: zone.sample_rate as f32,
                                         root_hz: zone.root_hz(),
                                         interpolation: layer

@@ -417,8 +417,9 @@ pub struct SampleZone {
     /// Inclusive, both ends.
     pub key_range: (u8, u8),
     pub sample_rate: u32,
-    /// Mono, −1..=1.
-    pub samples: std::sync::Arc<[f32]>,
+    /// Mono, −1..=1: floats, or sixteen-bit frames for a set the bank
+    /// ships (see [`ZoneAudio`]).
+    pub samples: ZoneAudio,
     /// The velocities this zone plays, inclusive — an SFZ's `lovel`/`hivel`
     /// (`docs/flopsynth-next.md` §4.3), the whole range for a zone from a
     /// folder or the bank. Two zones over one key with windows that meet
@@ -434,6 +435,99 @@ pub struct SampleZone {
     /// travel: the loop the recording asks for, unless somebody has drawn
     /// one.
     pub loop_frames: Option<(u32, u32)>,
+}
+
+/// A zone's recording: floats, as a dropped file or a soundfont is held,
+/// or sixteen-bit frames, as the factory grand is — ninety stereo
+/// recordings that are some sixty megabytes as integers and twice that as
+/// floats (Ty, 2026-10-19: *"make the default grand piano ... sound a lot
+/// more natural and professional"*). Behind an `Arc` either way: a patch is
+/// cloned on every edit, and the audio must not be.
+#[derive(Debug, Clone)]
+pub enum ZoneAudio {
+    F32(std::sync::Arc<[f32]>),
+    I16(std::sync::Arc<[i16]>),
+}
+
+impl ZoneAudio {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(s) => s.len(),
+            Self::I16(s) => s.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn is_sixteen_bit(&self) -> bool {
+        matches!(self, Self::I16(_))
+    }
+
+    /// Frame `at`, in −1..=1. Panics past the end, like an index.
+    pub fn get(&self, at: usize) -> f32 {
+        match self {
+            Self::F32(s) => s[at],
+            Self::I16(s) => f32::from(s[at]) / 32_768.0,
+        }
+    }
+
+    /// Every frame, as floats.
+    pub fn iter(&self) -> impl Iterator<Item = f32> + '_ {
+        (0..self.len()).map(|at| self.get(at))
+    }
+
+    /// A copy as floats — for the few readers that want a slice (a peak
+    /// picture, a file written out), never the audio thread.
+    pub fn to_f32(&self) -> Vec<f32> {
+        self.iter().collect()
+    }
+
+    /// What an oscillator reads.
+    pub fn pcm(&self) -> fontelle_dsp::Pcm<'_> {
+        match self {
+            Self::F32(s) => fontelle_dsp::Pcm::F32(s),
+            Self::I16(s) => fontelle_dsp::Pcm::I16(s),
+        }
+    }
+
+    /// Which allocation this is: two zones sharing one recording answer the
+    /// same, which is what an analysis cache keys on.
+    pub fn identity(&self) -> usize {
+        match self {
+            Self::F32(s) => std::sync::Arc::as_ptr(s) as *const f32 as usize,
+            Self::I16(s) => std::sync::Arc::as_ptr(s) as *const i16 as usize,
+        }
+    }
+}
+
+impl PartialEq for ZoneAudio {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::F32(a), Self::F32(b)) => a == b,
+            (Self::I16(a), Self::I16(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl From<std::sync::Arc<[f32]>> for ZoneAudio {
+    fn from(samples: std::sync::Arc<[f32]>) -> Self {
+        Self::F32(samples)
+    }
+}
+
+impl FromIterator<f32> for ZoneAudio {
+    fn from_iter<I: IntoIterator<Item = f32>>(frames: I) -> Self {
+        Self::F32(frames.into_iter().collect())
+    }
+}
+
+impl From<Vec<f32>> for ZoneAudio {
+    fn from(samples: Vec<f32>) -> Self {
+        Self::F32(samples.into())
+    }
 }
 
 impl SampleZone {

@@ -19,6 +19,45 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-19 — the Grand Piano is the Salamander C5 in stereo, and
+nothing clicks; on `main`, not released.** Ty: *"the default piano is also
+extremely clicky sounding and not very realistic ... make the default grand
+piano preset for flopsynth just sound a lot more natural and professional and
+clean like a real grand piano."*
+
+- **The clicks** were the September body round the recording: the noise
+  hammer's burst started at full on a note's first sample (a transient ~80 dB
+  over the silence before it; the recording's own hammer reads ~30) and the
+  noise damper did the same, ~40 dB, on every release. Gone, with the
+  modelled string that kept a four-second cut ringing.
+- **The recordings** (`assets/flopsynth/samples/grand-stereo/`, cut by
+  `examples/grand_stereo_samples.rs` from FreePats' SFZ+FLAC Salamander):
+  every key the C5 was sampled at (30, minor thirds), Salamander layers 3, 7
+  and 14 (evenly apart in tone — 2/10/15 put a 15 dB brightness step at the
+  first change), stereo at 48 kHz, 6 s in the bass to 1.6 s at the top, each
+  key's channels levelled to lean −3 dB left in the bass to +3 right at the
+  top (raw, a note sat up to 15 dB in one microphone), layers level-matched so
+  velocity alone sets the level. 6.9 MB of Ogg Vorbis in the binary; sets
+  `grand-left`/`grand-right` (`factory_samples::grand_stereo`), decoded on
+  first use across all cores (well under a second).
+- **Sixteen-bit zones**: `SampleZone::samples` is a `ZoneAudio` (F32 or I16);
+  `fontelle_dsp::Pcm` and the generic `interpolate<B: Frames>` read either.
+  The piano is ~64 MB as integers, twice that as floats. Each factory set now
+  decodes on its own `OnceLock`.
+- **The row**: A = left set panned hard left, B = right set hard right, every
+  other layer silent; the amp release is the damper (Release macro lengthens
+  it), a Lid macro closes a 20 kHz low-pass, a small room at 6 %. The old
+  `grand-soft`/`grand-hard` sets stay for the Sampled Keys pianos.
+- Tests: `fontelle-core/tests/grand_piano.rs` rewritten (12, incl.
+  `nothing_clicks` — no transient over 45 dB in staccato, repeats, a chord,
+  the bass — and `a_held_note_sings_on`), `factory_samples.rs`
+  (`the_grand_ships_in_stereo_at_three_strengths`), `fontelle-dsp`
+  `a_sixteen_bit_recording_plays_as_its_floats`; the bank audit's Grand
+  Piano carve-out (2.3× full scale from the hammer) is gone — it peaks at 0.18.
+- Not done: the Sampled Keys pianos still play the mono September cut; the
+  sustain pedal's sympathetic ring and key-off noises (Salamander has both)
+  are not used.
+
 **2026-10-19 — Steam-ready builds (hub card 0429), on a branch, not
 released.** `docs/steam.md` has the whole of it.
 

@@ -201,7 +201,8 @@ trademark, copied unaltered from their SDK and used as their guidelines
 require. **It is not covered by any of the licences above**; see its
 `NOTICE` and [`licenses/TRADEMARKS.md`](licenses/TRADEMARKS.md).
 
-The factory Grand Piano's recordings (`assets/flopsynth/samples/grand/`) are
+The factory Grand Piano's recordings (`assets/flopsynth/samples/grand-stereo/`,
+and the earlier mono cut in `assets/flopsynth/samples/grand/`) are
 cut from the **Salamander Grand Piano** by Alexander Holm, published under
 [CC BY 3.0](http://creativecommons.org/licenses/by/3.0/) and assembled as a
 soundfont by the [FreePats project](https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html);

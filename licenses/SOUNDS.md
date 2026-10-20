@@ -46,17 +46,19 @@ downloads it from its author's own address after showing its licence
 
 | | |
 |---|---|
-| What | The factory Grand Piano's 46 recordings (`assets/flopsynth/samples/grand/`), sets `grand-soft` and `grand-hard` |
-| Work | Salamander Grand Piano (Yamaha C5), in the SF2 build assembled by Roberto (zenvoid.org) for FreePats |
+| What | The factory Grand Piano's 90 stereo recordings (`assets/flopsynth/samples/grand-stereo/`), sets `grand-left` and `grand-right`; and the earlier 46 mono ones (`assets/flopsynth/samples/grand/`), sets `grand-soft` and `grand-hard`, which the remade pianos in Sampled Keys play |
+| Work | Salamander Grand Piano (Yamaha C5): the stereo cut from the SFZ+FLAC edition (V3+20200602), the mono one from the SF2 build, both assembled by Roberto (zenvoid.org) for FreePats |
 | Author | Alexander Holm |
 | Source | <https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html> |
 | Licence | Creative Commons Attribution 3.0 (`CC-BY-3.0`); text in [`sounds/salamander-grand-piano/LICENSE`](sounds/salamander-grand-piano/LICENSE) (the SPDX copy of the CC BY 3.0 Unported legal code) |
-| Changes | Each note played through Fontelle's sampler, trimmed to 1.3–4 s with a fade at the end, resampled to 24 or 32 kHz, summed to mono, scaled once per layer (`assets/flopsynth/samples/grand/README.md`) |
+| Changes | Stereo: layers 3, 7 and 14 kept, each note trimmed to 1.6–6 s with a fade, each key's channels levelled along the keyboard, layers level-matched, encoded as Ogg Vorbis (`assets/flopsynth/samples/grand-stereo/README.md`). Mono: each note played through Fontelle's sampler, trimmed to 1.3–4 s with a fade at the end, resampled to 24 or 32 kHz, summed to mono, scaled once per layer (`assets/flopsynth/samples/grand/README.md`) |
 
 The FreePats page states the licence as Creative Commons Attribution 3.0
-(checked 2026-10-19). The original package's own licence file was not kept
-in this tree when the recordings were cut, so this text is the licence's
-standard one rather than a copy from the package.
+(checked 2026-10-19), and so does the SFZ+FLAC package's own `readme.txt`,
+read when the stereo cut was made: *"The original Salamander Grand Piano was
+created by Alexander Holm. Published under the terms of the Creative Commons
+Attribution 3.0 license"*. The package carries no licence text of its own,
+so this text is the licence's standard one.
 
 ### `fontelle-kits`
 

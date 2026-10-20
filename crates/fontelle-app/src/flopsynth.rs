@@ -638,7 +638,7 @@ fn picture_for(
                 .and_then(|sample| sample.zone_for(60).map(|zone| (sample, zone)))
             {
                 Some((sample, zone)) => FlopsynthPicture::Sound {
-                    peaks: sound_peaks(&zone.samples),
+                    peaks: sound_peaks(&zone.samples.to_f32()),
                     start: osc.position.clamp(0.0, 1.0),
                     // The region: the loop for the two modes that have one,
                     // and for the grain cloud the span either side of the

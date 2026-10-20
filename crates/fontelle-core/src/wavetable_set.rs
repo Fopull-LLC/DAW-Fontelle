@@ -65,14 +65,14 @@ pub fn spectral_analysis(zone: &crate::SampleZone) -> Arc<fontelle_dsp::Spectral
     use std::sync::Mutex;
     static CACHE: Mutex<Option<HashMap<usize, Arc<fontelle_dsp::SpectralFrames>>>> =
         Mutex::new(None);
-    let key = Arc::as_ptr(&zone.samples) as *const f32 as usize;
+    let key = zone.samples.identity();
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
     if let Some(frames) = cache.get(&key) {
         return Arc::clone(frames);
     }
     let frames = Arc::new(fontelle_dsp::analyse_spectral(
-        &zone.samples,
+        &zone.samples.to_f32(),
         zone.sample_rate as f32,
         zone.root_hz(),
     ));

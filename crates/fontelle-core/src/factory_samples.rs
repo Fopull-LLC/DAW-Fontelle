@@ -48,14 +48,21 @@ pub enum FactorySampleSet {
     KitStudio,
     /// The drum machine's 808.
     Kit808,
+    /// The grand's left microphone: every key it was recorded at, at three
+    /// strengths — what the Grand Piano plays on its left.
+    GrandLeft,
+    /// Its right microphone, laid out zone for zone as the left is.
+    GrandRight,
 }
 
 impl FactorySampleSet {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 6] = [
         Self::GrandSoft,
         Self::GrandHard,
         Self::KitStudio,
         Self::Kit808,
+        Self::GrandLeft,
+        Self::GrandRight,
     ];
 
     /// The name a patch file stores. Stable: a file written by this build
@@ -66,6 +73,8 @@ impl FactorySampleSet {
             Self::GrandHard => "grand-hard",
             Self::KitStudio => "kit-studio",
             Self::Kit808 => "kit-808",
+            Self::GrandLeft => "grand-left",
+            Self::GrandRight => "grand-right",
         }
     }
 
@@ -80,15 +89,21 @@ impl FactorySampleSet {
             Self::GrandHard => "Grand (hard)",
             Self::KitStudio => "Studio kit",
             Self::Kit808 => "808 kit",
+            Self::GrandLeft => "Grand (left)",
+            Self::GrandRight => "Grand (right)",
         }
     }
 
     /// The set as a recording a patch can play. Decoded once per process;
     /// the zones' audio is shared, so this is a handful of `Arc` clones.
+    ///
+    /// Each set on its own, the first time it is asked for: the stereo grand
+    /// is ninety Vorbis files and a second or so of work, which a project
+    /// with no piano in it should never pay.
     pub fn sample(self) -> UserSample {
-        static SETS: OnceLock<Vec<UserSample>> = OnceLock::new();
-        let sets = SETS.get_or_init(|| Self::ALL.iter().map(|set| set.decode()).collect());
-        sets[self as usize].clone()
+        static SETS: [OnceLock<UserSample>; FactorySampleSet::ALL.len()] =
+            [const { OnceLock::new() }; FactorySampleSet::ALL.len()];
+        SETS[self as usize].get_or_init(|| self.decode()).clone()
     }
 
     fn decode(self) -> UserSample {
@@ -97,6 +112,8 @@ impl FactorySampleSet {
             Self::GrandHard => Self::keyboard(grand::HARD),
             Self::KitStudio => Self::kit(kit::STUDIO),
             Self::Kit808 => Self::kit(kit::EIGHT_OH_EIGHT),
+            Self::GrandLeft => grand_stereo::zones().0.clone(),
+            Self::GrandRight => grand_stereo::zones().1.clone(),
         };
         UserSample {
             name: self.label().to_string(),
@@ -119,7 +136,7 @@ impl FactorySampleSet {
                     fine_cents: 0.0,
                     key_range: (0, 127),
                     sample_rate,
-                    samples: Arc::from(samples),
+                    samples: crate::ZoneAudio::F32(Arc::from(samples)),
                     vel_range: (0, 127),
                     gain_db: 0.0,
                     loop_frames: None,
@@ -150,7 +167,7 @@ impl FactorySampleSet {
                     fine_cents: 0.0,
                     key_range: (slot.key, slot.key),
                     sample_rate,
-                    samples: Arc::from(samples),
+                    samples: crate::ZoneAudio::F32(Arc::from(samples)),
                     vel_range: (0, 127),
                     gain_db: 0.0,
                     loop_frames: None,
@@ -264,4 +281,154 @@ mod kit {
     }
     pub(super) static STUDIO: &[(&str, &[u8])] = hits!("studio");
     pub(super) static EIGHT_OH_EIGHT: &[(&str, &[u8])] = hits!("808");
+}
+
+/// The stereo grand: the Salamander C5's own recordings, every key it was
+/// sampled at (the bottom A and each minor third up), at three strengths —
+/// its layers 3, 7 and 14 of sixteen — as `grand_stereo_samples` cuts them
+/// into `assets/flopsynth/samples/grand-stereo/`. One Ogg Vorbis file per
+/// key and strength holds both microphones; decoding it once gives the
+/// left set and the right, laid out alike.
+mod grand_stereo {
+    use std::sync::{Arc, OnceLock};
+
+    use crate::patch::{SampleZone, ZoneAudio, key_ranges};
+
+    /// The velocities each strength answers: where Salamander's own split
+    /// falls between the layers this cut keeps.
+    pub(super) const STRENGTHS: [(&str, (u8, u8)); 3] =
+        [("soft", (0, 44)), ("medium", (45, 80)), ("hard", (81, 127))];
+
+    macro_rules! strength {
+        ($dir:literal) => {
+            strength!(@ $dir:
+                (21, "A0"), (24, "C1"), (27, "Ds1"), (30, "Fs1"), (33, "A1"), (36, "C2"),
+                (39, "Ds2"), (42, "Fs2"), (45, "A2"), (48, "C3"), (51, "Ds3"), (54, "Fs3"),
+                (57, "A3"), (60, "C4"), (63, "Ds4"), (66, "Fs4"), (69, "A4"), (72, "C5"),
+                (75, "Ds5"), (78, "Fs5"), (81, "A5"), (84, "C6"), (87, "Ds6"), (90, "Fs6"),
+                (93, "A6"), (96, "C7"), (99, "Ds7"), (102, "Fs7"), (105, "A7"), (108, "C8"),
+            )
+        };
+        (@ $dir:literal: $(($key:literal, $name:literal)),* $(,)?) => {
+            &[$(($key, include_bytes!(concat!(
+                "../../../assets/flopsynth/samples/grand-stereo/", $dir, "/", $name, ".ogg"
+            )) as &[u8])),*]
+        };
+    }
+
+    static FILES: [&[(u8, &[u8])]; 3] = [strength!("soft"), strength!("medium"), strength!("hard")];
+
+    /// Both sides' zones, decoded on as many threads as there are cores.
+    pub(super) fn zones() -> &'static (Vec<SampleZone>, Vec<SampleZone>) {
+        static ZONES: OnceLock<(Vec<SampleZone>, Vec<SampleZone>)> = OnceLock::new();
+        ZONES.get_or_init(|| {
+            let jobs: Vec<(usize, u8, &[u8])> = FILES
+                .iter()
+                .enumerate()
+                .flat_map(|(strength, files)| {
+                    files.iter().map(move |(key, ogg)| (strength, *key, *ogg))
+                })
+                .collect();
+            let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+            let chunk = jobs.len().div_ceil(threads.max(1));
+            let decoded: Vec<Option<Decoded>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = jobs
+                    .chunks(chunk.max(1))
+                    .map(|part| {
+                        scope.spawn(move || {
+                            part.iter()
+                                .map(|(_, _, ogg)| decode_stereo(ogg))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap_or_default())
+                    .collect()
+            });
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for ((strength, key, _), audio) in jobs.iter().zip(decoded) {
+                let Some((rate, l, r)) = audio else { continue };
+                let zone = |samples: Vec<i16>| SampleZone {
+                    name: String::new(),
+                    root_key: *key,
+                    fine_cents: 0.0,
+                    key_range: (0, 127),
+                    sample_rate: rate,
+                    samples: ZoneAudio::I16(Arc::from(samples)),
+                    vel_range: STRENGTHS[*strength].1,
+                    gain_db: 0.0,
+                    loop_frames: None,
+                };
+                left.push(zone(l));
+                right.push(zone(r));
+            }
+            for side in [&mut left, &mut right] {
+                side.sort_by_key(|zone| (zone.root_key, zone.vel_range.0));
+                let mut roots: Vec<u8> = side.iter().map(|zone| zone.root_key).collect();
+                roots.dedup();
+                let ranges = key_ranges(&roots);
+                for zone in side.iter_mut() {
+                    let at = roots.iter().position(|r| *r == zone.root_key).unwrap_or(0);
+                    zone.key_range = ranges[at];
+                }
+            }
+            (left, right)
+        })
+    }
+
+    /// A file's rate and its two channels as sixteen-bit frames.
+    type Decoded = (u32, Vec<i16>, Vec<i16>);
+
+    /// One file, decoded.
+    fn decode_stereo(ogg: &[u8]) -> Option<Decoded> {
+        use symphonia::core::codecs::audio::AudioDecoderOptions;
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+
+        let stream = MediaSourceStream::new(
+            Box::new(std::io::Cursor::new(ogg.to_vec())),
+            Default::default(),
+        );
+        let mut hint = Hint::new();
+        hint.with_extension("ogg");
+        let mut format = symphonia::default::get_probe()
+            .probe(
+                &hint,
+                stream,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .ok()?;
+        let track = format.default_track(TrackType::Audio)?;
+        let track_id = track.id;
+        let params = track.codec_params.as_ref()?.audio()?.clone();
+        let rate = params.sample_rate?;
+        let channels = params.channels.as_ref()?.count();
+        let mut decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .ok()?;
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        let mut buffer: Vec<f32> = Vec::new();
+        while let Ok(Some(packet)) = format.next_packet() {
+            if packet.track_id != track_id {
+                continue;
+            }
+            let Ok(decoded) = decoder.decode(&packet) else {
+                continue;
+            };
+            buffer.resize(decoded.samples_interleaved(), 0.0);
+            decoded.copy_to_slice_interleaved(&mut buffer);
+            for frame in buffer.chunks_exact(channels.max(1)) {
+                let to_i16 = |v: f32| (v * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16;
+                left.push(to_i16(frame[0]));
+                right.push(to_i16(*frame.get(1).unwrap_or(&frame[0])));
+            }
+        }
+        (!left.is_empty()).then_some((rate, left, right))
+    }
 }

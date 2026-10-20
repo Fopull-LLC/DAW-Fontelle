@@ -221,7 +221,10 @@ const SALAMANDER_GRAND: BundledSound = BundledSound {
     licence: SoundLicence::CcBy3,
     licence_file: "licenses/sounds/salamander-grand-piano/LICENSE",
     licence_text: include_str!("../../../licenses/sounds/salamander-grand-piano/LICENSE"),
-    paths: &["assets/flopsynth/samples/grand"],
+    paths: &[
+        "assets/flopsynth/samples/grand",
+        "assets/flopsynth/samples/grand-stereo",
+    ],
 };
 
 const FONTELLE_KITS: BundledSound = BundledSound {
@@ -240,7 +243,9 @@ impl FactorySampleSet {
     /// a compile error until somebody has said whose it is.
     pub fn bundled(self) -> &'static BundledSound {
         match self {
-            Self::GrandSoft | Self::GrandHard => &BUNDLED_SOUNDS[0],
+            Self::GrandSoft | Self::GrandHard | Self::GrandLeft | Self::GrandRight => {
+                &BUNDLED_SOUNDS[0]
+            }
             Self::KitStudio | Self::Kit808 => &BUNDLED_SOUNDS[1],
         }
     }

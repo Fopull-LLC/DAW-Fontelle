@@ -14,8 +14,8 @@
 //! an oscillator rather than a sampler, still works on it.
 
 use fontelle_dsp::{
-    Interpolation, SampleData, SampleLoop, SynthInput, SynthOsc, SynthSource, SynthState, Unison,
-    UnisonMode, UnisonSpread,
+    Interpolation, Pcm, SampleData, SampleLoop, SynthInput, SynthOsc, SynthSource, SynthState,
+    Unison, UnisonMode, UnisonSpread,
 };
 
 const SR: f32 = 48_000.0;
@@ -65,7 +65,7 @@ fn rms(samples: &[f32]) -> f32 {
 fn a_sample_asked_for_its_own_pitch_plays_as_recorded() {
     let sound = recording(440.0, 1.0, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -94,7 +94,7 @@ fn a_sample_asked_for_its_own_pitch_plays_as_recorded() {
 fn an_octave_up_plays_twice_as_fast() {
     let sound = recording(440.0, 1.0, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -115,7 +115,7 @@ fn an_octave_up_plays_twice_as_fast() {
 fn a_recording_at_another_rate_is_pitched_by_its_own_rate() {
     let sound = recording(220.0, 1.0, 24_000.0);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: 24_000.0,
         root_hz: 220.0,
         interpolation: Interpolation::Normal,
@@ -135,7 +135,7 @@ fn a_recording_at_another_rate_is_pitched_by_its_own_rate() {
 fn a_one_shot_ends_when_the_recording_does() {
     let sound = recording(440.0, 0.25, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -156,7 +156,7 @@ fn a_one_shot_ends_when_the_recording_does() {
 fn a_looped_sample_keeps_going() {
     let sound = recording(440.0, 0.25, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -190,7 +190,7 @@ fn the_position_knob_is_where_the_note_starts() {
     let mut sound = vec![0.0f32; 24_000];
     sound.extend(recording(440.0, 0.5, SR));
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -216,7 +216,7 @@ fn the_position_knob_is_where_the_note_starts() {
 fn one_unison_voice_is_the_plain_read() {
     let sound = recording(330.0, 0.5, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 330.0,
         interpolation: Interpolation::Normal,
@@ -248,7 +248,7 @@ fn one_unison_voice_is_the_plain_read() {
 fn a_detuned_stack_beats() {
     let sound = recording(220.0, 2.0, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: 220.0,
         interpolation: Interpolation::Normal,
@@ -280,7 +280,7 @@ fn a_detuned_stack_beats() {
 #[test]
 fn an_empty_recording_is_silence() {
     let data = SampleData {
-        samples: &[],
+        samples: Pcm::F32(&[]),
         sample_rate: SR,
         root_hz: 440.0,
         interpolation: Interpolation::Normal,
@@ -338,7 +338,7 @@ fn transposed_alias(interpolation: Interpolation) -> f32 {
     let root = note / ratio;
     let sound = recording(root, 2.0, SR);
     let data = SampleData {
-        samples: &sound,
+        samples: Pcm::F32(&sound),
         sample_rate: SR,
         root_hz: root,
         interpolation,
@@ -374,4 +374,33 @@ fn ultra_reads_at_least_as_cleanly_as_high_and_does_not_panic() {
         ultra <= high + 0.5,
         "Ultra {ultra:.1} against High {high:.1}"
     );
+}
+
+/// A recording kept as sixteen-bit integers — how the factory grand is held,
+/// half the memory of floats — plays as the floats it was made from, to the
+/// last bit sixteen bits can say.
+#[test]
+fn a_sixteen_bit_recording_plays_as_its_floats() {
+    let sound = recording(330.0, 0.5, SR);
+    let pcm: Vec<i16> = sound
+        .iter()
+        .map(|s| (s * 32_768.0).round().clamp(-32_768.0, 32_767.0) as i16)
+        .collect();
+    let data = |samples| SampleData {
+        samples,
+        sample_rate: SR,
+        root_hz: 330.0,
+        interpolation: Interpolation::High,
+        gain: 1.0,
+        loop_frames: None,
+    };
+    let floats = render(&osc(), &data(Pcm::F32(&sound)), 415.3, 12_000);
+    let ints = render(&osc(), &data(Pcm::I16(&pcm)), 415.3, 12_000);
+    for (i, (a, b)) in floats.iter().zip(&ints).enumerate() {
+        assert!(
+            (a - b).abs() < 2e-4,
+            "at {i}: {a} from floats, {b} from sixteen bits"
+        );
+    }
+    assert_eq!(Pcm::I16(&pcm).len(), sound.len());
 }

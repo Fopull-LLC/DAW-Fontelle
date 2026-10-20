@@ -376,12 +376,20 @@ fn a_row_of_the_import_tab_lands_on_an_oscillator() {
 fn a_cards_menu_lists_the_audio_folder_and_loads_from_it() {
     let dir = scratch("menu");
     let mut session = a_session(&dir);
-    // The bank's own sets, all of them: the two grands, then the two kits
-    // that arrived with the sampled shelves.
-    let factory: Vec<String> = ["Grand (soft)", "Grand (hard)", "Studio kit", "808 kit"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    // The bank's own sets, all of them: the two September grands, the two
+    // kits that arrived with the sampled shelves, and the stereo grand's
+    // two microphones.
+    let factory: Vec<String> = [
+        "Grand (soft)",
+        "Grand (hard)",
+        "Studio kit",
+        "808 kit",
+        "Grand (left)",
+        "Grand (right)",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     assert_eq!(
         session.audio_sounds(),
         factory,

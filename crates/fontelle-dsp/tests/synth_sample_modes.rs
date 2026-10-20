@@ -15,7 +15,7 @@
 //! holds one property of one mode that the modes before it lack.
 
 use fontelle_dsp::{
-    Interpolation, SampleData, SampleLoop, SampleSettings, SynthInput, SynthOsc, SynthSource,
+    Interpolation, Pcm, SampleData, SampleLoop, SampleSettings, SynthInput, SynthOsc, SynthSource,
     SynthState,
 };
 
@@ -48,7 +48,7 @@ fn osc(mode: SampleLoop) -> SynthOsc {
 
 fn data(samples: &[f32], root_hz: f32) -> SampleData<'_> {
     SampleData {
-        samples,
+        samples: Pcm::F32(samples),
         sample_rate: SR,
         root_hz,
         interpolation: Interpolation::Normal,

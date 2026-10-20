@@ -20,6 +20,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 # on every open.
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 slotmap = "1.1.1"
+# The factory grand's recordings are Ogg Vorbis in the binary
+# (`factory_samples::grand_stereo`): bytes in, frames out — no file is read.
+symphonia = { version = "0.6.1", default-features = false, features = ["ogg", "vorbis"] }
 
 [dev-dependencies]
 # The first bench in the tree (TDD §20.5,  §10). A

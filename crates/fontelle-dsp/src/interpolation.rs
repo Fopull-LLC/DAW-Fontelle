@@ -36,6 +36,83 @@ fn sinc_kernel(x: f32) -> f32 {
     sinc * window
 }
 
+/// Something a recording is read from, one frame at a time: floats, or
+/// sixteen-bit integers — which is how the factory grand is held, at half
+/// the memory floats would take (Ty, 2026-10-19: the piano rebuilt from
+/// ninety stereo recordings, some sixty megabytes as integers and twice that
+/// as floats).
+pub trait Frames {
+    fn frames(&self) -> usize;
+    /// Frame `at`, in −1..=1. `at` is in range.
+    fn frame(&self, at: usize) -> f32;
+}
+
+impl Frames for [f32] {
+    fn frames(&self) -> usize {
+        self.len()
+    }
+    fn frame(&self, at: usize) -> f32 {
+        self[at]
+    }
+}
+
+impl<const N: usize> Frames for [f32; N] {
+    fn frames(&self) -> usize {
+        N
+    }
+    fn frame(&self, at: usize) -> f32 {
+        self[at]
+    }
+}
+
+impl Frames for Vec<f32> {
+    fn frames(&self) -> usize {
+        self.len()
+    }
+    fn frame(&self, at: usize) -> f32 {
+        self[at]
+    }
+}
+
+impl Frames for [i16] {
+    fn frames(&self) -> usize {
+        self.len()
+    }
+    fn frame(&self, at: usize) -> f32 {
+        f32::from(self[at]) / 32_768.0
+    }
+}
+
+/// A recording as an oscillator borrows it: floats or sixteen-bit frames.
+/// Matched once per read, which the branch predictor makes free — a note
+/// reads one kind for its whole life.
+#[derive(Debug, Clone, Copy)]
+pub enum Pcm<'a> {
+    F32(&'a [f32]),
+    I16(&'a [i16]),
+}
+
+impl Pcm<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::F32(s) => s.len(),
+            Self::I16(s) => s.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// [`interpolate`] over whichever this is.
+    pub fn read(&self, position: f64, mode: Interpolation) -> f32 {
+        match self {
+            Self::F32(s) => interpolate(*s, position, mode),
+            Self::I16(s) => interpolate(*s, position, mode),
+        }
+    }
+}
+
 /// Reads a fractional sample position from `buffer` using `mode`. `position` is in
 /// samples; the fractional part drives the interpolation kernel.
 ///
@@ -47,18 +124,18 @@ fn sinc_kernel(x: f32) -> f32 {
 /// and it was reachable from the `patch/quality` chooser on every
 /// soundfont's window, so the argument was a panic on the audio thread
 /// one menu away (`docs/flopsynth-next.md` §4.1, 2026-09-19).
-pub fn interpolate(buffer: &[f32], position: f64, mode: Interpolation) -> f32 {
-    if buffer.is_empty() {
+pub fn interpolate<B: Frames + ?Sized>(buffer: &B, position: f64, mode: Interpolation) -> f32 {
+    if buffer.frames() == 0 {
         return 0.0;
     }
-    let last = buffer.len() - 1;
+    let last = buffer.frames() - 1;
     let base = position.floor();
     let t = (position - base) as f32;
     let base = base as isize;
 
     let at = |offset: isize| -> f32 {
         let idx = (base + offset).clamp(0, last as isize) as usize;
-        buffer[idx]
+        buffer.frame(idx)
     };
 
     match mode {

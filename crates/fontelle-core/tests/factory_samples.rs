@@ -11,8 +11,6 @@
 //! shipped preset file is a page of JSON like every other. Everything else
 //! (zones, roots, the voice's nearest-zone rule) is `UserSample` as before.
 
-use std::sync::Arc;
-
 use fontelle_core::factory_samples::FactorySampleSet;
 use fontelle_core::{Patch, SampleZone, Source, UserSample, flopsynth};
 use fontelle_dsp::SynthSource;
@@ -70,13 +68,13 @@ fn the_grand_ships_two_layers_that_tile_the_keyboard() {
             );
             // Starts from rest: the recording begins before the hammer lands.
             assert!(
-                zone.samples[0].abs() < 0.02,
+                zone.samples.get(0).abs() < 0.02,
                 "{set:?} root {}: starts at {}",
                 zone.root_key,
-                zone.samples[0]
+                zone.samples.get(0)
             );
             // And ends in silence, so a note that outlives it does not click.
-            assert!(zone.samples[zone.samples.len() - 1].abs() < 0.002);
+            assert!(zone.samples.get(zone.samples.len() - 1).abs() < 0.002);
         }
         // The bass is kept longer than the top: it rings longer.
         let bottom = sample.zones.first().unwrap();
@@ -94,7 +92,7 @@ fn a_factory_set_is_shared_not_copied() {
     // once, and a project with four piano channels is not four pianos.
     let a = FactorySampleSet::GrandHard.sample();
     let b = FactorySampleSet::GrandHard.sample();
-    assert!(Arc::ptr_eq(&a.zones[0].samples, &b.zones[0].samples));
+    assert_eq!(a.zones[0].samples.identity(), b.zones[0].samples.identity());
 }
 
 #[test]
@@ -110,10 +108,10 @@ fn a_patch_names_a_factory_set_rather_than_carrying_it() {
     assert!(text.contains("grand-soft"), "the set's name is in the file");
     let back = Patch::from_data(&data, |_| None).unwrap().patch;
     assert_eq!(back.samples, patch.samples);
-    assert!(Arc::ptr_eq(
-        &back.samples[0].zones[0].samples,
-        &patch.samples[0].zones[0].samples
-    ));
+    assert_eq!(
+        back.samples[0].zones[0].samples.identity(),
+        patch.samples[0].zones[0].samples.identity()
+    );
 }
 
 #[test]
@@ -173,7 +171,7 @@ fn a_set_this_build_does_not_know_reads_back_silent_not_broken() {
 #[test]
 fn the_kits_ship_every_gm_hit_named_on_its_own_key() {
     use fontelle_core::GM_DRUM_MAP;
-    assert_eq!(FactorySampleSet::ALL.len(), 4);
+    assert_eq!(FactorySampleSet::ALL.len(), 6);
     for set in [FactorySampleSet::KitStudio, FactorySampleSet::Kit808] {
         let sample = set.sample();
         assert_eq!(sample.factory, Some(set));
@@ -208,8 +206,8 @@ fn the_kits_ship_every_gm_hit_named_on_its_own_key() {
             );
             // Cut at the hit and faded at its end: the first sample is
             // rest, and so is the last.
-            assert!(zone.samples[0].abs() < 0.05);
-            assert!(zone.samples[zone.samples.len() - 1].abs() < 0.01);
+            assert!(zone.samples.get(0).abs() < 0.05);
+            assert!(zone.samples.get(zone.samples.len() - 1).abs() < 0.01);
         }
     }
     assert_eq!(FactorySampleSet::KitStudio.id(), "kit-studio");
@@ -226,6 +224,7 @@ fn the_kits_ship_every_gm_hit_named_on_its_own_key() {
     assert_eq!(snare.name, "Snare");
     let crossings = |zone: &SampleZone| {
         zone.samples
+            .to_f32()
             .windows(2)
             .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
             .count() as f32
@@ -302,4 +301,85 @@ fn a_kit_locked_to_one_hit_plays_it_on_every_key() {
         crossings(&high),
         crossings(&own)
     );
+}
+
+/// The grand the Grand Piano plays (Ty, 2026-10-19: *"just sound a lot more
+/// natural and professional and clean like a real grand piano"*): every key
+/// the Salamander C5 was recorded at — the bottom A and each minor third up
+/// — at three strengths, in stereo as its two microphones heard it, a set
+/// for each side laid out zone for zone alike so the two oscillators that
+/// play them always pick the same recording. Held as sixteen-bit frames, so
+/// the whole piano is some sixty megabytes and not twice that.
+#[test]
+fn the_grand_ships_in_stereo_at_three_strengths() {
+    let left = FactorySampleSet::GrandLeft.sample();
+    let right = FactorySampleSet::GrandRight.sample();
+    assert_eq!(left.factory, Some(FactorySampleSet::GrandLeft));
+    assert_eq!(right.factory, Some(FactorySampleSet::GrandRight));
+    let roots: Vec<u8> = (21..=108).step_by(3).collect();
+    assert_eq!(left.zones.len(), roots.len() * 3);
+    assert_eq!(right.zones.len(), left.zones.len());
+    let mut bytes = 0usize;
+    for (l, r) in left.zones.iter().zip(&right.zones) {
+        assert_eq!(
+            (
+                l.root_key,
+                l.key_range,
+                l.vel_range,
+                l.samples.len(),
+                l.sample_rate
+            ),
+            (
+                r.root_key,
+                r.key_range,
+                r.vel_range,
+                r.samples.len(),
+                r.sample_rate
+            ),
+            "the two sides must be laid out alike"
+        );
+        assert!(l.samples.is_sixteen_bit() && r.samples.is_sixteen_bit());
+        bytes += 2 * (l.samples.len() + r.samples.len());
+        assert_eq!(l.sample_rate, 48_000);
+        let seconds = l.samples.len() as f32 / l.sample_rate as f32;
+        let floor = if l.root_key <= 42 { 5.5 } else { 1.4 };
+        assert!(seconds >= floor, "root {}: {seconds:.1} s", l.root_key);
+        // From rest, to silence.
+        assert!(l.samples.get(0).abs() < 0.02 && r.samples.get(0).abs() < 0.02);
+        let end = l.samples.len() - 1;
+        assert!(l.samples.get(end).abs() < 0.002 && r.samples.get(end).abs() < 0.002);
+    }
+    assert!(bytes < 80_000_000, "{:.1} MB", bytes as f64 / 1e6);
+    // Every root has a soft, a firm and a hard recording, and between them
+    // they answer every velocity.
+    for root in &roots {
+        let mut windows: Vec<(u8, u8)> = left
+            .zones
+            .iter()
+            .filter(|z| z.root_key == *root)
+            .map(|z| z.vel_range)
+            .collect();
+        windows.sort();
+        assert_eq!(windows.len(), 3, "root {root}");
+        assert_eq!(windows[0].0, 0);
+        assert_eq!(windows[0].1 + 1, windows[1].0);
+        assert_eq!(windows[1].1 + 1, windows[2].0);
+        assert_eq!(windows[2].1, 127);
+    }
+    // No key is more than a semitone and a half from its recording, at any
+    // strength.
+    for key in 21..=108u8 {
+        for velocity in [10u8, 70, 120] {
+            let zone = left.zone_for_note(key, velocity).expect("a zone");
+            assert!((i16::from(zone.root_key) - i16::from(key)).abs() <= 1);
+            assert!(zone.vel_range.0 <= velocity && velocity <= zone.vel_range.1);
+        }
+    }
+    // Stereo, not one channel twice.
+    let middle = left.zone_for_note(60, 100).unwrap();
+    let other = right.zone_for_note(60, 100).unwrap();
+    let differs = (0..middle.samples.len())
+        .filter(|&i| (middle.samples.get(i) - other.samples.get(i)).abs() > 1e-3)
+        .count();
+    assert!(differs > middle.samples.len() / 4, "the sides are the same");
 }
