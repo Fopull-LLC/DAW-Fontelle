@@ -5390,6 +5390,7 @@ fn shoot_welcome_status(
             menu: None,
             carry: None,
             welcome: Some(WelcomeChrome {
+                notice: None,
                 layout: welcome.clone(),
                 title: &big_title,
                 version: "Version 0.1.0",
@@ -9617,4 +9618,29 @@ fn overlapping_notes_are_cross_hatched_where_they_overlap() {
         off(PPQN + PPQN / 4, PPQN * 2 - PPQN / 4) > 6,
         "no hatch where they overlap"
     );
+}
+
+/// The install ping's notice (hub card 0428) fits the row it shares with
+/// the support line, on the smallest start menu the tests draw.
+#[test]
+fn the_ping_notice_fits_its_row() {
+    use fontelle_ui::canvas::StartLine;
+    let theme = Theme::dark_default();
+    let window = Rect::new(0.0, 0.0, RW as f32, RH as f32);
+    let l = fontelle_ui::canvas::with_support_line(
+        fontelle_ui::canvas::welcome_layout(window, &theme.metrics, 3, false),
+        &theme.metrics,
+        true,
+    );
+    let line = l.support.expect("the row");
+    let mut text = TextContext::new();
+    for said in [StartLine::Support, StartLine::Ping] {
+        let width = text.layout(said.lead(), &theme.font, None).width
+            + text.layout(said.link(), &theme.font, None).width;
+        assert!(
+            width <= line.width,
+            "{said:?} is {width} wide in a row of {}",
+            line.width
+        );
+    }
 }

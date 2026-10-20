@@ -10,6 +10,9 @@
 
 /// The support page, with the product named so it opens on Fontelle.
 pub const SUPPORT_URL: &str = "https://fopull.com/support?product=fontelle";
+
+/// What the install ping sends, and why (hub card 0428, the contract's §5).
+pub const INSTALL_PING_URL: &str = "https://fopull.com/privacy#install-ping";
 /// The board's report form; `kind` says which.
 pub const REPORT_URL: &str = "https://fopull.com/roadmap/fontelle/report";
 

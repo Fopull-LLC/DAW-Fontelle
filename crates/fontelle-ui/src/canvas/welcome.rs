@@ -442,6 +442,46 @@ pub const SUPPORT_LINE_TEXT: &str =
 /// The launch it is first due on.
 pub const SUPPORT_LINE_LAUNCH: u32 = 10;
 
+/// The install ping's notice (hub card 0428): said on the first start menu,
+/// before anything is sent, with the way to turn it off in it.
+pub const PING_LINE_LEAD: &str =
+    "Fontelle counts installs with one anonymous ping a day \u{2014} Settings turns it off. ";
+pub const PING_LINE_LINK: &str = "What is sent";
+
+/// Which line the start menu's quiet row says. One row, two lines, never
+/// both on one launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartLine {
+    /// *Fontelle is free…* (hub card 0427).
+    Support,
+    /// What the install ping sends and how to stop it (hub card 0428).
+    Ping,
+}
+
+impl StartLine {
+    pub fn lead(self) -> &'static str {
+        match self {
+            Self::Support => SUPPORT_LINE_LEAD,
+            Self::Ping => PING_LINE_LEAD,
+        }
+    }
+
+    pub fn link(self) -> &'static str {
+        match self {
+            Self::Support => SUPPORT_LINE_LINK,
+            Self::Ping => PING_LINE_LINK,
+        }
+    }
+
+    /// Where a press on the line goes.
+    pub fn url(self) -> &'static str {
+        match self {
+            Self::Support => crate::support::SUPPORT_URL,
+            Self::Ping => crate::support::INSTALL_PING_URL,
+        }
+    }
+}
+
 /// Whether the start menu says the line on this launch: the `launches`th,
 /// counting this one, with the line `said` before or not, a crash's work
 /// being offered back (`recovering`) or a song with `unsaved` changes open.

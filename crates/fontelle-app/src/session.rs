@@ -1041,6 +1041,19 @@ impl Session {
             self.touch();
             return;
         }
+        if *row == crate::settings::SettingRow::InstallPing {
+            self.settings.install_ping = !self.settings.install_ping;
+            if !self.settings.install_ping
+                && let Some(path) = self.install_ping_path()
+            {
+                crate::install_ping::forget(&path);
+            }
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+            self.touch();
+            return;
+        }
         if *row == crate::settings::SettingRow::BetaUpdates {
             self.settings.beta_updates = !self.settings.beta_updates;
             if let Err(e) = self.save_settings() {
@@ -2066,6 +2079,60 @@ impl Session {
     pub fn with_links_to(mut self, links: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
         self.links_to = Some(links);
         self
+    }
+
+    /// Where the install ping keeps its id: beside the settings file.
+    fn install_ping_path(&self) -> Option<PathBuf> {
+        let dir = match &self.settings_path {
+            Some(path) => path.parent()?.to_path_buf(),
+            None => Settings::config_dir()?,
+        };
+        Some(dir.join(crate::install_ping::FILE_NAME))
+    }
+
+    /// Whether the ping is on: the switch, and no `FOPULL_NO_PING`.
+    fn install_ping_on(&self) -> bool {
+        self.settings.install_ping
+            && !crate::install_ping::no_ping_from_env(
+                std::env::var("FOPULL_NO_PING").ok().as_deref(),
+            )
+    }
+
+    /// Sends today's install ping on a thread of its own, if one is due —
+    /// `main` calls it once a launch (hub card 0428). Nothing waits on it,
+    /// and nothing it meets is shown.
+    pub fn start_install_ping(&self) {
+        let Some(path) = self.install_ping_path() else {
+            return;
+        };
+        let today = crate::install_ping::utc_date(std::time::SystemTime::now());
+        let file = crate::install_ping::PingFile::read(&path);
+        if !crate::install_ping::due(
+            self.settings.ping_notice_said,
+            !self.install_ping_on(),
+            file.as_ref(),
+            &today,
+        ) {
+            return;
+        }
+        let channel = if crate::distribution::Distribution::here().store().is_some() {
+            "steam"
+        } else if self.settings.beta_updates {
+            "beta"
+        } else {
+            "stable"
+        };
+        let ping = crate::install_ping::Ping {
+            path,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            channel: channel.to_string(),
+            today,
+        };
+        let _ = std::thread::Builder::new()
+            .name("install-ping".into())
+            .spawn(move || {
+                ping.run(crate::install_ping::send_with_curl, std::thread::sleep);
+            });
     }
 
     /// One more launch of the studio, counted in the settings and written
@@ -12375,6 +12442,21 @@ impl StudioHost for Session {
         self.settings.support_line_said
     }
 
+    fn ping_notice_due(&self) -> bool {
+        !self.settings.ping_notice_said && self.install_ping_on()
+    }
+
+    fn ping_notice_said(&self) -> bool {
+        self.settings.ping_notice_said
+    }
+
+    fn set_ping_notice_said(&mut self) {
+        self.settings.ping_notice_said = true;
+        if let Err(e) = self.save_settings() {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
     fn set_support_line_said(&mut self) {
         self.settings.support_line_said = true;
         if let Err(e) = self.save_settings() {
@@ -12569,6 +12651,8 @@ impl StudioHost for Session {
                         self.settings.compatible_plugin_graphics
                     } else if *row == crate::settings::SettingRow::BetaUpdates {
                         self.settings.beta_updates
+                    } else if *row == crate::settings::SettingRow::InstallPing {
+                        self.settings.install_ping
                     } else {
                         self.settings.check_for_updates
                     },

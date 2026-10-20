@@ -1230,9 +1230,9 @@ struct Welcome {
     /// The ASIO credit's words, shaped to its room, where the host offers
     /// ASIO — `StudioHost::asio_credit`.
     credit: Option<TextLayout>,
-    /// Whether the support line is on the card — decided once, as the menu
+    /// Which line the quiet row says, if any — decided once, as the menu
     /// goes up, and only ever turned off after (its ×).
-    support: bool,
+    notice: Option<crate::canvas::StartLine>,
 }
 
 #[derive(Debug)]
@@ -3046,7 +3046,10 @@ impl WindowApp {
         // The support line (hub card 0427): said once, from the tenth launch,
         // never beside a recovery or unsaved work. Marked said here, as it
         // goes up, so it never comes back whether it is pressed or not.
-        let support = self.options.document.as_mut().is_some_and(|doc| {
+        // Or, when the support line is not due, the install ping's notice
+        // (hub card 0428), said before the first ping goes. Never both: the
+        // ping waits for its notice, so it waits a launch.
+        let notice = self.options.document.as_mut().and_then(|doc| {
             let due = crate::canvas::support_line_due(
                 doc.launch_count(),
                 doc.support_line_said(),
@@ -3055,9 +3058,15 @@ impl WindowApp {
             );
             if due {
                 doc.set_support_line_said();
+                Some(crate::canvas::StartLine::Support)
+            } else if doc.ping_notice_due() {
+                doc.set_ping_notice_said();
+                Some(crate::canvas::StartLine::Ping)
+            } else {
+                None
             }
-            due
         });
+        let support = notice.is_some();
         let layout = crate::canvas::with_support_line(
             crate::canvas::with_recovery(
                 crate::canvas::with_asio_credit(
@@ -3100,7 +3109,7 @@ impl WindowApp {
             message: TextLayout::default(),
             recover,
             credit,
-            support,
+            notice,
         });
         if let Some(hint) = self
             .welcome
@@ -3165,7 +3174,7 @@ impl WindowApp {
                     welcome.recover.is_some(),
                 ),
                 metrics,
-                welcome.support,
+                welcome.notice.is_some(),
             );
             welcome.credit = welcome.layout.asio_credit.map(|c| {
                 self.text.layout(
@@ -3285,7 +3294,7 @@ impl WindowApp {
         // Gone for this launch; it was marked said when it went up.
         if hit == WelcomeHit::DismissSupport {
             if let Some(welcome) = &mut self.welcome {
-                welcome.support = false;
+                welcome.notice = None;
             }
             self.relayout_welcome();
             return;
@@ -3335,7 +3344,8 @@ impl WindowApp {
                 Ok(false)
             }
             WelcomeHit::Support => {
-                doc.open_url(crate::support::SUPPORT_URL);
+                let said = welcome.notice.unwrap_or(crate::canvas::StartLine::Support);
+                doc.open_url(said.url());
                 Ok(false)
             }
             // The menu stays up: the folder opens beside it, and a report
@@ -3902,6 +3912,7 @@ impl WindowApp {
                         hover: welcome.hover,
                         message: &welcome.message,
                         asio_credit: welcome.credit.as_ref(),
+                        notice: welcome.notice,
                     }),
                 keybinds: self.keybinds.map(|scroll| crate::render::KeybindsChrome {
                     scroll,
@@ -7998,6 +8009,8 @@ impl WindowApp {
                 crate::canvas::LEARN_DISMISS,
                 crate::canvas::SUPPORT_LINE_LEAD,
                 crate::canvas::SUPPORT_LINE_LINK,
+                crate::canvas::PING_LINE_LEAD,
+                crate::canvas::PING_LINE_LINK,
                 "\u{00d7}",
             ] {
                 want(&mut self.labels, &mut self.text, fixed);

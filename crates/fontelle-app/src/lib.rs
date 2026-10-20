@@ -15,6 +15,7 @@ pub mod distribution;
 pub mod extensions;
 pub mod flopsynth;
 pub mod insert_takes;
+pub mod install_ping;
 pub mod instrument;
 mod keymap;
 mod library;

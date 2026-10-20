@@ -2215,6 +2215,19 @@ pub trait StudioHost: DocumentHost {
     /// Remembers that it was, the moment it is shown.
     fn set_support_line_said(&mut self) {}
 
+    /// Whether the start menu is to say what the install ping sends before
+    /// the first one goes (hub card 0428). `false` by default: a host that
+    /// sends nothing has nothing to say.
+    fn ping_notice_due(&self) -> bool {
+        false
+    }
+    /// Whether it has been said. `true` by default, as above.
+    fn ping_notice_said(&self) -> bool {
+        true
+    }
+    /// Remembers that it was, the moment it is shown.
+    fn set_ping_notice_said(&mut self) {}
+
     /// One line per settings row saying what it is for, parallel to
     /// [`settings`](Self::settings) — what the settings page writes under each
     /// row's name. Empty for a heading.

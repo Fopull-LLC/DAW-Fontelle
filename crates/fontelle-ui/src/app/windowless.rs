@@ -584,6 +584,11 @@ impl Windowless {
         self.app.fullscreen
     }
 
+    /// Which line the start menu's quiet row says, while it is up.
+    pub fn welcome_notice(&self) -> Option<crate::canvas::StartLine> {
+        self.app.welcome.as_ref()?.notice
+    }
+
     /// Where the open prompt's field is, while one is open.
     pub fn prompt_field_rect(&self) -> Option<Rect> {
         match self.app.active_field() {

@@ -295,6 +295,8 @@ pub struct WelcomeChrome<'a> {
     pub message: &'a TextLayout,
     /// The ASIO credit's words, shaped to its room, when the layout has one.
     pub asio_credit: Option<&'a TextLayout>,
+    /// Which line the quiet row says, when the layout has one.
+    pub notice: Option<crate::canvas::StartLine>,
 }
 
 /// A row from the browser in mid-air, and what letting go would do with it.
@@ -3095,7 +3097,8 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
     // address in the accent as the link it is — the whole line answers the
     // pointer — and a × that only warms when pointed at.
     if let Some(line) = l.support {
-        let lead = labels.get(crate::canvas::SUPPORT_LINE_LEAD);
+        let said = chrome.notice.unwrap_or(crate::canvas::StartLine::Support);
+        let lead = labels.get(said.lead());
         let lead_w = lead.map_or(0.0, |t| t.width);
         if let Some(text) = lead {
             draw_text_clipped(
@@ -3107,7 +3110,7 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
                 p.text_muted,
             );
         }
-        if let Some(text) = labels.get(crate::canvas::SUPPORT_LINE_LINK) {
+        if let Some(text) = labels.get(said.link()) {
             let ink = if hot(WelcomeHit::Support) {
                 p.text
             } else {

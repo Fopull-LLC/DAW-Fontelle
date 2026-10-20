@@ -43,6 +43,9 @@ fn launch(n: u32, said: bool) -> fontelle_app::Session {
     let mut session = a_session();
     session.settings_mut().launches = n - 1;
     session.settings_mut().support_line_said = said;
+    // These are about the support line; the install ping's notice, which
+    // shares its row, has been said.
+    session.settings_mut().ping_notice_said = true;
     session.count_launch();
     session
 }

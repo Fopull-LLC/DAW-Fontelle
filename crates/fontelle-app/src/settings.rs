@@ -245,6 +245,14 @@ pub struct Settings {
     /// Whether that line has been shown: once is the most it is ever said.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_line_said: bool,
+    /// Whether the install ping goes (hub card 0428, `install_ping.rs`): on
+    /// unless turned off here or by `FOPULL_NO_PING`.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub install_ping: bool,
+    /// Whether the start menu has said what the ping sends. Nothing is sent
+    /// before it has.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ping_notice_said: bool,
     /// Which backend, device and buffer the studio plays through
     /// ([`AudioOutputSettings`]). All automatic until chosen.
     #[serde(default, skip_serializing_if = "AudioOutputSettings::is_automatic")]
@@ -351,6 +359,10 @@ fn yes() -> bool {
     true
 }
 
+fn is_true(on: &bool) -> bool {
+    *on
+}
+
 fn hundred() -> u16 {
     100
 }
@@ -393,6 +405,8 @@ impl Default for Settings {
             tour_offered: false,
             launches: 0,
             support_line_said: false,
+            install_ping: true,
+            ping_notice_said: false,
             audio_output: AudioOutputSettings::default(),
             backdrop_effects: None,
             backdrop_fps: thirty(),
@@ -765,6 +779,9 @@ pub enum SettingRow {
     CheckForUpdates,
     /// Whether that check offers betas too. A switch.
     BetaUpdates,
+    /// Whether the install ping goes (hub card 0428). A switch; off deletes
+    /// the id.
+    InstallPing,
     /// The open song's routing, rack-style or lane-style. A choice; the
     /// session answers its value, since it is the song's and not a setting.
     SongRouting,
@@ -838,7 +855,7 @@ pub const PICTURE_SIZE_RANGE: (f32, f32) = (0.1, 3.0);
 /// and adding one is a variant, a `label`, a `value` and a `nudge`, with
 /// nothing in `fontelle-ui` to change: the window draws names and values and
 /// knows what none of them mean.
-pub const SETTING_ROWS: [SettingRow; 61] = [
+pub const SETTING_ROWS: [SettingRow; 63] = [
     // First: if the studio does not sound right, nothing under it matters.
     SettingRow::Heading("Audio output"),
     SettingRow::AudioBackend,
@@ -921,6 +938,8 @@ pub const SETTING_ROWS: [SettingRow; 61] = [
     SettingRow::Heading("Updates"),
     SettingRow::CheckForUpdates,
     SettingRow::BetaUpdates,
+    SettingRow::Heading("Privacy"),
+    SettingRow::InstallPing,
     // The song's own routing, and what a new one starts as — the one place
     // a per-project choice sits among settings that outlive projects, so it
     // says "this song" in its name (`docs/ux-routing-and-learning-plan.md`).
@@ -1125,6 +1144,7 @@ impl SettingRow {
             Self::CompatibleGraphics => "Compatible plugin graphics",
             Self::CheckForUpdates => "Check at launch",
             Self::BetaUpdates => "Beta updates",
+            Self::InstallPing => "Count this install",
             Self::YourName => "Your name",
             Self::Relay => "Relay",
             Self::SongRouting => "Routing in this song",
@@ -1299,6 +1319,7 @@ impl SettingRow {
             }
             .to_string(),
             Self::BetaUpdates => if settings.beta_updates { "On" } else { "Off" }.to_string(),
+            Self::InstallPing => if settings.install_ping { "On" } else { "Off" }.to_string(),
             Self::YourName => settings.your_name(),
             // The song's, answered by the session; this is the default a row
             // shows with no song to ask.
@@ -1457,6 +1478,9 @@ impl SettingRow {
             Self::BetaUpdates => {
                 "Also offer test builds before they are released \u{2014} new things, and new bugs"
             }
+            Self::InstallPing => {
+                "One anonymous ping a day: a random id, the version and the OS. Off deletes the id"
+            }
             Self::SongRouting => {
                 "Rack-style: instruments choose tracks. Lane-style: each lane owns a track"
             }
@@ -1536,6 +1560,7 @@ impl SettingRow {
             | Self::CompatibleGraphics
             | Self::CheckForUpdates
             | Self::BetaUpdates
+            | Self::InstallPing
             | Self::YourName
             | Self::Relay
             | Self::SongRouting
@@ -1666,9 +1691,10 @@ impl SettingRow {
             Self::FixedVelocity | Self::VelocityMin | Self::VelocityMax | Self::Transpose => {
                 SettingControlKind::Slider
             }
-            Self::CheckForUpdates | Self::BetaUpdates | Self::CompatibleGraphics => {
-                SettingControlKind::Switch
-            }
+            Self::CheckForUpdates
+            | Self::BetaUpdates
+            | Self::InstallPing
+            | Self::CompatibleGraphics => SettingControlKind::Switch,
             Self::YourName | Self::Relay => SettingControlKind::Text,
             Self::PluginFolder
             | Self::PluginDir(_)

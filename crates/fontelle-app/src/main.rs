@@ -780,6 +780,9 @@ fn play_or_render(
             // One more launch, for the start menu's support line — said
             // once, from the tenth (`canvas::support_line_due`).
             session.count_launch();
+            // Today's install ping, if the start menu has said what it sends
+            // and it is on (hub card 0428). Its own thread; nothing waits.
+            session.start_install_ping();
             // The start menu's update check, if the settings allow one. Built
             // here rather than started: the window starts it when the menu
             // goes up, so a launch straight into a project asks nothing.
