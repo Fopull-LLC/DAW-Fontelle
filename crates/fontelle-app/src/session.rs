@@ -209,6 +209,11 @@ const EXPORT_TAIL_MAX_S: i64 = 12;
 /// is a keyboard or a mouse (TDD §11.4).
 const AUDITION_VOICE_CONTEXT: u32 = u32::MAX;
 
+/// How long a plugin's own window has to have been still before what it
+/// changed is sent to everybody sharing the song — a knob dragged in it is one
+/// edit, not one a frame.
+pub const PLUGIN_WINDOW_QUIET: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// How long an input that would not open waits before it is tried again.
 ///
 /// Long enough that a device that is really gone is not probed at frame
@@ -780,6 +785,15 @@ pub struct Session {
     /// selected channel. Set by the browser, cleared by anything that
     /// auditions the instrument you are actually working on.
     previewing: bool,
+    /// Where each live note now sounding went, a key struck twice twice: its
+    /// note-off goes there, whatever is selected or previewed since. See
+    /// `audition_off`.
+    live_aims: Vec<(u8, NodeId)>,
+    /// Plugins whose own window changed something, and when it last did —
+    /// see `share_plugin_windows`.
+    plugin_windows_heard: HashMap<crate::PluginSlot, std::time::Instant>,
+    /// When the open editors were last read for a change they did not say.
+    plugin_windows_looked: std::time::Instant,
     message: Option<String>,
 
     /// Where an audition goes. `None` when the window was opened without a
@@ -1792,6 +1806,9 @@ impl Session {
             preview_patch: None,
             random_state: 0,
             previewing: false,
+            live_aims: Vec::new(),
+            plugin_windows_heard: HashMap::new(),
+            plugin_windows_looked: std::time::Instant::now(),
             message: None,
             audition: None,
             roll_notes: Arena::default(),
@@ -6106,6 +6123,93 @@ impl Session {
         }
     }
 
+    /// A change in a plugin's own window, sent to everybody sharing the
+    /// song once the window has been quiet [`PLUGIN_WINDOW_QUIET`]: the
+    /// plugin's whole state, read off it, as one [`SetPluginState`] — and only
+    /// if it differs from the song's.
+    ///
+    /// > *"someone else in the session changing a preset in dexxed in a
+    /// > collab session didnt transfer that change over. if i leave and
+    /// > rejoin it updates it but not in realtime"*
+    ///
+    /// Alone, the song still takes a plugin's state at a save (§5.2): only a
+    /// shared song needs it now. A plugin that changes without a word — a
+    /// preset in its own browser — is read once a second while its editor is
+    /// open; an LV2 one is not, since reading it takes it off the audio
+    /// thread, and is sent when it says.
+    ///
+    /// [`SetPluginState`]: fontelle_model::SetPluginState
+    fn share_plugin_windows(&mut self, heard: Vec<crate::PluginSlot>) {
+        let now = std::time::Instant::now();
+        for slot in heard {
+            self.plugin_windows_heard.insert(slot, now);
+        }
+        if now.duration_since(self.plugin_windows_looked) >= std::time::Duration::from_secs(1) {
+            self.plugin_windows_looked = now;
+            for slot in self.plugins.open_editors_readable() {
+                self.plugin_windows_heard
+                    .entry(slot)
+                    .or_insert(now - PLUGIN_WINDOW_QUIET);
+            }
+        }
+        let mut due: Vec<crate::PluginSlot> = self
+            .plugin_windows_heard
+            .iter()
+            .filter(|(_, at)| now.duration_since(**at) >= PLUGIN_WINDOW_QUIET)
+            .map(|(slot, _)| *slot)
+            .collect();
+        due.sort_by_key(|slot| format!("{slot:?}"));
+        for slot in due {
+            self.plugin_windows_heard.remove(&slot);
+            self.share_plugin_state(slot);
+        }
+    }
+
+    fn share_plugin_state(&mut self, slot: crate::PluginSlot) {
+        self.free_retired_graphs();
+        let held = match slot {
+            crate::PluginSlot::Channel(id) => self
+                .project
+                .channels
+                .get(id)
+                .and_then(|channel| channel.plugin.clone()),
+            crate::PluginSlot::Insert { track, slot } => self
+                .project
+                .mixer
+                .tracks
+                .get(track)
+                .and_then(|track| track.inserts.get(slot))
+                .and_then(|insert| insert.plugin.clone()),
+        };
+        let Some(held) = held else {
+            return;
+        };
+        let Some(mut state) = self.plugins.snapshot(slot) else {
+            return;
+        };
+        if state.key != held.key {
+            return;
+        }
+        // What the plugin cannot say of itself stays as the song has it, as
+        // at a save (`capture_plugin_states`).
+        state.mpe = held.mpe;
+        if state.vendor.is_none() {
+            state.vendor = held.vendor.clone();
+        }
+        if state == held {
+            return;
+        }
+        self.plugins.kept(slot, &state);
+        let command = match slot {
+            crate::PluginSlot::Channel(id) => fontelle_model::SetPluginState::channel(id, state),
+            crate::PluginSlot::Insert { track, slot } => {
+                fontelle_model::SetPluginState::insert(track, slot, state)
+            }
+        };
+        self.run(Box::new(command));
+        self.history.break_gesture();
+    }
+
     fn capture_plugin_states(&mut self) {
         self.free_retired_graphs();
         let slots: Vec<crate::PluginSlot> = crate::plugin_slots(&self.project);
@@ -6922,8 +7026,7 @@ impl Session {
             .unwrap_or_default()
     }
 
-    fn send_live(&mut self, payload: EventPayload) {
-        let target = self.audition_target();
+    fn send_live_to(&mut self, target: NodeId, payload: EventPayload) {
         if let Some(sink) = &mut self.audition {
             // Sample zero: the live drain stamps events with the position the
             // audio thread is actually at, so a timestamp from here would only
@@ -10656,9 +10759,13 @@ impl StudioHost for Session {
         // save."* A knob turned in a plugin's own window is an edit the
         // history never saw; without this the title had no star, quitting
         // asked nothing and the minute's backup skipped it.
-        if self.plugins.take_changes_heard() && !self.dirty {
+        let heard = self.plugins.take_slots_heard();
+        if !heard.is_empty() && !self.dirty {
             self.dirty = true;
             self.touch();
+        }
+        if self.collab.is_some() {
+            self.share_plugin_windows(heard);
         }
         // An open editor keeps the audio thread running the graph, because
         // an LV2 editor reaches its plugin only through `run` — see
@@ -10672,15 +10779,7 @@ impl StudioHost for Session {
     fn rescan_plugins(&mut self) {
         // Pressed: try again what would not load last time.
         self.plugins.rescan_fresh();
-        let (found, failed) = (
-            self.plugins.scan().plugins.len(),
-            self.plugins.scan().failures.len(),
-        );
-        self.message = Some(match (found, failed) {
-            (0, 0) => "no plugins found".to_string(),
-            (n, 0) => format!("{n} plugins"),
-            (n, f) => format!("{n} plugins, {f} would not load"),
-        });
+        self.message = Some(self.plugins.scan().summary());
         self.touch();
     }
 
@@ -13796,18 +13895,27 @@ impl StudioHost for Session {
     }
 
     fn audition_on(&mut self, key: u8, velocity: u8, pan: i8) {
-        self.send_live(EventPayload::NoteOn {
-            key,
-            velocity,
-            pan,
-            // Auditioning plays the *instrument*, not a note off the score,
-            // so the four score-only properties are at their written defaults.
-            fine_pitch: 0,
-            release: 0,
-            mod_x: 0,
-            mod_y: 0,
-            voice_context: AUDITION_VOICE_CONTEXT,
-        });
+        let target = self.audition_target();
+        // A note-on the window never ended is not kept for ever.
+        if self.live_aims.len() >= 256 {
+            self.live_aims.remove(0);
+        }
+        self.live_aims.push((key, target));
+        self.send_live_to(
+            target,
+            EventPayload::NoteOn {
+                key,
+                velocity,
+                pan,
+                // Auditioning plays the *instrument*, not a note off the score,
+                // so the four score-only properties are at their written defaults.
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                voice_context: AUDITION_VOICE_CONTEXT,
+            },
+        );
     }
 
     fn preview_preset(&mut self, preset: usize) -> Result<(), String> {
@@ -13877,11 +13985,26 @@ impl StudioHost for Session {
         self.publish_live_target();
     }
 
+    /// To the instrument the note started on.
+    ///
+    /// > *"editing notes on plugins like dexxed in the piano roll sometimes
+    /// > triggers a bug where a note gets stuck playing infinitely"*
+    ///
+    /// Aimed afresh, a note-off went wherever the selection or a preview had
+    /// moved the aim since its note-on, and the instrument that had the note
+    /// kept it: with the song stopped nothing resets a live voice.
     fn audition_off(&mut self, key: u8) {
-        self.send_live(EventPayload::NoteOff {
-            key,
-            voice_context: AUDITION_VOICE_CONTEXT,
-        });
+        let target = match self.live_aims.iter().rposition(|(k, _)| *k == key) {
+            Some(index) => self.live_aims.remove(index).1,
+            None => self.audition_target(),
+        };
+        self.send_live_to(
+            target,
+            EventPayload::NoteOff {
+                key,
+                voice_context: AUDITION_VOICE_CONTEXT,
+            },
+        );
     }
 
     // -------------------------------------------------- the instrument editor ---

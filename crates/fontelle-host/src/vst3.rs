@@ -2608,6 +2608,10 @@ impl Vst3Processor {
         }
         for (pointers, bus) in self.out_ptrs.iter_mut().zip(&mut self.output) {
             for (pointer, channel) in pointers.iter_mut().zip(bus) {
+                // Cleared first, as CLAP's: a processor that fails the block
+                // would hand back the one before it again.
+                let frames = frames.min(channel.len());
+                channel[..frames].fill(0.0);
                 *pointer = channel.as_mut_ptr();
             }
         }

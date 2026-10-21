@@ -106,6 +106,7 @@ impl Rig {
                     inputs: &[],
                     outputs: &mut outputs,
                     all_events: &[],
+                    cut_events: &[],
                     live_events: &[],
                     audio: placements,
                     node: self.node_id,

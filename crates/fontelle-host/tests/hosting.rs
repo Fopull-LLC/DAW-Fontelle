@@ -774,6 +774,63 @@ fn a_reset_ends_only_the_notes_still_held() {
     assert_eq!(processor.held_keys().count(), 0);
 }
 
+/// Two note-ons on one key are two voices to Dexed, which lets go of one a
+/// note-off. A flag a key ended both with the first note-off, so a reset
+/// after it reached neither — the voice that rang for good. Counted now.
+#[test]
+fn a_key_started_twice_stays_held_until_it_is_ended_twice() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.note_on(0, 69, 1.0);
+    processor.note_on(10, 69, 1.0);
+    processor.note_off(20, 69);
+    assert_eq!(processor.held_keys().collect::<Vec<_>>(), vec![69]);
+    processor.note_off(30, 69);
+    assert_eq!(processor.held_keys().count(), 0);
+    // A stray note-off for a key nobody holds does not go below nothing.
+    processor.note_off(40, 69);
+    processor.note_on(50, 69, 1.0);
+    processor.note_off(60, 69);
+    assert_eq!(processor.held_keys().count(), 0);
+}
+
+/// And a reset ends as many as are held.
+#[test]
+fn a_reset_ends_a_key_as_many_times_as_it_was_started() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    processor.note_on(0, 69, 1.0);
+    processor.note_on(10, 69, 1.0);
+    assert_eq!(processor.held_count(69), 2);
+    processor.reset();
+    assert_eq!(processor.held_count(69), 0);
+}
+
+/// A plugin whose `process` fails has written nothing, and what was in its
+/// buffers was the block before: copied out again, every block it failed,
+/// a 128-sample loop of whatever it last played — the buzz a plugin across
+/// a bridge makes when the process behind it stalls. Silence instead.
+#[test]
+fn a_block_the_plugin_fails_is_silence_not_the_last_block_again() {
+    let mut host = host();
+    let mut plugin = sine(&mut host);
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.note_on(0, 69, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert!(peak(&output) > 0.1, "{}", peak(&output));
+
+    processor.note_on(0, fontelle_testplug::FAILS_A_BLOCK, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert!(
+        peak(&output) < 1e-6,
+        "the last block again: {}",
+        peak(&output)
+    );
+}
+
 /// A parameter moved in the same block as a note: the parameter is at frame
 /// zero and the note later, so the parameter goes first. CLAP's list is in
 /// time order and a plugin that splits its block at each event depends on

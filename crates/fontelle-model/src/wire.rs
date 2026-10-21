@@ -245,6 +245,8 @@ edits!(
     MoveMeterChange,
     // The roll-tools round (`docs/roll-tools-plan.md` §4.3): a note muted.
     SetNoteMuted,
+    // After 0.31.0-beta.1: a plugin's own window, shared (collab-plan G1).
+    SetPluginState,
 );
 
 /// What an edit changes in the running studio, and so what the studio has to
@@ -413,6 +415,7 @@ impl Edit {
             | Edit::RestoreChannelPlugin(_)
             | Edit::SetPluginParam(_)
             | Edit::RestorePluginParam(_)
+            | Edit::SetPluginState(_)
             | Edit::ApplyPreset(_)
             | Edit::SwitchChannelAb(_)
             | Edit::CopyChannelAb(_)

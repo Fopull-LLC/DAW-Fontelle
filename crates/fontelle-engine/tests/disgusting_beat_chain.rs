@@ -91,6 +91,7 @@ fn a_drawn_slope_comes_out_of_the_graph_as_a_clean_pitch() {
                 inputs: &[],
                 outputs: &mut outputs,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: Default::default(),

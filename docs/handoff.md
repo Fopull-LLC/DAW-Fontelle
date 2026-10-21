@@ -16,6 +16,25 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-20 night (the beta's reports).** `PROGRESS.md`'s top
+entry. Things to know:
+
+(a) **`ProcessContext` has `cut_events`**: note-offs a timeline swap owes,
+delivered first. A node that reads `all_events` directly (not `events()`)
+has to chain them in front, as `nodes.rs` does. A new `ProcessContext`
+literal needs `cut_events: &[]`.
+
+(b) **A live note's off goes where its on went** (`Session::live_aims`).
+Anything new that sends live notes should go through `audition_on/off`.
+
+(c) **The process environment says `QT_QPA_PLATFORM=xcb` and
+`GDK_BACKEND=x11`** on Linux with an X display (`gui::steady_toolkits`). A
+desktop program the studio starts goes through
+`gui::as_the_desktop_has_it`, or it runs on X11 too.
+
+(d) **A plugin is reported silenced only after 2 s of invalid audio**
+(`INVALID_AUDIO_FOR`); a test of the reopen has to hold its NaN that long.
+
 **Updated 2026-10-20 evening (0.31.0-beta.1: the roll's tools).**
 `PROGRESS.md`'s top entry and `docs/roll-tools-plan.md`. Things to know:
 

@@ -117,6 +117,7 @@ fn a_part_is_sung_by_an_installed_engine_and_heard_in_time() {
                 inputs: &[],
                 outputs: &mut channels,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),

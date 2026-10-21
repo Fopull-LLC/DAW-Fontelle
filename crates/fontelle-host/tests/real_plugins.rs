@@ -91,6 +91,76 @@ fn every_installed_instrument_is_silent_after_a_reset() {
     assert!(stuck.is_empty(), "still sounding after a reset: {stuck:?}");
 }
 
+/// > *"editing notes on plugins like dexxed in the piano roll sometimes
+/// > triggers a bug where a note gets stuck playing infinitely"*
+///
+/// A key started twice — a note dragged later past the playhead plays its
+/// note-on again — is two voices to Dexed, which lets go of one a note-off.
+/// The host flagged the key ended at the first note-off, so a reset reached
+/// neither voice. `FONTELLE_REAL_ONLY=Dexed`, or `FONTELLE_REAL_PATH` for
+/// one bundle whatever else shares its id (the yabridge Dexed).
+#[test]
+#[ignore]
+fn every_installed_instrument_is_silent_after_a_reset_of_a_key_started_twice() {
+    let scan = match std::env::var_os("FONTELLE_REAL_PATH") {
+        Some(path) => PluginScan {
+            plugins: fontelle_host::scan_bundle(std::path::Path::new(&path))
+                .expect("the bundle scans"),
+            failures: Vec::new(),
+        },
+        None => PluginScan::of(&search_paths()),
+    };
+    let only = std::env::var("FONTELLE_REAL_ONLY").ok();
+    let instruments: Vec<_> = scan
+        .plugins
+        .iter()
+        .filter(|p| p.is_instrument() && p.key.format.hosted())
+        .filter(|p| p.key.format != PluginFormat::Lv2 || only.is_some())
+        .filter(|p| only.as_ref().is_none_or(|only| p.name.contains(only)))
+        .filter(|p| only.is_some() || !CRASHES.iter().any(|name| p.name.contains(name)))
+        .collect();
+    assert!(!instruments.is_empty(), "no instruments installed");
+    let mut host = PluginHost::new();
+    let mut stuck = Vec::new();
+    for info in instruments {
+        let Ok(mut plugin) = host.open(&info.path, &info.key) else {
+            continue;
+        };
+        let Ok(mut processor) = plugin.activate(48_000.0, 256) else {
+            continue;
+        };
+        let mut output = vec![vec![0.0f32; 256]; plugin.audio_outputs().max(2) as usize];
+        processor.note_on(0, 60, 0.8);
+        processor.process_instrument(&mut output, 256);
+        processor.note_on(0, 60, 0.8);
+        let mut held = 0.0f32;
+        for _ in 0..40 {
+            processor.process_instrument(&mut output, 256);
+            held = held.max(peak(&output));
+        }
+        if held < 1e-3 {
+            eprintln!("{:<40} silent when played, skipped", info.name);
+            continue;
+        }
+        processor.note_off(0, 60);
+        processor.process_instrument(&mut output, 256);
+        processor.reset();
+        for _ in 0..750 {
+            processor.process_instrument(&mut output, 256);
+        }
+        let mut after = 0.0f32;
+        for _ in 0..190 {
+            processor.process_instrument(&mut output, 256);
+            after = after.max(peak(&output));
+        }
+        eprintln!("{:<40} held {held:.3}, after a reset {after:.4}", info.name);
+        if after > held * 0.01 {
+            stuck.push(info.name.clone());
+        }
+    }
+    assert!(stuck.is_empty(), "still sounding after a reset: {stuck:?}");
+}
+
 /// Every installed plugin's own library, listed and one of it loaded: how
 /// many, how long the listing took, and whether the plugin's state moved.
 /// `FONTELLE_REAL_ONLY=OB-Xf` for one.

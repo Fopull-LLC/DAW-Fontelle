@@ -22,6 +22,10 @@ pub struct ProcessContext<'a> {
     /// `TimedEvent::target` is what says who an event is for, and a node that
     /// reads this field directly will play other instruments' parts.
     pub all_events: &'a [TimedEvent],
+    /// Note-offs the song owes from before a new timeline replaced the one
+    /// playing ([`crate::SequencedNotes`]), at the top of the block. Theirs
+    /// is the timeline's origin, and they come first.
+    pub cut_events: &'a [TimedEvent],
     /// This block's live input — a MIDI keyboard, a controller, the UI's
     /// on-screen keys (TDD §14.1). A second slice rather than a merged one
     /// because merging means copying, and `EventPayload::ParamValue` owns a
@@ -75,8 +79,9 @@ impl ProcessContext<'_> {
 
     pub fn events_with_origin(&self) -> impl Iterator<Item = (VoiceOrigin, &TimedEvent)> {
         let node = self.node;
-        self.all_events
+        self.cut_events
             .iter()
+            .chain(self.all_events)
             .map(|event| (VoiceOrigin::Timeline, event))
             .chain(
                 self.live_events
@@ -312,7 +317,22 @@ impl CompiledGraph {
         transport: TransportSnapshot,
         sample_range: Range<Sample>,
     ) {
-        self.process_all(events, live_events, audio, transport, sample_range);
+        self.process_all(events, &[], live_events, audio, transport, sample_range);
+    }
+
+    /// As [`process_block_with_audio`](Self::process_block_with_audio), with
+    /// the note-offs a timeline swap owes ahead of the block's own events —
+    /// see [`crate::SequencedNotes`].
+    pub fn process_block_with_cuts(
+        &mut self,
+        events: &[TimedEvent],
+        cuts: &[TimedEvent],
+        live_events: &[TimedEvent],
+        audio: &[AudioPlacement],
+        transport: TransportSnapshot,
+        sample_range: Range<Sample>,
+    ) {
+        self.process_all(events, cuts, live_events, audio, transport, sample_range);
     }
 
     /// As [`CompiledGraph::process_block`], plus this block's live input
@@ -326,12 +346,13 @@ impl CompiledGraph {
         transport: TransportSnapshot,
         sample_range: Range<Sample>,
     ) {
-        self.process_all(events, live_events, &[], transport, sample_range);
+        self.process_all(events, &[], live_events, &[], transport, sample_range);
     }
 
     fn process_all(
         &mut self,
         events: &[TimedEvent],
+        cuts: &[TimedEvent],
         live_events: &[TimedEvent],
         audio: &[AudioPlacement],
         transport: TransportSnapshot,
@@ -406,6 +427,7 @@ impl CompiledGraph {
                             inputs: &inputs,
                             outputs: &mut outputs,
                             all_events: events,
+                            cut_events: cuts,
                             live_events,
                             audio,
                             node: scheduled.id,
@@ -429,6 +451,7 @@ impl CompiledGraph {
                             inputs: &inputs,
                             outputs: &mut outputs,
                             all_events: events,
+                            cut_events: cuts,
                             live_events,
                             audio,
                             node: scheduled.id,
@@ -448,6 +471,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut [],
                         all_events: events,
+                        cut_events: cuts,
                         live_events,
                         audio,
                         node: scheduled.id,
@@ -464,6 +488,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut outputs,
                         all_events: events,
+                        cut_events: cuts,
                         live_events,
                         audio,
                         node: scheduled.id,
@@ -480,6 +505,7 @@ impl CompiledGraph {
                         inputs: &[],
                         outputs: &mut outputs,
                         all_events: events,
+                        cut_events: cuts,
                         live_events,
                         audio,
                         node: scheduled.id,

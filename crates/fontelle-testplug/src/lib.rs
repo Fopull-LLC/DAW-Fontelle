@@ -839,6 +839,14 @@ impl<'a, const MIDI: bool> PluginAudioProcessor<'a, SineShared, SineMain<'a, MID
         // plugin then free-runs. This host always passes one; heard here as
         // silence if it does not.
         let untimed = process.transport.is_none();
+        // See `FAILS_A_BLOCK`: refused before a sample is written.
+        for event in events.input {
+            if let Some(note) = event.as_event::<NoteOnEvent>()
+                && note.pckn().key.into_specific() == Some(u16::from(FAILS_A_BLOCK))
+            {
+                return Err(PluginError::Message("asked to fail this block"));
+            }
+        }
         // CLAP: the input list is sorted by time. A plugin that splits its
         // block at each event takes that at its word, so one out of order is
         // a sub-block of negative length. Heard here as silence.
@@ -1095,6 +1103,11 @@ impl<const MIDI: bool> clack_extensions::render::PluginRenderImpl for SineMain<'
         Ok(())
     }
 }
+
+/// A note-on at this key makes the sine fail the block it is in — returns
+/// an error from `process` without writing its outputs — the way a plugin
+/// across a bridge fails when the process behind it stalls.
+pub const FAILS_A_BLOCK: u8 = 3;
 
 pub const TURNS_AND_SAYS: u8 = 1;
 pub const OWN_LEVEL_SAID: f64 = 0.125;

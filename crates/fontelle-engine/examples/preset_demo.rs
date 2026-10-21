@@ -90,6 +90,7 @@ fn main() -> std::io::Result<()> {
                     inputs: &[],
                     outputs: &mut outs,
                     all_events: &here,
+                    cut_events: &[],
                     live_events: &[],
                     audio: &[],
                     node: NodeId::default(),

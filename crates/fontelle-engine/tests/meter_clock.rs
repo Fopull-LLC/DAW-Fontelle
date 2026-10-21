@@ -195,6 +195,7 @@ fn the_click_plays_three_strengths() {
                 inputs: &[],
                 outputs: &mut outputs,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: Default::default(),

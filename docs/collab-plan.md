@@ -1339,14 +1339,16 @@ missing, it should tell you which plugins."* Every row was reproduced first
 | F94 | *Ty, 2026-10-20:* "when leaving a shared session, then making a new song, and pressing share, it pops up the screen saying that the previous person in the last session stopped sharing." `start_sharing` cleared `told_end` while the ended session was still `self.collab`, so the next pump showed its card again | `told_end` is cleared only when the new session is put in place (`share`, `begin_join`) | `sharing_a_new_song_does_not_bring_back_the_last_sessions_card` |
 | F95 | Found writing F94's test: over a real relay the host's Bye never reached its joiners. The pace's backlog empties when the goodbye is handed to the connection, and the link was let go at once; QUIC drops unwritten stream data on close | An ended session keeps its link half a second (`LAST_WORDS`) before letting go; the window keeps pumping while it does | `sharing_a_new_song_…` (over `LocalRelay`), `an_ended_session_lets_go_of_its_link` |
 | F96 | *Ty, 2026-10-20:* "add smoothing to collaboration syncing on cursor and time bar." Whereabouts arrive at 15 Hz and were drawn where each message put them | Drawn only, the wire unchanged: cursors glide on the screen (`canvas::glide_spot`), time markers in ticks and run on at their heard pace while playing (`canvas::PlayheadGlide`); a jump snaps | `presence_glide.rs` (6) |
+| F97 | *Ty, 2026-10-20:* "someone else in the session changing a preset in dexxed in a collab session didnt transfer that change over. if i leave and rejoin it updates it but not in realtime." A change in a plugin's own window changed the plugin and not the song (G1); a rejoin carried it only because the host's backup had captured it | Once the window has been quiet `PLUGIN_WINDOW_QUIET` (0.4 s), a shared studio reads the plugin's state and, if it differs from the song's, sends it as one `SetPluginState` (wire name appended; `Reach::Graph`, so the receiver restores it). Heard changes for every format; an open CLAP or VST 3 editor is also read once a second, for a preset picked without a word. One undo each | `a_change_in_a_plugins_own_window_reaches_everybody_sharing_the_song`, `a_plugin_window_that_changed_nothing_sends_nothing`; model `plugins.rs` (2), `wire.rs` |
 
 **What a shared song still does not carry** (the audit Ty asked for; each is
 open):
 
-- **G1** A plugin's own state changed in the plugin's own window after the
-  join: it is read off the plugin at a save or backup into each machine's own
-  copy, outside the stream (§5.2), and never crosses. A knob turned from
-  Fontelle's panel does cross.
+- **G1** *Closed by F97.* A plugin's own state changed in the plugin's own
+  window after the join was read off the plugin only at a save or backup,
+  into each machine's own copy, and never crossed. Still not sent: an LV2
+  plugin that changes without saying so (reading it takes it off the audio
+  thread, so it is read only when it says).
 - **G2** Files a plugin loaded (an LV2 sampler's `atom:Path`, collected into
   `assets/plugin-files/`): not in `Project::files`, so not in the manifest, so
   never sent — the joiner's sampler opens empty. A CLAP or VST 3 plugin's

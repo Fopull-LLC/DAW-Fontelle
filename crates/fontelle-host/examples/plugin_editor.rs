@@ -36,6 +36,7 @@ fn main() {
     // SAFETY: one thread so far.
     unsafe {
         fontelle_host::gui::steady_gdk_scale();
+        fontelle_host::gui::steady_toolkits();
     }
     #[cfg(target_os = "linux")]
     if std::env::var_os("PROBE_COMPATIBLE").is_some() {

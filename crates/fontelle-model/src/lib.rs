@@ -49,9 +49,9 @@ pub use commands::{
     SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
     SetInsertParam, SetKey, SetLoopRange, SetMeterChange, SetMixerOrder, SetMixerTrackColor,
     SetNoteKeys, SetNoteLengths, SetNoteMuted, SetNotePath, SetNoteProperty, SetNotePropertyEach,
-    SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPointCurve, SetPresetRef,
-    SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes, SplitClip,
-    SwitchChannelAb, TrimClipStart,
+    SetNoteSlide, SetNoteVelocity, SetNumber, SetPluginParam, SetPluginState, SetPointCurve,
+    SetPresetRef, SetSendLevel, SetSendPreFader, SetTrackInput, SetTrackOutput, SliceNotes,
+    SplitClip, SwitchChannelAb, TrimClipStart,
 };
 pub use lane::Lane;
 pub use lane_routing::{

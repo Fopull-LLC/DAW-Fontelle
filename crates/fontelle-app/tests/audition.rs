@@ -331,3 +331,64 @@ fn a_doubled_note_on_leaves_a_voice_that_one_note_off_cannot_stop() {
     }
     assert!(silent > 0, "matched note-offs have to end the note");
 }
+
+/// What the window sends to an instrument while a key is down.
+#[derive(Clone, Default)]
+struct Heard(std::sync::Arc<std::sync::Mutex<Vec<fontelle_types::TimedEvent>>>);
+
+impl fontelle_types::EventSink for Heard {
+    fn send(&mut self, event: fontelle_types::TimedEvent) -> bool {
+        self.0.lock().unwrap().push(event);
+        true
+    }
+}
+
+/// > *"editing notes on plugins like dexxed in the piano roll sometimes
+/// > triggers a bug where a note gets stuck playing infinitely ... if you
+/// > mute and unmute on the master it fixes itself briefly but pressing play
+/// > to resume playback makes the infinite sound come back."*
+///
+/// A live note's note-off was aimed where the note-on had been aimed only if
+/// nothing changed the aim between them — the selected channel, a preview
+/// starting. When it did, the note-off went to another instrument, and the
+/// first kept a voice that only a reset ends: with the song stopped, none
+/// comes. Muting let the graph go to sleep around it and Play woke it.
+#[test]
+fn a_live_note_ends_on_the_instrument_it_started_on_whatever_is_selected_since() {
+    let heard = Heard::default();
+    let mut session =
+        common::a_session_for(common::a_clip_project(1)).with_audition(Box::new(heard.clone()));
+    StudioHost::add_channel_of(&mut session, fontelle_types::InstrumentKind::Flopsynth)
+        .expect("a second channel");
+    session.select_channel(0);
+    let first = session.audition_target();
+    session.audition_on(60, 100, 0);
+    session.select_channel(1);
+    assert_ne!(
+        session.audition_target(),
+        first,
+        "two instruments to tell apart"
+    );
+    session.audition_off(60);
+    // And a key struck twice on one, ended twice there.
+    session.audition_on(62, 100, 0);
+    session.audition_on(62, 100, 0);
+    session.select_channel(0);
+    session.audition_off(62);
+    session.audition_off(62);
+
+    let events = heard.0.lock().unwrap().clone();
+    let aim = |key: u8, on: bool| -> Vec<fontelle_types::NodeId> {
+        events
+            .iter()
+            .filter(|e| match e.payload {
+                fontelle_types::EventPayload::NoteOn { key: k, .. } => on && k == key,
+                fontelle_types::EventPayload::NoteOff { key: k, .. } => !on && k == key,
+                _ => false,
+            })
+            .map(|e| e.target)
+            .collect()
+    };
+    assert_eq!(aim(60, false), aim(60, true), "{events:#?}");
+    assert_eq!(aim(62, false), aim(62, true), "{events:#?}");
+}

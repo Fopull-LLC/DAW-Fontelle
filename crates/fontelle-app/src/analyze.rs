@@ -1153,6 +1153,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut outputs,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),

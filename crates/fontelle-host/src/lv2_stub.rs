@@ -53,7 +53,7 @@ pub(crate) struct Opened {
 }
 
 fn not_here() -> String {
-    "LV2 plugins are hosted on Linux only".to_string()
+    crate::LV2_ELSEWHERE.to_string()
 }
 
 pub(crate) fn load_world(_path: &Path) -> Result<World, String> {

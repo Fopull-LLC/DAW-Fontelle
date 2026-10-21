@@ -79,6 +79,7 @@ fn run(node: &mut EffectNode, timeline: &[TimedEvent], live: &[TimedEvent], me: 
         inputs: &[],
         outputs: &mut channels,
         all_events: timeline,
+        cut_events: &[],
         live_events: live,
         audio: &[],
         node: me,

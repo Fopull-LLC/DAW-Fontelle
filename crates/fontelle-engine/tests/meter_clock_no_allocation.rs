@@ -53,6 +53,7 @@ fn the_clock_and_the_click_allocate_nothing() {
             inputs: &[],
             outputs: &mut [&mut buffer[..frames]],
             all_events: &[],
+            cut_events: &[],
             live_events: &[],
             audio: &[],
             node: Default::default(),

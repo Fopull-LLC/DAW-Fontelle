@@ -1436,6 +1436,15 @@ fn main() {
     unsafe {
         fontelle_host::gui::steady_gdk_scale();
     }
+    // Qt and GTK editors on X11, where the editors are embedded: drumkv1's Qt
+    // on Wayland left its window black (`fontelle_host::gui::
+    // toolkit_platforms_for`). The desktop's own programs get its choice
+    // back. Here for the same reason.
+    #[cfg(target_os = "linux")]
+    // SAFETY: the process has one thread so far.
+    unsafe {
+        fontelle_host::gui::steady_toolkits();
+    }
     // Compatible plugin graphics: plugin windows that draw with EGL draw with
     // Mesa's (`fontelle_host::gui::egl_vendor_for`) — Vital's aborts on
     // NVIDIA's. Here for the same reason: glvnd reads the variable once, at

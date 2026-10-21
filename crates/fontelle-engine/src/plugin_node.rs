@@ -91,6 +91,9 @@ pub struct PluginNode {
     /// nothing — the graph prepares every node before its first block.
     scratch: Vec<f32>,
     scratch_frames: usize,
+    /// How many frames running the plugin has played what is not a number —
+    /// see [`INVALID_AUDIO_FOR`].
+    invalid_frames: usize,
     /// What is sounding, so a **slide** has something to bend.
     ///
     /// A slide note names only the key it goes *to*; which note it moves is
@@ -163,6 +166,7 @@ impl PluginNode {
             pan: 0.0,
             scratch: Vec::new(),
             scratch_frames: 0,
+            invalid_frames: 0,
             sounding: [None; MAX_SOUNDING],
             key: None,
             key_buffer: Vec::new(),
@@ -612,6 +616,38 @@ fn only_numbers(samples: &mut [f32]) -> bool {
     silenced
 }
 
+/// How long a plugin has to go on playing what is not a number before the
+/// studio is told it has gone wrong (and opens it again). Shorter is
+/// silence, said nowhere.
+///
+/// > *"also getting this error with drumsynth too"* — distrho-ports'
+/// > DrumSynth plays NaN for the first hit of each fresh voice, a fifth of a
+/// > second, and numbers ever after. Told at its first NaN, the studio opened
+/// > it again — fresh voices, the next first hit NaN — and then left it
+/// > silenced. padthv1, which once wrong plays nothing else, is still caught.
+pub const INVALID_AUDIO_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// **RT.** Counts a block that was, or was not, silenced for invalid audio,
+/// and says so once it has gone on [`INVALID_AUDIO_FOR`].
+fn count_invalid(
+    invalid_frames: &mut usize,
+    bay: &ProcessorBay,
+    sample_rate: f64,
+    silenced: bool,
+    frames: usize,
+) {
+    if !silenced {
+        *invalid_frames = 0;
+        return;
+    }
+    *invalid_frames = invalid_frames.saturating_add(frames);
+    let enough = (INVALID_AUDIO_FOR.as_secs_f64() * sample_rate) as usize;
+    if *invalid_frames >= enough.max(1) {
+        bay.mark_silenced();
+        *invalid_frames = 0;
+    }
+}
+
 /// The plugin's own parameter id, from the tail of an address.
 fn param_id(address: &str) -> Option<u32> {
     address.rsplit_once("/param/")?.1.parse().ok()
@@ -691,9 +727,13 @@ impl AudioNode for PluginNode {
                 for channel in ctx.outputs.iter_mut() {
                     silenced |= only_numbers(channel);
                 }
-                if silenced {
-                    self.bay.mark_silenced();
-                }
+                count_invalid(
+                    &mut self.invalid_frames,
+                    &self.bay,
+                    self.sample_rate,
+                    silenced,
+                    frames,
+                );
             }
             PluginRole::Instrument => {
                 // Into scratch, placed there, and **added** to the bus — see
@@ -708,9 +748,13 @@ impl AudioNode for PluginNode {
                 for channel in rendered[..channels].iter_mut() {
                     silenced |= only_numbers(channel);
                 }
-                if silenced {
-                    self.bay.mark_silenced();
-                }
+                count_invalid(
+                    &mut self.invalid_frames,
+                    &self.bay,
+                    self.sample_rate,
+                    silenced,
+                    frames,
+                );
                 place(&mut rendered[..channels], frames, gain_db, pan);
                 for (index, channel) in ctx.outputs.iter_mut().enumerate() {
                     let source = &rendered[index.min(channels - 1)];

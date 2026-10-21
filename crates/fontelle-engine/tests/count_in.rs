@@ -233,6 +233,7 @@ fn the_count_in_clicks_its_beats_even_with_the_metronome_off() {
                 inputs: &[],
                 outputs: &mut outputs,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: Default::default(),

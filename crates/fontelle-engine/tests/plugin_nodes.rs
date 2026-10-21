@@ -141,6 +141,7 @@ fn run<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut [f32]], events: 
         inputs: &[],
         outputs: channels,
         all_events: events,
+        cut_events: &[],
         live_events: &[],
         audio: &[],
         node: NodeId::default(),
@@ -1001,10 +1002,59 @@ fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
         "the bus carries what the plugin played: {:?}",
         &left[..4]
     );
-    // And the studio is told, through the bay it shares with the node, so
-    // the channel's silence can be explained (`PluginRack::take_silenced`).
+    // Held for as long as it takes to be more than a moment of it: then the
+    // studio is told, through the bay it shares with the node, so the
+    // channel's silence can be explained (`PluginRack::take_silenced`).
+    let blocks = (fontelle_engine::INVALID_AUDIO_FOR.as_secs_f64() * 48_000.0) as usize / BLOCK;
+    for _ in 0..blocks + 1 {
+        run(&mut node, &mut [&mut left, &mut right], &[]);
+    }
+    assert!(
+        left.iter().chain(&right).all(|s| *s == 0.25),
+        "the bus still carries only what was there"
+    );
     assert!(bay.take_silenced(), "what was silenced is said");
     assert!(!bay.take_silenced(), "once");
+}
+
+/// > *"also getting this error with drumsynth too"* — "DrumSynth keeps
+/// > playing invalid audio — it is silenced."
+///
+/// distrho-ports' DrumSynth plays NaN for the first hit of each fresh voice
+/// (its pitch droop divides by an envelope length it has not filled in yet)
+/// and numbers for every hit after. Flagged at its first NaN, it was opened
+/// again — fresh voices, so the next first hit was NaN too — and then left
+/// silenced for good. A moment of it is silence, said nowhere; only invalid
+/// audio that goes on is a plugin gone wrong.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_moment_of_invalid_audio_is_silence_and_not_a_plugin_gone_wrong() {
+    let key = PluginKey::new(
+        fontelle_types::PluginFormat::Lv2,
+        fontelle_testlv2::LOADER_URI,
+    );
+    let (_host, _plugin, bay, mut node) =
+        wire_key(&key, &lv2_bundle(), PluginRole::Instrument, BLOCK);
+    let mut left = vec![0.0f32; BLOCK];
+    let mut right = vec![0.0f32; BLOCK];
+    // A fifth of a second of NaN, the length of one DrumSynth hit.
+    run(
+        &mut node,
+        &mut [&mut left, &mut right],
+        &[note_on(fontelle_testlv2::LOADER_NAN_KEY)],
+    );
+    for _ in 0..(48_000 / 5) / BLOCK {
+        left.fill(0.0);
+        right.fill(0.0);
+        run(&mut node, &mut [&mut left, &mut right], &[]);
+        assert!(left.iter().chain(&right).all(|s| *s == 0.0));
+    }
+    run(
+        &mut node,
+        &mut [&mut left, &mut right],
+        &[note_off(fontelle_testlv2::LOADER_NAN_KEY)],
+    );
+    assert!(!bay.take_silenced(), "a moment of it is not said");
 }
 
 /// And an insert: what it hands back is the bus, so a number or silence.

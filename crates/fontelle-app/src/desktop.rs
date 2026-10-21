@@ -55,7 +55,7 @@ pub fn reveal(dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let (program, args) = reveal_command(dir);
-    Command::new(program)
+    fontelle_host::gui::as_the_desktop_has_it(&mut Command::new(program))
         .args(&args)
         .spawn()
         .map(|_| ())
@@ -96,7 +96,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         return Err(format!("{url:?} is not a web address"));
     }
     let (program, args) = open_url_command(url);
-    Command::new(program)
+    fontelle_host::gui::as_the_desktop_has_it(&mut Command::new(program))
         .args(&args)
         .spawn()
         .map(|_| ())
@@ -174,7 +174,7 @@ pub fn copy_commands() -> Vec<(&'static str, Vec<String>)> {
 pub fn copy_text(text: &str) -> Result<(), String> {
     use std::io::Write;
     for (program, args) in copy_commands() {
-        let Ok(mut child) = Command::new(program)
+        let Ok(mut child) = fontelle_host::gui::as_the_desktop_has_it(&mut Command::new(program))
             .args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
@@ -239,6 +239,7 @@ pub fn paste_text_with(commands: &[(&str, Vec<String>)]) -> Result<String, Strin
     let mut found_one = false;
     for (program, args) in commands {
         let mut command = Command::new(program);
+        fontelle_host::gui::as_the_desktop_has_it(&mut command);
         command.args(args).stdin(std::process::Stdio::null());
         #[cfg(windows)]
         {
@@ -329,7 +330,7 @@ pub fn show_alert(title: &str, message: &str) {
         }
     }
     for (program, args) in alert_commands(title, message) {
-        let started = Command::new(program)
+        let started = fontelle_host::gui::as_the_desktop_has_it(&mut Command::new(program))
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -458,7 +459,7 @@ pub fn desktop_refresh_commands(data: &Path) -> Vec<(&'static str, Vec<String>)>
 /// about to open either way.
 pub fn refresh_desktop(data: &Path) {
     for (program, args) in desktop_refresh_commands(data) {
-        let _ = std::process::Command::new(program)
+        let _ = fontelle_host::gui::as_the_desktop_has_it(&mut std::process::Command::new(program))
             .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -951,7 +952,10 @@ pub fn run_picker(
 ) -> Result<Option<PathBuf>, String> {
     let mut tried = Vec::new();
     for (program, args) in candidates {
-        match Command::new(program).args(args).output() {
+        match fontelle_host::gui::as_the_desktop_has_it(&mut Command::new(program))
+            .args(args)
+            .output()
+        {
             Ok(output) => {
                 // A non-zero status is how all of these report a cancel.
                 if !output.status.success() {

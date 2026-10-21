@@ -17,6 +17,7 @@ pub fn process_at_tempo<'a>(node: &mut dyn AudioNode, channels: &'a mut [&'a mut
         inputs: &[],
         outputs: channels,
         all_events: &[],
+        cut_events: &[],
         live_events: &[],
         audio: &[],
         node: fontelle_types::NodeId::default(),

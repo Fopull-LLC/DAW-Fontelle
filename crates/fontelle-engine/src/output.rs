@@ -557,6 +557,9 @@ struct OutputState {
     /// Whether the current graph has handed its plugins to a render — see
     /// `Transport::hold`.
     lent: bool,
+    /// What the song has started and not ended, for a timeline swapped in
+    /// while playing — see [`crate::SequencedNotes`].
+    sequenced: crate::SequencedNotes,
 }
 
 /// A running stream, of whichever kind.
@@ -628,6 +631,7 @@ impl AudioOutput {
             gate: IdleGate::new(),
             monitor,
             lent: false,
+            sequenced: crate::SequencedNotes::with_capacity(SEQUENCED_NOTES),
         };
         let mut output = Self {
             stream: None,
@@ -1091,6 +1095,10 @@ impl Renderer {
     }
 }
 
+/// How many notes the song can have sounding at once and still have each
+/// ended when an edit takes its end away. Past it a note is not tracked.
+const SEQUENCED_NOTES: usize = 1024;
+
 /// One buffer of the song from `state` into `data`.
 fn render_state(state: &mut OutputState, data: &mut [f32], channels: usize) {
     let OutputState {
@@ -1102,6 +1110,7 @@ fn render_state(state: &mut OutputState, data: &mut [f32], channels: usize) {
         gate,
         monitor,
         lent,
+        sequenced,
     } = state;
     let frames_total = data.len() / channels.max(1);
 
@@ -1157,6 +1166,9 @@ fn render_state(state: &mut OutputState, data: &mut [f32], channels: usize) {
         // The cursor indexed into the events we just stopped using. Without
         // this the next block either replays notes or skips them.
         reader.retarget(timeline);
+        // And what the edit took the end of is ended now, rather than
+        // never: see `SequencedNotes`.
+        sequenced.retarget(timeline, reader.position());
     }
 
     let mut written = 0;
@@ -1184,18 +1196,22 @@ fn render_state(state: &mut OutputState, data: &mut [f32], channels: usize) {
             // be sounding through this, and the next block's own measurement
             // is what decides whether anything still is.
             graph.reset_sequenced();
+            sequenced.clear();
         }
 
         if step.process {
             let this_step = if live_pending { live_events } else { &[] };
             live_pending = false;
-            graph.process_block_with_audio(
+            graph.process_block_with_cuts(
                 step.events,
+                sequenced.cuts(),
                 this_step,
                 step.audio,
                 step.snapshot,
                 step.range.clone(),
             );
+            sequenced.delivered();
+            sequenced.heard(step.events);
 
             // Interleave the graph's planar buses into the device's frame
             // layout — the one and only place format conversion happens (TDD
@@ -1209,7 +1225,7 @@ fn render_state(state: &mut OutputState, data: &mut [f32], channels: usize) {
                 let bus = c.min(buses.saturating_sub(1));
                 let block = graph.buffer_pool.buffer_mut(bus);
                 for i in 0..frames {
-                    let sample = block[i];
+                    let sample = crate::device_sample(block[i]);
                     peak = peak.max(sample.abs());
                     data[(written + i) * channels + c] = sample;
                 }

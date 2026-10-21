@@ -24,10 +24,10 @@ use fontelle_model::{
     SetEqBand, SetFlag, SetInsertBypassed, SetInsertKey, SetInsertMix, SetInsertNotes,
     SetInsertParam, SetKey, SetLoopRange, SetLyrics, SetMixerOrder, SetMixerTrackColor,
     SetNoteKeys, SetNoteLengths, SetNoteMuted, SetNotePath, SetNoteProperty, SetNotePropertyEach,
-    SetNoteSlide, SetNoteVelocity, SetNoteVoices, SetNumber, SetPluginParam, SetPointCurve,
-    SetPresetRef, SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput, SetTrackOutput,
-    SetVocalLane, SetVocalSettings, SetVocalState, SliceNotes, SplitClip, SwitchChannelAb,
-    TrimClipStart, VocalVoice, load_project, peek_meta, save_project,
+    SetNoteSlide, SetNoteVelocity, SetNoteVoices, SetNumber, SetPluginParam, SetPluginState,
+    SetPointCurve, SetPresetRef, SetSendLevel, SetSendPreFader, SetSinger, SetTrackInput,
+    SetTrackOutput, SetVocalLane, SetVocalSettings, SetVocalState, SliceNotes, SplitClip,
+    SwitchChannelAb, TrimClipStart, VocalVoice, load_project, peek_meta, save_project,
 };
 use fontelle_model::{FreezeVocal, ImportVocal, UnfreezeVocal, VocalClipImport, VocalLanding};
 use fontelle_types::{
@@ -390,6 +390,12 @@ fn every_command() -> Vec<(&'static str, Make)> {
         ("SetPluginParam channel", |s| {
             Box::new(SetPluginParam::channel(s.drums, 3, 0.5))
         }),
+        ("SetPluginState channel", |s| {
+            let mut state = PluginState::new(PluginKey::clap("org.surge"), "Surge XT");
+            state.blob = Some("AAEC".to_string());
+            state.set_param(3, 0.75);
+            Box::new(SetPluginState::channel(s.drums, state))
+        }),
         ("SwitchChannelAb", |s| {
             Box::new(SwitchChannelAb::new(s.keys))
         }),
@@ -530,6 +536,11 @@ fn every_command() -> Vec<(&'static str, Make)> {
         }),
         ("SetPluginParam insert", |s| {
             Box::new(SetPluginParam::insert(s.part, PLUGIN, 7, 0.25))
+        }),
+        ("SetPluginState insert", |s| {
+            let mut state = PluginState::new(PluginKey::clap("com.u-he.diva"), "Diva");
+            state.blob = Some("AwQF".to_string());
+            Box::new(SetPluginState::insert(s.part, PLUGIN, state))
         }),
         ("ApplyPreset insert", |s| {
             let config = EffectConfig::new(EffectKind::Gate);

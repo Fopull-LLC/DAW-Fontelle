@@ -55,7 +55,9 @@ pub fn take() -> Option<Relaunch> {
 
 /// Starts it, not waiting for it.
 pub fn start(relaunch: &Relaunch) -> Result<(), String> {
-    std::process::Command::new(&relaunch.program)
+    // Started as the desktop had it, so the new studio keeps what the
+    // desktop said rather than what this one set (`steady_toolkits`).
+    fontelle_host::gui::as_the_desktop_has_it(&mut std::process::Command::new(&relaunch.program))
         .args(&relaunch.args)
         .spawn()
         .map(|_| ())

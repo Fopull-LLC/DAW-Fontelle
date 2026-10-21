@@ -302,3 +302,61 @@ fn a_project_written_before_plugins_existed_still_opens() {
         Some(EffectKind::Delay)
     );
 }
+
+// ------------------------------- a plugin's own window, shared (2026-10-20)
+
+/// > *"someone else in the session changing a preset in dexxed in a collab
+/// > session didnt transfer that change over. if i leave and rejoin it
+/// > updates it but not in realtime"*
+///
+/// A preset picked in the plugin's own window changes the plugin and not the
+/// song, so nothing crossed. `SetPluginState` is the song taking the
+/// plugin's whole state — blob and values — as one edit, and one undo.
+#[test]
+fn a_plugins_whole_state_is_taken_in_one_edit_and_given_back_in_one_undo() {
+    let (mut project, master) = fixture();
+    project.mixer.tracks[master]
+        .inserts
+        .push(EffectSlot::hosting(state()));
+    let mut after = state();
+    after.blob = Some("AQID".to_string());
+    after.set_param(0, 0.25);
+
+    let mut history = History::new();
+    history
+        .apply(
+            Box::new(fontelle_model::SetPluginState::insert(
+                master,
+                0,
+                after.clone(),
+            )),
+            &mut project,
+        )
+        .unwrap();
+    assert_eq!(
+        project.mixer.tracks[master].inserts[0].plugin.as_ref(),
+        Some(&after)
+    );
+    history.undo(&mut project).unwrap().unwrap();
+    assert_eq!(
+        project.mixer.tracks[master].inserts[0].plugin.as_ref(),
+        Some(&state())
+    );
+}
+
+/// A state is a plugin's own: one for another plugin than the slot holds now
+/// is refused, never a swap of the plugin — that is `SetChannelPlugin`.
+#[test]
+fn a_state_for_another_plugin_is_refused() {
+    let (mut project, master) = fixture();
+    project.mixer.tracks[master]
+        .inserts
+        .push(EffectSlot::hosting(state()));
+    let other = PluginState::new(PluginKey::clap("com.example.other"), "Other");
+    let refused = fontelle_model::SetPluginState::insert(master, 0, other).apply(&mut project);
+    assert!(refused.is_err());
+    assert_eq!(
+        project.mixer.tracks[master].inserts[0].plugin.as_ref(),
+        Some(&state())
+    );
+}

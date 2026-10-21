@@ -14,6 +14,15 @@ pub enum DeviceFormat {
     I32,
 }
 
+/// A sample as a device may be handed it: a number, inside full scale.
+///
+/// Every output path goes through this, cpal's floats too: a NaN or an
+/// infinity made after a plugin's own check (an effect blown up by what it
+/// was fed) went to the sound server as whatever it made of it.
+pub fn device_sample(x: f32) -> f32 {
+    if x.is_nan() { 0.0 } else { x.clamp(-1.0, 1.0) }
+}
+
 impl DeviceFormat {
     pub fn bytes(self) -> usize {
         match self {
@@ -28,7 +37,7 @@ impl DeviceFormat {
     pub fn write(self, samples: &[f32], dst: &mut [u8]) {
         let width = self.bytes();
         for (out, x) in dst.chunks_exact_mut(width).zip(samples) {
-            let x = if x.is_nan() { 0.0 } else { x.clamp(-1.0, 1.0) };
+            let x = device_sample(*x);
             match self {
                 Self::F32 => out.copy_from_slice(&x.to_le_bytes()),
                 Self::I16 => {

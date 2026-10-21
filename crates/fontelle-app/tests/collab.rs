@@ -2953,6 +2953,83 @@ fn a_knob_kept_on_the_joiner_survives_his_copy_being_made_again() {
     );
 }
 
+/// A knob turned, or a preset picked, in a plugin's **own window**: the
+/// plugin moves and says so, and the song does not.
+fn turned_in_its_own_window(session: &mut Session, value: f64) {
+    let (slot, _) = plugin_knob(session);
+    let rack = session.plugin_rack_mut();
+    assert!(rack.set_param(slot, 7, value));
+    rack.plugin_mut(slot).unwrap().values().note_heard();
+}
+
+/// Once the window has been quiet a moment, the studio looks again.
+fn after_the_window_is_quiet(session: &mut Session) {
+    StudioHost::tick_plugin_editors(session);
+    std::thread::sleep(fontelle_app::PLUGIN_WINDOW_QUIET + std::time::Duration::from_millis(30));
+    StudioHost::tick_plugin_editors(session);
+}
+
+/// > *"someone else in the session changing a preset in dexxed in a collab
+/// > session didnt transfer that change over. if i leave and rejoin it
+/// > updates it but not in realtime in the session"*
+///
+/// A change in a plugin's own window reached the song only at a save,
+/// outside any edit, and never crossed (§18's G1). Now it is one edit, once
+/// the window has gone quiet — from the host, and from a joiner.
+#[test]
+fn a_change_in_a_plugins_own_window_reaches_everybody_sharing_the_song() {
+    let mut pair = a_pair_on_a_plugin("plugin-window");
+    let (slot, before) = plugin_knob(&pair.joiner);
+    assert_ne!(before, Some(0.25));
+
+    turned_in_its_own_window(&mut pair.host, 0.25);
+    after_the_window_is_quiet(&mut pair.host);
+    pair.settle();
+    pair.same();
+    assert_eq!(plugin_knob(&pair.joiner).1, Some(0.25), "the song has it");
+    assert_eq!(
+        pair.joiner.plugin_rack_mut().value(slot, 7),
+        Some(0.25),
+        "and so does Bob's plugin"
+    );
+
+    turned_in_its_own_window(&mut pair.joiner, 0.625);
+    after_the_window_is_quiet(&mut pair.joiner);
+    pair.settle();
+    pair.same();
+    assert_eq!(
+        plugin_knob(&pair.host).1,
+        Some(0.625),
+        "Alice's song has it"
+    );
+    assert_eq!(
+        pair.host.plugin_rack_mut().value(slot, 7),
+        Some(0.625),
+        "and so does her plugin"
+    );
+    // One edit each, and one undo takes Bob's back.
+    pair.joiner.undo();
+    pair.settle();
+    assert_eq!(plugin_knob(&pair.host).1, Some(0.25));
+}
+
+/// Nothing changed in the window is nothing sent: a studio that only looked
+/// writes no edit.
+#[test]
+fn a_plugin_window_that_changed_nothing_sends_nothing() {
+    let mut pair = a_pair_on_a_plugin("plugin-window-still");
+    let (slot, before) = plugin_knob(&pair.host);
+    let depth = pair.host.undo_depth();
+    let rack = pair.host.plugin_rack_mut();
+    rack.plugin_mut(slot)
+        .unwrap()
+        .values()
+        .hear(7, before.unwrap_or(0.5));
+    rack.plugin_mut(slot).unwrap().values().note_heard();
+    after_the_window_is_quiet(&mut pair.host);
+    assert_eq!(pair.host.undo_depth(), depth, "no edit for nothing");
+}
+
 /// Ty: *"if there are plugins missing, it should tell you which plugins."*
 /// The joiner's Share panel lists every plugin the song uses that this
 /// computer has not got — its name, its format, who makes it, and which

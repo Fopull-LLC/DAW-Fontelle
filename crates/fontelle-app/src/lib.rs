@@ -68,7 +68,7 @@ pub use realise::{
     apply_send_controls, beat_samples, channel_nodes, realise, realise_hosting, realise_monitoring,
     realise_previewing, realise_reusing, realise_with, set_channel_patch,
 };
-pub use session::{Session, dropout_words};
+pub use session::{PLUGIN_WINDOW_QUIET, Session, dropout_words};
 pub use vocal::vocal_takes_dir;
 pub use window::EngineHost;
 

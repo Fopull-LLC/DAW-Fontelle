@@ -23,6 +23,7 @@ mod plugin_node;
 #[cfg(target_os = "linux")]
 pub mod rt_budget;
 mod rt_guard;
+mod sequenced_notes;
 mod spectrum_tap;
 mod study_player;
 mod timeline_channel;
@@ -37,7 +38,7 @@ pub use analyze_capture::{
 };
 pub use audio_input::{InputCapture, InputReader, InputTap, InputWriter, input_capture_channel};
 pub use device::{AudioDevice, BLOCK_SIZE, DeviceError};
-pub use device_format::DeviceFormat;
+pub use device_format::{DeviceFormat, device_sample};
 pub use disgusting_beat_channel::{
     DisgustingBeatControls, DisgustingBeatSource, disgusting_beat_channel,
 };
@@ -73,11 +74,12 @@ pub use pipewire::{
     PipeWireSource, drop_off_thread, find_pipewire_source, parse_pipewire_default_source,
     parse_pipewire_sources, pipewire_default_source, pipewire_pcm, pipewire_sources, source_menu,
 };
-pub use plugin_node::{PluginNode, PluginRole, plugin_transport};
+pub use plugin_node::{INVALID_AUDIO_FOR, PluginNode, PluginRole, plugin_transport};
 pub use rt_guard::{
     RtGuardAllocator, current_thread_is_rt, mark_current_thread_rt, unmark_current_thread_rt,
     with_rt_thread,
 };
+pub use sequenced_notes::SequencedNotes;
 pub use spectrum_tap::SpectrumTap;
 pub use study_player::{StudyAudio, StudyPlayer, StudyPlayerNode};
 pub use timeline_channel::{TimelinePublisher, TimelineSource, timeline_channel};

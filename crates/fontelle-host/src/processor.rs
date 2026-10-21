@@ -97,7 +97,7 @@ pub struct HostedProcessor {
     inner: Inner,
     /// Which keys this has started and not ended — so a [`reset`](Self::reset)
     /// can end them itself rather than trusting the plugin to. See there.
-    held: [bool; 128],
+    held: [u8; 128],
     /// Where the song is — see [`PluginTransport`].
     transport: PluginTransport,
     /// The MPE zone notes go out through, while the plugin's MPE switch is
@@ -147,7 +147,7 @@ impl HostedProcessor {
             inner: Inner::Clap(ClapProcessor::new(
                 processor, values, inputs, outputs, dialect, max_block,
             )),
-            held: [false; 128],
+            held: [0; 128],
             transport: PluginTransport::default(),
             mpe: None,
             drop_mark: crate::guard::DropMark(None),
@@ -159,7 +159,7 @@ impl HostedProcessor {
     pub(crate) fn lv2(processor: Lv2Processor) -> Self {
         Self {
             inner: Inner::Lv2(Box::new(processor)),
-            held: [false; 128],
+            held: [0; 128],
             transport: PluginTransport::default(),
             mpe: None,
             drop_mark: crate::guard::DropMark(None),
@@ -171,7 +171,7 @@ impl HostedProcessor {
     pub(crate) fn bridged(processor: BridgedProcessor) -> Self {
         Self {
             inner: Inner::Bridged(processor),
-            held: [false; 128],
+            held: [0; 128],
             transport: PluginTransport::default(),
             mpe: None,
             drop_mark: crate::guard::DropMark(None),
@@ -183,7 +183,7 @@ impl HostedProcessor {
     pub(crate) fn vst3(processor: Vst3Processor) -> Self {
         Self {
             inner: Inner::Vst3(Box::new(processor)),
-            held: [false; 128],
+            held: [0; 128],
             transport: PluginTransport::default(),
             mpe: None,
             drop_mark: crate::guard::DropMark(None),
@@ -216,7 +216,11 @@ impl HostedProcessor {
     /// over: both formats require an ordered event list and a plugin is
     /// entitled to stop reading at the first one out of order.
     pub fn note_on(&mut self, frame: usize, key: u8, velocity: f64) {
-        self.held[usize::from(key.min(127))] = true;
+        // Counted, not flagged: two note-ons on one key are two voices to
+        // a plugin that lets go of one a note-off (Dexed), and a reset has
+        // to end both.
+        let held = &mut self.held[usize::from(key.min(127))];
+        *held = held.saturating_add(1);
         if let Some(zone) = &mut self.mpe {
             let velocity = (velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
             let inner = &mut self.inner;
@@ -233,7 +237,8 @@ impl HostedProcessor {
 
     /// **RT.** Ends a note. See [`note_on`](Self::note_on).
     pub fn note_off(&mut self, frame: usize, key: u8) {
-        self.held[usize::from(key.min(127))] = false;
+        let held = &mut self.held[usize::from(key.min(127))];
+        *held = held.saturating_sub(1);
         if let Some(zone) = &mut self.mpe {
             let inner = &mut self.inner;
             zone.note_off(key, &mut |bytes| raw_midi(inner, frame, bytes));
@@ -407,7 +412,12 @@ impl HostedProcessor {
 
     /// The keys this has started and not yet ended, lowest first.
     pub fn held_keys(&self) -> impl Iterator<Item = u8> + '_ {
-        (0u8..=127).filter(|&key| self.held[usize::from(key)])
+        (0u8..=127).filter(|&key| self.held[usize::from(key)] > 0)
+    }
+
+    /// How many times `key` has been started and not yet ended.
+    pub fn held_count(&self, key: u8) -> u8 {
+        self.held[usize::from(key.min(127))]
     }
 
     /// **RT.** Ends every note this has started and not ended, at `frame`.
@@ -417,7 +427,7 @@ impl HostedProcessor {
     /// sounding in (`fontelle_engine::PluginNode`).
     pub fn release_held(&mut self, frame: usize) {
         for key in 0u8..=127 {
-            if self.held[usize::from(key)] {
+            while self.held[usize::from(key)] > 0 {
                 self.note_off(frame, key);
             }
         }
@@ -1008,6 +1018,12 @@ impl ClapProcessor {
         // synth. `with_input` decides whether the bus was *copied* into the
         // main port, not whether the ports are handed over; an instrument's
         // stay at the zeroes `new` left there.
+        // Cleared first: a plugin that fails the block, or leaves a channel
+        // unwritten, would otherwise hand back the block before, once a
+        // block — a 128-sample loop of whatever it last played.
+        for channel in output.iter_mut().flatten() {
+            channel[..frames].fill(0.0);
+        }
         let audio_in = if input.is_empty() {
             InputAudioBuffers::empty()
         } else {

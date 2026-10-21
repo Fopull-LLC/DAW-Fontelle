@@ -10052,6 +10052,102 @@ impl Command for RestorePluginParam {
     }
 }
 
+/// The song takes a plugin's whole state off the plugin: its blob and its
+/// values, as one edit — and one undo, which gives the old state back.
+///
+/// > *"someone else in the session changing a preset in dexxed in a collab
+/// > session didnt transfer that change over. if i leave and rejoin it
+/// > updates it but not in realtime in the session"*
+///
+/// A preset picked, or a knob turned, in the plugin's **own window** changes
+/// the plugin and not the song; the song read it back only at a save, outside
+/// any edit, so nothing crossed to anybody sharing it (`docs/collab-plan.md`
+/// G1). The studio sends this once the window has been quiet a moment.
+///
+/// Only over the plugin the slot holds: a state for another plugin is
+/// refused, never a swap — that is [`SetChannelPlugin`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SetPluginState {
+    target: PluginTarget,
+    /// Which insert the target's place held, for an insert — see [`claim`].
+    slot: Option<PersistentId>,
+    state: fontelle_types::PluginState,
+    previous: Option<fontelle_types::PluginState>,
+}
+
+impl SetPluginState {
+    pub fn channel(channel: ChannelId, state: fontelle_types::PluginState) -> Self {
+        Self {
+            target: PluginTarget::Channel(channel),
+            slot: None,
+            state,
+            previous: None,
+        }
+    }
+
+    pub fn insert(track: MixerTrackId, slot: usize, state: fontelle_types::PluginState) -> Self {
+        Self {
+            target: PluginTarget::Insert { track, slot },
+            slot: None,
+            state,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetPluginState {
+    fn to_edit(&self) -> crate::wire::Edit {
+        crate::wire::Edit::SetPluginState(self.clone())
+    }
+
+    fn apply(&mut self, doc: &mut Project) -> Result<(), CommandError> {
+        let held = plugin_state_mut(doc, self.target, &mut self.slot)?;
+        if held.key != self.state.key {
+            return Err(CommandError(format!(
+                "the slot holds {}, not {}",
+                held.name, self.state.name
+            )));
+        }
+        let was = std::mem::replace(held, self.state.clone());
+        self.previous.get_or_insert(was);
+        Ok(())
+    }
+
+    fn invert(&self) -> Box<dyn Command> {
+        match &self.previous {
+            Some(previous) => Box::new(SetPluginState {
+                target: self.target,
+                slot: self.slot,
+                state: previous.clone(),
+                previous: Some(self.state.clone()),
+            }),
+            None => Box::new(NotApplied::new("a plugin's own window")),
+        }
+    }
+
+    fn label(&self) -> &str {
+        "Plugin window"
+    }
+
+    fn merge_with(&mut self, _next: &dyn Command) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn memory_cost(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.state.blob.as_ref().map_or(0, String::len)
+            + self
+                .previous
+                .as_ref()
+                .and_then(|p| p.blob.as_ref())
+                .map_or(0, String::len)
+    }
+}
+
 // ---------------------------------------------------------------- presets
 
 /// Which device a preset is being put on (`docs/flopsynth-plan.md` §P.5).

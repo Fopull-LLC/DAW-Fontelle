@@ -246,6 +246,73 @@ pub unsafe fn steady_gdk_scale() {
     }
 }
 
+/// The toolkit platforms an embedded editor needs, where there is an X
+/// display: every editor this host embeds is put in an **X11** window, and a
+/// Qt or GTK editor on its toolkit's Wayland platform cannot draw in one.
+///
+/// > *"having some issues with drumkv1 i closed it and opened it and its
+/// > black now."* — drumkv1's Qt chose Wayland on Ty's Plasma desktop, came
+/// > up as a window of its own, and the studio's stayed black.
+///
+/// Set over whatever the desktop said, because a Wayland Qt can never embed
+/// here; the desktop's own choice goes back to every program the studio
+/// starts ([`as_the_desktop_had_it`]).
+pub fn toolkit_platforms_for(x_display: bool) -> Vec<(&'static str, &'static str)> {
+    if x_display {
+        vec![("QT_QPA_PLATFORM", "xcb"), ("GDK_BACKEND", "x11")]
+    } else {
+        Vec::new()
+    }
+}
+
+/// What the desktop had set for each variable [`steady_toolkits`] changed.
+static DESKTOP_HAD: std::sync::OnceLock<Vec<(&'static str, Option<std::ffi::OsString>)>> =
+    std::sync::OnceLock::new();
+
+/// Gives `command` the desktop's own toolkit choice back: each variable in
+/// `originals` set to what it was, or taken away if it was not set. For a
+/// file picker, the file manager, a browser — the desktop's programs, not
+/// this studio's editors.
+pub fn as_the_desktop_had_it(
+    command: &mut std::process::Command,
+    originals: &[(&str, Option<std::ffi::OsString>)],
+) {
+    for (name, value) in originals {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+}
+
+/// [`as_the_desktop_had_it`] with what this process found at its start —
+/// nothing, if [`steady_toolkits`] changed nothing.
+pub fn as_the_desktop_has_it(command: &mut std::process::Command) -> &mut std::process::Command {
+    as_the_desktop_had_it(command, DESKTOP_HAD.get().map_or(&[], Vec::as_slice));
+    command
+}
+
+/// Sets [`toolkit_platforms_for`]'s variables for this process, keeping
+/// what the desktop had for [`as_the_desktop_has_it`].
+///
+/// # Safety
+///
+/// Changes the environment: call it before the process has a second thread,
+/// as `std::env::set_var` asks.
+#[cfg(target_os = "linux")]
+pub unsafe fn steady_toolkits() {
+    let platforms = toolkit_platforms_for(std::env::var_os("DISPLAY").is_some());
+    let had = platforms
+        .iter()
+        .map(|(name, _)| (*name, std::env::var_os(name)))
+        .collect();
+    let _ = DESKTOP_HAD.set(had);
+    for (name, value) in platforms {
+        // SAFETY: the caller's — no other thread yet.
+        unsafe { std::env::set_var(name, value) };
+    }
+}
+
 /// Where glvnd looks for EGL vendor files, in its order: the system's
 /// configuration first, then the distribution's.
 pub const EGL_VENDOR_DIRS: [&str; 3] = [

@@ -49,3 +49,17 @@ fn sizes_and_a_short_destination() {
     DeviceFormat::I16.write(&[0.0, 0.0, 1.0], &mut out);
     assert_eq!(out, [0, 0, 0, 0]);
 }
+
+/// What every output path hands the device: WASAPI's bytes had this, and
+/// cpal's floats went out raw — a NaN after the plugin's own check (an
+/// effect blown up by what it was fed) went to the sound server as
+/// whatever it made of it. Reported as white noise, 2026-10-20.
+#[test]
+fn a_sample_for_the_device_is_a_number_inside_full_scale() {
+    use fontelle_engine::device_sample;
+    assert_eq!(device_sample(f32::NAN), 0.0);
+    assert_eq!(device_sample(f32::INFINITY), 1.0);
+    assert_eq!(device_sample(f32::NEG_INFINITY), -1.0);
+    assert_eq!(device_sample(2.5), 1.0);
+    assert_eq!(device_sample(-0.25), -0.25);
+}

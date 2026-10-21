@@ -415,8 +415,9 @@ impl AudioNode for SamplerNode {
         };
         let node = ctx.node;
         let mut timeline = ctx
-            .all_events
+            .cut_events
             .iter()
+            .chain(ctx.all_events)
             .filter(|e| e.target == node)
             .peekable();
         let mut live = ctx
@@ -1421,7 +1422,12 @@ impl EffectNode {
         let Some(source) = self.notes_from else {
             return;
         };
-        for event in ctx.all_events.iter().chain(ctx.live_events.iter()) {
+        for event in ctx
+            .cut_events
+            .iter()
+            .chain(ctx.all_events)
+            .chain(ctx.live_events)
+        {
             if event.target != source {
                 continue;
             }
@@ -3099,6 +3105,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),
@@ -3365,6 +3372,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut out_slices,
                 all_events: &events,
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),
@@ -3396,6 +3404,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),
@@ -3504,6 +3513,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),
@@ -3551,6 +3561,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut slices,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),
@@ -3622,6 +3633,7 @@ mod tests {
                 inputs: &[],
                 outputs: &mut out_slices,
                 all_events: &events,
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),

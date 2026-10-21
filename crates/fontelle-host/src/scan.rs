@@ -55,6 +55,11 @@ impl PluginInfo {
     }
 }
 
+/// Why an LV2 bundle found off Linux is not in the list: lilv is a Linux
+/// system library and this build has no other way to read one. Said as a
+/// reason of its own so a scan can name it rather than count it.
+pub const LV2_ELSEWHERE: &str = "LV2 plugins are hosted on Linux only";
+
 /// A bundle that could not be read.
 #[derive(Debug, Clone)]
 pub struct ScanFailure {
@@ -138,15 +143,50 @@ impl PluginScan {
         scan
     }
 
+    /// What a rescan says: how many plugins, how many would not load, and
+    /// LV2 bundles found where they cannot be hosted named for what they are.
+    ///
+    /// > *"on windows my friend installed an lv2 plugin and added common
+    /// > files lv2 to her plugin folders and rescanned but still couldnt find
+    /// > it"* — the bundle was found, and all she was told was a count.
+    pub fn summary(&self) -> String {
+        let elsewhere = self
+            .failures
+            .iter()
+            .filter(|failure| failure.why == LV2_ELSEWHERE)
+            .count();
+        let failed = self.failures.len() - elsewhere;
+        let mut said = match (self.plugins.len(), failed) {
+            (0, 0) => "no plugins found".to_string(),
+            (n, 0) => format!("{n} plugins"),
+            (n, f) => format!("{n} plugins, {f} would not load"),
+        };
+        if elsewhere > 0 {
+            let bundles = if elsewhere == 1 { "plugin" } else { "plugins" };
+            said.push_str(&format!(
+                " ({elsewhere} LV2 {bundles} skipped: LV2 works on Linux only, \
+                 so use its CLAP or VST3 version)"
+            ));
+        }
+        said
+    }
+
     fn take(&mut self, path: PathBuf, outcome: Result<Vec<PluginInfo>, String>) {
         match outcome {
             Ok(found) => {
                 for plugin in found {
                     // The same plugin found twice — a folder symlinked into
                     // another, a copy left beside the original — is one
-                    // plugin, and the first place it was found wins.
-                    if !self.plugins.iter().any(|seen| seen.key == plugin.key) {
-                        self.plugins.push(plugin);
+                    // plugin, and the first place it was found wins, unless
+                    // that place is a Windows build through Wine and this one
+                    // is not.
+                    match self.plugins.iter_mut().find(|seen| seen.key == plugin.key) {
+                        Some(seen) => {
+                            if through_wine(&seen.path) && !through_wine(&plugin.path) {
+                                *seen = plugin;
+                            }
+                        }
+                        None => self.plugins.push(plugin),
                     }
                 }
             }
@@ -177,6 +217,26 @@ impl PluginScan {
     pub fn find(&self, key: &PluginKey) -> Option<&PluginInfo> {
         self.plugins.iter().find(|plugin| &plugin.key == key)
     }
+}
+
+/// Whether a bundle is a Windows plugin reached through Wine: yabridge puts
+/// its copies in a `yabridge` folder, each with the Windows file linked
+/// beside it as `<name>-win`.
+///
+/// > *"white noise sometimes randomly playing ... specifically we were using
+/// > dexxed"* — Ty's `~/.clap/yabridge/Dexed.clap` and `/usr/lib/clap/
+/// > Dexed.clap` share an id, `~/.clap` is walked first, and every session
+/// > played Dexed across a process boundary every block.
+fn through_wine(path: &Path) -> bool {
+    let in_yabridge = path
+        .components()
+        .any(|part| part.as_os_str().eq_ignore_ascii_case("yabridge"));
+    let windows_beside = path.file_name().is_some_and(|name| {
+        let mut win = name.to_os_string();
+        win.push("-win");
+        path.with_file_name(win).exists()
+    });
+    in_yabridge || windows_beside
 }
 
 /// Every bundle under `folders`, in order, each once, with its format.

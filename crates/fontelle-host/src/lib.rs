@@ -99,8 +99,8 @@ pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHos
 pub use probe::{BundleProber, DEFAULT_PROBE_TIMEOUT, PROBE_FLAG, exit_now, probe_main};
 pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
 pub use scan::{
-    PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with, search_paths,
-    search_paths_with,
+    LV2_ELSEWHERE, PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with,
+    search_paths, search_paths_with,
 };
 pub use singer::{
     AbiVerdict, PhraseSpec, RenderFailure, SingerDescription, SingerEngine, SingerEngines,

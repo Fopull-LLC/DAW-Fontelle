@@ -61,6 +61,7 @@ fn the_vocal_node_never_allocates_on_the_audio_thread() {
                 inputs: &[],
                 outputs: &mut channels,
                 all_events: &[],
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: fontelle_types::NodeId::default(),

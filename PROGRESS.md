@@ -19,6 +19,57 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-20 (night) — the beta's first reports: stuck notes, noise,
+collab presets, LV2 on Windows, drumkv1, DrumSynth.** Ty tested
+0.31.0-beta.1 with a friend; six reports, each traced before it was fixed.
+
+- **Stuck notes** (*"a note gets stuck playing infinitely ... pressing
+  play to resume playback makes the infinite sound come back"*). Three
+  causes, all fixed: (1) a live note's note-off was aimed afresh, so a
+  selection or preview change between on and off sent it to another
+  instrument, and with the song stopped nothing resets a live voice —
+  `Session::live_aims` sends it where its note-on went; (2) a timeline
+  swapped in while playing only moved the cursor, so a sounding note an edit
+  shortened, deleted, moved or muted never heard its note-off, and one
+  dragged past the playhead started twice — `fontelle_engine::SequencedNotes`
+  ends at the swap what the new song will not end itself
+  (`ProcessContext::cut_events`, ahead of the block's own); (3) the host
+  flagged a key rather than counting it (`HostedProcessor::held` is a count).
+  Real Dexed (native and yabridge) was checked: its reset does clear voices,
+  so (1) is the one a Stop would not have cleared — the likeliest of the
+  three for the report, though the session itself was not seen.
+- **White noise with Dexed**: Ty's machine has Dexed twice under one id —
+  the native CLAP and the Windows one through yabridge in `~/.clap/yabridge/`,
+  walked first — and every session played the Wine copy. A native copy now
+  wins over one through Wine (`scan::through_wine`). Also: a plugin's output
+  buffers are cleared before each `process` (CLAP, VST 3), so a failed block
+  is silence, not the last block looped; every device sample goes through
+  `device_sample` (NaN → 0, ±1), cpal included.
+- **Collab** (*"changing a preset in dexxed ... didnt transfer"*): closes
+  collab-plan G1 as F97 — `SetPluginState`, sent once a plugin's own window
+  has been quiet 0.4 s (`Session::share_plugin_windows`).
+- **LV2 on Windows**: not hosted off Linux at all (lilv is a system
+  library); the bundle was found and failed, and the rescan said only a
+  count. `PluginScan::summary` names it and says to use the CLAP or VST 3
+  version. **Real LV2 on Windows is a build project** (vendored lilv, serd,
+  sord, sratom, zix; a Windows UI type) — Ty's call.
+- **drumkv1 black** (*"i closed it and opened it and its black now"*): its
+  Qt chose Wayland on a Wayland desktop and cannot draw in the X11 window
+  every editor is embedded in — black every time; the first time it was a
+  loose window. `gui::steady_toolkits` puts Qt (`xcb`) and GTK (`x11`) on X
+  at start; the desktop's programs get its own values back
+  (`as_the_desktop_has_it`). Seen embedded on a nested KWin.
+- **DrumSynth "keeps playing invalid audio"**: distrho-ports' DrumSynth
+  plays NaN on each fresh voice's first hit (its droop divides by an
+  envelope length not yet filled; seen under gdb and in a bare lilv host).
+  Flagged at the first NaN, it was reopened into fresh voices and then left
+  silenced. Only invalid audio that lasts `INVALID_AUDIO_FOR` (2 s) is a
+  plugin gone wrong now; a moment of it is silence.
+- Tests: fontelle-engine `sequenced_cuts` (8), `device_format` (+1),
+  `plugin_nodes` (+1, 1 changed); fontelle-host `hosting` (+3), `scanning`
+  (+3), `gui_toolkits` (3), `real_plugins` (+1, ignored); fontelle-model
+  `plugins` (+2), `wire` (+2); fontelle-app `audition` (+1), `collab` (+2).
+
 **2026-10-20 (evening) — the roll's tools round; for 0.31.0-beta.1.**
 Ty: *"spend some time putting together a plan to make the tools section
 start feeling feature complete"*, then *"great plan now follow through

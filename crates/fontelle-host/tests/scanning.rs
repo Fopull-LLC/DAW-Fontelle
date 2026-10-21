@@ -217,3 +217,110 @@ fn a_folder_reached_twice_is_walked_once() {
     let scan = PluginScan::of(&[real, folder.join("lib64").join("clap")]);
     assert_eq!(scan.failures.len(), 1, "{:?}", scan.failures);
 }
+
+// ------------------------------------------- LV2 off Linux (2026-10-20)
+
+/// > *"on windows my friend installed an lv2 plugin and added common files
+/// > lv2 to her plugin folders and rescanned but still couldnt find it"*
+///
+/// LV2 is hosted on Linux only. Her bundle was found and failed, and all the
+/// rescan said was a count. The summary names the reason, and what to do.
+#[test]
+fn a_scan_summary_says_lv2_is_linux_only_rather_than_counting_it_a_failure() {
+    use fontelle_host::{LV2_ELSEWHERE, ScanFailure};
+    let found = scan_bundle(&common::bundle()).unwrap();
+    let scan = PluginScan {
+        plugins: found,
+        failures: vec![
+            ScanFailure {
+                path: "C:/Program Files/Common Files/LV2/Thing.lv2".into(),
+                why: LV2_ELSEWHERE.to_string(),
+            },
+            ScanFailure {
+                path: "C:/Program Files/Common Files/CLAP/Broken.clap".into(),
+                why: "not a shared library".to_string(),
+            },
+        ],
+    };
+    let summary = scan.summary();
+    assert!(summary.starts_with("4 plugins"), "{summary}");
+    assert!(summary.contains("1 would not load"), "{summary}");
+    assert!(summary.contains("1 LV2"), "{summary}");
+    assert!(summary.contains("Linux only"), "{summary}");
+    assert!(summary.contains("CLAP or VST3"), "{summary}");
+
+    let clean = PluginScan {
+        plugins: scan.plugins.clone(),
+        failures: Vec::new(),
+    };
+    assert_eq!(clean.summary(), "4 plugins");
+    assert_eq!(PluginScan::default().summary(), "no plugins found");
+}
+
+/// And off Linux, a bundle in a folder somebody added is that reason, not
+/// some other failure — what CI's Windows and macOS runners check.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_an_lv2_bundle_is_found_and_set_aside_for_the_reason() {
+    let dir = std::env::temp_dir().join("fontelle-scan-lv2-elsewhere");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Thing.lv2")).unwrap();
+    std::fs::write(dir.join("Thing.lv2/manifest.ttl"), b"").unwrap();
+    let scan = PluginScan::of(std::slice::from_ref(&dir));
+    assert_eq!(scan.failures.len(), 1, "{:?}", scan.failures);
+    assert_eq!(scan.failures[0].why, fontelle_host::LV2_ELSEWHERE);
+    assert!(scan.summary().contains("Linux only"), "{}", scan.summary());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------- the native copy wins (2026-10-20)
+
+/// > *"white noise sometimes randomly playing while using plugins ...
+/// > specifically we were using dexxed"*
+///
+/// Ty's machine has Dexed twice under one id: `/usr/lib/clap/Dexed.clap`,
+/// and the Windows Dexed through yabridge in `~/.clap/yabridge/`, its
+/// `Dexed.clap-win` beside it. The first found won, and `~/.clap` is walked
+/// first: every session played the Wine copy, a round trip into another
+/// process every 2.7 ms block. The native copy is the one to open.
+#[test]
+fn a_native_plugin_wins_over_the_same_plugin_through_a_wine_bridge() {
+    let dir = std::env::temp_dir().join("fontelle-scan-native-wins");
+    let _ = std::fs::remove_dir_all(&dir);
+    let (home, system) = (dir.join("home"), dir.join("system"));
+    std::fs::create_dir_all(home.join("yabridge")).unwrap();
+    std::fs::create_dir_all(&system).unwrap();
+    std::fs::copy(common::bundle(), home.join("yabridge/Test.clap")).unwrap();
+    std::fs::copy(common::bundle(), system.join("Test.clap")).unwrap();
+
+    let scan = PluginScan::of(&[home.clone(), system.clone()]);
+    let gain = scan
+        .find(&fontelle_types::PluginKey::clap(common::GAIN))
+        .unwrap();
+    assert_eq!(gain.path, system.join("Test.clap"));
+    assert_eq!(
+        scan.plugins.len(),
+        4,
+        "still one of each: {:#?}",
+        scan.plugins
+    );
+
+    // Known by the `-win` beside it as well, wherever it is.
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::copy(common::bundle(), other.join("Test.clap")).unwrap();
+    std::fs::write(other.join("Test.clap-win"), b"").unwrap();
+    let scan = PluginScan::of(&[other.clone(), system.clone()]);
+    let gain = scan
+        .find(&fontelle_types::PluginKey::clap(common::GAIN))
+        .unwrap();
+    assert_eq!(gain.path, system.join("Test.clap"));
+
+    // And with no native copy, the bridged one is still there to play.
+    let scan = PluginScan::of(std::slice::from_ref(&home));
+    assert!(
+        scan.find(&fontelle_types::PluginKey::clap(common::GAIN))
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

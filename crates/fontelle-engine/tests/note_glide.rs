@@ -53,6 +53,7 @@ fn render(
                 inputs: &[],
                 outputs: &mut outputs,
                 all_events: &events,
+                cut_events: &[],
                 live_events: &[],
                 audio: &[],
                 node: NodeId::default(),

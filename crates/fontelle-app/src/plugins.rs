@@ -1388,6 +1388,32 @@ impl PluginRack {
     /// a knob turned in its window, a preset from its own browser. Those
     /// edits never pass through the document's history, and this is how
     /// they become unsaved changes.
+    /// [`take_changes_heard`](Self::take_changes_heard), slot by slot: the
+    /// plugins that said, since the last call, that their own window changed
+    /// something.
+    pub fn take_slots_heard(&mut self) -> Vec<PluginSlot> {
+        let mut heard: Vec<PluginSlot> = self
+            .live
+            .iter_mut()
+            .filter_map(|(slot, live)| live.plugin.take_changes_heard().then_some(*slot))
+            .collect();
+        heard.sort_by_key(|slot| format!("{slot:?}"));
+        heard
+    }
+
+    /// The slots whose own editor is open and that can be read without
+    /// taking the plugin off the audio thread: every format but LV2, whose
+    /// state is read through its processor ([`snapshot`](Self::snapshot)).
+    pub fn open_editors_readable(&self) -> Vec<PluginSlot> {
+        self.live
+            .iter()
+            .filter(|(_, live)| {
+                live.editor.is_some() && live.key.format != fontelle_types::PluginFormat::Lv2
+            })
+            .map(|(slot, _)| *slot)
+            .collect()
+    }
+
     pub fn take_changes_heard(&mut self) -> bool {
         let mut any = false;
         for live in self.live.values_mut() {
