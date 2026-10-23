@@ -20,7 +20,9 @@ codebase that cost real time to rediscover.
 ## Where things stand (maintained; the entries below are history)
 
 **2026-10-20 (night) — the beta's first reports: stuck notes, noise,
-collab presets, LV2 on Windows, drumkv1, DrumSynth.** Ty tested
+collab presets, LV2 on Windows, drumkv1, DrumSynth; released with the roll's
+tools as 0.31.0 (2026-10-21).** Next: LV2 on Windows and macOS,
+`docs/lv2-everywhere-plan.md` (spike done, §6's decisions Ty's). Ty tested
 0.31.0-beta.1 with a friend; six reports, each traced before it was fixed.
 
 - **Stuck notes** (*"a note gets stuck playing infinitely ... pressing
