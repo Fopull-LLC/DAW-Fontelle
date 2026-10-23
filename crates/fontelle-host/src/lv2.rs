@@ -813,6 +813,12 @@ impl Lv2Plugin {
                     self.atom_in_sizes.first().copied().unwrap_or(ATOM_CAPACITY),
                 )
             }),
+            state_changed: [
+                self.features.urid(c"http://lv2plug.in/ns/ext/atom#Object"),
+                self.features.urid(c"http://lv2plug.in/ns/ext/atom#Blank"),
+                self.features
+                    .urid(c"http://lv2plug.in/ns/ext/state#StateChanged"),
+            ],
         };
         // Every control port starts at the plugin's default; the wire
         // carries the document's answer and is applied on the first block.
@@ -940,6 +946,10 @@ pub(crate) struct Lv2Processor {
     latency_port: Option<PortIndex>,
     /// Its `patch:` parameters' messages, when it has any — see [`PatchIo`].
     patch: Option<PatchIo>,
+    /// `atom:Object`, `atom:Blank` and `state:StateChanged` in the plugin's
+    /// map: a plugin that changed what it keeps (a sample loaded, a preset
+    /// picked in its own browser) says so with the last, and is heard.
+    state_changed: [u32; 3],
 }
 
 /// The KXStudio programs extension (`lv2_programs.h`, from DSSI): presets
@@ -1349,8 +1359,21 @@ impl Lv2Processor {
         // input sequences are cleared, because both are this block's.
         if let Some(first) = atom_out.first() {
             let pipe = &self.atoms.to_editor;
+            let [object, blank, state_changed] = self.state_changed;
             for event in first.iter() {
                 pipe.push(event.event.body.mytype, event.data);
+                // An object's second word is its type: `state:StateChanged`
+                // is the plugin saying it changed itself.
+                let kind = event.event.body.mytype;
+                if (kind == object || kind == blank)
+                    && event
+                        .data
+                        .get(4..8)
+                        .map(|w| u32::from_ne_bytes(w.try_into().unwrap_or_default()))
+                        == Some(state_changed)
+                {
+                    self.values.note_heard();
+                }
             }
             // And what it said about its `patch:` parameters.
             if let Some(patch) = &mut self.patch {

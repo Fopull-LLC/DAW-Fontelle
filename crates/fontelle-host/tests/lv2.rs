@@ -1511,3 +1511,80 @@ fn what_the_studio_had_not_sent_yet_is_forgotten_by_a_load() {
     values.drain(|id, value| sent.push((id, value)));
     assert_eq!(sent, [(id, 3.0)], "only what it was asked to forget");
 }
+
+// ------------------------- an LV2 plugin's own changes, heard (2026-10-23)
+//
+// Ty: *"yes lv2s should report a change that sounds like a bug we should not
+// ignore"*. A VST 3 editor's edit marked the plugin changed; an LV2 editor's
+// write did not, and neither did a plugin that announced `state:StateChanged`
+// — so the song never showed it unsaved, and a shared song never sent it.
+
+/// A knob the editor turned is a change the studio hears.
+#[test]
+fn an_lv2_editors_write_is_a_change_the_studio_hears() {
+    let mut host = PluginHost::new();
+    let mut plugin = gain(&mut host);
+    assert!(!plugin.take_changes_heard(), "nothing yet");
+    let window = fontelle_host::PluginWindow::headless(640, 480);
+    plugin.open_editor(&window, 1.0).expect("the editor opens");
+    // Its first idle writes the gain port: a knob turned in its window.
+    plugin.tick_editor();
+    assert!(plugin.take_changes_heard(), "the editor's write was heard");
+    plugin.close_editor();
+}
+
+/// A note played on the editor's own keyboard is a note, not an edit.
+#[test]
+fn a_note_from_an_lv2_editor_is_not_a_change() {
+    let mut host = PluginHost::new();
+    let mut plugin = sine(&mut host);
+    let _processor = plugin.activate(48_000.0, 256).unwrap();
+    let window = fontelle_host::PluginWindow::headless(320, 240);
+    plugin.open_editor(&window, 1.0).expect("the editor opens");
+    plugin.tick_editor();
+    assert!(!plugin.take_changes_heard(), "a MIDI note is not an edit");
+    plugin.close_editor();
+}
+
+/// A plugin that says `state:StateChanged` — a sample it loaded, a preset in
+/// its own browser — has changed, whether or not any value moved.
+#[test]
+fn an_lv2_plugin_that_says_its_state_changed_is_heard() {
+    let mut host = PluginHost::new();
+    let key = PluginKey::new(
+        fontelle_types::PluginFormat::Lv2,
+        fontelle_testlv2::LOADER_URI,
+    );
+    let mut plugin = host.open(&common::lv2_bundle(), &key).expect("it opens");
+    let mut processor = plugin.activate(48_000.0, 256).unwrap();
+    let mut output = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
+    processor.process_instrument(&mut output, 256);
+    let _ = plugin.take_changes_heard();
+    processor.note_on(0, fontelle_testlv2::LOADER_QUIET_KEY, 1.0);
+    processor.process_instrument(&mut output, 256);
+    assert!(
+        plugin.take_changes_heard(),
+        "the plugin said so, and was heard"
+    );
+}
+
+/// An editor saying back what a port already is — many do as they open —
+/// is not an edit: opening a plugin's window leaves the song as it was.
+#[test]
+fn an_lv2_editor_repeating_a_value_is_not_a_change() {
+    let mut host = PluginHost::new();
+    let mut plugin = gain(&mut host);
+    plugin.set_param(
+        fontelle_testlv2::GAIN_PORT,
+        f64::from(fontelle_testlv2::HELLO_FROM_THE_EDITOR),
+    );
+    let _ = plugin.take_changes_heard();
+    let window = fontelle_host::PluginWindow::headless(640, 480);
+    plugin.open_editor(&window, 1.0).expect("the editor opens");
+    plugin.tick_editor();
+    assert!(
+        !plugin.take_changes_heard(),
+        "the value it wrote was already so"
+    );
+    plugin.close_editor();
+}

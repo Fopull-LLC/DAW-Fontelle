@@ -45,7 +45,7 @@ pub mod widget;
 
 pub use vello;
 
-pub use app::{WindowApp, WindowError, WindowOptions, Windowless, run, run_window};
+pub use app::{STATUS_HOLD, WindowApp, WindowError, WindowOptions, Windowless, run, run_window};
 pub use audition::{AuditionAction, Auditions, MAX_AUDITION, MIN_AUDITION};
 pub use backend::WindowBackend;
 pub use document::{

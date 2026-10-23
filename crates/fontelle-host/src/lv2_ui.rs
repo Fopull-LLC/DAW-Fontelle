@@ -180,6 +180,10 @@ pub(crate) struct UiBridge {
     /// the editor uses and the number this recognises would be two different
     /// numbers.
     event_transfer: u32,
+    /// `atom:Object` and `atom:Blank` in the plugin's own map: what a message
+    /// that changes the plugin (`patch:Set`, a file to load) is written as,
+    /// told from a MIDI note played on the editor's keyboard.
+    objects: [u32; 2],
     /// What the editor has written since the last look.
     ///
     /// Kept, rather than only applied, because of the one rule that makes the
@@ -242,6 +246,12 @@ extern "C" fn write_port(
             )
         };
         bridge.atoms.to_plugin.push(header.atom_type, body);
+        // A message, not a note: the plugin is being changed from its own
+        // window, which is a change the song has to hear of (and a shared
+        // song send) — as a VST 3 editor's edit is.
+        if bridge.objects.contains(&header.atom_type) {
+            bridge.values.note_heard();
+        }
         return;
     }
     // Protocol 0 is `ui:floatProtocol` — one control port, one float. Any
@@ -254,7 +264,14 @@ extern "C" fn write_port(
     if !value.is_finite() {
         return;
     }
+    // A knob turned in the plugin's own window — but not an editor saying
+    // back, as many do when they open, what every port already is: opening
+    // a plugin's window is not an edit.
+    let moved = bridge.values.get(port_index) != Some(f64::from(value));
     bridge.values.set(port_index, f64::from(value));
+    if moved {
+        bridge.values.note_heard();
+    }
     if let Ok(mut written) = bridge.written.lock() {
         written.push((port_index, value));
     }
@@ -392,6 +409,10 @@ impl Lv2Ui {
         let bridge = Box::new(UiBridge {
             values,
             event_transfer: features.urid(EVENT_TRANSFER),
+            objects: [
+                features.urid(c"http://lv2plug.in/ns/ext/atom#Object"),
+                features.urid(c"http://lv2plug.in/ns/ext/atom#Blank"),
+            ],
             atoms,
             written: Mutex::new(Vec::new()),
             resize: Mutex::new(None),

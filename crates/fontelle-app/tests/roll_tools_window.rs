@@ -480,3 +480,82 @@ fn the_title_follows_an_undo() {
     let title = w.tool_dialog().unwrap().title_text;
     assert!(title.contains("whole clip (6)"), "{title}");
 }
+
+// ------------------------------------- the status line holds (2026-10-23)
+//
+// Ty: *"sounds like a bug, id prefer not to leave loose ends"* — a tool's
+// sentence on the status line ("Chopped 12 note(s)", "Muting sung notes is
+// not built yet") was replaced at the very next refresh by the browser's own
+// line ("4069 file(s)"): nobody could read what had just been done, or why
+// it had not.
+
+fn a_vocal_window() -> (fontelle_ui::Windowless, std::path::PathBuf) {
+    let scratch = std::env::temp_dir().join(format!(
+        "fontelle-status-hold-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut session = common::a_session_for(common::a_clip_project(8));
+    session.set_singer_folders(vec![scratch.join("no-singers")]);
+    session.set_voicebanks(scratch.join("no-voicebanks"), Vec::new());
+    session
+        .add_channel_of(fontelle_types::InstrumentKind::Vocal)
+        .unwrap();
+    (window_over(session), scratch)
+}
+
+#[test]
+fn what_the_window_says_stays_on_the_status_line_long_enough_to_read() {
+    let (mut w, scratch) = a_vocal_window();
+    let ids = put(&mut w, vec![a_note(0, PPQN, 60)]);
+    w.frame(0.0);
+    w.select_notes(&ids);
+    w.choose_tool_menu("Mute or unmute");
+    let said = w.status().to_string();
+    assert!(said.contains("Muting sung notes"), "{said}");
+    for _ in 0..10 {
+        w.frame(0.016);
+    }
+    assert_eq!(w.status(), said, "still there ten frames on");
+    std::thread::sleep(fontelle_ui::STATUS_HOLD + std::time::Duration::from_millis(50));
+    w.frame(0.016);
+    assert_ne!(w.status(), said, "and then the browser's line again");
+    std::fs::remove_dir_all(&scratch).ok();
+}
+
+#[test]
+fn what_the_studio_says_stays_on_the_status_line_too() {
+    let empty =
+        std::env::temp_dir().join(format!("fontelle-status-noplugins-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    let session =
+        common::a_session_for(common::a_clip_project(8)).with_plugin_folders(vec![empty.clone()]);
+    let mut w = window_over(session);
+    w.document_mut().rescan_plugins();
+    w.frame(0.016);
+    let said = w.status().to_string();
+    assert!(said.contains("no plugins found"), "{said}");
+    for _ in 0..10 {
+        w.frame(0.016);
+    }
+    assert_eq!(w.status(), said, "still there ten frames on");
+    std::fs::remove_dir_all(&empty).ok();
+}
+
+#[test]
+fn a_new_sentence_replaces_the_last_at_once() {
+    let (mut w, scratch) = a_vocal_window();
+    let ids = put(&mut w, vec![a_note(0, PPQN, 60)]);
+    w.frame(0.0);
+    w.select_notes(&ids);
+    w.choose_tool_menu("Mute or unmute");
+    w.frame(0.016);
+    let first = w.status().to_string();
+    // One note glues to nothing: a sentence of its own all the same.
+    w.choose_tool_menu("Glue");
+    w.frame(0.016);
+    assert_ne!(w.status(), first);
+    assert!(w.status().contains("Nothing to change"), "{}", w.status());
+    std::fs::remove_dir_all(&scratch).ok();
+}

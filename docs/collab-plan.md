@@ -1346,9 +1346,10 @@ open):
 
 - **G1** *Closed by F97.* A plugin's own state changed in the plugin's own
   window after the join was read off the plugin only at a save or backup,
-  into each machine's own copy, and never crossed. Still not sent: an LV2
-  plugin that changes without saying so (reading it takes it off the audio
-  thread, so it is read only when it says).
+  into each machine's own copy, and never crossed. An LV2 plugin is heard
+  when its editor writes a value or a message to it, or when it says
+  `state:StateChanged` (2026-10-23); one that changes and says nothing at
+  all is still read only at a save.
 - **G2** Files a plugin loaded (an LV2 sampler's `atom:Path`, collected into
   `assets/plugin-files/`): not in `Project::files`, so not in the manifest, so
   never sent — the joiner's sampler opens empty. A CLAP or VST 3 plugin's

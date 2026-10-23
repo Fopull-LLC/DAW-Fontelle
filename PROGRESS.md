@@ -19,6 +19,24 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-23 — loose ends after 0.31.0.** Ty: *"id prefer not to leave
+loose ends so lets fix anything that comes up thats broken / flawed /
+confusing for users"*.
+
+- **The status line holds what was said** (`WindowApp::refresh_status_line`,
+  `STATUS_HOLD` 4 s): a sentence from the studio or the window holds the line,
+  then the browser's comes back; every pass of the loop, not only when the
+  song's revision moves, and the loop wakes for it. Before, it was replaced at
+  the next refresh.
+- **An LV2 plugin's own changes are heard**: a value its editor writes (one
+  that moves a port, not one repeated as it opens), a message (`atom:Object`)
+  its editor sends, and `state:StateChanged` from the plugin. Before, none
+  marked the song unsaved, and a shared song never sent them (collab G1).
+- **Releases**: notes written for the 33 releases that had none, and the
+  0.31.0 notes put on; the private `windows-audio-test-1` draft deleted; a
+  user's September log removed from the working tree.
+- Tests: fontelle-app `roll_tools_window` (+3); fontelle-host `lv2` (+4).
+
 **2026-10-20 (night) — the beta's first reports: stuck notes, noise,
 collab presets, LV2 on Windows, drumkv1, DrumSynth; released with the roll's
 tools as 0.31.0 (2026-10-21).** Next: LV2 on Windows and macOS,

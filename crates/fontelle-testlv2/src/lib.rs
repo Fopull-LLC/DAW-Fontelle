@@ -886,6 +886,10 @@ const LOADER_BOOST_URI_C: &CStr = c"http://fopull.com/fontelle/testlv2/loader#bo
 /// — a knob turned in its own window — and say so.
 pub const LOADER_BOOST_KEY: u8 = 1;
 pub const LOADER_BOOST_OWN: f32 = 0.5;
+/// The key that has the loader change its own state **without a value to
+/// say** — a sample loaded, a preset picked in its own browser — and say only
+/// `state:StateChanged`, the way LV2 asks a plugin to.
+pub const LOADER_QUIET_KEY: u8 = 2;
 
 /// What the loader's patch messages are spelled with.
 #[derive(Default, Clone, Copy)]
@@ -899,6 +903,7 @@ struct PatchUrids {
     urid: u32,
     sequence: u32,
     boost: u32,
+    state_changed: u32,
 }
 
 struct Loader {
@@ -916,6 +921,8 @@ struct Loader {
     boost: f32,
     /// Say the boost on the notify port at the end of this block.
     tell: bool,
+    /// Say `state:StateChanged` on the notify port at the end of this block.
+    changed: bool,
 }
 
 extern "C" fn loader_instantiate(
@@ -948,6 +955,7 @@ extern "C" fn loader_instantiate(
                         urid: urid(c"http://lv2plug.in/ns/ext/atom#URID"),
                         sequence: urid(ATOM_SEQUENCE_URI),
                         boost: urid(LOADER_BOOST_URI_C),
+                        state_changed: urid(c"http://lv2plug.in/ns/ext/state#StateChanged"),
                     };
                 } else if uri == WORKER_SCHEDULE_URI {
                     schedule = feature.data.cast();
@@ -974,6 +982,7 @@ extern "C" fn loader_instantiate(
         held: None,
         boost: 1.0,
         tell: false,
+        changed: false,
     }))
     .cast()
 }
@@ -1035,6 +1044,9 @@ extern "C" fn loader_run(handle: LV2Handle, samples: u32) {
                         0x90 if *data.add(2) > 0 && *data.add(1) == LOADER_BOOST_KEY => {
                             loader.boost = LOADER_BOOST_OWN;
                             loader.tell = true;
+                        }
+                        0x90 if *data.add(2) > 0 && *data.add(1) == LOADER_QUIET_KEY => {
+                            loader.changed = true;
                         }
                         0x90 if *data.add(2) > 0 => loader.held = Some(*data.add(1)),
                         0x80 | 0x90 => loader.held = None,
@@ -1109,6 +1121,29 @@ impl Loader {
         sequence.body.pad = 0;
         let header = size_of::<lv2_raw::LV2AtomSequenceBody>();
         sequence.atom.size = header as u32;
+        if std::mem::take(&mut self.changed) {
+            // id 0, otype `state:StateChanged`, no properties.
+            let mut body = [0u8; 8];
+            body[4..].copy_from_slice(&self.patch.state_changed.to_ne_bytes());
+            let event = size_of::<LV2AtomEvent>() + body.len();
+            if header + event <= capacity {
+                // SAFETY: within the capacity checked above.
+                unsafe {
+                    let start = (self.notify as *mut u8).add(size_of::<LV2AtomSequence>());
+                    let event_at = start.cast::<LV2AtomEvent>();
+                    (*event_at).time_in_frames = 0;
+                    (*event_at).body.type_ = self.patch.object;
+                    (*event_at).body.size = body.len() as u32;
+                    std::ptr::copy_nonoverlapping(
+                        body.as_ptr(),
+                        start.add(size_of::<LV2AtomEvent>()),
+                        body.len(),
+                    );
+                    (*self.notify).atom.size = (header + event) as u32;
+                }
+            }
+            return;
+        }
         if !std::mem::take(&mut self.tell) {
             return;
         }

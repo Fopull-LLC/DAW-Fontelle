@@ -1434,6 +1434,11 @@ struct SettingsPage {
     hover: Option<crate::canvas::SettingsPageHit>,
 }
 
+/// How long a sentence on the status line holds before the browser's own
+/// line comes back — long enough to read one, short enough to be gone by the
+/// next thing.
+pub const STATUS_HOLD: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// The live window. Public so a caller can read [`WindowApp::frames_drawn`]
 /// after the loop returns.
 pub struct WindowApp {
@@ -2234,6 +2239,11 @@ pub struct WindowApp {
     /// arrows go back to nudging notes and clips.
     preset_focus: Option<usize>,
     status: String,
+    /// What was said on the status line and when — see `refresh_studio`.
+    said: Option<(String, std::time::Instant)>,
+    /// What the last refresh put on the status line, so a sentence put on
+    /// `status` since is told from it.
+    status_written: String,
     rack_scroll: usize,
     /// The prefab list's own scroll offset — its own, because the two lists in
     /// the panel scroll independently and a shared one would jump when you
@@ -2921,6 +2931,8 @@ impl WindowApp {
             searching: false,
             preset_focus: None,
             status: String::new(),
+            said: None,
+            status_written: String::new(),
             key_map: crate::document::KeyMap::unknown(),
             key_style: crate::canvas::KeyStyle::default(),
             song_key: None,
@@ -7617,7 +7629,58 @@ impl WindowApp {
     ///
     /// The alternative — asking for `Vec<ChannelInfo>` every frame — allocates
     /// once a frame for a list that changes when somebody clicks something.
+    /// The status line: a sentence somebody said — the studio's, or the
+    /// window's own set straight on `status` since the last look — holds it
+    /// for [`STATUS_HOLD`]; then the browser's line comes back.
+    ///
+    /// > *"sounds like a bug, id prefer not to leave loose ends"* — a tool's
+    /// > sentence was replaced at the very next refresh by the browser's
+    /// > "4069 file(s)", so nobody read what had just happened.
+    ///
+    /// Every pass of the loop, not only when the song moved: a sentence the
+    /// window set changes nothing the revision counts.
+    fn refresh_status_line(&mut self) {
+        let Some(doc) = &mut self.options.document else {
+            return;
+        };
+        let before = self.status.clone();
+        let fallback = match self.browser_mode {
+            BrowserMode::Sounds => doc.library_status(),
+            BrowserMode::Presets => doc.preset_status(),
+            BrowserMode::Projects => doc.project_status(),
+            BrowserMode::Import => doc.import_status(),
+            BrowserMode::Settings => doc.settings_status(),
+        };
+        let now = std::time::Instant::now();
+        if let Some(message) = doc.take_message() {
+            self.said = Some((message, now));
+        } else if self.status != self.status_written {
+            self.said = Some((self.status.clone(), now));
+        }
+        if self
+            .said
+            .as_ref()
+            .is_some_and(|(_, at)| now.duration_since(*at) >= STATUS_HOLD)
+        {
+            self.said = None;
+        }
+        self.status = match &self.said {
+            Some((said, _)) => said.clone(),
+            None => fallback,
+        };
+        self.status_written = self.status.clone();
+        if self.status != before {
+            self.tree.invalidate(BROWSER);
+        }
+    }
+
+    /// When the sentence on the status line gives way, if one is there.
+    fn status_due(&self) -> Option<std::time::Instant> {
+        self.said.as_ref().map(|(_, at)| *at + STATUS_HOLD)
+    }
+
     fn refresh_studio(&mut self) {
+        self.refresh_status_line();
         self.refresh_theme();
         self.sync_roll_meter();
         if self
@@ -7906,14 +7969,6 @@ impl WindowApp {
         self.query = doc.query().to_string();
         self.imports = doc.import_files();
         self.import_kind = doc.import_kind();
-        let fallback = match self.browser_mode {
-            BrowserMode::Sounds => doc.library_status(),
-            BrowserMode::Presets => doc.preset_status(),
-            BrowserMode::Projects => doc.project_status(),
-            BrowserMode::Import => doc.import_status(),
-            BrowserMode::Settings => doc.settings_status(),
-        };
-        self.status = doc.take_message().unwrap_or(fallback);
         self.settings_status = doc.settings_status();
         self.refresh_tool_dialog();
 
@@ -27138,6 +27193,11 @@ impl WindowApp {
         // window that goes back to sleep the instant the mouse comes up leaves
         // it sounding until something else happens to it.
         if let Some(due) = self.audition.due() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        // A sentence on the status line gives way to the browser's on its
+        // own, with nothing else happening.
+        if let Some(due) = self.status_due() {
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
         // A tool's *Hear it*, for the same reason: its next note on or off.
