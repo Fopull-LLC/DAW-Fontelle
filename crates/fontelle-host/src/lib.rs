@@ -55,19 +55,10 @@ mod atom;
 pub mod bridge;
 pub mod guard;
 pub mod gui;
-// LV2 is loaded through `lilv`, a system library that lives on Linux where
-// the format does. Elsewhere the same module names answer "not here" — see
-// `lv2_stub.rs` for the shape and the reason.
-#[cfg(target_os = "linux")]
-pub mod lv2;
-#[cfg(not(target_os = "linux"))]
-#[path = "lv2_stub.rs"]
+// LV2 is loaded through `lilv`, built into the program on every system
+// (`vendor/lilv`).
 pub mod lv2;
 mod lv2_state;
-#[cfg(target_os = "linux")]
-mod lv2_ui;
-#[cfg(not(target_os = "linux"))]
-#[path = "lv2_ui_stub.rs"]
 mod lv2_ui;
 mod mpe;
 mod own_presets;
@@ -99,8 +90,8 @@ pub use plugin::{EditorRequests, HostError, HostedPlugin, NoteDialect, PluginHos
 pub use probe::{BundleProber, DEFAULT_PROBE_TIMEOUT, PROBE_FLAG, exit_now, probe_main};
 pub use processor::{HostedProcessor, PluginTransport, ProcessorBay};
 pub use scan::{
-    LV2_ELSEWHERE, PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with,
-    search_paths, search_paths_with,
+    PluginInfo, PluginScan, ScanFailure, scan_bundle, scan_bundle_with, search_paths,
+    search_paths_with,
 };
 pub use singer::{
     AbiVerdict, PhraseSpec, RenderFailure, SingerDescription, SingerEngine, SingerEngines,

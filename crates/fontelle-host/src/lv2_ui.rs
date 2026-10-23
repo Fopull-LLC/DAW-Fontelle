@@ -50,7 +50,16 @@ use lv2_raw::{LV2Feature, LV2UIControllerRaw, LV2UIHandle, LV2UIWidget};
 use crate::gui::{GuiError, GuiSize, PluginWindow};
 use crate::param::ParamValues;
 
-const X11_UI: &str = "http://lv2plug.in/ns/extensions/ui#X11UI";
+/// The kind of editor this system embeds: what [`PluginWindow::id`] is — an
+/// X11 window id on Linux, an `HWND` on Windows, an `NSView` on macOS — is
+/// what each of these takes as its `ui:parent`.
+const NATIVE_UI: &str = if cfg!(windows) {
+    "http://lv2plug.in/ns/extensions/ui#WindowsUI"
+} else if cfg!(target_os = "macos") {
+    "http://lv2plug.in/ns/extensions/ui#CocoaUI"
+} else {
+    "http://lv2plug.in/ns/extensions/ui#X11UI"
+};
 const UI_PARENT: &CStr = c"http://lv2plug.in/ns/extensions/ui#parent";
 const UI_RESIZE: &CStr = c"http://lv2plug.in/ns/extensions/ui#resize";
 const UI_IDLE: &CStr = c"http://lv2plug.in/ns/extensions/ui#idleInterface";
@@ -108,7 +117,7 @@ type PortEvent = unsafe extern "C" fn(LV2UIHandle, u32, u32, u32, *const c_void)
 /// stops a library which never returns one from hanging the studio.
 const MAX_UIS_PER_BINARY: u32 = 4096;
 
-/// Where a plugin's X11 editor lives.
+/// Where a plugin's own editor lives.
 pub(crate) struct Lv2UiInfo {
     /// The UI's own URI, which is not the plugin's.
     pub(crate) uri: CString,
@@ -116,19 +125,21 @@ pub(crate) struct Lv2UiInfo {
     pub(crate) binary: PathBuf,
 }
 
-/// The `ui:X11UI` this plugin ships, if it ships one.
+/// The editor of this system's kind ([`NATIVE_UI`]) this plugin ships, if it
+/// ships one. A Gtk or Qt one is not embeddable without suil, and a plugin
+/// with only those gets Fontelle's own panel.
 ///
 /// Read off the plugin's own Turtle through lilv, like everything else about
 /// an LV2 plugin — see [`crate::lv2`] on why the world holds one bundle.
-pub(crate) fn find_x11_ui(plugin: &livi::Plugin) -> Option<Lv2UiInfo> {
+pub(crate) fn find_native_ui(plugin: &livi::Plugin) -> Option<Lv2UiInfo> {
     let raw = plugin.raw();
     let uis = raw.uis()?;
     for ui in uis.iter() {
-        let is_x11 = ui
+        let native = ui
             .classes()
             .into_iter()
-            .any(|class| class.as_uri().is_some_and(|uri| uri == X11_UI));
-        if !is_x11 {
+            .any(|class| class.as_uri().is_some_and(|uri| uri == NATIVE_UI));
+        if !native {
             continue;
         }
         let uri = ui.uri();
@@ -148,21 +159,7 @@ pub(crate) fn find_x11_ui(plugin: &livi::Plugin) -> Option<Lv2UiInfo> {
 
 /// The reverse of [`crate::lv2::bundle_uri`]: a `file:` URI back to a path.
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
-    let rest = uri.strip_prefix("file://")?;
-    let mut out = Vec::with_capacity(rest.len());
-    let mut bytes = rest.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte != b'%' {
-            out.push(byte);
-            continue;
-        }
-        let hex: String = [bytes.next()?, bytes.next()?]
-            .iter()
-            .map(|b| *b as char)
-            .collect();
-        out.push(u8::from_str_radix(&hex, 16).ok()?);
-    }
-    Some(PathBuf::from(String::from_utf8(out).ok()?))
+    crate::lv2::path_of_file_uri(uri, cfg!(windows)).map(PathBuf::from)
 }
 
 /// Everything the UI's callbacks reach the host through.
@@ -437,8 +434,9 @@ impl Lv2Ui {
                 pointers.push(feature as *const LV2Feature);
             }
         }
-        // The window. An X11 UI's parent *is* the window id, carried in the
-        // pointer-sized `data` field, which is what the extension says.
+        // The window. A UI's parent *is* the window's handle — the X11 id,
+        // the `HWND`, the `NSView` — carried in the pointer-sized `data`
+        // field, which is what the extension says.
         owned.push(Box::new(LV2Feature {
             uri: UI_PARENT.as_ptr(),
             data: window.id() as usize as *mut c_void,

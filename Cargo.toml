@@ -33,6 +33,9 @@ members = [
     "crates/fontelle-app",
     "xtask",
 ]
+# Not a member: someone else's crate, built in place of the published one by
+# the patch below, and not held to this workspace's lints.
+exclude = ["vendor/lilv", "vendor/lv2-sys"]
 
 [workspace.package]
 # The product's version: one number for the whole workspace, which is what the
@@ -61,3 +64,8 @@ split-debuginfo = "unpacked"
 # file and line, at a fraction of the size.
 [profile.dev.package."*"]
 debug = "line-tables-only"
+
+# lilv built in, on every system — see `vendor/lilv/Cargo.toml`.
+[patch.crates-io]
+lilv = { path = "vendor/lilv" }
+lv2-sys = { path = "vendor/lv2-sys" }

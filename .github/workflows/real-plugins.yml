@@ -34,6 +34,9 @@ env:
   SURGE: "1.3.4"
   DEXED: "1.0.1"
   OBXF: "1.0.3"
+  # An LV2 plugin with Linux, Windows and macOS builds, for LV2 on every
+  # system (`docs/lv2-everywhere-plan.md`).
+  DRAGONFLY: "3.2.10"
 
 jobs:
   walks:
@@ -60,7 +63,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libjack-jackd2-dev libudev-dev libxkbcommon-dev libwayland-dev \
             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            liblilv-dev libdbus-1-dev xvfb libfreetype6 libfontconfig1 libgl1 \
+            libdbus-1-dev xvfb libfreetype6 libfontconfig1 libgl1 \
             libxcursor1 libxrandr2 libxinerama1 libxkbcommon-x11-0 libxcb-cursor0 \
             libxcb-xkb1 libxcb-keysyms1 libxcb-util1 libcurl4
       - uses: Swatinem/rust-cache@v2
@@ -80,12 +83,14 @@ jobs:
             Windows)
               echo "CLAP_DIR=C:/Program Files/Common Files/CLAP" >> "$GITHUB_ENV"
               echo "VST3_DIR=C:/Program Files/Common Files/VST3" >> "$GITHUB_ENV"
+              echo "LV2_DIR=C:/Program Files/Common Files/LV2" >> "$GITHUB_ENV"
               echo "SURGE_DATA=C:/ProgramData/Surge XT" >> "$GITHUB_ENV"
               echo "OBXF_DATA=C:/ProgramData/Surge Synth Team/OB-Xf" >> "$GITHUB_ENV"
               ;;
             macOS)
               echo "CLAP_DIR=$HOME/Library/Audio/Plug-Ins/CLAP" >> "$GITHUB_ENV"
               echo "VST3_DIR=$HOME/Library/Audio/Plug-Ins/VST3" >> "$GITHUB_ENV"
+              echo "LV2_DIR=$HOME/Library/Audio/Plug-Ins/LV2" >> "$GITHUB_ENV"
               echo "SURGE_DATA=/Library/Application Support/Surge XT" >> "$GITHUB_ENV"
               echo "OBXF_DATA=/Library/Application Support/Surge Synth Team/OB-Xf" >> "$GITHUB_ENV"
               ;;
@@ -168,6 +173,37 @@ jobs:
           esac
           ls "$CLAP_DIR" "$VST3_DIR"
 
+      - name: Install Dragonfly Reverb (LV2)
+        run: |
+          mkdir -p "$LV2_DIR"
+          cd dl
+          case "$RUNNER_OS" in
+            Linux)
+              gh release download "$DRAGONFLY" --repo michaelwillis/dragonfly-reverb --pattern "dragonfly-reverb-$DRAGONFLY-linux-x86_64.tar.xz"
+              mkdir dragonfly && tar xJf "dragonfly-reverb-$DRAGONFLY-linux-x86_64.tar.xz" -C dragonfly
+              ;;
+            Windows)
+              gh release download "$DRAGONFLY" --repo michaelwillis/dragonfly-reverb --pattern "dragonfly-reverb-$DRAGONFLY-win64.zip"
+              mkdir dragonfly && unzip -q "dragonfly-reverb-$DRAGONFLY-win64.zip" -d dragonfly
+              ;;
+            macOS)
+              gh release download "$DRAGONFLY" --repo michaelwillis/dragonfly-reverb --pattern "dragonfly-reverb-$DRAGONFLY-macos-universal.dmg"
+              hdiutil attach -nobrowse -mountpoint /tmp/dragonfly "dragonfly-reverb-$DRAGONFLY-macos-universal.dmg"
+              mkdir dragonfly
+              found=$(find /tmp/dragonfly -maxdepth 4 -name 'DragonflyRoomReverb.lv2' | head -1)
+              if [ -n "$found" ]; then
+                cp -R "$found" dragonfly/
+              else
+                pkg=$(find /tmp/dragonfly -maxdepth 2 -name '*.pkg' | head -1)
+                pkgutil --expand-full "$pkg" dragonfly-pkg
+                cp -R "$(find dragonfly-pkg -name 'DragonflyRoomReverb.lv2' -type d | head -1)" dragonfly/
+              fi
+              hdiutil detach /tmp/dragonfly
+              ;;
+          esac
+          cp -R "$(find dragonfly -name 'DragonflyRoomReverb.lv2' -type d | head -1)" "$LV2_DIR/"
+          ls "$LV2_DIR" "$LV2_DIR/DragonflyRoomReverb.lv2"
+
       - name: Build the fixtures and the walks
         run: |
           cargo build -p fontelle-testplug -p fontelle-testlv2 -p fontelle-testvst3
@@ -180,6 +216,12 @@ jobs:
           run() { if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$@"; else "$@"; fi; }
           run cargo test -p fontelle-app --test real_plugin_sessions the_studios_scan -- \
             --ignored --nocapture --test-threads=1
+
+      - name: An LV2 plugin on this system
+        run: |
+          run() { if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a "$@"; else "$@"; fi; }
+          FONTELLE_REAL_PATH="$LV2_DIR/DragonflyRoomReverb.lv2" run cargo test -p fontelle-host \
+            --test real_plugins an_effect_at_a_path -- --ignored --nocapture --test-threads=1
 
       - name: The session walks
         run: |

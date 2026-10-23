@@ -2496,13 +2496,11 @@ dependencies = [
 [[package]]
 name = "lilv"
 version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06e14c13e0d64ed27265d0cc41563b131cd8499cde811618b646dd309763906d"
 dependencies = [
+ "cc",
  "lilv-sys",
  "lv2_raw 0.2.0",
  "parking_lot 0.11.2",
- "pkg-config",
 ]
 
 [[package]]
@@ -2575,8 +2573,6 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 [[package]]
 name = "lv2-sys"
 version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd0f9e7de3649dcec348de51cbf611ab88688b97c0ce038f8c07b996b2a8e30"
 
 [[package]]
 name = "lv2_raw"

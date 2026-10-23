@@ -10,9 +10,6 @@
 //! knob writes on. Where LV2 differs (a bundle is a folder, a parameter is a
 //! control port, there is no state extension in this build) the test says so.
 
-// LV2 is hosted on Linux only — see `lv2_stub.rs`.
-#![cfg(target_os = "linux")]
-
 mod common;
 
 use fontelle_host::{HostError, PluginHost, PluginScan, scan_bundle, search_paths};
@@ -52,15 +49,40 @@ fn lv2_is_a_format_this_build_hosts() {
 
 #[test]
 fn the_folders_lv2_nominates_are_searched() {
+    let paths = search_paths();
     // `~/.lv2`, `/usr/lib/lv2` and `/usr/local/lib/lv2` are the LV2
     // specification's own list for Linux, and `LV2_PATH` overrides it. The
     // `lib64` twins are where Fedora's packages put them.
-    let paths = search_paths();
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
-    assert!(paths.contains(&home.join(".lv2")), "{paths:?}");
-    assert!(paths.contains(&"/usr/lib/lv2".into()), "{paths:?}");
-    assert!(paths.contains(&"/usr/lib64/lv2".into()), "{paths:?}");
-    assert!(paths.contains(&"/usr/local/lib64/lv2".into()), "{paths:?}");
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(paths.contains(&home.join(".lv2")), "{paths:?}");
+        assert!(paths.contains(&"/usr/lib/lv2".into()), "{paths:?}");
+        assert!(paths.contains(&"/usr/lib64/lv2".into()), "{paths:?}");
+        assert!(paths.contains(&"/usr/local/lib64/lv2".into()), "{paths:?}");
+    }
+    // And Windows's: where an installer puts a bundle for everybody
+    // (`Common Files\LV2`, where the report's friend had hers) and for one
+    // person.
+    #[cfg(windows)]
+    {
+        let folder =
+            |var: &str| std::path::PathBuf::from(std::env::var_os(var).unwrap()).join("LV2");
+        assert!(paths.contains(&folder("COMMONPROGRAMFILES")), "{paths:?}");
+        assert!(paths.contains(&folder("APPDATA")), "{paths:?}");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(
+            paths.contains(&home.join("Library/Audio/Plug-Ins/LV2")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&"/Library/Audio/Plug-Ins/LV2".into()),
+            "{paths:?}"
+        );
+    }
 }
 
 #[test]
@@ -1153,6 +1175,8 @@ fn in_mpe_mode_a_slide_reaches_an_lv2_instrument_whole() {
 /// must happen on the thread that made it, and the process died; Calf's
 /// corrupted its heap. A processor let go of anywhere but the thread that
 /// made it is leaked instead, as `clack` does for CLAP.
+// Linux only: the fixture names threads by `/proc/thread-self/comm`.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_instance_let_go_of_on_another_thread_is_not_freed_there() {
     let log = std::env::temp_dir().join(format!("fontelle-lv2-cleanup-{}", std::process::id()));
@@ -1587,4 +1611,36 @@ fn an_lv2_editor_repeating_a_value_is_not_a_change() {
         "the value it wrote was already so"
     );
     plugin.close_editor();
+}
+
+// --------------------------------- LV2 on every system (2026-10-23)
+
+/// A bundle's path as lilv wants it: a `file:` URI. On Windows a path is
+/// `C:\Program Files\Common Files\LV2\x.lv2`, or `\\?\C:\…` once canonical —
+/// and percent-encoding the backslashes and the colon, as a Unix path's
+/// rules would, named a bundle lilv could not open.
+#[test]
+fn a_bundle_path_becomes_a_file_uri_on_every_system() {
+    use fontelle_host::lv2::{file_uri_of, path_of_file_uri};
+    assert_eq!(
+        file_uri_of("/usr/lib/lv2/My Synth.lv2", false),
+        "file:///usr/lib/lv2/My%20Synth.lv2/"
+    );
+    assert_eq!(
+        file_uri_of(r"\\?\C:\Program Files\Common Files\LV2\x.lv2", true),
+        "file:///C:/Program%20Files/Common%20Files/LV2/x.lv2/"
+    );
+    assert_eq!(
+        file_uri_of(r"C:\Users\Lore\AppData\Roaming\LV2\y.lv2\", true),
+        "file:///C:/Users/Lore/AppData/Roaming/LV2/y.lv2/"
+    );
+    // And back, for the editor's library.
+    assert_eq!(
+        path_of_file_uri("file:///C:/Program%20Files/LV2/x.lv2/x_ui.dll", true).as_deref(),
+        Some("C:/Program Files/LV2/x.lv2/x_ui.dll")
+    );
+    assert_eq!(
+        path_of_file_uri("file:///usr/lib/lv2/x.lv2/x_ui.so", false).as_deref(),
+        Some("/usr/lib/lv2/x.lv2/x_ui.so")
+    );
 }

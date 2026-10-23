@@ -82,12 +82,11 @@ fn vst3_folder() -> PathBuf {
 
 /// A folder holding the LV2 test bundle — `plugin_hosting.rs`'s layout.
 /// LV2 is hosted on Linux alone.
-#[cfg(target_os = "linux")]
 fn lv2_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testlv2.so");
+    let built = path.join(fontelle_testlv2::BUILT_NAME);
     assert!(
         built.exists(),
         "{} is missing — run `cargo build -p fontelle-testlv2`",
@@ -104,18 +103,19 @@ fn lv2_folder() -> PathBuf {
             let _ = std::fs::remove_dir_all(&folder);
             std::fs::create_dir_all(&bundle).unwrap();
             std::fs::copy(&built, bundle.join(fontelle_testlv2::BINARY_NAME)).unwrap();
-            std::fs::write(bundle.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL).unwrap();
-            std::fs::write(bundle.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
+            std::fs::write(
+                bundle.join("manifest.ttl"),
+                fontelle_testlv2::manifest_ttl(),
+            )
+            .unwrap();
+            std::fs::write(bundle.join("testlv2.ttl"), fontelle_testlv2::plugin_ttl()).unwrap();
             folder
         })
         .clone()
 }
 
 fn plugin_folders() -> Vec<PathBuf> {
-    #[cfg(target_os = "linux")]
-    return vec![vst3_folder(), lv2_folder()];
-    #[cfg(not(target_os = "linux"))]
-    vec![vst3_folder()]
+    vec![vst3_folder(), lv2_folder()]
 }
 
 fn settings(dir: &Path) -> PathBuf {
@@ -414,7 +414,6 @@ fn a_press_on_a_plugins_own_preset_in_the_browser_loads_it() {
 /// Cardinal's patches at the top of its folder have no category, and the
 /// tab's heading over them was a blank line. It names the plugin — the LV2
 /// gain's "Half", in no bank, is the same shape.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_plugins_presets_with_no_category_are_under_its_name_in_the_browser() {
     let dir = scratch("browser-heading");
@@ -461,7 +460,6 @@ fn a_plugins_presets_with_no_category_are_under_its_name_in_the_browser() {
 /// An LV2 plugin whose presets are compiled into it and offered through the
 /// KXStudio programs extension — Dexed's LV2 — has them in the menu, read
 /// off the instance the studio is running, and one chosen is played.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugins_programs_are_offered_and_load() {
     let dir = scratch("lv2");
@@ -511,7 +509,6 @@ fn an_lv2_plugins_programs_are_offered_and_load() {
 /// amsynth's LV2 lists nothing through LV2: its presets are banks of
 /// parameters by name, which is its ports' symbols. They are in the menu,
 /// filed under the bank, and one chosen sets the ports.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugins_banks_are_offered_and_load() {
     let dir = scratch("lv2-bank");
@@ -630,7 +627,6 @@ fn the_strips_star_with_no_preset_says_why() {
 
 /// The LV2 bank fixture with two banks that both have a "Quieter" — what
 /// amsynth's 27 banks do with their "Init"s.
-#[cfg(target_os = "linux")]
 fn two_banks(dir: &Path, keep: bool) -> (Session, PresetDevice) {
     let library = dir.join("library");
     let banks = library.join("Fontelle Test Plain LV2").join("banks");
@@ -672,7 +668,6 @@ fn two_banks(dir: &Path, keep: bool) -> (Session, PresetDevice) {
     (session, PresetDevice::Insert { strip, slot: 0 })
 }
 
-#[cfg(target_os = "linux")]
 fn plain_key() -> PluginKey {
     PluginKey::new(
         fontelle_types::PluginFormat::Lv2,
@@ -680,7 +675,6 @@ fn plain_key() -> PluginKey {
     )
 }
 
-#[cfg(target_os = "linux")]
 fn stars(session: &Session, device: PresetDevice) -> Vec<(String, bool)> {
     session
         .preset_choices(device)
@@ -692,7 +686,6 @@ fn stars(session: &Session, device: PresetDevice) -> Vec<(String, bool)> {
 
 /// Two presets of one name in two banks are two presets: starring one does
 /// not star the other, and the file says which.
-#[cfg(target_os = "linux")]
 #[test]
 fn same_named_presets_in_two_banks_star_independently() {
     let dir = scratch("star-banks");
@@ -724,7 +717,6 @@ fn same_named_presets_in_two_banks_star_independently() {
 /// first of them, in the order the menu lists them — the one the person saw
 /// first under that name — and is written with its bank. A star that matches
 /// no preset here is kept as it was, never dropped.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_old_star_goes_to_the_first_preset_of_its_name_and_none_is_lost() {
     let dir = scratch("star-migrate");

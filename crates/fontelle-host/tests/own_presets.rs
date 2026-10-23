@@ -556,7 +556,6 @@ fn a_plugin_without_a_program_list_has_no_programs() {
 
 // --------------------------------------------------------------------- LV2
 
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugins_presets_are_read_off_its_turtle() {
     let key = PluginKey::new(PluginFormat::Lv2, common::LV2_GAIN);
@@ -571,7 +570,6 @@ fn an_lv2_plugins_presets_are_read_off_its_turtle() {
 /// LV2 restores a state only while the instance is not running, so a
 /// running one is loaded with its processor in hand — the same recall a
 /// snapshot makes.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_preset_is_loaded_into_the_running_instance() {
     let key = PluginKey::new(PluginFormat::Lv2, common::LV2_GAIN);
@@ -595,7 +593,6 @@ fn an_lv2_preset_is_loaded_into_the_running_instance() {
 /// An LV2 plugin with presets compiled into it and none in its Turtle —
 /// Dexed's LV2, and DISTRHO's ports — offers them through the KXStudio
 /// programs extension, asked of the running instance.
-#[cfg(target_os = "linux")]
 fn lv2_programs_plugin() -> (
     PluginHost,
     fontelle_host::HostedPlugin,
@@ -608,7 +605,6 @@ fn lv2_programs_plugin() -> (
     (host, plugin, processor)
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugins_programs_are_listed_off_the_running_instance() {
     let (_host, mut plugin, mut processor) = lv2_programs_plugin();
@@ -639,7 +635,6 @@ fn an_lv2_plugins_programs_are_listed_off_the_running_instance() {
 /// Selected with the processor in hand, the program writes its control
 /// ports, and the host reads them back onto the wire — otherwise the next
 /// block wrote the old values over the program.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_program_is_selected_in_the_running_instance() {
     let (_host, mut plugin, mut processor) = lv2_programs_plugin();
@@ -658,7 +653,6 @@ fn an_lv2_program_is_selected_in_the_running_instance() {
 /// Only a plugin whose Turtle declares the programs extension is asked for
 /// it: blop's 16 Step Sequencer, asked, crashed the process. The deaf gain
 /// answers for the extension without declaring it.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugin_is_not_asked_for_programs_it_does_not_declare() {
     let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::DEAF_URI);
@@ -671,7 +665,6 @@ fn an_lv2_plugin_is_not_asked_for_programs_it_does_not_declare() {
 
 /// The gain ships a `pset:Preset`: what its Turtle lists is its library, and
 /// nothing else is asked for (a DPF plugin offers the same set both ways).
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugin_with_presets_in_its_turtle_lists_no_programs_beside_them() {
     let key = PluginKey::new(PluginFormat::Lv2, common::LV2_GAIN);
@@ -815,7 +808,6 @@ fn a_rack_patch_library_is_listed_for_a_plugin_whose_state_carries_one() {
 
 /// amsynth's LV2 has no preset its host can list: its banks are text files
 /// of parameters by name, and the name is its port's symbol.
-#[cfg(target_os = "linux")]
 fn bank_root(name: &str) -> PathBuf {
     let root = scratch(name);
     let folder = root.join("Fontelle Test Plain LV2").join("banks");
@@ -829,7 +821,6 @@ fn bank_root(name: &str) -> PathBuf {
     root
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_plugins_bank_is_mapped_onto_its_ports_by_symbol() {
     let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PLAIN_URI);
@@ -864,7 +855,6 @@ fn an_lv2_plugins_bank_is_mapped_onto_its_ports_by_symbol() {
     assert!(state.is_none());
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn a_bank_preset_is_loaded_into_the_running_instance() {
     let key = PluginKey::new(PluginFormat::Lv2, fontelle_testlv2::PLAIN_URI);

@@ -109,12 +109,11 @@ pub const LV2_LOADER: &str = fontelle_testlv2::LOADER_URI;
 /// if the built library is older than its source, written once per test
 /// binary and put in place by a rename so a parallel test never reads half a
 /// bundle.
-#[cfg(target_os = "linux")]
 pub fn lv2_bundle() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testlv2.so");
+    let built = path.join(fontelle_testlv2::BUILT_NAME);
     assert!(
         built.exists(),
         "the LV2 test plugin has not been built: {} — run `cargo build -p fontelle-testlv2`",
@@ -135,8 +134,12 @@ pub fn lv2_bundle() -> PathBuf {
             std::fs::create_dir_all(&staging).expect("a staging folder");
             std::fs::copy(&built, staging.join(fontelle_testlv2::BINARY_NAME))
                 .expect("the library copies");
-            std::fs::write(staging.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL).unwrap();
-            std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
+            std::fs::write(
+                staging.join("manifest.ttl"),
+                fontelle_testlv2::manifest_ttl(),
+            )
+            .unwrap();
+            std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::plugin_ttl()).unwrap();
             // A directory rename over an existing directory fails, so the old
             // bundle goes first; the window in which neither exists is one
             // this process's own tests cannot observe, because they all wait

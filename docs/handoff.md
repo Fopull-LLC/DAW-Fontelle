@@ -16,6 +16,25 @@ Branch `main`. Everything described in `PROGRESS.md` is **committed** — the
 long uncommitted stretch that ran from `ee06e6b` through ten sessions was
 landed on 2026-09-02, and the automation pass after it.
 
+**Updated 2026-10-23 (LV2 everywhere).** `PROGRESS.md`'s top entry. Things
+to know:
+
+(a) **lilv is ours now**: `vendor/lilv/c` is the C, `vendor/lilv/build.rs`
+says how it is built. A lilv update is a re-vendor: replace the five folders
+from the release tarballs, update `SHA256SUMS`, the versions in `build.rs` and
+`licenses/lv2/README.md`.
+
+(b) **Testing the Windows build here**: `cargo build -p fontelle-testlv2
+-p fontelle-testplug -p fontelle-testvst3 --target x86_64-pc-windows-gnu`,
+then `WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test
+-p fontelle-host --target x86_64-pc-windows-gnu --test lv2`. Wine has no
+OpenGL on a nested `:99`, so a GL editor (DPF's) cannot be seen there, in any
+format.
+
+(c) **A new LV2 test fixture bundle** is built from `BUILT_NAME` and
+`manifest_ttl()`/`plugin_ttl()`, never the raw constants: the editor class
+differs per system.
+
 **Updated 2026-10-20 night (the beta's reports).** `PROGRESS.md`'s top
 entry. Things to know:
 

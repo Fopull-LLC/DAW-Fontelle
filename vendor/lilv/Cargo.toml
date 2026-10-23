@@ -1,0 +1,26 @@
+# The `lilv` crate 0.2.4 (MIT, Will Medrano and Henna Haahti), unchanged but
+# for its build script (and one `#[must_use]` on a trait method, which the
+# compiler warns has no effect): the published one asks `pkg-config` for the system's
+# lilv, which only Linux has. This one compiles lilv and the four libraries
+# it stands on (serd, sord, sratom, zix — all ISC, in `c/`) into the build,
+# so LV2 is hosted the same way on Linux, Windows and macOS
+# (`docs/lv2-everywhere-plan.md`). Put in place of the published crate by the
+# workspace's `[patch.crates-io]`.
+[package]
+name = "lilv"
+version = "0.2.4"
+authors = ["Will Medrano <will.s.medrano@gmail.com", "Henna Haahti <grejppi@gmail.com>"]
+description = "Library for discovering and running LV2 plugins, with lilv built in."
+edition = "2018"
+license = "MIT"
+build = "build.rs"
+publish = false
+links = "lilv-0"
+
+[dependencies]
+lilv-sys = "0.2"
+lv2_raw = "0.2"
+parking_lot = "0.11"
+
+[build-dependencies]
+cc = "1"

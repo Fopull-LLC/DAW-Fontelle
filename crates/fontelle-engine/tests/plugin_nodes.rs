@@ -86,12 +86,11 @@ fn wire_key(
 /// The `fontelle-testlv2` bundle, assembled beside the test binary the way
 /// `fontelle-host/tests/common` assembles it, and for the same reasons.
 /// Linux only, as LV2 hosting is.
-#[cfg(target_os = "linux")]
 fn lv2_bundle() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
     path.pop();
-    let built = path.join("libfontelle_testlv2.so");
+    let built = path.join(fontelle_testlv2::BUILT_NAME);
     assert!(
         built.exists(),
         "{} is missing — run `cargo build -p fontelle-testlv2`",
@@ -109,8 +108,12 @@ fn lv2_bundle() -> PathBuf {
             let _ = std::fs::remove_dir_all(&staging);
             std::fs::create_dir_all(&staging).unwrap();
             std::fs::copy(&built, staging.join(fontelle_testlv2::BINARY_NAME)).unwrap();
-            std::fs::write(staging.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL).unwrap();
-            std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
+            std::fs::write(
+                staging.join("manifest.ttl"),
+                fontelle_testlv2::manifest_ttl(),
+            )
+            .unwrap();
+            std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::plugin_ttl()).unwrap();
             let _ = std::fs::remove_dir_all(&bundle);
             std::fs::rename(&staging, &bundle).unwrap();
             bundle
@@ -689,7 +692,6 @@ fn crossings(samples: &[f32]) -> usize {
 }
 
 // Only the LV2 slide test lets a note go; see it for why that is Linux's.
-#[cfg(target_os = "linux")]
 fn note_off(key: u8) -> TimedEvent {
     TimedEvent {
         sample: 0,
@@ -875,7 +877,6 @@ fn a_glide_glides_over_its_length() {
 /// For a plugin that hears pitch as a **channel** bend — every LV2 one — a
 /// slide is undone when the note it bent ends, so the next note on that
 /// channel starts at its own pitch rather than the last slide's.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_slid_note_that_ends_leaves_the_next_one_unbent() {
     let (_host, _plugin, _bay, mut node) = wire_key(
@@ -947,7 +948,6 @@ fn the_transport_is_said_in_a_plugins_terms() {
 /// note path's glide reaches an LV2 synth as its own channel's bend over 48
 /// semitones, so an octave is an octave where the channel bend stops at two
 /// (`docs/note-paths-plan.md` §6).
-#[cfg(target_os = "linux")]
 #[test]
 fn with_mpe_on_a_glide_reaches_an_lv2_synth_whole() {
     let (_host, _plugin, _bay, node) = wire_key(
@@ -975,7 +975,6 @@ fn with_mpe_on_a_glide_reaches_an_lv2_synth_whole() {
 /// filter and limiter after it, for good: the whole export, every channel,
 /// silent. Whatever a plugin plays that is not a number stops at its node,
 /// as silence, and the rest of the bus is left as it was.
-#[cfg(target_os = "linux")]
 #[test]
 fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
     let key = PluginKey::new(
@@ -1026,7 +1025,6 @@ fn what_a_plugin_plays_that_is_not_a_number_goes_no_further_than_its_node() {
 /// again — fresh voices, so the next first hit was NaN too — and then left
 /// silenced for good. A moment of it is silence, said nowhere; only invalid
 /// audio that goes on is a plugin gone wrong.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_moment_of_invalid_audio_is_silence_and_not_a_plugin_gone_wrong() {
     let key = PluginKey::new(

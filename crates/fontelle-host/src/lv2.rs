@@ -285,19 +285,63 @@ pub(crate) fn bundle_uri(path: &Path) -> Result<String, String> {
     let absolute = path
         .canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(file_uri_of(&absolute.to_string_lossy(), cfg!(windows)))
+}
+
+/// A directory's path as a `file:` URI ending in `/`, which is how lilv
+/// names a bundle. `windows`: the path is a Windows one — `\\?\C:\…` or
+/// `C:\…` — whose backslashes are separators and whose drive is written
+/// `file:///C:/`, its colon as it is.
+pub fn file_uri_of(path: &str, windows: bool) -> String {
+    let mut path = path.to_string();
+    if windows {
+        if let Some(rest) = path.strip_prefix(r"\\?\") {
+            path = rest.to_string();
+        }
+        path = path.replace('\\', "/");
+        if !path.starts_with('/') {
+            path.insert(0, '/');
+        }
+    }
+    let drive = windows && path.as_bytes().get(2) == Some(&b':');
     let mut uri = String::from("file://");
-    for byte in absolute.to_string_lossy().bytes() {
+    for (at, byte) in path.bytes().enumerate() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 uri.push(byte as char);
             }
+            b':' if drive && at == 2 => uri.push(':'),
             other => uri.push_str(&format!("%{other:02X}")),
         }
     }
     if !uri.ends_with('/') {
         uri.push('/');
     }
-    Ok(uri)
+    uri
+}
+
+/// The reverse of [`file_uri_of`], for a file: a `file:` URI back to a
+/// path. On Windows `file:///C:/x` is `C:/x`, which Windows reads as it is.
+pub fn path_of_file_uri(uri: &str, windows: bool) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    let mut out = Vec::with_capacity(rest.len());
+    let mut bytes = rest.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte != b'%' {
+            out.push(byte);
+            continue;
+        }
+        let hex: String = [bytes.next()?, bytes.next()?]
+            .iter()
+            .map(|b| *b as char)
+            .collect();
+        out.push(u8::from_str_radix(&hex, 16).ok()?);
+    }
+    let path = String::from_utf8(out).ok()?;
+    if windows && path.as_bytes().get(2) == Some(&b':') {
+        return Some(path[1..].to_string());
+    }
+    Some(path)
 }
 
 /// Parses one bundle into a world of its own. See the module note on why
@@ -683,7 +727,7 @@ impl Lv2Plugin {
 
     /// Whether this plugin ships an editor of its own this host can show.
     pub(crate) fn has_editor(&self) -> bool {
-        crate::lv2_ui::find_x11_ui(&self.plugin).is_some()
+        crate::lv2_ui::find_native_ui(&self.plugin).is_some()
     }
 
     /// Loads and starts that editor into `window`.
@@ -697,7 +741,7 @@ impl Lv2Plugin {
         window: &crate::gui::PluginWindow,
     ) -> Result<crate::lv2_ui::Lv2Ui, crate::gui::GuiError> {
         let info =
-            crate::lv2_ui::find_x11_ui(&self.plugin).ok_or(crate::gui::GuiError::NoEditor)?;
+            crate::lv2_ui::find_native_ui(&self.plugin).ok_or(crate::gui::GuiError::NoEditor)?;
         // Every control port, because that is what a UI is told about and
         // what it writes back — an LV2 parameter *is* a control port index.
         let ports: Vec<u32> = params.iter().map(|param| param.id).collect();

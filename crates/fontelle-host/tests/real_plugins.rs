@@ -783,3 +783,42 @@ fn one_note_through_the_bundle_at_a_path() {
     }
     plugin.deactivate(processor);
 }
+
+/// An effect at `FONTELLE_REAL_PATH` — any format, any system — scanned,
+/// opened and run over a burst of sound: what comes out is numbers, and not
+/// silence. What `docs/lv2-everywhere-plan.md` Phase 3 runs on Windows and
+/// macOS with Dragonfly's LV2 build.
+#[test]
+#[ignore]
+fn an_effect_at_a_path_processes_a_burst_of_sound() {
+    let path = std::path::PathBuf::from(
+        std::env::var("FONTELLE_REAL_PATH").expect("FONTELLE_REAL_PATH names a bundle"),
+    );
+    let found = fontelle_host::scan_bundle(&path).expect("the bundle scans");
+    let info = found
+        .iter()
+        .find(|p| p.is_effect())
+        .expect("an effect in it");
+    eprintln!("{} ({})", info.name, info.key);
+    let mut host = PluginHost::new();
+    let mut plugin = host.open(&path, &info.key).expect("it opens");
+    let mut processor = plugin.activate(48_000.0, 256).expect("it activates");
+    let burst: Vec<Vec<f32>> = (0..2)
+        .map(|_| (0..256).map(|i| ((i as f32) * 0.1).sin() * 0.5).collect())
+        .collect();
+    let silence = vec![vec![0.0f32; 256]; 2];
+    let mut output = vec![vec![0.0f32; 256]; 2];
+    let mut loudest = 0.0f32;
+    for block in 0..200 {
+        let input = if block < 4 { &burst } else { &silence };
+        processor.process_effect(input, &mut output, 256);
+        assert!(
+            output.iter().flatten().all(|s| s.is_finite()),
+            "block {block} is not numbers"
+        );
+        loudest = loudest.max(peak(&output));
+    }
+    eprintln!("loudest {loudest:.4}");
+    assert!(loudest > 1e-4, "it gave back silence");
+    plugin.deactivate(processor);
+}

@@ -19,10 +19,9 @@ Grab the archive for your platform from the
 - **Linux** (the platform this is built for): unpack the tarball and run
   `./install.sh`. It puts `fontelle` in `~/.local/bin` with a menu entry and an
   icon — nothing outside your home folder, no root. `./install.sh --uninstall`
-  takes it away again. The binary needs ALSA, D-Bus and lilv (for LV2
-  plugins) from your distribution — on Debian/Ubuntu
-  `sudo apt install liblilv-0-0`, on Fedora and Arch the package is `lilv`;
-  the installer says so if anything is missing.
+  takes it away again. The binary needs ALSA and D-Bus from your
+  distribution, which nearly every desktop has; the installer says so if
+  anything is missing.
 - **Windows / macOS**: unpack and run `fontelle`. The binaries are unsigned for
   now, so expect the first-run warning (macOS: right-click → Open).
 
@@ -115,9 +114,7 @@ Compressor (with sidechain), Gate, Distortion, Bitcrush, Soften, Chorus,
 Delay, Reverb and Tune, an autotune.
 
 **Plugins.** CLAP, VST 3 and LV2 instruments and effects, with their own
-editor windows and their state in the project. LV2 is hosted on Linux only:
-on Windows and macOS a rescan says how many LV2 bundles it skipped, and the
-plugin's CLAP or VST 3 version is the one to install.
+editor windows and their state in the project, on Linux, Windows and macOS.
 
 *Vital's window on NVIDIA (Linux).* Vital draws with EGL into the X
 server's root window, and NVIDIA's EGL offers what Vital asks for (an
@@ -153,13 +150,14 @@ decision made during scaffolding that isn't explicit in the TDD.
 ## Building
 
 Requires Rust 2024 edition (MSRV 1.88.0). On Linux you'll also need ALSA, the
-JACK headers (JACK itself is loaded at run time, only if it is there), lilv
-(LV2), D-Bus (for rtkit) and windowing/XKB development headers:
+JACK headers (JACK itself is loaded at run time, only if it is there), D-Bus
+(for rtkit) and windowing/XKB development headers. LV2's lilv is built from
+`vendor/lilv` on every system, so it needs only a C compiler:
 
 ```sh
 sudo apt install libasound2-dev libjack-jackd2-dev libudev-dev libxkbcommon-dev libwayland-dev \
     libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-    liblilv-dev libdbus-1-dev
+    libdbus-1-dev
 
 cargo check --workspace
 ```

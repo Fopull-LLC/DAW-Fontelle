@@ -41,7 +41,6 @@
 //!   pass that builds one for plugin-loaded files. `state:makePath` is not
 //!   offered: nothing here has a folder to hand a plugin to write into.
 
-#[cfg(target_os = "linux")]
 pub(crate) use ffi::{declares_interface, restore, save};
 
 /// One property a plugin stored: a key and a type, both URIs, and the bytes.
@@ -153,10 +152,8 @@ impl<'a> Cursor<'a> {
 
 // ------------------------------------------------------------ the C ABI ---
 //
-// Linux's half: everything below talks to a plugin through `lilv`, and is
-// compiled only where one can be loaded. The encoding above is the file
-// format and is the same everywhere.
-#[cfg(target_os = "linux")]
+// Everything below talks to a plugin through `lilv`. The encoding above is
+// the file format.
 mod ffi {
     use std::ffi::{CStr, CString, c_char, c_void};
 

@@ -1,0 +1,16 @@
+# The `lv2-sys` crate 2.0.0 (MIT OR Apache-2.0, the rust-lv2 authors),
+# unchanged but for one line in `src/lib.rs`: it carries generated bindings for
+# Linux and Windows and refuses to build anywhere else, so macOS reads Linux's
+# for its architecture. The LV2 headers are plain structs and function
+# pointers, laid out alike under both systems' 64-bit C ABIs. The one
+# difference is `va_list` in `LV2_Log_Log::vprintf` on arm64 (a `char *` on
+# Apple's), which nothing in Fontelle or livi calls. Put in place of the
+# published crate by the workspace's `[patch.crates-io]`.
+[package]
+name = "lv2-sys"
+version = "2.0.0"
+authors = ["Jan-Oliver 'Janonard' Opdenhövel <jan.opdenhoevel@protonmail.com>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+description = "rust-lv2's C header bindings, readable on macOS"
+publish = false

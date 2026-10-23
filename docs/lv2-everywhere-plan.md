@@ -4,8 +4,38 @@ Ty, 2026-10-21: *"yes absolutely we should have lv2 support on windows and
 macos lets work on that"*, after a friend on Windows installed an LV2 plugin,
 added `Common Files\LV2` to her folders, rescanned, and never saw it.
 
-Status: **planned, spike done, nothing built in the tree.** §6's decisions are
-Ty's.
+Status (2026-10-23): **Phases 1 and 2 built on `main`; Phase 3 half done.**
+Ty's answers to §6: one built-in thing rather than an add-on (*"id want to
+keep the app small but i dont want to make developing too much of a hassle a
+single thing may be better"*) — D1 and D2 as recommended; hold the release
+until all open work is done, then a beta his brother tests on a Mac (D4).
+
+What was found building it, beyond §2:
+
+- **`lv2-sys`** (livi's other dependency) carries generated bindings for Linux
+  and Windows only and refuses macOS outright. Patched like `lilv`
+  (`vendor/lv2-sys`): macOS reads Linux's bindings for its architecture —
+  the same 64-bit layout; the one difference, `va_list` in the log
+  callback on Apple arm64, is called by nothing here.
+- **A bundle's URI** on Windows: `canonicalize` gives `\\?\C:\…`, which the
+  Unix rule percent-encoded into a URI lilv could not open
+  (`lv2::file_uri_of`, `path_of_file_uri`).
+- **The editors** needed only the UI class: `PluginWindow::id` is already the
+  `HWND` on Windows and the `NSView` on macOS, which is what `ui:WindowsUI` and
+  `ui:CocoaUI` take as their parent (`lv2_ui::NATIVE_UI`).
+- **The preflight** lints macOS without its SDK, so the lilv build has a
+  lint-only switch (`FONTELLE_LILV_LINT_ONLY`; clippy never links).
+
+Proved here: the whole host suite's LV2 tests (67, one Linux-only by its
+`/proc` harness), the scans and the presets, built for Windows and **run under
+Wine**; Dragonfly Room Reverb's real **Windows** LV2 build scanned, opened and
+run over audio under Wine (`real_plugins::an_effect_at_a_path_processes_a_
+burst_of_sound`); its Windows editor loaded as `ui:WindowsUI` and got as far as
+drawing — then failed for want of OpenGL under Wine on the nested display,
+exactly as the same plugin's **CLAP** editor does there, so that is Wine, not
+LV2. Not proved here: MSVC, macOS, and an LV2 editor on a real Windows or Mac
+screen — CI's runners (the real-plugins workflow now installs Dragonfly's LV2
+on all three) and the beta's testers.
 
 ## 1. Why it does not work today
 

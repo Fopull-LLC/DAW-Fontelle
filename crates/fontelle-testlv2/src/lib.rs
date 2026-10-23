@@ -47,8 +47,38 @@ use lv2_raw::{
 /// both beside the built library to make a bundle the way an installer would.
 pub const MANIFEST_TTL: &str = include_str!("../bundle/manifest.ttl");
 pub const PLUGIN_TTL: &str = include_str!("../bundle/testlv2.ttl");
-/// What the manifest calls the shared library.
+/// What the manifest calls the shared library — on every system: lilv and
+/// the system's loader go by the name the manifest gives, not its ending.
 pub const BINARY_NAME: &str = "fontelle_testlv2.so";
+
+/// What cargo calls the library it built, on this system.
+pub const BUILT_NAME: &str = if cfg!(windows) {
+    "fontelle_testlv2.dll"
+} else if cfg!(target_os = "macos") {
+    "libfontelle_testlv2.dylib"
+} else {
+    "libfontelle_testlv2.so"
+};
+
+/// The kind of editor a host on this system embeds: an X11 window on Linux,
+/// an `HWND` on Windows, an `NSView` on macOS.
+pub const NATIVE_UI: &str = if cfg!(windows) {
+    "ui:WindowsUI"
+} else if cfg!(target_os = "macos") {
+    "ui:CocoaUI"
+} else {
+    "ui:X11UI"
+};
+
+/// [`MANIFEST_TTL`], its editors declared as this system's kind.
+pub fn manifest_ttl() -> String {
+    MANIFEST_TTL.replace("ui:X11UI", NATIVE_UI)
+}
+
+/// [`PLUGIN_TTL`], likewise.
+pub fn plugin_ttl() -> String {
+    PLUGIN_TTL.replace("ui:X11UI", NATIVE_UI)
+}
 
 pub const GAIN_URI: &str = "http://fopull.com/fontelle/testlv2/gain";
 /// The gain again, under a name that ships **no editor**.

@@ -151,7 +151,6 @@ fn scratch(name: &str) -> std::path::PathBuf {
     path
 }
 
-#[cfg(target_os = "linux")]
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {
@@ -167,7 +166,6 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 /// An LV2 bundle is a folder with a `manifest.ttl` in it; `.lv2` on the end
 /// is a habit, not the rule. setBfree's `b_synth` has no suffix, and was not
 /// found — its libraries were offered to the VST 2 bridge instead.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_bundle_without_the_suffix_is_still_found() {
     let folder = scratch("lv2-suffix");
@@ -218,59 +216,50 @@ fn a_folder_reached_twice_is_walked_once() {
     assert_eq!(scan.failures.len(), 1, "{:?}", scan.failures);
 }
 
-// ------------------------------------------- LV2 off Linux (2026-10-20)
+// ------------------------------------------- LV2 everywhere (2026-10-23)
 
 /// > *"on windows my friend installed an lv2 plugin and added common files
 /// > lv2 to her plugin folders and rescanned but still couldnt find it"*
 ///
-/// LV2 is hosted on Linux only. Her bundle was found and failed, and all the
-/// rescan said was a count. The summary names the reason, and what to do.
+/// LV2 was hosted on Linux only: her bundle was found, failed, and all the
+/// rescan said was a count. Now lilv is built in everywhere, and the bundle in
+/// a folder somebody added is a plugin in the list, on every system.
 #[test]
-fn a_scan_summary_says_lv2_is_linux_only_rather_than_counting_it_a_failure() {
-    use fontelle_host::{LV2_ELSEWHERE, ScanFailure};
+fn an_lv2_bundle_in_a_folder_somebody_added_is_listed_on_every_system() {
+    let dir = std::env::temp_dir().join(format!("fontelle-scan-lv2-added-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    copy_dir(&common::lv2_bundle(), &dir.join("Thing.lv2"));
+    let scan = PluginScan::of(std::slice::from_ref(&dir));
+    assert!(scan.failures.is_empty(), "{:?}", scan.failures);
+    assert!(
+        scan.plugins
+            .iter()
+            .any(|p| p.key.id == fontelle_testlv2::GAIN_URI),
+        "{:#?}",
+        scan.plugins
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_scan_summary_counts_what_was_found_and_what_would_not_load() {
+    use fontelle_host::ScanFailure;
     let found = scan_bundle(&common::bundle()).unwrap();
     let scan = PluginScan {
         plugins: found,
-        failures: vec![
-            ScanFailure {
-                path: "C:/Program Files/Common Files/LV2/Thing.lv2".into(),
-                why: LV2_ELSEWHERE.to_string(),
-            },
-            ScanFailure {
-                path: "C:/Program Files/Common Files/CLAP/Broken.clap".into(),
-                why: "not a shared library".to_string(),
-            },
-        ],
+        failures: vec![ScanFailure {
+            path: "C:/Program Files/Common Files/CLAP/Broken.clap".into(),
+            why: "not a shared library".to_string(),
+        }],
     };
-    let summary = scan.summary();
-    assert!(summary.starts_with("4 plugins"), "{summary}");
-    assert!(summary.contains("1 would not load"), "{summary}");
-    assert!(summary.contains("1 LV2"), "{summary}");
-    assert!(summary.contains("Linux only"), "{summary}");
-    assert!(summary.contains("CLAP or VST3"), "{summary}");
-
+    assert_eq!(scan.summary(), "4 plugins, 1 would not load");
     let clean = PluginScan {
         plugins: scan.plugins.clone(),
         failures: Vec::new(),
     };
     assert_eq!(clean.summary(), "4 plugins");
     assert_eq!(PluginScan::default().summary(), "no plugins found");
-}
-
-/// And off Linux, a bundle in a folder somebody added is that reason, not
-/// some other failure — what CI's Windows and macOS runners check.
-#[cfg(not(target_os = "linux"))]
-#[test]
-fn off_linux_an_lv2_bundle_is_found_and_set_aside_for_the_reason() {
-    let dir = std::env::temp_dir().join("fontelle-scan-lv2-elsewhere");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("Thing.lv2")).unwrap();
-    std::fs::write(dir.join("Thing.lv2/manifest.ttl"), b"").unwrap();
-    let scan = PluginScan::of(std::slice::from_ref(&dir));
-    assert_eq!(scan.failures.len(), 1, "{:?}", scan.failures);
-    assert_eq!(scan.failures[0].why, fontelle_host::LV2_ELSEWHERE);
-    assert!(scan.summary().contains("Linux only"), "{}", scan.summary());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ------------------------------------- the native copy wins (2026-10-20)

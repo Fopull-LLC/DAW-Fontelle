@@ -50,8 +50,9 @@ else
 fi
 
 if installed aarch64-apple-darwin; then
+    # lilv's C (`vendor/lilv`) needs the macOS SDK too; clippy never links.
     step "clippy (macOS, without fontelle-app and fontelle-net)" \
-        cargo clippy -q --workspace --exclude fontelle-app --exclude fontelle-net \
+        env FONTELLE_LILV_LINT_ONLY=1 cargo clippy -q --workspace --exclude fontelle-app --exclude fontelle-net \
         --exclude fontelle-analysis \
         --all-targets --target aarch64-apple-darwin -- -D warnings
     step "clippy (macOS, fontelle-analysis without the model)" \

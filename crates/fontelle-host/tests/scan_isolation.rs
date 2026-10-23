@@ -148,7 +148,6 @@ fn what_was_read_is_kept_on_disk_for_the_next_start() {
 
 /// An LV2 bundle is read from its Turtle without loading its library, so it
 /// is read here, as before.
-#[cfg(target_os = "linux")]
 #[test]
 fn an_lv2_bundle_is_still_read_in_this_process() {
     let folder = scratch("lv2");
@@ -161,7 +160,6 @@ fn an_lv2_bundle_is_still_read_in_this_process() {
     assert_eq!(prober.probes(), 0);
 }
 
-#[cfg(target_os = "linux")]
 fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap().flatten() {

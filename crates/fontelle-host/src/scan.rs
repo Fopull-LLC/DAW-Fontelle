@@ -55,11 +55,6 @@ impl PluginInfo {
     }
 }
 
-/// Why an LV2 bundle found off Linux is not in the list: lilv is a Linux
-/// system library and this build has no other way to read one. Said as a
-/// reason of its own so a scan can name it rather than count it.
-pub const LV2_ELSEWHERE: &str = "LV2 plugins are hosted on Linux only";
-
 /// A bundle that could not be read.
 #[derive(Debug, Clone)]
 pub struct ScanFailure {
@@ -143,32 +138,13 @@ impl PluginScan {
         scan
     }
 
-    /// What a rescan says: how many plugins, how many would not load, and
-    /// LV2 bundles found where they cannot be hosted named for what they are.
-    ///
-    /// > *"on windows my friend installed an lv2 plugin and added common
-    /// > files lv2 to her plugin folders and rescanned but still couldnt find
-    /// > it"* — the bundle was found, and all she was told was a count.
+    /// What a rescan says: how many plugins, and how many would not load.
     pub fn summary(&self) -> String {
-        let elsewhere = self
-            .failures
-            .iter()
-            .filter(|failure| failure.why == LV2_ELSEWHERE)
-            .count();
-        let failed = self.failures.len() - elsewhere;
-        let mut said = match (self.plugins.len(), failed) {
+        match (self.plugins.len(), self.failures.len()) {
             (0, 0) => "no plugins found".to_string(),
             (n, 0) => format!("{n} plugins"),
             (n, f) => format!("{n} plugins, {f} would not load"),
-        };
-        if elsewhere > 0 {
-            let bundles = if elsewhere == 1 { "plugin" } else { "plugins" };
-            said.push_str(&format!(
-                " ({elsewhere} LV2 {bundles} skipped: LV2 works on Linux only, \
-                 so use its CLAP or VST3 version)"
-            ));
         }
-        said
     }
 
     fn take(&mut self, path: PathBuf, outcome: Result<Vec<PluginInfo>, String>) {

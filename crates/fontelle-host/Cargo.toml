@@ -34,16 +34,8 @@ vst3 = "0.3.0"
 serde_json = "1"
 clack-extensions = { version = "0.1.1", features = ["params", "state", "audio-ports", "note-ports", "gui", "timer", "posix-fd", "latency", "preset-discovery", "render", "clack-host", "raw-window-handle_06"] }
 
-# Linux only, all three: LV2 loads through `lilv`, a system library that lives
-# where the format does, and a plugin's editor is embedded through X11. Every
-# other platform builds the same host with those arms stubbed — see
-# `lv2_stub.rs` and `gui.rs`.
-[target.'cfg(target_os = "linux")'.dependencies]
-# The window a plugin's own editor is embedded into — see `gui`. Pure Rust
-# XCB, so nothing new is linked; `winit` already pulls the same crate in.
-x11rb = "0.13.2"
-# LV2, through lilv (ISC) — see the crate docs for why the second format is an
-# arm and not a rewrite.
+# LV2, through lilv (ISC), built into the program on every system — see
+# `vendor/lilv` and `docs/lv2-everywhere-plan.md`.
 livi = "0.7.5"
 # The C structs an LV2 UI is loaded through — see `lv2_ui`. Pinned to the
 # version `livi` itself uses, deliberately: the `urid:map` feature handed to a
@@ -52,6 +44,12 @@ livi = "0.7.5"
 # the compiler will not let meet — which is the compiler being right, since
 # nothing would then guarantee they agree.
 lv2_raw = "=0.2.0"
+
+# Linux only: a plugin's editor is embedded through X11 there.
+[target.'cfg(target_os = "linux")'.dependencies]
+# The window a plugin's own editor is embedded into — see `gui`. Pure Rust
+# XCB, so nothing new is linked; `winit` already pulls the same crate in.
+x11rb = "0.13.2"
 
 # The editor window on Windows: a plain Win32 top-level window the plugin
 # makes its child window in — see `gui`. Already in the tree under winit.

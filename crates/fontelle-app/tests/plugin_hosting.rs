@@ -639,11 +639,8 @@ fn a_plugin_insert_keyed_to_another_track_hears_that_track() {
     );
 }
 
-// LV2 is hosted on Linux only (`fontelle-host`'s `lv2_stub.rs` says why), and
-// so is the bridge, which is a `.so` the rack dlopens. Everything that needs
-// either lives in this module.
-#[cfg(target_os = "linux")]
-mod linux_only {
+// LV2, on every system since lilv is built in (`vendor/lilv`).
+mod lv2_hosting {
     use super::*;
 
     // ------------------------------------------------------------------ LV2 ---
@@ -665,7 +662,7 @@ mod linux_only {
         let mut path = std::env::current_exe().unwrap();
         path.pop();
         path.pop();
-        let built = path.join("libfontelle_testlv2.so");
+        let built = path.join(fontelle_testlv2::BUILT_NAME);
         assert!(
             built.exists(),
             "{} is missing — run `cargo build -p fontelle-testlv2`",
@@ -680,9 +677,13 @@ mod linux_only {
                 let _ = std::fs::remove_dir_all(&staging);
                 std::fs::create_dir_all(&staging).unwrap();
                 std::fs::copy(&built, staging.join(fontelle_testlv2::BINARY_NAME)).unwrap();
-                std::fs::write(staging.join("manifest.ttl"), fontelle_testlv2::MANIFEST_TTL)
+                std::fs::write(
+                    staging.join("manifest.ttl"),
+                    fontelle_testlv2::manifest_ttl(),
+                )
+                .unwrap();
+                std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::plugin_ttl())
                     .unwrap();
-                std::fs::write(staging.join("testlv2.ttl"), fontelle_testlv2::PLUGIN_TTL).unwrap();
                 let bundle = folder.join("fontelle-testlv2.lv2");
                 let _ = std::fs::remove_dir_all(&bundle);
                 std::fs::rename(&staging, &bundle).unwrap();
@@ -987,6 +988,12 @@ mod linux_only {
             "the blob was read off the parked processor"
         );
     }
+}
+
+// The bridge is a `.so` the rack dlopens: Linux only.
+#[cfg(target_os = "linux")]
+mod bridged {
+    use super::*;
 
     // -------------------------------------------------------------- bridges ---
     //

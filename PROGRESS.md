@@ -19,6 +19,27 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-23 — LV2 on Windows and macOS (for the next beta).** Ty: *"yes
+absolutely we should have lv2 support on windows and macos lets work on
+that"*. `docs/lv2-everywhere-plan.md` has the plan, the decisions and what
+was proved where.
+
+- **lilv built in on every system**: `vendor/lilv` is the `lilv` crate with
+  a build script that compiles lilv 0.28.0, serd, sord, sratom and zix
+  (`vendor/lilv/c`, ISC) into one static `lilv-0`; `vendor/lv2-sys` lets macOS
+  read Linux's bindings. Both through `[patch.crates-io]`, both excluded from
+  the workspace. Linux no longer needs lilv installed (README, `install.sh`,
+  the workflows' `liblilv-dev` gone); `licenses/lv2/` ships the notices.
+- **The host**: the `lv2` and `lv2_ui` modules and `lv2_state`'s C half
+  ungated, `lv2_stub.rs` and `LV2_ELSEWHERE` gone; Windows-safe bundle URIs;
+  editors of the system's own kind (`ui:WindowsUI`, `ui:CocoaUI`).
+- **Tests**: the LV2 tests run everywhere (fixture: `BUILT_NAME`,
+  `manifest_ttl()`/`plugin_ttl()` with the system's UI class); new `lv2`
+  `a_bundle_path_becomes_a_file_uri_on_every_system`, the folders test per
+  system, `scanning` `an_lv2_bundle_in_a_folder_somebody_added_is_listed_on_
+  every_system`, `real_plugins` `an_effect_at_a_path_processes_a_burst_of_
+  sound` (ignored; CI's real-plugins job runs it on Dragonfly's LV2).
+
 **2026-10-23 — loose ends after 0.31.0.** Ty: *"id prefer not to leave
 loose ends so lets fix anything that comes up thats broken / flawed /
 confusing for users"*.
