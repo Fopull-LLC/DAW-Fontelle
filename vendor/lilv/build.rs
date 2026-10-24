@@ -45,7 +45,15 @@ fn main() {
     }
 
     let mut build = cc::Build::new();
-    build.std("c11").warnings(false);
+    build.warnings(false);
+    // C11 for GCC and clang, whose newest default (C23) turns zix's
+    // `constexpr` on. **Not for MSVC**: there `/std:c11` makes zix's
+    // `ZIX_STATIC_STRING` a compound literal, which MSVC will not take as a
+    // static initializer (C2099, `path.c`) — and meson, which the libraries
+    // are tested with, passes MSVC no standard at all.
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        build.std("c11");
+    }
     for library in LIBRARIES {
         let dir = c.join(library);
         build.include(dir.join("include")).include(dir.join("src"));
@@ -98,6 +106,10 @@ fn main() {
         }
         "macos" => {
             build.define("_DARWIN_C_SOURCE", None);
+            // zix and serd guess `posix_fadvise` from the POSIX version;
+            // macOS says POSIX.1-2001 and has no such function. Meson would
+            // have found out by linking one.
+            build.define("HAVE_POSIX_FADVISE", "0");
         }
         _ => {}
     }
