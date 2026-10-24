@@ -25,6 +25,10 @@ What was found building it, beyond §2:
   `ui:CocoaUI` take as their parent (`lv2_ui::NATIVE_UI`).
 - **The preflight** lints macOS without its SDK, so the lilv build has a
   lint-only switch (`FONTELLE_LILV_LINT_ONLY`; clippy never links).
+- **MSVC and Apple clang** each refused the C once: MSVC under `/std:c11`
+  rejects zix's compound-literal static strings (C2099), so MSVC gets no
+  standard flag, as in zix's own build; macOS lacks `posix_fadvise`, so
+  `HAVE_POSIX_FADVISE=0`. CI green on all three since `21c7503`.
 
 Proved here: the whole host suite's LV2 tests (67, one Linux-only by its
 `/proc` harness), the scans and the presets, built for Windows and **run under
@@ -33,9 +37,10 @@ run over audio under Wine (`real_plugins::an_effect_at_a_path_processes_a_
 burst_of_sound`); its Windows editor loaded as `ui:WindowsUI` and got as far as
 drawing — then failed for want of OpenGL under Wine on the nested display,
 exactly as the same plugin's **CLAP** editor does there, so that is Wine, not
-LV2. Not proved here: MSVC, macOS, and an LV2 editor on a real Windows or Mac
-screen — CI's runners (the real-plugins workflow now installs Dragonfly's LV2
-on all three) and the beta's testers.
+LV2. Proved by CI: the build and the whole suite under MSVC and on macOS
+(arm64), and Dragonfly's LV2 run over audio on all three (the real-plugins
+workflow). Not proved: an LV2 editor on a real Windows or Mac screen — the
+beta's testers.
 
 ## 1. Why it does not work today
 

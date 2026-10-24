@@ -39,6 +39,12 @@ was proved where.
   system, `scanning` `an_lv2_bundle_in_a_folder_somebody_added_is_listed_on_
   every_system`, `real_plugins` `an_effect_at_a_path_processes_a_burst_of_
   sound` (ignored; CI's real-plugins job runs it on Dragonfly's LV2).
+- **The C on MSVC and Apple clang** (CI's first run of it, `31d1863`, red on
+  both): MSVC takes no `/std:c11` — under it zix's `ZIX_STATIC_STRING` is a
+  compound literal, which MSVC refuses as a static initialiser (C2099), and
+  zix's own build gives MSVC no standard flag either; macOS has no
+  `posix_fadvise`, which zix and serd assumed from the POSIX version, so the
+  build says `HAVE_POSIX_FADVISE=0`. Green on all three at `21c7503`.
 
 **2026-10-23 — loose ends after 0.31.0.** Ty: *"id prefer not to leave
 loose ends so lets fix anything that comes up thats broken / flawed /
