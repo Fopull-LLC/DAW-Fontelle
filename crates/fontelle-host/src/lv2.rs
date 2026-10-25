@@ -776,14 +776,16 @@ impl Lv2Plugin {
                 ),
             });
         }
+        let libraries = LIBRARIES.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: this runs the plugin's own `instantiate`, which is somebody
         // else's code; there is no safe version of that, and the features it
         // is handed are the ones its Turtle asked for.
         let instance = unsafe {
             self.plugin
                 .instantiate(Arc::clone(&self.features), sample_rate)
-        }
-        .map_err(|e| HostError::Activate {
+        };
+        drop(libraries);
+        let instance = instance.map_err(|e| HostError::Activate {
             key: key.clone(),
             why: format!("{e:?}"),
         })?;
@@ -925,11 +927,23 @@ impl Drop for Lv2Processor {
         // place. It is a few kilobytes at a moment that is rare (the studio
         // keeps a processor's host alive and frees it at home otherwise).
         if std::thread::current().id() == self.owner {
+            let _libraries = LIBRARIES.lock().unwrap_or_else(|e| e.into_inner());
             // SAFETY: dropped exactly once, here, and never used after.
             unsafe { std::mem::ManuallyDrop::drop(&mut self.instance) };
         }
     }
 }
+
+/// Held while an instance is made or freed, whichever host it is in.
+///
+/// lilv counts a library's instances in its world, unlocked, and closes the
+/// library when the count reaches nothing. A world outlives its host (it is
+/// parked for the next one, and a processor keeps its own alive), so one
+/// world can be in two hosts' hands on two threads — a bounce's and the
+/// studio's. An instance freed on one while another was made on the other
+/// lost a count: on Windows the library was unloaded under a live instance,
+/// and its record freed twice (`tests/lv2.rs`, `hosts_on_many_threads_…`).
+static LIBRARIES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The audio half of an LV2 plugin — which, for LV2, is the whole plugin.
 pub(crate) struct Lv2Processor {

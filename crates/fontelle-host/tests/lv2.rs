@@ -1644,3 +1644,40 @@ fn a_bundle_path_becomes_a_file_uri_on_every_system() {
         Some("/usr/lib/lv2/x.lv2/x_ui.so")
     );
 }
+
+/// > CI, Windows, 0.32.0-beta.1: `plugin_hosting` died of an access
+/// > violation, 1 run in 150 — in `lilv_lib_close`, freeing an instance,
+/// > with `lib->world` already gone; another time inside the test plugin's
+/// > library after it had been unloaded.
+///
+/// A host that goes parks its worlds for the next host, and a processor it
+/// opened may outlive it. So one world can be in two hosts' hands on two
+/// threads — a bounce's and the studio's — and an instance from it freed on
+/// one while another is made on the other. lilv counts a library's
+/// instances in the world, with no lock: the count went wrong, the library
+/// was closed under a live instance, and its record freed twice.
+#[test]
+fn hosts_on_many_threads_can_share_a_bundle_while_their_instances_come_and_go() {
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..600 {
+                    let mut host = PluginHost::new();
+                    let mut plugin = gain(&mut host);
+                    let mut processor = plugin.activate(48_000.0, 16).unwrap();
+                    // The host goes first, and its world to the next one.
+                    drop(host);
+                    let input = vec![vec![1.0f32; 16]];
+                    let mut output = vec![vec![0.0f32; 16]];
+                    processor.process_effect(&input, &mut output, 16);
+                    assert!((output[0][0] - 1.0).abs() < 1e-5);
+                    drop(processor);
+                    drop(plugin);
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().expect("no thread died");
+    }
+}
