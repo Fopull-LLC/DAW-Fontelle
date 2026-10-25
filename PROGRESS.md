@@ -45,6 +45,14 @@ was proved where.
   zix's own build gives MSVC no standard flag either; macOS has no
   `posix_fadvise`, which zix and serd assumed from the POSIX version, so the
   build says `HAVE_POSIX_FADVISE=0`. Green on all three at `21c7503`.
+- **An access violation on Windows, 1 run in ~120** of `plugin_hosting`
+  (found by the beta's CI, reproduced on the runner under procdump): lilv
+  counts a library's instances in its world, unlocked, and a parked world
+  can be in two hosts' hands on two threads (a bounce's and the studio's).
+  A lost count unloaded the library under a live instance. Instances are now
+  made and freed under one lock (`lv2::LIBRARIES`); new `lv2`
+  `hosts_on_many_threads_can_share_a_bundle_while_their_instances_come_and_go`
+  failed 7 in 10 under Wine, passes 20 in 20; the runner 0 in 800.
 
 **2026-10-23 — loose ends after 0.31.0.** Ty: *"id prefer not to leave
 loose ends so lets fix anything that comes up thats broken / flawed /

@@ -29,6 +29,10 @@ What was found building it, beyond §2:
   rejects zix's compound-literal static strings (C2099), so MSVC gets no
   standard flag, as in zix's own build; macOS lacks `posix_fadvise`, so
   `HAVE_POSIX_FADVISE=0`. CI green on all three since `21c7503`.
+- **lilv's library count is not thread-safe**, and Windows really unloads a
+  library when it reaches nothing (Linux mostly does not): two hosts sharing
+  a parked world on two threads crashed 1 run in ~120. Instances are made and
+  freed under one lock (`lv2::LIBRARIES`).
 
 Proved here: the whole host suite's LV2 tests (67, one Linux-only by its
 `/proc` harness), the scans and the presets, built for Windows and **run under
