@@ -715,6 +715,14 @@ impl Windowless {
         self.app.welcome.as_ref()?.notice
     }
 
+    /// Whether the next frame can draw `text` as a label: shaped as a frame
+    /// shapes before it draws, then looked up as the drawing looks it up.
+    /// A string the drawing wants and nothing shaped is drawn as nothing.
+    pub fn shaped(&mut self, text: &str) -> bool {
+        self.app.shape_labels();
+        self.app.labels.get(text).is_some()
+    }
+
     /// Where the open prompt's field is, while one is open.
     pub fn prompt_field_rect(&self) -> Option<Rect> {
         match self.app.active_field() {

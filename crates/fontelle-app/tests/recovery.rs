@@ -230,6 +230,34 @@ fn a_recovered_untitled_song_opens_untitled() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The start menu's *Recover* button says what it recovers.
+///
+/// Seen recording the site's pictures (2026-10-26): after a crash the start
+/// menu had a button with **no words on it** above *New project*. The
+/// caption names the song, so it is not one of the menu's fixed strings,
+/// and nothing shaped it — `draw_welcome_button` found no layout and drew an
+/// empty plate, at the moment somebody most needs to know what it does.
+#[test]
+fn the_recover_button_on_the_start_menu_says_what_it_recovers() {
+    let session = a_fresh_session().with_recovery(Recovery {
+        backup: PathBuf::from("/nowhere/Night Drive.fontelle"),
+        home: None,
+        name: "Night Drive".into(),
+    });
+    let caption = session.recovery_offer().expect("it is offered");
+    let mut w = fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    );
+    w.open_welcome();
+    assert!(
+        w.welcome_layout().and_then(|l| l.recover_button).is_some(),
+        "the button is there"
+    );
+    assert!(w.shaped(&caption), "its words are drawn: {caption:?}");
+}
+
 // ------------------------------------------------------- the crash guard
 
 /// The test bundle, alone in a folder — see `tests/plugin_ui.rs`.

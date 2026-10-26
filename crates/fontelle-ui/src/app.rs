@@ -8116,6 +8116,11 @@ impl WindowApp {
             if let Some(button) = welcome.button {
                 want(&mut self.labels, &mut self.text, button);
             }
+            // It names the song, so it is not among the fixed strings; left
+            // out, the button after a crash was a plate with no words.
+            if let Some(recover) = &welcome.recover {
+                want(&mut self.labels, &mut self.text, recover);
+            }
             for project in &welcome.recent {
                 want(&mut self.labels, &mut self.text, &project.name);
                 self.labels.ensure_small(
