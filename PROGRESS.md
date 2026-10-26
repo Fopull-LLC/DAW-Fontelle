@@ -35,6 +35,18 @@ general pass making sure all of the themes are up to standard."*
   no longer looks like Paper. **Midnight**'s mist and stars can be seen.
 - Every look checked in the real studio on the tour song and on the start
   menu; the rest stand as they are.
+- **Found recording the site's media** (hub card 0545): the share panel, the
+  job card, the question, the save prompt, the carried chip, a track's
+  options and DisgustingBeat's menu were drawn in the theme's see-through
+  panel ink, so a see-through theme's clips showed through their words —
+  now `Palette::solid()` like every other overlay (`render_headless`
+  `what_is_drawn_over_the_studio_stands_on_a_solid_ground_…`); and the start
+  menu's *Recover* button after a crash had no words, its caption never
+  shaped (`recovery` `the_recover_button_on_the_start_menu_says_…`).
+- Still open from the same session: the plugin window's preset strip is a
+  fixed 32 px on a 2× screen; a second Fontelle on the same PulseAudio sink
+  could not open it; a wrong share code says the relay's "no lobby …"; the
+  join prompt's hint row shows "Untitled", then echoes what is typed.
 
 **2026-10-23 — LV2 on Windows and macOS (for the next beta).** Ty: *"yes
 absolutely we should have lv2 support on windows and macos lets work on
