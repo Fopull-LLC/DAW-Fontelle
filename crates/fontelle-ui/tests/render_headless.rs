@@ -7192,6 +7192,181 @@ fn a_job_card_a_save_prompt_and_saved_are_drawn_where_their_layouts_say() {
 //
 // `docs/collab-plan.md` §10.1–10.2, F46, F49.
 
+/// What is drawn over other content stands on a solid ground, whatever the
+/// theme's panels are: the share panel, the job card, the question and the
+/// save prompt.
+///
+/// Seen recording the site's pictures (2026-10-26), sharing under Nebula:
+/// the share panel was the theme's see-through panel ink, so "Nobody has
+/// joined yet" was written straight over the Bass line and Piano pulse
+/// clips under it. `Palette::solid` is the rule for anything drawn over
+/// other content; these four had been left out of it.
+#[test]
+fn what_is_drawn_over_the_studio_stands_on_a_solid_ground_under_a_see_through_theme() {
+    use fontelle_ui::canvas::{
+        ShareRole, confirm_layout, job_card_layout, save_prompt_layout, share_panel_layout,
+        share_panel_words,
+    };
+    use fontelle_ui::render::{Notices, ShareNotice};
+    const PW: u32 = 640;
+    const PH: u32 = 420;
+    let Some(shared) = headless() else {
+        return;
+    };
+    let mut theme = Theme::builtins()
+        .into_iter()
+        .find(|t| t.name == "Nebula")
+        .expect("Nebula is built in");
+    assert!(
+        theme.palette.panel.0[3] < 0xff,
+        "its panels are see-through"
+    );
+    // Something bright under the overlays, as the clips were, so one that
+    // lets it through cannot pass for one that does not.
+    theme.palette.window = Color::rgb(0xe0, 0x50, 0x40);
+    let layout = window_layout(
+        PW as f32,
+        PH as f32,
+        &theme.metrics,
+        DEFAULT_TIMELINE_HEIGHT,
+    );
+    let bar = transport_bar_layout(layout.transport, &theme.metrics);
+    let mut text = TextContext::new();
+    let title = text.layout("Song", &theme.font, None);
+    let readout = text.layout("1.1.000", &theme.font, None);
+    let mut labels = Labels::new();
+    for word in share_panel_words(ShareRole::Alone, &[]) {
+        labels.ensure(&word, &theme.font, &mut text);
+    }
+    let shoot = |notices: Notices<'_>, confirm: Option<(&str, &str)>| {
+        let mut scene = vello::Scene::new();
+        draw_window(
+            &mut scene,
+            &theme,
+            &layout,
+            &Chrome {
+                field: None,
+                panel_title: &title,
+                people: &[],
+                backdrops: Default::default(),
+                transport: TransportChrome {
+                    layout: bar,
+                    view: TransportView::unavailable(),
+                    meters: [Meter::new(); 2],
+                    readout: &readout,
+                    tempo: &readout,
+                    signature: &readout,
+                    mode: &readout,
+                    hover: None,
+                    marker_sample: 0,
+                    clip_mode: false,
+                    tempo_field: None,
+                },
+                roll: None,
+                rack: None,
+                prefabs: None,
+                browser: None,
+                timeline: None,
+                mixer: None,
+                tabs: fontelle_ui::layout::editor_tabs(layout.panel.header, &theme.metrics),
+                tab: fontelle_ui::layout::EditorTab::Roll,
+                hover_tab: None,
+                browser_title: "Soundfonts",
+                labels: &labels,
+                status: "",
+                toast: None,
+                confirm,
+                notices,
+                tooltip: None,
+                menu: None,
+                carry: None,
+                welcome: None,
+                keybinds: None,
+                help: None,
+                tour: None,
+                settings_page: None,
+                vocal_overlay: None,
+            },
+        );
+        shared
+            .lock()
+            .expect("the shared renderer")
+            .render(&scene, PW, PH, theme.palette.window)
+            .expect("rendering")
+    };
+    let solid = theme.palette.solid().panel;
+    // In a card's left margin, halfway down: nothing but its ground.
+    let ground = |pixels: &[u8], frame: Rect, what: &str| {
+        let (x, y) = (frame.x + 3.0, frame.y + frame.height / 2.0);
+        let i = ((y as u32 * PW + x as u32) * 4) as usize;
+        let got = Color([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]);
+        assert!(
+            near(got, solid),
+            "{what}: the ground at ({x}, {y}) is {got:?}, not the solid {solid:?}"
+        );
+    };
+
+    let share = shoot(
+        Notices {
+            share: Some(ShareNotice {
+                role: ShareRole::Alone,
+                code: None,
+                peers: &[],
+                status: "",
+                missing: &[],
+                following: None,
+                chat: &[],
+                password_on: false,
+                ask_first: false,
+                locked: false,
+            }),
+            ..Default::default()
+        },
+        None,
+    );
+    let panel = share_panel_layout(
+        layout.window,
+        bar.share,
+        &theme.metrics,
+        ShareRole::Alone,
+        0,
+    );
+    ground(&share, panel.frame, "the share panel");
+
+    let job = shoot(
+        Notices {
+            job: Some(("Exporting", Some(0.4))),
+            ..Default::default()
+        },
+        None,
+    );
+    ground(
+        &job,
+        job_card_layout(layout.window, &theme.metrics).frame,
+        "the job card",
+    );
+
+    let prompt = shoot(
+        Notices {
+            save_prompt: Some("Save changes?"),
+            ..Default::default()
+        },
+        None,
+    );
+    ground(
+        &prompt,
+        save_prompt_layout(layout.window, &theme.metrics).frame,
+        "the save prompt",
+    );
+
+    let question = shoot(Notices::default(), Some(("Delete it?", "Delete")));
+    ground(
+        &question,
+        confirm_layout(layout.window, &theme.metrics).frame,
+        "the question",
+    );
+}
+
 #[test]
 fn the_share_panel_its_dot_and_the_join_question_are_drawn_where_their_layouts_say() {
     use fontelle_ui::canvas::{

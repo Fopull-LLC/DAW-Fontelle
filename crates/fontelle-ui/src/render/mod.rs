@@ -2345,7 +2345,9 @@ fn draw_confirm(
     question: &str,
     button: &str,
 ) {
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     // A scrim, so what is under the modal reads as out of reach.
     fill_rect(scene, window, p.window.with_alpha(190));
@@ -2396,7 +2398,9 @@ fn draw_job_card(
     label: &str,
     fraction: Option<f32>,
 ) {
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let l = crate::canvas::job_card_layout(window, m);
     if l.frame.is_empty() {
@@ -2457,7 +2461,9 @@ fn draw_save_prompt(
     question: &str,
 ) {
     use crate::canvas::{SAVE_PROMPT_DISCARD, SAVE_PROMPT_SAVE};
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     fill_rect(scene, window, p.window.with_alpha(190));
     let l = crate::canvas::save_prompt_layout(window, m);
@@ -2511,7 +2517,10 @@ fn draw_share_panel(
     share: &ShareNotice<'_>,
 ) {
     use crate::canvas::{COPY_CODE, FOLLOW, FOLLOWING, NOBODY_YET, REMOVE_PEER, VIEW_ONLY};
-    let p = &theme.palette;
+    // Over the arrangement: a see-through theme's panel ink let the clips
+    // under it through the panel's words.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let rows = crate::canvas::share_chat_rows(window, anchor, m, share.role, share.chat);
     let l = crate::canvas::share_panel_layout_full(
@@ -4484,7 +4493,9 @@ fn draw_tooltip(scene: &mut Scene, theme: &Theme, chrome: &Chrome<'_>) {
 /// sentence said about a gesture. A new field would mean a theme format
 /// version, for a border.
 pub fn draw_carry(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &CarryChrome<'_>) {
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let target = &chrome.target;
 
@@ -5739,7 +5750,9 @@ fn draw_track_options(
 ) {
     use crate::canvas::{MixerHit, OptionsHit};
 
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let hovering = |what: OptionsHit| chrome.hover == Some(MixerHit::Options(what));
     let Some(strip) = chrome.strips.get(options.track) else {
@@ -15416,7 +15429,9 @@ fn draw_disgusting_beat_menu(
     labels: &Labels,
     chrome: &DisgustingBeatChrome<'_>,
 ) {
-    let p = &theme.palette;
+    // Drawn over other content: solid, whatever the theme's panels are.
+    let solid = theme.palette.solid();
+    let p = &solid;
     let m = &theme.metrics;
     let Some(menu) = chrome.view.menu else {
         return;
