@@ -19,6 +19,23 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-26 — themes polished (for the next release).** Ty: *"the lofi
+rain one does not really resemble what it's describing … i want you to do a
+general pass making sure all of the themes are up to standard."*
+
+- **Lo-fi Rain** redrawn (`shaders/rain.wgsl`): a city at dusk through a
+  rainy window — indigo-to-rose sky, a low moon, two rows of towers whose
+  windows switch on and off over minutes, mist on the glass, drops that rest
+  and dry, and drops that run down leaving clear trails. Before it was
+  coloured bokeh dots on a blur. 0.17 ms a frame at 1080p, as before.
+- **Nebula** wears Ty's own colours from his "Nebula (mine)" copy, exactly
+  (navy ground, sea-blue accent, hot-pink peak, 3-px corners).
+- **Sunroom** shows what it says: a slanting patch of sun from a window,
+  crossed by the frame, leaf shadows swaying in it; leaf-green notes, so it
+  no longer looks like Paper. **Midnight**'s mist and stars can be seen.
+- Every look checked in the real studio on the tour song and on the start
+  menu; the rest stand as they are.
+
 **2026-10-23 — LV2 on Windows and macOS (for the next beta).** Ty: *"yes
 absolutely we should have lv2 support on windows and macos lets work on
 that"*. `docs/lv2-everywhere-plan.md` has the plan, the decisions and what

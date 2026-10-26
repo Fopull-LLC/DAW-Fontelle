@@ -1016,8 +1016,8 @@ impl Theme {
         theme.metrics.border_width = 1.0;
         // Hub card 0366: a slow cold-blue backdrop, seen through panels
         // only a little see-through — the rigid look stays rigid.
-        p.panel = p.panel.with_alpha(0xd4);
-        p.panel_header = p.panel_header.with_alpha(0xe4);
+        p.panel = p.panel.with_alpha(0xc4);
+        p.panel_header = p.panel_header.with_alpha(0xd8);
         p.row_accidental = p.row_accidental.with_alpha(0xb0);
         p.row_out_of_scale = p.row_out_of_scale.with_alpha(0xb0);
         theme.backdrops.window = vec![Layer::Shader(ShaderLayer {

@@ -221,11 +221,13 @@ pub(super) fn sunroom() -> Theme {
             muted: hex(0x5e5446),
             accent: hex(0x4f7d3a),
             playhead: hex(0xb4562a),
-            note: hex(0x5a7f9c),
+            // Leaf green, so a song in the sunroom does not look like one
+            // on Paper (whose notes are the blue ink).
+            note: hex(0x5d8a3c),
         },
         true,
     );
-    veil(&mut p, 0xdc, 0xe8);
+    veil(&mut p, 0xc8, 0xd8);
     let mut theme = look(
         "Sunroom",
         "Daylight on a warm wall, with leaf shadows drifting in a breeze.",
@@ -235,7 +237,7 @@ pub(super) fn sunroom() -> Theme {
     ground(
         &mut theme,
         "builtin:sunroom",
-        [hex(0x6e7a52), hex(0xfff2c8), hex(0xefe6d6), hex(0x2b2620)],
+        [hex(0x6e7a52), hex(0xffe0a0), hex(0xefe6d6), hex(0x2b2620)],
         1.0,
     );
     theme
@@ -276,26 +278,43 @@ pub(super) fn control_room() -> Theme {
 }
 
 pub(super) fn nebula() -> Theme {
+    // Ty's own colours for it, from the copy he made in the theme editor
+    // ("Nebula (mine)"): a navy ground, a sea-blue accent, the peak in hot
+    // pink, and tighter corners. *"the galaxy one is the best one for sure
+    // but i picked better colors for it."*
     let mut p = inks(
         &Inks {
-            window: hex(0x070811),
+            window: hex(0x131b29),
             panel: hex(0x0f1220),
             header: hex(0x141829),
-            border: hex(0x2a3050),
+            border: hex(0x2a3e50),
             text: hex(0xe6e8f6),
             muted: hex(0x9aa0c4),
-            accent: hex(0x8f7ce0),
+            accent: hex(0x518194),
             playhead: hex(0x5cc8d8),
             note: hex(0x6f7fd0),
         },
         false,
     );
     veil(&mut p, 0xcc, 0xdc);
+    p.meter = hex(0x3a9e82);
+    p.meter_peak = hex(0xf50058);
+    p.mod_envelope = hex(0xad6fd0);
+    // The rest as his copy kept them: the violet grid and selection, the
+    // deep-space rows.
+    p.grid_line_sub = hex(0x171b2e);
+    p.grid_line = hex(0x21263f);
+    p.grid_line_strong = hex(0x2a3050);
+    p.selection = hex(0x8f7ce0).with_alpha(0x50);
+    p.row_accidental = hex(0x0b0d19).with_alpha(0x9c);
+    p.row_dead = hex(0x05060c);
+    p.row_out_of_scale = hex(0x090b16).with_alpha(0x9c);
+    p.row_scale_root = hex(0x262543);
     let mut theme = look(
         "Nebula",
         "A spiral galaxy turning slowly: the sky Flopsynth's bridge looks out on.",
         p,
-        8.0,
+        3.0,
     );
     // The bridge's sky inks (`sky::SkyPalette::for_theme` over the bridge's
     // palette): the accent teal and the modulation violet as the two
@@ -320,29 +339,29 @@ pub(super) fn nebula() -> Theme {
 pub(super) fn lofi_rain() -> Theme {
     let mut p = inks(
         &Inks {
-            window: hex(0x0c1018),
-            panel: hex(0x141a26),
-            header: hex(0x19202d),
-            border: hex(0x2c3548),
-            text: hex(0xe6e8f0),
-            muted: hex(0x9aa3b8),
-            accent: hex(0xe8a75c),
-            playhead: hex(0x7cc4e8),
-            note: hex(0xc08a58),
+            window: hex(0x110f22),
+            panel: hex(0x17152c),
+            header: hex(0x1d1a35),
+            border: hex(0x332e52),
+            text: hex(0xeee8f2),
+            muted: hex(0xa69fbe),
+            accent: hex(0xf0a868),
+            playhead: hex(0x9cc4f0),
+            note: hex(0xd0906a),
         },
         false,
     );
-    veil(&mut p, 0xc4, 0xd4);
+    veil(&mut p, 0xbf, 0xd0);
     let mut theme = look(
         "Lo-fi Rain",
-        "City lights blurred behind a rainy window at night.",
+        "Rain on the window by the desk, and the city at dusk beyond it.",
         p,
         10.0,
     );
     ground(
         &mut theme,
         "builtin:rain",
-        [hex(0xffb35c), hex(0xff5c9a), hex(0x0e1320), hex(0x8cc8ff)],
+        [hex(0xffb062), hex(0xd8688c), hex(0x1c1840), hex(0xb4cdf5)],
         1.0,
     );
     theme
