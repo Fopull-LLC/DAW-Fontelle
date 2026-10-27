@@ -13,8 +13,7 @@ a whole piece in; there is still a great deal on the design's list. See
 
 ## Installing
 
-Grab the archive for your platform from the
-[latest release](https://github.com/Fopull-LLC/DAW-Fontelle/releases/latest).
+Download from https://fopull.com/fontelle
 
 - **Linux** (the platform this is built for): unpack the tarball and run
   `./install.sh`. It puts `fontelle` in `~/.local/bin` with a menu entry and an
