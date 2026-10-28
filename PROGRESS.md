@@ -19,6 +19,37 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-10-27 — G on both panels, clips in their track's colour, kits told
+from instruments (0.33.0).** Ty: *"when pressing g in the piano roll it
+changes your grid snapping but in the arrangement it doesnt"*, *"we need clip
+colors to always be the track color not some arbitrary color and an
+outline"*, *"several soundfonts … are not counted as a correct keyboard for
+the scale / key / note stuff"*.
+
+- **G** steps the snap of the panel last pressed (`Focus`), the
+  arrangement's too; its chip's tip says G (`snap_key`).
+- **A block is the colour of the mixer track it plays into**, first and
+  always (`Session::clip_color`): a clip's own colour and a coloured lane
+  used to outrank it, and an audio clip never asked, so it was the default
+  blue — then ringed in the track's colour on the mixer. Those colours are
+  only for a block that plays into the master. With a strip chosen on the
+  mixer, the blocks that do **not** feed it dim; the ring is gone
+  (`clip_colours`, `render_headless` `the_clips_not_feeding_…`).
+- **Kit or instrument** (`keymap::is_kit`): one narrow zone used to make a
+  patch a kit, and a kit gets key names instead of a keyboard and no scale. Over Ty's
+  bank, now 2,106 presets, that misread 267 melodic presets (pianos, strings,
+  guitars sampled a key or two apart). Now the names decide — the preset's,
+  then the samples' (a drum word against a note name, `STW PIANO f B1`,
+  `Fa#`), then, with no word to go by, fixed-pitch hits over most of the
+  keys — and a melodic patch names no key at all. Result: 101 kits, 55 of
+  the 57 in bank 128 (GXSCC's `31` has samples `300`–`306`; one snare
+  spans every key) and 46 outside it, all real. The session passes the
+  preset's name (`key_map_for`). The bank number is not on the patch; adding
+  it would be a format change, and nothing measured needs it.
+- Not seen in the real studio this time: the sandbox had no audio device, and
+  the studio will not start without one. The dim was checked in the headless
+  renderer's pixels.
+
 **2026-10-26 — themes polished (for the next release).** Ty: *"the lofi
 rain one does not really resemble what it's describing … i want you to do a
 general pass making sure all of the themes are up to standard."*

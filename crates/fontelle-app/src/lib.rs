@@ -55,7 +55,7 @@ pub use bundle::{
     MissingAsset, OpenError, OpenedProject, open_project, open_project_with, resolve,
     resolve_checked, save_project,
 };
-pub use keymap::{HIT_SPAN_KEYS, KEY_MAP_HITS, MAX_NAMED_BAND_KEYS, key_map};
+pub use keymap::{HIT_SPAN_KEYS, MAX_NAMED_BAND_KEYS, key_map, key_map_for};
 pub use library::{ImportedAudio, SampleLibrary};
 pub use plugins::{
     EditorHeader, PluginRack, PluginSlot, PluginWiring, plugin_formats_label, plugin_slots,

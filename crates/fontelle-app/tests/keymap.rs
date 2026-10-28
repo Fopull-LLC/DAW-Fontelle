@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use fontelle_app::{SampleLibrary, key_map};
+use fontelle_app::{SampleLibrary, key_map, key_map_for};
 use fontelle_core::{
     FilterSlot, Layer, LoopMode, ModMatrix, Patch, PlaybackConfig, SampleBuffer, Source,
     VoiceConfig,
@@ -193,18 +193,11 @@ fn a_channel_with_no_instrument_greys_nothing() {
     }
 }
 
-/// **One hit is enough to read a patch as a key map**, and that number is
-/// measured rather than chosen. Across the 606 melodic presets in the
-/// soundfont bank on the machine this was written on, exactly two contain a
-/// one-key zone at all — and both of those contain five, so they are caught
-/// either way. Of the 11 percussion presets, all 11 contain at least one and
-/// only 10 contain two. Requiring two would therefore have cost a real kit
-/// (`Z3 Percussion`: one hit and one eleven-key band) and bought nothing.
-///
-/// A hit two keys wide is still a hit — some kits give a sample a key of room
-/// either side — and once the patch is a key map its wider zones are named
-/// too, because in a kit a stretched zone is a percussion sound and not a
-/// register.
+/// **One hit is enough**, once the names say kit: `Z3 Percussion` is one
+/// hit and one eleven-key band. A hit two keys wide is still a hit — some
+/// kits give a sample a key of room either side — and in a kit its wider
+/// zones are named too, because a stretched zone is a percussion sound and
+/// not a register.
 #[test]
 fn one_hit_is_enough_to_read_a_patch_as_a_key_map() {
     let mut library = SampleLibrary::new();
@@ -302,20 +295,16 @@ fn a_multisample_with_real_world_zone_widths_is_still_named_nowhere() {
 /// stretched across it, not a percussion band — and its name on every row is
 /// forty rows saying the same uninformative thing.
 ///
-/// Measured, like the rest of this rule. Across the bank this was developed
-/// against, the widest band in any real percussion preset is 28 keys
-/// (`SMW Percussion`); the two melodic presets that contain a one-key zone at
-/// all (`MP_NES_Composer.sf2`'s "dj TW" and "tuhh SM NES") carry zones of 48,
-/// 56 and 59. The cut falls cleanly between them.
+/// Measured, like the rest of this rule: the widest band in any real
+/// percussion preset is 28 keys (`SMW Percussion`).
 #[test]
 fn a_zone_spanning_half_the_keyboard_is_not_a_hit_even_in_a_kit() {
     let mut library = SampleLibrary::new();
-    // "dj TW"'s shape: a few short zones and two enormous ones.
     let patch = patch_of(
         &mut library,
         &[
-            ("blip", (60, 60)),
-            ("blop", (61, 62)),
+            ("kick", (60, 60)),
+            ("snare", (61, 62)),
             ("base UF", (0, 47)),
             ("pad", (63, 118)),
         ],
@@ -324,10 +313,10 @@ fn a_zone_spanning_half_the_keyboard_is_not_a_hit_even_in_a_kit() {
 
     assert_eq!(
         map.name(60),
-        Some("blip"),
+        Some("kick"),
         "the short zones are still named"
     );
-    assert_eq!(map.name(61), Some("blop"));
+    assert_eq!(map.name(61), Some("snare"));
     assert_eq!(
         map.name(20),
         None,
@@ -361,4 +350,125 @@ fn a_kits_widest_real_band_is_still_named() {
 
     assert_eq!(map.name(48), Some("hihat"));
     assert_eq!(map.name(76), Some("toms"), "28 keys is a band, not a range");
+}
+
+// ------------------------------------------------ melodic or a kit? ---
+//
+// > *"several soundfonts, even though mapped onto keys correctly it seems,
+// > are not counted as a correct keyboard for the scale / key / note stuff so
+// > your scale snapping just wont work"* (Ty, 2026-10-27)
+//
+// One narrow zone used to make a whole patch a kit, and a kit gets no scale.
+// Over the 2,106 presets in Ty's bank that misread 267 melodic presets:
+// anything sampled a key or two at a time — Deltarune's pianos, strings and
+// guitars, a clarinet sampled on every key. Whether narrow zones are drum hits
+// or the steps of a pitched instrument is said by the names: the preset's,
+// then the samples' (a drum's word against a note's name).
+
+/// A clarinet sampled on every key, its samples numbered — Deltarune's
+/// "Come Home Clarinet" in shape.
+#[test]
+fn an_instrument_sampled_on_every_key_is_melodic() {
+    let mut library = SampleLibrary::new();
+    let names: Vec<String> = (0..36).map(|i| format!("mc_b_{i:02}")).collect();
+    let layers: Vec<(&str, (u8, u8))> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), (48 + i as u8, 48 + i as u8)))
+        .collect();
+    let patch = patch_of(&mut library, &layers);
+    let map = key_map(&patch, &library);
+    assert!(!map.is_named(), "a clarinet is not a drum kit");
+    assert!(map.plays(60));
+}
+
+/// A piano sampled every two keys, its samples named by note — Deltarune's
+/// "Piano 1" (`STW PIANO f B1(L)`), and solfège too (`1_Fa#_Kz`).
+#[test]
+fn samples_named_by_their_notes_are_a_melodic_instrument() {
+    let mut library = SampleLibrary::new();
+    let patch = patch_of(
+        &mut library,
+        &[
+            ("STW PIANO f B1(L)", (34, 35)),
+            ("STW PIANO f C#2(L)", (36, 37)),
+            ("STW PIANO f D#2(L)", (38, 39)),
+            ("1_Fa#_Kz", (40, 40)),
+            ("1_Sol_Kz", (41, 41)),
+        ],
+    );
+    assert!(!key_map(&patch, &library).is_named());
+}
+
+/// One narrow zone at the top of an otherwise ordinary multisample —
+/// `Square.sf2`'s "CTFF5 - Piano 1" (2, 7, 9, 7, 10, 49, 44).
+#[test]
+fn one_narrow_zone_does_not_make_a_piano_a_kit() {
+    let mut library = SampleLibrary::new();
+    let mut patch = patch_of(
+        &mut library,
+        &[
+            ("kpianob1", (20, 21)),
+            ("kpianob2", (22, 28)),
+            ("kpianob3", (29, 80)),
+        ],
+    );
+    // Played transposed, as the real one is.
+    patch.layers[0].root_key = 60;
+    assert!(!key_map(&patch, &library).is_named());
+}
+
+/// A kit with no word in its sample names is still a kit when its preset
+/// says so — `BIG_SHOT.sf2`'s "PRC Drumkit", whose samples are
+/// `Sample @0x42abc4`.
+#[test]
+fn a_preset_called_a_drum_kit_is_one() {
+    let mut library = SampleLibrary::new();
+    let names: Vec<String> = (0..8).map(|i| format!("Sample @0x{i:06x}")).collect();
+    let layers: Vec<(&str, (u8, u8))> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), (36 + i as u8, 36 + i as u8)))
+        .collect();
+    let patch = patch_of(&mut library, &layers);
+    assert!(!key_map(&patch, &library).is_named(), "nothing says so");
+    for preset in ["PRC Drumkit", "SOM Percussion", "TR-808 Kit", "Drums"] {
+        assert!(
+            key_map_for(&patch, &library, Some(preset)).is_named(),
+            "{preset}"
+        );
+    }
+    assert!(!key_map_for(&patch, &library, Some("Clarinet")).is_named());
+}
+
+/// And one whose names say nothing at all, but whose every hit plays its
+/// sample at one pitch whatever the key — no instrument does that.
+#[test]
+fn hits_that_play_one_pitch_on_every_key_are_a_kit() {
+    let mut library = SampleLibrary::new();
+    let names: Vec<String> = (0..8).map(|i| format!("s{i}")).collect();
+    let layers: Vec<(&str, (u8, u8))> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), (36 + i as u8, 36 + i as u8)))
+        .collect();
+    let mut patch = patch_of(&mut library, &layers);
+    for layer in &mut patch.layers {
+        layer.root_key = 60;
+    }
+    assert!(key_map(&patch, &library).is_named());
+}
+
+/// A lone narrow zone in a melodic patch is not named either: a name on one
+/// key is what made the roll treat the whole instrument as a kit.
+#[test]
+fn a_melodic_patch_names_no_key_at_all() {
+    let mut library = SampleLibrary::new();
+    let patch = patch_of(
+        &mut library,
+        &[("Bass", (24, 60)), ("Bass top C5", (72, 72))],
+    );
+    let map = key_map(&patch, &library);
+    assert_eq!(map.name(72), None);
+    assert!(!map.is_named());
 }

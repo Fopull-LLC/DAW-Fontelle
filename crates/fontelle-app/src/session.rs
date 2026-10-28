@@ -14818,9 +14818,19 @@ impl StudioHost for Session {
     }
 
     fn key_map(&self) -> fontelle_ui::document::KeyMap {
+        // The preset's name, or the channel's (a soundfont channel is called
+        // what it plays): the surest word on whether it is a kit.
+        let channel = self
+            .selected_channel_id()
+            .and_then(|id| self.project.channels.get(id));
+        let preset = channel.map(|c| {
+            c.preset
+                .as_ref()
+                .map_or(c.name.as_str(), |p| p.name.as_str())
+        });
         self.selected_patch()
             .map_or_else(fontelle_ui::document::KeyMap::unknown, |patch| {
-                crate::key_map(&patch, &self.library)
+                crate::key_map_for(&patch, &self.library, preset)
             })
     }
 

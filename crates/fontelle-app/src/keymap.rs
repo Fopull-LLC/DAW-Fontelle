@@ -36,30 +36,158 @@ use crate::library::SampleLibrary;
 /// would start labelling string sections; two never does.
 pub const HIT_SPAN_KEYS: u8 = 2;
 
-/// How many hits a patch needs before it is read as a **key map** rather than
-/// an instrument.
+/// Words that say a sample, or a preset, is a drum — matched anywhere in a
+/// name, case aside: `ClHi-Hat`, `BassDrum`, `GT01AKicks`.
+const DRUM_PARTS: &[&str] = &[
+    "kick",
+    "snare",
+    "hihat",
+    "hi-hat",
+    "hi hat",
+    "hat",
+    "cymbal",
+    "crash",
+    "cowbell",
+    "conga",
+    "bongo",
+    "tamb",
+    "shaker",
+    "clap",
+    "drum",
+    "perc",
+    "rimshot",
+    "timbale",
+    "cabasa",
+    "maraca",
+    "guiro",
+    "clave",
+    "woodblock",
+    "cuica",
+    "agogo",
+    "808",
+    "909",
+];
+
+/// Shorter ones, which only count as a whole word (a trailing number aside:
+/// `tom2`, `bd1`) — `tom` inside `bottom` is not a drum.
+const DRUM_WORDS: &[&str] = &[
+    "bd", "sd", "hh", "oh", "ch", "tom", "toms", "ride", "rim", "kit", "cym", "splash", "china",
+    "stick",
+];
+
+/// Whether `name` names a drum.
+fn names_a_drum(name: &str) -> bool {
+    let low = name.to_lowercase();
+    DRUM_PARTS.iter().any(|part| low.contains(part))
+        || low
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .flat_map(|word| [word, word.trim_end_matches(|c: char| c.is_ascii_digit())])
+            .any(|word| DRUM_WORDS.contains(&word))
+}
+
+/// Whether `name` names a note: a letter A–G not inside a word, an optional
+/// sharp or flat, and an octave — `B1(L)`, `G#3STAS`, `f#3L`, `A_2L` — or a
+/// solfège syllable as a word (`1_Fa#_Kz`).
+fn names_a_note(name: &str) -> bool {
+    let b = name.as_bytes();
+    let note_at = |i: usize| {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'#' | b'b' | b's')) {
+            j += 1;
+        }
+        if matches!(b.get(j), Some(b'-' | b'_')) {
+            j += 1;
+        }
+        b.get(j).is_some_and(u8::is_ascii_digit) && !b.get(j + 1).is_some_and(u8::is_ascii_digit)
+    };
+    let lettered = (0..b.len()).any(|i| {
+        (b'a'..=b'g').contains(&b[i].to_ascii_lowercase())
+            && (i == 0 || !b[i - 1].is_ascii_alphabetic())
+            && note_at(i)
+    });
+    lettered
+        || name
+            .to_lowercase()
+            .split(|c: char| !(c.is_ascii_alphabetic() || c == '#'))
+            .map(|word| word.trim_end_matches('#'))
+            .any(|word| ["do", "re", "mi", "fa", "sol", "la", "si", "ti"].contains(&word))
+}
+
+/// Whether a patch with narrow zones is a **kit** — keys that are different
+/// sounds — or a melodic instrument sampled a key or two at a time.
 ///
-/// **This is the judgement call in the file**, and the per-zone rule above is
-/// not enough on its own — which is the thing measuring real files taught. A
-/// kit is not all one-key zones: `FZ Percussion` is five hits plus one
-/// thirteen-key band, `MMX Percussion` three plus a 3, a 13, a 14 and two
-/// 17s. Those wide zones are a percussion sample stretched across a band, and
-/// judging each zone alone left F-Zero naming 5 of its 18 playable keys and
-/// Mega Man X 3 of 67 — most of the trial and error this exists to remove.
+/// > *"several soundfonts, even though mapped onto keys correctly it seems,
+/// > are not counted as a correct keyboard for the scale / key / note stuff"*
+/// > (Ty, 2026-10-27)
 ///
-/// So the question is asked of the **patch**: one hit and it is a key map,
-/// and then every covered key takes the name of the zone covering it,
-/// stretched bands included.
+/// This was "one narrow zone and it is a kit" (`KEY_MAP_HITS = 1`), measured
+/// on a bank of 617 presets where only two melodic ones had a narrow zone at
+/// all. Ty's bank is 2,106 presets now, and that rule read **267** melodic
+/// presets as kits — Deltarune's pianos, strings and guitars, a clarinet
+/// sampled on every key — and a kit gets no scale. The shape cannot tell a
+/// clarinet on every key from a kit on every key; the names can. First to
+/// answer wins:
 ///
-/// One rather than two, and that is the measurement, not a guess. Over the
-/// 617 presets in the bank this was developed against: of 606 melodic
-/// presets, **two** contain a one-key zone at all, and both contain five — so
-/// they are read as key maps either way. Of 11 percussion presets, all 11
-/// contain at least one hit and only 10 contain two. Requiring two would have
-/// cost a real kit (`Z3 Percussion`, one hit and one eleven-key band) and
-/// bought no protection that the corpus shows is needed. The safety is in
-/// [`HIT_SPAN_KEYS`] being narrow, not in counting.
-pub const KEY_MAP_HITS: usize = 1;
+/// 1. the preset's name (`PRC Drumkit`, `SOM Percussion`, `TR-808 Kit`);
+/// 2. the samples' names, a drum's word against a note's (`kick` against
+///    `STW PIANO f B1`), and the drums must outnumber the notes;
+/// 3. with nothing in a name, the shape: most narrow zones playing their
+///    sample at one pitch whatever the key, over most of what plays — no
+///    instrument does that;
+/// 4. else melodic.
+///
+/// Measured over Ty's bank: 101 of the 2,106 presets read as kits, 55 of
+/// them the 57 in bank 128 — the two left are GXSCC's `31` (samples named
+/// `300`–`306`, nothing to go by) and one snare stretched over every key —
+/// and the 46 outside it are all kits (`Metal Kit`, `TR-808 Kit`, `dj TW`'s
+/// NES drum hits by their shape).
+fn is_kit(
+    patch: &Patch,
+    library: &SampleLibrary,
+    preset: Option<&str>,
+    is_hit: impl Fn(&fontelle_core::Layer) -> bool,
+) -> bool {
+    let narrow: Vec<_> = patch.layers.iter().filter(|layer| is_hit(layer)).collect();
+    if narrow.is_empty() {
+        return false;
+    }
+    if preset.is_some_and(names_a_drum) {
+        return true;
+    }
+    let names: Vec<&str> = patch
+        .layers
+        .iter()
+        .filter_map(|layer| match layer.source {
+            Source::Sample { file } | Source::Sf2Zone { file, .. } => library.name(file),
+            Source::Drum(_) => Some("drum"),
+            Source::Oscillator(_) | Source::Synth(_) => None,
+        })
+        .collect();
+    let drums = names.iter().filter(|name| names_a_drum(name)).count();
+    let notes = names.iter().filter(|name| names_a_note(name)).count();
+    if drums > notes {
+        return true;
+    }
+    if notes > 0 {
+        return false;
+    }
+    let fixed = narrow
+        .iter()
+        .filter(|layer| layer.root_key < layer.key_range.0 || layer.root_key > layer.key_range.1)
+        .count();
+    let span = |layers: &mut dyn Iterator<Item = &fontelle_core::Layer>| {
+        let mut keys = [false; 128];
+        for layer in layers {
+            for key in layer.key_range.0..=layer.key_range.1.min(127) {
+                keys[usize::from(key)] = true;
+            }
+        }
+        keys.iter().filter(|on| **on).count()
+    };
+    let narrow_keys = span(&mut narrow.iter().copied());
+    let all_keys = span(&mut patch.layers.iter());
+    fixed * 2 > narrow.len() && narrow_keys * 2 > all_keys
+}
 
 /// The widest a zone may be and still have its name put on the keys it covers,
 /// even in a key map.
@@ -81,20 +209,27 @@ pub const MAX_NAMED_BAND_KEYS: u8 = 32;
 /// tells the truth about the key. A key counts as playable if any layer covers
 /// it at any velocity.
 pub fn key_map(patch: &Patch, library: &SampleLibrary) -> KeyMap {
+    key_map_for(patch, library, None)
+}
+
+/// [`key_map`] for a patch loaded from a preset called `preset` — whose name
+/// is the surest word on whether it is a kit (see [`is_kit`]).
+pub fn key_map_for(patch: &Patch, library: &SampleLibrary, preset: Option<&str>) -> KeyMap {
     let mut keys = vec![KeyInfo::default(); KeyMap::KEYS];
 
     let is_hit = |layer: &fontelle_core::Layer| {
         layer.key_range.1.saturating_sub(layer.key_range.0) < HIT_SPAN_KEYS
     };
     // Decided once, for the whole patch, before any key is looked at — see
-    // [`KEY_MAP_HITS`]. Asking it per zone is what left real kits half
-    // labelled.
-    let is_key_map = patch.layers.iter().filter(|l| is_hit(l)).count() >= KEY_MAP_HITS;
+    // [`is_kit`]. Asking it per zone is what left real kits half labelled.
+    let is_key_map = is_kit(patch, library, preset, is_hit);
 
     for layer in &patch.layers {
         let (low, high) = layer.key_range;
         let band = high.saturating_sub(low).saturating_add(1);
-        let nameable = (is_key_map && band <= MAX_NAMED_BAND_KEYS) || is_hit(layer);
+        // Nothing on a melodic instrument: a name on one key is what made the
+        // roll take a whole piano for a kit and give it no scale.
+        let nameable = is_key_map && (band <= MAX_NAMED_BAND_KEYS || is_hit(layer));
         let name = nameable
             .then(|| match layer.source {
                 Source::Sample { file } | Source::Sf2Zone { file, .. } => library.name(file),
