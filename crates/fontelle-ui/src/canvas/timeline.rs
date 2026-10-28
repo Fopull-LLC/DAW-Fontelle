@@ -919,6 +919,7 @@ impl TimelineControl {
             Self::Paint => Action::PaintTool,
             Self::Select => Action::SelectTool,
             Self::Slice => Action::SliceTool,
+            Self::Snap => Action::RollSnap,
             Self::Stretch => Action::Stretch,
             Self::Repeat => Action::Duplicate,
             Self::Cut => Action::Cut,

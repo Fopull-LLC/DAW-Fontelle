@@ -273,7 +273,8 @@ pub enum Action {
     /// Stretch on the arrangement. Was "snap or stretch" — S in the roll
     /// is the slide's now, and the roll's snap is [`RollSnap`](Self::RollSnap).
     Stretch,
-    /// The piano roll's snap grid, cycled.
+    /// The snap grid of the panel being worked on, cycled — the roll's or
+    /// the arrangement's. The id stays `roll-snap`: it is permanent.
     RollSnap,
     // No `Slide`: the `A` key that marked FL slide notes went with them —
     // *"triangle notes should not exist."* A settings file that rebound it
@@ -609,7 +610,7 @@ impl Action {
             Self::DeleteTool => "Delete (piano roll)",
             Self::SliceTool => "Slice",
             Self::Stretch => "Stretch on or off (arrangement)",
-            Self::RollSnap => "Next snap grid (piano roll)",
+            Self::RollSnap => "Next snap grid (piano roll or arrangement)",
             Self::LaneProperty => "Next property lane: velocity, pan, pitch\u{2026}",
             Self::Ghosts => "Ghost notes from other clips",
             Self::SmartChords => "Chords offered on a placed note",

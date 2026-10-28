@@ -24972,9 +24972,15 @@ impl WindowApp {
             // the grid whenever a drawing was not quite in hand is what made
             // a second S "just change the snapping grid" (Ty, 2026-10-01).
             Action::Stretch => self.stretch(),
-            // The roll's grid, on G.
+            // The grid of the panel being worked on, on G: *"in the
+            // arrangement it doesnt do that when you press g"* (Ty,
+            // 2026-10-27). The last canvas pressed decides, as it does for
+            // Delete and S.
             Action::RollSnap => {
-                if self.tab == EditorTab::Roll {
+                if self.focus == Focus::Timeline {
+                    self.timeline.cycle_snap();
+                    self.tree.invalidate(TIMELINE);
+                } else if self.tab == EditorTab::Roll {
                     self.cycle_snap();
                 }
             }
