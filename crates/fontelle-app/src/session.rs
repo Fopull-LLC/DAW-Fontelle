@@ -4373,33 +4373,48 @@ impl Session {
 
     /// What colour a block is drawn — and its notes ghosted — in.
     ///
-    /// > *"clips made in old versions projects now on newer versions do not
-    /// > color the clips"*
+    /// > *"we need clip colors to always be the track color not some
+    /// > arbitrary color and an outline"* (Ty, 2026-10-27)
     ///
-    /// A clip with no colour of its own was its lane's, and every lane is
-    /// made the same blue: nothing but the tour song and a MIDI import ever
-    /// gave one another. So an arrangement was a wall of one blue whatever
-    /// the rack's chips said. Now, first to answer wins: the clip's own
-    /// colour; a lane somebody did colour; in lane-style, the lane's track;
-    /// then the instrument the notes play (`instrument_colours`).
+    /// **The mixer track it plays into, first and always**: the lane's in
+    /// lane-style, an audio clip's own route, else the instrument's. A clip's
+    /// own colour and a coloured lane used to outrank it — an import's or an
+    /// old song's, since nothing in the window sets either — and an audio
+    /// clip never asked, so it was the default blue while the mixer ringed it
+    /// in its track's colour. Those colours are only what is left for a block
+    /// that plays straight into the master, which is grey; then the
+    /// instrument's chip (`instrument_colours`).
+    ///
+    /// Older: *"clips made in old versions projects now on newer versions do
+    /// not color the clips"* — every lane is made the same blue, which is why
+    /// the instrument is asked before the lane's default.
     fn clip_color(
         &self,
+        id: ClipId,
         clip: &fontelle_model::Clip,
         channel: Option<ChannelId>,
         colours: &HashMap<ChannelId, [u8; 4]>,
     ) -> [u8; 4] {
+        let master = self.project.mixer.master;
+        let track = if self.lane_style() {
+            self.project.lane_track(clip.lane)
+        } else if matches!(clip.source, fontelle_model::ClipSource::Audio(_)) {
+            self.project.clip_route(id)
+        } else {
+            channel.and_then(|channel| self.project.channel_route(channel))
+        };
+        if let Some(track) = track
+            .filter(|track| Some(*track) != master)
+            .and_then(|track| self.project.mixer.tracks.get(track))
+        {
+            return track.color;
+        }
         if let Some(colour) = clip.color {
             return colour;
         }
         let lane = self.project.lanes.get(clip.lane).map(|lane| lane.color);
         if let Some(colour) = lane.filter(|colour| *colour != UNCOLOURED) {
             return colour;
-        }
-        if self.lane_style()
-            && let Some(track) = self.project.lane_track(clip.lane)
-            && let Some(track) = self.project.mixer.tracks.get(track)
-        {
-            return track.color;
         }
         channel
             .and_then(|channel| colours.get(&channel).copied())
@@ -15950,7 +15965,7 @@ impl StudioHost for Session {
         let editing = self.selected_channel_id();
         let colours = self.instrument_colours();
         let mut ghosts = Vec::new();
-        for (_, clip) in self.project.clips.iter() {
+        for (id, clip) in self.project.clips.iter() {
             let ClipSource::Notes(data) = &clip.source else {
                 continue;
             };
@@ -15990,7 +16005,7 @@ impl StudioHost for Session {
                         start: start + offset,
                         length: note.length.min(pass_end - start),
                         key: note.key,
-                        color: self.clip_color(clip, Some(channel), &colours),
+                        color: self.clip_color(id, clip, Some(channel), &colours),
                     });
                 }
             }
@@ -16242,7 +16257,7 @@ impl StudioHost for Session {
                     // editing.
                     open: id == self.clip || Some(id) == self.automation_clip,
                     loop_length: clip.loop_length,
-                    color: self.clip_color(clip, home, &colours),
+                    color: self.clip_color(id, clip, home, &colours),
                     kind,
                     curve,
                     notes,

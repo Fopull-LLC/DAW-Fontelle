@@ -7900,16 +7900,17 @@ fn the_rows_feeding_the_selected_strip_glow_in_its_colour() {
     );
 }
 
+/// A block is its track's colour now (`Session::clip_color`), so a ring in
+/// that colour round it would be the block drawn twice. Ty: *"not some
+/// arbitrary color and an outline"*. What says "these feed the strip" is the
+/// rest stepping back.
 #[test]
-fn the_clips_feeding_the_selected_strip_glow_in_its_colour() {
+fn the_clips_not_feeding_the_selected_strip_step_back() {
     use fontelle_ui::canvas::clip_rect;
-    let colour = [0x4f, 0x8f, 0xd0, 0xff];
-    // Two ids from one arena: `a_clip` mints each from a fresh one, so two
-    // of its clips share an id.
     let mut ids: Arena<fontelle_types::ClipId, ()> = Arena::default();
     let mut clips = vec![
-        a_clip(0, PPQN * 4, PPQN * 8, colour),
-        a_clip(1, PPQN * 4, PPQN * 8, colour),
+        a_clip(0, PPQN * 4, PPQN * 8, TRACK_RED),
+        a_clip(1, PPQN * 4, PPQN * 8, TRACK_RED),
     ];
     clips[0].id = ids.insert(());
     clips[1].id = ids.insert(());
@@ -7922,14 +7923,27 @@ fn the_clips_feeding_the_selected_strip_glow_in_its_colour() {
     else {
         return;
     };
-    let edge = |shot: &TimelineShot, clip: &fontelle_ui::document::ClipInfo| {
+    let body = |shot: &TimelineShot, clip: &fontelle_ui::document::ClipInfo| {
         let block = clip_rect(&shot.view, shot.layout.grid, clip);
-        let y = (block.y + block.height / 2.0) as u32;
-        (0..3).any(|d| near(shot.at(block.x as u32 + d, y), Color(TRACK_RED)))
+        shot.at(
+            (block.x + 12.0) as u32,
+            (block.y + block.height * 0.8) as u32,
+        )
     };
-    assert!(!edge(&quiet, &clips[0]), "nothing glows unasked");
-    assert!(edge(&lit, &clips[0]), "the block that plays into it glows");
-    assert!(!edge(&lit, &clips[1]), "the other does not");
+    let bright = |c: Color| c.0[..3].iter().map(|v| u32::from(*v)).sum::<u32>();
+    assert!(
+        near(body(&quiet, &clips[1]), Color(TRACK_RED)),
+        "unasked, both are the track's"
+    );
+    assert!(
+        near(body(&lit, &clips[0]), Color(TRACK_RED)),
+        "the block that feeds it is as it was"
+    );
+    assert!(
+        bright(body(&lit, &clips[1])) + 60 < bright(Color(TRACK_RED)),
+        "the other steps back: {:?}",
+        body(&lit, &clips[1])
+    );
 }
 
 #[test]

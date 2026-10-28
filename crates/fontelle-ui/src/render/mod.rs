@@ -507,7 +507,8 @@ pub struct TimelineChrome<'a> {
     /// cannot be mistaken for notes that are.
     pub take_notes: &'a [crate::document::NotePreview],
     /// The clips feeding the selected mixer strip, and its colour, while the
-    /// mixer is showing (`docs/ux-routing-and-learning-plan.md` §3).
+    /// mixer is showing (`docs/ux-routing-and-learning-plan.md` §3). The
+    /// others are drawn dimmed; these as they always are.
     pub glow: Option<([u8; 4], &'a [fontelle_types::ClipId])>,
     /// The row a click on its header selected, lit — where new material with
     /// no row of its own lands (`docs/ux-routing-and-learning-plan.md` §2).
@@ -9109,10 +9110,18 @@ fn draw_timeline(
         }
         let selected = chrome.selection.contains(&clip.id);
         let automation = clip.kind == crate::document::ClipKind::Automation;
+        // While a strip is chosen in the mixer, the blocks that do not feed
+        // it step back. A block is its track's colour already
+        // (`Session::clip_color`), so the old ring in that colour round the
+        // ones that do was the block drawn twice — *"not some arbitrary
+        // color and an outline"* (Ty, 2026-10-27).
+        let aside = chrome.glow.is_some_and(|(_, ids)| !ids.contains(&clip.id));
         let body = if clip.muted {
             p.grid_line
         } else if selected {
             p.note_selected
+        } else if aside {
+            mix(Color(clip.color), p.panel, 0.65)
         } else {
             Color(clip.color)
         };
@@ -9281,19 +9290,6 @@ fn draw_timeline(
             None,
             &rounded(block.inset(1.0), 3.0),
         );
-    }
-    // The blocks feeding the strip selected in the mixer, ringed in its
-    // colour over their edges (`docs/ux-routing-and-learning-plan.md` §3).
-    if let Some((colour, ids)) = chrome.glow {
-        for clip in chrome.clips.iter().filter(|clip| ids.contains(&clip.id)) {
-            if !lanes.contains(&clip.lane) {
-                continue;
-            }
-            let block = clip_rect(v, l.grid, clip).intersection(&l.grid);
-            if !block.is_empty() {
-                stroke_rect_rounded(scene, block.inset(1.0), 3.0, 2.0, Color(colour));
-            }
-        }
     }
     // And where two blocks on a row lie over each other, stripes across the
     // part they share — see `canvas::clip_overlaps`. Diagonal, so they read
