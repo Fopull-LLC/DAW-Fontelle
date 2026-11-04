@@ -772,6 +772,18 @@ impl Updater {
         self
     }
 
+    /// One whose install of `version` has just finished, asking nothing
+    /// more — for tests of what the window does then (hub card 0620: it
+    /// restarts by itself).
+    pub fn already_installed(version: &str) -> Self {
+        let mut updater = Self::new();
+        updater.enabled = false;
+        *updater.status.lock().unwrap() = UpdateStatus::Installed {
+            version: version.to_string(),
+        };
+        updater
+    }
+
     /// Whether somebody else updates this copy (see [`managed_by`](Self::managed_by)).
     pub fn is_managed(&self) -> bool {
         self.managed

@@ -1222,6 +1222,9 @@ struct Welcome {
     /// The name, shaped at twice the chrome's size.
     title: TextLayout,
     hover: Option<crate::canvas::WelcomeHit>,
+    /// Whether this launch is a new version's first — the row says
+    /// *Updated to* while the check has nothing more to say.
+    just_updated: bool,
     /// What the host last said, so a change is noticed and drawn.
     status: crate::document::UpdateStatus,
     /// The update line and its offer, from `canvas::update_line` — the line
@@ -1609,6 +1612,9 @@ pub struct WindowApp {
     /// The prompt before leaving unsaved work: what was being left to do,
     /// and the question as it is drawn.
     save_prompt: Option<(Leave, String)>,
+    /// An installed update's restart has been tried this run
+    /// (`poll_update_restart`): once is all it gets.
+    update_restart_tried: bool,
     /// The Share panel, open (`docs/collab-plan.md` §10.1).
     share_open: bool,
     /// The theme editor beside the studio, while it is open.
@@ -2676,6 +2682,7 @@ impl WindowApp {
             toast: None,
             confirm: None,
             save_prompt: None,
+            update_restart_tried: false,
             share_open: false,
             theme_editor: None,
             session: Default::default(),
@@ -3063,7 +3070,14 @@ impl WindowApp {
             .map_or(crate::document::UpdateStatus::Unchecked, |doc| {
                 doc.update_status()
             });
-        let (line, button) = crate::canvas::update_line(&status, &self.options.version);
+        // The first launch of a new version says so (hub card 0620).
+        let just_updated = self
+            .options
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.just_updated());
+        let (line, button) =
+            crate::canvas::update_line_since(&status, &self.options.version, just_updated);
         let progress = crate::canvas::update_progress(&status);
         let offer = self
             .options
@@ -3081,9 +3095,11 @@ impl WindowApp {
             .document
             .as_ref()
             .is_some_and(|doc| doc.asio_credit());
-        // The support line (hub card 0427): said once, from the tenth launch,
+        // The support line (hub card 0427): said once, from the fifth launch,
         // never beside a recovery or unsaved work. Marked said here, as it
         // goes up, so it never comes back whether it is pressed or not.
+        // The same words on a new version's first start menu, under its
+        // *What's new*, at most once a month (hub card 0620).
         // Or, when the support line is not due, the install ping's notice
         // (hub card 0428), said before the first ping goes. Never both: the
         // ping waits for its notice, so it waits a launch.
@@ -3094,9 +3110,18 @@ impl WindowApp {
                 recover.is_some(),
                 doc.is_dirty(),
             );
+            let after_update = crate::canvas::support_after_update_due(
+                doc.just_updated(),
+                doc.days_since_support_line(),
+                recover.is_some(),
+                doc.is_dirty(),
+            );
             if due {
                 doc.set_support_line_said();
                 Some(crate::canvas::StartLine::Support)
+            } else if after_update {
+                doc.set_support_line_said();
+                Some(crate::canvas::StartLine::AfterUpdate)
             } else if doc.ping_notice_due() {
                 doc.set_ping_notice_said();
                 Some(crate::canvas::StartLine::Ping)
@@ -3138,6 +3163,7 @@ impl WindowApp {
             layout,
             title,
             hover: None,
+            just_updated,
             status,
             line,
             button,
@@ -3238,7 +3264,8 @@ impl WindowApp {
         if status == welcome.status {
             return;
         }
-        let (line, button) = crate::canvas::update_line(&status, &self.options.version);
+        let (line, button) =
+            crate::canvas::update_line_since(&status, &self.options.version, welcome.just_updated);
         let progress = crate::canvas::update_progress(&status);
         let had_slot = welcome.button.is_some() || welcome.progress.is_some();
         let relayout = (button.is_some() || progress.is_some()) != had_slot;
@@ -3254,6 +3281,39 @@ impl WindowApp {
         } else {
             self.tree.invalidate_rect(self.layout.window);
         }
+    }
+
+    /// Restarts onto an update that has finished installing, the first pass
+    /// nothing would be lost by it (`canvas::update_restart_due`) — on the
+    /// start menu, that is the pass the install finishes. Tried once: when
+    /// the restart cannot be arranged, the toast says so and the row goes on
+    /// saying *restart to use it*.
+    fn poll_update_restart(&mut self) {
+        if self.update_restart_tried {
+            return;
+        }
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let moment = crate::canvas::RestartMoment {
+            installed: matches!(
+                doc.update_status(),
+                crate::document::UpdateStatus::Installed { .. }
+            ),
+            unsaved: doc.is_dirty(),
+            playing: self.view.playing,
+            recording: self.view.recording || self.view.armed || self.count_in_until.is_some(),
+            busy: self.job.is_some() || doc.vocal_busy(),
+            in_session: self.in_session(),
+            asking: self.menu.is_some() || self.confirm.is_some() || self.save_prompt.is_some(),
+        };
+        if !crate::canvas::update_restart_due(&moment) {
+            return;
+        }
+        self.update_restart_tried = true;
+        // Not `leave`: there is nothing to ask — the song is saved and
+        // nobody else is in it — so straight to the going.
+        self.go(Leave::Restart);
     }
 
     /// Takes the menu down: the studio is what is drawn from here on.
@@ -3369,6 +3429,9 @@ impl WindowApp {
             WelcomeHit::Update => {
                 match welcome.status {
                     UpdateStatus::Available { .. } => doc.upgrade(),
+                    _ if welcome.button == Some(crate::canvas::WHATS_NEW_LABEL) => {
+                        doc.open_url(crate::support::WHATS_NEW_URL)
+                    }
                     _ => doc.open_release_page(),
                 }
                 Ok(false)
@@ -4137,6 +4200,7 @@ impl WindowApp {
     fn tick(&mut self) {
         self.poll_welcome();
         self.poll_job();
+        self.poll_update_restart();
         self.poll_analysis();
         self.tick_analyze_playhead();
         // Where this person is goes with the pass's edits.

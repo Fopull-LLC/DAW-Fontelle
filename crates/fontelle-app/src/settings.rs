@@ -248,9 +248,20 @@ pub struct Settings {
     /// that and nothing else, and never leaves this file (hub card 0427).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub launches: u32,
-    /// Whether that line has been shown: once is the most it is ever said.
+    /// Whether that line has been shown: once is the most it is ever said
+    /// for the launch count (the first start menu after an update may say
+    /// it again, by `support_line_day`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_line_said: bool,
+    /// The day the support line was last shown, in days since 1970 (UTC):
+    /// after an update it is said again only a month on (hub card 0620).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_line_day: Option<u32>,
+    /// The version that ran here last — how a launch knows it is a new
+    /// version's first, and says *Updated to* (hub card 0620). Kept here and
+    /// nowhere else; nothing is asked over the network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_version: Option<String>,
     /// Whether the install ping goes (hub card 0428, `install_ping.rs`): on
     /// unless turned off here or by `FOPULL_NO_PING`.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -377,6 +388,13 @@ fn is_hundred(percent: &u16) -> bool {
     *percent == 100
 }
 
+/// Today, in days since 1970 (UTC) — what `support_line_day` is counted in.
+pub fn today() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| (d.as_secs() / 86_400) as u32)
+}
+
 fn is_zero(count: &u32) -> bool {
     *count == 0
 }
@@ -412,6 +430,8 @@ impl Default for Settings {
             tour_offered: false,
             launches: 0,
             support_line_said: false,
+            support_line_day: None,
+            last_version: None,
             install_ping: true,
             ping_notice_said: false,
             audio_output: AudioOutputSettings::default(),
@@ -436,6 +456,23 @@ impl Settings {
     pub fn count_launch(&mut self) {
         if !self.support_line_said {
             self.launches = self.launches.saturating_add(1);
+        }
+    }
+
+    /// Writes down that `current` is the version running, and says whether
+    /// that makes this launch an update: a newer version than the one
+    /// written down. With none written down — every copy before 0.34.0 —
+    /// a settings file that has seen a start menu (its install-ping notice
+    /// said, its tour offered, its launches counted) belonged to a copy that
+    /// ran before, so this is its update; a fresh install is not.
+    pub fn note_version(&mut self, current: &str) -> bool {
+        use crate::updates::Version;
+        let ran_before = self.ping_notice_said || self.tour_offered || self.launches > 0;
+        let before = self.last_version.replace(current.to_string());
+        match (before, Version::parse(current)) {
+            (Some(before), Some(now)) => Version::parse(&before).is_some_and(|b| b < now),
+            (Some(_), None) => false,
+            (None, _) => ran_before,
         }
     }
 

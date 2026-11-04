@@ -22,8 +22,9 @@ use crate::document::UpdateStatus;
 use crate::layout::Rect;
 use crate::theme::Metrics;
 
-/// The company's site — the footer's first link.
-pub const WEBSITE_URL: &str = "https://fopull.com";
+/// The company's site — the footer's first link, tagged as the start menu's
+/// (hub card 0620).
+pub const WEBSITE_URL: &str = "https://fopull.com/?utm_source=fontelle-app&utm_medium=start-menu";
 /// The source — the footer's second link.
 pub const REPOSITORY_URL: &str = "https://github.com/Fopull-LLC/DAW-Fontelle";
 
@@ -439,8 +440,12 @@ pub const SUPPORT_LINE_LEAD: &str = "Fontelle is free. If it has earned somethin
 pub const SUPPORT_LINE_LINK: &str = "fopull.com/support";
 pub const SUPPORT_LINE_TEXT: &str =
     "Fontelle is free. If it has earned something, fopull.com/support";
-/// The launch it is first due on.
-pub const SUPPORT_LINE_LAUNCH: u32 = 10;
+/// The launch it is first due on. Ty, 2026-11-03 (hub card 0620): the
+/// fifth — at the tenth, with 34 installs, it reached almost nobody.
+pub const SUPPORT_LINE_LAUNCH: u32 = 5;
+/// The least time between two sayings of it: after an update it may be said
+/// again, but never within this many days of the last time (hub card 0620).
+pub const SUPPORT_LINE_SPACING_DAYS: u32 = 30;
 
 /// The install ping's notice (hub card 0428): said on the first start menu,
 /// before anything is sent, with the way to turn it off in it.
@@ -454,6 +459,9 @@ pub const PING_LINE_LINK: &str = "What is sent";
 pub enum StartLine {
     /// *Fontelle is free…* (hub card 0427).
     Support,
+    /// The same words on the first start menu after an update (hub card
+    /// 0620), its link counted as the update's.
+    AfterUpdate,
     /// What the install ping sends and how to stop it (hub card 0428).
     Ping,
 }
@@ -461,14 +469,14 @@ pub enum StartLine {
 impl StartLine {
     pub fn lead(self) -> &'static str {
         match self {
-            Self::Support => SUPPORT_LINE_LEAD,
+            Self::Support | Self::AfterUpdate => SUPPORT_LINE_LEAD,
             Self::Ping => PING_LINE_LEAD,
         }
     }
 
     pub fn link(self) -> &'static str {
         match self {
-            Self::Support => SUPPORT_LINE_LINK,
+            Self::Support | Self::AfterUpdate => SUPPORT_LINE_LINK,
             Self::Ping => PING_LINE_LINK,
         }
     }
@@ -476,10 +484,30 @@ impl StartLine {
     /// Where a press on the line goes.
     pub fn url(self) -> &'static str {
         match self {
-            Self::Support => crate::support::SUPPORT_URL,
+            Self::Support => crate::support::SUPPORT_URL_START_MENU,
+            Self::AfterUpdate => crate::support::SUPPORT_URL_UPDATE,
             Self::Ping => crate::support::INSTALL_PING_URL,
         }
     }
+}
+
+/// Whether the first start menu after an update says the line: `just_updated`
+/// (this launch is a new version's first), the line last said
+/// `days_since_said` days ago (`None`: never), with a recovery or unsaved
+/// work as [`support_line_due`] has them.
+///
+/// Hub card 0620: *"the one time a returning user is reading something from
+/// us … at most once every 30 days"*. Nothing over the network decides it.
+pub fn support_after_update_due(
+    just_updated: bool,
+    days_since_said: Option<u32>,
+    recovering: bool,
+    unsaved: bool,
+) -> bool {
+    just_updated
+        && days_since_said.is_none_or(|days| days >= SUPPORT_LINE_SPACING_DAYS)
+        && !recovering
+        && !unsaved
 }
 
 /// Whether the start menu says the line on this launch: the `launches`th,
@@ -487,7 +515,7 @@ impl StartLine {
 /// being offered back (`recovering`) or a song with `unsaved` changes open.
 ///
 /// Ty: *"accessibility is the product; nothing may nag or gate. The line is
-/// a courtesy, said once."* So never before the tenth launch, never twice,
+/// a courtesy, said once."* So never before the fifth launch, never twice,
 /// and never beside work somebody could lose — a launch like that is not the
 /// moment, and the line waits for the next clean one rather than being
 /// spent on it.
@@ -696,6 +724,76 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
         return Some(WelcomeHit::DismissLearn);
     }
     None
+}
+
+/// The update row's offer on the first launch of a new version.
+pub const WHATS_NEW_LABEL: &str = "What's new";
+
+/// [`update_line`], on a launch that may be a new version's first: when it
+/// is (`just_updated`) and the check has nothing newer or worse to say, the
+/// row says so and offers [`WHATS_NEW_LABEL`] (hub card 0620).
+pub fn update_line_since(
+    status: &UpdateStatus,
+    current: &str,
+    just_updated: bool,
+) -> (String, Option<&'static str>) {
+    match status {
+        UpdateStatus::Unchecked
+        | UpdateStatus::Checking
+        | UpdateStatus::UpToDate
+        | UpdateStatus::Off
+            if just_updated =>
+        {
+            (
+                format!("Updated to Fontelle {current}"),
+                Some(WHATS_NEW_LABEL),
+            )
+        }
+        _ => update_line(status, current),
+    }
+}
+
+/// What the window knows about this moment, for [`update_restart_due`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RestartMoment {
+    /// An update has finished installing in this run.
+    pub installed: bool,
+    /// The song has changes not yet saved — a knob turned in a plugin's own
+    /// window among them.
+    pub unsaved: bool,
+    pub playing: bool,
+    /// Recording, or armed to.
+    pub recording: bool,
+    /// A bounce running beside the window, or phrases still being sung.
+    pub busy: bool,
+    /// Hosting or in somebody else's shared song.
+    pub in_session: bool,
+    /// A prompt, a menu or a question is open: somebody is in the middle of
+    /// saying something.
+    pub asking: bool,
+}
+
+/// Whether the window restarts itself now onto the update it installed.
+///
+/// Ty, 2026-11-03: *"immediately automatically restart after finishing
+/// installing … ive seen some users just press install update and then go
+/// on with their day not realizing."* Immediately, then — but a restart is
+/// a quit and an open, and it may never cost anything: not unsaved work
+/// (and never a save prompt in its place — the question would be an
+/// interruption nobody asked for), not a take, not a bounce, not the others
+/// in a shared song. Until all of that is clear it waits, and the row goes
+/// on saying *restart to use it*; the song reopens after (`relaunch`).
+pub fn update_restart_due(moment: &RestartMoment) -> bool {
+    let RestartMoment {
+        installed,
+        unsaved,
+        playing,
+        recording,
+        busy,
+        in_session,
+        asking,
+    } = *moment;
+    installed && !(unsaved || playing || recording || busy || in_session || asking)
 }
 
 /// The update line's words, and the button's, if there is one to press.

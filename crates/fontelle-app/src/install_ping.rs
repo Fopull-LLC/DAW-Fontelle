@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime};
 /// Where the pings go.
 pub const ENDPOINT: &str = "https://fopull.com/api/v1/installs/ping";
 /// What the start menu's notice links to.
-pub const PRIVACY_URL: &str = "https://fopull.com/privacy#install-ping";
+pub const PRIVACY_URL: &str = fontelle_ui::support::INSTALL_PING_URL;
 /// The file beside the settings that keeps the id and the last day sent.
 pub const FILE_NAME: &str = "install-ping.json";
 

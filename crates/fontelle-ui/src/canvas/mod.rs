@@ -380,9 +380,11 @@ pub use voicebank_page::{
 pub use welcome::{
     FOOTER_TEXT, JOIN_LABEL, LEARN_BUTTON, LEARN_DISMISS, LEARN_OFFER, LEARN_TAKE, LOGS_LABEL,
     NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, PING_LINE_LEAD, PING_LINE_LINK,
-    RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, SUPPORT_LINE_LAUNCH,
-    SUPPORT_LINE_LEAD, SUPPORT_LINE_LINK, SUPPORT_LINE_TEXT, StartLine, TITLE_HEIGHT,
-    WEBSITE_LABEL, WEBSITE_URL, WelcomeCredit, WelcomeHit, WelcomeLayout, support_line_due,
-    transfer_fraction, transfer_text, update_line, update_progress, welcome_enter, welcome_hint,
-    welcome_hit, welcome_layout, with_asio_credit, with_learn, with_recovery, with_support_line,
+    RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, RestartMoment,
+    SUPPORT_LINE_LAUNCH, SUPPORT_LINE_LEAD, SUPPORT_LINE_LINK, SUPPORT_LINE_SPACING_DAYS,
+    SUPPORT_LINE_TEXT, StartLine, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WHATS_NEW_LABEL,
+    WelcomeCredit, WelcomeHit, WelcomeLayout, support_after_update_due, support_line_due,
+    transfer_fraction, transfer_text, update_line, update_line_since, update_progress,
+    update_restart_due, welcome_enter, welcome_hint, welcome_hit, welcome_layout, with_asio_credit,
+    with_learn, with_recovery, with_support_line,
 };

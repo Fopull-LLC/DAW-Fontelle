@@ -198,10 +198,16 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: Fontelle ${{ needs.version.outputs.version }}
+          # The notes open by pointing to the site (hub card 0620): somebody
+          # who lands here from a search is sent where the download offers
+          # pay-what-you-want. The assets stay here — the updater and the
+          # site both fetch them by these names.
           # The Windows download plays through ASIO by way of fontelle-asio,
           # so the notes carry Steinberg's logo and attribution (their usage
           # guidelines; docs/asio.md §1).
           body: |
+            Download: https://fopull.com/fontelle
+
             <img src="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png" alt="ASIO Compatible Logo" width="110"/>
 
             The Windows download can play through ASIO® drivers by way of `fontelle-asio.exe`, a separate GPLv3 program whose source is attached below as `fontelle-asio-source-${{ needs.version.outputs.version }}.tar.gz`. ASIO is a registered trademark of Steinberg Media Technologies GmbH.

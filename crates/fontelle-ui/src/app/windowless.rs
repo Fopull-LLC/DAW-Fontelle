@@ -367,6 +367,23 @@ impl Windowless {
         self.settle();
     }
 
+    /// One pass of the loop's reading of the host — what `about_to_wait`
+    /// does each time round, the update's restart among it.
+    pub fn tick(&mut self) {
+        self.app.tick();
+        self.settle();
+    }
+
+    /// Whether the window has decided to close (a quit, or a restart).
+    pub fn quitting(&self) -> bool {
+        self.app.quit
+    }
+
+    /// Whether the prompt about unsaved changes is up.
+    pub fn save_prompt_open(&self) -> bool {
+        self.app.save_prompt.is_some()
+    }
+
     /// The start menu's card, while it is up.
     pub fn welcome_layout(&self) -> Option<crate::canvas::WelcomeLayout> {
         self.app.welcome.as_ref().map(|w| w.layout.clone())

@@ -19,6 +19,37 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-03 — Users routed through fopull.com, and an update restarts by
+itself (hub card 0620, not released).** W measured ~70% of GitHub downloads
+never touching the site, and one visit to the support page in 16 days. Ty:
+*"nothing is hardly directing them … obviously shouldnt be too intrusive"*,
+and *"lets make it immediately automatically restart after finishing
+installing … ive seen some users just press install update and then go on
+with their day not realizing."*
+
+- **Every fopull.com address the app opens is tagged**
+  `utm_source=fontelle-app&utm_medium=<help-menu|start-menu|update>`
+  (`support.rs`, `WEBSITE_URL`; the query goes before `#install-ping`).
+- **The 0427 line** is due from the **fifth** launch (Ty), and stamps the day
+  it was said (`Settings::support_line_day`).
+- **A new version's first start menu** says *Updated to Fontelle X* with a
+  **What's new** button (`WHATS_NEW_URL`, Fontelle's page on the site) and,
+  at most once every 30 days, the same quiet line (`StartLine::AfterUpdate`,
+  `support_after_update_due`). `Settings::last_version` tells a new
+  version's first launch from any other; a copy from before it was kept
+  counts as updated when its settings have seen a start menu.
+- **An installed update restarts the studio itself** the first pass nothing
+  would be lost (`canvas::update_restart_due`, `poll_update_restart`):
+  never over unsaved work (and no save prompt in its place), playing,
+  recording/armed/count-in, a bounce, a shared song or an open prompt. On
+  the start menu that is the pass the install finishes. The song reopens.
+- **Trap fixed on the way:** `relaunch::this_binary_on` used
+  `current_exe()`, which after an upgrade names `fontelle.old (deleted)` on
+  Linux — it now starts `updates::launched_exe()`.
+- Release notes open with `Download: https://fopull.com/fontelle`;
+  `.github/FUNDING.yml` gives the repo a Sponsor button; the README link is
+  tagged `utm_source=github&utm_medium=readme`.
+
 **2026-10-27 — G on both panels, clips in their track's colour, kits told
 from instruments (0.33.0).** Ty: *"when pressing g in the piano roll it
 changes your grid snapping but in the arrangement it doesnt"*, *"we need clip

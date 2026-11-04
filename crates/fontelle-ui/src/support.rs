@@ -8,13 +8,35 @@
 //! browser opens it; what reaches the board is then what they choose to
 //! send. No plugin's name, no path, nothing about the song but its formats.
 
-/// The support page, with the product named so it opens on Fontelle.
-pub const SUPPORT_URL: &str = "https://fopull.com/support?product=fontelle";
+// Every address into the site says it came from the app and from where
+// (hub card 0620): *"so W can count what each one brings in"*. Plausible
+// reads `utm_source`/`utm_medium` with no change on the site. Written out
+// whole rather than built, so a grep for an address finds it.
+
+/// The support page, with the product named so it opens on Fontelle — the
+/// guide's *Support Fontelle*, always there beside *Report a bug*.
+pub const SUPPORT_URL: &str =
+    "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=help-menu";
+/// The same page from the start menu's quiet line (hub card 0427).
+pub const SUPPORT_URL_START_MENU: &str =
+    "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu";
+/// And from that line on the first start menu after an update.
+pub const SUPPORT_URL_UPDATE: &str =
+    "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update";
+/// *What's new*, on the first start menu after an update: Fontelle's page
+/// on the site, so the visit counts there (Ty: *"send them to the site so
+/// it counts as a visit"*).
+pub const WHATS_NEW_URL: &str =
+    "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update";
 
 /// What the install ping sends, and why (hub card 0428, the contract's §5).
-pub const INSTALL_PING_URL: &str = "https://fopull.com/privacy#install-ping";
+/// The query before the fragment: after it, the browser never sends it.
+pub const INSTALL_PING_URL: &str =
+    "https://fopull.com/privacy?utm_source=fontelle-app&utm_medium=start-menu#install-ping";
 /// The board's report form; `kind` says which.
 pub const REPORT_URL: &str = "https://fopull.com/roadmap/fontelle/report";
+/// What a report's address ends with: it is pressed in the guide.
+const REPORT_CAMPAIGN: &str = "utm_source=fontelle-app&utm_medium=help-menu";
 
 /// The form's `maxlength` for each environment field. Longer and the
 /// browser would cut it anyway, wherever it fell; cut here, it is cut
@@ -72,6 +94,8 @@ pub fn report_url(kind: ReportKind, env: &ReportEnvironment) -> String {
         url.push('=');
         url.push_str(&percent_encode(value));
     }
+    url.push('&');
+    url.push_str(REPORT_CAMPAIGN);
     url
 }
 

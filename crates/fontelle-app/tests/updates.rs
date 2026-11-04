@@ -964,3 +964,43 @@ fn the_release_workflow_marks_a_hyphenated_tag_as_a_prerelease() {
         "release.yml must publish a hyphenated tag as a pre-release"
     );
 }
+
+// Hub card 0620: about 70% of the GitHub downloads never touch fopull.com,
+// where the download step offers pay-what-you-want. The repository's own
+// pages point there, without moving the assets the updater fetches.
+
+fn in_the_tree(path: &str) -> String {
+    std::fs::read_to_string(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR")))
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+#[test]
+fn every_release_page_opens_by_pointing_to_the_site() {
+    let workflow = in_the_tree(".github/workflows/release.yml");
+    let body = workflow
+        .split_once("body: |\n")
+        .expect("the release has a body")
+        .1;
+    let first = body.lines().next().unwrap_or_default().trim();
+    assert_eq!(first, "Download: https://fopull.com/fontelle");
+}
+
+#[test]
+fn the_repository_has_a_sponsor_button_to_the_support_page() {
+    let funding = in_the_tree(".github/FUNDING.yml");
+    assert_eq!(
+        funding.trim(),
+        "custom: [\"https://fopull.com/support?product=fontelle&utm_source=github&utm_medium=sponsor-button\"]"
+    );
+}
+
+#[test]
+fn the_readme_download_link_says_it_came_from_github() {
+    let readme = in_the_tree("README.md");
+    assert!(
+        readme.contains(
+            "Download from https://fopull.com/fontelle?utm_source=github&utm_medium=readme"
+        ),
+        "README.md's download line"
+    );
+}

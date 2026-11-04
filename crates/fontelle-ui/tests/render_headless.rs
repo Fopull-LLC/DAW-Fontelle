@@ -5307,7 +5307,8 @@ fn shoot_welcome_status(
     let bar = transport_bar_layout(layout.transport, &theme.metrics);
     let readout = text.layout("0", &theme.font, None);
 
-    let (line, button) = fontelle_ui::canvas::update_line(&status, "0.1.0");
+    let (line, button) =
+        fontelle_ui::canvas::update_line_since(&status, "0.1.0", UPDATED_SHOWN.with(|c| c.get()));
     let progress = fontelle_ui::canvas::update_progress(&status);
     let with_credit = ASIO_SHOWN.with(|c| c.get());
     let welcome = fontelle_ui::canvas::with_support_line(
@@ -5966,8 +5967,45 @@ thread_local! {
     /// Whether the start menu shots carry the support line (hub card 0427),
     /// and what the pointer is on.
     static SUPPORT_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the shot is a new version's first start menu (hub card 0620).
+    static UPDATED_SHOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static SUPPORT_HOVER: std::cell::Cell<fontelle_ui::canvas::WelcomeHit> =
         const { std::cell::Cell::new(fontelle_ui::canvas::WelcomeHit::NewProject) };
+}
+
+/// A new version's first start menu (hub card 0620): *Updated to* with its
+/// *What's new* in the update row's slot, the quiet line under the card.
+#[test]
+fn the_first_start_menu_after_an_update_offers_whats_new_and_the_line() {
+    SUPPORT_SHOWN.with(|c| c.set(true));
+    UPDATED_SHOWN.with(|c| c.set(true));
+    let shot = shoot_welcome_status(
+        Theme::dark_default(),
+        &recent_projects(),
+        fontelle_ui::UpdateStatus::UpToDate,
+        "start-menu-updated",
+    );
+    SUPPORT_SHOWN.with(|c| c.set(false));
+    UPDATED_SHOWN.with(|c| c.set(false));
+    let Some(shot) = shot else { return };
+    let l = fontelle_ui::canvas::with_support_line(
+        fontelle_ui::canvas::welcome_layout(
+            shot.layout.window,
+            &shot.theme.metrics,
+            recent_projects().len(),
+            true,
+        ),
+        &shot.theme.metrics,
+        true,
+    );
+    let button = l.update_button.expect("the slot for What's new");
+    // The button is drawn: its plate is not the card's colour throughout.
+    let at = |x: f32, y: f32| pixel(&shot.pixels, shot.width, x as u32, y as u32);
+    let corner = at(button.x + 3.0, button.y + 3.0);
+    let inked = (0..button.width as u32)
+        .map(|dx| at(button.x + dx as f32, button.y + button.height / 2.0))
+        .any(|c| c != corner);
+    assert!(inked, "What's new has words on its plate");
 }
 
 /// The line said once: quiet words, the address in the accent with its

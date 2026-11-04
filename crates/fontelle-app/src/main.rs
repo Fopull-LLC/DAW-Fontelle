@@ -777,8 +777,11 @@ fn play_or_render(
             // created and nothing is guessed at (INVARIANT 10): with no folder
             // configured the Projects tab says so and offers to pick one.
             session.open_projects();
+            // Which version this is, against the one that ran last: a new
+            // one's first start menu says *Updated to* (hub card 0620).
+            session.note_version(env!("CARGO_PKG_VERSION"));
             // One more launch, for the start menu's support line — said
-            // once, from the tenth (`canvas::support_line_due`).
+            // once, from the fifth (`canvas::support_line_due`).
             session.count_launch();
             // Today's install ping, if the start menu has said what it sends
             // and it is on (hub card 0428). Its own thread; nothing waits.

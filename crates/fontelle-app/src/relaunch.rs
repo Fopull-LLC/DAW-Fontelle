@@ -35,8 +35,15 @@ pub fn args_for(bundle: Option<&Path>) -> Vec<OsString> {
 }
 
 /// What starts this same binary on `bundle`, or why it cannot be known.
+///
+/// The binary as it was launched (`updates::launched_exe`), not
+/// `current_exe()` now: the restart after an update (hub card 0620) comes
+/// after [`install`](crate::updates::install) renamed the running binary to
+/// `.old` and deleted it, and on Linux `current_exe()` then names
+/// `fontelle.old (deleted)` — a restart onto nothing.
 pub fn this_binary_on(bundle: Option<&Path>) -> Result<Relaunch, String> {
-    let program = std::env::current_exe().map_err(|e| e.to_string())?;
+    let program = crate::updates::launched_exe()
+        .ok_or_else(|| "this program's own path is not known".to_string())?;
     Ok(Relaunch {
         program,
         args: args_for(bundle),

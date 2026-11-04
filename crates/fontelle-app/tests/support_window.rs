@@ -5,7 +5,7 @@
 //! Ty: *"accessibility is the product; nothing may nag or gate. The line is
 //! a courtesy, said once."* So these tests hold the studio to: a link goes
 //! where it says with no more than the address carries; the line shows from
-//! the tenth launch, once, and never over work a crash or an unsaved song
+//! the fifth launch, once, and never over work a crash or an unsaved song
 //! put at risk.
 
 mod common;
@@ -163,7 +163,16 @@ fn each_link_in_the_guide_opens_its_page() {
         assert!(report.contains("env_os="), "{report}");
         assert!(report.contains("env_plugin=LV2"), "{report}");
     }
-    assert_eq!(opened[2], "https://fopull.com/support?product=fontelle");
+    assert_eq!(
+        opened[2],
+        "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=help-menu"
+    );
+    for report in &opened[..2] {
+        assert!(
+            report.ends_with("&utm_source=fontelle-app&utm_medium=help-menu"),
+            "{report}"
+        );
+    }
 }
 
 // --------------------------------------------------------- the quiet line
@@ -189,8 +198,8 @@ fn a_launch_is_counted_and_counting_stops_once_the_line_is_said() {
 }
 
 #[test]
-fn the_ninth_launch_says_nothing() {
-    let (mut w, _) = studio(launch(9, false));
+fn the_fourth_launch_says_nothing() {
+    let (mut w, _) = studio(launch(4, false));
     w.open_welcome();
     assert!(w.welcome_layout().is_some(), "the menu is up");
     assert!(line_of(&w).is_none());
@@ -198,10 +207,10 @@ fn the_ninth_launch_says_nothing() {
 }
 
 #[test]
-fn the_tenth_says_it_once_and_marks_it_said() {
-    let (mut w, links) = studio(launch(10, false));
+fn the_fifth_says_it_once_and_marks_it_said() {
+    let (mut w, links) = studio(launch(5, false));
     w.open_welcome();
-    let l = line_of(&w).expect("the line, on the tenth launch");
+    let l = line_of(&w).expect("the line, on the fifth launch");
     // Said as soon as it is shown, so it never repeats, pressed or not.
     assert!(w.document().support_line_said());
 
@@ -209,7 +218,9 @@ fn the_tenth_says_it_once_and_marks_it_said() {
     w.click_studio(x, y);
     assert_eq!(
         links.lock().unwrap().as_slice(),
-        ["https://fopull.com/support?product=fontelle"]
+        [
+            "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu"
+        ]
     );
     assert!(
         w.welcome_layout().is_some(),
@@ -224,20 +235,20 @@ fn the_tenth_says_it_once_and_marks_it_said() {
 }
 
 #[test]
-fn the_eleventh_after_it_was_said_says_nothing() {
-    let (mut w, _) = studio(launch(11, true));
+fn the_sixth_after_it_was_said_says_nothing() {
+    let (mut w, _) = studio(launch(6, true));
     w.open_welcome();
     assert!(line_of(&w).is_none());
 }
 
 #[test]
-fn a_tenth_launch_offering_a_recovery_waits_for_the_next_clean_one() {
+fn a_fifth_launch_offering_a_recovery_waits_for_the_next_clean_one() {
     let recovery = fontelle_app::crashlog::Recovery {
         backup: std::path::PathBuf::from("/nowhere/autosave.fontelle"),
         home: None,
         name: "Song".to_string(),
     };
-    let (mut w, _) = studio(launch(10, false).with_recovery(recovery));
+    let (mut w, _) = studio(launch(5, false).with_recovery(recovery));
     w.open_welcome();
     assert!(
         w.welcome_layout().unwrap().recover_button.is_some(),
@@ -246,18 +257,145 @@ fn a_tenth_launch_offering_a_recovery_waits_for_the_next_clean_one() {
     assert!(line_of(&w).is_none(), "and nothing else is said over it");
     assert!(!w.document().support_line_said(), "deferred, not spent");
 
-    let (mut w, _) = studio(launch(11, false));
+    let (mut w, _) = studio(launch(6, false));
     w.open_welcome();
     assert!(line_of(&w).is_some(), "the next clean launch says it");
 }
 
 #[test]
 fn not_over_a_song_with_unsaved_changes() {
-    let mut session = launch(10, false);
+    let mut session = launch(5, false);
     DocumentHost::set_tempo(&mut session, 97.0);
     assert!(DocumentHost::is_dirty(&session), "an edit is unsaved");
     let (mut w, _) = studio(session);
     w.open_welcome();
     assert!(line_of(&w).is_none());
     assert!(!w.document().support_line_said());
+}
+
+// ---------------------------------------------- the launch after an update
+//
+// Hub card 0620: *"The moment after an update installs is the one time a
+// returning user is reading something from us. The 'updated to X' note gets
+// a 'What's new' link and one quiet line under it … At most once every 30
+// days, closable, never during playback or recording, never modal."*
+
+/// A session that last ran as `before` and is now launched as `now`, the
+/// support line last said `said_days_ago` (or never), the way `main`
+/// launches it.
+fn updated(before: Option<&str>, now: &str, said_days_ago: Option<u32>) -> fontelle_app::Session {
+    let mut session = a_session();
+    let today = fontelle_app::settings::today();
+    {
+        let settings = session.settings_mut();
+        settings.last_version = before.map(str::to_string);
+        // Past the fifth launch and its line, so only the update speaks.
+        settings.launches = 20;
+        settings.support_line_said = true;
+        settings.support_line_day = said_days_ago.map(|d| today - d);
+        settings.ping_notice_said = true;
+    }
+    session.note_version(now);
+    session.count_launch();
+    session
+}
+
+#[test]
+fn a_new_version_is_noticed_once_and_written_down() {
+    let mut session = updated(Some("0.33.0"), "0.34.0", None);
+    assert!(StudioHost::just_updated(&session));
+    assert_eq!(
+        session.settings_mut().last_version.as_deref(),
+        Some("0.34.0")
+    );
+    // The next launch of the same version is an ordinary one.
+    session.note_version("0.34.0");
+    assert!(!StudioHost::just_updated(&session));
+}
+
+#[test]
+fn the_same_or_an_older_version_is_not_an_update() {
+    assert!(!StudioHost::just_updated(&updated(
+        Some("0.34.0"),
+        "0.34.0",
+        None
+    )));
+    assert!(!StudioHost::just_updated(&updated(
+        Some("0.35.0"),
+        "0.34.0",
+        None
+    )));
+}
+
+#[test]
+fn a_fresh_install_is_not_an_update_but_a_copy_from_before_this_was_kept_is() {
+    // Nothing written down and no sign of a start menu ever shown: new here.
+    let mut fresh = a_session();
+    fresh.note_version("0.34.0");
+    assert!(!StudioHost::just_updated(&fresh));
+    assert_eq!(fresh.settings_mut().last_version.as_deref(), Some("0.34.0"));
+    // 0.33.0 and before kept no version, but they did say the ping's notice:
+    // that copy has run before, so this launch is its update.
+    let older = updated(None, "0.34.0", None);
+    assert!(StudioHost::just_updated(&older));
+}
+
+#[test]
+fn the_start_menu_after_an_update_offers_whats_new_and_the_quiet_line() {
+    let (mut w, links) = studio(updated(Some("0.33.0"), "0.34.0", None));
+    w.open_welcome();
+    let l = line_of(&w).expect("the quiet line, after an update");
+    assert_eq!(
+        w.welcome_notice(),
+        Some(fontelle_ui::canvas::StartLine::AfterUpdate)
+    );
+    assert_eq!(
+        w.document().days_since_support_line(),
+        Some(0),
+        "stamped today as it goes up"
+    );
+    let button = l.update_button.expect("What's new, in the update row");
+    let (x, y) = centre(button);
+    w.click_studio(x, y);
+    let (x, y) = centre(l.support.unwrap());
+    w.click_studio(x, y);
+    assert_eq!(
+        links.lock().unwrap().as_slice(),
+        [
+            "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update",
+            "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update",
+        ]
+    );
+    assert!(w.welcome_layout().is_some(), "links do not close the menu");
+}
+
+#[test]
+fn after_an_update_the_line_waits_a_month_from_the_last_time_it_was_said() {
+    let (mut w, _) = studio(updated(Some("0.33.0"), "0.34.0", Some(12)));
+    w.open_welcome();
+    assert!(line_of(&w).is_none(), "said twelve days ago");
+    assert!(
+        w.welcome_layout().unwrap().update_button.is_some(),
+        "What's new is still offered"
+    );
+
+    let (mut w, _) = studio(updated(Some("0.33.0"), "0.34.0", Some(31)));
+    w.open_welcome();
+    assert!(line_of(&w).is_some(), "a month on");
+}
+
+#[test]
+fn the_fifth_launch_line_stamps_the_day_too() {
+    // So an update the week after the fifth launch does not say it again.
+    let (mut w, _) = studio(launch(5, false));
+    w.open_welcome();
+    assert!(line_of(&w).is_some());
+    assert_eq!(w.document().days_since_support_line(), Some(0));
+}
+
+#[test]
+fn an_ordinary_launch_says_nothing_of_updates() {
+    let (mut w, _) = studio(updated(Some("0.34.0"), "0.34.0", None));
+    w.open_welcome();
+    assert!(line_of(&w).is_none());
 }

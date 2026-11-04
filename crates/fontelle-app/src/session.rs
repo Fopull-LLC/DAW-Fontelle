@@ -618,6 +618,9 @@ pub struct Session {
     /// "Turn on and restart" was answered, and the window has not yet taken
     /// it (`StudioHost::take_restart_request`).
     restart_request: bool,
+    /// Whether this launch is a newer version's first (`note_version`): the
+    /// start menu says *Updated to* (hub card 0620).
+    just_updated: bool,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -1756,6 +1759,7 @@ impl Session {
             graphics_offer: None,
             graphics_asked: false,
             restart_request: false,
+            just_updated: false,
             settings,
             settings_path: None,
             links_to: None,
@@ -2150,6 +2154,19 @@ impl Session {
             .spawn(move || {
                 ping.run(crate::install_ping::send_with_curl, std::thread::sleep);
             });
+    }
+
+    /// Writes down that `current` is the version running — `main` calls it
+    /// once per window opened, before [`count_launch`](Self::count_launch)
+    /// — and keeps whether that makes this launch an update.
+    pub fn note_version(&mut self, current: &str) {
+        let before = self.settings.last_version.clone();
+        self.just_updated = self.settings.note_version(current);
+        if self.settings.last_version != before
+            && let Err(e) = self.save_settings()
+        {
+            self.message = Some(format!("could not write settings: {e}"));
+        }
     }
 
     /// One more launch of the studio, counted in the settings and written
@@ -12681,6 +12698,16 @@ impl StudioHost for Session {
         self.settings.ping_notice_said
     }
 
+    fn just_updated(&self) -> bool {
+        self.just_updated
+    }
+
+    fn days_since_support_line(&self) -> Option<u32> {
+        self.settings
+            .support_line_day
+            .map(|day| crate::settings::today().saturating_sub(day))
+    }
+
     fn set_ping_notice_said(&mut self) {
         self.settings.ping_notice_said = true;
         if let Err(e) = self.save_settings() {
@@ -12690,6 +12717,7 @@ impl StudioHost for Session {
 
     fn set_support_line_said(&mut self) {
         self.settings.support_line_said = true;
+        self.settings.support_line_day = Some(crate::settings::today());
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }

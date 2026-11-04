@@ -13,7 +13,7 @@ a whole piece in; there is still a great deal on the design's list. See
 
 ## Installing
 
-Download from https://fopull.com/fontelle
+Download from https://fopull.com/fontelle?utm_source=github&utm_medium=readme
 
 - **Linux** (the platform this is built for): unpack the tarball and run
   `./install.sh`. It puts `fontelle` in `~/.local/bin` with a menu entry and an

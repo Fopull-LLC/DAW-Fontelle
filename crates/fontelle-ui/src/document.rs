@@ -2212,8 +2212,21 @@ pub trait StudioHost: DocumentHost {
     fn support_line_said(&self) -> bool {
         true
     }
-    /// Remembers that it was, the moment it is shown.
+    /// Remembers that it was, the moment it is shown — and the day, for
+    /// [`days_since_support_line`](Self::days_since_support_line).
     fn set_support_line_said(&mut self) {}
+    /// Whether this launch is the first of a newer version than the one
+    /// that ran here last (hub card 0620): the start menu says *Updated to*
+    /// and offers *What's new*. `false` by default.
+    fn just_updated(&self) -> bool {
+        false
+    }
+    /// How many days ago the support line was last said, `None` for never
+    /// — what keeps it to once a month after an update
+    /// (`canvas::support_after_update_due`).
+    fn days_since_support_line(&self) -> Option<u32> {
+        None
+    }
 
     /// Whether the start menu is to say what the install ping sends before
     /// the first one goes (hub card 0428). `false` by default: a host that

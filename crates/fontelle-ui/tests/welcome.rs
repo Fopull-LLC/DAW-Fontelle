@@ -14,8 +14,9 @@
 
 use fontelle_ui::UpdateStatus;
 use fontelle_ui::canvas::{
-    REPOSITORY_URL, WEBSITE_URL, WelcomeHit, WelcomeLayout, update_line, welcome_enter,
-    welcome_hint, welcome_hit, welcome_layout,
+    REPOSITORY_URL, RestartMoment, WEBSITE_URL, WHATS_NEW_LABEL, WelcomeHit, WelcomeLayout,
+    update_line, update_line_since, update_restart_due, welcome_enter, welcome_hint, welcome_hit,
+    welcome_layout,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::theme::{Metrics, Theme};
@@ -256,7 +257,10 @@ fn the_status_line_says_what_the_check_found_and_when_there_is_something_to_pres
 
 #[test]
 fn the_footer_names_the_company_and_the_links_are_real_addresses() {
-    assert_eq!(WEBSITE_URL, "https://fopull.com");
+    assert!(
+        WEBSITE_URL.starts_with("https://fopull.com/?"),
+        "{WEBSITE_URL}"
+    );
     assert!(REPOSITORY_URL.starts_with("https://github.com/Fopull-LLC/"));
     let layout = welcome_layout(window(), &metrics(), 0, false);
     // The footer is the last thing on the card and the links are in it.
@@ -580,4 +584,119 @@ fn work_a_crash_would_have_lost_is_offered_above_the_ways_in() {
     );
     let (x, y) = (button.x + 4.0, button.y + 4.0);
     assert_eq!(welcome_hit(&l, x, y), Some(WelcomeHit::Recover));
+}
+
+// ------------------------------------------------- the launch after an update
+//
+// Hub card 0620: *"The moment after an update installs is the one time a
+// returning user is reading something from us. The 'updated to X' note gets
+// a 'What's new' link."*
+
+#[test]
+fn the_first_launch_of_a_new_version_says_so_and_offers_whats_new() {
+    let since = |status: &UpdateStatus| update_line_since(status, "0.34.0", true);
+    for status in [
+        UpdateStatus::Unchecked,
+        UpdateStatus::Checking,
+        UpdateStatus::UpToDate,
+        UpdateStatus::Off,
+    ] {
+        let (line, button) = since(&status);
+        assert_eq!(line, "Updated to Fontelle 0.34.0", "{status:?}");
+        assert_eq!(button, Some(WHATS_NEW_LABEL), "{status:?}");
+    }
+    assert_eq!(WHATS_NEW_LABEL, "What's new");
+    // Something newer still is news that outranks it, and so is a failure.
+    let available = UpdateStatus::Available {
+        version: "0.35.0".into(),
+    };
+    assert_eq!(since(&available), update_line(&available, "0.34.0"));
+    let failed = UpdateStatus::Failed("no route to host".into());
+    assert_eq!(since(&failed), update_line(&failed, "0.34.0"));
+    // And an ordinary launch is exactly what it was.
+    for status in [UpdateStatus::UpToDate, UpdateStatus::Unchecked] {
+        assert_eq!(
+            update_line_since(&status, "0.34.0", false),
+            update_line(&status, "0.34.0")
+        );
+    }
+}
+
+// Ty, 2026-11-03: *"lets make it immediately automatically restart after
+// finishing installing instead of the user having to read where it says
+// restart to use and then do it, ive seen some users just press install
+// update and then go on with their day not realizing."*
+
+fn quiet() -> RestartMoment {
+    RestartMoment {
+        installed: true,
+        unsaved: false,
+        playing: false,
+        recording: false,
+        busy: false,
+        in_session: false,
+        asking: false,
+    }
+}
+
+#[test]
+fn an_installed_update_restarts_at_once_when_nothing_would_be_lost() {
+    assert!(update_restart_due(&quiet()));
+    assert!(
+        !update_restart_due(&RestartMoment {
+            installed: false,
+            ..quiet()
+        }),
+        "nothing installed: nothing to restart for"
+    );
+}
+
+#[test]
+fn it_waits_for_any_moment_a_restart_would_cost_something() {
+    for (why, moment) in [
+        (
+            "unsaved",
+            RestartMoment {
+                unsaved: true,
+                ..quiet()
+            },
+        ),
+        (
+            "playing",
+            RestartMoment {
+                playing: true,
+                ..quiet()
+            },
+        ),
+        (
+            "recording",
+            RestartMoment {
+                recording: true,
+                ..quiet()
+            },
+        ),
+        (
+            "a bounce running",
+            RestartMoment {
+                busy: true,
+                ..quiet()
+            },
+        ),
+        (
+            "a shared song",
+            RestartMoment {
+                in_session: true,
+                ..quiet()
+            },
+        ),
+        (
+            "a prompt open",
+            RestartMoment {
+                asking: true,
+                ..quiet()
+            },
+        ),
+    ] {
+        assert!(!update_restart_due(&moment), "{why}");
+    }
 }

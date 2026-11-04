@@ -8,13 +8,14 @@
 
 use fontelle_ui::canvas::{
     HELP_LINKS, HelpHit, HelpLink, SUPPORT_LINE_LAUNCH, SUPPORT_LINE_LEAD, SUPPORT_LINE_LINK,
-    SUPPORT_LINE_TEXT, WelcomeHit, WelcomeLayout, help_hit, help_layout, support_line_due,
-    welcome_hit, welcome_layout, with_learn, with_recovery, with_support_line,
+    SUPPORT_LINE_SPACING_DAYS, SUPPORT_LINE_TEXT, StartLine, WEBSITE_URL, WelcomeHit,
+    WelcomeLayout, help_hit, help_layout, support_after_update_due, support_line_due, welcome_hit,
+    welcome_layout, with_learn, with_recovery, with_support_line,
 };
 use fontelle_ui::layout::Rect;
 use fontelle_ui::support::{
-    ENV_OS_MAX, ENV_PLUGIN_MAX, ENV_VERSION_MAX, REPORT_URL, ReportEnvironment, ReportKind,
-    SUPPORT_URL, report_url,
+    ENV_OS_MAX, ENV_PLUGIN_MAX, ENV_VERSION_MAX, INSTALL_PING_URL, REPORT_URL, ReportEnvironment,
+    ReportKind, SUPPORT_URL, SUPPORT_URL_START_MENU, SUPPORT_URL_UPDATE, WHATS_NEW_URL, report_url,
 };
 use fontelle_ui::theme::{Metrics, Theme};
 
@@ -77,8 +78,69 @@ fn decode(value: &str) -> String {
 
 #[test]
 fn the_addresses_are_the_live_boards() {
-    assert_eq!(SUPPORT_URL, "https://fopull.com/support?product=fontelle");
+    assert!(SUPPORT_URL.starts_with("https://fopull.com/support?product=fontelle&"));
     assert_eq!(REPORT_URL, "https://fopull.com/roadmap/fontelle/report");
+}
+
+// Hub card 0620: *"Every link the app opens to fopull.com carries a campaign
+// tag, so W can count what each one brings in."* Plausible reads `utm_*`
+// with no change on the site; `product=fontelle` stays on the support page.
+
+#[test]
+fn every_address_into_the_site_says_it_came_from_the_app_and_where() {
+    assert_eq!(
+        SUPPORT_URL,
+        "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=help-menu"
+    );
+    assert_eq!(
+        SUPPORT_URL_START_MENU,
+        "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu"
+    );
+    assert_eq!(
+        SUPPORT_URL_UPDATE,
+        "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update"
+    );
+    assert_eq!(
+        WHATS_NEW_URL,
+        "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update"
+    );
+    assert_eq!(
+        WEBSITE_URL,
+        "https://fopull.com/?utm_source=fontelle-app&utm_medium=start-menu"
+    );
+    // The query goes before the fragment, or the browser never sends it.
+    assert_eq!(
+        INSTALL_PING_URL,
+        "https://fopull.com/privacy?utm_source=fontelle-app&utm_medium=start-menu#install-ping"
+    );
+}
+
+#[test]
+fn a_report_says_it_came_from_the_guide_after_its_fields() {
+    for kind in [ReportKind::Bug, ReportKind::Feature] {
+        let url = report_url(kind, &env("0.34.0", "Windows", "LV2"));
+        assert!(
+            url.ends_with("&utm_source=fontelle-app&utm_medium=help-menu"),
+            "{url}"
+        );
+        assert_eq!(url.matches('?').count(), 1, "{url}");
+    }
+    // With no fields to fill, still one query.
+    let url = report_url(ReportKind::Bug, &env("", "", ""));
+    assert_eq!(
+        url,
+        "https://fopull.com/roadmap/fontelle/report?kind=bug&utm_source=fontelle-app&utm_medium=help-menu"
+    );
+}
+
+#[test]
+fn each_start_line_goes_to_its_own_tagged_address() {
+    assert_eq!(StartLine::Support.url(), SUPPORT_URL_START_MENU);
+    assert_eq!(StartLine::AfterUpdate.url(), SUPPORT_URL_UPDATE);
+    assert_eq!(StartLine::Ping.url(), INSTALL_PING_URL);
+    // The same words wherever it is said (hub card 0620: "same words as 0427").
+    assert_eq!(StartLine::AfterUpdate.lead(), StartLine::Support.lead());
+    assert_eq!(StartLine::AfterUpdate.link(), StartLine::Support.link());
 }
 
 #[test]
@@ -125,7 +187,8 @@ fn anything_that_could_break_the_query_is_encoded() {
         &env("1.0", "Linux (Tom & Jerry = #1 ünïcode/OS?)", ""),
     );
     assert!(url.is_ascii(), "{url}");
-    assert_eq!(url.matches('&').count(), 2, "kind, version, os: {url}");
+    // Kind, version, os — then the campaign's two, which are ours.
+    assert_eq!(url.matches('&').count(), 4, "kind, version, os: {url}");
     assert_eq!(url.matches('?').count(), 1, "{url}");
     assert!(!url.contains('#') && !url.contains(' '), "{url}");
     assert_eq!(
@@ -217,33 +280,66 @@ fn the_line_says_exactly_what_the_card_says() {
         format!("{SUPPORT_LINE_LEAD}{SUPPORT_LINE_LINK}"),
         SUPPORT_LINE_TEXT
     );
-    assert_eq!(SUPPORT_LINE_LAUNCH, 10);
+    // Ty, 2026-11-03 (hub card 0620): the fifth, not the tenth.
+    assert_eq!(SUPPORT_LINE_LAUNCH, 5);
 }
 
 #[test]
-fn the_line_is_due_from_the_tenth_launch_once_and_never_over_unsaved_work() {
+fn the_line_is_due_from_the_fifth_launch_once_and_never_over_unsaved_work() {
     // (launches, already said, recovery offered, unsaved song open)
     assert!(!support_line_due(1, false, false, false));
-    assert!(!support_line_due(9, false, false, false), "ninth: no");
-    assert!(support_line_due(10, false, false, false), "tenth: yes");
+    assert!(!support_line_due(4, false, false, false), "fourth: no");
+    assert!(support_line_due(5, false, false, false), "fifth: yes");
     assert!(
-        !support_line_due(10, true, false, false),
+        !support_line_due(5, true, false, false),
         "said: never again"
     );
-    assert!(!support_line_due(11, true, false, false), "eleventh: no");
-    // Deferred, not lost: a tenth launch offering a recovery, or with a song
+    assert!(!support_line_due(6, true, false, false), "sixth: no");
+    // Deferred, not lost: a fifth launch offering a recovery, or with a song
     // unsaved, says nothing — and the next clean launch says it.
     assert!(
-        !support_line_due(10, false, true, false),
+        !support_line_due(5, false, true, false),
         "recovery: not now"
     );
+    assert!(!support_line_due(5, false, false, true), "unsaved: not now");
     assert!(
-        !support_line_due(10, false, false, true),
-        "unsaved: not now"
+        support_line_due(6, false, false, false),
+        "the next clean one"
+    );
+}
+
+#[test]
+fn after_an_update_the_line_is_said_at_most_once_a_month() {
+    // Hub card 0620: the first start menu of a new version is the one time a
+    // returning user is reading something from us — "at most once every 30
+    // days, closable … never modal".
+    assert_eq!(SUPPORT_LINE_SPACING_DAYS, 30);
+    // (just updated, days since the line was last said, recovery, unsaved)
+    assert!(
+        support_after_update_due(true, None, false, false),
+        "never said"
+    );
+    assert!(support_after_update_due(true, Some(30), false, false));
+    assert!(support_after_update_due(true, Some(400), false, false));
+    assert!(
+        !support_after_update_due(true, Some(29), false, false),
+        "said last week: not again"
     );
     assert!(
-        support_line_due(11, false, false, false),
-        "the next clean one"
+        !support_after_update_due(true, Some(0), false, false),
+        "said today"
+    );
+    assert!(
+        !support_after_update_due(false, None, false, false),
+        "an ordinary launch is not an update"
+    );
+    assert!(
+        !support_after_update_due(true, None, true, false),
+        "recovery"
+    );
+    assert!(
+        !support_after_update_due(true, None, false, true),
+        "unsaved"
     );
 }
 
