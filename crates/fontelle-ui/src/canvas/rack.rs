@@ -116,6 +116,14 @@ const ROUTE: f32 = 22.0;
 
 /// Lays out `count` channels in `body`, starting from `scroll`.
 pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -> RackLayout {
+    rack_layout_at(body, metrics, count, scroll as f32)
+}
+
+/// [`rack_layout`] scrolled `scroll` rows, a fraction included — where a
+/// list that glides is seen between two rows (`canvas::ListGlide`). The
+/// rows keep their whole height; one more peeks in below while it is
+/// between, and the list is clipped round them when drawn.
+pub fn rack_layout_at(body: Rect, metrics: &Metrics, count: usize, scroll: f32) -> RackLayout {
     let (tabs, body) = tab_strip(body, metrics);
     let add_height = metrics.row_height.min(body.height.max(0.0));
     let add = Rect::new(
@@ -144,11 +152,14 @@ pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -
     if metrics.row_height > 0.0 && !list.is_empty() {
         let visible = (list.height / metrics.row_height).floor() as usize;
         capacity = visible;
-        let scroll = scroll.min(count.saturating_sub(1));
-        for (slot, index) in (scroll..count).take(visible).enumerate() {
+        let at = scroll.max(0.0).min(count.saturating_sub(1) as f32);
+        let first = at.floor() as usize;
+        let fraction = at - first as f32;
+        let peek = usize::from(fraction > 0.0);
+        for (slot, index) in (first..count).take(visible + peek).enumerate() {
             let frame = Rect::new(
                 list.x,
-                list.y + slot as f32 * metrics.row_height,
+                list.y + (slot as f32 - fraction) * metrics.row_height,
                 list.width,
                 metrics.row_height,
             );
@@ -193,7 +204,7 @@ pub fn rack_layout(body: Rect, metrics: &Metrics, count: usize, scroll: usize) -
         rows,
         add,
         total: count,
-        scroll,
+        scroll: scroll.max(0.0).floor() as usize,
         capacity,
     }
 }

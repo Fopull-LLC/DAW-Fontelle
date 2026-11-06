@@ -211,3 +211,131 @@ fn at_rest_it_asks_for_no_frames() {
     assert!(!s.step(FRAME, now + 0.1));
     assert_eq!(s.position(), 40.0);
 }
+
+// ------------------------------------------------- more of the same feel
+//
+// Ty, 2026-11-06: *"continue on the remaining reccomendations"* — lists
+// that glide instead of jumping a row, a touchpad that pans the
+// arrangement and the roll under the fingers and coasts, pages and menus
+// that appear rather than blink in, and Page Up/Down/Home/End on the long
+// pages.
+
+use fontelle_ui::canvas::{ListGlide, PanCoast, appear_alpha, toast_alpha};
+
+#[test]
+fn glide_to_goes_there_without_giving() {
+    let mut s = page(600.0);
+    s.glide_to(400.0);
+    let (_, seen) = settle(&mut s, 0.0);
+    assert_eq!(s.position(), 400.0);
+    assert!(seen.iter().all(|&p| (0.0..=600.0).contains(&p)), "{seen:?}");
+    // Past the end is the end, and no further — keys never give.
+    s.glide_to(10_000.0);
+    let (_, seen) = settle(&mut s, 0.0);
+    assert_eq!(s.position(), 600.0);
+    assert!(seen.iter().all(|&p| p <= 600.0));
+    s.glide_to(-50.0);
+    settle(&mut s, 0.0);
+    assert_eq!(s.position(), 0.0);
+}
+
+#[test]
+fn a_list_glides_a_row_rather_than_jumping_it() {
+    let mut g = ListGlide::default();
+    assert!(!g.step(0.0, FRAME), "at rest where it is");
+    assert!(g.step(3.0, FRAME));
+    let first = g.position();
+    assert!(first > 0.0 && first < 3.0, "{first}");
+    let mut last = first;
+    for _ in 0..120 {
+        let moving = g.step(3.0, FRAME);
+        assert!(g.position() >= last && g.position() <= 3.0);
+        last = g.position();
+        if !moving {
+            break;
+        }
+    }
+    assert_eq!(g.position(), 3.0, "lands on the row exactly");
+    // A jump far away — a channel added at the end, `usize::MAX` — still
+    // glides, but never takes long: it starts close.
+    assert!(g.step(500.0, FRAME));
+    assert!(
+        g.position() > 400.0,
+        "a long way is mostly skipped: {}",
+        g.position()
+    );
+    g.jump(7.0);
+    assert_eq!(g.position(), 7.0);
+    assert!(!g.step(7.0, FRAME));
+}
+
+#[test]
+fn a_touchpad_pan_coasts_after_the_fingers_lift() {
+    let mut p = PanCoast::default();
+    for i in 0..10 {
+        p.touch(-20.0, 5.0, f64::from(i) / 120.0);
+    }
+    p.release(10.0 / 120.0);
+    let (mut dx, mut dy) = (0.0, 0.0);
+    let mut now = 10.0 / 120.0;
+    for _ in 0..240 {
+        now += f64::from(FRAME);
+        let (x, y) = p.step(FRAME, now);
+        dx += x;
+        dy += y;
+    }
+    assert!(dx < -200.0, "carried on the way it went: {dx}");
+    assert!(dy > 20.0 && dy < -dx, "{dy}");
+    assert!(!p.coasting(), "and stopped");
+    let (x, y) = p.step(FRAME, now + 1.0);
+    assert_eq!((x, y), (0.0, 0.0));
+}
+
+#[test]
+fn a_pan_whose_fingers_stopped_first_does_not_coast() {
+    let mut p = PanCoast::default();
+    for i in 0..10 {
+        p.touch(-20.0, 0.0, f64::from(i) / 120.0);
+    }
+    p.release(10.0 / 120.0 + 0.25);
+    assert!(!p.coasting());
+    assert_eq!(p.step(FRAME, 1.0), (0.0, 0.0));
+}
+
+#[test]
+fn a_pan_that_is_never_said_to_lift_still_coasts() {
+    let mut p = PanCoast::default();
+    for i in 0..10 {
+        p.touch(0.0, 30.0, f64::from(i) / 120.0);
+    }
+    let mut dy = 0.0;
+    let mut now = 9.0 / 120.0;
+    for _ in 0..120 {
+        now += f64::from(FRAME);
+        dy += p.step(FRAME, now).1;
+    }
+    assert!(dy > 200.0, "{dy}");
+}
+
+#[test]
+fn a_page_fades_in_quickly_and_a_toast_fades_both_ways() {
+    assert_eq!(appear_alpha(0.0), 0.0);
+    assert!(
+        appear_alpha(0.05) > 0.3,
+        "most of the way early: {}",
+        appear_alpha(0.05)
+    );
+    assert_eq!(appear_alpha(0.2), 1.0, "done in under a fifth of a second");
+    let mut last = 0.0;
+    for i in 0..30 {
+        let a = appear_alpha(i as f32 / 100.0);
+        assert!(a >= last);
+        last = a;
+    }
+    // A toast: in, held, out by the end of its time.
+    let total = 6.0;
+    assert_eq!(toast_alpha(0.0, total), 0.0);
+    assert_eq!(toast_alpha(1.0, total), 1.0);
+    assert!(toast_alpha(total - 0.1, total) < 0.6);
+    assert_eq!(toast_alpha(total, total), 0.0);
+}

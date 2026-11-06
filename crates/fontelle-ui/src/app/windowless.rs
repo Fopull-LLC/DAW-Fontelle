@@ -498,6 +498,80 @@ impl Windowless {
         });
     }
 
+    /// The rack's list area.
+    pub fn rack_list(&self) -> Rect {
+        self.app.rack.list
+    }
+
+    /// Where the rack is seen, in rows — gliding after a notch.
+    pub fn rack_drawn_scroll(&self) -> f32 {
+        self.app.rack_glide.position()
+    }
+
+    /// The row the rack is scrolled to.
+    pub fn rack_scroll_target(&self) -> usize {
+        self.app.list_targets()[0] as usize
+    }
+
+    /// The wheel turned `dy` notches with the pointer at `(x, y)`.
+    pub fn wheel_at(&mut self, x: f32, y: f32, dy: f32) {
+        self.app.cursor = (x, y);
+        self.app.wheel(super::WheelInput::Lines { x: 0.0, y: dy });
+    }
+
+    /// Fingers on a touchpad moved `(dx, dy)` points with the pointer at
+    /// `(x, y)`, now on the test's clock.
+    pub fn touchpad_at(&mut self, x: f32, y: f32, dx: f32, dy: f32) {
+        self.app.cursor = (x, y);
+        self.app.test_clock.get_or_insert(0.0);
+        self.app.wheel(super::WheelInput::Pixels {
+            x: dx,
+            y: dy,
+            lifted: false,
+        });
+    }
+
+    /// A page key on the open full page.
+    pub fn page_key(&mut self, key: crate::canvas::PageKey) {
+        self.app.page_key(key);
+    }
+
+    /// The guide, as `?` opens it.
+    pub fn open_help_page(&mut self) {
+        self.app.open_help();
+        self.settle();
+        // Its paragraphs measured, as the first frame drawn measures them.
+        self.app.shape_labels();
+        self.animate(0.0);
+    }
+
+    /// A press on the guide's section `section`.
+    pub fn choose_help_section(&mut self, section: usize) {
+        let layout = self.app.help_layout();
+        let (x, y) = {
+            let r = layout.nav[section];
+            (r.x + r.width / 2.0, r.y + r.height / 2.0)
+        };
+        self.app.press_help(x, y);
+        self.app.shape_labels();
+        self.settle();
+    }
+
+    pub fn close_help_page(&mut self) {
+        self.app.close_help();
+        self.settle();
+    }
+
+    /// The guide's section and scroll, while it is up.
+    pub fn help_place(&self) -> Option<(usize, f32)> {
+        self.app.help.as_ref().map(|h| (h.section, h.scroll))
+    }
+
+    /// How far into sight the open page is (1.0 whole).
+    pub fn page_appear(&self) -> f32 {
+        self.app.page_alpha()
+    }
+
     /// `seconds` of what moves on its own, a sixtieth at a time (less, for
     /// less), on the test's clock — no sleeping.
     pub fn animate(&mut self, seconds: f32) {

@@ -64,9 +64,9 @@ pub use autoscroll::{AUTOSCROLL_DEAD_ZONE, AUTOSCROLL_TAP_S, Autoscroll};
 pub use browser::{
     BrowserHit, BrowserLayout, BrowserList, BrowserMode, SettingControl, SettingPress,
     TAB_WORD_MIN_WIDTH, browser_file_share_at, browser_focus_step, browser_hit, browser_layout,
-    browser_layout_for, browser_layout_split, browser_row_carries, kind_icon, row_under, scrolled,
-    setting_control_rect, setting_press, setting_slider_at, setting_slider_groove,
-    setting_slider_x_of, tab_shows_word,
+    browser_layout_for, browser_layout_split, browser_layout_split_at, browser_row_carries,
+    kind_icon, row_under, scrolled, setting_control_rect, setting_press, setting_slider_at,
+    setting_slider_groove, setting_slider_x_of, tab_shows_word,
 };
 pub use carry::{
     CARRY_PAD, Carried, CarryOscillator, CarryRack, CarryRelease, CarryScene, CarryTarget,
@@ -295,7 +295,7 @@ pub use prefabs::{
 };
 pub use rack::{
     NEW_TRACK, NO_OUTPUT, RackHit, RackLayout, RackRow, RouteChoice, RouteMenu, output_menu_layout,
-    rack_hit, rack_layout, route_label, route_menu_hit, route_menu_layout,
+    rack_hit, rack_layout, rack_layout_at, route_label, route_menu_hit, route_menu_layout,
     route_menu_layout_excluding, route_tip, scroll_to_show, tab_at, tab_strip, without_route_chips,
 };
 pub use roll_scale::{
@@ -323,7 +323,10 @@ pub use singer_picker::{
     picker_filter, picker_filter_for, picker_move, singer_picker_hit, singer_picker_layout,
     singer_picker_layout_for,
 };
-pub use spring::{MAX_OVERSCROLL, PAGE_SCROLL_STEP, SpringScroll};
+pub use spring::{
+    APPEAR_SECONDS, ListGlide, MAX_OVERSCROLL, PAGE_SCROLL_STEP, PageKey, PanCoast, SpringScroll,
+    appear_alpha, toast_alpha,
+};
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use theme_editor::{
     LayerRowLayout, PALETTE_GROUPS, SHADER_EDITOR_DONE, SHADER_EDITOR_FINE, SHADER_EDITOR_TITLE,

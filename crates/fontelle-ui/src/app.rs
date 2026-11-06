@@ -39,12 +39,12 @@ use crate::canvas::{
     InstrumentView, MixerHit, MixerLayout, Modifiers, MouseButton, ParamKind, PianoRoll, RackHit,
     RackLayout, RollControl, RollLayout, RouteChoice, RouteMenu, SnapDivision, Timeline,
     TimelineHit, TimelineLayout, Tool, ToolbarLayout, browser_file_share_at, browser_hit,
-    browser_layout, browser_layout_split, clamp_to_grid, edge_scroll_rate, fader_db_at,
-    format_gain_db, format_pan, instrument_hit, instrument_layout, knob_value, lane_height_at,
-    mixer_hit, next_value, pan_at, rack_hit, rack_layout, roll_layout_with_keys, route_label,
-    route_menu_hit, route_menu_layout, scrolled, timeline_hit, timeline_layout,
-    timeline_toolbar_hit, timeline_toolbar_layout, timeline_x_to_tick, timeline_zoom_x,
-    timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick, y_to_key, zoom_x, zoom_y,
+    browser_layout, clamp_to_grid, edge_scroll_rate, fader_db_at, format_gain_db, format_pan,
+    instrument_hit, instrument_layout, knob_value, lane_height_at, mixer_hit, next_value, pan_at,
+    rack_hit, rack_layout, roll_layout_with_keys, route_label, route_menu_hit, route_menu_layout,
+    scrolled, timeline_hit, timeline_layout, timeline_toolbar_hit, timeline_toolbar_layout,
+    timeline_x_to_tick, timeline_zoom_x, timeline_zoom_y, toolbar_hit, toolbar_layout, x_to_tick,
+    y_to_key, zoom_x, zoom_y,
 };
 use crate::canvas::{ToolAction, ToolKind, Tools, ToolsDialog, lane_menu_hit, lane_menu_layout};
 use crate::document::{ChannelInfo, ClipInfo, LaneInfo, LibraryEntry, MixerStrip, StudioHost};
@@ -1431,6 +1431,13 @@ const TOUR_EASE: std::time::Duration = std::time::Duration::from_millis(260);
 
 /// The settings page while it is up: which section it shows, how far that
 /// section is scrolled, and what the pointer is over.
+/// What a touchpad's pan is moving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanTarget {
+    Timeline,
+    Roll,
+}
+
 /// One turn of the wheel or move on a touchpad, as `App::wheel` reads it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WheelInput {
@@ -1531,6 +1538,30 @@ pub struct WindowApp {
     /// A clock a test drives in place of the real one, for the motions
     /// that read time (`now_s`).
     test_clock: Option<f64>,
+    /// Where the rack, the browser's files and its presets are *seen*, in
+    /// rows — gliding to the row each is scrolled to after a notch of the
+    /// wheel (`wheeled`), landing at once after anything else.
+    rack_glide: crate::canvas::ListGlide,
+    file_glide: crate::canvas::ListGlide,
+    preset_glide: crate::canvas::ListGlide,
+    /// Rack, files, presets: the wheel moved it, so it glides.
+    wheeled: [bool; 3],
+    /// A touchpad's pan of the arrangement or the roll, for its coast.
+    pan: crate::canvas::PanCoast,
+    pan_target: PanTarget,
+    /// The open menu's wheel, gliding — only once the wheel has turned it
+    /// (`menu_wheeled`); its scrollbar and `scroll_to` move it directly.
+    menu_spring: crate::canvas::SpringScroll,
+    menu_wheeled: bool,
+    /// Where the guide was left: its section and its scroll.
+    help_place: Option<(usize, f32)>,
+    /// The scroll the guide is to be put back at, once its paragraphs are
+    /// measured — before that the page does not know how tall it is.
+    help_wants_scroll: Option<f32>,
+    /// Which full page is up (1 shortcuts, 2 guide, 3 settings) and when it
+    /// came up; when the menu came up — for their fade in.
+    page_seen: Option<(u8, f64)>,
+    menu_seen: Option<f64>,
     /// The guide behind `?`, while it is up.
     help: Option<HelpState>,
     /// The tour step's choice's options and which is set, read off the host
@@ -2644,6 +2675,18 @@ impl WindowApp {
             settings_place_read: false,
             page_spring: crate::canvas::SpringScroll::default(),
             test_clock: None,
+            rack_glide: crate::canvas::ListGlide::default(),
+            file_glide: crate::canvas::ListGlide::default(),
+            preset_glide: crate::canvas::ListGlide::default(),
+            wheeled: [false; 3],
+            pan: crate::canvas::PanCoast::default(),
+            pan_target: PanTarget::Timeline,
+            menu_spring: crate::canvas::SpringScroll::default(),
+            menu_wheeled: false,
+            help_place: None,
+            help_wants_scroll: None,
+            page_seen: None,
+            menu_seen: None,
             help: None,
             tour_choices: (Vec::new(), None),
             tour: None,
@@ -3660,6 +3703,17 @@ impl WindowApp {
         let ghost = self.clips.is_empty().then(|| {
             crate::canvas::ghost_pulse(self.started.elapsed().as_secs_f32(), self.ghost_moving())
         });
+        // How far into sight the pages, the menu and the toast are.
+        let appear = crate::render::Appear {
+            page: self.page_alpha(),
+            menu: self.menu_alpha(),
+            toast: self.toast.as_ref().map_or(1.0, |t| {
+                crate::canvas::toast_alpha(
+                    t.shown.elapsed().as_secs_f32(),
+                    crate::canvas::TOAST_SECONDS,
+                )
+            }),
+        };
         let Some(Some(renderer)) = self.renderers.get_mut(live.surface.dev_id) else {
             return;
         };
@@ -3976,6 +4030,7 @@ impl WindowApp {
                 labels: &self.labels,
                 status: &self.status,
                 toast: self.toast.as_ref().map(|t| (t.text.as_str(), t.undoable)),
+                appear,
                 confirm: self
                     .confirm
                     .as_ref()
@@ -7616,6 +7671,7 @@ impl WindowApp {
     /// Recomputes every panel's inner geometry. Called on a resize, and
     /// whenever something changes how many rows a list has.
     fn relayout_panels(&mut self) {
+        self.settle_list_glides();
         let m = &self.options.theme.metrics;
         // The key strip is wider when the instrument's keys have names of
         // their own — a drum kit — and exactly what it always was otherwise.
@@ -7648,11 +7704,11 @@ impl WindowApp {
             Some(self.selected_track),
             self.mixer_view,
         );
-        self.rack = rack_layout(
+        self.rack = crate::canvas::rack_layout_at(
             self.layout.rack.body,
             m,
             self.channels.len(),
-            self.rack_scroll,
+            self.rack_glide.position(),
         );
         if self.lane_style {
             self.rack = crate::canvas::without_route_chips(self.rack.clone());
@@ -7663,7 +7719,7 @@ impl WindowApp {
             self.prefabs.len(),
             self.prefab_scroll,
         );
-        self.browser = browser_layout_split(
+        self.browser = crate::canvas::browser_layout_split_at(
             self.layout.browser.body,
             m,
             self.browser_mode,
@@ -7674,8 +7730,8 @@ impl WindowApp {
                 BrowserMode::Settings => self.settings.len(),
             },
             self.presets.len(),
-            self.file_scroll,
-            self.preset_scroll,
+            self.file_glide.position(),
+            self.preset_glide.position(),
             self.browser_file_share,
         );
         self.sync_cables();
@@ -9807,6 +9863,26 @@ impl WindowApp {
     /// follow exactly (`canvas::spring`) and everything else reads as
     /// notches, as it always has.
     pub(crate) fn wheel(&mut self, input: WheelInput) {
+        // A touchpad over the arrangement or the roll, with no key held:
+        // the view goes exactly where the fingers take it, and coasts after.
+        if let WheelInput::Pixels { x, y, lifted } = input {
+            let now = self.now_s();
+            if let Some(target) = self.pan_target_under_pointer() {
+                if x != 0.0 || y != 0.0 {
+                    self.pan_target = target;
+                    self.pan.touch(x, y, now);
+                    self.pan_by(target, x, y);
+                }
+                if lifted {
+                    self.pan.release(now);
+                }
+                self.request_redraw_if_dirty();
+                return;
+            }
+            if lifted {
+                self.pan.release(now);
+            }
+        }
         let (dx, dy) = match input {
             WheelInput::Lines { x, y } => (x, y),
             WheelInput::Pixels { x, y, .. } => (x / 40.0, y / 40.0),
@@ -9849,6 +9925,34 @@ impl WindowApp {
         } else if self.welcome.is_none() {
             self.scroll_roll(dx, dy);
         }
+    }
+
+    /// What a touchpad pans under the pointer, if anything: the arrangement's
+    /// lanes or the roll's grid, with nothing over them and no key held (a
+    /// held key keeps the wheel's zooms and sideways scroll).
+    fn pan_target_under_pointer(&self) -> Option<PanTarget> {
+        if self.keybinds.is_some()
+            || self.help.is_some()
+            || self.settings_page.is_some()
+            || self.welcome.is_some()
+            || self.menu.is_some()
+            || self.modifiers.control_key()
+            || self.modifiers.shift_key()
+            || self.modifiers.alt_key()
+        {
+            return None;
+        }
+        let (x, y) = self.cursor;
+        if self.timeline_layout.grid.contains(x, y) {
+            return Some(PanTarget::Timeline);
+        }
+        if self.tab == EditorTab::Roll
+            && self.options.document.is_some()
+            && self.roll_layout.grid.contains(x, y)
+        {
+            return Some(PanTarget::Roll);
+        }
+        None
     }
 
     /// What the motions that read time read: the real clock, or a test's.
@@ -9918,6 +10022,16 @@ impl WindowApp {
         if self.keybinds.is_none() && self.help.is_none() && self.settings_page.is_none() {
             return false;
         }
+        // The guide put back where it was left, once it knows its height.
+        if self.keybinds.is_none()
+            && let Some(want) = self.help_wants_scroll
+            && self.help.as_ref().is_some_and(|h| !h.paragraphs.is_empty())
+        {
+            let max = crate::canvas::help_scroll_max(&self.help_layout());
+            self.page_spring.set_max(max);
+            self.page_spring.jump_to(want.min(max));
+            self.help_wants_scroll = None;
+        }
         self.sync_page_spring();
         let now = self.now_s();
         let moving = self.page_spring.step(dt, now);
@@ -9940,7 +10054,258 @@ impl WindowApp {
             self.tree.invalidate(PANEL);
         }
         let paging = self.step_page_spring(dt);
-        self.glide_views(dt) || scrolling || flying || people || paging
+        let listing = self.step_list_glides(dt);
+        let panning = self.step_pan(dt);
+        let menu = self.step_menu_spring(dt);
+        let appearing = self.note_appearances();
+        self.glide_views(dt)
+            || scrolling
+            || flying
+            || people
+            || paging
+            || listing
+            || panning
+            || menu
+            || appearing
+    }
+
+    /// The lists' glides: to the row each is scrolled to, landing at once
+    /// unless the wheel moved it (`wheeled`). Called before every layout of
+    /// them, so a channel added, a search typed or a tab switched lands
+    /// where it is meant to be with no frame in between.
+    fn settle_list_glides(&mut self) {
+        let targets = self.list_targets();
+        for (i, glide) in [
+            &mut self.rack_glide,
+            &mut self.file_glide,
+            &mut self.preset_glide,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !self.wheeled[i] {
+                glide.jump(targets[i]);
+            }
+        }
+    }
+
+    /// The rows the rack, the files and the presets are scrolled to.
+    fn list_targets(&self) -> [f32; 3] {
+        [
+            self.rack_scroll.min(
+                self.channels
+                    .len()
+                    .saturating_sub(self.rack.capacity.max(1)),
+            ) as f32,
+            self.file_scroll.min(self.browser_rows().saturating_sub(1)) as f32,
+            self.preset_scroll.min(self.presets.len().saturating_sub(1)) as f32,
+        ]
+    }
+
+    /// One frame of the lists that glide. Whether any is still moving.
+    fn step_list_glides(&mut self, dt: f32) -> bool {
+        if !self.wheeled.iter().any(|w| *w) {
+            return false;
+        }
+        let targets = self.list_targets();
+        let mut moved = [false; 3];
+        for (i, glide) in [
+            &mut self.rack_glide,
+            &mut self.file_glide,
+            &mut self.preset_glide,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if self.wheeled[i] {
+                moved[i] = glide.step(targets[i], dt);
+                if glide.position() == targets[i] {
+                    self.wheeled[i] = false;
+                }
+            }
+        }
+        if moved.iter().any(|m| *m) {
+            self.relayout_panels();
+            if moved[0] {
+                self.tree.invalidate(RACK);
+            }
+            if moved[1] || moved[2] {
+                self.tree.invalidate(BROWSER);
+            }
+            self.update_hover();
+        }
+        self.wheeled.iter().any(|w| *w)
+    }
+
+    /// A touchpad's pan moves `(dx, dy)` points — signed as a wheel's
+    /// notches are — over the arrangement or the roll: exactly that, now.
+    fn pan_by(&mut self, target: PanTarget, dx: f32, dy: f32) {
+        match target {
+            PanTarget::Timeline => {
+                let v = &self.timeline.view;
+                let (ppt, lane) = (
+                    f64::from(v.pixels_per_tick.max(0.0001)),
+                    f64::from(v.lane_height.max(1.0)),
+                );
+                self.glide_timeline_x.shift(-f64::from(dx) / ppt);
+                self.glide_timeline_y.shift(-f64::from(dy) / lane);
+                self.tree.invalidate(TIMELINE);
+            }
+            PanTarget::Roll => {
+                let v = &self.roll.view;
+                let (ppt, key) = (
+                    f64::from(v.pixels_per_tick.max(0.0001)),
+                    f64::from(v.key_height.max(1.0)),
+                );
+                self.glide_roll_x.shift(-f64::from(dx) / ppt);
+                // Up the pad is up the keyboard, as the wheel's is.
+                self.glide_roll_y.shift(f64::from(dy) / key);
+                self.tree.invalidate(PANEL);
+            }
+        }
+        self.glide_views(0.0);
+    }
+
+    /// One frame of a pan's coast. Whether it wants another.
+    fn step_pan(&mut self, dt: f32) -> bool {
+        if !self.pan.active() {
+            return false;
+        }
+        let now = self.now_s();
+        let (dx, dy) = self.pan.step(dt, now);
+        if dx != 0.0 || dy != 0.0 {
+            self.pan_by(self.pan_target, dx, dy);
+        }
+        self.pan.active()
+    }
+
+    /// One frame of the open menu's wheel glide.
+    fn step_menu_spring(&mut self, dt: f32) -> bool {
+        if !self.menu_wheeled {
+            return false;
+        }
+        let Some((_, menu)) = &mut self.menu else {
+            self.menu_wheeled = false;
+            return false;
+        };
+        self.menu_spring.set_max(menu.max_scroll());
+        let now = self
+            .test_clock
+            .unwrap_or_else(|| self.glide_clock.elapsed().as_secs_f64());
+        let moving = self.menu_spring.step(dt, now);
+        let to = self.menu_spring.position().clamp(0.0, menu.max_scroll());
+        menu.scroll_by(to - menu.scroll());
+        self.tree.invalidate_rect(self.layout.window);
+        if !moving {
+            self.menu_wheeled = false;
+        }
+        moving
+    }
+
+    /// Which full page is up: 1 the shortcuts, 2 the guide, 3 settings.
+    fn open_page_kind(&self) -> u8 {
+        if self.keybinds.is_some() {
+            1
+        } else if self.help.is_some() {
+            2
+        } else if self.settings_page.is_some() {
+            3
+        } else {
+            0
+        }
+    }
+
+    /// Notes when a page or the menu came up, for their fade; whether
+    /// anything is still fading (in, or a toast in or out).
+    fn note_appearances(&mut self) -> bool {
+        let now = self.now_s();
+        let kind = self.open_page_kind();
+        if kind == 0 {
+            self.page_seen = None;
+        } else if self.page_seen.map(|(k, _)| k) != Some(kind) {
+            self.page_seen = Some((kind, now));
+        }
+        if self.menu.is_some() {
+            self.menu_seen.get_or_insert(now);
+        } else {
+            self.menu_seen = None;
+        }
+        let young = |at: Option<f64>| {
+            at.is_some_and(|at| now - at < f64::from(crate::canvas::APPEAR_SECONDS))
+        };
+        let toast = self.toast.as_ref().is_some_and(|t| {
+            let age = t.shown.elapsed().as_secs_f32();
+            age < crate::canvas::APPEAR_SECONDS || age > crate::canvas::TOAST_SECONDS - 0.35
+        });
+        let fading = young(self.page_seen.map(|(_, at)| at)) || young(self.menu_seen) || toast;
+        if fading {
+            self.tree.invalidate_rect(self.layout.window);
+        }
+        fading
+    }
+
+    /// How far into sight the open page is.
+    fn page_alpha(&self) -> f32 {
+        match self.page_seen {
+            Some((kind, at)) if kind == self.open_page_kind() => {
+                crate::canvas::appear_alpha((self.now_s() - at) as f32)
+            }
+            _ if self.open_page_kind() != 0 => 0.0,
+            _ => 1.0,
+        }
+    }
+
+    /// How far into sight the open menu is.
+    fn menu_alpha(&self) -> f32 {
+        match self.menu_seen {
+            Some(at) => crate::canvas::appear_alpha((self.now_s() - at) as f32),
+            None if self.menu.is_some() => 0.0,
+            None => 1.0,
+        }
+    }
+
+    /// Page Up, Page Down, Home or End on the open full page: a glide a
+    /// screen at a time, or to an end. Whether a page took it.
+    pub(crate) fn page_key(&mut self, key: crate::canvas::PageKey) -> bool {
+        use crate::canvas::PageKey;
+        let body = if self.keybinds.is_some() {
+            self.keybinds_layout().body.height
+        } else if self.help.is_some() {
+            self.help_layout().body.height
+        } else if self.settings_page.is_some() {
+            self.settings_page_layout().body.height
+        } else {
+            return false;
+        };
+        let Some(max) = self.open_page_scroll_max() else {
+            return false;
+        };
+        self.page_spring.set_max(max);
+        let from = self.page_spring.destination();
+        // A screen less a row, so the line at the edge is still in sight.
+        let screen = (body - self.options.theme.metrics.row_height).max(body * 0.5);
+        let to = match key {
+            PageKey::PageDown => from + screen,
+            PageKey::PageUp => from - screen,
+            PageKey::Home => 0.0,
+            PageKey::End => max,
+        };
+        self.page_spring.glide_to(to);
+        self.tree.invalidate_rect(self.layout.window);
+        true
+    }
+
+    /// The winit key, as a [`page_key`](Self::page_key).
+    fn page_key_of(event: &winit::event::KeyEvent) -> Option<crate::canvas::PageKey> {
+        use crate::canvas::PageKey;
+        use winit::keyboard::{Key, NamedKey};
+        match event.logical_key {
+            Key::Named(NamedKey::PageDown) => Some(PageKey::PageDown),
+            Key::Named(NamedKey::PageUp) => Some(PageKey::PageUp),
+            Key::Named(NamedKey::Home) => Some(PageKey::Home),
+            Key::Named(NamedKey::End) => Some(PageKey::End),
+            _ => None,
+        }
     }
 
     /// Middle-click autoscroll begins at `(x, y)`: in the studio's window
@@ -17857,14 +18222,17 @@ impl WindowApp {
         }
         self.close_keybinds();
         if self.help.is_none() {
+            // Where it was left (Ty, 2026-11-06: remember where things were).
+            let (section, scroll) = self.help_place.unwrap_or((0, 0.0));
             self.help = Some(HelpState {
-                section: 0,
+                section,
                 scroll: 0.0,
                 hover: None,
                 paragraphs: Vec::new(),
                 shaped: None,
             });
             self.page_spring = crate::canvas::SpringScroll::default();
+            self.help_wants_scroll = Some(scroll);
         }
         if let Some(live) = &self.live {
             live.window.focus_window();
@@ -17874,7 +18242,14 @@ impl WindowApp {
     }
 
     fn close_help(&mut self) {
-        if self.help.take().is_some() {
+        let max = self
+            .help
+            .is_some()
+            .then(|| crate::canvas::help_scroll_max(&self.help_layout()));
+        if let Some(help) = self.help.take() {
+            let scroll = help.scroll.clamp(0.0, max.unwrap_or(0.0));
+            self.help_place = Some((help.section, scroll));
+            self.help_wants_scroll = None;
             self.tree.invalidate_rect(self.layout.window);
         }
     }
@@ -17908,6 +18283,7 @@ impl WindowApp {
                     help.section = section;
                     help.scroll = 0.0;
                 }
+                self.help_wants_scroll = None;
                 self.page_spring.jump_to(0.0);
             }
             HelpHit::Shortcuts => {
@@ -24422,7 +24798,14 @@ impl WindowApp {
         if !menu.frame.contains(x, y) {
             return false;
         }
-        menu.scroll_by(-steps * step);
+        // Glides there (`menu_spring`), from wherever the menu is now.
+        if !self.menu_wheeled {
+            self.menu_spring.set_max(menu.max_scroll());
+            self.menu_spring.jump_to(menu.scroll());
+        }
+        self.menu_spring.set_max(menu.max_scroll());
+        self.menu_spring.wheel(-steps * step);
+        self.menu_wheeled = true;
         true
     }
 
@@ -24441,6 +24824,9 @@ impl WindowApp {
             return;
         }
         *scroll = wanted;
+        // The thumb is held: the list follows it exactly, no glide.
+        self.wheeled[1] = false;
+        self.wheeled[2] = false;
         self.relayout_panels();
         self.tree.invalidate(BROWSER);
     }
@@ -24531,6 +24917,7 @@ impl WindowApp {
                 self.prefab_scroll = scrolled(self.prefab_scroll, step, self.prefabs.len());
             } else {
                 self.rack_scroll = scrolled(self.rack_scroll, step, self.channels.len());
+                self.wheeled[0] = true;
             }
             self.relayout_panels();
             self.tree.invalidate(RACK);
@@ -24547,7 +24934,9 @@ impl WindowApp {
             if over_presets {
                 self.preset_scroll =
                     scrolled(self.preset_scroll, -(dy.round() as i32), self.presets.len());
+                self.wheeled[2] = true;
             } else {
+                self.wheeled[1] = true;
                 // **The list that is showing**, not the soundfonts: a scroll
                 // offset clamped against the wrong list either stops short of
                 // the end of a long one or runs past the end of a short one,
@@ -24896,6 +25285,14 @@ impl WindowApp {
         // a page, and a page that let `D` through to the delete tool behind
         // it would be a page that edits — and two keys shut it. Before the
         // start menu, because it opens over that too.
+        // Page Up/Down, Home and End move the long pages — but not while the
+        // shortcuts page is listening for a chord to bind.
+        if self.rebind.is_none()
+            && let Some(key) = Self::page_key_of(event)
+            && self.page_key(key)
+        {
+            return;
+        }
         if self.keybinds.is_some() {
             self.keybinds_key(event);
             return;

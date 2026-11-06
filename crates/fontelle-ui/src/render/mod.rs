@@ -159,6 +159,9 @@ pub struct Chrome<'a> {
     /// A transient banner — its text and whether it offers an Undo — drawn over
     /// everything but the modal. See [`crate::canvas::toast_layout`].
     pub toast: Option<(&'a str, bool)>,
+    /// How far into sight the pages, the menu and the toast are — each
+    /// fades in rather than blinking in (`canvas::appear_alpha`).
+    pub appear: Appear,
     /// A confirm modal's question, while one is up. Drawn last of all, over a
     /// scrim. See [`crate::canvas::confirm_layout`].
     /// The question and the confirm button's word.
@@ -846,21 +849,29 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
         // The settings page, opened from the card's gear — under the menu,
         // because its drop-downs are menus.
         if let Some(page) = &chrome.settings_page {
-            draw_settings_page(scene, theme, chrome.labels, layout.window, page);
+            faded(scene, layout.window, chrome.appear.page, |scene| {
+                draw_settings_page(scene, theme, chrome.labels, layout.window, page)
+            });
         }
         // The one thing above it: the name prompt *New project* opens.
-        draw_context_menu(
-            scene,
-            theme,
-            chrome.labels,
-            chrome.menu,
-            chrome.field.as_ref(),
-        );
+        faded(scene, layout.window, chrome.appear.menu, |scene| {
+            draw_context_menu(
+                scene,
+                theme,
+                chrome.labels,
+                chrome.menu,
+                chrome.field.as_ref(),
+            )
+        });
         if let Some(help) = &chrome.help {
-            draw_help(scene, theme, chrome.labels, layout.window, help);
+            faded(scene, layout.window, chrome.appear.page, |scene| {
+                draw_help(scene, theme, chrome.labels, layout.window, help)
+            });
         }
         if let Some(keybinds) = &chrome.keybinds {
-            draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
+            faded(scene, layout.window, chrome.appear.page, |scene| {
+                draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds)
+            });
         }
         return;
     }
@@ -1100,7 +1111,9 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // The settings page goes under it: its drop-downs and its name prompt
     // are menus, and they open over the page.
     if let Some(page) = &chrome.settings_page {
-        draw_settings_page(scene, theme, chrome.labels, layout.window, page);
+        faded(scene, layout.window, chrome.appear.page, |scene| {
+            draw_settings_page(scene, theme, chrome.labels, layout.window, page)
+        });
     }
     if let Some(tour) = &chrome.tour {
         draw_tour(scene, theme, chrome.labels, layout.window, tour);
@@ -1110,13 +1123,15 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     if let Some(overlay) = &chrome.vocal_overlay {
         vocal::draw_vocal_overlays(scene, theme, chrome.labels, overlay);
     }
-    draw_context_menu(
-        scene,
-        theme,
-        chrome.labels,
-        chrome.menu,
-        chrome.field.as_ref(),
-    );
+    faded(scene, layout.window, chrome.appear.menu, |scene| {
+        draw_context_menu(
+            scene,
+            theme,
+            chrome.labels,
+            chrome.menu,
+            chrome.field.as_ref(),
+        )
+    });
     draw_tooltip(scene, theme, chrome);
     // Last of all: what the pointer is holding.
     if let Some(carry) = &chrome.carry {
@@ -1124,7 +1139,9 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     }
     // Over even that: the transient banner, and — above everything — the modal.
     if let Some((text, undoable)) = chrome.toast {
-        draw_toast(scene, theme, chrome.labels, layout.window, text, undoable);
+        faded(scene, layout.window, chrome.appear.toast, |scene| {
+            draw_toast(scene, theme, chrome.labels, layout.window, text, undoable)
+        });
     }
     if let Some((label, fraction)) = chrome.notices.job {
         draw_job_card(scene, theme, chrome.labels, layout.window, label, fraction);
@@ -1177,10 +1194,14 @@ pub fn draw_window(scene: &mut Scene, theme: &Theme, layout: &WindowLayout, chro
     // And the shortcuts sheet, which is a page rather than a prompt: over
     // the studio and its menus, under nothing. The guide is the same.
     if let Some(help) = &chrome.help {
-        draw_help(scene, theme, chrome.labels, layout.window, help);
+        faded(scene, layout.window, chrome.appear.page, |scene| {
+            draw_help(scene, theme, chrome.labels, layout.window, help)
+        });
     }
     if let Some(keybinds) = &chrome.keybinds {
-        draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds);
+        faded(scene, layout.window, chrome.appear.page, |scene| {
+            draw_keybinds(scene, theme, chrome.labels, layout.window, keybinds)
+        });
     }
 }
 
@@ -7974,6 +7995,66 @@ pub fn prefab_uses_label(uses: usize) -> String {
 /// shape exactly the string the renderer will look for.
 pub const ADD_PREFAB: &str = "+ Make prefab";
 
+/// How opaque the things that come and go are this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Appear {
+    pub page: f32,
+    pub menu: f32,
+    pub toast: f32,
+}
+
+impl Default for Appear {
+    fn default() -> Self {
+        Self {
+            page: 1.0,
+            menu: 1.0,
+            toast: 1.0,
+        }
+    }
+}
+
+/// Clips what follows to `rect` until the matching `pop_layer`.
+fn clip_to(scene: &mut Scene, rect: Rect) {
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        Affine::IDENTITY,
+        &KRect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.right()),
+            f64::from(rect.bottom()),
+        ),
+    );
+}
+
+/// Draws `draw` at `alpha` over `rect`: whole when it is whole, nothing
+/// when it is nothing, and in a layer in between.
+fn faded(scene: &mut Scene, rect: Rect, alpha: f32, draw: impl FnOnce(&mut Scene)) {
+    if alpha >= 1.0 {
+        draw(scene);
+        return;
+    }
+    if alpha <= 0.0 {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        alpha,
+        Affine::IDENTITY,
+        &KRect::new(
+            f64::from(rect.x),
+            f64::from(rect.y),
+            f64::from(rect.right()),
+            f64::from(rect.bottom()),
+        ),
+    );
+    draw(scene);
+    scene.pop_layer();
+}
+
 fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChrome<'_>) {
     let p = &theme.palette;
     let l = &chrome.layout;
@@ -7994,6 +8075,8 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
         Some(RackHit::Row(index) | RackHit::Mute(index) | RackHit::Solo(index)) => Some(index),
         _ => None,
     };
+    // Clipped to the list: while it glides, a row is half out of it.
+    clip_to(scene, l.list);
     for row in &l.rows {
         let Some(channel) = chrome.channels.get(row.index) else {
             continue;
@@ -8100,6 +8183,8 @@ fn draw_rack(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &RackChr
             stroke_rect_rounded(scene, row.route.inset(-1.0), 3.0, 1.5, p.text);
         }
     }
+
+    scene.pop_layer();
 
     // The add button, always at the bottom.
     fill_rect_rounded(scene, l.add, theme.metrics.corner_radius, p.accent);
@@ -10585,6 +10670,8 @@ fn draw_browser(
             return;
         }
         fill_rect(scene, area, p.window);
+        // Clipped to the list: while it glides, a row is half out of it.
+        clip_to(scene, area);
         for (index, rect) in rows {
             let Some(entry) = entries.get(*index) else {
                 continue;
@@ -10680,6 +10767,7 @@ fn draw_browser(
                 draw_setting_control(scene, p, m, control, *rect);
             }
         }
+        scene.pop_layer();
     };
     list(
         l.files,

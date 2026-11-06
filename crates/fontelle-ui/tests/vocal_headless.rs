@@ -314,6 +314,7 @@ fn shoot(
             labels: &labels,
             status: "",
             toast: None,
+            appear: Default::default(),
             confirm: None,
             notices: Default::default(),
             tooltip: None,

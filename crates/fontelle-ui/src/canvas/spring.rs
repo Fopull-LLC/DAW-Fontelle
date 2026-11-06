@@ -127,6 +127,23 @@ impl SpringScroll {
         self.velocity = 0.0;
     }
 
+    /// Glides to `position` within the content, with no give — what a key
+    /// asks for: Page Down, End.
+    pub fn glide_to(&mut self, position: f32) {
+        self.velocity = 0.0;
+        self.motion = Motion::Glide {
+            target: position.clamp(0.0, self.max),
+        };
+    }
+
+    /// Where the page is going: a glide's target, or where it is.
+    pub fn destination(&self) -> f32 {
+        match self.motion {
+            Motion::Glide { target } => target.clamp(0.0, self.max),
+            _ => self.position.clamp(0.0, self.max),
+        }
+    }
+
     /// A wheel moved the page `points` (down is positive).
     pub fn wheel(&mut self, points: f32) {
         let from = match self.motion {
@@ -297,4 +314,157 @@ impl SpringScroll {
 /// `from` an exponential step toward `to`.
 fn approach(from: f32, to: f32, dt: f32, tau: f32) -> f32 {
     to + (from - to) * (-dt / tau).exp()
+}
+
+/// The keys that move a long page: a screen at a time, or to an end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKey {
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+/// How far a list may be from where it is going before the glide starts
+/// there instead, in rows: a jump to the far end still glides, briefly,
+/// rather than scrolling past a hundred rows.
+const LIST_SKIP_ROWS: f32 = 4.0;
+
+/// A list's glide's time constant.
+const LIST_TAU_S: f32 = 0.05;
+
+/// Closer than this, in rows, a list has arrived.
+const LIST_SETTLE_ROWS: f32 = 0.02;
+
+/// Where a list of rows is drawn, in rows from the top — easing toward the
+/// whole row its scroll names (Ty, 2026-11-06: lists that glide). The row
+/// the list is scrolled to stays the truth; this is only where it is seen.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ListGlide {
+    position: f32,
+}
+
+impl ListGlide {
+    pub fn position(&self) -> f32 {
+        self.position
+    }
+
+    /// At `rows`, at once.
+    pub fn jump(&mut self, rows: f32) {
+        self.position = rows;
+    }
+
+    /// One frame toward `target`, `dt` seconds on. Whether it is still
+    /// moving.
+    pub fn step(&mut self, target: f32, dt: f32) -> bool {
+        let gap = target - self.position;
+        if gap.abs() < LIST_SETTLE_ROWS {
+            let moved = self.position != target;
+            self.position = target;
+            return moved;
+        }
+        if gap.abs() > LIST_SKIP_ROWS {
+            self.position = target - LIST_SKIP_ROWS * gap.signum();
+        }
+        self.position = approach(self.position, target, dt.max(0.0), LIST_TAU_S);
+        if (target - self.position).abs() < LIST_SETTLE_ROWS {
+            self.position = target;
+        }
+        true
+    }
+}
+
+/// A touchpad's pan of a view that scrolls both ways — the arrangement, the
+/// roll — and its coast once the fingers lift. What it hands back each frame
+/// is how far to move the view, in points, signed as the fingers moved.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PanCoast {
+    velocity: (f32, f32),
+    last: Option<f64>,
+    coasting: bool,
+}
+
+impl PanCoast {
+    /// Fingers moved `(dx, dy)` points at `at`. The caller moves the view by
+    /// exactly that itself; this keeps the speed for the coast.
+    pub fn touch(&mut self, dx: f32, dy: f32, at: f64) {
+        match self.last {
+            Some(last) if !self.coasting => {
+                let gap = (at - last).clamp(1.0 / 480.0, MAX_EVENT_GAP_S) as f32;
+                let speed = (dx / gap, dy / gap);
+                self.velocity = (
+                    self.velocity.0 * 0.4 + speed.0 * 0.6,
+                    self.velocity.1 * 0.4 + speed.1 * 0.6,
+                );
+            }
+            _ => self.velocity = (0.0, 0.0),
+        }
+        self.coasting = false;
+        self.last = Some(at);
+    }
+
+    /// The fingers lifted at `at`.
+    pub fn release(&mut self, at: f64) {
+        let Some(last) = self.last.take() else {
+            return;
+        };
+        if at - last > STILL_BEFORE_LIFT_S {
+            self.velocity = (0.0, 0.0);
+        }
+        self.coasting = self.velocity.0.hypot(self.velocity.1) >= COAST_MIN_SPEED;
+    }
+
+    /// Whether it is still carrying the view on.
+    pub fn coasting(&self) -> bool {
+        self.coasting
+    }
+
+    /// Whether a frame is wanted: coasting, or fingers down that may lift
+    /// without saying so.
+    pub fn active(&self) -> bool {
+        self.coasting || self.last.is_some()
+    }
+
+    /// One frame, `dt` seconds on at `now`: how far to move the view.
+    pub fn step(&mut self, dt: f32, now: f64) -> (f32, f32) {
+        if let Some(last) = self.last
+            && now - last > TOUCH_IDLE_S
+        {
+            self.release(now);
+        }
+        if !self.coasting {
+            return (0.0, 0.0);
+        }
+        let decay = (-dt.max(0.0) / COAST_TAU_S).exp();
+        self.velocity = (self.velocity.0 * decay, self.velocity.1 * decay);
+        if self.velocity.0.hypot(self.velocity.1) < COAST_MIN_SPEED {
+            self.coasting = false;
+            self.velocity = (0.0, 0.0);
+            return (0.0, 0.0);
+        }
+        (self.velocity.0 * dt, self.velocity.1 * dt)
+    }
+}
+
+/// How long a page or a menu takes to fade in.
+pub const APPEAR_SECONDS: f32 = 0.14;
+
+/// How opaque a page or menu is `age` seconds after it opened: most of the
+/// way in the first frames, then easing in — so it is never in the way.
+pub fn appear_alpha(age: f32) -> f32 {
+    let t = (age / APPEAR_SECONDS).clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// How long a toast takes to fade out at the end of its time.
+const TOAST_FADE_OUT_S: f32 = 0.3;
+
+/// How opaque a toast is `age` seconds into its `total`: faded in, held,
+/// faded out by the end — never a blink either way.
+pub fn toast_alpha(age: f32, total: f32) -> f32 {
+    if age >= total {
+        return 0.0;
+    }
+    let out = ((total - age) / TOAST_FADE_OUT_S).clamp(0.0, 1.0);
+    appear_alpha(age).min(out)
 }

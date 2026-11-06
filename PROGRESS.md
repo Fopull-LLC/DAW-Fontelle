@@ -19,6 +19,33 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-06 — Polish, round two, as 0.35.0-beta.1.** Ty: *"continue on
+the remaining reccomendations and then release as a beta release"*.
+
+- **Lists glide** (`canvas::ListGlide`): the rack and the browser's two
+  lists are laid out at a fraction of a row (`rack_layout_at`,
+  `browser_layout_split_at`); rows keep their whole height, one more peeks
+  in, and the drawing is clipped to the list (`render::clip_to`). Only a
+  wheel turn glides (`App::wheeled`): anything else that moves a list —
+  a channel added, a search, the scrollbar held — lands at once in
+  `settle_list_glides`, so nothing that reads the rack afterwards sees it
+  mid-way. The mixer still steps by strip: its cables and the pinned master
+  are laid out against whole strips, and half a strip is half a fader.
+- **Menus** glide on the wheel through `menu_spring` (their own scrollbar
+  and `scroll_to` still move them directly).
+- **A touchpad pans the arrangement and the roll** exactly under the
+  fingers (`Glide::shift`) and coasts after the lift (`canvas::PanCoast`).
+  A held key keeps the wheel's zooms and sideways scroll. No bounce at the
+  song's start: the views cannot stand before tick 0.
+- **Fades** (`canvas::appear_alpha`, `toast_alpha`, `render::Appear`): the
+  full pages and the menu fade in over 0.14 s, a toast in and out.
+- **Page Up/Down, Home, End** on the full pages (`App::page_key`), not
+  while the shortcuts page is listening for a chord.
+- **The guide** opens on the section and scroll it was left at in this run
+  (`help_place`, put back once its paragraphs are measured).
+- Not done, on purpose: remembering the browser's tab across launches —
+  it would undo Ty's choice that it opens on Import.
+
 **2026-11-06 — Polish: What's new always there, settings remember their
 place, springy scrolling (not released).** Ty: *"make the whats new button
 permenant on the home page and also make settings remember what tab you

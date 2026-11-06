@@ -280,6 +280,32 @@ pub fn browser_layout_split(
     preset_scroll: usize,
     file_share: Option<f32>,
 ) -> BrowserLayout {
+    browser_layout_split_at(
+        body,
+        metrics,
+        mode,
+        file_count,
+        preset_count,
+        file_scroll as f32,
+        preset_scroll as f32,
+        file_share,
+    )
+}
+
+/// [`browser_layout_split`] with each list scrolled a fraction of a row as
+/// well — where a list that glides is seen between two rows. See
+/// [`rows`] for what a row half out of its list may and may not do.
+#[allow(clippy::too_many_arguments)]
+pub fn browser_layout_split_at(
+    body: Rect,
+    metrics: &Metrics,
+    mode: BrowserMode,
+    file_count: usize,
+    preset_count: usize,
+    file_scroll: f32,
+    preset_scroll: f32,
+    file_share: Option<f32>,
+) -> BrowserLayout {
     // The mode switch first, above the search box: the search filters
     // whichever list is showing, so it belongs *under* the thing that decides
     // which list that is.
@@ -478,10 +504,20 @@ pub fn browser_layout_split(
         kinds,
         search,
         file_rows: rows(files, metrics, file_count, file_scroll),
-        file_bar: RowScrollbar::of(files, metrics.row_height, file_count, file_scroll),
+        file_bar: RowScrollbar::of(
+            files,
+            metrics.row_height,
+            file_count,
+            file_scroll.max(0.0).round() as usize,
+        ),
         files,
         preset_rows: rows(presets, metrics, preset_count, preset_scroll),
-        preset_bar: RowScrollbar::of(presets, metrics.row_height, preset_count, preset_scroll),
+        preset_bar: RowScrollbar::of(
+            presets,
+            metrics.row_height,
+            preset_count,
+            preset_scroll.max(0.0).round() as usize,
+        ),
         seam,
         presets,
         status,
@@ -491,8 +527,8 @@ pub fn browser_layout_split(
         export,
         file_count,
         preset_count,
-        file_scroll,
-        preset_scroll,
+        file_scroll: file_scroll.max(0.0).floor() as usize,
+        preset_scroll: preset_scroll.max(0.0).floor() as usize,
     }
 }
 
@@ -511,12 +547,13 @@ const OPEN_SHARE: f32 = 0.58;
 /// reached across the boundary into the list below so a click at the top of the
 /// preset list landed on a soundfont. A row that does not fit is not shown, and
 /// the few pixels left over at the bottom are list background.
-pub(crate) fn rows(
-    area: Rect,
-    metrics: &Metrics,
-    count: usize,
-    scroll: usize,
-) -> Vec<(usize, Rect)> {
+///
+/// **Between two rows** (a glide, `scroll` a fraction): the first row is
+/// partly above the list and one more peeks in below, each at its whole
+/// height — never squeezed — and the drawing is clipped to `area`.
+/// [`browser_hit`] answers only inside the list a row belongs to, so the
+/// part of a row hanging out of its list is never pressed.
+pub(crate) fn rows(area: Rect, metrics: &Metrics, count: usize, scroll: f32) -> Vec<(usize, Rect)> {
     if area.is_empty() || metrics.row_height <= 0.0 || count == 0 {
         return Vec::new();
     }
@@ -524,7 +561,10 @@ pub(crate) fn rows(
     if visible == 0 {
         return Vec::new();
     }
-    let scroll = scroll.min(count.saturating_sub(1));
+    let at = scroll.max(0.0).min(count.saturating_sub(1) as f32);
+    let first = at.floor() as usize;
+    let fraction = at - first as f32;
+    let peek = usize::from(fraction > 0.0);
     // A list longer than its room gives its bar a strip down the right edge
     // (see `RowScrollbar`), so no name runs under the thumb.
     let width = if count > visible {
@@ -532,15 +572,15 @@ pub(crate) fn rows(
     } else {
         area.width
     };
-    (scroll..count)
-        .take(visible)
+    (first..count)
+        .take(visible + peek)
         .enumerate()
         .map(|(slot, index)| {
             (
                 index,
                 Rect::new(
                     area.x,
-                    area.y + slot as f32 * metrics.row_height,
+                    area.y + (slot as f32 - fraction) * metrics.row_height,
                     width,
                     metrics.row_height,
                 ),
