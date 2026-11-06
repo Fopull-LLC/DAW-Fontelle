@@ -442,13 +442,16 @@ fn updater_serving(served: &Served) -> Updater {
                 .map(|(_, answer)| answer.clone())
                 .unwrap_or_else(|| Err(format!("no such url in the test: {url}")));
             // Half-way, then done, the way a real transfer reports — and a
-            // pause between, long enough for a test to see the first.
+            // pause between, long enough for a test to see the first. Sixty
+            // milliseconds was not, on a busy macOS runner: the 0.35.0-beta.1
+            // CI run saw `done: 261` where the half-way 130 was due (the
+            // poll, every 10 ms, slept through the whole pause).
             if let Ok(bytes) = &answer
                 && bytes.len() > 100
             {
                 let total = bytes.len() as u64;
                 progress(total / 2, Some(total));
-                std::thread::sleep(std::time::Duration::from_millis(60));
+                std::thread::sleep(std::time::Duration::from_millis(400));
                 progress(total, Some(total));
             }
             answer
