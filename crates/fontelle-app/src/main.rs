@@ -81,6 +81,9 @@ struct Playback<'a> {
     /// command line goes straight to it, and `--no-menu` skips it too — for
     /// the driven runs that photograph the studio.
     welcome: bool,
+    /// A song named on the command line — a double-click in the file
+    /// manager — was opened: a milestone for the install ping (card 0646).
+    opened_a_song: bool,
 }
 
 fn play_sf2(path: &std::path::Path, options: PlayOptions<'_>) -> Result<(), String> {
@@ -232,6 +235,7 @@ fn open_and_play<'a>(
     if playback.window && playback.save.is_none() {
         playback.save = Some(bundle);
     }
+    playback.opened_a_song = playback.window;
     play_or_render(opened.project, opened.library, playback)
 }
 
@@ -254,6 +258,7 @@ fn play_or_render(
         soundfont_dirs,
         run_for,
         welcome,
+        opened_a_song,
     } = options;
     // An offline bounce is not real-time, so it renders at export quality
     // rather than at whatever the patch asks for during playback (§7.6).
@@ -798,6 +803,9 @@ fn play_or_render(
             ));
             if !welcome {
                 session.say_ping_notice_without_menu();
+            }
+            if opened_a_song {
+                session.reached(fontelle_app::install_ping::Milestone::ProjectOpened);
             }
             session.start_install_ping();
             // The start menu's update check, if the settings allow one. Built
@@ -1721,6 +1729,7 @@ fn main() {
         // Only a plain launch: a project or a demo named on the command line
         // is a person who has already said where they are going.
         welcome: window && !headless_project && !blank && !args.iter().any(|a| a == "--no-menu"),
+        opened_a_song: false,
         announce: match (playing_sf2, opening) {
             (false, false) => Some(WELCOME.to_string()),
             (true, false) if midi.is_none() => Some(if blank {
