@@ -1,0 +1,31 @@
+Opening Fontelle on a Mac for the first time
+============================================
+
+Fontelle is free and is not signed with a paid Apple developer account, so
+macOS asks you to confirm it once. After that it opens like any other app,
+and it updates itself from its start menu without asking again.
+
+1. Drag Fontelle.app into your Applications folder.
+   (Opened from Downloads, macOS runs it from a temporary copy that cannot
+   update itself.)
+
+2. Open Fontelle from Applications. macOS says it cannot verify that
+   "Fontelle" is free of malware. Press Done.
+
+3. Open System Settings > Privacy & Security. Scroll down to Security,
+   where it says "Fontelle" was blocked to protect your Mac, and press
+   Open Anyway. Confirm with your password or Touch ID.
+
+4. Open Fontelle again and press Open Anyway once more. That is the last
+   time.
+
+On macOS 14 (Sonoma) and earlier, Control-click Fontelle.app in
+Applications, choose Open, then Open.
+
+If you are comfortable with Terminal, this does steps 2 to 4 in one go:
+
+    xattr -dr com.apple.quarantine /Applications/Fontelle.app
+
+Recording asks for the microphone the first time you record; say Allow.
+
+Help and the download page: https://fopull.com/fontelle

@@ -3318,6 +3318,11 @@ impl WindowApp {
 
     /// Takes the menu down: the studio is what is drawn from here on.
     fn close_welcome(&mut self) {
+        if self.welcome.is_some()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.start_menu_left();
+        }
         self.welcome = None;
         self.refresh_title();
         self.tree.invalidate_rect(self.layout.window);

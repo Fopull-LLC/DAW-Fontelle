@@ -131,6 +131,13 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
+      # The release's Fontelle.app (hub card 0645), made and verified by
+      # macOS's own codesign: a whole, sealed app, days before a tag.
+      - name: Fontelle.app
+        if: runner.os == 'macOS'
+        run: |
+          packaging/macos/make-app.sh target/debug/fontelle 0.0.0-ci "$RUNNER_TEMP"
+          codesign --display --verbose=2 "$RUNNER_TEMP/Fontelle.app"
 
   # The ASIO helper on the platform it is for: built as it is released, and
   # every test that needs no ASIO driver — the protocol, the conversions,

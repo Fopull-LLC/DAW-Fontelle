@@ -210,6 +210,7 @@ impl BundleProber {
     fn read_one(&self, bundle: &Path, bridge_folders: &[PathBuf]) -> Outcome {
         self.probes.fetch_add(1, Ordering::Relaxed);
         let mut command = std::process::Command::new(&self.helper);
+        crate::gui::no_console(&mut command);
         command.arg(PROBE_FLAG).arg(bundle);
         for folder in bridge_folders {
             command.arg("--bridges").arg(folder);

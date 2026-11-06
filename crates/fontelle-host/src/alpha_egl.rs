@@ -269,6 +269,7 @@ impl EditorGate {
 /// The command that runs `helper` as the probe.
 pub fn egl_probe_command(helper: &Path) -> std::process::Command {
     let mut command = std::process::Command::new(helper);
+    crate::gui::no_console(&mut command);
     command
         .arg(EGL_PROBE_FLAG)
         .stdin(std::process::Stdio::null())

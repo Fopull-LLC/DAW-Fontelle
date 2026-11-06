@@ -415,7 +415,7 @@ pub fn fetch_command(url: &str) -> (&'static str, Vec<String>) {
 /// Fetches `url` with `curl`, returning the body.
 pub fn fetch(url: &str) -> Result<Vec<u8>, String> {
     let (program, args) = fetch_command(url);
-    let output = Command::new(program)
+    let output = fontelle_host::gui::no_console(&mut Command::new(program))
         .args(&args)
         .output()
         .map_err(|e| format!("could not run {program}: {e}"))?;
@@ -460,7 +460,7 @@ pub fn fetch_with_progress(
         args.push(TIMEOUT_SECONDS.to_string());
         args
     };
-    let mut child = Command::new(program)
+    let mut child = fontelle_host::gui::no_console(&mut Command::new(program))
         .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -494,7 +494,7 @@ pub fn fetch_with_progress(
 /// The size `url` says it is, from a `HEAD` — the last `content-length`
 /// after the redirects, which is the CDN's and the real one.
 fn content_length(url: &str) -> Option<u64> {
-    let output = Command::new("curl")
+    let output = fontelle_host::gui::no_console(&mut Command::new("curl"))
         .args([
             "-sI",
             "-L",
@@ -567,6 +567,16 @@ fn binary_name() -> &'static str {
 /// tarball has those already, and one who did not has a binary and nothing
 /// scattered around it.
 pub fn install(archive: &Path, exe: &Path) -> Result<(), String> {
+    // A quarantined app opened where it was downloaded runs from a read-only
+    // copy macOS makes for it ("App Translocation"): nothing written there
+    // would last. Said in words that say what to do.
+    if exe.to_string_lossy().contains("/AppTranslocation/") {
+        return Err(
+            "macOS is running Fontelle from a temporary copy \u{2014} move Fontelle.app \
+             to Applications, open it from there, and update again"
+                .to_string(),
+        );
+    }
     let dir = exe
         .parent()
         .ok_or_else(|| format!("{} has no folder", exe.display()))?;
@@ -576,14 +586,65 @@ pub fn install(archive: &Path, exe: &Path) -> Result<(), String> {
         .map_err(|e| format!("cannot write to {}: {e}", dir.display()))?;
     let result = unpack_and_swap(archive, exe, &staging);
     std::fs::remove_dir_all(&staging).ok();
+    // Inside an app, the app is sealed again over its new binary (hub card
+    // 0645). Best effort: an app that cannot be re-signed still runs on an
+    // Intel Mac, and on Apple silicon says why when opened.
+    #[cfg(target_os = "macos")]
+    if result.is_ok()
+        && let Some(app) = app_bundle_of(exe)
+    {
+        for (program, args) in reseal_commands(&app) {
+            let _ = fontelle_host::gui::no_console(&mut Command::new(program))
+                .args(&args)
+                .status();
+        }
+    }
     result
+}
+
+/// The `.app` a binary at `exe` is the executable of —
+/// `X.app/Contents/MacOS/fontelle` — or `None` for a binary in a folder.
+pub fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app")
+        .then(|| app.to_path_buf())
+}
+
+/// What seals `app` again after its binary was replaced: an ad-hoc
+/// signature over the whole app — no Apple account needed, and without it
+/// a changed binary in a signed app is a "damaged" app — and no quarantine
+/// flag, so an update never needs System Settings' *Open Anyway* again.
+/// `curl` sets none, but a person's own copying might have. Both programs
+/// are part of every macOS.
+pub fn reseal_commands(app: &Path) -> Vec<(&'static str, Vec<String>)> {
+    let app = app.to_string_lossy().into_owned();
+    vec![
+        (
+            "codesign",
+            vec![
+                "--force".to_string(),
+                "--deep".to_string(),
+                "--sign".to_string(),
+                "-".to_string(),
+                app.clone(),
+            ],
+        ),
+        (
+            "xattr",
+            vec!["-dr".to_string(), "com.apple.quarantine".to_string(), app],
+        ),
+    ]
 }
 
 fn unpack_and_swap(archive: &Path, exe: &Path, staging: &Path) -> Result<(), String> {
     // `tar` reads both a tarball and a zip (bsdtar, which is what Windows
     // and macOS ship, does; GNU tar does not read zips, but Linux gets a
     // tarball).
-    let status = Command::new("tar")
+    let status = fontelle_host::gui::no_console(&mut Command::new("tar"))
         .arg("-xf")
         .arg(archive)
         .arg("-C")
@@ -671,11 +732,11 @@ fn install_asio_helper(from: &Path, to: &Path) {
 }
 
 /// The binary inside an unpacked archive: at the top, or — as the release
-/// workflow packs it — inside the one folder the archive holds.
+/// workflow packs it — inside the one folder the archive holds; and, in
+/// either, inside the `Fontelle.app` the macOS archive holds there.
 fn find_binary(staging: &Path) -> Option<PathBuf> {
-    let direct = staging.join(binary_name());
-    if direct.is_file() {
-        return Some(direct);
+    if let Some(found) = binary_in(staging) {
+        return Some(found);
     }
     let mut folders = std::fs::read_dir(staging)
         .ok()?
@@ -686,8 +747,17 @@ fn find_binary(staging: &Path) -> Option<PathBuf> {
         // Two folders is not a release archive; refuse to guess.
         return None;
     }
-    let nested = folder.join(binary_name());
-    nested.is_file().then_some(nested)
+    binary_in(&folder)
+}
+
+/// The binary right in `dir`, or in `dir/Fontelle.app`.
+fn binary_in(dir: &Path) -> Option<PathBuf> {
+    [
+        dir.join(binary_name()),
+        dir.join("Fontelle.app/Contents/MacOS").join(binary_name()),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 /// The binary this process was launched as, asked once and kept.

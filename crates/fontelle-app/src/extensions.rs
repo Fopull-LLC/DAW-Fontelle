@@ -357,7 +357,7 @@ fn unpack_and_place(
     let archive_path = staging.join("archive");
     std::fs::write(&archive_path, archive)
         .map_err(|e| format!("cannot stage the download: {e}"))?;
-    let status = std::process::Command::new("tar")
+    let status = fontelle_host::gui::no_console(&mut std::process::Command::new("tar"))
         .arg("-xf")
         .arg(&archive_path)
         .arg("-C")

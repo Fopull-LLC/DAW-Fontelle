@@ -19,6 +19,34 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-05 — Counted on the first open; macOS gets an app, Windows loses
+its console (hub card 0645, not released).** W: 51 fresh downloads became
+16 counted installs since 0.33.0, and macOS never counted one. Ty (via W,
+confirmed with me): *opt out, counted on first open*; no paid signing.
+
+- **The first launch pings.** Saying the notice (`set_ping_notice_said`)
+  schedules this run's ping `install_ping::NOTICE_GRACE` (60 s) later, or
+  at once when the start menu is left (`StudioHost::start_menu_left`);
+  `pump_install_ping` starts it, reading the switch again. A launch with
+  no start menu says the notice as a toast (`say_ping_notice_without_menu`).
+  **The sender is injected** (`Session::with_ping_sender`): only `main`
+  gives it curl, so no test can count itself as an install.
+- **Windows**: `windows_subsystem = "windows"` (verified: the cross-built
+  exe's PE subsystem is 2), `AttachConsole` for command-line runs, and
+  every spawn goes through `fontelle_host::gui::no_console`
+  (`as_the_desktop_has_it` calls it). `tests/no_console.rs` scans for any
+  `Command::new` that does not.
+- **macOS**: the archive holds `Fontelle.app` (`packaging/macos/make-app.sh`,
+  ad-hoc signed) and `FIRST-RUN.txt` (Applications, Done, Privacy &
+  Security ▸ Open Anyway; the `xattr` line). The updater finds the binary
+  inside an app, re-seals the app after a swap (`reseal_commands`:
+  `codesign --sign -` and `xattr -dr com.apple.quarantine`), and refuses
+  with words from a translocated copy. CI's macOS job builds and verifies
+  the app; a macOS-only test updates a real signed app and verifies it.
+  **Not seen on a real Mac by me** — the first macOS user is the check.
+- Steam's `make-depots.sh` reads the binary out of the app, or the bare
+  one from older releases.
+
 **2026-11-03 — Users routed through fopull.com, and an update restarts by
 itself (hub card 0620, not released).** W measured ~70% of GitHub downloads
 never touching the site, and one visit to the support page in 16 days. Ty:

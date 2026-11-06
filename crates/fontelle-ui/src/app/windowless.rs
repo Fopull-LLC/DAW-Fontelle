@@ -374,6 +374,12 @@ impl Windowless {
         self.settle();
     }
 
+    /// Takes the start menu down, as every way out of it does.
+    pub fn leave_welcome(&mut self) {
+        self.app.close_welcome();
+        self.settle();
+    }
+
     /// Whether the window has decided to close (a quit, or a restart).
     pub fn quitting(&self) -> bool {
         self.app.quit

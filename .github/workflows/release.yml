@@ -114,7 +114,15 @@ jobs:
         shell: bash
         run: |
           mkdir -p "dist/$NAME"
-          cp "target/${{ matrix.target }}/release/fontelle" "dist/$NAME/"
+          # macOS gets Fontelle.app and the steps for its first open (hub
+          # card 0645): the bare binary opened Terminal on a double-click.
+          # The updater finds the binary inside either (`updates.rs`).
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            packaging/macos/make-app.sh "target/${{ matrix.target }}/release/fontelle" "$VERSION" "dist/$NAME"
+            cp packaging/macos/FIRST-RUN.txt "dist/$NAME/"
+          else
+            cp "target/${{ matrix.target }}/release/fontelle" "dist/$NAME/"
+          fi
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$NAME/"
           # Third-party notices (basic-pitch's Apache-2.0 NOTICE, every
           # shipped sound's licence in licenses/SOUNDS.md) travel with the

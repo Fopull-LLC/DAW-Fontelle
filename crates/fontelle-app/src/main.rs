@@ -1,3 +1,8 @@
+// A window on Windows, not a console program (hub card 0645): from v0.33.0
+// a console opened behind the studio, and closing it closed Fontelle.
+// Started from a terminal it borrows that terminal back (`attach_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::sync::Arc;
 
 use fontelle_app::{RealiseOptions, SampleLibrary, demo_project, project_from_midi};
@@ -783,8 +788,17 @@ fn play_or_render(
             // One more launch, for the start menu's support line — said
             // once, from the fifth (`canvas::support_line_due`).
             session.count_launch();
-            // Today's install ping, if the start menu has said what it sends
-            // and it is on (hub card 0428). Its own thread; nothing waits.
+            // Today's install ping, if the notice has been said and it is on
+            // (hub card 0428). Its own thread; nothing waits. On a first
+            // launch the notice is said now — on the start menu, or as a
+            // toast when there is none — and the ping follows it in this run
+            // (hub card 0645).
+            session = session.with_ping_sender(std::sync::Arc::new(
+                fontelle_app::install_ping::send_with_curl,
+            ));
+            if !welcome {
+                session.say_ping_notice_without_menu();
+            }
             session.start_install_ping();
             // The start menu's update check, if the settings allow one. Built
             // here rather than started: the window starts it when the menu
@@ -1417,6 +1431,19 @@ Where things live
   --help                  Print this.
 ";
 
+/// A windowed program has no console. Started from one — `fontelle
+/// --render-wav …` in a terminal — it writes to that terminal's, as a
+/// console program would; double-clicked, there is none and nothing opens.
+/// After the probes: their output goes down the pipes the scan gave them.
+fn attach_console() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        // SAFETY: no pointers; failing (no parent console) changes nothing.
+        unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // A child of the studio's own plugin scan, asked to read one bundle and
@@ -1430,6 +1457,7 @@ fn main() {
     if let Some(code) = fontelle_host::egl_probe_main(&args[1..]) {
         std::process::exit(code);
     }
+    attach_console();
     // `GDK_SCALE=1` where Xwayland has no XSETTINGS manager — what GTK uses
     // there anyway, and what keeps amsynth 2.0.0's editor from taking the
     // studio down (`fontelle_host::gui::gdk_scale_for`). Here, because it

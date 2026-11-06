@@ -1032,7 +1032,7 @@ pub fn reduce_motion() -> bool {
         // the key exists, unread, at whatever it was installed as.
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
         if desktop.to_ascii_lowercase().contains("gnome")
-            && let Ok(out) = Command::new("gsettings")
+            && let Ok(out) = fontelle_host::gui::no_console(&mut Command::new("gsettings"))
                 .args(["get", "org.gnome.desktop.interface", "enable-animations"])
                 .output()
         {
@@ -1042,7 +1042,7 @@ pub fn reduce_motion() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("defaults")
+        fontelle_host::gui::no_console(&mut Command::new("defaults"))
             .args(["read", "com.apple.universalaccess", "reduceMotion"])
             .output()
             .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "1")

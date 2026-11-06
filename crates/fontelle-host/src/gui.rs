@@ -289,6 +289,23 @@ pub fn as_the_desktop_had_it(
 /// nothing, if [`steady_toolkits`] changed nothing.
 pub fn as_the_desktop_has_it(command: &mut std::process::Command) -> &mut std::process::Command {
     as_the_desktop_had_it(command, DESKTOP_HAD.get().map_or(&[], Vec::as_slice));
+    no_console(command)
+}
+
+/// Starts `command` with no console window of its own, on Windows.
+///
+/// Fontelle is a windowed program there (hub card 0645), and a console
+/// program a windowed one starts — `curl`, `tar`, `reg`, the plugin probe,
+/// the ASIO helper — gets a console window that flashes up over the studio.
+/// A windowed program started this way is untouched: the flag only says
+/// what to do about a console. Elsewhere, nothing.
+pub fn no_console(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
 }
 

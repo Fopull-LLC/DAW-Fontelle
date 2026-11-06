@@ -121,13 +121,21 @@ marker "$out/depots/linux"
 cp -R "$out/unpack/$windows/." "$out/depots/windows/"
 marker "$out/depots/windows"
 
-# macOS: the release has a bare binary per architecture and no .app; Steam
-# launches an app bundle. One universal binary in a minimal bundle, the
-# licences beside it at the depot's top as in the other two.
+# macOS: Steam launches an app bundle. One universal binary in a minimal
+# bundle, the licences beside it at the depot's top as in the other two.
+# The release has a Fontelle.app per architecture from 0.34.0 and a bare
+# binary before it (hub card 0645); either is read.
+mac_binary() {
+    if [ -f "$1/Fontelle.app/Contents/MacOS/fontelle" ]; then
+        echo "$1/Fontelle.app/Contents/MacOS/fontelle"
+    else
+        echo "$1/fontelle"
+    fi
+}
 app="$out/depots/macos/Fontelle.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 "$lipo" -create -output "$app/Contents/MacOS/fontelle" \
-    "$out/unpack/$mac_arm/fontelle" "$out/unpack/$mac_intel/fontelle"
+    "$(mac_binary "$out/unpack/$mac_arm")" "$(mac_binary "$out/unpack/$mac_intel")"
 chmod 755 "$app/Contents/MacOS/fontelle"
 # CFBundleShortVersionString is three numbers by Apple's rule; the full
 # version, beta and all, goes in CFBundleVersion.
@@ -136,7 +144,10 @@ sed -e "s/@VERSION@/$version/g" -e "s/@SHORT_VERSION@/$short/g" \
     "$tree/packaging/macos/Info.plist.in" >"$app/Contents/Info.plist"
 marker "$app/Contents/Resources"
 for item in "$out/unpack/$mac_arm/"*; do
-    [ "$(basename "$item")" = fontelle ] || cp -R "$item" "$out/depots/macos/"
+    case "$(basename "$item")" in
+    fontelle | Fontelle.app | FIRST-RUN.txt) ;;
+    *) cp -R "$item" "$out/depots/macos/" ;;
+    esac
 done
 
 for template in "$here"/*.vdf.in; do

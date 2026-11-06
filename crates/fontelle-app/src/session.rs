@@ -241,6 +241,9 @@ impl InputFailure {
 /// silenced — see `Session::deal_with_silenced`.
 const SILENCED_AGAIN: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What sends one install ping: the body in, the status or why none out.
+pub type PingSender = std::sync::Arc<dyn Fn(&str) -> Result<u16, String> + Send + Sync>;
+
 pub struct Session {
     project: Project,
     history: History,
@@ -621,6 +624,17 @@ pub struct Session {
     /// Whether this launch is a newer version's first (`note_version`): the
     /// start menu says *Updated to* (hub card 0620).
     just_updated: bool,
+    /// What sends the install ping — `curl`, given by `main`
+    /// ([`with_ping_sender`](Session::with_ping_sender)). `None` sends
+    /// nothing, so no test can count itself as an install.
+    ping_sender: Option<PingSender>,
+    /// How long after the notice the first launch's ping goes (hub card
+    /// 0645: about a minute, or when the start menu is left).
+    ping_grace: std::time::Duration,
+    /// When this run's ping is due, once the notice has been said in it.
+    ping_due_at: Option<std::time::Instant>,
+    /// This run's ping has been started: once a run is all it gets.
+    ping_started: bool,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -1760,6 +1774,10 @@ impl Session {
             graphics_asked: false,
             restart_request: false,
             just_updated: false,
+            ping_sender: None,
+            ping_grace: crate::install_ping::NOTICE_GRACE,
+            ping_due_at: None,
+            ping_started: false,
             settings,
             settings_path: None,
             links_to: None,
@@ -2119,10 +2137,57 @@ impl Session {
             )
     }
 
+    /// What sends the install ping. `main` gives `send_with_curl`; a test
+    /// gives something that writes the requests down.
+    pub fn with_ping_sender(mut self, sender: PingSender) -> Self {
+        self.ping_sender = Some(sender);
+        self
+    }
+
+    /// How long after the notice the first launch's ping waits.
+    pub fn with_ping_grace(mut self, grace: std::time::Duration) -> Self {
+        self.ping_grace = grace;
+        self
+    }
+
+    /// The notice, for a launch that shows no start menu — a project named
+    /// on the command line (hub card 0645: that path was never counted). Said
+    /// as a toast, once, and the ping follows it as it follows the menu's.
+    pub fn say_ping_notice_without_menu(&mut self) {
+        use fontelle_ui::document::StudioHost;
+        if !self.ping_notice_due() {
+            return;
+        }
+        self.session_notices
+            .push(crate::install_ping::NOTICE_WITHOUT_MENU.to_string());
+        self.set_ping_notice_said();
+    }
+
+    /// The pass's turn of the install ping: this run's, once its notice's
+    /// grace is over.
+    fn pump_install_ping(&mut self) {
+        if self
+            .ping_due_at
+            .is_some_and(|at| std::time::Instant::now() >= at)
+        {
+            self.ping_due_at = None;
+            self.start_install_ping();
+        }
+    }
+
     /// Sends today's install ping on a thread of its own, if one is due —
-    /// `main` calls it once a launch (hub card 0428). Nothing waits on it,
-    /// and nothing it meets is shown.
-    pub fn start_install_ping(&self) {
+    /// `main` calls it once a launch (hub card 0428), and on the first
+    /// launch it is called again once the notice has been up its grace
+    /// (hub card 0645). Nothing waits on it, and nothing it meets is shown.
+    pub fn start_install_ping(&mut self) {
+        // Started already, or the notice was said in this run and its grace
+        // is not over: `pump_install_ping` asks again when it is.
+        if self.ping_started || self.ping_due_at.is_some() {
+            return;
+        }
+        let Some(sender) = self.ping_sender.clone() else {
+            return;
+        };
         let Some(path) = self.install_ping_path() else {
             return;
         };
@@ -2149,10 +2214,11 @@ impl Session {
             channel: channel.to_string(),
             today,
         };
+        self.ping_started = true;
         let _ = std::thread::Builder::new()
             .name("install-ping".into())
             .spawn(move || {
-                ping.run(crate::install_ping::send_with_curl, std::thread::sleep);
+                ping.run(|body| sender(body), std::thread::sleep);
             });
     }
 
@@ -12710,8 +12776,19 @@ impl StudioHost for Session {
 
     fn set_ping_notice_said(&mut self) {
         self.settings.ping_notice_said = true;
+        // Counted on the first open (hub card 0645): the ping follows the
+        // notice in this same run, its grace later or sooner if the menu is
+        // left. The switch is read again when it goes.
+        self.ping_due_at = Some(std::time::Instant::now() + self.ping_grace);
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
+        }
+    }
+
+    fn start_menu_left(&mut self) {
+        // The notice's ping goes now rather than at the end of its grace.
+        if self.ping_due_at.is_some() {
+            self.ping_due_at = Some(std::time::Instant::now());
         }
     }
 
@@ -17083,6 +17160,7 @@ impl StudioHost for Session {
     }
 
     fn pump(&mut self) {
+        self.pump_install_ping();
         self.pump_previews();
         self.watch_output();
         // Lane-style's upkeep for an edit nobody let go of — a key press has

@@ -255,3 +255,177 @@ fn the_live_endpoint_records_a_ping_through_curl() {
         "a second the same day is a 204 too"
     );
 }
+
+// ------------------------------------------------ counted on the first open
+//
+// Hub card 0645, Ty 2026-11-05: opt out, counted on the first open. Until
+// then the first launch only showed the notice and the ping waited for a
+// second launch that many never made — 51 fresh downloads, 16 counted. The
+// contract (§4, PR #4): the first ping goes in the first launch, about 60 s
+// after the notice appears or when the screen showing it is left, whichever
+// is first; off in that window means no request.
+
+type Sent = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// A first launch: nothing said, the ping on, its requests written down
+/// rather than sent, and the notice's grace `grace` long.
+fn first_launch(
+    dir: &std::path::Path,
+    grace: std::time::Duration,
+) -> (fontelle_app::Session, Sent) {
+    let sent: Sent = Default::default();
+    let to = sent.clone();
+    let mut session = common::a_session_for(common::a_clip_project(4))
+        .with_settings_path(dir.join("settings.json"))
+        .with_ping_sender(std::sync::Arc::new(move |body: &str| {
+            to.lock().unwrap().push(body.to_string());
+            Ok(204)
+        }))
+        .with_ping_grace(grace);
+    session.settings_mut().ping_notice_said = false;
+    session.settings_mut().install_ping = true;
+    (session, sent)
+}
+
+fn window(session: fontelle_app::Session) -> fontelle_ui::Windowless {
+    fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    )
+}
+
+/// Turns the loop until `sent` has `n` requests or two seconds pass.
+fn wait_for(w: &mut fontelle_ui::Windowless, sent: &Sent, n: usize) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while sent.lock().unwrap().len() < n && std::time::Instant::now() < until {
+        w.idle(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn the_first_launch_is_counted_a_moment_after_the_notice() {
+    let dir = scratch("first-open");
+    let (mut session, sent) = first_launch(&dir, std::time::Duration::from_millis(150));
+    // `main` asks at launch, before any menu: nothing said yet, nothing sent.
+    session.start_install_ping();
+    let mut w = window(session);
+    w.idle(std::time::Duration::from_millis(30));
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "before the notice: nothing"
+    );
+    w.open_welcome();
+    assert!(
+        sent.lock().unwrap().is_empty(),
+        "not the moment it is shown"
+    );
+    wait_for(&mut w, &sent, 1);
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "once, in this same launch: {sent:?}");
+    assert!(sent[0].contains("\"product\":\"fontelle\""), "{}", sent[0]);
+    let file = fontelle_app::install_ping::PingFile::read(
+        &dir.join(fontelle_app::install_ping::FILE_NAME),
+    )
+    .expect("the id is kept");
+    assert_eq!(
+        file.last_sent.as_deref(),
+        Some(fontelle_app::install_ping::utc_date(std::time::SystemTime::now()).as_str())
+    );
+    // Turning the loop on sends nothing more.
+    w.idle(std::time::Duration::from_millis(200));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn leaving_the_start_menu_sends_it_without_waiting_out_the_grace() {
+    let dir = scratch("left-menu");
+    let (session, sent) = first_launch(&dir, std::time::Duration::from_secs(3600));
+    let mut w = window(session);
+    w.open_welcome();
+    w.idle(std::time::Duration::from_millis(50));
+    assert!(sent.lock().unwrap().is_empty());
+    w.leave_welcome();
+    wait_for(&mut w, &sent, 1);
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn turned_off_while_the_notice_is_up_nothing_is_sent() {
+    let dir = scratch("off-in-grace");
+    let (session, sent) = first_launch(&dir, std::time::Duration::from_millis(150));
+    let mut w = window(session);
+    w.open_welcome();
+    w.open_settings("Settings");
+    let row = w
+        .setting_labels()
+        .iter()
+        .position(|(name, _)| name == "Count this install")
+        .expect("the switch is in Settings");
+    w.press_setting(row);
+    w.leave_welcome();
+    w.idle(std::time::Duration::from_millis(400));
+    assert!(sent.lock().unwrap().is_empty(), "off means no request");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_launch_straight_into_a_project_says_the_notice_too_and_is_counted() {
+    let dir = scratch("no-menu");
+    let (mut session, sent) = first_launch(&dir, std::time::Duration::from_millis(150));
+    // `main`, when no start menu will be shown: the notice, then the
+    // launch's ask — which must wait out the notice's grace, not send now.
+    session.say_ping_notice_without_menu();
+    session.start_install_ping();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    assert!(sent.lock().unwrap().is_empty(), "not the moment it is said");
+    assert!(fontelle_ui::document::StudioHost::ping_notice_said(
+        &session
+    ));
+    let said = fontelle_ui::document::StudioHost::take_session_notices(&mut session);
+    assert!(
+        said.iter()
+            .any(|s| s.contains("anonymous") && s.contains("Settings")),
+        "{said:?}"
+    );
+    let mut w = window(session);
+    wait_for(&mut w, &sent, 1);
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn off_there_is_no_notice_without_the_menu_and_nothing_sent() {
+    let dir = scratch("no-menu-off");
+    let (mut session, sent) = first_launch(&dir, std::time::Duration::from_millis(50));
+    session.settings_mut().install_ping = false;
+    session.say_ping_notice_without_menu();
+    assert!(!fontelle_ui::document::StudioHost::ping_notice_said(
+        &session
+    ));
+    let mut w = window(session);
+    w.idle(std::time::Duration::from_millis(300));
+    assert!(sent.lock().unwrap().is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_session_with_no_sender_never_sends() {
+    // Only `main` gives the session curl: no test can count itself as an
+    // install by showing a start menu.
+    let dir = scratch("no-sender");
+    let mut session = common::a_session_for(common::a_clip_project(4))
+        .with_settings_path(dir.join("settings.json"))
+        .with_ping_grace(std::time::Duration::ZERO);
+    session.settings_mut().ping_notice_said = false;
+    let mut w = window(session);
+    w.open_welcome();
+    w.leave_welcome();
+    w.idle(std::time::Duration::from_millis(200));
+    assert!(
+        !dir.join(fontelle_app::install_ping::FILE_NAME).exists(),
+        "no id even made"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -159,7 +159,7 @@ pub fn pipewire_default_source() -> Option<String> {
 }
 
 fn dump() -> String {
-    std::process::Command::new("pw-dump")
+    fontelle_host::gui::no_console(&mut std::process::Command::new("pw-dump"))
         .output()
         .ok()
         .filter(|output| output.status.success())

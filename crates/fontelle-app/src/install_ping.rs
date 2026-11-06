@@ -4,10 +4,12 @@
 //!
 //! What it sends is the contract's body and nothing else: a random id made
 //! here, the product, the version, the OS, the CPU and the update channel.
-//! It is said on the start menu before anything is sent — the first launch
-//! that shows the menu shows the notice and sends nothing, so anybody who
-//! wants it off can turn it off before a single request — and it is off
-//! under `FOPULL_NO_PING` or the Settings switch, which also deletes the id.
+//! It is said before anything is sent — on the start menu, or as a toast
+//! when a launch shows none — and the first launch's ping follows a minute
+//! after, or when the menu is left (hub card 0645, Ty: *opt out, counted on
+//! the first open*), so anybody who wants it off has had the moment to turn
+//! it off. It is off under `FOPULL_NO_PING` or the Settings switch, which
+//! also deletes the id; either, read when it goes, means no request.
 //!
 //! Like the update check (`updates.rs`) it goes through `curl`: one more
 //! subprocess and nothing more linked. It runs on a thread of its own and
@@ -20,6 +22,13 @@ use std::time::{Duration, SystemTime};
 pub const ENDPOINT: &str = "https://fopull.com/api/v1/installs/ping";
 /// What the start menu's notice links to.
 pub const PRIVACY_URL: &str = fontelle_ui::support::INSTALL_PING_URL;
+/// How long the first launch's ping waits after its notice is shown (hub
+/// card 0645, the contract's §4): time to read it and turn it off.
+pub const NOTICE_GRACE: Duration = Duration::from_secs(60);
+/// The notice where no start menu is shown — the start menu's words, with
+/// the address the menu's link would open, since a toast is not a link.
+pub const NOTICE_WITHOUT_MENU: &str = "Fontelle counts installs with one anonymous ping a day \u{2014} \
+     Settings turns it off. What is sent: fopull.com/privacy";
 /// The file beside the settings that keeps the id and the last day sent.
 pub const FILE_NAME: &str = "install-ping.json";
 
@@ -196,7 +205,7 @@ pub fn forget(path: &Path) {
 /// The request, through `curl`: the status, or why there was none.
 pub fn send_with_curl(body: &str) -> Result<u16, String> {
     use std::io::Write;
-    let mut child = std::process::Command::new("curl")
+    let mut child = fontelle_host::gui::no_console(&mut std::process::Command::new("curl"))
         .args([
             "-sS",
             "-o",

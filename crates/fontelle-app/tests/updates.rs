@@ -1004,3 +1004,192 @@ fn the_readme_download_link_says_it_came_from_github() {
         "README.md's download line"
     );
 }
+
+// ------------------------------------------------------------- macOS's app
+//
+// Hub card 0645: the macOS download was a bare Unix executable — a
+// double-click opened Terminal, and none of v0.33.0's six macOS downloads
+// ever counted an install. From 0.34.0 the archive holds `Fontelle.app`.
+// The updater has to find the binary inside it, and to re-seal the app once
+// it has swapped the binary in, or macOS would call the app damaged.
+
+/// A macOS release archive: `Fontelle.app` inside the archive's folder.
+fn a_mac_archive(dir: &Path, binary_text: &str) -> PathBuf {
+    let stem = "fontelle-9.9.9-aarch64-apple-darwin";
+    let app = dir.join("stage").join(stem).join("Fontelle.app");
+    std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+    std::fs::write(app.join("Contents/MacOS").join(BIN), binary_text).unwrap();
+    std::fs::write(app.join("Contents/Info.plist"), "<plist/>").unwrap();
+    std::fs::write(dir.join("stage").join(stem).join("README.md"), "readme").unwrap();
+    let archive = dir.join(format!("{stem}.tar.gz"));
+    let status = std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir.join("stage"))
+        .arg(stem)
+        .status()
+        .expect("tar is on this machine");
+    assert!(status.success());
+    std::fs::remove_dir_all(dir.join("stage")).unwrap();
+    archive
+}
+
+#[test]
+fn the_binary_inside_a_mac_app_in_the_archive_installs() {
+    let dir = scratch("mac-app");
+    let archive = a_mac_archive(&dir, "app build");
+    let exe = dir
+        .join("Applications/Fontelle.app/Contents/MacOS")
+        .join(BIN);
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "old build").unwrap();
+    fontelle_app::updates::install(&archive, &exe).expect("the app's binary installs");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "app build");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_copy_from_before_the_app_finds_its_update_inside_it_too() {
+    // 0.33.0 on macOS is a bare `fontelle` somebody unpacked; its update is
+    // now an app. The binary still comes out of it.
+    let dir = scratch("mac-bare");
+    let archive = a_mac_archive(&dir, "app build");
+    let exe = dir.join("bin").join(BIN);
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "old build").unwrap();
+    fontelle_app::updates::install(&archive, &exe).expect("installs");
+    assert_eq!(std::fs::read_to_string(&exe).unwrap(), "app build");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_app_a_binary_belongs_to_is_found_from_its_path() {
+    use fontelle_app::updates::app_bundle_of;
+    assert_eq!(
+        app_bundle_of(Path::new(
+            "/Applications/Fontelle.app/Contents/MacOS/fontelle"
+        )),
+        Some(PathBuf::from("/Applications/Fontelle.app"))
+    );
+    assert_eq!(
+        app_bundle_of(Path::new("/home/someone/.local/bin/fontelle")),
+        None
+    );
+    assert_eq!(
+        app_bundle_of(Path::new("/opt/Contents/MacOS/fontelle")),
+        None
+    );
+}
+
+#[test]
+fn after_an_update_the_app_is_sealed_again_and_never_quarantined() {
+    // `codesign` and `xattr` are part of every macOS: an ad-hoc signature
+    // over the new binary, so the app is not "damaged", and no quarantine
+    // flag, so the update needs no second trip to System Settings.
+    let app = Path::new("/Applications/Fontelle.app");
+    assert_eq!(
+        fontelle_app::updates::reseal_commands(app),
+        vec![
+            (
+                "codesign",
+                vec![
+                    "--force".to_string(),
+                    "--deep".to_string(),
+                    "--sign".to_string(),
+                    "-".to_string(),
+                    "/Applications/Fontelle.app".to_string(),
+                ]
+            ),
+            (
+                "xattr",
+                vec![
+                    "-dr".to_string(),
+                    "com.apple.quarantine".to_string(),
+                    "/Applications/Fontelle.app".to_string(),
+                ]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_app_macos_is_running_from_a_temporary_copy_is_told_to_move_it_first() {
+    // Opened straight out of Downloads, a quarantined app runs from a
+    // read-only copy ("App Translocation"): the update could never land.
+    let dir = scratch("translocated");
+    let archive = a_mac_archive(&dir, "app build");
+    let exe = Path::new(
+        "/private/var/folders/xy/T/AppTranslocation/1234-ABCD/d/Fontelle.app/Contents/MacOS/fontelle",
+    );
+    let err = fontelle_app::updates::install(&archive, exe).unwrap_err();
+    assert!(err.contains("Applications"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_mac_release_is_an_app_with_its_first_run_steps_beside_it() {
+    let workflow = in_the_tree(".github/workflows/release.yml");
+    assert!(
+        workflow.contains("packaging/macos/make-app.sh"),
+        "release.yml packs macOS as Fontelle.app"
+    );
+    let script = in_the_tree("packaging/macos/make-app.sh");
+    for needed in ["Contents/MacOS", "Info.plist.in", "codesign", "--sign -"] {
+        assert!(script.contains(needed), "make-app.sh: {needed}");
+    }
+    // The steps, written out for macOS 15, where right-click → Open is gone.
+    let steps = in_the_tree("packaging/macos/FIRST-RUN.txt");
+    for needed in ["Applications", "Privacy & Security", "Open Anyway", "xattr"] {
+        assert!(steps.contains(needed), "FIRST-RUN.txt: {needed}");
+    }
+    let readme = in_the_tree("README.md");
+    assert!(readme.contains("Open Anyway"), "README's macOS steps");
+    assert!(
+        !readme.contains("right-click → Open)"),
+        "macOS 15 removed that way"
+    );
+}
+
+/// On the macOS runner, for real: an update into a signed app leaves an app
+/// whose signature `codesign` still accepts — not one macOS calls damaged.
+#[cfg(target_os = "macos")]
+#[test]
+fn on_a_mac_an_updated_app_still_verifies() {
+    let dir = scratch("mac-reseal");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/macos/make-app.sh");
+    let apps = dir.join("Applications");
+    std::fs::create_dir_all(&apps).unwrap();
+    let run = |cmd: &mut std::process::Command| assert!(cmd.status().unwrap().success(), "{cmd:?}");
+    run(std::process::Command::new(&script)
+        .arg("/bin/echo")
+        .arg("9.9.8")
+        .arg(&apps));
+    // The update: an app around a different program, packed as released.
+    let stem = "fontelle-9.9.9-aarch64-apple-darwin";
+    let stage = dir.join("stage").join(stem);
+    std::fs::create_dir_all(&stage).unwrap();
+    run(std::process::Command::new(&script)
+        .arg("/bin/cat")
+        .arg("9.9.9")
+        .arg(&stage));
+    let archive = dir.join(format!("{stem}.tar.gz"));
+    run(std::process::Command::new("tar")
+        .arg("-czf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir.join("stage"))
+        .arg(stem));
+
+    let app = apps.join("Fontelle.app");
+    let exe = app.join("Contents/MacOS/fontelle");
+    fontelle_app::updates::install(&archive, &exe).expect("installs into the app");
+    assert_eq!(
+        std::fs::read(&exe).unwrap(),
+        std::fs::read("/bin/cat").unwrap()
+    );
+    run(std::process::Command::new("codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(&app));
+    std::fs::remove_dir_all(&dir).ok();
+}

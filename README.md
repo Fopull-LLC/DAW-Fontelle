@@ -21,8 +21,14 @@ Download from https://fopull.com/fontelle?utm_source=github&utm_medium=readme
   takes it away again. The binary needs ALSA and D-Bus from your
   distribution, which nearly every desktop has; the installer says so if
   anything is missing.
-- **Windows / macOS**: unpack and run `fontelle`. The binaries are unsigned for
-  now, so expect the first-run warning (macOS: right-click → Open).
+- **Windows**: unpack the zip and run `fontelle.exe`. It is unsigned, so
+  SmartScreen may warn the first time: More info → Run anyway.
+- **macOS**: unpack the download and drag `Fontelle.app` into Applications.
+  It is not notarised, so the first open needs one confirmation: open it,
+  press Done, then System Settings ▸ Privacy & Security ▸ **Open Anyway**,
+  and open it again. On macOS 14 and earlier, Control-click → Open does the
+  same. `FIRST-RUN.txt` in the download has the steps, and the one-line
+  Terminal alternative.
 
 Fontelle checks for a newer release when it starts and offers to install it
 from its start menu — the download is verified against the release's published

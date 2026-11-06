@@ -84,14 +84,8 @@ pub fn asio_helper_path() -> Option<PathBuf> {
 
 /// The helper as a command: no console window of its own on Windows.
 fn helper_command(path: &PathBuf) -> Command {
-    #[allow(unused_mut)]
     let mut command = Command::new(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
+    fontelle_host::gui::no_console(&mut command);
     command
 }
 

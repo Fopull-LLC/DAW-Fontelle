@@ -35,7 +35,7 @@ pub fn fl_studio_folders() -> Vec<PathBuf> {
     let mut folders = Vec::new();
     #[cfg(windows)]
     {
-        if let Ok(output) = std::process::Command::new("reg")
+        if let Ok(output) = fontelle_host::gui::no_console(&mut std::process::Command::new("reg"))
             .args(["query", FL_PATHS_KEY])
             .output()
             && output.status.success()
