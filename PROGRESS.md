@@ -19,6 +19,39 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-05 — How far people get: milestones and features in the ping
+(hub card 0646, contract §9, not released).** Ty: *"we should measure
+started using it things like opened project played note, used a plugin,
+collabed with a friend etc. so we can see how far people are really getting
+with the program and if they eventually drop it and where they did."*
+
+- **Keys** are `install_ping::Milestone` and `Feature` — the contract's
+  table, pinned by `the_keys_are_the_contracts_table`. Never rename one.
+- **Where they come from.** The studio's own edits are counted by their
+  wire name (`install_ping::usage_of` over `history.last_applied()` when
+  the generation moves; a collaborator's never enter the undo stack);
+  `COUNTED_EDITS` is pinned against `Edit::TAGS`. The rest are hooks:
+  new/open/save, audition, the instrument panel, soundfont and Flopsynth
+  presets, a plugin's window, takes kept, a finished bounce, share/join,
+  the tour's last step (`DocumentHost::tour_finished`), playback and a
+  shared song seen by `pump`, and the output going for good.
+- **Sending.** The day's first ping carries what was done before it. Later
+  that day `pump_usage` sends when a milestone has waited
+  `MILESTONE_BATCH` (30 s) or a grown feature set has waited that and
+  `USED_EVERY` (30 min) since the last send; never before the day's first
+  is recorded, never after a 400/429 this run, `SENDS_A_DAY` (8) requests
+  at most, retries included. Each send carries everything not yet
+  acknowledged.
+- **The file** (`install-ping.json`) keeps acknowledged milestones, a
+  pending set (a refused send or a run that ended first is reported by the
+  next), today's acknowledged features and the day's request count, all
+  under one lock (`PingFile::update`). Off deletes it and the run's
+  `Usage`; reached while off is never kept.
+- **A start that cannot open the output** has no studio: `main` writes
+  `audio_unavailable` into the pending set (`reached_without_a_studio`)
+  for the next launch to report; nothing is sent on that exit. A *first*
+  launch that dies there is not counted — no notice has been shown.
+
 **2026-11-05 — Counted on the first open; macOS gets an app, Windows loses
 its console (hub card 0645, not released).** W: 51 fresh downloads became
 16 counted installs since 0.33.0, and macOS never counted one. Ty (via W,

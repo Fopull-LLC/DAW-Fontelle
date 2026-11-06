@@ -633,8 +633,17 @@ pub struct Session {
     ping_grace: std::time::Duration,
     /// When this run's ping is due, once the notice has been said in it.
     ping_due_at: Option<std::time::Instant>,
-    /// This run's ping has been started: once a run is all it gets.
+    /// This run's first ping has been started: once a run is all it gets.
+    /// Later sends that day carry only §9's news (`usage`).
     ping_started: bool,
+    /// How far the person has got, for the ping (hub card 0646, §9).
+    usage: crate::install_ping::Usage,
+    /// The history's generation the last own edit was counted at.
+    usage_generation: u64,
+    /// A ping's thread is running: one request at a time.
+    ping_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A send was refused (400 or 429): no more this run (§2).
+    ping_refused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The bank's previews (§5.2): what *sounds like* answers from, read
     /// from beside the settings and filled by a worker the first time the
     /// Presets page asks. `preview_jobs` is the worker's channel while it
@@ -1074,10 +1083,12 @@ impl Session {
         }
         if *row == crate::settings::SettingRow::InstallPing {
             self.settings.install_ping = !self.settings.install_ping;
-            if !self.settings.install_ping
-                && let Some(path) = self.install_ping_path()
-            {
-                crate::install_ping::forget(&path);
+            if !self.settings.install_ping {
+                // And whatever was waiting to be reported (§9).
+                self.usage.forget();
+                if let Some(path) = self.install_ping_path() {
+                    crate::install_ping::forget(&path);
+                }
             }
             if let Err(e) = self.save_settings() {
                 self.message = Some(format!("could not write settings: {e}"));
@@ -1778,6 +1789,10 @@ impl Session {
             ping_grace: crate::install_ping::NOTICE_GRACE,
             ping_due_at: None,
             ping_started: false,
+            usage: crate::install_ping::Usage::default(),
+            usage_generation: 0,
+            ping_busy: Default::default(),
+            ping_refused: Default::default(),
             settings,
             settings_path: None,
             links_to: None,
@@ -2150,6 +2165,124 @@ impl Session {
         self
     }
 
+    /// How long a milestone waits for others before a later send — about
+    /// 30 s (§9); a test makes it short.
+    pub fn with_usage_batch(mut self, batch: std::time::Duration) -> Self {
+        self.usage = crate::install_ping::Usage::with_batch(batch);
+        self
+    }
+
+    /// A milestone reached (hub card 0646): kept for the ping while it is
+    /// on, and for nothing while it is off — nothing is queued (§9).
+    pub fn reached(&mut self, milestone: crate::install_ping::Milestone) {
+        if self.usage.has_seen(milestone) || !self.install_ping_on() {
+            return;
+        }
+        let Some(path) = self.install_ping_path() else {
+            return;
+        };
+        let key = milestone.key();
+        let acknowledged = || {
+            crate::install_ping::PingFile::read(&path).is_some_and(|f| f.milestones.contains(key))
+        };
+        if self
+            .usage
+            .reach(milestone, acknowledged, std::time::Instant::now())
+        {
+            crate::install_ping::note_reached(&path, key);
+        }
+    }
+
+    /// A feature used today (hub card 0646), while the ping is on.
+    pub fn used(&mut self, feature: crate::install_ping::Feature) {
+        if !self.install_ping_on() {
+            return;
+        }
+        let today = crate::install_ping::utc_date(std::time::SystemTime::now());
+        self.usage
+            .use_feature(feature, &today, std::time::Instant::now());
+    }
+
+    /// The pass's look at what the person has done since the last: this
+    /// studio's own edits (a collaborator's never enter the undo stack),
+    /// the transport, a shared song.
+    fn count_usage(&mut self) {
+        use crate::install_ping::{Counted, Feature, Milestone};
+        if !self.install_ping_on() {
+            return;
+        }
+        let generation = self.history.generation();
+        if generation != self.usage_generation {
+            self.usage_generation = generation;
+            let mut found = Vec::new();
+            if let Some(command) = self.history.last_applied() {
+                crate::install_ping::usage_of(&command.to_edit(), &mut found);
+            }
+            for counted in found {
+                match counted {
+                    Counted::Reached(m) => self.reached(m),
+                    Counted::Used(f) => self.used(f),
+                }
+            }
+        }
+        if self.transport.as_ref().is_some_and(|t| t.is_playing()) {
+            self.used(Feature::Playback);
+            if !self.usage.has_seen(Milestone::NotePlayed)
+                && self
+                    .project
+                    .clips
+                    .iter()
+                    .any(|(_, clip)| match &clip.source {
+                        ClipSource::Notes(notes) => !notes.notes.is_empty(),
+                        _ => false,
+                    })
+            {
+                self.reached(Milestone::NotePlayed);
+            }
+        }
+        if self.collab.as_ref().is_some_and(|c| c.ended().is_none()) {
+            self.used(Feature::Collab);
+        }
+    }
+
+    /// A later send the same day, when §9 has news and its waits are over.
+    fn pump_usage(&mut self) {
+        use std::sync::atomic::Ordering;
+        let now = std::time::Instant::now();
+        // After the notice and its grace, whether or not this run sent the
+        // day's first: a second launch the same day has news of its own.
+        if self.ping_sender.is_none()
+            || !self.settings.ping_notice_said
+            || self.ping_due_at.is_some()
+            || self.ping_busy.load(Ordering::Acquire)
+            || self.ping_refused.load(Ordering::Acquire)
+            || !self.usage.wants_send(now)
+            || !self.install_ping_on()
+        {
+            return;
+        }
+        let Some(path) = self.install_ping_path() else {
+            return;
+        };
+        let today = crate::install_ping::utc_date(std::time::SystemTime::now());
+        let Some(file) = crate::install_ping::PingFile::read(&path) else {
+            self.usage.defer(now);
+            return;
+        };
+        self.usage.acknowledged(&file);
+        // Only once today's first has been recorded: a day whose first was
+        // refused or given up on is over (§4), and a new UTC day's first is
+        // the next launch's.
+        if file.last_sent.as_deref() != Some(today.as_str())
+            || file.sends_on(&today) >= crate::install_ping::SENDS_A_DAY
+        {
+            // Asked again a batch from now, not every frame.
+            self.usage.defer(now);
+            return;
+        }
+        self.send_ping(path, today);
+    }
+
     /// The notice, for a launch that shows no start menu — a project named
     /// on the command line (hub card 0645: that path was never counted). Said
     /// as a toast, once, and the ping follows it as it follows the menu's.
@@ -2166,6 +2299,8 @@ impl Session {
     /// The pass's turn of the install ping: this run's, once its notice's
     /// grace is over.
     fn pump_install_ping(&mut self) {
+        self.count_usage();
+        self.pump_usage();
         if self
             .ping_due_at
             .is_some_and(|at| std::time::Instant::now() >= at)
@@ -2185,9 +2320,9 @@ impl Session {
         if self.ping_started || self.ping_due_at.is_some() {
             return;
         }
-        let Some(sender) = self.ping_sender.clone() else {
+        if self.ping_sender.is_none() {
             return;
-        };
+        }
         let Some(path) = self.install_ping_path() else {
             return;
         };
@@ -2201,6 +2336,16 @@ impl Session {
         ) {
             return;
         }
+        self.ping_started = true;
+        self.send_ping(path, today);
+    }
+
+    /// One send on a thread of its own, with all §9 knows of.
+    fn send_ping(&mut self, path: PathBuf, today: String) {
+        use std::sync::atomic::Ordering;
+        let Some(sender) = self.ping_sender.clone() else {
+            return;
+        };
         let channel = if crate::distribution::Distribution::here().store().is_some() {
             "steam"
         } else if self.settings.beta_updates {
@@ -2213,13 +2358,25 @@ impl Session {
             version: env!("CARGO_PKG_VERSION").to_string(),
             channel: channel.to_string(),
             today,
+            milestones: self.usage.reached(),
+            used: self.usage.used(),
         };
-        self.ping_started = true;
-        let _ = std::thread::Builder::new()
+        self.usage.sending(std::time::Instant::now());
+        self.ping_busy.store(true, Ordering::Release);
+        let busy = self.ping_busy.clone();
+        let refused = self.ping_refused.clone();
+        let spawned = std::thread::Builder::new()
             .name("install-ping".into())
             .spawn(move || {
-                ping.run(|body| sender(body), std::thread::sleep);
+                let answer = ping.run(|body| sender(body), std::thread::sleep);
+                if answer == crate::install_ping::PingAnswer::Refused {
+                    refused.store(true, Ordering::Release);
+                }
+                busy.store(false, Ordering::Release);
             });
+        if spawned.is_err() {
+            self.ping_busy.store(false, Ordering::Release);
+        }
     }
 
     /// Writes down that `current` is the version running — `main` calls it
@@ -2778,6 +2935,14 @@ impl Session {
     /// One bundle that is not there any more is an error naming it, not an
     /// empty studio.
     pub fn open_project_path(&mut self, path: &Path) -> Result<(), String> {
+        let done = self.open_project_path_inner(path);
+        if done.is_ok() {
+            self.reached(crate::install_ping::Milestone::ProjectOpened);
+        }
+        done
+    }
+
+    fn open_project_path_inner(&mut self, path: &Path) -> Result<(), String> {
         if !path.join("project.json").is_file() {
             // The name and the end of the folder, not the whole path: the
             // sentence is drawn on the start menu, and a path from `/tmp`
@@ -2853,6 +3018,18 @@ impl Session {
     /// a bundle — so a song never saved is refused (the window asks for a
     /// name first), and unsaved changes are saved.
     pub fn share(
+        &mut self,
+        transport: Box<dyn fontelle_net::Transport>,
+        options: crate::collab::CollabOptions,
+    ) -> Result<(), String> {
+        let done = self.share_inner(transport, options);
+        if done.is_ok() {
+            self.reached(crate::install_ping::Milestone::CollabHosted);
+        }
+        done
+    }
+
+    fn share_inner(
         &mut self,
         transport: Box<dyn fontelle_net::Transport>,
         options: crate::collab::CollabOptions,
@@ -3004,7 +3181,11 @@ impl Session {
         if self.dirty {
             return Err("save or discard the open song before joining another".into());
         }
-        self.begin_join(transport, options)
+        let done = self.begin_join(transport, options);
+        if done.is_ok() {
+            self.reached(crate::install_ping::Milestone::CollabJoined);
+        }
+        done
     }
 
     /// [`join`](Self::join), once whatever was unsaved has been asked about.
@@ -4064,6 +4245,14 @@ impl Session {
     /// they have named, and the answer is a sentence rather than a guess at
     /// `~/Documents`.
     pub fn save_as(&mut self, name: &str) -> Result<(), String> {
+        let done = self.save_as_inner(name);
+        if done.is_ok() {
+            self.reached(crate::install_ping::Milestone::ProjectSaved);
+        }
+        done
+    }
+
+    fn save_as_inner(&mut self, name: &str) -> Result<(), String> {
         let path = self.projects.new_project_path(name).ok_or_else(|| {
             "there is no projects folder yet \u{2014} choose one on the Projects tab".to_string()
         })?;
@@ -4095,6 +4284,14 @@ impl Session {
     /// Makes a project of that name in the projects folder and opens it,
     /// leaving what is open behind. See [`DocumentHost::new_project`].
     pub fn new_project_named(&mut self, name: &str) -> Result<(), String> {
+        let done = self.new_project_named_inner(name);
+        if done.is_ok() {
+            self.reached(crate::install_ping::Milestone::ProjectCreated);
+        }
+        done
+    }
+
+    fn new_project_named_inner(&mut self, name: &str) -> Result<(), String> {
         let path = self
             .projects
             .new_project_path(name)
@@ -4780,7 +4977,10 @@ impl Session {
                     fell_back_words(&self.settings, &status)
                 }
                 Ok(status) => format!("The audio output went away; playing through {status}"),
-                Err(e) => format!("The audio output went away and nothing else opened: {e}"),
+                Err(e) => {
+                    self.reached(crate::install_ping::Milestone::AudioUnavailable);
+                    format!("The audio output went away and nothing else opened: {e}")
+                }
             };
             eprintln!(
                 "fontelle: audio output lost{}; {said}",
@@ -5450,6 +5650,10 @@ impl Session {
             Ok(Err(e)) => Err(e),
             Err(_) => Err("the render stopped with an error".to_string()),
         };
+        if result.is_ok() {
+            self.reached(crate::install_ping::Milestone::AudioExported);
+            self.used(crate::install_ping::Feature::Export);
+        }
         JobPoll::Finished(result)
     }
 
@@ -6374,7 +6578,12 @@ impl Session {
     /// it.
     fn open_plugin_editor(&mut self, slot: crate::PluginSlot) -> bool {
         match self.plugins.open_editor(slot) {
-            Ok(opened) => opened,
+            Ok(opened) => {
+                if opened {
+                    self.used(crate::install_ping::Feature::Plugins);
+                }
+                opened
+            }
             Err(e) => {
                 // Into the session log as well: a report of the knob panel
                 // opening instead said nothing of why.
@@ -7108,6 +7317,21 @@ impl Session {
     /// Public because it is also where **live MIDI** goes (§14.3). A keyboard
     /// and a clicked key on the roll play the same instrument, and having one
     /// answer to "which node is that" is what keeps them from drifting apart.
+    /// The selected instrument played or edited: a feature of its own when
+    /// it is Flopsynth or a hosted plugin (hub card 0646).
+    fn used_by_the_selected_instrument(&mut self) {
+        use fontelle_types::InstrumentKind;
+        let kind = self
+            .selected_channel_id()
+            .and_then(|id| self.project.channels.get(id))
+            .and_then(|c| c.instrument);
+        match kind {
+            Some(InstrumentKind::Flopsynth) => self.used(crate::install_ping::Feature::Flopsynth),
+            Some(InstrumentKind::Plugin) => self.used(crate::install_ping::Feature::Plugins),
+            _ => {}
+        }
+    }
+
     pub fn audition_target(&self) -> NodeId {
         // The preview voice while the browser is letting you hear something,
         // and the selected channel the rest of the time. One switch rather
@@ -7188,6 +7412,7 @@ impl Session {
         self.dirty = true;
         self.rebuild_graph();
         self.touch();
+        self.used(crate::install_ping::Feature::Flopsynth);
         Ok(())
     }
 
@@ -7280,6 +7505,7 @@ impl Session {
         self.patch_cache = None;
         self.dirty = true;
         self.rebuild_graph();
+        self.reached(crate::install_ping::Milestone::SoundfontLoaded);
         Ok(())
     }
 
@@ -9029,6 +9255,7 @@ impl DocumentHost for Session {
         crate::save_project(&self.project, &bundle).map_err(|e| e.to_string())?;
         self.dirty = false;
         self.touch();
+        self.reached(crate::install_ping::Milestone::ProjectSaved);
         Ok(())
     }
 
@@ -12503,6 +12730,7 @@ impl StudioHost for Session {
             .ok_or_else(|| "that project is not in the list any more".to_string())?;
         let opened = self.open_bundle(&path).map_err(|e| e.to_string())?;
         self.adopt(opened, path);
+        self.reached(crate::install_ping::Milestone::ProjectOpened);
         Ok(())
     }
 
@@ -12783,6 +13011,10 @@ impl StudioHost for Session {
         if let Err(e) = self.save_settings() {
             self.message = Some(format!("could not write settings: {e}"));
         }
+    }
+
+    fn tour_finished(&mut self) {
+        self.reached(crate::install_ping::Milestone::TourFinished);
     }
 
     fn start_menu_left(&mut self) {
@@ -13739,7 +13971,12 @@ impl StudioHost for Session {
         at: fontelle_types::Sample,
         end_sample: fontelle_types::Sample,
     ) -> Result<usize, String> {
-        Session::keep_audio_take(self, at, end_sample)
+        let kept = Session::keep_audio_take(self, at, end_sample);
+        if matches!(kept, Ok(n) if n > 0) {
+            self.reached(crate::install_ping::Milestone::AudioRecorded);
+            self.used(crate::install_ping::Feature::Recording);
+        }
+        kept
     }
 
     fn audio_clip(&self, clip: ClipId) -> Option<fontelle_types::AudioClipData> {
@@ -14015,6 +14252,10 @@ impl StudioHost for Session {
     }
 
     fn audition_on(&mut self, key: u8, velocity: u8, pan: i8) {
+        self.reached(crate::install_ping::Milestone::NotePlayed);
+        if !self.previewing {
+            self.used_by_the_selected_instrument();
+        }
         let target = self.audition_target();
         // A note-on the window never ended is not kept for ever.
         if self.live_aims.len() >= 256 {
@@ -14943,6 +15184,9 @@ impl StudioHost for Session {
         let Some(channel_id) = self.selected_channel_id() else {
             return;
         };
+        self.reached(crate::install_ping::Milestone::InstrumentEdited);
+        self.used(crate::install_ping::Feature::InstrumentEditor);
+        self.used_by_the_selected_instrument();
         // The two that live on the **channel** rather than in its patch. Not
         // on its mixer track: a track is a destination several channels may
         // share, and a panel that wrote to one was two channels' panels
@@ -17081,6 +17325,7 @@ impl StudioHost for Session {
         if events.is_empty() {
             return 0;
         }
+        self.used(crate::install_ping::Feature::Recording);
 
         // Read in **song** ticks first, by the clock the transport was
         // playing to, and only then decided where it goes. It used to be

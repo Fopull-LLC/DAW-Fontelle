@@ -380,6 +380,18 @@ impl Windowless {
         self.settle();
     }
 
+    /// Starts the tour over the open song, as the guide's button does.
+    pub fn begin_tour(&mut self) {
+        self.app.begin_tour();
+        self.settle();
+    }
+
+    /// Goes to tour step `step`, as Next, Back and the steps menu do.
+    pub fn tour_step_to(&mut self, step: usize) {
+        self.app.tour_to(step);
+        self.settle();
+    }
+
     /// Whether the window has decided to close (a quit, or a restart).
     pub fn quitting(&self) -> bool {
         self.app.quit

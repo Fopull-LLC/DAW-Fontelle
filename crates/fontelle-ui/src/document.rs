@@ -2243,6 +2243,9 @@ pub trait StudioHost: DocumentHost {
     /// The start menu has been left — for anything waiting on the person
     /// being done with it (the first launch's install ping, hub card 0645).
     fn start_menu_left(&mut self) {}
+    /// The tour's last step has been reached — a milestone for the install
+    /// ping (hub card 0646).
+    fn tour_finished(&mut self) {}
 
     /// One line per settings row saying what it is for, parallel to
     /// [`settings`](Self::settings) — what the settings page writes under each

@@ -969,9 +969,13 @@ fn the_release_workflow_marks_a_hyphenated_tag_as_a_prerelease() {
 // where the download step offers pay-what-you-want. The repository's own
 // pages point there, without moving the assets the updater fetches.
 
+/// A file of the repository, its line ends `\n` — the Windows runner's
+/// checkout has `\r\n`, and `"body: |\n"` was never found there (0620's
+/// first CI run).
 fn in_the_tree(path: &str) -> String {
     std::fs::read_to_string(format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR")))
         .unwrap_or_else(|e| panic!("{path}: {e}"))
+        .replace("\r\n", "\n")
 }
 
 #[test]
@@ -1184,9 +1188,28 @@ fn on_a_mac_an_updated_app_still_verifies() {
     let app = apps.join("Fontelle.app");
     let exe = app.join("Contents/MacOS/fontelle");
     fontelle_app::updates::install(&archive, &exe).expect("installs into the app");
+    // Not compared byte for byte: signing rewrites a binary's signature, and
+    // the app's is signed twice. Run instead — `cat` gives its input back,
+    // `echo` does not — which is also the proof that matters: on Apple
+    // silicon a binary whose signature is broken is killed before it runs.
+    let mut cat = std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        cat.stdin
+            .take()
+            .unwrap()
+            .write_all(b"the new build")
+            .unwrap();
+    }
+    let out = cat.wait_with_output().unwrap();
+    assert!(out.status.success(), "{:?}", out.status);
     assert_eq!(
-        std::fs::read(&exe).unwrap(),
-        std::fs::read("/bin/cat").unwrap()
+        out.stdout, b"the new build",
+        "the update is the one running"
     );
     run(std::process::Command::new("codesign")
         .args(["--verify", "--deep", "--strict"])

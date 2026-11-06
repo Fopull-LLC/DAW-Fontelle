@@ -16,6 +16,8 @@ fn source(path: &str) -> String {
             .join(path),
     )
     .unwrap_or_else(|e| panic!("{path}: {e}"))
+    // The Windows runner's checkout ends lines `\r\n`.
+    .replace("\r\n", "\n")
 }
 
 #[test]

@@ -17795,6 +17795,14 @@ impl WindowApp {
                 crate::canvas::GUIDE[section].title
             );
         }
+        // The last step reached: how far a person got, for the install
+        // ping (hub card 0646).
+        if step + 1 == steps.len()
+            && self.tour.is_some()
+            && let Some(doc) = &mut self.options.document
+        {
+            doc.tour_finished();
+        }
         self.refresh_tour_choices();
         self.tree.invalidate_rect(self.layout.window);
         self.request_redraw_if_dirty();

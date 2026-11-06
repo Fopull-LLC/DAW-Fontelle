@@ -571,7 +571,7 @@ fn play_or_render(
             (midi_in || window).then_some(live_source),
             &output_choice,
         )
-        .map_err(|e| format!("failed to open the audio output: {e}"))?;
+        .map_err(|e| format!("{OUTPUT_FAILED}: {e}"))?;
     println!("  output: {output_status}");
     if let Some(why) = &output_status.fell_back {
         println!("  ! the chosen output would not open ({why}); playing through the default");
@@ -1358,6 +1358,9 @@ fn choose_preset(
         .unwrap_or(default_preset)
 }
 
+/// How a start that could not open the audio output begins its error.
+const OUTPUT_FAILED: &str = "failed to open the audio output";
+
 /// The window `fontelle` opens with no arguments at all.
 ///
 /// The gate sentence in `docs/first-usable-plan.md` §3 starts "launch
@@ -1750,6 +1753,18 @@ fn main() {
     };
     if let Err(e) = result {
         eprintln!("Fontelle: {e}");
+        // Where a person stops before the studio ever opens: kept for the
+        // next launch's install ping (hub card 0646), never sent from here.
+        if window && e.starts_with(OUTPUT_FAILED) {
+            let (settings, _) = fontelle_app::settings::Settings::load();
+            if let Some(dir) = fontelle_app::settings::Settings::config_dir() {
+                fontelle_app::install_ping::reached_without_a_studio(
+                    &settings,
+                    &dir.join(fontelle_app::install_ping::FILE_NAME),
+                    fontelle_app::install_ping::Milestone::AudioUnavailable,
+                );
+            }
+        }
         // Launched from the desktop's menu there is nobody reading stderr,
         // and a studio that cannot open the sound card just never appeared
         // (a Fedora user's report). A terminal has already been told.
