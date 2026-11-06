@@ -19,6 +19,22 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-06 — Release notes are written, and What's new opens them (hub
+card 0665).** 0.32.0, 0.33.0 and 0.34.0 went out with bodies holding only
+the Download line and the ASIO notice; Ty pressed What's new and found no
+changelog.
+
+- **Every release has `release-notes/<tag>.md`, written in the version's
+  commit.** `.github/scripts/release-body.sh` makes the body (Download
+  line, the notes, the ASIO notice); the release workflow's version job
+  refuses a tag without notes before anything builds, and
+  `the_version_being_built_has_release_notes` keeps CI red until they
+  exist. For a stable after a beta, the notes cover everything since the
+  last stable.
+- **What's new** opens `support::whats_new_url(version)`: W's
+  fopull.com/fontelle/releases at `#v<version>`. W redirects 0.34.0's old
+  address there.
+
 **2026-11-05 — How far people get: milestones and features in the ping
 (hub card 0646, contract §9, not released).** Ty: *"we should measure
 started using it things like opened project played note, used a plugin,

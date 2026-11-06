@@ -23,11 +23,20 @@ pub const SUPPORT_URL_START_MENU: &str =
 /// And from that line on the first start menu after an update.
 pub const SUPPORT_URL_UPDATE: &str =
     "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update";
-/// *What's new*, on the first start menu after an update: Fontelle's page
-/// on the site, so the visit counts there (Ty: *"send them to the site so
-/// it counts as a visit"*).
-pub const WHATS_NEW_URL: &str =
-    "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update";
+/// *What's new*, on the first start menu after an update: the releases
+/// page on the site, so the visit counts there (Ty: *"send them to the site
+/// so it counts as a visit"*), open at this version's notes (hub card 0665:
+/// the old address landed on Fontelle's page, not a changelog). The page
+/// reads each release's notes from GitHub, so the notes must be written
+/// (`release-notes/`). No version, no anchor: the page opens at its newest.
+pub fn whats_new_url(version: &str) -> String {
+    let page = "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update";
+    if version.is_empty() {
+        page.to_string()
+    } else {
+        format!("{page}#v{version}")
+    }
+}
 
 /// What the install ping sends, and why (hub card 0428, the contract's §5).
 /// The query before the fragment: after it, the browser never sends it.

@@ -362,7 +362,9 @@ fn the_start_menu_after_an_update_offers_whats_new_and_the_quiet_line() {
     assert_eq!(
         links.lock().unwrap().as_slice(),
         [
-            "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update",
+            // The releases page (hub card 0665); this window is told no
+            // version, so it opens at the newest.
+            "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update",
             "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update",
         ]
     );

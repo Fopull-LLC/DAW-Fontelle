@@ -50,6 +50,12 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Notes before anything is built (hub card 0665): the release page
+          # is what "What's new" opens, by way of fopull.com/fontelle/releases.
+          if [ ! -s "release-notes/$GITHUB_REF_NAME.md" ]; then
+            echo "release-notes/$GITHUB_REF_NAME.md is missing: write the notes in the version's commit" >&2
+            exit 1
+          fi
 
   ci:
     name: CI passed on this commit
@@ -190,6 +196,8 @@ jobs:
     needs: [version, ci, build, helper-source]
     runs-on: ubuntu-latest
     steps:
+      # For the release notes and the script that makes the body.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -199,6 +207,10 @@ jobs:
           cd artifacts
           sha256sum fontelle-* > SHA256SUMS
           cat SHA256SUMS
+      # The body: the Download line, the release's notes, and the ASIO
+      # notice (`release-body.sh` says why each). `tests/updates.rs` runs it.
+      - name: The release notes
+        run: .github/scripts/release-body.sh "${{ github.ref_name }}" "${{ needs.version.outputs.version }}" "${{ github.repository }}" > body.md
       # A hyphenated tag (`v0.27.0-beta.1`) is a beta: published as a
       # pre-release, so `releases/latest` — the stable channel — never sees
       # it, and only machines with Beta updates on are offered it
@@ -206,19 +218,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: Fontelle ${{ needs.version.outputs.version }}
-          # The notes open by pointing to the site (hub card 0620): somebody
-          # who lands here from a search is sent where the download offers
-          # pay-what-you-want. The assets stay here — the updater and the
-          # site both fetch them by these names.
-          # The Windows download plays through ASIO by way of fontelle-asio,
-          # so the notes carry Steinberg's logo and attribution (their usage
-          # guidelines; docs/asio.md §1).
-          body: |
-            Download: https://fopull.com/fontelle
-
-            <img src="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png" alt="ASIO Compatible Logo" width="110"/>
-
-            The Windows download can play through ASIO® drivers by way of `fontelle-asio.exe`, a separate GPLv3 program whose source is attached below as `fontelle-asio-source-${{ needs.version.outputs.version }}.tar.gz`. ASIO is a registered trademark of Steinberg Media Technologies GmbH.
+          body_path: body.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |

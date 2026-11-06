@@ -15,7 +15,7 @@ use fontelle_ui::canvas::{
 use fontelle_ui::layout::Rect;
 use fontelle_ui::support::{
     ENV_OS_MAX, ENV_PLUGIN_MAX, ENV_VERSION_MAX, INSTALL_PING_URL, REPORT_URL, ReportEnvironment,
-    ReportKind, SUPPORT_URL, SUPPORT_URL_START_MENU, SUPPORT_URL_UPDATE, WHATS_NEW_URL, report_url,
+    ReportKind, SUPPORT_URL, SUPPORT_URL_START_MENU, SUPPORT_URL_UPDATE, report_url,
 };
 use fontelle_ui::theme::{Metrics, Theme};
 
@@ -99,10 +99,6 @@ fn every_address_into_the_site_says_it_came_from_the_app_and_where() {
     assert_eq!(
         SUPPORT_URL_UPDATE,
         "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update"
-    );
-    assert_eq!(
-        WHATS_NEW_URL,
-        "https://fopull.com/fontelle?utm_source=fontelle-app&utm_medium=update"
     );
     assert_eq!(
         WEBSITE_URL,
@@ -434,4 +430,19 @@ fn on_a_short_card_with_everything_on_it_nothing_collides() {
     if let Some(card) = l.learn_card {
         assert!(!overlaps(card, line));
     }
+}
+
+/// Hub card 0665: the button goes straight to this version's entry on the
+/// releases page (W keeps the old address redirecting for 0.34.0).
+#[test]
+fn whats_new_opens_this_versions_notes() {
+    assert_eq!(
+        fontelle_ui::support::whats_new_url("0.35.0"),
+        "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update#v0.35.0"
+    );
+    // A window told no version: the page, at its newest.
+    assert_eq!(
+        fontelle_ui::support::whats_new_url(""),
+        "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update"
+    );
 }

@@ -3435,7 +3435,7 @@ impl WindowApp {
                 match welcome.status {
                     UpdateStatus::Available { .. } => doc.upgrade(),
                     _ if welcome.button == Some(crate::canvas::WHATS_NEW_LABEL) => {
-                        doc.open_url(crate::support::WHATS_NEW_URL)
+                        doc.open_url(&crate::support::whats_new_url(&self.options.version))
                     }
                     _ => doc.open_release_page(),
                 }

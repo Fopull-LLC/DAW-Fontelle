@@ -978,15 +978,89 @@ fn in_the_tree(path: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+// Hub card 0665: "What's new" landed on release bodies that said nothing —
+// 0.32.0, 0.33.0 and 0.34.0 held only the Download line and the ASIO notice.
+// Every release now has its notes in `release-notes/<tag>.md`, written in
+// the commit that bumps the version, and the body is made from them.
+
 #[test]
-fn every_release_page_opens_by_pointing_to_the_site() {
+fn the_version_being_built_has_release_notes() {
+    let notes = in_the_tree(&format!("release-notes/v{}.md", env!("CARGO_PKG_VERSION")));
+    assert!(
+        notes.trim().len() > 80,
+        "release-notes/v{} says nothing",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+#[test]
+fn the_release_workflow_will_not_publish_a_tag_without_notes() {
     let workflow = in_the_tree(".github/workflows/release.yml");
-    let body = workflow
-        .split_once("body: |\n")
-        .expect("the release has a body")
-        .1;
-    let first = body.lines().next().unwrap_or_default().trim();
-    assert_eq!(first, "Download: https://fopull.com/fontelle");
+    let version_job = workflow
+        .split_once("  version:\n")
+        .expect("the version job")
+        .1
+        .split_once("\n  ci:\n")
+        .expect("the ci job follows")
+        .0;
+    assert!(
+        version_job.contains("release-notes/$GITHUB_REF_NAME.md"),
+        "{version_job}"
+    );
+    assert!(
+        workflow.contains(".github/scripts/release-body.sh"),
+        "the body is made by the script"
+    );
+    assert!(workflow.contains("body_path: body.md"));
+    assert!(
+        !workflow.contains("          body: |"),
+        "no second body written in the workflow"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn every_release_page_opens_by_pointing_to_the_site_then_says_what_is_new() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = std::process::Command::new("bash")
+        .arg(root.join(".github/scripts/release-body.sh"))
+        .args(["v0.34.0", "0.34.0", "Fopull-LLC/DAW-Fontelle"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body = String::from_utf8(out.stdout).unwrap();
+    let mut lines = body.lines();
+    assert_eq!(lines.next(), Some("Download: https://fopull.com/fontelle"));
+    assert_eq!(lines.next(), Some(""));
+    let notes = in_the_tree("release-notes/v0.34.0.md");
+    assert_eq!(
+        lines.next(),
+        notes.lines().next(),
+        "the notes come straight after"
+    );
+    assert!(body.contains(notes.trim()));
+    // Steinberg's logo and words, after the notes (docs/asio.md §1).
+    let asio = body.find("ASIO Compatible Logo").expect("the logo");
+    assert!(asio > body.find(notes.trim()).unwrap());
+    assert!(body.contains(
+        "https://raw.githubusercontent.com/Fopull-LLC/DAW-Fontelle/v0.34.0/assets/trademarks/asio/ASIO-compatible-logo-Steinberg-TM-BW.png"
+    ));
+    assert!(body.contains("`fontelle-asio-source-0.34.0.tar.gz`"));
+    assert!(body.contains("ASIO is a registered trademark of Steinberg Media Technologies GmbH."));
+
+    // A tag with no notes is refused, not published empty.
+    let none = std::process::Command::new("bash")
+        .arg(root.join(".github/scripts/release-body.sh"))
+        .args(["v9.9.9", "9.9.9", "Fopull-LLC/DAW-Fontelle"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(!none.status.success());
 }
 
 #[test]
