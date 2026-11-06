@@ -5313,11 +5313,14 @@ fn shoot_welcome_status(
     let with_credit = ASIO_SHOWN.with(|c| c.get());
     let welcome = fontelle_ui::canvas::with_support_line(
         fontelle_ui::canvas::with_asio_credit(
-            welcome_layout(
-                layout.window,
-                &theme.metrics,
-                recent.len(),
-                button.is_some() || progress.is_some(),
+            fontelle_ui::canvas::with_whats_new_link(
+                welcome_layout(
+                    layout.window,
+                    &theme.metrics,
+                    recent.len(),
+                    button.is_some() || progress.is_some(),
+                ),
+                button != Some(fontelle_ui::canvas::WHATS_NEW_LABEL),
             ),
             &theme.metrics,
             with_credit,
@@ -5338,6 +5341,8 @@ fn shoot_welcome_status(
     for s in [
         fontelle_ui::canvas::NEW_PROJECT_LABEL,
         fontelle_ui::canvas::OPEN_PROJECT_LABEL,
+        fontelle_ui::canvas::JOIN_LABEL,
+        fontelle_ui::canvas::WHATS_NEW_LABEL,
         fontelle_ui::canvas::RECENT_HEADING,
         fontelle_ui::canvas::NOTHING_RECENT,
         fontelle_ui::canvas::FOOTER_TEXT,

@@ -199,7 +199,12 @@ pub fn settings_page_layout(
     } else {
         count as f32 * row_h + (count - 1) as f32 * ROW_GAP
     };
-    let scroll = scroll.clamp(0.0, (content_height - body.height).max(0.0));
+    // Up to a band past either end: the spring's give (`canvas::spring`)
+    // is drawn as the rows pulled away from the edge, then let go.
+    let scroll = scroll.clamp(
+        -super::MAX_OVERSCROLL,
+        (content_height - body.height).max(0.0) + super::MAX_OVERSCROLL,
+    );
 
     let control_w = CONTROL_WIDTH
         .min(body.width * CONTROL_SHARE)

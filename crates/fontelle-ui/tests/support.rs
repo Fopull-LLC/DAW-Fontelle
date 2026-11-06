@@ -437,12 +437,17 @@ fn on_a_short_card_with_everything_on_it_nothing_collides() {
 #[test]
 fn whats_new_opens_this_versions_notes() {
     assert_eq!(
-        fontelle_ui::support::whats_new_url("0.35.0"),
+        fontelle_ui::support::whats_new_url("0.35.0", "update"),
         "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update#v0.35.0"
     );
     // A window told no version: the page, at its newest.
     assert_eq!(
-        fontelle_ui::support::whats_new_url(""),
+        fontelle_ui::support::whats_new_url("", "update"),
         "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update"
+    );
+    // The start menu's own link says it came from there.
+    assert_eq!(
+        fontelle_ui::support::whats_new_url("0.35.0", "start-menu"),
+        "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=start-menu#v0.35.0"
     );
 }

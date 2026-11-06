@@ -187,8 +187,12 @@ fn a_long_section_scrolls_within_its_ends() {
     assert!(max > 0.0);
     assert!(help_scrolled(&l, 0.0, -2.0) > 0.0);
     assert_eq!(help_scrolled(&l, 0.0, 2.0), 0.0);
+    // Laid out, a scroll may stand a band past the end — the springy
+    // scroll's give (`canvas::spring`) — and no further.
     let l = help_layout(window(), &metrics(), 0, &tall, 1.0e7);
-    assert_eq!(l.scroll, max);
+    assert_eq!(l.scroll, max + fontelle_ui::canvas::MAX_OVERSCROLL);
+    let l = help_layout(window(), &metrics(), 0, &tall, -1.0e7);
+    assert_eq!(l.scroll, -fontelle_ui::canvas::MAX_OVERSCROLL);
 }
 
 #[test]

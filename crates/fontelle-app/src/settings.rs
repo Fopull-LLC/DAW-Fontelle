@@ -262,6 +262,11 @@ pub struct Settings {
     /// nowhere else; nothing is asked over the network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_version: Option<String>,
+    /// Where the settings page was left: its section's heading and its
+    /// scroll in whole points, so the gear opens it there again (Ty,
+    /// 2026-11-06).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_page_place: Option<(String, u32)>,
     /// Whether the install ping goes (hub card 0428, `install_ping.rs`): on
     /// unless turned off here or by `FOPULL_NO_PING`.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -432,6 +437,7 @@ impl Default for Settings {
             support_line_said: false,
             support_line_day: None,
             last_version: None,
+            settings_page_place: None,
             install_ping: true,
             ping_notice_said: false,
             audio_output: AudioOutputSettings::default(),

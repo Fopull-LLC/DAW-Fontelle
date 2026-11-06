@@ -73,6 +73,8 @@ const ROW_HEIGHT: f32 = 40.0;
 const STACK_GAP: f32 = 12.0;
 /// The footer's links are fixed-width cells the text is drawn inside.
 const WEBSITE_WIDTH: f32 = 80.0;
+/// The *What's new* link's width: its words, and a little to spare.
+const WHATS_NEW_WIDTH: f32 = 76.0;
 const REPOSITORY_WIDTH: f32 = 120.0;
 const LOGS_WIDTH: f32 = 80.0;
 const LINK_GAP: f32 = 16.0;
@@ -96,6 +98,10 @@ pub struct WelcomeLayout {
     pub title: Rect,
     /// "Version 0.1.0", under the name.
     pub version: Rect,
+    /// *What's new*, a link under the version, on every start menu (Ty,
+    /// 2026-11-06: *"make the whats new button permenant on the home
+    /// page"*): this version's notes on the site.
+    pub whats_new: Rect,
     /// What the update check has to say. Two rows, because "could not check
     /// for updates — no connection" is a sentence and the column is narrow.
     pub update: Rect,
@@ -210,8 +216,9 @@ pub fn welcome_layout(
         (left.width - LOGO - LOGO_GAP).max(0.0),
         LOGO,
     );
-    // The name and the version are stacked and centred on the logo.
-    let block = TITLE_HEIGHT + row;
+    // The name, the version and *What's new* are stacked and centred on
+    // the logo.
+    let block = TITLE_HEIGHT + 2.0 * row;
     let title = Rect::new(
         beside.x,
         beside.y + (LOGO - block) / 2.0,
@@ -219,6 +226,12 @@ pub fn welcome_layout(
         TITLE_HEIGHT,
     );
     let version = Rect::new(beside.x, title.y + TITLE_HEIGHT, beside.width, row);
+    let whats_new = Rect::new(
+        beside.x,
+        version.y + row,
+        WHATS_NEW_WIDTH.min(beside.width),
+        row,
+    );
     let update = Rect::new(left.x, logo.y + LOGO + STACK_GAP, left.width, 2.0 * row);
     let update_button = update_button.then(|| {
         Rect::new(
@@ -314,6 +327,7 @@ pub fn welcome_layout(
         logo,
         title,
         version,
+        whats_new,
         update,
         update_button,
         recover_button: None,
@@ -380,6 +394,15 @@ pub const LEARN_BUTTON: &str = "Learn Fontelle";
 pub const LEARN_OFFER: &str = "New here? A short tour of a small song shows you around.";
 pub const LEARN_TAKE: &str = "Take the tour";
 pub const LEARN_DISMISS: &str = "No thanks";
+
+/// The *What's new* link under the version, or none (`shown` false) when
+/// the update row's button already offers it — said once, not twice.
+pub fn with_whats_new_link(mut layout: WelcomeLayout, shown: bool) -> WelcomeLayout {
+    if !shown {
+        layout.whats_new = Rect::new(layout.whats_new.x, layout.whats_new.y, 0.0, 0.0);
+    }
+    layout
+}
 
 /// Places the tour's way in at the foot of the recent list — a button, or
 /// on first launch (`offer`) a card round it with a No thanks. The recent
@@ -627,6 +650,8 @@ pub enum WelcomeHit {
     /// [`update_line`] offered.
     Update,
     Website,
+    /// *What's new*, under the version: this version's notes on the site.
+    WhatsNew,
     Repository,
     /// The logs folder, shown in the file manager.
     Logs,
@@ -704,6 +729,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.website.contains(x, y) {
         return Some(WelcomeHit::Website);
+    }
+    if layout.whats_new.contains(x, y) {
+        return Some(WelcomeHit::WhatsNew);
     }
     if layout.repository.contains(x, y) {
         return Some(WelcomeHit::Repository);

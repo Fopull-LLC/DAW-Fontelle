@@ -36,6 +36,7 @@ mod settings_page;
 mod share;
 mod singer_panel;
 mod singer_picker;
+mod spring;
 mod text_entry;
 mod theme_editor;
 mod timeline;
@@ -322,6 +323,7 @@ pub use singer_picker::{
     picker_filter, picker_filter_for, picker_move, singer_picker_hit, singer_picker_layout,
     singer_picker_layout_for,
 };
+pub use spring::{MAX_OVERSCROLL, PAGE_SCROLL_STEP, SpringScroll};
 pub use text_entry::{SystemClipboard, TextClipboard, TextEntry, TextKey, text_key};
 pub use theme_editor::{
     LayerRowLayout, PALETTE_GROUPS, SHADER_EDITOR_DONE, SHADER_EDITOR_FINE, SHADER_EDITOR_TITLE,
@@ -386,5 +388,5 @@ pub use welcome::{
     WelcomeCredit, WelcomeHit, WelcomeLayout, support_after_update_due, support_line_due,
     transfer_fraction, transfer_text, update_line, update_line_since, update_progress,
     update_restart_due, welcome_enter, welcome_hint, welcome_hit, welcome_layout, with_asio_credit,
-    with_learn, with_recovery, with_support_line,
+    with_learn, with_recovery, with_support_line, with_whats_new_link,
 };

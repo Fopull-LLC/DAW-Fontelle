@@ -427,6 +427,89 @@ impl Windowless {
         self.app.settings_page.is_some()
     }
 
+    /// The settings page as the gear opens it: where it was left.
+    pub fn open_settings_page(&mut self) {
+        self.app.open_settings_page_where_left();
+        self.settle();
+    }
+
+    /// The page's × .
+    pub fn close_settings_page(&mut self) {
+        self.app.close_settings_page();
+        self.settle();
+    }
+
+    /// The settings page's sections, by heading.
+    pub fn settings_sections(&self) -> Vec<String> {
+        crate::canvas::settings_sections(&self.app.settings_controls)
+            .iter()
+            .map(|s| {
+                self.app
+                    .settings
+                    .get(s.heading)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// A press on section `section` in the page's list.
+    pub fn choose_settings_section(&mut self, section: usize) {
+        self.app.choose_settings_section(section);
+        self.settle();
+    }
+
+    /// How far the page's section can scroll.
+    pub fn settings_page_scroll_max(&self) -> f32 {
+        crate::canvas::settings_page_scroll_max(&self.app.settings_page_layout())
+    }
+
+    /// The section the page shows and how far it is scrolled, while it is up.
+    pub fn settings_page_place(&self) -> Option<(usize, f32)> {
+        self.app
+            .settings_page
+            .as_ref()
+            .map(|page| (page.section, page.scroll))
+    }
+
+    /// The wheel turned `dy` notches (up positive), wherever the pointer is.
+    pub fn wheel_lines(&mut self, dy: f32) {
+        self.app.wheel(super::WheelInput::Lines { x: 0.0, y: dy });
+    }
+
+    /// Fingers on a touchpad moved `dy` points (up positive), now on the
+    /// test's clock.
+    pub fn touchpad(&mut self, dy: f32) {
+        self.app.test_clock.get_or_insert(0.0);
+        self.app.wheel(super::WheelInput::Pixels {
+            x: 0.0,
+            y: dy,
+            lifted: false,
+        });
+    }
+
+    /// The fingers left the touchpad.
+    pub fn touchpad_lift(&mut self) {
+        self.app.test_clock.get_or_insert(0.0);
+        self.app.wheel(super::WheelInput::Pixels {
+            x: 0.0,
+            y: 0.0,
+            lifted: true,
+        });
+    }
+
+    /// `seconds` of what moves on its own, a sixtieth at a time (less, for
+    /// less), on the test's clock — no sleeping.
+    pub fn animate(&mut self, seconds: f32) {
+        let mut left = seconds;
+        while left > 1e-6 {
+            let dt = left.min(1.0 / 60.0);
+            *self.app.test_clock.get_or_insert(0.0) += f64::from(dt);
+            self.app.frame_motion(dt);
+            left -= dt;
+        }
+    }
+
     /// A press on settings row `index`, as a click on its control makes.
     pub fn press_setting(&mut self, index: usize) {
         self.app.press_setting_row(index, false);

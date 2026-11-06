@@ -401,3 +401,26 @@ fn an_ordinary_launch_says_nothing_of_updates() {
     w.open_welcome();
     assert!(line_of(&w).is_none());
 }
+
+/// Ty, 2026-11-06: *"make the whats new button permenant on the home page"*.
+/// Every start menu, not only a new version's first, and the releases page.
+#[test]
+fn whats_new_is_on_every_start_menu() {
+    let (mut w, links) = studio(a_session());
+    w.open_welcome();
+    let l = w.welcome_layout().expect("the start menu");
+    let (x, y) = centre(l.whats_new);
+    w.click_studio(x, y);
+    let links = links.lock().unwrap().clone();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert!(
+        links[0].starts_with(
+            "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=start-menu"
+        ),
+        "{links:?}"
+    );
+    assert!(
+        w.welcome_layout().is_some(),
+        "a link does not close the menu"
+    );
+}

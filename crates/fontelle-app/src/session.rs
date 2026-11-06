@@ -13013,6 +13013,23 @@ impl StudioHost for Session {
         }
     }
 
+    fn settings_place(&self) -> Option<(String, f32)> {
+        self.settings
+            .settings_page_place
+            .as_ref()
+            .map(|(heading, scroll)| (heading.clone(), *scroll as f32))
+    }
+
+    fn set_settings_place(&mut self, heading: &str, scroll: f32) {
+        let place = Some((heading.to_string(), scroll.max(0.0).round() as u32));
+        if self.settings.settings_page_place != place {
+            self.settings.settings_page_place = place;
+            if let Err(e) = self.save_settings() {
+                self.message = Some(format!("could not write settings: {e}"));
+            }
+        }
+    }
+
     fn tour_finished(&mut self) {
         self.reached(crate::install_ping::Milestone::TourFinished);
     }

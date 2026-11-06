@@ -520,7 +520,12 @@ pub fn keybinds_layout(window: Rect, metrics: &Metrics, scroll: f32) -> Keybinds
         heights[column] = y;
     }
     let content_height = heights.iter().copied().fold(0.0_f32, f32::max);
-    let scroll = scroll.clamp(0.0, (content_height - body.height).max(0.0));
+    // Up to a band past either end: the spring's give (`canvas::spring`)
+    // is drawn as the rows pulled away from the edge, then let go.
+    let scroll = scroll.clamp(
+        -super::MAX_OVERSCROLL,
+        (content_height - body.height).max(0.0) + super::MAX_OVERSCROLL,
+    );
 
     let shift =
         |r: Rect| Rect::new(r.x, (r.y + body.y - scroll).round(), r.width, r.height).clamped();

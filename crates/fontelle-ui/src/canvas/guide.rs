@@ -612,7 +612,12 @@ pub fn help_layout(
         }
     }
     let content_height = y;
-    let scroll = scroll.clamp(0.0, (content_height - body.height).max(0.0));
+    // Up to a band past either end: the spring's give (`canvas::spring`)
+    // is drawn as the rows pulled away from the edge, then let go.
+    let scroll = scroll.clamp(
+        -super::MAX_OVERSCROLL,
+        (content_height - body.height).max(0.0) + super::MAX_OVERSCROLL,
+    );
     let blocks = placed
         .into_iter()
         .map(|mut block| {

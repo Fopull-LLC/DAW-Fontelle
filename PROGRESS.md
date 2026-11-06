@@ -19,6 +19,36 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-06 — Polish: What's new always there, settings remember their
+place, springy scrolling (not released).** Ty: *"make the whats new button
+permenant on the home page and also make settings remember what tab you
+were last in … could you also encorperate springy scrolling like apple
+devices have"*.
+
+- **What's new** is a link under the version on every start menu
+  (`WelcomeLayout::whats_new`, `WelcomeHit::WhatsNew`), opening
+  `support::whats_new_url(version, "start-menu")`. On a new version's first
+  start menu the update row's button already says it, so the link steps
+  aside (`with_whats_new_link`).
+- **Settings opens where it was left**: the gear and the browser's tab go
+  through `open_settings_page_where_left`, which finds the section by its
+  heading (not its index) and restores the scroll; closing writes it to the
+  document (`DocumentHost::set_settings_place`, kept in
+  `Settings::settings_page_place`, whole points). Asked for by name ("Import
+  from") it opens there, and that becomes the place.
+- **`canvas::SpringScroll`** drives the shortcuts, help and settings pages
+  (`App::page_spring`, one at a time): a notch glides and gives 28 pt at an
+  edge; a touchpad follows the fingers exactly, stretches like a rubber band
+  past an edge (never past `MAX_OVERSCROLL`), and coasts after the lift —
+  said by winit's `TouchPhase::Ended` or inferred after 50 ms of quiet —
+  bouncing back at an edge. The page layouts accept a scroll up to the band
+  past either end. `App::wheel` is now a method the windowless tests drive,
+  with a test clock (`Windowless::animate`).
+- Seen in the real binary on `:99`: the give measured 27 pt and back in a
+  third of a second. That needs the `AutoNoVsync` scratch build — with vsync
+  the nested server presents once a second and every motion looks like a
+  jump.
+
 **2026-11-06 — Release notes are written, and What's new opens them (hub
 card 0665).** 0.32.0, 0.33.0 and 0.34.0 went out with bodies holding only
 the Download line and the ASIO notice; Ty pressed What's new and found no

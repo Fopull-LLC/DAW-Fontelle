@@ -215,8 +215,10 @@ fn a_section_taller_than_the_body_scrolls_and_the_scroll_is_clamped() {
     let down = settings_page_scrolled(&l, 0.0, -3.0);
     assert!(down > 0.0, "a notch down scrolls down");
     assert_eq!(settings_page_scrolled(&l, 0.0, 3.0), 0.0);
+    // Laid out, a scroll may stand a band past the end — the springy
+    // scroll's give (`canvas::spring`) — and no further.
     let l = settings_page_layout(window(), &metrics(), &sections, 0, 1.0e6);
-    assert_eq!(l.scroll, max);
+    assert_eq!(l.scroll, max + fontelle_ui::canvas::MAX_OVERSCROLL);
     for row in &l.rows {
         assert!(row.rect.intersects(&l.body), "only rows that show: {row:?}");
     }

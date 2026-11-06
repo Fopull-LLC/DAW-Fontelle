@@ -53,6 +53,7 @@ fn pressables(layout: &WelcomeLayout) -> Vec<Rect> {
         layout.repository,
     ];
     all.push(layout.join_button);
+    all.push(layout.whats_new);
     all.extend(layout.update_button);
     all.extend(layout.rows.iter().map(|row| row.frame));
     all
@@ -699,4 +700,48 @@ fn it_waits_for_any_moment_a_restart_would_cost_something() {
     ] {
         assert!(!update_restart_due(&moment), "{why}");
     }
+}
+
+/// Ty, 2026-11-06: *"make the whats new button permenant on the home page"*.
+/// It was only offered on a new version's first start menu, in the update
+/// row's one slot; now a link under the version says it every time.
+#[test]
+fn whats_new_is_always_there_under_the_version() {
+    for (w, h) in [(1280.0, 720.0), (900.0, 560.0), (640.0, 400.0)] {
+        let window = Rect::new(0.0, 0.0, w, h);
+        for button in [false, true] {
+            let layout = welcome_layout(window, &metrics(), 3, button);
+            let link = layout.whats_new;
+            assert!(
+                !link.is_empty() && within(link, layout.frame),
+                "{link:?} at {w}x{h}"
+            );
+            assert!(
+                link.y >= layout.version.y + layout.version.height - 0.01,
+                "under the version"
+            );
+            assert!((link.x - layout.version.x).abs() < 0.01, "lined up with it");
+            for other in [layout.logo, layout.title, layout.version, layout.update] {
+                assert!(!overlaps(link, other), "{link:?} on {other:?} at {w}x{h}");
+            }
+            // Still beside the logo: the three lines stand together.
+            assert!(link.y + link.height <= layout.logo.y + layout.logo.height + 0.01);
+            assert!(layout.title.y >= layout.logo.y - 0.01);
+            let (x, y) = centre(link);
+            assert_eq!(welcome_hit(&layout, x, y), Some(WelcomeHit::WhatsNew));
+        }
+    }
+}
+
+/// On a new version's first start menu the update row already offers *What's
+/// new* as a button; the link steps aside rather than say it twice.
+#[test]
+fn whats_new_is_said_once_when_the_update_row_offers_it() {
+    let layout = welcome_layout(window(), &metrics(), 3, true);
+    let (x, y) = centre(layout.whats_new);
+    let kept = fontelle_ui::canvas::with_whats_new_link(layout.clone(), true);
+    assert_eq!(kept.whats_new, layout.whats_new);
+    let aside = fontelle_ui::canvas::with_whats_new_link(layout, false);
+    assert!(aside.whats_new.is_empty());
+    assert_eq!(welcome_hit(&aside, x, y), None);
 }

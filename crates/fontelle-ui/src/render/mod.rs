@@ -2872,6 +2872,14 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         p.text,
     );
     draw_line(scene, labels, chrome.version, l.version, p.text_muted);
+    draw_welcome_link_left(
+        scene,
+        theme,
+        labels,
+        crate::canvas::WHATS_NEW_LABEL,
+        l.whats_new,
+        hot(WelcomeHit::WhatsNew),
+    );
 
     // What the check found, and the offer if there is one.
     draw_text_clipped(
@@ -3280,6 +3288,26 @@ fn draw_welcome_button(
 /// A footer link: accent ink with a rule under it, brighter under the
 /// pointer. Right-aligned in its cell, so the two sit flush with the card's
 /// edge whatever their lengths.
+/// [`draw_welcome_link`], its words at the left of `area` — under the
+/// version, lined up with it.
+fn draw_welcome_link_left(
+    scene: &mut Scene,
+    theme: &Theme,
+    labels: &Labels,
+    caption: &str,
+    area: Rect,
+    hot: bool,
+) {
+    if area.is_empty() {
+        return;
+    }
+    let Some(text) = labels.get(caption) else {
+        return;
+    };
+    let fitted = Rect::new(area.x, area.y, text.width.min(area.width), area.height);
+    draw_welcome_link(scene, theme, labels, caption, fitted, hot);
+}
+
 fn draw_welcome_link(
     scene: &mut Scene,
     theme: &Theme,

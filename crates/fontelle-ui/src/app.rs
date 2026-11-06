@@ -1431,6 +1431,15 @@ const TOUR_EASE: std::time::Duration = std::time::Duration::from_millis(260);
 
 /// The settings page while it is up: which section it shows, how far that
 /// section is scrolled, and what the pointer is over.
+/// One turn of the wheel or move on a touchpad, as `App::wheel` reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum WheelInput {
+    /// A wheel's notches (up and left positive, as winit says them).
+    Lines { x: f32, y: f32 },
+    /// A touchpad's points, and whether this is the fingers lifting.
+    Pixels { x: f32, y: f32, lifted: bool },
+}
+
 struct SettingsPage {
     section: usize,
     scroll: f32,
@@ -1508,6 +1517,20 @@ pub struct WindowApp {
     /// The settings page, while it is up: opened by the gear, shut by Esc,
     /// its × or a press off the card (`canvas::settings_page`).
     settings_page: Option<SettingsPage>,
+    /// Where the settings page was left — its section's heading and its
+    /// scroll — so the gear opens it there again (Ty, 2026-11-06: *"make
+    /// settings remember what tab you were last in so every time you dont
+    /// have to re scroll"*). Read from the document the first time, written
+    /// back to it on every close, so a relaunch keeps it too.
+    settings_place: Option<(String, f32)>,
+    settings_place_read: bool,
+    /// The scroll of whichever full page is up — shortcuts, help or
+    /// settings, never two at once — with its give and its coast
+    /// (`canvas::spring`). The page's own `scroll` is what this last wrote.
+    page_spring: crate::canvas::SpringScroll,
+    /// A clock a test drives in place of the real one, for the motions
+    /// that read time (`now_s`).
+    test_clock: Option<f64>,
     /// The guide behind `?`, while it is up.
     help: Option<HelpState>,
     /// The tour step's choice's options and which is set, read off the host
@@ -2617,6 +2640,10 @@ impl WindowApp {
             keybinds_hover: None,
             keybinds_note: String::new(),
             settings_page: None,
+            settings_place: None,
+            settings_place_read: false,
+            page_spring: crate::canvas::SpringScroll::default(),
+            test_clock: None,
             help: None,
             tour_choices: (Vec::new(), None),
             tour: None,
@@ -3223,11 +3250,14 @@ impl WindowApp {
                 crate::canvas::with_recovery(
                     crate::canvas::with_asio_credit(
                         crate::canvas::with_learn(
-                            crate::canvas::welcome_layout(
-                                window,
-                                metrics,
-                                welcome.recent.len(),
-                                welcome.button.is_some() || welcome.progress.is_some(),
+                            crate::canvas::with_whats_new_link(
+                                crate::canvas::welcome_layout(
+                                    window,
+                                    metrics,
+                                    welcome.recent.len(),
+                                    welcome.button.is_some() || welcome.progress.is_some(),
+                                ),
+                                welcome.button != Some(crate::canvas::WHATS_NEW_LABEL),
                             ),
                             metrics,
                             offer,
@@ -3367,7 +3397,7 @@ impl WindowApp {
         }
         // The gear: the settings page, over the card, as over the studio.
         if hit == WelcomeHit::Settings {
-            self.open_settings_page(0);
+            self.open_settings_page_where_left();
             return;
         }
         // The tour: its song opens and the menu gives way to it. Offered on
@@ -3434,15 +3464,22 @@ impl WindowApp {
             WelcomeHit::Update => {
                 match welcome.status {
                     UpdateStatus::Available { .. } => doc.upgrade(),
-                    _ if welcome.button == Some(crate::canvas::WHATS_NEW_LABEL) => {
-                        doc.open_url(&crate::support::whats_new_url(&self.options.version))
-                    }
+                    _ if welcome.button == Some(crate::canvas::WHATS_NEW_LABEL) => doc.open_url(
+                        &crate::support::whats_new_url(&self.options.version, "update"),
+                    ),
                     _ => doc.open_release_page(),
                 }
                 Ok(false)
             }
             WelcomeHit::Website => {
                 doc.open_url(WEBSITE_URL);
+                Ok(false)
+            }
+            WelcomeHit::WhatsNew => {
+                doc.open_url(&crate::support::whats_new_url(
+                    &self.options.version,
+                    "start-menu",
+                ));
                 Ok(false)
             }
             WelcomeHit::Repository => {
@@ -5461,47 +5498,16 @@ impl ApplicationHandler for WindowApp {
                 ..
             } => self.released(button),
 
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => {
-                        (p.x as f32 / 40.0, p.y as f32 / 40.0)
-                    }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                let input = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => WheelInput::Lines { x, y },
+                    winit::event::MouseScrollDelta::PixelDelta(p) => WheelInput::Pixels {
+                        x: p.x as f32,
+                        y: p.y as f32,
+                        lifted: phase == winit::event::TouchPhase::Ended,
+                    },
                 };
-                if let Some(scroll) = self.keybinds {
-                    let layout = self.keybinds_layout();
-                    self.keybinds = Some(crate::canvas::keybinds_scrolled(&layout, scroll, dy));
-                    self.tree.invalidate_rect(self.layout.window);
-                    // The rows moved under a still pointer.
-                    self.update_hover();
-                } else if self.help.is_some() {
-                    let layout = self.help_layout();
-                    if let Some(help) = &mut self.help {
-                        help.scroll = crate::canvas::help_scrolled(&layout, help.scroll, dy);
-                    }
-                    self.tree.invalidate_rect(self.layout.window);
-                    self.update_hover();
-                } else if self.settings_page.is_some() {
-                    let layout = self.settings_page_layout();
-                    if let Some(page) = &mut self.settings_page {
-                        page.scroll =
-                            crate::canvas::settings_page_scrolled(&layout, page.scroll, dy);
-                    }
-                    self.tree.invalidate_rect(self.layout.window);
-                    self.update_hover();
-                } else if self.vocal_edit.picker.is_some() {
-                    self.scroll_singer_picker(dy);
-                } else if let Some(page) = &mut self.vocal_edit.page {
-                    page.scroll = (page.scroll - dy * 40.0).max(0.0);
-                    if let Some(layout) = &page.layout {
-                        page.scroll = page
-                            .scroll
-                            .min((layout.content_height - layout.list.height).max(0.0));
-                    }
-                    self.tree.invalidate_rect(self.layout.window);
-                } else if self.welcome.is_none() {
-                    self.scroll_roll(dx, dy);
-                }
+                self.wheel(input);
                 self.request_redraw_if_dirty();
             }
 
@@ -8169,6 +8175,7 @@ impl WindowApp {
                 crate::canvas::WEBSITE_LABEL,
                 crate::canvas::REPOSITORY_LABEL,
                 crate::canvas::LOGS_LABEL,
+                crate::canvas::WHATS_NEW_LABEL,
                 crate::canvas::LEARN_BUTTON,
                 crate::canvas::LEARN_OFFER,
                 crate::canvas::LEARN_TAKE,
@@ -9795,6 +9802,132 @@ impl WindowApp {
         self.studio_released();
     }
 
+    /// The wheel or a touchpad, over whatever is under the pointer. Lines
+    /// are a wheel's notches; points are a touchpad's, which the full pages
+    /// follow exactly (`canvas::spring`) and everything else reads as
+    /// notches, as it always has.
+    pub(crate) fn wheel(&mut self, input: WheelInput) {
+        let (dx, dy) = match input {
+            WheelInput::Lines { x, y } => (x, y),
+            WheelInput::Pixels { x, y, .. } => (x / 40.0, y / 40.0),
+        };
+        if self.keybinds.is_some() || self.help.is_some() || self.settings_page.is_some() {
+            // The full pages scroll by the point, with give (`page_spring`).
+            // Its end first: the section may have changed since the last
+            // frame, and a target is held to the end it knows.
+            if let Some(max) = self.open_page_scroll_max() {
+                self.page_spring.set_max(max);
+            }
+            match input {
+                WheelInput::Lines { y, .. } => {
+                    self.page_spring.wheel(-y * crate::canvas::PAGE_SCROLL_STEP);
+                }
+                WheelInput::Pixels { y, lifted, .. } => {
+                    let now = self.now_s();
+                    if y != 0.0 {
+                        self.page_spring.touch(-y, now);
+                    }
+                    if lifted {
+                        self.page_spring.release(now);
+                    }
+                }
+            }
+            self.sync_page_spring();
+            self.tree.invalidate_rect(self.layout.window);
+            // The rows moved under a still pointer.
+            self.update_hover();
+        } else if self.vocal_edit.picker.is_some() {
+            self.scroll_singer_picker(dy);
+        } else if let Some(page) = &mut self.vocal_edit.page {
+            page.scroll = (page.scroll - dy * 40.0).max(0.0);
+            if let Some(layout) = &page.layout {
+                page.scroll = page
+                    .scroll
+                    .min((layout.content_height - layout.list.height).max(0.0));
+            }
+            self.tree.invalidate_rect(self.layout.window);
+        } else if self.welcome.is_none() {
+            self.scroll_roll(dx, dy);
+        }
+    }
+
+    /// What the motions that read time read: the real clock, or a test's.
+    fn now_s(&self) -> f64 {
+        self.test_clock
+            .unwrap_or_else(|| self.glide_clock.elapsed().as_secs_f64())
+    }
+
+    /// The open page's scroll, from `page_spring`: its end told to the
+    /// spring, its position written into the page. Whether it moved.
+    fn sync_page_spring(&mut self) -> bool {
+        let Some(max) = self.open_page_scroll_max() else {
+            return false;
+        };
+        self.page_spring.set_max(max);
+        let at = self.page_spring.position();
+        let slot = if let Some(scroll) = &mut self.keybinds {
+            scroll
+        } else if let Some(help) = &mut self.help {
+            &mut help.scroll
+        } else if let Some(page) = &mut self.settings_page {
+            &mut page.scroll
+        } else {
+            return false;
+        };
+        let moved = *slot != at;
+        *slot = at;
+        moved
+    }
+
+    /// The spring takes whatever the open page's scroll now is as its own,
+    /// at rest — after something else (middle-click autoscroll) moved it.
+    fn page_spring_adopts_page(&mut self) {
+        let at = if let Some(scroll) = self.keybinds {
+            scroll
+        } else if let Some(help) = &self.help {
+            help.scroll
+        } else if let Some(page) = &self.settings_page {
+            page.scroll
+        } else {
+            return;
+        };
+        // The end first, so the jump is not clamped to a stale one.
+        if let Some(max) = self.open_page_scroll_max() {
+            self.page_spring.set_max(max);
+        }
+        self.page_spring.jump_to(at);
+    }
+
+    /// How far the open full page can scroll, if one is open.
+    fn open_page_scroll_max(&self) -> Option<f32> {
+        if self.keybinds.is_some() {
+            Some(crate::canvas::keybinds_scroll_max(&self.keybinds_layout()))
+        } else if self.help.is_some() {
+            Some(crate::canvas::help_scroll_max(&self.help_layout()))
+        } else if self.settings_page.is_some() {
+            Some(crate::canvas::settings_page_scroll_max(
+                &self.settings_page_layout(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// One frame of the open page's spring. Whether it is still moving.
+    fn step_page_spring(&mut self, dt: f32) -> bool {
+        if self.keybinds.is_none() && self.help.is_none() && self.settings_page.is_none() {
+            return false;
+        }
+        self.sync_page_spring();
+        let now = self.now_s();
+        let moving = self.page_spring.step(dt, now);
+        if self.sync_page_spring() {
+            self.tree.invalidate_rect(self.layout.window);
+            self.update_hover();
+        }
+        moving
+    }
+
     /// One frame of what moves on its own — the wheel's glides — `dt`
     /// seconds after the last. Whether anything is still moving.
     fn frame_motion(&mut self, dt: f32) -> bool {
@@ -9806,7 +9939,8 @@ impl WindowApp {
             self.particles.step(dt);
             self.tree.invalidate(PANEL);
         }
-        self.glide_views(dt) || scrolling || flying || people
+        let paging = self.step_page_spring(dt);
+        self.glide_views(dt) || scrolling || flying || people || paging
     }
 
     /// Middle-click autoscroll begins at `(x, y)`: in the studio's window
@@ -10032,6 +10166,8 @@ impl WindowApp {
                     self.keybinds =
                         Some(crate::canvas::keybinds_scrolled(&layout, scroll + py, 0.0));
                 }
+                // Its own pace already: the spring only learns where it is.
+                self.page_spring_adopts_page();
                 self.tree.invalidate_rect(self.layout.window);
                 self.update_hover();
             }
@@ -10040,6 +10176,8 @@ impl WindowApp {
                 if let Some(help) = &mut self.help {
                     help.scroll = crate::canvas::help_scrolled(&layout, help.scroll + py, 0.0);
                 }
+                // Its own pace already: the spring only learns where it is.
+                self.page_spring_adopts_page();
                 self.tree.invalidate_rect(self.layout.window);
                 self.update_hover();
             }
@@ -10049,6 +10187,8 @@ impl WindowApp {
                     page.scroll =
                         crate::canvas::settings_page_scrolled(&layout, page.scroll + py, 0.0);
                 }
+                // Its own pace already: the spring only learns where it is.
+                self.page_spring_adopts_page();
                 self.tree.invalidate_rect(self.layout.window);
                 self.update_hover();
             }
@@ -14179,7 +14319,7 @@ impl WindowApp {
         // The gear is a page now, not a list in the sidebar (Ty, 2026-09-30:
         // *"a full settings page"*); the sidebar keeps what it was showing.
         if mode == BrowserMode::Settings {
-            self.open_settings_page(0);
+            self.open_settings_page_where_left();
             return;
         }
         self.browser_mode = mode;
@@ -17416,6 +17556,7 @@ impl WindowApp {
             self.end_tempo_entry(true);
         }
         self.keybinds = Some(0.0);
+        self.page_spring = crate::canvas::SpringScroll::default();
         // The page is drawn in the studio window. Asked for from an editor
         // window, that window is behind the one the keys are being typed
         // at, so bring it forward where the desktop allows — and the editor
@@ -17547,6 +17688,7 @@ impl WindowApp {
             scroll: 0.0,
             hover: None,
         });
+        self.page_spring = crate::canvas::SpringScroll::default();
         // The rows are read on a revision change; ask for them now, so a page
         // opened before anything else moved is not an empty one.
         self.studio_revision = u64::MAX;
@@ -17579,9 +17721,53 @@ impl WindowApp {
         }
     }
 
+    /// Opens the page where it was left: the section by its heading (a
+    /// section added or moved since cannot send it to the wrong one), at
+    /// the scroll it had. The first time, the first section.
+    fn open_settings_page_where_left(&mut self) {
+        if !self.settings_place_read {
+            self.settings_place_read = true;
+            if let Some(doc) = &self.options.document {
+                self.settings_place = doc.settings_place();
+            }
+        }
+        let Some((heading, scroll)) = self.settings_place.clone() else {
+            self.open_settings_page(0);
+            return;
+        };
+        self.open_settings_page_at(&heading);
+        let max = crate::canvas::settings_page_scroll_max(&self.settings_page_layout());
+        let at = scroll.clamp(0.0, max);
+        self.page_spring.set_max(max);
+        self.page_spring.jump_to(at);
+        self.sync_page_spring();
+    }
+
     fn close_settings_page(&mut self) {
         self.settings_focus = None;
-        if self.settings_page.take().is_some() {
+        if let Some(page) = self.settings_page.take() {
+            // Where it was left, for the next open — resting, not mid-give.
+            let sections = crate::canvas::settings_sections(&self.settings_controls);
+            let heading = sections
+                .get(page.section)
+                .and_then(|s| self.settings.get(s.heading))
+                .map(|e| e.name.clone());
+            if let Some(heading) = heading {
+                let max =
+                    crate::canvas::settings_page_scroll_max(&crate::canvas::settings_page_layout(
+                        self.layout.window,
+                        &self.options.theme.metrics,
+                        &sections,
+                        page.section,
+                        0.0,
+                    ));
+                let scroll = page.scroll.clamp(0.0, max);
+                if let Some(doc) = &mut self.options.document {
+                    doc.set_settings_place(&heading, scroll);
+                }
+                self.settings_place = Some((heading, scroll));
+                self.settings_place_read = true;
+            }
             self.tree.invalidate_rect(self.layout.window);
         }
     }
@@ -17603,6 +17789,17 @@ impl WindowApp {
         )
     }
 
+    /// The settings page shows its `section`th section, from the top.
+    fn choose_settings_section(&mut self, section: usize) {
+        self.settings_focus = None;
+        if let Some(page) = &mut self.settings_page {
+            page.section = section;
+            page.scroll = 0.0;
+        }
+        self.page_spring.jump_to(0.0);
+        self.tree.invalidate_rect(self.layout.window);
+    }
+
     /// A press while the page is up. The row presses are the ones the
     /// sidebar tab had — `press_settings` — routed by index.
     fn press_settings_page(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
@@ -17610,13 +17807,7 @@ impl WindowApp {
         let layout = self.settings_page_layout();
         match crate::canvas::settings_page_hit(&layout, x, y) {
             SettingsPageHit::Close | SettingsPageHit::Outside => self.close_settings_page(),
-            SettingsPageHit::Section(section) => {
-                self.settings_focus = None;
-                if let Some(page) = &mut self.settings_page {
-                    page.section = section;
-                    page.scroll = 0.0;
-                }
-            }
+            SettingsPageHit::Section(section) => self.choose_settings_section(section),
             SettingsPageHit::Row { index, on_control } => {
                 let back = button == winit::event::MouseButton::Right;
                 // The words of a slider row take the keyboard and nothing
@@ -17673,6 +17864,7 @@ impl WindowApp {
                 paragraphs: Vec::new(),
                 shaped: None,
             });
+            self.page_spring = crate::canvas::SpringScroll::default();
         }
         if let Some(live) = &self.live {
             live.window.focus_window();
@@ -17716,6 +17908,7 @@ impl WindowApp {
                     help.section = section;
                     help.scroll = 0.0;
                 }
+                self.page_spring.jump_to(0.0);
             }
             HelpHit::Shortcuts => {
                 self.close_help();

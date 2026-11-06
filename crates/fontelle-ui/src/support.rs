@@ -29,10 +29,14 @@ pub const SUPPORT_URL_UPDATE: &str =
 /// the old address landed on Fontelle's page, not a changelog). The page
 /// reads each release's notes from GitHub, so the notes must be written
 /// (`release-notes/`). No version, no anchor: the page opens at its newest.
-pub fn whats_new_url(version: &str) -> String {
-    let page = "https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium=update";
+/// `medium` says where it was pressed — `update` for the first start menu
+/// after an update, `start-menu` for the link under the version — for W's
+/// counts.
+pub fn whats_new_url(version: &str, medium: &str) -> String {
+    let page =
+        format!("https://fopull.com/fontelle/releases?utm_source=fontelle-app&utm_medium={medium}");
     if version.is_empty() {
-        page.to_string()
+        page
     } else {
         format!("{page}#v{version}")
     }

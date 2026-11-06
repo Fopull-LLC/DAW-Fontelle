@@ -2243,6 +2243,14 @@ pub trait StudioHost: DocumentHost {
     /// The start menu has been left — for anything waiting on the person
     /// being done with it (the first launch's install ping, hub card 0645).
     fn start_menu_left(&mut self) {}
+    /// Where the settings page was last left — its section's heading and
+    /// its scroll — kept beyond this run.
+    fn settings_place(&self) -> Option<(String, f32)> {
+        None
+    }
+    /// The settings page was left on the section headed `heading`, scrolled
+    /// `scroll`.
+    fn set_settings_place(&mut self, _heading: &str, _scroll: f32) {}
     /// The tour's last step has been reached — a milestone for the install
     /// ping (hub card 0646).
     fn tour_finished(&mut self) {}
