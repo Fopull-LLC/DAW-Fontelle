@@ -32,7 +32,7 @@
             "delay_s": 0.0,
             "hold_s": 0.0,
             "release_s": 2.0,
-            "release_shape": -0.6000000238418579,
+            "release_shape": 0.0,
             "sustain_level": 1.0
           },
           {
@@ -508,7 +508,7 @@
             }
           ]
         },
-        "output_db": 8.300000190734863,
+        "output_db": 5.0,
         "samples": [
           {
             "factory": "grand-hard",

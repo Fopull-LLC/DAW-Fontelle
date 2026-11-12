@@ -49,6 +49,36 @@ codebase that cost real time to rediscover.
   `utm_medium=start-menu-footer`); it steps aside in a card too narrow for
   it beside the company's line.
 
+**2026-11-12 — The Flopsynth bank audited for polish (not released).** Ty:
+*"the synth is capable of a lot and making really polished sounds but many
+still sound unpolished or janky please have an agent do a full audit on all
+of the built in presets"*. Measured, not listened to.
+
+- **`tests/preset_polish.rs`**, seven gates over all 409 rows (readings in
+  `tests/support/polish.rs`, shared with `examples/preset_polish.rs`, which
+  prints them per row and `--axes` for the bank gate's five). Before the
+  fixes: 5 rows clicked after their start, 59 carried DC or rumble, 48
+  folded at C6, 4 "plucks" swelled, 16 sustained imitations had no late
+  vibrato on the wheel, and **45 named macros were dead** (an LFO's depth
+  starts at 1 and clamps there, so every Vibrato/Trill/Range knob that
+  *added* depth moved nothing — the whole `strings()` archetype among them).
+- **The decibel release click**: the Init envelopes bend the release −0.6;
+  on the `Decibel` curve that bend fell 1.8 dB in the release's first sample
+  (808 Freeze: 1.000 → 0.808). `Build::curve` now straightens the release
+  when it sets `Decibel` — the whole sampled-grand and kit family.
+- New builder verbs: `floor(hz)` (a high-pass in the free filter slot,
+  every layer routed through it — 38 rows; pulses and lopsided warps),
+  `oversample(…)` (49 rows at 2×, Metal Throat at 4×), `rest_depth(lfo, d)`
+  (rest the LFO lower and scale its routes up: identical at rest, knob
+  alive). Brass archetype, Pan Pipe, Synth Vox and the woodwinds got a late
+  vibrato the wheel deepens. Square/S&H gates smoothed. Steel, Mandolin,
+  Touch Pluck, Kora, Morph Drone (its sweep shut the filter for most of a
+  slow cycle) and Neuro (RM 0.35) changed by hand. Oversampling took away
+  the fold that told six pairs apart; each was moved on one axis, commented.
+- Not done: the Init envelopes' linear release bend still steps ~2 % on
+  the first sample (masked, under the click gate); the tables themselves
+  carry DC (`wavetable.rs` keeps bin 0) — `floor` is the preset-side fix.
+
 **2026-11-06 — Polish, round two, as 0.35.0-beta.1.** Ty: *"continue on
 the remaining reccomendations and then release as a beta release"*.
 

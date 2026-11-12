@@ -83,7 +83,7 @@
           },
           {
             "character": 0.0,
-            "cutoff_hz": 4500.0,
+            "cutoff_hz": 7000.0,
             "drive": 0.0,
             "enabled": true,
             "key_track": 0.0,
@@ -472,6 +472,7 @@
           ]
         },
         "output_db": 11.100000381469727,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

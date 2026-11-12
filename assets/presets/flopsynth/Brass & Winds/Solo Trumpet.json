@@ -337,7 +337,7 @@
         "lfos": [
           {
             "delay_s": 0.4000000059604645,
-            "depth": 1.0,
+            "depth": 0.3499999940395355,
             "division": "Quarter",
             "fade_s": 0.30000001192092896,
             "mode": "Retrigger",
@@ -472,11 +472,46 @@
               "source": {
                 "Lfo": 0
               },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.0010000000474974513,
+              "destination": {
+                "LayerPitch": 1
+              },
+              "invert": false,
+              "source": {
+                "Lfo": 0
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.6499999761581421,
+              "destination": {
+                "LfoDepth": 0
+              },
+              "invert": false,
+              "source": "ModWheel",
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.0010000000474974513,
+              "destination": {
+                "LayerPitch": 0
+              },
+              "invert": false,
+              "source": {
+                "Lfo": 0
+              },
               "via": "ModWheel"
             }
           ]
         },
         "output_db": 12.0,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": true,

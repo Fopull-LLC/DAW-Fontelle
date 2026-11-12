@@ -87,13 +87,13 @@
           },
           {
             "character": 0.0,
-            "cutoff_hz": 20.0,
+            "cutoff_hz": 30.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -128,7 +128,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -3.0,
+            "gain_db": -13.699999809265137,
             "key_range": [
               0,
               127
@@ -288,7 +288,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -316,7 +316,7 @@
           },
           {
             "fine_tune_cents": 0.0,
-            "gain_db": 3.0,
+            "gain_db": -7.699999809265137,
             "key_range": [
               0,
               127
@@ -335,7 +335,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "F1",
+                "filter_route": "Serial",
                 "key_track": false,
                 "modulator": null,
                 "noise_colour": 0.30000001192092896,
@@ -514,7 +514,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.4000000059604645,
+              "depth": -0.3499999940395355,
               "destination": {
                 "FilterCutoff": 0
               },

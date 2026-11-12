@@ -181,7 +181,7 @@
                   "width": 0.5
                 },
                 "warp": "Rm",
-                "warp_amount": 0.5
+                "warp_amount": 0.3499999940395355
               }
             },
             "vel_range": [

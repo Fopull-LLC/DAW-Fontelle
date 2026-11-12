@@ -337,7 +337,7 @@
         "lfos": [
           {
             "delay_s": 0.20000000298023224,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.30000001192092896,
             "mode": "Retrigger",
@@ -418,7 +418,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0006000000284984708,
+              "depth": 0.001500000013038516,
               "destination": {
                 "LayerPitch": 0
               },
@@ -430,7 +430,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0006000000284984708,
+              "depth": 0.001500000013038516,
               "destination": {
                 "LayerPitch": 1
               },
@@ -464,7 +464,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0012000000569969416,
+              "depth": 0.003000000026077032,
               "destination": {
                 "LayerPitch": 0
               },

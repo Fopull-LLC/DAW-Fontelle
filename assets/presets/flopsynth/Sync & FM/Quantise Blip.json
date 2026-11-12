@@ -335,7 +335,7 @@
         "lfos": [
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Retrigger",
@@ -416,7 +416,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.003000000026077032,
+              "depth": 0.007500000298023224,
               "destination": {
                 "LayerPitch": 0
               },
@@ -462,7 +462,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.4000000059604645,
+              "depth": 1.0,
               "destination": {
                 "OscWarp": 0
               },

@@ -14,6 +14,7 @@
     "filtered",
     "lfo",
     "velocity",
+    "wheel",
     "rhythmic"
   ],
   "notes": "A brass or wind sound built from a table; reach for Tone, then Vibrato.",
@@ -459,10 +460,21 @@
                 "Macro": 1
               },
               "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.6000000238418579,
+              "destination": {
+                "LfoDepth": 0
+              },
+              "invert": false,
+              "source": "ModWheel",
+              "via": null
             }
           ]
         },
         "output_db": 12.0,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": true,

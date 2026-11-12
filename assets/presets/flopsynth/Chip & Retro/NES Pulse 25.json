@@ -10,6 +10,7 @@
     "retro",
     "table",
     "poly",
+    "filtered",
     "lfo",
     "wheel",
     "velocity",
@@ -87,11 +88,11 @@
             "character": 0.0,
             "cutoff_hz": 20.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -259,7 +260,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -334,7 +335,7 @@
         "lfos": [
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Retrigger",
@@ -415,7 +416,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.003000000026077032,
+              "depth": 0.007500000298023224,
               "destination": {
                 "LayerPitch": 0
               },
@@ -462,6 +463,7 @@
           ]
         },
         "output_db": -6.400000095367432,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

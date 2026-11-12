@@ -10,6 +10,7 @@
     "table",
     "warped",
     "poly",
+    "filtered",
     "velocity",
     "lfo",
     "distorted",
@@ -30,7 +31,7 @@
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.30000001192092896,
+            "release_s": 0.44999998807907104,
             "release_shape": -0.6000000238418579,
             "sustain_level": 0.4000000059604645
           },
@@ -87,11 +88,11 @@
             "character": 0.0,
             "cutoff_hz": 20.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -299,7 +300,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,

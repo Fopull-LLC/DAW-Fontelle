@@ -369,7 +369,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 0.25,
-            "smooth": 0.0,
+            "smooth": 0.03999999910593033,
             "sync": true,
             "wave": "Square"
           },
@@ -513,6 +513,7 @@
           ]
         },
         "output_db": 0.800000011920929,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

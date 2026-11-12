@@ -13,6 +13,9 @@
     "filtered",
     "ladder",
     "velocity",
+    "lfo",
+    "wheel",
+    "rhythmic",
     "chorus",
     "reverb"
   ],
@@ -366,13 +369,13 @@
         ],
         "lfos": [
           {
-            "delay_s": 0.0,
-            "depth": 1.0,
+            "delay_s": 0.4000000059604645,
+            "depth": 0.3499999940395355,
             "division": "Quarter",
-            "fade_s": 0.0,
+            "fade_s": 0.5,
             "mode": "Retrigger",
             "phase": 0.0,
-            "rate_hz": 5.0,
+            "rate_hz": 5.199999809265137,
             "smooth": 0.0,
             "sync": false,
             "wave": "Sine"
@@ -490,6 +493,40 @@
               "source": {
                 "Macro": 1
               },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.0010000000474974513,
+              "destination": {
+                "LayerPitch": 0
+              },
+              "invert": false,
+              "source": {
+                "Lfo": 0
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.0010000000474974513,
+              "destination": {
+                "LayerPitch": 1
+              },
+              "invert": false,
+              "source": {
+                "Lfo": 0
+              },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.6499999761581421,
+              "destination": {
+                "LfoDepth": 0
+              },
+              "invert": false,
+              "source": "ModWheel",
               "via": null
             }
           ]

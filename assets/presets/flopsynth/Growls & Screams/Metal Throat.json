@@ -531,6 +531,7 @@
           ]
         },
         "output_db": -2.5,
+        "oversampling": "X4",
         "samples": [
           {
             "factory": "kit-studio",

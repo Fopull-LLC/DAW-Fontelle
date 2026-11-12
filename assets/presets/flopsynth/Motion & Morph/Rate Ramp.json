@@ -352,13 +352,13 @@
         "lfos": [
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Retrigger",
             "phase": 0.0,
             "rate_hz": 4.0,
-            "smooth": 0.0,
+            "smooth": 0.03999999910593033,
             "sync": false,
             "wave": "Square"
           },
@@ -445,7 +445,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.8500000238418579,
+              "depth": 2.125,
               "destination": "Amp",
               "invert": false,
               "source": {

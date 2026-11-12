@@ -333,7 +333,7 @@
         "lfos": [
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Retrigger",
@@ -414,7 +414,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.003000000026077032,
+              "depth": 0.007500000298023224,
               "destination": {
                 "LayerPitch": 0
               },
@@ -485,6 +485,7 @@
           ]
         },
         "output_db": 2.200000047683716,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

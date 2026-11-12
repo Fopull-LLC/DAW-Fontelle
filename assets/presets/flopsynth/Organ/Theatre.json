@@ -358,7 +358,7 @@
           },
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.0,
             "mode": "Free",
@@ -483,7 +483,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.6000000238418579,
+              "depth": 1.5,
               "destination": "Amp",
               "invert": false,
               "source": {
@@ -493,7 +493,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0012000000569969416,
+              "depth": 0.003000000026077032,
               "destination": {
                 "LayerPitch": 0
               },

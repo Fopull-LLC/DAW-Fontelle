@@ -80,7 +80,7 @@
             "key_track": 0.0,
             "mode": "Bandpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.6000000238418579,
             "slope": "Db24"
           },
           {
@@ -403,7 +403,7 @@
           "routes": [
             {
               "curve": "Linear",
-              "depth": 0.6000000238418579,
+              "depth": 0.15000000596046448,
               "destination": {
                 "FilterCutoff": 0
               },

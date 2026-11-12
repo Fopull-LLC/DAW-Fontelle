@@ -347,7 +347,7 @@
           },
           {
             "delay_s": 0.0,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Eighth",
             "fade_s": 0.0,
             "mode": "Free",
@@ -450,7 +450,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.3499999940395355,
+              "depth": 0.875,
               "destination": "Amp",
               "invert": false,
               "source": {
@@ -472,7 +472,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.4000000059604645,
+              "depth": 1.0,
               "destination": {
                 "LayerPan": 0
               },
@@ -485,6 +485,7 @@
           ]
         },
         "output_db": -7.300000190734863,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

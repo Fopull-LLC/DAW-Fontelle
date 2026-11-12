@@ -17,6 +17,7 @@
     "ladder",
     "lfo",
     "velocity",
+    "wheel",
     "rhythmic",
     "reverb"
   ],
@@ -353,7 +354,7 @@
         "lfos": [
           {
             "delay_s": 0.30000001192092896,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.3499999940395355,
             "mode": "Retrigger",
@@ -434,7 +435,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.000699999975040555,
+              "depth": 0.0017499999376013875,
               "destination": {
                 "LayerPitch": 0
               },
@@ -476,6 +477,16 @@
               "source": {
                 "Macro": 1
               },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.6000000238418579,
+              "destination": {
+                "LfoDepth": 0
+              },
+              "invert": false,
+              "source": "ModWheel",
               "via": null
             }
           ]

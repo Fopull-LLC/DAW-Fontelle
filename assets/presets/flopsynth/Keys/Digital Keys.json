@@ -467,6 +467,7 @@
           ]
         },
         "output_db": 12.0,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

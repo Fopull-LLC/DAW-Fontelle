@@ -340,7 +340,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 5.0,
-            "smooth": 0.05000000074505806,
+            "smooth": 0.15000000596046448,
             "sync": true,
             "wave": "Square"
           },
@@ -352,7 +352,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 5.0,
-            "smooth": 0.0,
+            "smooth": 0.6000000238418579,
             "sync": true,
             "wave": "Square"
           },
@@ -415,7 +415,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.699999988079071,
+              "depth": 0.3499999940395355,
               "destination": "Amp",
               "invert": false,
               "source": {
@@ -473,7 +473,7 @@
             }
           ]
         },
-        "output_db": -9.199999809265137,
+        "output_db": -2.0999999046325684,
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": false,

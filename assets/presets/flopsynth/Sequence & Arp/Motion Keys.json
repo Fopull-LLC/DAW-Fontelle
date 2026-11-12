@@ -374,7 +374,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 5.0,
-            "smooth": 0.0,
+            "smooth": 0.10000000149011612,
             "sync": true,
             "wave": "SawDown"
           },

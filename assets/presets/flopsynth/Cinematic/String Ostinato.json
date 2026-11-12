@@ -350,7 +350,7 @@
         "lfos": [
           {
             "delay_s": 0.3499999940395355,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Sixteenth",
             "fade_s": 0.4000000059604645,
             "mode": "Free",
@@ -431,7 +431,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0006000000284984708,
+              "depth": 0.001500000013038516,
               "destination": {
                 "LayerPitch": 0
               },
@@ -443,7 +443,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0006000000284984708,
+              "depth": 0.001500000013038516,
               "destination": {
                 "LayerPitch": 1
               },
@@ -477,7 +477,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0012000000569969416,
+              "depth": 0.003000000026077032,
               "destination": {
                 "LayerPitch": 0
               },
@@ -501,7 +501,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.800000011920929,
+              "depth": 2.0,
               "destination": "Amp",
               "invert": false,
               "source": {

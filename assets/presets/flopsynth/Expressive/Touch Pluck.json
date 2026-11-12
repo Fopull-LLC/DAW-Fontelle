@@ -128,9 +128,9 @@
                   "Table": "SubTri"
                 },
                 "unison": {
-                  "blend": 1.0,
-                  "detune_cents": 8.0,
-                  "voices": 2,
+                  "blend": 0.30000001192092896,
+                  "detune_cents": 6.0,
+                  "voices": 3,
                   "width": 0.5
                 },
                 "warp": "Off",

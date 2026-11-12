@@ -78,7 +78,7 @@
             "key_track": 0.0,
             "mode": "Bandpass",
             "model": "Clean",
-            "resonance": 0.800000011920929,
+            "resonance": 0.6000000238418579,
             "slope": "Db24"
           },
           {
@@ -97,7 +97,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": 7.0,
+            "gain_db": 3.799999237060547,
             "key_range": [
               0,
               127
@@ -401,7 +401,7 @@
           "routes": [
             {
               "curve": "Linear",
-              "depth": 0.6000000238418579,
+              "depth": 0.0,
               "destination": {
                 "FilterCutoff": 0
               },

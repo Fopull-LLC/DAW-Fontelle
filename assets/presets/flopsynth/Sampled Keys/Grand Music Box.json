@@ -31,7 +31,7 @@
             "delay_s": 0.0,
             "hold_s": 0.0,
             "release_s": 0.4000000059604645,
-            "release_shape": -0.6000000238418579,
+            "release_shape": 0.0,
             "sustain_level": 0.0
           },
           {

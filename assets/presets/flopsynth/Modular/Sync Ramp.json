@@ -90,11 +90,11 @@
             "character": 0.0,
             "cutoff_hz": 20.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -278,7 +278,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -493,6 +493,7 @@
           ]
         },
         "output_db": 3.799999952316284,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": true,

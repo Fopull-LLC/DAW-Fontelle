@@ -33,7 +33,7 @@
             "decay_shape": -0.6000000238418579,
             "delay_s": 0.0,
             "hold_s": 0.0,
-            "release_s": 0.20000000298023224,
+            "release_s": 1.2000000476837158,
             "release_shape": -0.6000000238418579,
             "sustain_level": 1.0
           },
@@ -90,11 +90,11 @@
             "character": 0.0,
             "cutoff_hz": 20.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -119,7 +119,7 @@
         "layers": [
           {
             "fine_tune_cents": 0.0,
-            "gain_db": -13.0,
+            "gain_db": -10.399999618530273,
             "key_range": [
               0,
               127
@@ -279,7 +279,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -505,7 +505,8 @@
             }
           ]
         },
-        "output_db": 8.600000381469727,
+        "output_db": 12.0,
+        "oversampling": "X2",
         "voice_config": {
           "bend_range_semitones": 2.0,
           "glide_legato_only": true,

@@ -382,7 +382,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 5.0,
-            "smooth": 0.0,
+            "smooth": 0.03999999910593033,
             "sync": true,
             "wave": "Square"
           },

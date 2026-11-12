@@ -16,6 +16,7 @@
     "formant",
     "lfo",
     "velocity",
+    "wheel",
     "rhythmic",
     "distorted"
   ],
@@ -360,7 +361,7 @@
         "lfos": [
           {
             "delay_s": 0.3499999940395355,
-            "depth": 1.0,
+            "depth": 0.4000000059604645,
             "division": "Quarter",
             "fade_s": 0.4000000059604645,
             "mode": "Retrigger",
@@ -441,7 +442,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.0007999999797903001,
+              "depth": 0.001999999862164259,
               "destination": {
                 "LayerPitch": 0
               },
@@ -483,6 +484,16 @@
               "source": {
                 "Macro": 1
               },
+              "via": null
+            },
+            {
+              "curve": "Linear",
+              "depth": 0.6000000238418579,
+              "destination": {
+                "LfoDepth": 0
+              },
+              "invert": false,
+              "source": "ModWheel",
               "via": null
             }
           ]

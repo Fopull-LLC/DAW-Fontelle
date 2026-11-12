@@ -11,6 +11,7 @@
     "rhythmic",
     "table",
     "poly",
+    "filtered",
     "lfo",
     "velocity",
     "delay"
@@ -87,11 +88,11 @@
             "character": 0.0,
             "cutoff_hz": 20.0,
             "drive": 0.0,
-            "enabled": false,
+            "enabled": true,
             "key_track": 0.0,
             "mode": "Highpass",
             "model": "Clean",
-            "resonance": 0.699999988079071,
+            "resonance": 0.5,
             "slope": "Db12"
           }
         ],
@@ -275,7 +276,7 @@
             "root_key": 60,
             "source": {
               "Synth": {
-                "filter_route": "Bypass",
+                "filter_route": "F2",
                 "key_track": true,
                 "modulator": null,
                 "noise_colour": 0.0,
@@ -368,7 +369,7 @@
             "mode": "Free",
             "phase": 0.0,
             "rate_hz": 5.0,
-            "smooth": 0.0,
+            "smooth": 0.03999999910593033,
             "sync": true,
             "wave": "Square"
           },
@@ -477,7 +478,7 @@
             },
             {
               "curve": "Linear",
-              "depth": 0.6000000238418579,
+              "depth": -0.6000000238418579,
               "destination": {
                 "LfoDepth": 0
               },
