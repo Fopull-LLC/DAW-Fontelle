@@ -1907,6 +1907,8 @@ pub struct WindowApp {
     /// told apart from the other two the way they are told apart from each
     /// other: exactly one of `eq`, `tune` and `insert_view` is `Some`.
     tune: Option<crate::canvas::TuneView>,
+    /// *Listen for key* on corrector `(strip, slot)`, while it listens.
+    tune_listen: Option<(usize, usize, crate::canvas::TuneListen)>,
     tune_layout: crate::canvas::TuneLayout,
     /// **Analyze Musically** (`docs/analyze-musically-plan.md`): what the host
     /// says about the clip it is open on, the revision that copy is of, how
@@ -2854,6 +2856,7 @@ impl WindowApp {
             },
             insert_knob: None,
             tune: None,
+            tune_listen: None,
             tune_layout: crate::canvas::TuneLayout::default(),
             analyze: None,
             analyze_revision: u64::MAX,
@@ -3516,6 +3519,10 @@ impl WindowApp {
             }
             WelcomeHit::Website => {
                 doc.open_url(WEBSITE_URL);
+                Ok(false)
+            }
+            WelcomeHit::SupportFontelle => {
+                doc.open_url(crate::support::SUPPORT_URL_FOOTER);
                 Ok(false)
             }
             WelcomeHit::WhatsNew => {
@@ -8040,6 +8047,21 @@ impl WindowApp {
         self.eq = eq;
         self.insert_view = insert_view;
         self.tune = tune;
+        // *Listen for key* hears the hops traced since it last looked —
+        // inline, field by field, because `doc` is still held here.
+        let listening_here = self.tune.is_some()
+            && matches!(
+                (&self.tune_listen, self.open_insert),
+                (Some((strip, slot, _)), Some(at)) if (*strip, *slot) == at
+            );
+        if !listening_here {
+            self.tune_listen = None;
+        } else if let (Some((_, _, listen)), Some(view)) =
+            (self.tune_listen.as_mut(), self.tune.as_mut())
+        {
+            listen.take(&view.trace, view.frames_written);
+            view.listen = Some(crate::canvas::listen_caption(Some(listen)));
+        }
         self.disgusting_beat = disgusting_beat;
         // Which insert is open is the window's own fact, and the host needs
         // it: an effect preset clicked in the browser lands in the insert you
@@ -8232,6 +8254,7 @@ impl WindowApp {
                 crate::canvas::REPOSITORY_LABEL,
                 crate::canvas::LOGS_LABEL,
                 crate::canvas::WHATS_NEW_LABEL,
+                crate::canvas::SUPPORT_LINK_LABEL,
                 crate::canvas::LEARN_BUTTON,
                 crate::canvas::LEARN_OFFER,
                 crate::canvas::LEARN_TAKE,
@@ -16889,6 +16912,10 @@ impl WindowApp {
         };
         let hit = crate::canvas::tune_hit(&self.tune_layout, &view, x, y);
         match hit {
+            Some(crate::canvas::TuneHit::Listen) => {
+                self.press_tune_listen();
+                return;
+            }
             Some(crate::canvas::TuneHit::Key { class }) => {
                 match button {
                     // Right-click sets the root and leaves the scale alone,
@@ -17084,7 +17111,14 @@ impl WindowApp {
             self.tree.invalidate(TRANSPORT);
             return;
         };
-        let paste = crate::canvas::tune_paste(&key);
+        self.apply_tune_key(&key);
+    }
+
+    /// Writes `key` into the open corrector — its root, and its scale or
+    /// Custom with the switches set — as one undo. What Paste scale and
+    /// *Listen for key* both do.
+    fn apply_tune_key(&mut self, key: &fontelle_types::KeyScale) {
+        let paste = crate::canvas::tune_paste(key);
         let Some((strip, slot)) = self.open_insert else {
             return;
         };
@@ -17116,11 +17150,74 @@ impl WindowApp {
             }
             doc.end_gesture();
         }
-        self.status = format!("Scale: {}", fontelle_types::scale_text(&key));
+        self.status = format!("Scale: {}", fontelle_types::scale_text(key));
         self.tree.invalidate(TRANSPORT);
         self.refresh_studio();
         self.refresh_title();
         self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// The *Listen for key* chip: start listening, or set what was heard.
+    fn press_tune_listen(&mut self) {
+        let Some(at) = self.open_insert else {
+            return;
+        };
+        match self.tune_listen.take() {
+            Some((strip, slot, listen)) if (strip, slot) == at => {
+                match listen.guess() {
+                    Some(found) => {
+                        self.apply_tune_key(&found.key);
+                        let fit = (found.fit * 100.0).round();
+                        self.show_toast(
+                            if found.few_notes {
+                                format!(
+                                    "Tune set to {} \u{2014} from only a few notes; sing more for a surer guess",
+                                    fontelle_types::scale_text(&found.key)
+                                )
+                            } else {
+                                format!(
+                                    "Tune set to {} \u{2014} {fit}% of what you sang fits it",
+                                    fontelle_types::scale_text(&found.key)
+                                )
+                            },
+                            false,
+                        );
+                    }
+                    None => self.show_toast(
+                        "Not enough singing to tell the key \u{2014} press Listen and sing a few phrases"
+                            .to_string(),
+                        false,
+                    ),
+                }
+            }
+            _ => {
+                self.tune_listen = Some((at.0, at.1, crate::canvas::TuneListen::default()));
+                self.sync_tune_listen();
+            }
+        }
+        self.shape_labels();
+        self.redraw_editor(EditorKind::Effect);
+    }
+
+    /// Feeds *Listen for key* the hops traced since it last looked, and puts
+    /// what it hears on the chip. Stops listening when the corrector it was
+    /// listening to is no longer the open window.
+    fn sync_tune_listen(&mut self) {
+        let Some((strip, slot, _)) = &self.tune_listen else {
+            return;
+        };
+        if self.open_insert != Some((*strip, *slot)) || self.tune.is_none() {
+            self.tune_listen = None;
+            return;
+        }
+        let Some(view) = self.tune.as_mut() else {
+            return;
+        };
+        let Some((_, _, listen)) = self.tune_listen.as_mut() else {
+            return;
+        };
+        listen.take(&view.trace, view.frames_written);
+        view.listen = Some(crate::canvas::listen_caption(Some(listen)));
     }
 
     /// Ctrl+C and Ctrl+V over the corrector's key or scale control.
@@ -20311,7 +20408,22 @@ impl WindowApp {
     /// The *+ fx* menu's rows, and what each means.
     fn effect_rows(&self) -> Vec<(crate::canvas::MenuEntry, crate::canvas::EffectRow)> {
         let plugins = self.plugin_listings(PluginPurpose::Insert(0));
-        crate::canvas::effect_menu_rows(&self.favorites(), &plugins)
+        crate::canvas::narrowed_rows(
+            crate::canvas::effect_menu_rows(&self.favorites(), &plugins),
+            self.menu_filter.text(),
+        )
+    }
+
+    /// Flopsynth's *Add effect* menu, narrowed by what has been typed: each
+    /// row with the effect it adds.
+    fn patch_effect_rows(
+        &self,
+    ) -> Vec<(crate::canvas::MenuEntry, Option<fontelle_types::EffectKind>)> {
+        let mut rows = vec![(crate::canvas::MenuEntry::disabled("Add effect"), None)];
+        for kind in self.patch_effect_kinds() {
+            rows.push((crate::canvas::MenuEntry::new(kind.full_label()), Some(kind)));
+        }
+        crate::canvas::narrowed_rows(rows, self.menu_filter.text())
     }
 
     /// The singer engines installed, each an instrument of its own beside
@@ -20368,7 +20480,7 @@ impl WindowApp {
             crate::canvas::MenuEntry::new(VOICEBANKS_ROW).after_rule(),
             crate::canvas::InstrumentRow::Voicebanks,
         ));
-        rows
+        crate::canvas::narrowed_rows(rows, self.menu_filter.text())
     }
 
     /// The plugin picker's rows, narrowed by what has been typed.
@@ -20653,9 +20765,16 @@ impl WindowApp {
                     .into_iter()
                     .map(|(entry, _)| entry)
                     .collect();
-                entries[0] = MenuEntry::disabled("New instrument");
-                // Last: a vocal track made from a song file.
-                entries.push(MenuEntry::new(VOCAL_FROM_FILE).after_rule());
+                // Its own name, keeping what the search line says after it.
+                let heading = entries[0]
+                    .label
+                    .replacen("Change instrument", "New instrument", 1);
+                entries[0] = MenuEntry::disabled(heading);
+                // Last: a vocal track made from a song file — while it
+                // matches what has been typed, like every other row.
+                if crate::canvas::menu_matches(VOCAL_FROM_FILE, self.menu_filter.text()) {
+                    entries.push(MenuEntry::new(VOCAL_FROM_FILE).after_rule());
+                }
                 entries
             }
             MenuTarget::PluginPicker(purpose) => self
@@ -20799,13 +20918,11 @@ impl WindowApp {
                 entries.push(MenuEntry::new(crate::render::NEW_CATEGORY).after_rule());
                 entries
             }
-            MenuTarget::AddPatchEffect => {
-                let mut entries = vec![MenuEntry::disabled("Add effect")];
-                for kind in self.patch_effect_kinds() {
-                    entries.push(MenuEntry::new(kind.full_label()));
-                }
-                entries
-            }
+            MenuTarget::AddPatchEffect => self
+                .patch_effect_rows()
+                .into_iter()
+                .map(|(entry, _)| entry)
+                .collect(),
             MenuTarget::WaveActions { .. } => {
                 let mut entries = vec![MenuEntry::disabled("Table")];
                 for (_, word) in crate::canvas::WAVE_ACTIONS {
@@ -21452,6 +21569,12 @@ impl WindowApp {
                         | MenuTarget::TrackPresetMenu(_)
                         // And eighty-odd scales are a list you type into.
                         | MenuTarget::KeyScale
+                        // And the built-in instruments and effects, as the
+                        // plugins are (Ty, 2026-11-12).
+                        | MenuTarget::NewInstrument
+                        | MenuTarget::ChangeInstrument(_)
+                        | MenuTarget::AddEffect(_)
+                        | MenuTarget::AddPatchEffect
                 )
             )
         {
@@ -21469,6 +21592,40 @@ impl WindowApp {
                 self.tree.invalidate_rect(bounds);
                 // Row 1: the heading is row 0 and cannot be chosen.
                 self.choose_menu(&target, 1);
+                true
+            }
+            // In a list being searched, Enter takes the first match — what
+            // typing a few letters is for.
+            Key::Named(NamedKey::Enter)
+                if matches!(
+                    target,
+                    Some(
+                        MenuTarget::NewInstrument
+                            | MenuTarget::ChangeInstrument(_)
+                            | MenuTarget::AddEffect(_)
+                            | MenuTarget::AddPatchEffect
+                            | MenuTarget::PluginPicker(_)
+                    )
+                ) =>
+            {
+                let first = self.menu.as_ref().and_then(|(_, menu)| {
+                    menu.entries
+                        .iter()
+                        .enumerate()
+                        .skip(1)
+                        .find(|(_, e)| e.enabled)
+                        .map(|(i, _)| i)
+                });
+                let Some(index) = first else {
+                    return true;
+                };
+                let Some((target, _)) = self.menu.take() else {
+                    return true;
+                };
+                let bounds = self.menu_at.1;
+                self.tree.invalidate_rect(bounds);
+                self.choose_menu(&target, index);
+                self.menu_filter.clear();
                 true
             }
             Key::Named(NamedKey::Escape) => {
@@ -22450,10 +22607,11 @@ impl WindowApp {
                 self.after_preset_change();
             }
             (MenuTarget::AddPatchEffect, index) => {
-                // Row 0 is the heading, so the kinds start at 1.
-                let kind = index
-                    .checked_sub(1)
-                    .and_then(|which| self.patch_effect_kinds().get(which).copied());
+                // Through the rows as shown, typed-into or not.
+                let kind = self
+                    .patch_effect_rows()
+                    .get(index)
+                    .and_then(|(_, kind)| *kind);
                 if let (Some(kind), Some(doc)) = (kind, self.options.document.as_mut()) {
                     doc.add_patch_effect(kind);
                 }

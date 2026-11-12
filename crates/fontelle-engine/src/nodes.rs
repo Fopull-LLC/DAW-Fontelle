@@ -631,6 +631,8 @@ pub fn insert_latency_samples(
         // rather than a knob — but it is a latency all the same, and lining the
         // rest of the mix up to it is what keeps a ducked track in time.
         fontelle_types::EffectConfig::Limiter(_) => limiter_latency_samples(sample_rate),
+        // The mastering chain ends in the same limiter.
+        fontelle_types::EffectConfig::Master(_) => limiter_latency_samples(sample_rate),
         _ => 0,
     }
 }
@@ -670,7 +672,9 @@ pub fn max_insert_latency_samples(config: &fontelle_types::EffectConfig, sample_
             (fontelle_types::MAX_GATE_LOOKAHEAD_MS / 1000.0 * sample_rate.max(0.0)).ceil() as u32
         }
         // Fixed, so the worst case is the only case.
-        fontelle_types::EffectConfig::Limiter(_) => limiter_latency_samples(sample_rate),
+        fontelle_types::EffectConfig::Limiter(_) | fontelle_types::EffectConfig::Master(_) => {
+            limiter_latency_samples(sample_rate)
+        }
         fontelle_types::EffectConfig::Tune(tune) => {
             // The range and the mode are what set it, and a change of either
             // is a graph rebuild (`docs/tune-plan.md` §3.8) — but the live
@@ -1033,6 +1037,7 @@ enum EffectState {
     Hyper(fontelle_fx::Hyper),
     Multiband(fontelle_fx::Multiband),
     Width(fontelle_fx::Width),
+    Master(Box<fontelle_fx::Master>),
     DisgustingBeat(fontelle_fx::DisgustingBeat),
     /// The notepad, which has no DSP at all and no state to keep: what it
     /// holds is words, and they never leave the document
@@ -1104,6 +1109,9 @@ impl EffectState {
                 EffectState::Multiband(fontelle_fx::Multiband::new())
             }
             fontelle_types::EffectConfig::Width(_) => EffectState::Width(fontelle_fx::Width::new()),
+            fontelle_types::EffectConfig::Master(_) => {
+                EffectState::Master(Box::new(fontelle_fx::Master::new()))
+            }
             fontelle_types::EffectConfig::DisgustingBeat(_) => {
                 EffectState::DisgustingBeat(fontelle_fx::DisgustingBeat::new())
             }
@@ -1147,6 +1155,11 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.prepare(sample_rate),
             Self::Multiband(multiband) => multiband.prepare(sample_rate),
             Self::Width(width) => width.prepare(sample_rate),
+            Self::Master(master) => {
+                if let fontelle_types::EffectConfig::Master(config) = config {
+                    master.prepare(sample_rate, config);
+                }
+            }
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.prepare(sample_rate),
             // Nothing to size and nothing to clear: the signal goes past it.
             Self::Notepad | Self::Analyze => {}
@@ -1238,6 +1251,9 @@ impl EffectState {
             (Self::Width(width), fontelle_types::EffectConfig::Width(config)) => {
                 width.process(outputs, config);
             }
+            (Self::Master(master), fontelle_types::EffectConfig::Master(config)) => {
+                master.process(outputs, config);
+            }
             // The pad writes nothing, which is the whole of it: a block that
             // went through a notepad is the block that went in. DisgustingBeat
             // is processed by the node rather than here: it wants the curves
@@ -1281,6 +1297,7 @@ impl EffectState {
             Self::Hyper(hyper) => hyper.reset(),
             Self::Multiband(multiband) => multiband.reset(),
             Self::Width(width) => width.reset(),
+            Self::Master(master) => master.reset(),
             Self::DisgustingBeat(disgusting_beat) => disgusting_beat.reset(),
             // A take is not stopped by a transport stop: "Now" and "On input"
             // record with the transport stopped, and "On play" stops itself

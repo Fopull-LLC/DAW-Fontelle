@@ -3137,6 +3137,16 @@ pub fn draw_welcome(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &
         l.logs,
         hot(WelcomeHit::Logs),
     );
+    if !l.support_link.is_empty() {
+        draw_welcome_link(
+            scene,
+            theme,
+            labels,
+            crate::canvas::SUPPORT_LINK_LABEL,
+            l.support_link,
+            hot(WelcomeHit::SupportFontelle),
+        );
+    }
 
     // The support line (hub card 0427): quiet words in the muted ink, the
     // address in the accent as the link it is — the whole line answers the
@@ -15060,6 +15070,37 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
     draw_tune_ground(scene, theme, l.body);
     draw_tune_viewport(scene, theme, labels, chrome);
     draw_tune_keyboard(scene, theme, labels, chrome);
+    // *Listen for key*, over the trace's corner: the accent while it
+    // listens, a quiet chip until then.
+    if !l.listen.is_empty() {
+        let listening = chrome.view.listen.is_some();
+        let caption = chrome
+            .view
+            .listen
+            .clone()
+            .unwrap_or_else(|| crate::canvas::listen_caption(None));
+        let hot = crate::canvas::tune_hit(
+            &chrome.layout,
+            chrome.view,
+            chrome.hover_at.0,
+            chrome.hover_at.1,
+        ) == Some(crate::canvas::TuneHit::Listen);
+        let fill = if listening {
+            p.accent
+        } else if hot {
+            p.row_accidental
+        } else {
+            p.panel
+        };
+        fill_rect_rounded(scene, l.listen, m.corner_radius, fill);
+        stroke_rect_rounded(scene, l.listen, m.corner_radius, 1.0, p.grid_line);
+        if let Some(text) = labels.get(&caption) {
+            let x = l.listen.x + (l.listen.width - text.width).max(0.0) / 2.0;
+            let y = l.listen.y + (l.listen.height - text.height) / 2.0;
+            let ink = if listening { p.window } else { p.text };
+            draw_text_clipped(scene, text, l.listen, x, y, ink);
+        }
+    }
 
     for (index, placed) in l.cards.iter().enumerate() {
         let Some(card) = chrome.view.cards.get(index) else {

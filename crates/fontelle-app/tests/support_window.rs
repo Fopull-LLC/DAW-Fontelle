@@ -424,3 +424,23 @@ fn whats_new_is_on_every_start_menu() {
         "a link does not close the menu"
     );
 }
+
+/// The footer's *Support Fontelle*: the support page, tagged as the footer.
+#[test]
+fn support_fontelle_in_the_footer_opens_the_support_page() {
+    let (mut w, links) = studio(a_session());
+    w.open_welcome();
+    let l = w.welcome_layout().expect("the start menu");
+    let (x, y) = centre(l.support_link);
+    w.click_studio(x, y);
+    assert_eq!(
+        links.lock().unwrap().as_slice(),
+        [
+            "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu-footer"
+        ]
+    );
+    assert!(
+        w.welcome_layout().is_some(),
+        "a link does not close the menu"
+    );
+}

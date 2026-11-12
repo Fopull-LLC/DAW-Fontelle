@@ -692,6 +692,23 @@ impl Windowless {
         }
     }
 
+    /// The mixer's *Add effect* menu for strip `strip`, as its empty slot
+    /// opens it.
+    pub fn open_effect_menu(&mut self, strip: usize) {
+        let (x, y) = self.app.cursor;
+        let bounds = self.app.layout.window;
+        self.app
+            .open_menu(super::MenuTarget::AddEffect(strip), x, y, bounds);
+    }
+
+    /// The rack's *New instrument* menu.
+    pub fn open_new_instrument_menu(&mut self) {
+        let (x, y) = self.app.cursor;
+        let bounds = self.app.layout.window;
+        self.app
+            .open_menu(super::MenuTarget::NewInstrument, x, y, bounds);
+    }
+
     /// What the open prompt's field shows, if a prompt is open.
     pub fn prompt_field(&self) -> Option<String> {
         self.app

@@ -204,6 +204,13 @@ fn effect_presets() -> Vec<Preset> {
             EffectConfig::Width(WidthConfig::from_preset(preset)),
         ));
     }
+    // The mastering chain's bank: a starting point for every kind of song.
+    for preset in fontelle_types::MasterPreset::ALL {
+        out.push(effect_preset(
+            preset.label(),
+            EffectConfig::Master(fontelle_types::MasterConfig::from_preset(preset)),
+        ));
+    }
     // The notepad's bank is its **looks**: the pad has nothing to say about
     // the sound, so a preset here is a palette, and there is one per theme
     // (`fontelle-types/src/notepad.rs`).

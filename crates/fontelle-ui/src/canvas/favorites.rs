@@ -126,6 +126,43 @@ fn rule_above_first<R>(rows: &mut [(MenuEntry, R)]) {
 /// not by somebody remembering to add it in a second place. That is the same
 /// rule the roll's lane properties follow and the reason they have a `const`
 /// list too.
+/// A menu's rows narrowed to what has been typed (Ty, 2026-11-12: search in
+/// every menu people would expect it in). Nothing typed: the menu as it
+/// was, its heading saying it can be typed into. Something typed: the
+/// heading says what, and only the rows that can be chosen and whose name
+/// matches remain — group headings and rules would only stand between the
+/// results — or one line saying nothing matches. Row 0 is the heading.
+pub fn narrowed_rows<R: Copy>(rows: Vec<(MenuEntry, R)>, filter: &str) -> Vec<(MenuEntry, R)> {
+    let filter = filter.trim();
+    let mut rows = rows.into_iter();
+    let Some((heading, heading_row)) = rows.next() else {
+        return Vec::new();
+    };
+    let title = heading.label.clone();
+    let heading = MenuEntry::disabled(if filter.is_empty() {
+        format!("{title} \u{2014} type to search")
+    } else {
+        format!("{title} \u{2014} {filter}")
+    });
+    if filter.is_empty() {
+        return std::iter::once((heading, heading_row))
+            .chain(rows)
+            .collect();
+    }
+    let mut out = vec![(heading, heading_row)];
+    out.extend(
+        rows.filter(|(entry, _)| entry.enabled && menu_matches(&entry.label, filter))
+            .map(|(mut entry, row)| {
+                entry.separator = false;
+                (entry, row)
+            }),
+    );
+    if out.len() == 1 {
+        out.push((MenuEntry::disabled("nothing matches"), heading_row));
+    }
+    out
+}
+
 pub fn effect_menu_rows(
     favorites: &[Favorite],
     plugins: &[PluginListing],

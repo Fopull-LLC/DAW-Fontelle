@@ -19,6 +19,36 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-12 — Ty's feedback round, toward 0.35.0 stable.**
+
+- **Master** (`EffectKind::Master`, `fontelle_types::master`,
+  `fontelle_fx::Master`): clean (low/high cut), tone (low, mud, presence,
+  air), glue (one knob over the compressor), space (width, mono bass),
+  speakers (*small speakers* adds the bass's harmonics; *check on*
+  previews mono / phone / laptop), loudness (auto level to a target LUFS,
+  measured on the output with BS.1770 K-weighting as an integral
+  controller, under the look-ahead limiter's ceiling). Built from the EQ,
+  compressor, width and limiter that exist. Ten presets (`MasterPreset`).
+  `tests/master.rs` measures every claim with an independent K-weighting.
+  Unlike other effects it is not a wire when dropped on: it levels.
+- **Tune's *Listen for key***: a chip over the trace; while it listens the
+  window keeps the hops traced since (`TuneListen::take`, by the tap's
+  `frames_written`), and a second press fits them (`fontelle_types::sung_key`
+  over `find_scales`, runs of ≥ 4 voiced hops, never chromatic) and writes
+  the key through `apply_tune_key` — Paste scale's path, one undo.
+- **Search in the built-in menus**: New/Change instrument, Add effect and
+  Flopsynth's Add effect filter as you type (`canvas::narrowed_rows`);
+  Enter takes the first match there and in the plugin picker.
+- **The roll's cut snaps** to the roll's grid (`slice_cuts_snapped`).
+- **Space plays from a plugin's window** unless the plugin itself was
+  clicked (`fontelle_host::gui`, X11): the strip and the desktop focusing
+  the window send the keyboard to a one-pixel sink outside the plugin's
+  tree; a raw press (XInput 2) inside the plugin hands it back. Linux only;
+  Windows and macOS unchanged.
+- **Support Fontelle** in the start menu's footer (`SUPPORT_URL_FOOTER`,
+  `utm_medium=start-menu-footer`); it steps aside in a card too narrow for
+  it beside the company's line.
+
 **2026-11-06 — Polish, round two, as 0.35.0-beta.1.** Ty: *"continue on
 the remaining reccomendations and then release as a beta release"*.
 

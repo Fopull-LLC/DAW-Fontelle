@@ -54,6 +54,10 @@ fn pressables(layout: &WelcomeLayout) -> Vec<Rect> {
     ];
     all.push(layout.join_button);
     all.push(layout.whats_new);
+    // Only where there is room for it beside the company's line.
+    if !layout.support_link.is_empty() {
+        all.push(layout.support_link);
+    }
     all.extend(layout.update_button);
     all.extend(layout.rows.iter().map(|row| row.frame));
     all
@@ -744,4 +748,27 @@ fn whats_new_is_said_once_when_the_update_row_offers_it() {
     let aside = fontelle_ui::canvas::with_whats_new_link(layout, false);
     assert!(aside.whats_new.is_empty());
     assert_eq!(welcome_hit(&aside, x, y), None);
+}
+
+/// Ty, 2026-11-12: *"put the support fontelle button on the home page of the
+/// software when you open it too next to the logs fopull and github source
+/// buttons"*.
+#[test]
+fn support_fontelle_sits_in_the_footer_beside_the_other_links() {
+    let layout = welcome_layout(window(), &metrics(), 3, false);
+    let link = layout.support_link;
+    assert!(!link.is_empty());
+    assert_eq!(link.y, layout.logs.y, "on the footer's line");
+    assert!(link.right() <= layout.logs.x - 1.0, "left of Logs folder");
+    let (x, y) = centre(link);
+    assert_eq!(
+        welcome_hit(&layout, x, y),
+        Some(WelcomeHit::SupportFontelle)
+    );
+    assert_eq!(fontelle_ui::canvas::SUPPORT_LINK_LABEL, "Support Fontelle");
+    // Where the card is too narrow for it beside the company's line, it
+    // steps aside rather than run into it.
+    let narrow = welcome_layout(Rect::new(0.0, 0.0, 520.0, 400.0), &metrics(), 3, false);
+    let text_end = narrow.footer.x + 230.0;
+    assert!(narrow.support_link.is_empty() || narrow.support_link.x >= text_end);
 }

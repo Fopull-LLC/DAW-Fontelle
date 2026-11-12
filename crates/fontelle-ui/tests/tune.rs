@@ -115,6 +115,8 @@ fn a_view() -> TuneView {
         mode: "studio".to_string(),
         sources: vec!["no MIDI".to_string(), "Melody".to_string()],
         source: 0,
+        frames_written: 0,
+        listen: None,
     }
 }
 
@@ -527,4 +529,51 @@ fn any_other_scale_is_pasted_as_its_notes() {
     assert_eq!(paste.root, 4);
     assert_eq!(paste.scale, None, "Custom, with the switches set");
     assert_eq!(paste.mask, key.mask().unwrap());
+}
+
+// ---------------------------------------------------- listening for a key
+//
+// Ty, 2026-11-12: *"sing and it automatically guesses during that singing
+// callibration what scale youre trying to have"*.
+
+#[test]
+fn listen_for_key_is_a_chip_over_the_trace() {
+    let view = a_view();
+    let l = fontelle_ui::canvas::tune_layout(body((960.0, 620.0)), &view);
+    assert!(!l.listen.is_empty());
+    assert!(l.listen.x >= l.viewport.x && l.listen.right() <= l.viewport.right() + 0.01);
+    assert!(l.listen.y >= l.viewport.y && l.listen.bottom() <= l.viewport.bottom() + 0.01);
+    let (x, y) = (
+        l.listen.x + l.listen.width / 2.0,
+        l.listen.y + l.listen.height / 2.0,
+    );
+    assert_eq!(tune_hit(&l, &view, x, y), Some(TuneHit::Listen));
+    assert_eq!(fontelle_ui::canvas::listen_caption(None), "Listen for key");
+}
+
+#[test]
+fn listening_takes_each_hop_once() {
+    use fontelle_types::{TUNE_VOICED, TuneFrame};
+    let hop = |cents: f32| TuneFrame {
+        sung_cents: cents,
+        out_cents: 0.0,
+        target_cents: 0.0,
+        flags: TUNE_VOICED,
+    };
+    let mut listen = fontelle_ui::canvas::TuneListen::default();
+    // Whatever the ring held before the chip was pressed is not this
+    // singing.
+    let old: Vec<TuneFrame> = (0..50).map(|_| hop(6000.0)).collect();
+    listen.take(&old, 50);
+    assert!(listen.frames.is_empty());
+    // Ten new hops: the last ten of the trace, once.
+    let mut trace = old.clone();
+    trace.extend((0..10).map(|_| hop(6200.0)));
+    listen.take(&trace, 60);
+    assert_eq!(listen.frames.len(), 10);
+    listen.take(&trace, 60);
+    assert_eq!(listen.frames.len(), 10, "nothing new, nothing taken");
+    // More written than the trace holds: what it holds.
+    listen.take(&trace, 1_000);
+    assert_eq!(listen.frames.len(), 70);
 }

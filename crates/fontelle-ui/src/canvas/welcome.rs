@@ -36,6 +36,8 @@ pub const REPOSITORY_LABEL: &str = "Source on GitHub";
 /// The footer's third link: the folder the session logs and crash reports
 /// are in (`fontelle_app::logs`), for attaching to a bug report.
 pub const LOGS_LABEL: &str = "Logs folder";
+/// The footer's support link (Ty, 2026-11-12).
+pub const SUPPORT_LINK_LABEL: &str = "Support Fontelle";
 pub const NEW_PROJECT_LABEL: &str = "New project";
 pub const OPEN_PROJECT_LABEL: &str = "Open a project\u{2026}";
 /// The third way in: somebody else's song, by the code they gave you
@@ -77,6 +79,10 @@ const WEBSITE_WIDTH: f32 = 80.0;
 const WHATS_NEW_WIDTH: f32 = 76.0;
 const REPOSITORY_WIDTH: f32 = 120.0;
 const LOGS_WIDTH: f32 = 80.0;
+const SUPPORT_LINK_WIDTH: f32 = 112.0;
+/// The room the company's line takes at the left of the footer: a link
+/// that would start inside it is not placed.
+const FOOTER_TEXT_ROOM: f32 = 230.0;
 const LINK_GAP: f32 = 16.0;
 
 /// One row of the recent list.
@@ -132,6 +138,9 @@ pub struct WelcomeLayout {
     pub repository: Rect,
     /// The logs folder — "where get", answered.
     pub logs: Rect,
+    /// *Support Fontelle*, left of the logs — empty when the card is too
+    /// narrow for it beside the company's line.
+    pub support_link: Rect,
     /// The `?` in the top right corner: the keyboard shortcuts page.
     pub help: Rect,
     /// The gear beside it: the settings page. Ty: *"please also make the
@@ -203,6 +212,12 @@ pub fn welcome_layout(
         row,
     );
     let logs = Rect::new(website.x - LINK_GAP - LOGS_WIDTH, footer.y, LOGS_WIDTH, row);
+    let support_x = logs.x - LINK_GAP - SUPPORT_LINK_WIDTH;
+    let support_link = if support_x >= footer.x + FOOTER_TEXT_ROOM {
+        Rect::new(support_x, footer.y, SUPPORT_LINK_WIDTH, row)
+    } else {
+        Rect::new(logs.x, footer.y, 0.0, 0.0)
+    };
     let above_footer = footer.y - STACK_GAP;
 
     // The left column, top down: the logo with the name and version beside
@@ -342,6 +357,7 @@ pub fn welcome_layout(
         website,
         repository,
         logs,
+        support_link,
         help,
         settings,
         learn: Rect::ZERO,
@@ -655,6 +671,8 @@ pub enum WelcomeHit {
     Repository,
     /// The logs folder, shown in the file manager.
     Logs,
+    /// *Support Fontelle* in the footer: the support page.
+    SupportFontelle,
     /// The `?`: the keyboard shortcuts page.
     Help,
     /// The gear: the settings page.
@@ -738,6 +756,9 @@ pub fn welcome_hit(layout: &WelcomeLayout, x: f32, y: f32) -> Option<WelcomeHit>
     }
     if layout.logs.contains(x, y) {
         return Some(WelcomeHit::Logs);
+    }
+    if layout.support_link.contains(x, y) {
+        return Some(WelcomeHit::SupportFontelle);
     }
     if layout.settings.contains(x, y) {
         return Some(WelcomeHit::Settings);

@@ -49,7 +49,7 @@ lv2_raw = "=0.2.0"
 [target.'cfg(target_os = "linux")'.dependencies]
 # The window a plugin's own editor is embedded into — see `gui`. Pure Rust
 # XCB, so nothing new is linked; `winit` already pulls the same crate in.
-x11rb = "0.13.2"
+x11rb = { version = "0.13.2", features = ["xinput"] }
 
 # The editor window on Windows: a plain Win32 top-level window the plugin
 # makes its child window in — see `gui`. Already in the tree under winit.

@@ -88,7 +88,7 @@ pub use effect::{
 };
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
-    instrument_menu_rows, plugin_picker_rows, singer_instrument_menu_rows,
+    instrument_menu_rows, narrowed_rows, plugin_picker_rows, singer_instrument_menu_rows,
 };
 pub use scrollbar::RowScrollbar;
 pub mod gestures;
@@ -284,9 +284,9 @@ pub use piano_roll::{
     lane_baseline_y, lane_caption, lane_height_at, lane_menu_hit, lane_menu_layout,
     lane_value_of_y, lane_y_of_value, legato_edits, legato_edits_to, note_at_tick, note_marks,
     note_overlaps, path_handles, path_line, pitch_y, roll_layout, roll_layout_with_keys,
-    roll_past_end, slice_cuts, snap_caption, subdivision_unit, tick_to_x, toolbar_hit,
-    toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys, visible_ticks,
-    x_to_tick, y_to_key, zoom_x, zoom_y,
+    roll_past_end, slice_cuts, slice_cuts_snapped, snap_caption, subdivision_unit, tick_to_x,
+    toolbar_hit, toolbar_layout, tools_caption, velocity_of_y, velocity_to_y, visible_keys,
+    visible_ticks, x_to_tick, y_to_key, zoom_x, zoom_y,
 };
 pub use preedit::{Composed, Preedit, compose};
 pub use prefabs::{
@@ -361,10 +361,10 @@ pub use tools::{
 };
 pub use tune::{
     KEYBOARD_FLOOR, KEYBOARD_HEIGHT, KEYBOARD_KEYS, KEYBOARD_OCTAVES, NO_MIDI, TRACE_SECONDS,
-    TUNE_LOCK_CENTS, TUNE_SOURCE, TracePoint, TuneHit, TuneLayout, TunePaste, TuneView,
-    VIEWPORT_FLOOR, VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, sung_class,
-    target_class, trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout, tune_paste,
-    tune_readout, tune_scale_text, tune_strings, viewport_points, viewport_rails,
+    TUNE_LOCK_CENTS, TUNE_SOURCE, TracePoint, TuneHit, TuneLayout, TuneListen, TunePaste, TuneView,
+    VIEWPORT_FLOOR, VIEWPORT_HEIGHT, current_frame, key_click_mask, key_solo_mask, listen_caption,
+    sung_class, target_class, trace_at, tune_caption, tune_hit, tune_keyboard_layout, tune_layout,
+    tune_paste, tune_readout, tune_scale_text, tune_strings, viewport_points, viewport_rails,
 };
 pub use vocal_edit::{
     CurveScale, DEFAULT_GLIDE, HANDLE_SIZE, LaneStroke, NoteHandle, PHONEME_ROW_HEIGHT,
@@ -387,9 +387,9 @@ pub use welcome::{
     NEW_PROJECT_LABEL, NOTHING_RECENT, OPEN_PROJECT_LABEL, PING_LINE_LEAD, PING_LINE_LINK,
     RECENT_HEADING, REPOSITORY_LABEL, REPOSITORY_URL, RecentRow, RestartMoment,
     SUPPORT_LINE_LAUNCH, SUPPORT_LINE_LEAD, SUPPORT_LINE_LINK, SUPPORT_LINE_SPACING_DAYS,
-    SUPPORT_LINE_TEXT, StartLine, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL, WHATS_NEW_LABEL,
-    WelcomeCredit, WelcomeHit, WelcomeLayout, support_after_update_due, support_line_due,
-    transfer_fraction, transfer_text, update_line, update_line_since, update_progress,
-    update_restart_due, welcome_enter, welcome_hint, welcome_hit, welcome_layout, with_asio_credit,
-    with_learn, with_recovery, with_support_line, with_whats_new_link,
+    SUPPORT_LINE_TEXT, SUPPORT_LINK_LABEL, StartLine, TITLE_HEIGHT, WEBSITE_LABEL, WEBSITE_URL,
+    WHATS_NEW_LABEL, WelcomeCredit, WelcomeHit, WelcomeLayout, support_after_update_due,
+    support_line_due, transfer_fraction, transfer_text, update_line, update_line_since,
+    update_progress, update_restart_due, welcome_enter, welcome_hint, welcome_hit, welcome_layout,
+    with_asio_credit, with_learn, with_recovery, with_support_line, with_whats_new_link,
 };

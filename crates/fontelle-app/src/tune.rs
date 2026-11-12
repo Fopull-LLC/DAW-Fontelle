@@ -217,6 +217,8 @@ pub fn describe(
         mode: config.mode.label().to_string(),
         sources,
         source: at,
+        frames_written: 0,
+        listen: None,
     }
 }
 

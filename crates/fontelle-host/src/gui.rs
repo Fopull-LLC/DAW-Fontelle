@@ -615,7 +615,84 @@ struct OnScreen {
     /// Where it is in the frame, and its pixels as the server takes them.
     menu_at: (i32, i32),
     menu_pixels: Option<(Vec<u8>, u32, u32)>,
+    /// A window of one pixel, outside the plugin's tree, that holds the
+    /// keyboard while the plugin itself has not been clicked — so the space
+    /// bar plays wherever the pointer is (Ty, 2026-11-12, below).
+    sink: u32,
+    /// Focus is being handed to the plugin's side on purpose: the FocusIn
+    /// that answers it is not the desktop's, and is not sent to the sink.
+    yielding: bool,
+    /// When a press last landed in the plugin's own area — a desktop
+    /// focusing the window on that same click is not a click on the title
+    /// bar.
+    plugin_pressed_at: Option<std::time::Instant>,
+    /// Whether the server gave us raw button presses (XInput 2): how a press
+    /// inside the plugin, which only the plugin hears, is noticed at all.
+    raw_presses: bool,
 }
+
+/// Where the keyboard goes, on a plugin's window (Ty, 2026-11-12: *"if the
+/// content of the plugin window isnt focused (ie you clicked inside the
+/// window) you can press play so for example if i drag the actual drag bar
+/// of the plugin window, thats not inside the plugin itself, so i could click
+/// the bar at the top then be able to play and pause without having to
+/// switch windows and this wouldnt interefere with how any plugin works"*).
+///
+/// X11 gives a key to the focused window — or to the window under the
+/// pointer if that is inside it. So the frame having the keyboard was not
+/// enough: with the pointer back over the plugin, the plugin heard the
+/// space, and a JUCE plugin keeps it. The keyboard goes instead to a sink
+/// outside the plugin's tree until the plugin itself is clicked.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FocusMove {
+    /// Hand the keyboard to the sink: the space plays.
+    ToSink,
+    /// Hand it to the plugin's side: the plugin hears its keys.
+    ToPlugin,
+    /// Leave it where it is.
+    Stay,
+}
+
+/// The frame was given the keyboard (`detail`, `mode` as the FocusIn says).
+/// The desktop focusing the window — a click on its title bar, Alt+Tab, a
+/// menu over it closing — sends it to the sink; anything that landed on the
+/// plugin's own window, a grab's comings and goings, and the answer to our
+/// own handing-over do not.
+#[cfg(target_os = "linux")]
+pub(crate) fn on_focus_in(
+    detail: x11rb::protocol::xproto::NotifyDetail,
+    mode: x11rb::protocol::xproto::NotifyMode,
+    yielding: bool,
+    plugin_pressed_just_now: bool,
+) -> FocusMove {
+    use x11rb::protocol::xproto::{NotifyDetail, NotifyMode};
+    if mode != NotifyMode::NORMAL || yielding || plugin_pressed_just_now {
+        return FocusMove::Stay;
+    }
+    match detail {
+        NotifyDetail::ANCESTOR | NotifyDetail::NONLINEAR | NotifyDetail::INFERIOR => {
+            FocusMove::ToSink
+        }
+        _ => FocusMove::Stay,
+    }
+}
+
+/// A press somewhere on the screen. One inside the plugin's own area while
+/// the sink has the keyboard gives the keyboard back to the plugin — the
+/// click that means "now I am using the plugin".
+#[cfg(target_os = "linux")]
+pub(crate) fn on_raw_press(sink_has_keyboard: bool, in_plugin: bool) -> FocusMove {
+    if sink_has_keyboard && in_plugin {
+        FocusMove::ToPlugin
+    } else {
+        FocusMove::Stay
+    }
+}
+
+/// How long after a press in the plugin a focus-in is that press's.
+#[cfg(target_os = "linux")]
+const PRESS_THEN_FOCUS: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// The same on Windows: the window's handle and what its window procedure
 /// has seen. See [`win32`].
@@ -687,7 +764,7 @@ impl PluginWindow {
         // and the window under the strip hears one a plugin window passed up
         // because it does not listen for keys. See `GuiPoll::play_pause`.
         let keys = EventMask::KEY_PRESS | EventMask::KEY_RELEASE;
-        let mut mask = EventMask::STRUCTURE_NOTIFY | keys;
+        let mut mask = EventMask::STRUCTURE_NOTIFY | EventMask::FOCUS_CHANGE | keys;
         if header > 0 {
             mask = mask
                 | EventMask::EXPOSURE
@@ -742,6 +819,44 @@ impl PluginWindow {
         };
         let gc = connection.generate_id().map_err(|e| fail(&e))?;
         let _ = connection.create_gc(gc, window, &x11rb::protocol::xproto::CreateGCAux::new());
+
+        // The keyboard's sink: one pixel in the frame's corner, a sibling of
+        // the plugin's window rather than an ancestor, so a key given to it
+        // stays with it wherever the pointer is. See `FocusMove`.
+        let sink = connection.generate_id().map_err(|e| fail(&e))?;
+        let _ = connection.create_window(
+            0,
+            sink,
+            window,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new().event_mask(keys),
+        );
+        let _ = connection.map_window(sink);
+        // Raw presses, which every client may hear: a press inside the
+        // plugin is otherwise the plugin's alone.
+        let raw_presses = {
+            use x11rb::protocol::xinput::{self, ConnectionExt as _};
+            connection
+                .xinput_xi_query_version(2, 0)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .is_some_and(|reply| reply.major_version >= 2)
+                && connection
+                    .xinput_xi_select_events(
+                        root,
+                        &[xinput::EventMask {
+                            deviceid: xinput::Device::ALL_MASTER.into(),
+                            mask: vec![xinput::XIEventMask::RAW_BUTTON_PRESS],
+                        }],
+                    )
+                    .is_ok()
+        };
 
         // The close button. Without this the desktop kills the connection
         // instead of telling us, which takes the studio with it.
@@ -799,6 +914,10 @@ impl PluginWindow {
             menu: 0,
             menu_at: (0, 0),
             menu_pixels: None,
+            sink,
+            yielding: false,
+            plugin_pressed_at: None,
+            raw_presses,
         });
         screen_window.set_title(title);
         if let Some(server) = &screen_window.server {
@@ -1035,6 +1154,58 @@ impl PluginWindow {
                     result
                         .header_presses
                         .push((i32::from(press.event_x), i32::from(press.event_y)));
+                    // The strip is not the plugin: the space plays from here.
+                    let _ = server.connection.set_input_focus(
+                        x11rb::protocol::xproto::InputFocus::PARENT,
+                        server.sink,
+                        x11rb::CURRENT_TIME,
+                    );
+                }
+                X11Event::FocusIn(focus) if focus.event == server.window => {
+                    let just_now = server
+                        .plugin_pressed_at
+                        .is_some_and(|at| at.elapsed() < PRESS_THEN_FOCUS);
+                    let yielding = std::mem::take(&mut server.yielding);
+                    if on_focus_in(focus.detail, focus.mode, yielding, just_now)
+                        == FocusMove::ToSink
+                    {
+                        let _ = server.connection.set_input_focus(
+                            x11rb::protocol::xproto::InputFocus::PARENT,
+                            server.sink,
+                            x11rb::CURRENT_TIME,
+                        );
+                    }
+                }
+                X11Event::XinputRawButtonPress(_) if server.raw_presses => {
+                    let sink_has_it = server
+                        .connection
+                        .get_input_focus()
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .is_some_and(|reply| reply.focus == server.sink);
+                    let in_plugin = server
+                        .connection
+                        .query_pointer(server.window)
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .is_some_and(|pointer| {
+                            pointer.same_screen
+                                && pointer.win_x >= 0
+                                && pointer.win_y >= header as i16
+                                && (pointer.win_x as u32) < self.size.width
+                                && ((pointer.win_y as u32) < self.size.height + header)
+                        });
+                    if in_plugin {
+                        server.plugin_pressed_at = Some(std::time::Instant::now());
+                    }
+                    if on_raw_press(sink_has_it, in_plugin) == FocusMove::ToPlugin {
+                        server.yielding = true;
+                        let _ = server.connection.set_input_focus(
+                            x11rb::protocol::xproto::InputFocus::PARENT,
+                            server.window,
+                            x11rb::CURRENT_TIME,
+                        );
+                    }
                 }
                 X11Event::MotionNotify(motion) if motion.event == server.window => {
                     let over = motion.event_y >= 0 && (motion.event_y as u32) < header;
@@ -3053,5 +3224,67 @@ impl Drop for PluginWindow {
         if let Some(server) = &self.server {
             server.window.close();
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod focus_tests {
+    use super::{FocusMove, on_focus_in, on_raw_press};
+    use x11rb::protocol::xproto::{NotifyDetail, NotifyMode};
+
+    #[test]
+    fn the_desktop_focusing_the_window_sends_the_keyboard_to_the_sink() {
+        // A click on the title bar, Alt+Tab.
+        for detail in [NotifyDetail::NONLINEAR, NotifyDetail::ANCESTOR] {
+            assert_eq!(
+                on_focus_in(detail, NotifyMode::NORMAL, false, false),
+                FocusMove::ToSink
+            );
+        }
+        // A menu over it closing hands it back to the frame: the sink too.
+        assert_eq!(
+            on_focus_in(NotifyDetail::INFERIOR, NotifyMode::NORMAL, false, false),
+            FocusMove::ToSink
+        );
+    }
+
+    #[test]
+    fn the_plugin_taking_the_keyboard_is_left_alone() {
+        // Focus on the plugin's own window: the frame hears it as virtual.
+        for detail in [NotifyDetail::VIRTUAL, NotifyDetail::NONLINEAR_VIRTUAL] {
+            assert_eq!(
+                on_focus_in(detail, NotifyMode::NORMAL, false, false),
+                FocusMove::Stay
+            );
+        }
+        // Our own handing-over, a grab, and the desktop focusing the window
+        // on the very click that landed in the plugin.
+        assert_eq!(
+            on_focus_in(NotifyDetail::NONLINEAR, NotifyMode::NORMAL, true, false),
+            FocusMove::Stay
+        );
+        assert_eq!(
+            on_focus_in(NotifyDetail::NONLINEAR, NotifyMode::UNGRAB, false, false),
+            FocusMove::Stay
+        );
+        assert_eq!(
+            on_focus_in(NotifyDetail::NONLINEAR, NotifyMode::NORMAL, false, true),
+            FocusMove::Stay
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_plugin_gives_it_the_keyboard_back() {
+        assert_eq!(on_raw_press(true, true), FocusMove::ToPlugin);
+        assert_eq!(
+            on_raw_press(true, false),
+            FocusMove::Stay,
+            "a click on the strip"
+        );
+        assert_eq!(
+            on_raw_press(false, true),
+            FocusMove::Stay,
+            "it has it already"
+        );
     }
 }

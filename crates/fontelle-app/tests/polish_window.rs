@@ -144,3 +144,46 @@ fn a_touchpad_pans_the_arrangement_under_the_fingers_and_coasts() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Typed into the mixer's *Add effect* menu: it narrows as you type, and
+/// Enter puts the first match on the strip.
+#[test]
+fn the_effect_menu_narrows_as_you_type_and_enter_takes_the_first() {
+    let dir = scratch("menu-search");
+    let mut w = studio(&dir, 0);
+    w.open_effect_menu(0);
+    let all = w.menu_rows().len();
+    w.type_into_prompt("delay");
+    let rows: Vec<String> = w.menu_rows().into_iter().map(|(_, l)| l).collect();
+    assert!(rows.len() < all, "{rows:?}");
+    assert!(
+        rows[1..].iter().all(|l| l.to_lowercase().contains("delay")),
+        "{rows:?}"
+    );
+    let before = w.document().mixer_strips()[0].inserts.len();
+    w.type_into_prompt("\n");
+    assert!(w.menu_rows().is_empty(), "Enter chose, and the menu shut");
+    let after = &w.document().mixer_strips()[0].inserts;
+    assert_eq!(after.len(), before + 1);
+    assert!(
+        after.last().unwrap().label.to_lowercase().contains("delay"),
+        "{:?}",
+        after.last().map(|i| &i.label)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_new_instrument_menu_narrows_as_you_type() {
+    let dir = scratch("menu-search-instruments");
+    let mut w = studio(&dir, 0);
+    w.open_new_instrument_menu();
+    w.type_into_prompt("drum");
+    let rows: Vec<String> = w.menu_rows().into_iter().map(|(_, l)| l).collect();
+    assert!(rows.len() >= 2, "{rows:?}");
+    assert!(
+        rows[1..].iter().all(|l| l.to_lowercase().contains("drum")),
+        "{rows:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

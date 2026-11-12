@@ -625,3 +625,73 @@ pub fn find_scales(notes: &[ScaleNote]) -> ScaleFinding {
         .collect();
     ScaleFinding { rows, few_notes }
 }
+
+// ------------------------------------------------- a key from singing
+
+/// What Tune's *Listen for key* heard: the key the singing is in, how much
+/// of it fits, and whether there was so little that it is a guess.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SungKey {
+    pub key: KeyScale,
+    /// The share of the sung notes' time inside the key, 0..=1.
+    pub fit: f32,
+    /// Fewer than five pitch classes, or few notes: many keys fit.
+    pub few_notes: bool,
+}
+
+/// The fewest hops a pitch must be held to count as a note — shorter is a
+/// scoop, a slide or a consonant, not a choice of note.
+const SUNG_NOTE_HOPS: usize = 4;
+
+/// The fewest hops of notes, in all, for any answer.
+const SUNG_LEAST_HOPS: usize = 20;
+
+/// The key `frames` — Tune's trace while somebody sang (Ty, 2026-11-12) —
+/// were sung in. Each run of voiced hops on one semitone is a note as long
+/// as it lasts, and the notes go through *Find my scale…*'s own weighing
+/// ([`find_scales`]); chromatic, which fits anything, is never the answer.
+/// `None` when too little was sung to say.
+pub fn sung_key(frames: &[crate::TuneFrame]) -> Option<SungKey> {
+    let mut notes: Vec<ScaleNote> = Vec::new();
+    let mut run: Option<(u8, usize, usize)> = None;
+    let flush = |run: &mut Option<(u8, usize, usize)>, notes: &mut Vec<ScaleNote>| {
+        if let Some((key, start, length)) = run.take()
+            && length >= SUNG_NOTE_HOPS
+        {
+            notes.push(ScaleNote {
+                key,
+                start: start as i64,
+                length: length as i64,
+            });
+        }
+    };
+    for (at, frame) in frames.iter().enumerate() {
+        if frame.flags & crate::TUNE_VOICED == 0 || !frame.sung_cents.is_finite() {
+            flush(&mut run, &mut notes);
+            continue;
+        }
+        let key = (frame.sung_cents / 100.0).round().clamp(0.0, 127.0) as u8;
+        match &mut run {
+            Some((held, _, length)) if *held == key => *length += 1,
+            _ => {
+                flush(&mut run, &mut notes);
+                run = Some((key, at, 1));
+            }
+        }
+    }
+    flush(&mut run, &mut notes);
+    let sung: i64 = notes.iter().map(|n| n.length).sum();
+    if sung < SUNG_LEAST_HOPS as i64 {
+        return None;
+    }
+    let finding = find_scales(&notes);
+    let row = finding
+        .rows
+        .iter()
+        .find(|row| row.key.mask() != Some(0x0FFF))?;
+    Some(SungKey {
+        key: row.key.clone(),
+        fit: row.fit,
+        few_notes: finding.few_notes,
+    })
+}

@@ -29,6 +29,7 @@ mod id;
 mod import;
 mod instrument;
 mod lfo_shape;
+mod master;
 mod meter;
 mod notepad;
 mod pan;
@@ -96,6 +97,7 @@ pub use id::{
 pub use import::{FolderKind, is_multisample_path};
 pub use instrument::InstrumentKind;
 pub use lfo_shape::{LfoPoint, LfoShape, LfoShapeMode, MAX_LFO_POINTS};
+pub use master::{MASTER_MONO_OFF_HZ, MasterCheck, MasterConfig, MasterPreset};
 pub use meter::{
     Accent, BarHere, GridStep, MAX_BOTTOM, MAX_TOP, Meter, MeterChange, MeterLine, Signature,
 };
@@ -116,8 +118,8 @@ pub use preset::{
 };
 pub use scale::{
     KeyScale, MOST_SCALE_ROWS, PITCH_NAMES, SCALES, Scale, ScaleFamily, ScaleFinding, ScaleFit,
-    ScaleNote, find_scales, fit_to_scale, parse_scale, scale, scale_matches, scale_notes,
-    scale_text,
+    ScaleNote, SungKey, find_scales, fit_to_scale, parse_scale, scale, scale_matches, scale_notes,
+    scale_text, sung_key,
 };
 pub use study::{
     DEFAULT_GLIDE_MS, PitchEdit, Study, StudyClean, StudyCompSpan, StudyDenoise, StudyEngines,

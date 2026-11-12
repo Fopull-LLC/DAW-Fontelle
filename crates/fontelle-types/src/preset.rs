@@ -114,6 +114,7 @@ impl DeviceKind {
                     EffectKind::Hyper => "hyper",
                     EffectKind::Multiband => "multiband",
                     EffectKind::Width => "width",
+                    EffectKind::Master => "master",
                     EffectKind::DisgustingBeat => "disgusting-beat",
                     EffectKind::Notepad => "notepad",
                     EffectKind::Analyze => "analyze-musically",

@@ -15972,7 +15972,7 @@ impl StudioHost for Session {
             .filter_map(|channel| self.project.channels.get(channel))
             .map(|channel| channel.name.clone())
             .collect();
-        Some(crate::tune::describe(
+        let mut view = crate::tune::describe(
             &name,
             id,
             slot,
@@ -15982,7 +15982,13 @@ impl StudioHost for Session {
             &channels,
             self.insert_notes(strip, slot),
             self.options.sample_rate as f32,
-        ))
+        );
+        // Read after the trace, so it never counts a hop the trace lacks.
+        view.frames_written = self
+            .tune_taps
+            .get(&(id, slot))
+            .map_or(0, |tap| tap.frames_written());
+        Some(view)
     }
 
     fn tune_trace(&self, strip: usize, slot: usize) -> Vec<fontelle_types::TuneFrame> {

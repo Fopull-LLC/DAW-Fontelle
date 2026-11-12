@@ -441,3 +441,57 @@ fn a_stroke_that_cuts_nothing_marks_nothing_in_the_roll() {
     let marks = slice_marks(&v, grid(), &notes, (x0, y), (x1, y));
     assert!(marks.is_empty(), "a stroke along the row marked something");
 }
+
+/// Ty, 2026-11-12: *"the cut tool does snap to the grid in the arrangement
+/// but not in the piano roll."* The roll cuts at the nearest line of its own
+/// snap now, as the arrangement's does (`clip_cuts`), and not at all with
+/// snap off — a cut that lands on a note's own edge is no cut.
+#[test]
+fn the_cut_lands_on_the_rolls_grid() {
+    use fontelle_ui::canvas::{MeterView, slice_cuts_snapped};
+    let v = view();
+    let mut notes = Arena::default();
+    let id = notes.insert(note(0, PPQN * 4, 60));
+    let meter = MeterView::default();
+    // A little past two beats in: the cut is at two beats on a beat grid.
+    let (x, y) = at(&v, PPQN * 2 + PPQN / 5, 60);
+    let cuts = slice_cuts_snapped(
+        &v,
+        grid(),
+        &notes,
+        (x, y - 40.0),
+        (x, y + 40.0),
+        SnapDivision::Beat,
+        &meter,
+    );
+    assert_eq!(cuts, vec![(id, PPQN * 2)]);
+    // With snap off it is where the line crossed, as it always was.
+    let free = slice_cuts_snapped(
+        &v,
+        grid(),
+        &notes,
+        (x, y - 40.0),
+        (x, y + 40.0),
+        SnapDivision::None,
+        &meter,
+    );
+    assert_eq!(
+        free,
+        slice_cuts(&v, grid(), &notes, (x, y - 40.0), (x, y + 40.0))
+    );
+    assert_ne!(free[0].1, PPQN * 2);
+    // Snapped onto the note's own start: nothing to cut.
+    let (x0, _) = at(&v, PPQN / 5, 60);
+    assert!(
+        slice_cuts_snapped(
+            &v,
+            grid(),
+            &notes,
+            (x0, y - 40.0),
+            (x0, y + 40.0),
+            SnapDivision::Beat,
+            &meter,
+        )
+        .is_empty()
+    );
+}

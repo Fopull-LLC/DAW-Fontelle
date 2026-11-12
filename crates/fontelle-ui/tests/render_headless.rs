@@ -4709,6 +4709,8 @@ fn shoot_tune() -> Option<TuneShot> {
             "Melody".to_string(),
         ],
         source: 1,
+        frames_written: 0,
+        listen: None,
     };
 
     let (ew, eh) = fontelle_ui::layout::TUNE_SIZE;
@@ -5349,6 +5351,7 @@ fn shoot_welcome_status(
         fontelle_ui::canvas::OPEN_PROJECT_LABEL,
         fontelle_ui::canvas::JOIN_LABEL,
         fontelle_ui::canvas::WHATS_NEW_LABEL,
+        fontelle_ui::canvas::SUPPORT_LINK_LABEL,
         fontelle_ui::canvas::RECENT_HEADING,
         fontelle_ui::canvas::NOTHING_RECENT,
         fontelle_ui::canvas::FOOTER_TEXT,

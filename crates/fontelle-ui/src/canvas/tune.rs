@@ -101,6 +101,12 @@ pub struct TuneView {
     /// per channel — and which is chosen.
     pub sources: Vec<String>,
     pub source: usize,
+    /// How many hops the corrector has ever traced — what tells *Listen for
+    /// key* which hops of `trace` are new ([`TuneListen::take`]).
+    pub frames_written: u64,
+    /// What the *Listen for key* chip says while it listens; `None` when it
+    /// is not listening ([`listen_caption`]).
+    pub listen: Option<String>,
 }
 
 /// What the MIDI drop-down's first row says.
@@ -134,6 +140,9 @@ pub struct TuneLayout {
     pub keys: Vec<Rect>,
     /// The cards, in the order the view lists them.
     pub cards: Vec<CardLayout>,
+    /// *Listen for key*, a chip in the trace's top-right corner — where the
+    /// eye is while singing.
+    pub listen: Rect,
 }
 
 impl Default for TuneLayout {
@@ -147,6 +156,7 @@ impl Default for TuneLayout {
             keyboard: Rect::ZERO,
             keys: Vec::new(),
             cards: Vec::new(),
+            listen: Rect::ZERO,
         }
     }
 }
@@ -162,6 +172,8 @@ pub enum TuneHit {
     Key { class: u8 },
     /// The trace. Hovering it reads a frame out; nothing else uses it.
     Viewport,
+    /// *Listen for key*: start listening, or set what it heard.
+    Listen,
 }
 
 /// The two bands and the cards under them.
@@ -242,12 +254,74 @@ pub fn tune_layout(body: Rect, view: &TuneView) -> TuneLayout {
     );
     let cards = fit_cards(below, &view.cards, &super::flopsynth::estimated_width);
 
+    // The chip: wide enough for its longest caption, inset from the corner.
+    let listen = if viewport.is_empty() {
+        Rect::ZERO
+    } else {
+        let width = LISTEN_WIDTH.min((viewport.width - 2.0 * LISTEN_INSET).max(0.0));
+        Rect::new(
+            viewport.right() - LISTEN_INSET - width,
+            viewport.y + LISTEN_INSET,
+            width,
+            LISTEN_HEIGHT.min((viewport.height - 2.0 * LISTEN_INSET).max(0.0)),
+        )
+    };
     TuneLayout {
         body,
         viewport,
         keyboard,
         keys,
         cards,
+        listen,
+    }
+}
+
+/// The *Listen for key* chip's size and its inset from the trace's corner.
+const LISTEN_WIDTH: f32 = 230.0;
+const LISTEN_HEIGHT: f32 = 24.0;
+const LISTEN_INSET: f32 = 8.0;
+
+/// What the chip says. Not listening: what pressing it does. Listening:
+/// what it hears so far, and that a second press sets it.
+pub fn listen_caption(listen: Option<&TuneListen>) -> String {
+    match listen {
+        None => "Listen for key".to_string(),
+        Some(listen) => match listen.guess() {
+            Some(found) => format!(
+                "Hearing {} \u{2014} click to set",
+                fontelle_types::scale_text(&found.key)
+            ),
+            None => "Listening\u{2026} sing a phrase".to_string(),
+        },
+    }
+}
+
+/// *Listen for key* while it listens (Ty, 2026-11-12: *"sing and it
+/// automatically guesses during that singing callibration what scale youre
+/// trying to have"*): the hops sung since the chip was pressed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TuneListen {
+    /// The tap's count when last looked at; `None` before the first look.
+    pub since: Option<u64>,
+    pub frames: Vec<TuneFrame>,
+}
+
+impl TuneListen {
+    /// Takes the hops of `trace` written since the last look — `trace` is
+    /// the ring's newest, ending at hop `written`. The first look takes
+    /// nothing: what was in the ring before the chip was pressed is not
+    /// this singing.
+    pub fn take(&mut self, trace: &[TuneFrame], written: u64) {
+        if let Some(since) = self.since {
+            let new = written.saturating_sub(since).min(trace.len() as u64) as usize;
+            self.frames.extend_from_slice(&trace[trace.len() - new..]);
+        }
+        self.since = Some(written);
+    }
+
+    /// The key sung so far, if there is enough to say.
+    pub fn guess(&self) -> Option<fontelle_types::SungKey> {
+        fontelle_types::sung_key(&self.frames)
     }
 }
 
@@ -320,6 +394,9 @@ pub fn tune_hit(layout: &TuneLayout, view: &TuneView, x: f32, y: f32) -> Option<
                 });
             }
         }
+    }
+    if layout.listen.contains(x, y) {
+        return Some(TuneHit::Listen);
     }
     layout.viewport.contains(x, y).then_some(TuneHit::Viewport)
 }
@@ -508,6 +585,7 @@ pub fn tune_caption(view: &TuneView) -> String {
 pub fn tune_strings(view: &TuneView) -> Vec<String> {
     let mut out = vec![tune_caption(view)];
     out.extend(tune_readout(view));
+    out.push(view.listen.clone().unwrap_or_else(|| listen_caption(None)));
     out
 }
 

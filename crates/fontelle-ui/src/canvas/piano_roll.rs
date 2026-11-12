@@ -2981,7 +2981,15 @@ impl PianoRoll {
                 self.selection = notes_in(&self.view, grid, notes, box_);
             }
             Gesture::Slicing { from, to } => {
-                let cuts = slice_cuts(&self.view, grid, notes, from, to);
+                let cuts = slice_cuts_snapped(
+                    &self.view,
+                    grid,
+                    notes,
+                    from,
+                    to,
+                    self.view.snap,
+                    self.meter(),
+                );
                 if !cuts.is_empty() {
                     edits.push(RollEdit::Slice { cuts });
                 }
@@ -3696,6 +3704,31 @@ pub fn slice_cuts(
     from: (f32, f32),
     to: (f32, f32),
 ) -> Vec<(NoteId, Tick)> {
+    slice_cuts_snapped(
+        view,
+        grid,
+        notes,
+        from,
+        to,
+        SnapDivision::None,
+        &super::MeterView::default(),
+    )
+}
+
+/// [`slice_cuts`], each cut moved to the nearest line of `snap` in `meter`
+/// — what the roll's cut tool does, as the arrangement's does
+/// (`timeline::clip_cuts`). Ty: *"the cut tool does snap to the grid in the
+/// arrangement but not in the piano roll."* A cut snapped onto a note's own
+/// edge is no cut.
+pub fn slice_cuts_snapped(
+    view: &RollView,
+    grid: Rect,
+    notes: &Arena<NoteId, Note>,
+    from: (f32, f32),
+    to: (f32, f32),
+    snap: SnapDivision,
+    meter: &super::MeterView,
+) -> Vec<(NoteId, Tick)> {
     let mut cuts = Vec::new();
     let (dx, dy) = (to.0 - from.0, to.1 - from.1);
     // A press with no drag is somebody putting the pointer down, not a cut.
@@ -3713,7 +3746,7 @@ pub fn slice_cuts(
                 segment_crossing(from, to, a, b)
             });
             if let Some(x) = crossing {
-                let at = x_to_tick(view, grid, x);
+                let at = meter.snap(x_to_tick(view, grid, x), snap);
                 if at > note.start && at < note.start + note.length {
                     cuts.push((id, at));
                 }
@@ -3732,7 +3765,7 @@ pub fn slice_cuts(
             continue; // the row is beyond one end of the stroke
         }
         let x = from.0 + dx * along;
-        let at = x_to_tick(view, grid, x);
+        let at = meter.snap(x_to_tick(view, grid, x), snap);
         if at <= note.start || at >= note.start + note.length {
             continue;
         }

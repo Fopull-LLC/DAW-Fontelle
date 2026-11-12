@@ -20,6 +20,8 @@ pub const SUPPORT_URL: &str =
 /// The same page from the start menu's quiet line (hub card 0427).
 pub const SUPPORT_URL_START_MENU: &str =
     "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu";
+/// And from the start menu's footer link (Ty, 2026-11-12).
+pub const SUPPORT_URL_FOOTER: &str = "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=start-menu-footer";
 /// And from that line on the first start menu after an update.
 pub const SUPPORT_URL_UPDATE: &str =
     "https://fopull.com/support?product=fontelle&utm_source=fontelle-app&utm_medium=update";
