@@ -187,3 +187,46 @@ fn the_new_instrument_menu_narrows_as_you_type() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Typing a plugin's name into *Add effect* finds it there, not only in the
+/// picker behind it — and *New instrument* the same (the test plugin, a
+/// gain, is an effect).
+#[test]
+fn searching_the_effect_menu_finds_installed_plugins_too() {
+    let dir = scratch("menu-search-plugins");
+    // The test plugin cargo builds beside this test (`render_mode.rs`).
+    let mut built = std::env::current_exe().unwrap();
+    built.pop();
+    built.pop();
+    let built = built.join(if cfg!(target_os = "windows") {
+        "fontelle_testplug.dll"
+    } else if cfg!(target_os = "macos") {
+        "libfontelle_testplug.dylib"
+    } else {
+        "libfontelle_testplug.so"
+    });
+    let folder = dir.join("clap");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::copy(&built, folder.join("fontelle-testplug.clap")).unwrap();
+    let mut session = common::a_session_for(common::a_clip_project(4))
+        .with_settings_path(dir.join("settings.json"))
+        .with_plugin_folders(vec![folder]);
+    // As `main` does at launch.
+    session.scan_plugins();
+    let mut w = fontelle_ui::Windowless::new(
+        Box::new(session),
+        fontelle_ui::theme::Theme::dark_default(),
+        (1280, 720),
+    );
+    w.open_effect_menu(0);
+    let unfiltered: Vec<String> = w.menu_rows().into_iter().map(|(_, l)| l).collect();
+    w.type_into_prompt("test gain");
+    let rows: Vec<String> = w.menu_rows().into_iter().map(|(_, l)| l).collect();
+    assert!(
+        rows[1..]
+            .iter()
+            .any(|l| l.to_lowercase().contains("test gain")),
+        "{rows:?} (unfiltered: {unfiltered:?})"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

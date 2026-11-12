@@ -69,3 +69,16 @@ fn the_instruments_narrow_the_same_way() {
     assert!(picks.iter().any(|l| l.contains("Flopsynth")), "{picks:?}");
     assert!(picks.iter().all(|l| l.to_lowercase().contains("flop")));
 }
+
+/// Seen typing "obx" in the real window: Obxd was found and OB-Xf was not,
+/// for its hyphen. A search reads letters and digits, not punctuation.
+#[test]
+fn a_search_ignores_punctuation_and_spaces() {
+    use fontelle_ui::canvas::menu_matches;
+    assert!(menu_matches("OB-Xf — Surge Synth Team", "obx"));
+    assert!(menu_matches("Fontelle Test Gain", "test gain"));
+    assert!(menu_matches("Fontelle Test Gain", "testgain"));
+    assert!(menu_matches("Vocal track from a song file…", "song file"));
+    assert!(!menu_matches("Reverb", "rvb"));
+    assert!(menu_matches("Anything", "  "));
+}

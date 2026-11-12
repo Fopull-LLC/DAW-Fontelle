@@ -96,7 +96,7 @@ fn plugin_starred(favorites: &[Favorite], key: &PluginKey) -> bool {
 /// row would otherwise read the same. OB-Xf installs as a CLAP and an LV2,
 /// and two rows saying "OB-Xf — Surge Synth Team" are two rows nobody can
 /// choose between.
-fn plugin_label(listing: &PluginListing, all: &[PluginListing]) -> String {
+pub(crate) fn plugin_label(listing: &PluginListing, all: &[PluginListing]) -> String {
     let base = if listing.vendor.is_empty() {
         listing.name.clone()
     } else {

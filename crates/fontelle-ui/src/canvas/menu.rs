@@ -431,11 +431,21 @@ fn place_rows(
 /// typing something else. An empty query matches everything, which is what an
 /// unfiltered menu is.
 pub fn menu_matches(label: &str, query: &str) -> bool {
-    let query = query.trim();
+    // Letters and digits only, on both sides: "obx" finds "OB-Xf" and
+    // "test gain" finds "Test Gain" — punctuation and spacing are how a
+    // name is written, not what somebody types to find it.
+    let letters = |s: &str| -> String {
+        s.chars()
+            // A sharp and a flat are part of a note's name.
+            .filter(|c| c.is_alphanumeric() || matches!(c, '#' | '\u{266f}' | '\u{266d}'))
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let query = letters(query);
     if query.is_empty() {
         return true;
     }
-    label.to_lowercase().contains(&query.to_lowercase())
+    letters(label).contains(&query)
 }
 
 /// A row's picture: 32×16, as §3.3 sizes it, and its gap from the caption.

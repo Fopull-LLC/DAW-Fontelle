@@ -1438,6 +1438,13 @@ enum PanTarget {
     Roll,
 }
 
+/// What an effect window adds around its grid of knobs: the preset bar,
+/// the name and the margins.
+const EFFECT_WINDOW_CHROME: f32 = 96.0;
+
+/// The tallest a grid-of-knobs effect window opens.
+const EFFECT_WINDOW_TALLEST: u32 = 900;
+
 /// One turn of the wheel or move on a touchpad, as `App::wheel` reads it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WheelInput {
@@ -6069,13 +6076,29 @@ impl WindowApp {
             .flatten();
         // A vocal track's instrument is the singer panel, its own shape.
         let singer = kind == EditorKind::Instrument && self.singer_panel.is_some();
+        // A grid of knobs opens tall enough to show all of them: the generic
+        // panel does not scroll, and Master's six sections ran off the
+        // bottom of the fixed 720×420 (seen on `:99`, 2026-11-12).
+        let knob_grid = (kind == EditorKind::Effect && !tune && !notepad && !disgusting_beat)
+            .then_some(self.insert_view.as_ref())
+            .flatten()
+            .map(|view| {
+                let (w, h) = kind.default_size();
+                let probe = crate::canvas::instrument_layout(
+                    crate::layout::Rect::new(0.0, 0.0, w as f32 - 16.0, 10_000.0),
+                    &self.options.theme.metrics,
+                    view,
+                );
+                let tall = (probe.content_height + EFFECT_WINDOW_CHROME).ceil() as u32;
+                (w, tall.clamp(h, EFFECT_WINDOW_TALLEST))
+            });
         let (w, h) = match (flop_size, tune, notepad, disgusting_beat) {
             _ if singer => crate::canvas::SINGER_PANEL_SIZE,
             (Some(size), _, _, _) => size,
             (_, true, _, _) => crate::layout::TUNE_SIZE,
             (_, _, true, _) => crate::layout::NOTEPAD_SIZE,
             (_, _, _, true) => crate::layout::DISGUSTING_BEAT_SIZE,
-            _ => kind.default_size(),
+            _ => knob_grid.unwrap_or_else(|| kind.default_size()),
         };
         let (min_w, min_h) = match (flop_size, tune, disgusting_beat) {
             (Some(size), _, _) => size,
@@ -20408,10 +20431,23 @@ impl WindowApp {
     /// The *+ fx* menu's rows, and what each means.
     fn effect_rows(&self) -> Vec<(crate::canvas::MenuEntry, crate::canvas::EffectRow)> {
         let plugins = self.plugin_listings(PluginPurpose::Insert(0));
-        crate::canvas::narrowed_rows(
-            crate::canvas::effect_menu_rows(&self.favorites(), &plugins),
-            self.menu_filter.text(),
-        )
+        let mut rows = crate::canvas::effect_menu_rows(&self.favorites(), &plugins);
+        // Searching, every installed plugin effect is a row too: a name typed
+        // here finds it without the picker behind the menu.
+        if !self.menu_filter.text().trim().is_empty() {
+            for (which, listing) in plugins.iter().enumerate() {
+                let row = crate::canvas::EffectRow::Plugin(which);
+                if !rows.iter().any(|(_, r)| *r == row) {
+                    rows.push((
+                        crate::canvas::MenuEntry::new(crate::canvas::plugin_label(
+                            listing, &plugins,
+                        )),
+                        row,
+                    ));
+                }
+            }
+        }
+        crate::canvas::narrowed_rows(rows, self.menu_filter.text())
     }
 
     /// Flopsynth's *Add effect* menu, narrowed by what has been typed: each
@@ -20480,6 +20516,20 @@ impl WindowApp {
             crate::canvas::MenuEntry::new(VOICEBANKS_ROW).after_rule(),
             crate::canvas::InstrumentRow::Voicebanks,
         ));
+        // Searching, every installed plugin instrument is a row too.
+        if !self.menu_filter.text().trim().is_empty() {
+            for (which, listing) in plugins.iter().enumerate() {
+                let row = crate::canvas::InstrumentRow::Plugin(which);
+                if !rows.iter().any(|(_, r)| *r == row) {
+                    rows.push((
+                        crate::canvas::MenuEntry::new(crate::canvas::plugin_label(
+                            listing, &plugins,
+                        )),
+                        row,
+                    ));
+                }
+            }
+        }
         crate::canvas::narrowed_rows(rows, self.menu_filter.text())
     }
 

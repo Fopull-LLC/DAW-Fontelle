@@ -15094,7 +15094,8 @@ fn draw_tune(scene: &mut Scene, theme: &Theme, labels: &Labels, chrome: &TuneChr
         };
         fill_rect_rounded(scene, l.listen, m.corner_radius, fill);
         stroke_rect_rounded(scene, l.listen, m.corner_radius, 1.0, p.grid_line);
-        if let Some(text) = labels.get(&caption) {
+        // Shaped small, with the window's other strings (`tune_strings`).
+        if let Some(text) = labels.get_small(&caption) {
             let x = l.listen.x + (l.listen.width - text.width).max(0.0) / 2.0;
             let y = l.listen.y + (l.listen.height - text.height) / 2.0;
             let ink = if listening { p.window } else { p.text };

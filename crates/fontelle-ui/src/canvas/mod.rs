@@ -86,6 +86,7 @@ pub use effect::{
     eq_right_click, eq_x_of_freq, eq_y_of_gain, format_hz, next_band_channel, next_band_type,
     spectrum_band_hz, spectrum_points,
 };
+pub(crate) use favorites::plugin_label;
 pub use favorites::{
     EffectRow, FAVORITES_HEADING, InstrumentRow, PickerRow, RESCAN_PLUGINS, effect_menu_rows,
     instrument_menu_rows, narrowed_rows, plugin_picker_rows, singer_instrument_menu_rows,

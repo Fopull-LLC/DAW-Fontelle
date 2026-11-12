@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Master"
+  },
+  "name": "club",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Master": {
+        "low_cut_hz": 28.0,
+        "high_cut_hz": 20000.0,
+        "low_db": 1.5,
+        "mud_db": 0.0,
+        "presence_db": 0.0,
+        "air_db": 0.0,
+        "glue": 40.0,
+        "glue_attack_ms": 30.0,
+        "glue_release_ms": 200.0,
+        "width": 1.15,
+        "mono_below_hz": 150.0,
+        "small_speakers": 35.0,
+        "check": "Off",
+        "auto_level": true,
+        "target_lufs": -8.0,
+        "ceiling_db": -0.8,
+        "release_ms": 40.0,
+        "mix": 1.0
+      }
+    }
+  }
+}

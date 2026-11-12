@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "device": {
+    "effect": "Master"
+  },
+  "name": "lo-fi",
+  "category": "Factory",
+  "payload": {
+    "effect": {
+      "Master": {
+        "low_cut_hz": 45.0,
+        "high_cut_hz": 11000.0,
+        "low_db": 1.0,
+        "mud_db": 0.0,
+        "presence_db": 0.0,
+        "air_db": -5.0,
+        "glue": 50.0,
+        "glue_attack_ms": 30.0,
+        "glue_release_ms": 200.0,
+        "width": 0.7,
+        "mono_below_hz": 100.0,
+        "small_speakers": 0.0,
+        "check": "Off",
+        "auto_level": true,
+        "target_lufs": -13.0,
+        "ceiling_db": -1.0,
+        "release_ms": 80.0,
+        "mix": 1.0
+      }
+    }
+  }
+}
