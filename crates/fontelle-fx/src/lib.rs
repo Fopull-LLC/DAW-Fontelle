@@ -49,7 +49,7 @@ pub use fold::{Fold, fold_curve_at};
 pub use gate::Gate;
 pub use hyper::Hyper;
 pub use limiter::{Limiter, LimiterConfig};
-pub use master::Master;
+pub use master::{MASTER_SILENT_LUFS, Master, MasterReading};
 pub use meters::{Oscilloscope, SpectrumAnalyser};
 pub use multiband::Multiband;
 pub use phaser::Phaser;

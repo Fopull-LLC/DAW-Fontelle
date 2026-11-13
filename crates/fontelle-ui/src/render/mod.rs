@@ -410,6 +410,8 @@ pub struct BrowserChrome<'a> {
     /// "which one is on the channel". Two different questions, so two marks:
     /// an outline for where the arrow keys are, a wash for what is playing.
     pub focus_preset: Option<usize>,
+    /// The Import tab's row the arrows are on.
+    pub focus_file: Option<usize>,
     /// Whether the search box has the keyboard, so the caret is drawn.
     pub searching: bool,
     /// The box as a field while it has the keyboard — caret and selection
@@ -670,6 +672,8 @@ pub struct InstrumentChrome<'a> {
     pub hover_preset: Option<usize>,
     /// The same, for the key row.
     pub hover_key: Option<usize>,
+    /// A Master's loudness strip, and where it goes.
+    pub meter: Option<(Rect, crate::canvas::MasterMeterView)>,
 }
 
 /// The mixer panel's contents (TDD §13).
@@ -8605,6 +8609,32 @@ fn draw_instrument(
         }
     }
 
+    // A Master's loudness strip, under its name: a caption over a value in
+    // each of four cells (`canvas::master_meter`).
+    if let Some((strip, view)) = &chrome.meter {
+        let cells = crate::canvas::master_meter_cells(view);
+        for (cell, (caption, value)) in crate::canvas::master_meter_rects(*strip)
+            .into_iter()
+            .zip(cells.iter())
+        {
+            fill_rect_rounded(scene, cell, m.corner_radius, p.window);
+            stroke_rect_rounded(scene, cell, m.corner_radius, 1.0, p.border);
+            if let Some(text) = labels.get_small(caption) {
+                draw_text_clipped(scene, text, cell, cell.x + 8.0, cell.y + 4.0, p.text_muted);
+            }
+            if let Some(text) = labels.get(value) {
+                draw_text_clipped(
+                    scene,
+                    text,
+                    cell,
+                    cell.x + 8.0,
+                    cell.bottom() - text.height - 4.0,
+                    p.text,
+                );
+            }
+        }
+    }
+
     // The key row, above the first heading. A chip rather than a knob, because
     // a key names a track and a track is not a number with a range — and
     // because choosing one is a press rather than a turn.
@@ -10785,7 +10815,7 @@ fn draw_browser(
         chrome.files,
         chrome.selected_file,
         hover_file,
-        chrome.focus_setting,
+        chrome.focus_setting.or(chrome.focus_file),
     );
     list(
         l.presets,

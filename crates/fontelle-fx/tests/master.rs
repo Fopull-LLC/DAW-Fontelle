@@ -294,3 +294,64 @@ fn its_latency_is_the_limiters_look_ahead() {
     assert!(master.latency_samples() > 0);
     assert_eq!(master.latency_samples(), limiter.latency_samples());
 }
+
+/// What the window shows (Ty, 2026-11-12: *"loudness readout on master would
+/// be good"*): how loud the master comes out, how far the leveler is riding
+/// it, and how hard the ceiling is holding it.
+#[test]
+fn the_reading_says_how_loud_it_comes_out_and_what_the_leveler_did() {
+    let mix = a_mix(14.0, 0.05);
+    let config = MasterConfig::new();
+    let mut master = Master::new();
+    master.prepare(SR, &config);
+    let (mut l, mut r) = (mix.clone(), mix.clone());
+    for start in (0..l.len()).step_by(256) {
+        let end = (start + 256).min(l.len());
+        let mut channels: Vec<&mut [f32]> = vec![&mut l[start..end], &mut r[start..end]];
+        master.process(&mut channels, &config);
+    }
+    let reading = master.reading();
+    // The meter agrees with an independent one over the last seconds.
+    let tail = l.len() - (2.0 * SR) as usize;
+    let measured = lufs(&l[tail..], &r[tail..]);
+    assert!(
+        (reading.loudness_lufs - measured).abs() < 1.5,
+        "reads {} where it measures {measured}",
+        reading.loudness_lufs
+    );
+    // A quiet mix is brought up, and says so.
+    assert!(reading.level_db > 6.0, "{}", reading.level_db);
+    assert!(reading.reduction_db >= 0.0);
+}
+
+#[test]
+fn a_silent_master_reads_as_silence_and_the_ceiling_reading_is_taken() {
+    let config = MasterConfig::new();
+    let mut master = Master::new();
+    master.prepare(SR, &config);
+    let mut l = vec![0.0f32; 256];
+    let mut r = vec![0.0f32; 256];
+    for _ in 0..200 {
+        let mut channels: Vec<&mut [f32]> = vec![&mut l, &mut r];
+        master.process(&mut channels, &config);
+    }
+    let reading = master.reading();
+    assert!(reading.loudness_lufs <= -60.0, "{}", reading.loudness_lufs);
+    assert_eq!(reading.level_db, 0.0, "nothing to level");
+    assert_eq!(reading.reduction_db, 0.0);
+
+    // Driven into the ceiling, it holds — and reading takes the most it held.
+    let config = MasterConfig {
+        auto_level: false,
+        ..MasterConfig::new()
+    };
+    let loud = a_mix(1.0, 3.0);
+    let (mut l, mut r) = (loud.clone(), loud);
+    for start in (0..l.len()).step_by(256) {
+        let end = (start + 256).min(l.len());
+        let mut channels: Vec<&mut [f32]> = vec![&mut l[start..end], &mut r[start..end]];
+        master.process(&mut channels, &config);
+    }
+    assert!(master.reading().reduction_db > 3.0);
+    assert_eq!(master.reading().reduction_db, 0.0, "read once, then reset");
+}

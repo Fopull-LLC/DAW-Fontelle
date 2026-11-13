@@ -102,6 +102,32 @@ impl Biquad {
     }
 }
 
+/// The quietest a reading says, in LUFS: below it the master is silent.
+pub const MASTER_SILENT_LUFS: f32 = -70.0;
+
+/// What a Master is doing, for its window (Ty, 2026-11-12: *"loudness
+/// readout on master would be good"*).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MasterReading {
+    /// How loud it comes out, K-weighted over the leveler's own 0.6 s
+    /// window — what the leveler steers by, so the two never disagree.
+    pub loudness_lufs: f32,
+    /// How far the leveler is riding the song, in dB: up is positive.
+    pub level_db: f32,
+    /// The most the ceiling held it down since the last reading, in
+    /// positive dB.
+    pub reduction_db: f32,
+}
+
+impl MasterReading {
+    /// Nothing played yet.
+    pub const SILENT: Self = Self {
+        loudness_lufs: MASTER_SILENT_LUFS,
+        level_db: 0.0,
+        reduction_db: 0.0,
+    };
+}
+
 /// The mastering chain. See the module.
 pub struct Master {
     sample_rate: f32,
@@ -199,6 +225,17 @@ impl Master {
     /// The leveler's gain now, in dB — for a meter.
     pub fn level_db(&self) -> f32 {
         self.level_db
+    }
+
+    /// What it is doing now. Takes the ceiling's most-held, so each reading
+    /// says what happened since the last one.
+    pub fn reading(&mut self) -> MasterReading {
+        let loudness = -0.691 + 10.0 * self.power.max(1e-12).log10();
+        MasterReading {
+            loudness_lufs: loudness.max(MASTER_SILENT_LUFS),
+            level_db: self.level_db,
+            reduction_db: self.limiter.take_max_reduction_db(),
+        }
     }
 
     pub fn process(&mut self, channels: &mut [&mut [f32]], config: &MasterConfig) {

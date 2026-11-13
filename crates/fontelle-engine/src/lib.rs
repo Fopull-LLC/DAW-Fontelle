@@ -15,6 +15,7 @@ mod graph_channel;
 mod input_monitor;
 mod key_tap;
 mod live;
+mod master_tap;
 mod nodes;
 mod output;
 mod output_asio;
@@ -55,6 +56,7 @@ pub use live::{
     CAPTURE_CAPACITY, CaptureReader, CaptureWriter, IdleGate, LIVE_PORT_CAPACITY, LIVE_PORT_COUNT,
     LiveEventPorts, LiveEventSource, LivePort, live_capture_channel, live_event_channel,
 };
+pub use master_tap::MasterTap;
 pub use nodes::{
     AudioClipNode, BusSumNode, CHANNEL_GAIN_MAX_DB, CHANNEL_GAIN_MIN_DB, DelayNode, EffectNode,
     GAIN_MAX_DB, GAIN_MIN_DB, HeldKeys, MAX_HELD_KEYS, MasterMeter, MasterNode, Metronome,

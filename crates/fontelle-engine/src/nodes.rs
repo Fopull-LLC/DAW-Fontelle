@@ -839,6 +839,9 @@ pub struct EffectNode {
     disgusting_beat_curves: Option<crate::DisgustingBeatSource>,
     /// What a DisgustingBeat's window is shown, when one is open on it.
     disgusting_beat_tap: Option<std::sync::Arc<crate::DisgustingBeatTap>>,
+    /// A Master's reading, for its window. Carried and never written on any
+    /// other effect.
+    master_tap: Option<std::sync::Arc<crate::MasterTap>>,
     /// An Analyze Musically insert's capture, when this is one and the graph
     /// is live — see [`EffectNode::with_analyze_capture`]. `None` in an
     /// offline render, which records nothing.
@@ -1320,6 +1323,7 @@ impl EffectNode {
             controls: None,
             disgusting_beat_curves: None,
             disgusting_beat_tap: None,
+            master_tap: None,
             analyze: None,
             automated: [None; MAX_EFFECT_PARAMS],
             metre: (
@@ -1359,6 +1363,12 @@ impl EffectNode {
         tap: std::sync::Arc<crate::DisgustingBeatTap>,
     ) -> Self {
         self.disgusting_beat_tap = Some(tap);
+        self
+    }
+
+    /// A Master's window's end of what it is doing (`crate::MasterTap`).
+    pub fn with_master_tap(mut self, tap: std::sync::Arc<crate::MasterTap>) -> Self {
+        self.master_tap = Some(tap);
         self
     }
 
@@ -1753,6 +1763,9 @@ impl AudioNode for EffectNode {
         } else {
             self.state
                 .process(ctx.outputs, key, notes, &self.config, ctx.transport.bpm);
+            if let (Some(tap), EffectState::Master(master)) = (&self.master_tap, &mut self.state) {
+                tap.write(master.reading());
+            }
         }
 
         // What the corrector did to the note, for whatever window is open on

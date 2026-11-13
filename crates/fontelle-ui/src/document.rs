@@ -3664,6 +3664,16 @@ pub trait StudioHost: DocumentHost {
     /// happened.
     fn edit_notepad(&mut self, _strip: usize, _slot: usize, _edit: fontelle_types::NotepadEdit) {}
 
+    /// What the Master on this insert is reading now, for the strip along
+    /// its window's top. `None` when the slot holds something else.
+    fn master_insert_meter(
+        &self,
+        _strip: usize,
+        _slot: usize,
+    ) -> Option<crate::canvas::MasterMeterView> {
+        None
+    }
+
     /// What the DisgustingBeat on this insert is, and what it is doing right
     /// now (`docs/disgusting-beat-plan.md` §7). `None` when the slot holds
     /// something else.

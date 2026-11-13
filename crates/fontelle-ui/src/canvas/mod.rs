@@ -16,6 +16,7 @@ mod instrument;
 mod keybinds;
 mod keymap;
 mod lyrics;
+mod master_meter;
 mod menu;
 mod meter_view;
 mod mixer;
@@ -248,6 +249,9 @@ pub use glide::{Glide, wheel_travel};
 pub use lyrics::{
     LyricEditor, LyricKey, RESEARCH_BADGE, SingerRow, TRANSLATE_TERMS, TermsRow, language_name,
     line_text, neighbour, singer_menu_rows, terms_menu_rows, terms_menu_rows_with,
+};
+pub use master_meter::{
+    MASTER_METER_HEIGHT, MasterMeterView, master_meter_cells, master_meter_rects, master_meter_room,
 };
 pub use meter_view::{MeterView, grid_step};
 pub use mixer::{

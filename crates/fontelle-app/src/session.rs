@@ -349,6 +349,8 @@ pub struct Session {
     /// `docs/disgusting-beat-plan.md` §7.2.
     disgusting_beat_taps:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// Each Master insert's reading, for its window's loudness strip.
+    master_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::MasterTap>>,
     /// Every Analyze Musically insert's capture, kept across rebuilds — see
     /// [`Session::analyze_capture`].
     analyze_captures:
@@ -1708,6 +1710,7 @@ impl Session {
             disgusting_beat_zoom: 1.0,
             disgusting_beat_menu: None,
             disgusting_beat_taps: HashMap::new(),
+            master_taps: HashMap::new(),
             analyze_captures: HashMap::new(),
             disgusting_beat_controls: HashMap::new(),
             plugins: {
@@ -6644,6 +6647,7 @@ impl Session {
                 spectrum: self.spectrum_taps.clone(),
                 tune: self.tune_taps.clone(),
                 disgusting_beat: self.disgusting_beat_taps.clone(),
+                master_taps: self.master_taps.clone(),
                 master: self.master_meter.clone(),
                 analyze: Some(self.analyze_captures.clone()),
                 vocal: self.vocal.players.clone(),
@@ -6670,6 +6674,7 @@ impl Session {
                 self.scope_taps = realised.scope_taps;
                 self.tune_taps = realised.tune_taps;
                 self.disgusting_beat_taps = realised.disgusting_beat_taps;
+                self.master_taps = realised.master_taps;
                 self.analyze_captures = realised.analyze_captures;
                 self.vocal.players = realised.vocal_players;
                 self.disgusting_beat_controls = realised.disgusting_beat_controls;
@@ -16037,6 +16042,30 @@ impl StudioHost for Session {
             .copied()
             .collect();
         Some(fontelle_ui::sky::SkySound { bands_db, wave })
+    }
+
+    fn master_insert_meter(
+        &self,
+        strip: usize,
+        slot: usize,
+    ) -> Option<fontelle_ui::canvas::MasterMeterView> {
+        let id = self.mixer_track_ids().get(strip).copied()?;
+        let insert = self.project.mixer.tracks.get(id)?.inserts.get(slot)?;
+        let fontelle_types::EffectConfig::Master(config) = insert.config else {
+            return None; // this slot holds something else
+        };
+        // An insert nobody has played yet has no tap, or a fresh one: both
+        // read as silence.
+        let reading = self
+            .master_taps
+            .get(&(id, slot))
+            .map_or(fontelle_fx::MasterReading::SILENT, |tap| tap.read());
+        Some(fontelle_ui::canvas::MasterMeterView {
+            loudness_lufs: reading.loudness_lufs,
+            target_lufs: config.auto_level.then_some(config.target_lufs),
+            level_db: reading.level_db,
+            reduction_db: reading.reduction_db,
+        })
     }
 
     fn disgusting_beat_view(

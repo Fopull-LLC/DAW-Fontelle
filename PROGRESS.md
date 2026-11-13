@@ -19,6 +19,53 @@ codebase that cost real time to rediscover.
 
 ## Where things stand (maintained; the entries below are history)
 
+**2026-11-13 — After 0.35.0: platform parity, Master's readout, hearing
+presets without clicking (not released).** Ty: *"of course it should work
+for all platforms we always should ensure parity"*, *"loudness readout on
+master would be good"*, *"hovering over a search result to hear the preset
+would be good"*, *"when you used arrow keys in the browser to go between
+presets it played the sound currently you have to click"*.
+
+- **Space from plugin windows on Windows and macOS.** One rule for all three
+  (`gui::on_window_press`, `PressAt`): a press on the title bar or the strip
+  gives the studio the keyboard; a press in the plugin leaves it alone.
+  Windows: `WM_NCLBUTTONDOWN`/`HTCAPTION` and a strip press `SetFocus` the
+  frame. macOS: the window is a `FontellePluginFrame` NSWindow subclass whose
+  `sendEvent:` notes a press above the content (`press_is_on_title`), and
+  `poll` makes the area view first responder after a title or strip press.
+  `gui_windows.rs` drives the strip case for real; run under Wine on `:99` it
+  failed before and passes after. `gui_macos.rs` has the same test, and it
+  skips rather than fails where a headless runner won't deliver an event.
+  Neither test drives the title bar, because a press posted there would start
+  the desktop's drag loop.
+- **Master's loudness strip**: four cells under the window's name (Loudness,
+  Target, Leveling, Ceiling) via `canvas::master_meter`. The reading comes
+  from `Master::reading()` through `fontelle_engine::MasterTap`, which the
+  session keeps across rebuilds the way DisgustingBeat's tap is kept. The
+  window reads it once a frame, like the EQ's analyser (`tick_master_meter`),
+  and redraws only when the text changes. The ceiling's peak hold lasts 1 s.
+  The window opens taller by the strip (`knob_grid_size`). Seen live on `:99`
+  over Night Drive.
+- **Found with the readout, not fixed, and Ty's to decide:** the leveler
+  follows a 0.6 s loudness at up to 10 dB/s, so it raises a quiet intro to
+  the target (Night Drive's piano intro read +19 dB of leveling) and then
+  slams the ceiling when the drums enter (15.6 dB held). Night Drive bounces
+  at −19.3 LUFS integrated with 10.6 LU of range. The mix going in quiet is
+  the likely root of *"songs made in fontelle feel quieter"*. A song-length
+  leveler (gated integrated loudness, slow, plus a measuring pre-pass on
+  export) is the proposal.
+- **Browser lists heard from the keyboard and on a rest.** Landing on a
+  soundfont or preset row with the arrows plays it, as a click does. The
+  Import tab has a focus of its own (`import_focus`): a click puts it there,
+  the arrows walk the list, each file is heard, and Enter imports or opens.
+  Resting 400 ms on a Sounds-tab preset or a row of Flopsynth's bank plays it
+  once per visit (`Hearable`, `tick_hover_hear`). The Presets tab is left out
+  because its listen loads onto the channel. **Trap found:** a key or a rest
+  has no button to come up, so its audition held forever until it was
+  released straight after starting, as `hear_flop_row` already did.
+- `:99` keys need the studio to be given X focus explicitly (memory: seeing
+  Fontelle's GUI).
+
 **2026-11-12 — Ty's feedback round, toward 0.35.0 stable.**
 
 - **Master** (`EffectKind::Master`, `fontelle_types::master`,

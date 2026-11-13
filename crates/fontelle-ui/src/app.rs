@@ -1445,6 +1445,21 @@ const EFFECT_WINDOW_CHROME: f32 = 96.0;
 /// The tallest a grid-of-knobs effect window opens.
 const EFFECT_WINDOW_TALLEST: u32 = 900;
 
+/// How long the pointer rests on a preset row before it is heard (Ty,
+/// 2026-11-12: *"hovering over a search result to hear the preset would be
+/// good"*; the figure is `docs/flopsynth-next.md` §5.2's).
+const HOVER_HEAR: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// A row the pointer can rest on to hear — only where hearing it changes
+/// nothing: a soundfont preset on the Sounds tab (the preview voice), or a
+/// row of Flopsynth's own bank. The Presets tab's listen loads the preset
+/// onto the channel, so it is not one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hearable {
+    SoundfontRow(usize),
+    FlopRow(usize),
+}
+
 /// One turn of the wheel or move on a touchpad, as `App::wheel` reads it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum WheelInput {
@@ -1909,6 +1924,12 @@ pub struct WindowApp {
     insert_view: Option<InstrumentView>,
     /// Where its controls are, in that window.
     insert_layout: InstrumentLayout,
+    /// A Master insert's loudness strip, while its window is open, and where
+    /// it is drawn (`canvas::master_meter`).
+    master_meter: Option<crate::canvas::MasterMeterView>,
+    master_meter_rect: crate::layout::Rect,
+    /// The most the ceiling held lately, and when — see `tick_master_meter`.
+    master_ceiling_held: Option<(f32, std::time::Instant)>,
     /// The pitch corrector's window, when the open insert is one
     /// (`docs/tune-plan.md` §7.6). The third of the three effect windows, and
     /// told apart from the other two the way they are told apart from each
@@ -2307,6 +2328,10 @@ pub struct WindowApp {
     /// `None` when the browser does not hold the keyboard, which is when the
     /// arrows go back to nudging notes and clips.
     preset_focus: Option<usize>,
+    /// The Import tab's row the keyboard is on, the same way: a click on a
+    /// file puts it there, and the arrows walk the list from it, each file
+    /// heard as they land on it.
+    import_focus: Option<usize>,
     status: String,
     /// What was said on the status line and when — see `refresh_studio`.
     said: Option<(String, std::time::Instant)>,
@@ -2333,6 +2358,9 @@ pub struct WindowApp {
     /// a list whose rows do not light up under the pointer does not look like a
     /// list you can click.
     hover_browser: Option<BrowserHit>,
+    /// The hearable row under the pointer, since when, and whether this
+    /// visit has been heard — see `tick_hover_hear`.
+    hover_hear: Option<(Hearable, std::time::Instant, bool)>,
     /// The same for the channel rack.
     hover_rack: Option<RackHit>,
     /// And for the prefab list under the panel's other tab.
@@ -2853,6 +2881,9 @@ impl WindowApp {
                 &fontelle_types::EqConfig::new(),
             ),
             insert_view: None,
+            master_meter: None,
+            master_meter_rect: crate::layout::Rect::ZERO,
+            master_ceiling_held: None,
             insert_layout: InstrumentLayout {
                 name: crate::layout::Rect::ZERO,
                 body: layout.panel.body,
@@ -3017,6 +3048,7 @@ impl WindowApp {
             query: String::new(),
             searching: false,
             preset_focus: None,
+            import_focus: None,
             status: String::new(),
             said: None,
             status_written: String::new(),
@@ -3063,6 +3095,7 @@ impl WindowApp {
             preset_scroll: 0,
             hover_control: None,
             hover_browser: None,
+            hover_hear: None,
             hover_rack: None,
             menu: None,
             menu_at: ((0.0, 0.0), crate::layout::Rect::ZERO),
@@ -3937,6 +3970,9 @@ impl WindowApp {
                     searching: self.searching,
                     search_field: self.search_field.clone(),
                     focus_preset: self.preset_focus,
+                    focus_file: (self.browser_mode == BrowserMode::Import)
+                        .then_some(self.import_focus)
+                        .flatten(),
                     hover: self.hover_browser,
                     settings_controls: if self.browser_mode == BrowserMode::Settings {
                         &self.settings_controls
@@ -4506,8 +4542,10 @@ impl WindowApp {
         // open — the same rule the mixer's meters follow, and for the same
         // reason: it moves every block, and reading it on the studio's
         // revision would rebuild the whole window sixty times a second.
+        self.tick_hover_hear();
         if self.is_editor_open(EditorKind::Effect) {
             self.tick_spectrum(dt);
+            self.tick_master_meter();
         } else if !self.spectrum.is_empty() {
             // The window closed. Nothing is drawing it, and a stale spectrum
             // waiting to be shown at whatever it last was is worse than none.
@@ -5076,6 +5114,19 @@ impl WindowApp {
             self.hover_browser = browser;
             self.tree.invalidate(BROWSER);
         }
+        let hearable = match browser {
+            Some(BrowserHit::Preset(index))
+                if self.browser_mode == BrowserMode::Sounds
+                    && self
+                        .presets
+                        .get(index)
+                        .is_some_and(|row| row.kind != crate::document::LibraryKind::Group) =>
+            {
+                Some(Hearable::SoundfontRow(index))
+            }
+            _ => None,
+        };
+        self.rest_on(hearable, |h| matches!(h, Hearable::SoundfontRow(_)));
         let tab = editor_tab_at(&self.tabs, x, y);
         // A wire in the hand lights where it would land (`strip_glow`), not
         // the control under it.
@@ -5820,6 +5871,91 @@ impl WindowApp {
         self.redraw_editor(EditorKind::Effect);
     }
 
+    /// How big the effect window opens for the grid of knobs in it: tall
+    /// enough for all of them and, on a Master, its loudness strip.
+    pub(crate) fn knob_grid_size(&self) -> Option<(u32, u32)> {
+        let view = self.insert_view.as_ref()?;
+        let (w, h) = EditorKind::Effect.default_size();
+        let mut probe = crate::canvas::instrument_layout(
+            crate::layout::Rect::new(0.0, 0.0, w as f32 - 16.0, 10_000.0),
+            &self.options.theme.metrics,
+            view,
+        );
+        if self.master_meter.is_some() {
+            crate::canvas::master_meter_room(&mut probe);
+        }
+        let tall = (probe.content_height + EFFECT_WINDOW_CHROME).ceil() as u32;
+        Some((w, tall.clamp(h, EFFECT_WINDOW_TALLEST)))
+    }
+
+    /// One frame of a Master's loudness strip: read it, and redraw only
+    /// when what it says has changed — a number that is the same to the
+    /// tenth is not worth a frame.
+    fn tick_master_meter(&mut self) {
+        let Some((strip, slot)) = self.open_insert else {
+            return;
+        };
+        let Some(doc) = &self.options.document else {
+            return;
+        };
+        let Some(mut reading) = doc.master_insert_meter(strip, slot) else {
+            return;
+        };
+        // The ceiling's most-held is taken by each read, so a squash between
+        // two frames would flash for one; it is held for a second instead.
+        let now = std::time::Instant::now();
+        match self.master_ceiling_held {
+            Some((held, at))
+                if held > reading.reduction_db && now.duration_since(at).as_secs_f32() < 1.0 =>
+            {
+                reading.reduction_db = held;
+            }
+            _ => self.master_ceiling_held = Some((reading.reduction_db, now)),
+        }
+        let said = self
+            .master_meter
+            .as_ref()
+            .map(crate::canvas::master_meter_cells);
+        if said != Some(crate::canvas::master_meter_cells(&reading)) {
+            self.master_meter = Some(reading);
+            self.redraw_editor(EditorKind::Effect);
+        }
+    }
+
+    /// The pointer is now over `hearable` — or, if `None`, over nothing
+    /// hearable of the kind `mine` names. A new row starts a new rest; the
+    /// same row keeps the rest it has; and one window leaving its rows does
+    /// not end a rest in the other.
+    fn rest_on(&mut self, hearable: Option<Hearable>, mine: impl Fn(&Hearable) -> bool) {
+        match (hearable, self.hover_hear) {
+            (Some(new), Some((old, _, _))) if new == old => {}
+            (Some(new), _) => self.hover_hear = Some((new, std::time::Instant::now(), false)),
+            (None, Some((old, _, _))) if mine(&old) => self.hover_hear = None,
+            (None, _) => {}
+        }
+    }
+
+    /// A rest of `HOVER_HEAR` on a hearable row hears it, once a visit, and
+    /// not while a button is held — a drag is going somewhere.
+    pub(crate) fn tick_hover_hear(&mut self) {
+        let Some((row, since, false)) = self.hover_hear else {
+            return;
+        };
+        if self.drag != Drag::None || since.elapsed() < HOVER_HEAR {
+            return;
+        }
+        self.hover_hear = Some((row, since, true));
+        match row {
+            Hearable::SoundfontRow(index) => {
+                self.preview_preset(index);
+                // No button will come up: the hold is the floor it sounds.
+                self.audition.release(std::time::Instant::now());
+            }
+            Hearable::FlopRow(which) => self.hear_flop_row(which),
+        }
+        self.tree.invalidate(BROWSER);
+    }
+
     /// Whether an editor of this kind is open.
     fn is_editor_open(&self, kind: EditorKind) -> bool {
         self.editors.iter().any(|e| e.kind == kind) || self.pending_editors.contains(&kind)
@@ -6080,18 +6216,8 @@ impl WindowApp {
         // panel does not scroll, and Master's six sections ran off the
         // bottom of the fixed 720×420 (seen on `:99`, 2026-11-12).
         let knob_grid = (kind == EditorKind::Effect && !tune && !notepad && !disgusting_beat)
-            .then_some(self.insert_view.as_ref())
-            .flatten()
-            .map(|view| {
-                let (w, h) = kind.default_size();
-                let probe = crate::canvas::instrument_layout(
-                    crate::layout::Rect::new(0.0, 0.0, w as f32 - 16.0, 10_000.0),
-                    &self.options.theme.metrics,
-                    view,
-                );
-                let tall = (probe.content_height + EFFECT_WINDOW_CHROME).ceil() as u32;
-                (w, tall.clamp(h, EFFECT_WINDOW_TALLEST))
-            });
+            .then(|| self.knob_grid_size())
+            .flatten();
         let (w, h) = match (flop_size, tune, notepad, disgusting_beat) {
             _ if singer => crate::canvas::SINGER_PANEL_SIZE,
             (Some(size), _, _, _) => size,
@@ -6382,6 +6508,13 @@ impl WindowApp {
                             content_height: 0.0,
                         },
                     };
+                    // A Master's loudness strip, under its name.
+                    self.master_meter_rect =
+                        if self.insert_view.is_some() && self.master_meter.is_some() {
+                            crate::canvas::master_meter_room(&mut self.insert_layout)
+                        } else {
+                            crate::layout::Rect::ZERO
+                        };
                     let config = self.eq.unwrap_or_default();
                     self.eq_layout = crate::canvas::eq_layout_for(body, &m, &config, self.eq_band);
                     self.eq_curve = crate::canvas::eq_curve_points(&self.eq_layout, &config);
@@ -6881,6 +7014,9 @@ impl WindowApp {
 
     /// A button went down in editor window `kind`, where the pointer is.
     fn editor_pressed(&mut self, kind: EditorKind, button: MouseButton) {
+        if let Some((_, _, heard)) = &mut self.hover_hear {
+            *heard = true;
+        }
         let (x, y) = self.cursor;
         // A menu opened on a knob is above this window's own panel, and a
         // press that chose an entry is spent.
@@ -6999,6 +7135,17 @@ impl WindowApp {
                 crate::canvas::preset_bar_hit(&layout, &self.preset_view[slot], x, y)
                     .map(|hit| (slot, hit))
             });
+        // A row of Flopsynth's bank under the pointer, to be heard on a rest.
+        let flop_row = (kind == EditorKind::Instrument && self.flopsynth.is_some())
+            .then(|| crate::canvas::presets_hit(&self.flopsynth_layout, x, y))
+            .flatten()
+            .and_then(|hit| match hit {
+                crate::canvas::PresetsHit::Row(which) => Some(Hearable::FlopRow(which)),
+                _ => None,
+            });
+        if kind == EditorKind::Instrument {
+            self.rest_on(flop_row, |h| matches!(h, Hearable::FlopRow(_)));
+        }
         match kind {
             EditorKind::Instrument if self.flopsynth.is_some() => {
                 let hit = crate::canvas::flopsynth_hit(&self.flopsynth_layout, x, y);
@@ -7424,6 +7571,7 @@ impl WindowApp {
                         // `InstrumentView::keys`, which is empty on every
                         // instrument panel.
                         hover_key: None,
+                        meter: None,
                     }
                 }))
             }
@@ -7496,6 +7644,9 @@ impl WindowApp {
                     active: self.insert_knob.map(|(which, _, _)| which),
                     hover_preset: self.hover_preset,
                     hover_key: self.hover_key,
+                    meter: self
+                        .master_meter
+                        .map(|meter| (self.master_meter_rect, meter)),
                 })
             }
             EditorKind::Effect => {
@@ -8069,6 +8220,9 @@ impl WindowApp {
         };
         self.eq = eq;
         self.insert_view = insert_view;
+        self.master_meter = self
+            .open_insert
+            .and_then(|(strip, slot)| doc.master_insert_meter(strip, slot));
         self.tune = tune;
         // *Listen for key* hears the hops traced since it last looked —
         // inline, field by field, because `doc` is still held here.
@@ -8821,6 +8975,14 @@ impl WindowApp {
             }
             for name in fontelle_types::TUNE_ROOTS {
                 self.labels.ensure_small(name, &font, &mut self.text);
+            }
+        }
+        // **A Master's loudness strip**: its four captions, small, and their
+        // values, from the function the renderer draws them with.
+        if let Some(meter) = self.master_meter {
+            for (caption, value) in crate::canvas::master_meter_cells(&meter) {
+                self.labels.ensure_small(caption, &font, &mut self.text);
+                want(&mut self.labels, &mut self.text, &value);
             }
         }
         // **The notepad's page**, under exactly the strings `draw_notepad`
@@ -10643,6 +10805,10 @@ impl WindowApp {
     }
 
     fn press(&mut self, button: winit::event::MouseButton, x: f32, y: f32) {
+        // A click already hears its row; the rest after it must not again.
+        if let Some((_, _, heard)) = &mut self.hover_hear {
+            *heard = true;
+        }
         // Any click while autoscrolling ends it, and is spent on that — the
         // click that leaves scroll mode must not also draw a note.
         if self.autoscroll.is_some() {
@@ -10777,6 +10943,9 @@ impl WindowApp {
         // notes and clips. `press_browser` puts the focus back on straight
         // after, so clicking a preset row keeps it.
         if !self.layout.browser.frame.contains(x, y) && self.preset_focus.take().is_some() {
+            self.tree.invalidate(BROWSER);
+        }
+        if !self.layout.browser.frame.contains(x, y) && self.import_focus.take().is_some() {
             self.tree.invalidate(BROWSER);
         }
         // The same for a focused settings row: a click away hands the arrows
@@ -14027,6 +14196,12 @@ impl WindowApp {
         self.open_insert = Some((strip, slot));
         self.eq = config;
         self.insert_view = view;
+        self.master_meter = self
+            .options
+            .document
+            .as_ref()
+            .and_then(|doc| doc.master_insert_meter(strip, slot));
+        self.master_ceiling_held = None;
         self.tune = tune;
         // A pad opened afresh starts with the keyboard elsewhere and the page
         // at the top, so that opening a window never eats the next keystroke.
@@ -14744,6 +14919,7 @@ impl WindowApp {
         // A different tab is a different list; the arrow-key focus in the
         // old one means nothing in the new.
         self.settings_focus = None;
+        self.import_focus = None;
         // The status line says something different in each mode and the
         // studio's revision has not moved, so ask for the lists again rather
         // than waiting for something else to change them.
@@ -15284,9 +15460,14 @@ impl WindowApp {
     /// the preview voice for §5.2's second and a half, nothing written.
     fn select_flop_row(&mut self, which: usize, hear: bool) {
         self.set_flop_selected(Some(which));
-        if !hear {
-            return;
+        if hear {
+            self.hear_flop_row(which);
         }
+    }
+
+    /// Bank row `which` heard through the preview voice, without selecting
+    /// or loading it.
+    fn hear_flop_row(&mut self, which: usize) {
         let aimed = match self.options.document.as_mut() {
             Some(doc) => doc.audition_preset(crate::canvas::PresetDevice::Instrument, which),
             None => return,
@@ -19901,9 +20082,114 @@ impl WindowApp {
             } else if index >= self.preset_scroll + rows {
                 self.preset_scroll = index + 1 - rows;
             }
+            // **Landing on a row is a listen**, as a click on it is (Ty,
+            // 2026-11-12: *"when you used arrow keys in the browser to go
+            // between presets it played the sound currently you have to
+            // click"*). `browser_focus_step` never lands on a heading.
+            self.preview_preset(index);
+            // And let go at once: a key has no button to come up, and the
+            // hold is the floor the note sounds out.
+            self.audition.release(std::time::Instant::now());
         }
         self.relayout_panels();
         self.tree.invalidate(BROWSER);
+    }
+
+    /// The Import tab's focus moved `delta` rows, scrolled to and heard: a
+    /// file plays as a click plays it; a folder is only somewhere to stand,
+    /// and Enter walks into it.
+    fn step_import_focus(&mut self, delta: i32) {
+        let next = crate::canvas::browser_focus_step(&self.imports, self.import_focus, delta);
+        if next == self.import_focus {
+            return;
+        }
+        self.import_focus = next;
+        if let Some(index) = next {
+            let rows = self.browser.file_rows.len().max(1);
+            if index < self.file_scroll {
+                self.file_scroll = index;
+            } else if index >= self.file_scroll + rows {
+                self.file_scroll = index + 1 - rows;
+            }
+            if crate::canvas::browser_row_carries(
+                &self.imports,
+                self.browser_mode,
+                self.import_kind,
+                index,
+            ) {
+                self.preview_import(index);
+                // Held for the file's length, then let go, as above.
+                self.audition.release(std::time::Instant::now());
+            }
+        }
+        self.relayout_panels();
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// Enter on the Import tab's focus: what a double-click on that row
+    /// does — a file comes in, a folder opens.
+    fn choose_focused_import(&mut self) {
+        let Some(index) = self.import_focus else {
+            return;
+        };
+        let walks = matches!(
+            self.imports.get(index).map(|entry| entry.kind),
+            Some(crate::document::LibraryKind::Folder | crate::document::LibraryKind::Up)
+        );
+        if let Some(doc) = &mut self.options.document
+            && let Err(e) = doc.open_import(index)
+        {
+            self.status = e;
+        }
+        if walks {
+            // A different list now, so the focus starts again at its top.
+            self.file_scroll = 0;
+            self.import_focus = None;
+            self.studio_revision = u64::MAX;
+        }
+        self.refresh_studio();
+        self.refresh_title();
+        self.tree.invalidate(BROWSER);
+    }
+
+    /// The arrows, Enter and Escape for a browser list that has the keyboard;
+    /// `false` when no list has it and the key is the studio's.
+    ///
+    /// **The soundfont list holds the arrows while one of its rows is
+    /// focused.** Clicking a preset is what focuses it, so this can only be
+    /// on when somebody is looking at that list — and Escape, or a click
+    /// anywhere else, hands the arrows back to the notes and clips.
+    pub(crate) fn browser_list_key(&mut self, key: &winit::keyboard::Key) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.browser_mode == BrowserMode::Import && self.import_focus.is_some() {
+            match key {
+                Key::Named(NamedKey::ArrowDown) => self.step_import_focus(1),
+                Key::Named(NamedKey::ArrowUp) => self.step_import_focus(-1),
+                Key::Named(NamedKey::Enter) => self.choose_focused_import(),
+                Key::Named(NamedKey::Escape) => {
+                    self.import_focus = None;
+                    self.tree.invalidate(BROWSER);
+                }
+                _ => return false,
+            }
+            return true;
+        }
+        if self.preset_focus.is_none() {
+            return false;
+        }
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.step_preset_focus(1),
+            Key::Named(NamedKey::ArrowUp) => self.step_preset_focus(-1),
+            // *"press enter while its selected"* — the keyboard half of a
+            // double-click.
+            Key::Named(NamedKey::Enter) => self.choose_focused_preset(),
+            Key::Named(NamedKey::Escape) => {
+                self.preset_focus = None;
+                self.tree.invalidate(BROWSER);
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Puts the focused preset on the selected channel — what Enter and a
@@ -20162,6 +20448,8 @@ impl WindowApp {
                 );
                 if carried {
                     self.drag = Drag::BrowserRow(BrowserRow::File(index));
+                    // And the arrows walk the list from here.
+                    self.import_focus = Some(index);
                     // **A click plays it; a double-click imports it.** The same
                     // gesture a soundfont row has, and for the same report:
                     // *"clicking on an audio file in the import tab instantly
@@ -25635,33 +25923,8 @@ impl WindowApp {
             }
         }
 
-        // **The soundfont list holds the arrows while one of its rows is
-        // focused.** Clicking a preset is what focuses it, so this can only be
-        // on when somebody is looking at that list — and Escape, or a click
-        // anywhere else, hands the arrows back to the notes and clips.
-        if self.preset_focus.is_some() {
-            match &event.logical_key {
-                Key::Named(NamedKey::ArrowDown) => {
-                    self.step_preset_focus(1);
-                    return;
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    self.step_preset_focus(-1);
-                    return;
-                }
-                // *"press enter while its selected"* — the keyboard half of a
-                // double-click.
-                Key::Named(NamedKey::Enter) => {
-                    self.choose_focused_preset();
-                    return;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.preset_focus = None;
-                    self.tree.invalidate(BROWSER);
-                    return;
-                }
-                _ => {}
-            }
+        if self.browser_list_key(&event.logical_key) {
+            return;
         }
 
         // Transport, undo and save mean the same thing wherever they are

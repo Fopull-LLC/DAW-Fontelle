@@ -134,6 +134,9 @@ pub struct Realised {
     /// (`docs/disgusting-beat-plan.md` §7.2).
     pub disgusting_beat_taps:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// One reading per Master insert, for its window's loudness strip, kept
+    /// across a rebuild the same way.
+    pub master_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::MasterTap>>,
     /// One capture per Analyze Musically insert in a live graph, keyed the
     /// same way and carried across a rebuild so a take in progress carries
     /// on (`docs/analyze-musically-plan.md` §6.1). The insert records into
@@ -492,6 +495,8 @@ pub struct KeptTaps {
     /// [`Realised::disgusting_beat_taps`].
     pub disgusting_beat:
         HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::DisgustingBeatTap>>,
+    /// One reading per Master insert — see [`Realised::master_taps`].
+    pub master_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::MasterTap>>,
     /// The master meter the transport bar reads — see [`Realised::master`].
     /// `None` mints one, which is right for the first graph and wrong for
     /// every graph after it: the bar keeps the first, so a rebuild that
@@ -1049,6 +1054,10 @@ pub fn realise_hosting(
         (MixerTrackId, usize),
         fontelle_engine::DisgustingBeatControls,
     > = HashMap::new();
+    let mut master_taps: HashMap<
+        (MixerTrackId, usize),
+        std::sync::Arc<fontelle_engine::MasterTap>,
+    > = HashMap::new();
     let mut tune_taps: HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::TuneTap>> =
         HashMap::new();
     let mut analyze_captures: HashMap<
@@ -1073,6 +1082,7 @@ pub fn realise_hosting(
             &mut tune_taps,
             &mut disgusting_beat_taps,
             &mut disgusting_beat_controls,
+            &mut master_taps,
             (&mut analyze_captures, analyze_frames),
             &channel_nodes,
             &mut param_nodes,
@@ -1190,6 +1200,7 @@ pub fn realise_hosting(
         &mut tune_taps,
         &mut disgusting_beat_taps,
         &mut disgusting_beat_controls,
+        &mut master_taps,
         (&mut analyze_captures, analyze_frames),
         &channel_nodes,
         &mut param_nodes,
@@ -1273,6 +1284,7 @@ pub fn realise_hosting(
         spectrum_taps,
         tune_taps,
         disgusting_beat_taps,
+        master_taps,
         analyze_captures,
         vocal_players,
         disgusting_beat_controls,
@@ -1427,6 +1439,7 @@ fn schedule_inserts(
         (MixerTrackId, usize),
         fontelle_engine::DisgustingBeatControls,
     >,
+    master_taps: &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::MasterTap>>,
     (analyze_captures, analyze_frames): (
         &mut HashMap<(MixerTrackId, usize), std::sync::Arc<fontelle_engine::AnalyzeCapture>>,
         usize,
@@ -1558,6 +1571,16 @@ fn schedule_inserts(
                 .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::DisgustingBeatTap::new()));
             node = node.with_disgusting_beat_tap(std::sync::Arc::clone(&tap));
             disgusting_beat_taps.insert((id, index), tap);
+        }
+        // A Master's loudness strip.
+        if slot.kind() == Some(fontelle_types::EffectKind::Master) {
+            let tap = existing_taps
+                .master_taps
+                .get(&(id, index))
+                .map(std::sync::Arc::clone)
+                .unwrap_or_else(|| std::sync::Arc::new(fontelle_engine::MasterTap::new()));
+            node = node.with_master_tap(std::sync::Arc::clone(&tap));
+            master_taps.insert((id, index), tap);
         }
 
         // Analyze Musically's capture: kept across a rebuild so a take in

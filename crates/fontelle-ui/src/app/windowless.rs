@@ -142,6 +142,8 @@ impl Windowless {
         let until = std::time::Instant::now() + time;
         while std::time::Instant::now() < until {
             self.settle();
+            self.app.tick_hover_hear();
+            self.app.settle_audition();
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
@@ -344,6 +346,108 @@ impl Windowless {
     pub fn press_key_arrow(&mut self, dx: i32, dy: i32) {
         self.app.arrow(dx, dy);
         self.settle();
+    }
+
+    /// A key pressed while the browser has the pointer's attention: what
+    /// the studio's keyboard does with it when a list holds the keys.
+    pub fn browser_key(&mut self, key: winit::keyboard::Key) {
+        self.app.browser_list_key(&key);
+        self.settle();
+    }
+
+    /// The browser's tab `mode`, chosen as its tab chooses it.
+    pub fn show_browser_mode(&mut self, mode: crate::canvas::BrowserMode) {
+        self.app.show_browser_mode(mode);
+        self.settle();
+    }
+
+    /// The size the effect window would open at for insert `slot` on
+    /// `strip`, as its window is sized when it opens.
+    pub fn effect_window_size(&mut self, strip: usize, slot: usize) -> (u32, u32) {
+        self.app.open_insert(strip, slot);
+        self.app
+            .knob_grid_size()
+            .unwrap_or_else(|| EditorKind::Effect.default_size())
+    }
+
+    /// Insert `slot` on `strip`, open in its window at `size` points.
+    pub fn open_effect_window(&mut self, strip: usize, slot: usize, size: (f32, f32)) {
+        self.app.open_insert(strip, slot);
+        let body = editor_window_layout(size.0, size.1, &self.app.options.theme.metrics).body;
+        self.app
+            .windowless
+            .retain(|(kind, _)| *kind != EditorKind::Effect);
+        self.app.windowless.push((EditorKind::Effect, body));
+        self.settle();
+    }
+
+    /// A Master's loudness strip, where its window draws it.
+    pub fn master_meter_strip(&self) -> Option<Rect> {
+        (!self.app.master_meter_rect.is_empty()).then_some(self.app.master_meter_rect)
+    }
+
+    /// What a Master's window was last told.
+    pub fn master_meter(&self) -> Option<crate::canvas::MasterMeterView> {
+        self.app.master_meter
+    }
+
+    /// The effect window's first section heading.
+    pub fn effect_first_heading(&self) -> Option<Rect> {
+        self.app.insert_layout.headings.first().map(|(_, r)| *r)
+    }
+
+    /// The effect window's lowest knob.
+    pub fn effect_last_cell(&self) -> Option<Rect> {
+        self.app
+            .insert_layout
+            .cells
+            .iter()
+            .map(|(_, _, r)| *r)
+            .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+    }
+
+    /// [`shaped`](Self::shaped), for the small size captions are drawn at.
+    pub fn shaped_small(&mut self, text: &str) -> bool {
+        self.app.shape_labels();
+        self.app.labels.get_small(text).is_some()
+    }
+
+    /// Flopsynth's Presets page, shown as its tab shows it.
+    pub fn show_flop_presets(&mut self) {
+        self.app
+            .show_flop_page(crate::canvas::FlopsynthPage::Presets);
+        self.settle();
+        self.app.relayout_editors();
+    }
+
+    /// The rows Flopsynth's Presets page draws, by bank row.
+    pub fn flop_preset_rows(&self) -> Vec<(usize, Rect)> {
+        self.app.flopsynth_layout.presets.rows.clone()
+    }
+
+    /// The pointer moving to `(x, y)` in the instrument panel's window.
+    pub fn move_instrument_panel(&mut self, x: f32, y: f32) {
+        self.app.editor_pointer_moved(EditorKind::Instrument, x, y);
+    }
+
+    /// Where the browser's lower list draws row `index`, if it is on screen.
+    pub fn browser_preset_row(&self, index: usize) -> Option<Rect> {
+        self.app
+            .browser
+            .preset_rows
+            .iter()
+            .find(|(row, _)| *row == index)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Where the browser's upper list draws row `index`, if it is on screen.
+    pub fn browser_file_row(&self, index: usize) -> Option<Rect> {
+        self.app
+            .browser
+            .file_rows
+            .iter()
+            .find(|(row, _)| *row == index)
+            .map(|(_, rect)| *rect)
     }
 
     /// Whether a typed prompt is open.

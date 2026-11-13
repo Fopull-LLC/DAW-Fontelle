@@ -22,7 +22,7 @@ fn main() {}
 
 #[cfg(target_os = "macos")]
 fn main() {
-    let tests: [(&str, fn()); 4] = [
+    let tests: [(&str, fn()); 5] = [
         (
             "a_plugin_window_is_a_real_window_that_reports_what_the_desktop_does",
             a_plugin_window_is_a_real_window_that_reports_what_the_desktop_does,
@@ -30,6 +30,10 @@ fn main() {
         (
             "the_strip_is_the_studios_and_the_rest_is_the_plugins",
             the_strip_is_the_studios_and_the_rest_is_the_plugins,
+        ),
+        (
+            "a_press_on_the_strip_takes_the_keyboard_back_from_the_plugin",
+            a_press_on_the_strip_takes_the_keyboard_back_from_the_plugin,
         ),
         (
             "a_clap_editor_is_embedded_in_the_window",
@@ -143,6 +147,107 @@ fn the_strip_is_the_studios_and_the_rest_is_the_plugins() {
             width: 700,
             height: 400
         }
+    );
+}
+
+/// Ty, 2026-11-12: *"i could click the bar at the top then be able to play
+/// and pause"*, and *"of course it should work for all platforms"*. A plugin
+/// view that has the keyboard keeps the space; a press on the strip hands the
+/// keyboard to the plugin's area, which hears the next space as play. (The
+/// title bar is the same rule, `on_window_press`; a press sent there would
+/// start AppKit's drag loop, so it is not driven here.)
+///
+/// Events are made and sent to the window directly, which a desktop with no
+/// one at it may still not deliver; where a step does not happen at all the
+/// test says so and stops, rather than blaming the window for the runner.
+#[cfg(target_os = "macos")]
+fn a_press_on_the_strip_takes_the_keyboard_back_from_the_plugin() {
+    use objc2::MainThreadOnly;
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSTextView, NSView, NSWindow};
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+
+    const HEADER: u32 = 32;
+    let mut window = PluginWindow::open_with_header(
+        "Synth",
+        GuiSize {
+            width: 640,
+            height: 480,
+        },
+        HEADER,
+    )
+    .expect("a window on macOS");
+    fontelle_host::pump_gui_messages();
+    // SAFETY: the ids are the window's own NSWindow and NSView, alive while
+    // `window` is.
+    let (ns_window, area) = unsafe {
+        (
+            &*(window.frame_id() as usize as *const NSWindow),
+            &*(window.id() as usize as *const NSView),
+        )
+    };
+    let mtm = objc2::MainThreadMarker::new().expect("the main thread");
+    // The plugin: a text view, which keeps every key it is sent.
+    let plugin = NSTextView::initWithFrame(
+        NSTextView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 480.0)),
+    );
+    area.addSubview(&plugin);
+    if !ns_window.makeFirstResponder(Some(&plugin)) {
+        println!("(skipped: the text view would not take the keyboard)");
+        return;
+    }
+    let number = ns_window.windowNumber();
+    let space = || {
+        let text = NSString::from_str(" ");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            number,
+            None,
+            &text,
+            &text,
+            false,
+            49,
+        )
+        .expect("a key event");
+        ns_window.sendEvent(&event);
+    };
+    space();
+    fontelle_host::pump_gui_messages();
+    if window.poll().play_pause != 0 {
+        println!("(skipped: the text view passed the space on)");
+        return;
+    }
+
+    // A press on the strip: AppKit's window coordinates are bottom up, and
+    // the strip is the top 32 points of the 512.
+    let press = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        NSEventType::LeftMouseDown,
+        NSPoint::new(50.0, 500.0),
+        NSEventModifierFlags::empty(),
+        0.0,
+        number,
+        None,
+        0,
+        1,
+        1.0,
+    )
+    .expect("a mouse event");
+    ns_window.sendEvent(&press);
+    fontelle_host::pump_gui_messages();
+    let poll = window.poll();
+    if poll.header_presses.is_empty() {
+        println!("(skipped: the press never reached the strip)");
+        return;
+    }
+    space();
+    fontelle_host::pump_gui_messages();
+    assert_eq!(
+        window.poll().play_pause,
+        1,
+        "the space after the strip plays"
     );
 }
 

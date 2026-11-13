@@ -643,15 +643,50 @@ struct OnScreen {
 /// enough: with the pointer back over the plugin, the plugin heard the
 /// space, and a JUCE plugin keeps it. The keyboard goes instead to a sink
 /// outside the plugin's tree until the plugin itself is clicked.
-#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FocusMove {
-    /// Hand the keyboard to the sink: the space plays.
+    /// Hand the keyboard to the studio's side of the window — the sink on
+    /// X11, the frame on Windows, the plugin's area view on macOS: the
+    /// space plays.
     ToSink,
-    /// Hand it to the plugin's side: the plugin hears its keys.
+    /// Hand it to the plugin's side: the plugin hears its keys. Only X11
+    /// has to do this itself; elsewhere the plugin's own click does it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     ToPlugin,
     /// Leave it where it is.
     Stay,
+}
+
+/// Where on a plugin's window a press landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PressAt {
+    /// The desktop's title bar — the "drag bar". X11 hears it as the
+    /// desktop focusing the window instead (`on_focus_in`).
+    #[cfg_attr(all(not(test), target_os = "linux"), allow(dead_code))]
+    TitleBar,
+    /// The studio's strip across the top.
+    Strip,
+    /// The plugin's own area.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Plugin,
+}
+
+/// The rule every platform follows: a press on the title bar or the strip
+/// gives the keyboard to the studio, so Space plays and stops wherever the
+/// pointer then is; a press in the plugin leaves its keys to it.
+pub(crate) fn on_window_press(at: PressAt) -> FocusMove {
+    match at {
+        PressAt::TitleBar | PressAt::Strip => FocusMove::ToSink,
+        PressAt::Plugin => FocusMove::Stay,
+    }
+}
+
+/// Whether a press `y` up from the bottom of a macOS window (AppKit's
+/// window coordinates) is on its title bar, over content `content_height`
+/// tall. The title bar is the window's, not a view's, so no view hears it.
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+pub(crate) fn press_is_on_title(y: f64, content_height: f64) -> bool {
+    y >= content_height
 }
 
 /// The frame was given the keyboard (`detail`, `mode` as the FocusIn says).
@@ -708,7 +743,7 @@ struct OnScreen {
 /// strip's view. See [`cocoa`].
 #[cfg(target_os = "macos")]
 struct OnScreen {
-    window: objc2::rc::Retained<objc2_app_kit::NSWindow>,
+    window: objc2::rc::Retained<cocoa::FrameWindow>,
     embed: objc2::rc::Retained<cocoa::AreaView>,
     strip: Option<objc2::rc::Retained<cocoa::StripView>>,
     /// The menu over the window, made the first time one is shown.
@@ -1155,11 +1190,13 @@ impl PluginWindow {
                         .header_presses
                         .push((i32::from(press.event_x), i32::from(press.event_y)));
                     // The strip is not the plugin: the space plays from here.
-                    let _ = server.connection.set_input_focus(
-                        x11rb::protocol::xproto::InputFocus::PARENT,
-                        server.sink,
-                        x11rb::CURRENT_TIME,
-                    );
+                    if on_window_press(PressAt::Strip) == FocusMove::ToSink {
+                        let _ = server.connection.set_input_focus(
+                            x11rb::protocol::xproto::InputFocus::PARENT,
+                            server.sink,
+                            x11rb::CURRENT_TIME,
+                        );
+                    }
                 }
                 X11Event::FocusIn(focus) if focus.event == server.window => {
                     let just_now = server
@@ -1659,13 +1696,13 @@ mod win32 {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         AdjustWindowRectEx, BringWindowToTop, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-        GetClientRect, GetParent, GetWindowLongPtrW, HWND_TOP, IDC_ARROW, IsIconic, LoadCursorW,
-        MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_HIDE, SW_RESTORE, SW_SHOW,
+        GetClientRect, GetParent, GetWindowLongPtrW, HTCAPTION, HWND_TOP, IDC_ARROW, IsIconic,
+        LoadCursorW, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_HIDE, SW_RESTORE, SW_SHOW,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow,
         SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
         WM_CAPTURECHANGED, WM_CHAR, WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-        WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN,
-        WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        WM_MOUSEWHEEL, WM_NCLBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WM_SIZE, WNDCLASSEXW, WS_CHILD,
+        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     /// `WM_MOUSELEAVE`, which `windows-sys` files under the common controls.
@@ -2265,8 +2302,25 @@ mod win32 {
                 let (x, y) = point(lparam);
                 if y >= 0 && (y as u32) < seen.header.get() {
                     seen.presses.borrow_mut().push((x, y));
+                    // The strip is not the plugin: the keyboard comes back
+                    // to the frame, whose procedure hears the space.
+                    if super::on_window_press(super::PressAt::Strip) == super::FocusMove::ToSink {
+                        // SAFETY: this thread's own window.
+                        unsafe { SetFocus(hwnd) };
+                    }
                 }
                 0
+            }
+            // The title bar — the "drag bar" — is not the plugin either. The
+            // frame takes the keyboard and the press goes on to the desktop,
+            // so the window still drags.
+            (WM_NCLBUTTONDOWN, Some(_)) if wparam == HTCAPTION as WPARAM => {
+                if super::on_window_press(super::PressAt::TitleBar) == super::FocusMove::ToSink {
+                    // SAFETY: this thread's own window.
+                    unsafe { SetFocus(hwnd) };
+                }
+                // SAFETY: as below.
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
             }
             (WM_MOUSEMOVE, Some(seen)) if seen.header.get() > 0 => {
                 let (x, y) = point(lparam);
@@ -2612,12 +2666,52 @@ mod cocoa {
     };
     use objc2_app_kit::{
         NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSBitmapImageRep,
-        NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSImage, NSView,
-        NSWindow, NSWindowStyleMask,
+        NSDeviceRGBColorSpace, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSImage,
+        NSView, NSWindow, NSWindowStyleMask,
     };
     use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSRect, NSSize, NSString};
 
     use super::{GuiError, GuiSize, OverlayEvent, OverlayKey};
+
+    /// What a plugin's window keeps: whether its title bar was pressed.
+    #[derive(Default)]
+    pub(super) struct FrameIvars {
+        title_pressed: std::cell::Cell<bool>,
+    }
+
+    define_class!(
+        /// A plugin's window, which only hears presses on its own title bar —
+        /// the bar is the window's, not any view's, so nothing else can. A
+        /// press there gives the studio the keyboard (`super::on_window_press`).
+        #[unsafe(super(NSWindow))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "FontellePluginFrame"]
+        #[ivars = FrameIvars]
+        pub(super) struct FrameWindow;
+
+        impl FrameWindow {
+            #[unsafe(method(sendEvent:))]
+            fn send_event(&self, event: &NSEvent) {
+                if event.r#type() == NSEventType::LeftMouseDown {
+                    let content = self
+                        .contentView()
+                        .map_or(f64::MAX, |view| view.frame().size.height);
+                    if super::press_is_on_title(event.locationInWindow().y, content) {
+                        self.ivars().title_pressed.set(true);
+                    }
+                }
+                // And on to AppKit, so the window still drags.
+                unsafe { msg_send![super(self), sendEvent: event] }
+            }
+        }
+    );
+
+    impl FrameWindow {
+        /// Whether the title bar was pressed since this was last asked.
+        pub(super) fn take_title_press(&self) -> bool {
+            self.ivars().title_pressed.replace(false)
+        }
+    }
 
     /// What the menu's view keeps: its picture, where in the frame it goes,
     /// and what was done to it.
@@ -2973,14 +3067,15 @@ mod cocoa {
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
             | NSWindowStyleMask::Resizable;
-        let window = unsafe {
-            NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(mtm),
-                NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(width, total)),
-                style,
-                NSBackingStoreType::Buffered,
-                false,
-            )
+        let frame = FrameWindow::alloc(mtm).set_ivars(FrameIvars::default());
+        let window: Retained<FrameWindow> = unsafe {
+            msg_send![
+                super(frame),
+                initWithContentRect: NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(width, total)),
+                styleMask: style,
+                backing: NSBackingStoreType::Buffered,
+                defer: false
+            ]
         };
         // Closing it hides it; the host lets it go (`Drop`), not AppKit.
         unsafe { window.setReleasedWhenClosed(false) };
@@ -3183,13 +3278,29 @@ impl PluginWindow {
             return result;
         };
         result.play_pause = server.embed.take_spaces();
+        // A press on the title bar or the strip hands the keyboard to the
+        // plugin's area, which hears the space the plugin did not take.
+        let title = server.window.take_title_press();
+        let strip = server
+            .strip
+            .as_ref()
+            .map(|strip| strip.take_presses())
+            .unwrap_or_default();
+        let pressed = if title {
+            Some(PressAt::TitleBar)
+        } else if !strip.is_empty() {
+            Some(PressAt::Strip)
+        } else {
+            None
+        };
+        if pressed.is_some_and(|at| on_window_press(at) == FocusMove::ToSink) {
+            server.window.makeFirstResponder(Some(&server.embed));
+        }
+        result.header_presses = strip;
         // The close button hides the window (`setReleasedWhenClosed(false)`).
         if !server.closed && !server.window.isVisible() {
             server.closed = true;
             result.closed = true;
-        }
-        if let Some(strip) = &server.strip {
-            result.header_presses = strip.take_presses();
         }
         if let Some(menu) = &server.menu {
             result.overlay = menu.take_events();
@@ -3286,5 +3397,37 @@ mod focus_tests {
             FocusMove::Stay,
             "it has it already"
         );
+    }
+}
+
+/// The rule every platform's window follows (Ty, 2026-11-12: *"if i drag the
+/// actual drag bar of the plugin window, thats not inside the plugin itself,
+/// so i could click the bar at the top then be able to play and pause"* — and
+/// then, of the Linux-only first cut, *"of course it should work for all
+/// platforms"*).
+#[cfg(test)]
+mod press_tests {
+    use super::{FocusMove, PressAt, on_window_press, press_is_on_title};
+
+    #[test]
+    fn the_title_bar_and_the_strip_give_the_studio_the_keyboard() {
+        assert_eq!(on_window_press(PressAt::TitleBar), FocusMove::ToSink);
+        assert_eq!(on_window_press(PressAt::Strip), FocusMove::ToSink);
+    }
+
+    #[test]
+    fn a_press_in_the_plugin_leaves_its_keys_to_it() {
+        // The plugin's own view takes the keyboard on its own click, on
+        // Windows and macOS alike; the window does not fight it.
+        assert_eq!(on_window_press(PressAt::Plugin), FocusMove::Stay);
+    }
+
+    #[test]
+    fn above_the_content_is_the_title_bar() {
+        // AppKit's window coordinates: the origin at the bottom left, the
+        // content from 0 up to its height, the title bar over that.
+        assert!(press_is_on_title(430.0, 420.0));
+        assert!(!press_is_on_title(419.0, 420.0), "the strip's top row");
+        assert!(!press_is_on_title(10.0, 420.0), "the plugin");
     }
 }

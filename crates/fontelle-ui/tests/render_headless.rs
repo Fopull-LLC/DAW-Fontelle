@@ -1766,6 +1766,7 @@ fn shoot_instrument() -> Option<(Vec<u8>, Theme, fontelle_ui::canvas::Instrument
             view: &instrument,
             hover: None,
             active: Some((1, 2)),
+            meter: None,
         })),
         None,
         None,
@@ -5703,6 +5704,7 @@ fn shoot_settings_controls() {
                 searching: false,
                 search_field: None,
                 focus_preset: None,
+                focus_file: None,
                 hover: None,
                 settings_controls: &controls,
                 focus_setting: Some(5),
@@ -9905,5 +9907,114 @@ fn the_ping_notice_fits_its_row() {
             "{said:?} is {width} wide in a row of {}",
             line.width
         );
+    }
+}
+
+/// A Master's window: its loudness strip under its name, above the knobs,
+/// with the four captions and values drawn (Ty, 2026-11-12: *"loudness
+/// readout on master would be good"*).
+#[test]
+fn a_masters_window_shows_its_loudness_under_its_name() {
+    use fontelle_types::ParamAddress;
+    use fontelle_ui::canvas::{
+        InstrumentGroup, InstrumentParam, InstrumentView, MasterMeterView, ParamKind,
+        instrument_layout, master_meter_cells, master_meter_rects, master_meter_room,
+    };
+    use fontelle_ui::render::InstrumentChrome;
+
+    let theme = Theme::dark_default();
+    let Some(shared) = headless() else {
+        return;
+    };
+    let mut text = TextContext::new();
+    let title = text.layout("Master \u{2014} Master", &theme.font, None);
+    let knob = |name: &str, value: f32, display: &str| InstrumentParam {
+        address: ParamAddress::new(format!("insert/{name}")),
+        label: name.to_string(),
+        value,
+        display: display.to_string(),
+        kind: ParamKind::Knob,
+        automated: false,
+    };
+    let view = InstrumentView {
+        keys: Vec::new(),
+        key: None,
+        title: "Master".to_string(),
+        groups: vec![InstrumentGroup {
+            name: "Loudness".to_string(),
+            params: vec![
+                knob("Target LUFS", 0.6, "-14.0"),
+                knob("Ceiling", 0.9, "-1.0 dB"),
+                knob("Release", 0.3, "80 ms"),
+            ],
+        }],
+    };
+    let meter = MasterMeterView {
+        loudness_lufs: -15.3,
+        target_lufs: Some(-14.0),
+        level_db: 6.2,
+        reduction_db: 1.4,
+    };
+    let (ew, eh) = (720u32, 420u32);
+    let panel = fontelle_ui::layout::editor_window_layout(ew as f32, eh as f32, &theme.metrics);
+    let mut l = instrument_layout(panel.body, &theme.metrics, &view);
+    let strip = master_meter_room(&mut l);
+    let mut labels = Labels::new();
+    labels.ensure(&view.title, &theme.font, &mut text);
+    for group in &view.groups {
+        labels.ensure(&group.name, &theme.font, &mut text);
+        for param in &group.params {
+            labels.ensure(&param.label, &theme.font, &mut text);
+            labels.ensure(&param.display, &theme.font, &mut text);
+        }
+    }
+    for (caption, value) in master_meter_cells(&meter) {
+        labels.ensure_small(caption, &theme.font, &mut text);
+        labels.ensure(&value, &theme.font, &mut text);
+    }
+    let mut scene = vello::Scene::new();
+    fontelle_ui::render::draw_editor_window(
+        &mut scene,
+        &theme,
+        &panel,
+        &labels,
+        &title,
+        &fontelle_ui::render::EditorWindowChrome::Insert(InstrumentChrome {
+            hover_preset: None,
+            hover_key: None,
+            layout: l.clone(),
+            view: &view,
+            hover: None,
+            active: None,
+            meter: Some((strip, meter)),
+        }),
+        None,
+        None,
+        None,
+        None,
+    );
+    let pixels = shared
+        .lock()
+        .expect("the shared renderer")
+        .render(&scene, ew, eh, theme.palette.window)
+        .expect("the scene must render");
+    dump_sized(&pixels, "master_meter", ew, eh);
+
+    assert!(strip.y >= l.name.bottom() && strip.bottom() <= l.headings[0].1.y);
+    // Every cell has its value drawn in it: text-coloured pixels inside.
+    let at = |x: u32, y: u32| {
+        let i = ((y * ew + x) * 4) as usize;
+        Color(pixels[i..i + 4].try_into().expect("four bytes"))
+    };
+    for cell in master_meter_rects(strip) {
+        let mut inked = false;
+        for y in cell.y as u32..cell.bottom() as u32 {
+            for x in cell.x as u32..cell.right() as u32 {
+                if near(at(x, y), theme.palette.text) {
+                    inked = true;
+                }
+            }
+        }
+        assert!(inked, "nothing written in {cell:?}");
     }
 }
