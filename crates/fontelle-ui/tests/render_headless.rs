@@ -10001,20 +10001,23 @@ fn a_masters_window_shows_its_loudness_under_its_name() {
     dump_sized(&pixels, "master_meter", ew, eh);
 
     assert!(strip.y >= l.name.bottom() && strip.bottom() <= l.headings[0].1.y);
-    // Every cell has its value drawn in it: text-coloured pixels inside.
+    // Every cell has its value drawn in its lower half: ink on the cell's
+    // ground, inside its border. Not "pixels of exactly the text colour" —
+    // macOS's CI runner shapes with another font whose antialiased strokes
+    // never land on it, and that check failed there with the value drawn.
     let at = |x: u32, y: u32| {
         let i = ((y * ew + x) * 4) as usize;
         Color(pixels[i..i + 4].try_into().expect("four bytes"))
     };
     for cell in master_meter_rects(strip) {
-        let mut inked = false;
-        for y in cell.y as u32..cell.bottom() as u32 {
-            for x in cell.x as u32..cell.right() as u32 {
-                if near(at(x, y), theme.palette.text) {
-                    inked = true;
+        let mut ink = 0;
+        for y in (cell.y + cell.height / 2.0) as u32..cell.bottom() as u32 - 2 {
+            for x in cell.x as u32 + 2..cell.right() as u32 - 2 {
+                if !near(at(x, y), theme.palette.window) {
+                    ink += 1;
                 }
             }
         }
-        assert!(inked, "nothing written in {cell:?}");
+        assert!(ink > 20, "only {ink} pixels written in {cell:?}");
     }
 }
