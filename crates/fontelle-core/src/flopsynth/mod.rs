@@ -811,8 +811,8 @@ pub fn sources(patch: &Patch) -> Vec<(ModSource, String)> {
         (ModSource::RandomWalk, "Walk".to_string()),
         (ModSource::EnvelopeFollower, "Follow".to_string()),
     ]);
-    for index in 0..MACRO_COUNT {
-        let name = patch.macros[index].name.clone();
+    for (index, slot) in patch.macros.iter().enumerate().take(MACRO_COUNT) {
+        let name = slot.name.clone();
         let label = if name.is_empty() {
             format!("M{}", index + 1)
         } else {

@@ -235,8 +235,7 @@ pub fn describe(title: &str, patch: &Patch, gain_db: f32, pan: f32) -> Instrumen
             .iter()
             .all(|l| matches!(l.source, fontelle_core::Source::Oscillator(_)));
         let mut params = Vec::new();
-        for index in 0..shown {
-            let layer = &patch.layers[index];
+        for (index, layer) in patch.layers.iter().enumerate().take(shown) {
             let name = |field: &str| {
                 if all_oscillators {
                     format!("osc {} {field}", index + 1)

@@ -178,8 +178,8 @@ fn without_mesa_the_row_cannot_be_turned_on_and_says_why() {
 /// The test bundle, alone in a folder — see `tests/plugin_ui.rs`.
 fn plugin_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(if cfg!(target_os = "windows") {
         "fontelle_testplug.dll"
     } else if cfg!(target_os = "macos") {

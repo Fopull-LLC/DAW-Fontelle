@@ -40,8 +40,8 @@ fn scratch(name: &str) -> PathBuf {
 /// `plugin_hosting.rs`, whose layout this is.
 fn vst3_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(if cfg!(target_os = "windows") {
         "fontelle_testvst3.dll"
     } else if cfg!(target_os = "macos") {
@@ -84,8 +84,8 @@ fn vst3_folder() -> PathBuf {
 /// LV2 is hosted on Linux alone.
 fn lv2_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(fontelle_testlv2::BUILT_NAME);
     assert!(
         built.exists(),

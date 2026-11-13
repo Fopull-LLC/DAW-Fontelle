@@ -9,11 +9,12 @@ use std::path::PathBuf;
 /// Found by walking up from the running test rather than by a path written
 /// down here, because `target/` moves: `CARGO_TARGET_DIR`, a workspace built
 /// from elsewhere, and `cargo test --release` all put it somewhere different,
-/// and all three put it exactly two levels above the test binary.
+/// and all three put it in the `debug/` or `release/` above the test binary
+/// (two levels up before Rust 1.100, five since, under `build/<pkg>/<hash>/out/`).
 pub fn bundle() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
-    path.pop(); // deps/
-    path.pop(); // debug/ or release/
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let file = if cfg!(target_os = "windows") {
         "fontelle_testplug.dll"
     } else if cfg!(target_os = "macos") {
@@ -111,8 +112,8 @@ pub const LV2_LOADER: &str = fontelle_testlv2::LOADER_URI;
 /// bundle.
 pub fn lv2_bundle() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(fontelle_testlv2::BUILT_NAME);
     assert!(
         built.exists(),
@@ -185,8 +186,8 @@ pub const BRIDGED_SINE: &str = fontelle_testbridge::SINE_ID;
 #[cfg(target_os = "linux")]
 pub fn bridge_folder() -> PathBuf {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join("libfontelle_testbridge.so");
     assert!(
         built.exists(),
@@ -217,8 +218,8 @@ pub fn bridged_bundle() -> PathBuf {
     BUNDLE
         .get_or_init(|| {
             let mut path = std::env::current_exe().unwrap();
-            path.pop();
-            path.pop();
+            // Up to target/<profile>/, however deep Cargo puts the test binary.
+            while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
             // In a folder of its own, so a test that scans the folder the
             // bundle sits in scans one bundle and not all of `target/`.
             let bundle = path.join("fontelle-test-bridged").join(format!(
@@ -252,8 +253,8 @@ pub const PHANTOM_NAME: &str = "Fontelle Phantom (listed, not built)";
 /// The built `fontelle-testvst3` library.
 fn vst3_library() -> (PathBuf, PathBuf) {
     let mut path = std::env::current_exe().expect("a test binary knows where it is");
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let file = if cfg!(target_os = "windows") {
         "fontelle_testvst3.dll"
     } else if cfg!(target_os = "macos") {

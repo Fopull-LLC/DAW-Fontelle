@@ -39,8 +39,8 @@ fn the_heaviest_patch() -> fontelle_core::Patch {
     use fontelle_core::{ModDest, ModRoute, ModSource};
     let mut patch = flopsynth::flopsynth_init();
 
-    for index in 0..3 {
-        let Source::Synth(osc) = &mut patch.layers[index].source else {
+    for (index, layer) in patch.layers.iter_mut().enumerate().take(3) {
+        let Source::Synth(osc) = &mut layer.source else {
             unreachable!()
         };
         osc.unison.voices = 8;
@@ -59,7 +59,7 @@ fn the_heaviest_patch() -> fontelle_core::Patch {
             1 => FilterRoute::F1,
             _ => FilterRoute::F2,
         };
-        patch.layers[index].gain_db = -18.0;
+        layer.gain_db = -18.0;
     }
     // Oscillator A takes its FM from a later layer, which is the reverse walk.
     let Source::Synth(a) = &mut patch.layers[0].source else {

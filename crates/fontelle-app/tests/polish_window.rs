@@ -196,8 +196,8 @@ fn searching_the_effect_menu_finds_installed_plugins_too() {
     let dir = scratch("menu-search-plugins");
     // The test plugin cargo builds beside this test (`render_mode.rs`).
     let mut built = std::env::current_exe().unwrap();
-    built.pop();
-    built.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(built.ends_with("debug") || built.ends_with("release")) && built.pop() {}
     let built = built.join(if cfg!(target_os = "windows") {
         "fontelle_testplug.dll"
     } else if cfg!(target_os = "macos") {

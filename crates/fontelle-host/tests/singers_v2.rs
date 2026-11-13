@@ -35,8 +35,8 @@ fn folder() -> PathBuf {
     FOLDER
         .get_or_init(|| {
             let mut path = std::env::current_exe().expect("a test binary knows where it is");
-            path.pop();
-            path.pop();
+            // Up to target/<profile>/, however deep Cargo puts the test binary.
+            while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
             let built = path.join(library_name("fontelle_testsinger"));
             assert!(built.exists(), "build fontelle-testsinger first");
             let folder = path.join(format!("fontelle-test-singers-v2-{}", std::process::id()));

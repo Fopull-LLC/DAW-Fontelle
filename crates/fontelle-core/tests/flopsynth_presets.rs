@@ -173,9 +173,9 @@ fn every_name_is_unique_and_every_preset_builds_a_flopsynth_patch() {
             row.name,
             patch.layers.len()
         );
-        for index in 0..5 {
+        for (index, layer) in patch.layers.iter().enumerate().take(5) {
             assert!(
-                matches!(patch.layers[index].source, fontelle_core::Source::Synth(_)),
+                matches!(layer.source, fontelle_core::Source::Synth(_)),
                 "{}: layer {index} is not a synth oscillator",
                 row.name
             );

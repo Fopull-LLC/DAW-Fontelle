@@ -36,8 +36,8 @@ fn library_name(stem: &str) -> String {
 /// The ABI-1 test engine alone, copied somewhere of the test's own.
 fn engine_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(library_name("fontelle_testsinger"));
     assert!(built.exists(), "run `cargo build -p fontelle-testsinger`");
     let folder = std::env::temp_dir().join(format!("fontelle-panel-shots-{}", std::process::id()));

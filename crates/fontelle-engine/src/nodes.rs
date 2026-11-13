@@ -780,6 +780,9 @@ impl AudioNode for DelayNode {
         let frames = ctx.outputs.first().map_or(0, |buffer| buffer.len());
         let channels = ctx.outputs.len().min(MAX_CHANNELS);
         let delay = (self.samples as usize).min(self.capacity - 1);
+        // Frame-major on purpose: every channel shares one write head, so
+        // the outer index walks frames across all the channel buffers.
+        #[allow(clippy::needless_range_loop)]
         for frame in 0..frames {
             let read = (self.write + self.capacity - delay) % self.capacity;
             for channel in 0..channels {

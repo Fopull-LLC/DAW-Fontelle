@@ -44,7 +44,13 @@ fn silent_graph() -> CompiledGraph {
 /// program. (Fontelle never links it: it is GPL, and a program apart.)
 fn helper_program() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let profile = exe.parent().unwrap().parent().unwrap().to_path_buf();
+    // `target/<profile>/`: two levels up before Rust 1.100, five since
+    // (`build/<pkg>/<hash>/out/`), which CI found when the helper went missing.
+    let profile = exe
+        .ancestors()
+        .find(|p| p.ends_with("debug") || p.ends_with("release"))
+        .expect("a test binary lives under target/<profile>/")
+        .to_path_buf();
     let name = if cfg!(windows) {
         "fontelle-asio.exe"
     } else {

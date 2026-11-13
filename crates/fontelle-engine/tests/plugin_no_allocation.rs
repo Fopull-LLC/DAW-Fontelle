@@ -31,8 +31,8 @@ const BLOCKS: usize = 200;
 
 fn bundle() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(if cfg!(target_os = "windows") {
         "fontelle_testplug.dll"
     } else if cfg!(target_os = "macos") {

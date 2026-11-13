@@ -263,8 +263,8 @@ fn the_recover_button_on_the_start_menu_says_what_it_recovers() {
 /// The test bundle, alone in a folder — see `tests/plugin_ui.rs`.
 fn plugin_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(if cfg!(target_os = "windows") {
         "fontelle_testplug.dll"
     } else if cfg!(target_os = "macos") {

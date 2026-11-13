@@ -33,8 +33,8 @@ fn testplug_library() -> &'static str {
 /// list rather than whatever happens to be installed on this machine.
 fn plugin_folder() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(testplug_library());
     assert!(
         built.exists(),
@@ -660,8 +660,8 @@ mod lv2_hosting {
     /// folder holds keep counting one of each.
     fn lv2_folder() -> PathBuf {
         let mut path = std::env::current_exe().unwrap();
-        path.pop();
-        path.pop();
+        // Up to target/<profile>/, however deep Cargo puts the test binary.
+        while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
         let built = path.join(fontelle_testlv2::BUILT_NAME);
         assert!(
             built.exists(),
@@ -1007,8 +1007,8 @@ mod bridged {
 
     fn bridge_folder() -> PathBuf {
         let mut path = std::env::current_exe().unwrap();
-        path.pop();
-        path.pop();
+        // Up to target/<profile>/, however deep Cargo puts the test binary.
+        while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
         let built = path.join("libfontelle_testbridge.so");
         assert!(built.exists(), "run `cargo build -p fontelle-testbridge`");
         static FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -1356,8 +1356,8 @@ mod vst3 {
     /// the SDK lays a bundle out: `Name.vst3/Contents/<arch>/Name.so`.
     fn vst3_folder() -> PathBuf {
         let mut path = std::env::current_exe().unwrap();
-        path.pop();
-        path.pop();
+        // Up to target/<profile>/, however deep Cargo puts the test binary.
+        while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
         let built = path.join(vst3_library());
         assert!(
             built.exists(),

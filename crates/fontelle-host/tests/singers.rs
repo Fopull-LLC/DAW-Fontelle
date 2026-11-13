@@ -30,8 +30,8 @@ fn singer_folder() -> PathBuf {
     FOLDER
         .get_or_init(|| {
             let mut path = std::env::current_exe().expect("a test binary knows where it is");
-            path.pop();
-            path.pop();
+            // Up to target/<profile>/, however deep Cargo puts the test binary.
+            while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
             let built = path.join(library_name("fontelle_testsinger"));
             assert!(
                 built.exists(),
@@ -91,8 +91,8 @@ fn a_missing_folder_is_no_engines_and_no_failure() {
 #[test]
 fn a_library_that_is_not_a_singer_engine_is_a_failure_not_a_crash() {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let other = path.join(library_name("fontelle_testbridge"));
     if !other.exists() {
         return;
@@ -288,8 +288,8 @@ fn a_guessed_pronunciation_is_said_so() {
 #[test]
 fn an_engine_in_a_folder_of_its_own_is_loaded_and_its_helpers_are_not() {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let root = path.join(format!("fontelle-test-singer-dirs-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let engine_dir = root.join("toy");

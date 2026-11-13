@@ -82,9 +82,9 @@ fn the_init_patch_is_five_synth_layers_in_role_order() {
 fn only_oscillator_a_is_up_and_the_rest_are_one_knob_away() {
     let patch = flopsynth::flopsynth_init();
     assert!(patch.layers[0].gain_db > fontelle_core::SILENT_DB);
-    for index in 1..5 {
+    for (index, layer) in patch.layers.iter().enumerate().take(5).skip(1) {
         assert_eq!(
-            patch.layers[index].gain_db,
+            layer.gain_db,
             fontelle_core::SILENT_DB,
             "layer {index} arrives audible, which clips the first chord"
         );

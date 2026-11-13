@@ -50,8 +50,8 @@ fn singer_folder() -> PathBuf {
     FOLDER
         .get_or_init(|| {
             let mut path = std::env::current_exe().unwrap();
-            path.pop();
-            path.pop();
+            // Up to target/<profile>/, however deep Cargo puts the test binary.
+            while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
             let built = path.join(library_name("fontelle_testsinger"));
             assert!(built.exists(), "run `cargo build -p fontelle-testsinger`");
             let folder = scratch("singers");

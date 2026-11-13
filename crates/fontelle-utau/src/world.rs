@@ -454,12 +454,12 @@ fn cheaptrick(x: &[f64], fs: u32, f0: &[f32], fft_size: usize, f0_floor: f32) ->
             }
             fft.inverse();
             let q1 = -0.15;
-            for n in 0..fft_size {
+            for (n, t) in fft.time.iter_mut().enumerate().take(fft_size) {
                 let q = n.min(fft_size - n) as f64 / fsd;
                 let a = PI * f0v * q;
                 let sm = if q == 0.0 { 1.0 } else { a.sin() / a };
                 let comp = (1.0 - 2.0 * q1) + 2.0 * q1 * (2.0 * PI * q * f0v).cos();
-                fft.time[n] *= sm * comp / fft_size as f64;
+                *t *= sm * comp / fft_size as f64;
             }
             fft.forward();
             for (k, v) in o.iter_mut().enumerate() {

@@ -316,8 +316,8 @@ fn newest_report(dir: &std::path::Path) -> String {
 #[cfg(target_os = "linux")]
 fn test_plugin() -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    path.pop();
+    // Up to target/<profile>/, however deep Cargo puts the test binary.
+    while !(path.ends_with("debug") || path.ends_with("release")) && path.pop() {}
     let built = path.join(if cfg!(target_os = "macos") {
         "libfontelle_testplug.dylib"
     } else {

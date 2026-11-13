@@ -59,6 +59,14 @@ codebase that cost real time to rediscover.
 - **Support Fontelle** in the start menu's footer (`SUPPORT_URL_FOOTER`,
   `utm_medium=start-menu-footer`); it steps aside in a card too narrow for
   it beside the company's line.
+- **CI went red on the 0.35.0 commit because its stable had become Rust
+  1.100 while this machine was on 1.98.** Two changes caught it. Clippy's
+  `needless_range_loop` now fires on loops that index two arrays, which
+  flagged seven old loops. And Cargo moved test binaries from
+  `target/<profile>/deps/` to `target/<profile>/build/<pkg>/<hash>/out/`,
+  so the 35 "pop twice to reach `target/debug`" lookups in the tests now
+  walk up to the nearest `debug`/`release`. Check with `cargo +1.100.0`
+  (installed); preflight can't catch drift it isn't running.
 
 **2026-11-12 — The Flopsynth bank audited for polish (not released).** Ty:
 *"the synth is capable of a lot and making really polished sounds but many
