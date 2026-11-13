@@ -45,6 +45,17 @@ codebase that cost real time to rediscover.
   the window send the keyboard to a one-pixel sink outside the plugin's
   tree; a raw press (XInput 2) inside the plugin hands it back. Linux only;
   Windows and macOS unchanged.
+- **Found on `:99`, fixed:** the searched menus also list every installed
+  plugin (they listed only starred ones); `menu_matches` reads letters,
+  digits, sharps and flats only ("obx" finds OB-Xf); a generic effect
+  window opens tall enough for its knobs (`knob_grid`, Master's six
+  sections ran off a fixed 720×420); the Tune chip's caption is shaped
+  small. Space-from-a-plugin-window seen working with OB-Xf: the strip
+  click plays with the pointer over the plugin, a click in the plugin
+  gives it the keys back. **Ty's OB-Xf "steals my mouse, invisible" was
+  not reproduced** on `:99` (no window manager, no scaling): OB-Xf's JUCE
+  menus opened in place and held no grab. The suspicion is a pop-up placed
+  off-screen on a scaled Wayland desktop; it needs his machine.
 - **Support Fontelle** in the start menu's footer (`SUPPORT_URL_FOOTER`,
   `utm_medium=start-menu-footer`); it steps aside in a card too narrow for
   it beside the company's line.
